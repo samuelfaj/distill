@@ -3,7 +3,7 @@ import cliPackage from "../packages/cli/package.json";
 export const DISTILL_VERSION = cliPackage.version;
 export const DEFAULT_MODEL = "qwen3.5:2b";
 export const DEFAULT_HOST = "http://127.0.0.1:11434";
-export const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_TIMEOUT_MS = 90_000;
 export const DEFAULT_IDLE_MS = 1_200;
 export const DEFAULT_INTERACTIVE_GAP_MS = 180;
 

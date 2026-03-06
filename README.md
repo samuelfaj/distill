@@ -45,6 +45,7 @@ You can persist defaults locally:
 
 ```bash
 distill config model "qwen3.5:2b"
+distill config timeout-ms 90000
 distill config thinking false
 ```
 

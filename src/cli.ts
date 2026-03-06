@@ -1,6 +1,6 @@
 import { parseCommand, formatUsage, DISTILL_VERSION, UsageError } from "./config";
 import { createOllamaSummarizer } from "./summarizer";
-import { DistillSession } from "./stream-distiller";
+import { DistillSession, type ProgressPhase } from "./stream-distiller";
 import {
   getPersistedConfigValue,
   readPersistedConfig,
@@ -51,13 +51,32 @@ async function run(): Promise<number> {
     throw new UsageError("stdin is required.");
   }
 
-  const progress = process.stderr.isTTY ? process.stderr : undefined;
+  const progressProtocol = process.env.DISTILL_PROGRESS_PROTOCOL === "stderr";
+  const progress =
+    progressProtocol
+      ? undefined
+      : process.stderr.isTTY
+        ? process.stderr
+        : process.stdout.isTTY
+          ? process.stdout
+          : undefined;
+  const emitProgressPhase = progressProtocol
+    ? (phase: ProgressPhase) => {
+        process.stderr.write(`__DISTILL_PROGRESS__:phase:${phase}\n`);
+      }
+    : undefined;
+  const emitProgressStop = progressProtocol
+    ? () => {
+        process.stderr.write("__DISTILL_PROGRESS__:stop\n");
+      }
+    : undefined;
   const session = new DistillSession({
     summarizer: createOllamaSummarizer(command.config),
     stdout: process.stdout,
     isTTY: Boolean(process.stdout.isTTY),
     progress,
-    progressIsTTY: Boolean(progress)
+    onProgressPhase: emitProgressPhase,
+    onProgressStop: emitProgressStop
   });
 
   await new Promise<void>((resolve, reject) => {

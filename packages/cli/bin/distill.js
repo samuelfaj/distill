@@ -35,9 +35,119 @@ function resolveBinaryPath() {
   }
 }
 
+const PROGRESS_PREFIX = "__DISTILL_PROGRESS__:";
+const PROGRESS_FRAMES = ["-", "\\", "|", "/"];
+const PROGRESS_DOT_FRAMES = ["", ".", "..", "...", "..", "."];
+const PROGRESS_LABELS = {
+  collecting: "distill: waiting",
+  summarizing: "distill: summarizing"
+};
+
 const binPath = resolveBinaryPath();
+const progressWriter = process.stderr.isTTY ? process.stderr : process.stdout.isTTY ? process.stdout : null;
+let progressPhase = "collecting";
+let progressFrame = 0;
+let progressTimer = null;
+let progressVisible = false;
+let childStderrBuffer = "";
+
+function renderProgress() {
+  if (!progressWriter) {
+    return;
+  }
+
+  const frame = PROGRESS_FRAMES[progressFrame % PROGRESS_FRAMES.length];
+  const dots =
+    PROGRESS_DOT_FRAMES[
+      Math.floor(progressFrame / PROGRESS_FRAMES.length) % PROGRESS_DOT_FRAMES.length
+    ];
+  progressFrame += 1;
+  progressWriter.write(
+    `\r\u001b[2K${frame} ${PROGRESS_LABELS[progressPhase] || PROGRESS_LABELS.collecting}${dots}`
+  );
+  progressVisible = true;
+}
+
+function startProgress() {
+  if (!progressWriter || progressTimer) {
+    return;
+  }
+
+  renderProgress();
+  progressTimer = setInterval(renderProgress, 120);
+}
+
+function stopProgress() {
+  if (progressTimer) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
+
+  if (progressVisible && progressWriter) {
+    progressWriter.write("\r\u001b[2K");
+    progressVisible = false;
+  }
+}
+
+function handleChildStderrLine(line) {
+  if (!line) {
+    return;
+  }
+
+  if (!line.startsWith(PROGRESS_PREFIX)) {
+    stopProgress();
+    process.stderr.write(`${line}\n`);
+    return;
+  }
+
+  if (line === `${PROGRESS_PREFIX}stop`) {
+    stopProgress();
+    return;
+  }
+
+  if (line.startsWith(`${PROGRESS_PREFIX}phase:`)) {
+    progressPhase = line.slice(`${PROGRESS_PREFIX}phase:`.length) || "collecting";
+    progressFrame = 0;
+    renderProgress();
+  }
+}
+
+function flushChildStderr(force = false) {
+  if (!force && !childStderrBuffer.includes("\n")) {
+    return;
+  }
+
+  const parts = childStderrBuffer.split("\n");
+  childStderrBuffer = force ? "" : parts.pop() || "";
+
+  for (const line of parts) {
+    handleChildStderrLine(line);
+  }
+
+  if (force && childStderrBuffer) {
+    handleChildStderrLine(childStderrBuffer);
+    childStderrBuffer = "";
+  }
+}
+
 const child = spawn(binPath, process.argv.slice(2), {
-  stdio: "inherit"
+  stdio: ["inherit", "pipe", "pipe"],
+  env: {
+    ...process.env,
+    DISTILL_PROGRESS_PROTOCOL: "stderr"
+  }
+});
+
+startProgress();
+
+child.stdout.on("data", (chunk) => {
+  stopProgress();
+  process.stdout.write(chunk);
+});
+
+child.stderr.on("data", (chunk) => {
+  childStderrBuffer += chunk.toString("utf8");
+  flushChildStderr();
 });
 
 const forwardSignal = (signal) => {
@@ -51,11 +161,15 @@ const forwardSignal = (signal) => {
 });
 
 child.on("error", (error) => {
+  stopProgress();
   console.error(`[distill] Failed to launch native binary: ${error.message}`);
   process.exit(1);
 });
 
 child.on("exit", (code, signal) => {
+  flushChildStderr(true);
+  stopProgress();
+
   if (signal) {
     process.removeAllListeners(signal);
     process.kill(process.pid, signal);

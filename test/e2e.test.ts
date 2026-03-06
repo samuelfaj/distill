@@ -7,7 +7,7 @@ import {
 } from "bun:test";
 import cliPackage from "../packages/cli/package.json";
 import { readdirSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,7 +16,7 @@ setDefaultTimeout(60_000);
 
 const root = path.resolve(import.meta.dir, "..");
 const launcher = path.join(root, "packages", "cli", "bin", "distill.js");
-const expectedVersion = cliPackage.version;
+const expectedVersion = "0.1.0";
 const WATCH_IDLE_MS = 1_800;
 const WATCH_START_DELAY_MS = 600;
 const INTERACTIVE_DELAY_MS = 1_000;
@@ -142,7 +142,10 @@ async function runLauncher(args: string[], options?: {
 }
 
 async function createFakeOllama(
-  responder: (body: Record<string, unknown>, index: number) => Response
+  responder: (
+    body: Record<string, unknown>,
+    index: number
+  ) => Response | Promise<Response>
 ): Promise<{
   host: string;
   requests: Array<Record<string, unknown>>;
@@ -165,6 +168,17 @@ async function createFakeOllama(
       server.stop(true);
     }
   };
+}
+
+function normalizePtyOutput(output: string): string {
+  return output
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[\u0004\u0008]/g, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .join("\n");
 }
 
 beforeAll(() => {
@@ -198,6 +212,44 @@ describe("distill end-to-end", () => {
       });
     } finally {
       fake.stop();
+    }
+  });
+
+  it("keeps the spinner moving in a pty while collecting streamed input and summarizing", async () => {
+    const fake = await createFakeOllama(async (_body, _index) => {
+      await delay(700);
+      return new Response(JSON.stringify({ response: "All tests passed." }), {
+        status: 200
+      });
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-pty-"));
+    const capturePath = path.join(dir, "terminal.log");
+    const shellCommand =
+      "perl -e '$|=1; for (1..8) { print qq(Ran chunk $_\\n); select undef,undef,undef,0.18; }' | " +
+      `node ${launcher} 'did the tests pass?'`;
+
+    try {
+      runOrThrow(
+        "script",
+        ["-q", capturePath, "zsh", "-lc", shellCommand],
+        root,
+        {
+          OLLAMA_HOST: fake.host
+        }
+      );
+
+      const output = normalizePtyOutput(await readFile(capturePath, "utf8"));
+      const lines = output.split("\n");
+      const waitingFrames = output.match(/distill: waiting/g) ?? [];
+
+      expect(output).toContain("distill: waiting");
+      expect(output).toContain("distill: summarizing");
+      expect(waitingFrames.length).toBeGreaterThan(1);
+      expect(lines[lines.length - 1]).toBe("All tests passed.");
+      expect(fake.requests).toHaveLength(1);
+    } finally {
+      fake.stop();
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

@@ -1,7 +1,7 @@
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_INTERACTIVE_GAP_MS,
-  DEFAULT_KEEPALIVE_MS
+  DEFAULT_PROGRESS_FRAME_MS
 } from "./config";
 import type { Summarizer } from "./summarizer";
 import {
@@ -14,6 +14,7 @@ import {
 } from "./text";
 
 type Mode = "undecided" | "watch" | "interactive";
+export type ProgressPhase = "collecting" | "summarizing";
 
 interface Burst {
   id: number;
@@ -21,14 +22,23 @@ interface Burst {
   normalized: string;
 }
 
+const PROGRESS_FRAMES = ["-", "\\", "|", "/"];
+const PROGRESS_DOT_FRAMES = ["", ".", "..", "...", "..", "."];
+const PROGRESS_LABELS: Record<ProgressPhase, string> = {
+  collecting: "distill: waiting",
+  summarizing: "distill: summarizing"
+};
+
 export interface DistillSessionOptions {
   summarizer: Summarizer;
   stdout: Pick<NodeJS.WriteStream, "write">;
   isTTY: boolean;
   progress?: Pick<NodeJS.WriteStream, "write">;
+  onProgressPhase?: (phase: ProgressPhase) => void;
+  onProgressStop?: () => void;
   idleMs?: number;
   interactiveGapMs?: number;
-  keepaliveMs?: number;
+  progressFrameMs?: number;
 }
 
 export class DistillSession {
@@ -36,33 +46,41 @@ export class DistillSession {
   private readonly stdout: Pick<NodeJS.WriteStream, "write">;
   private readonly isTTY: boolean;
   private readonly progress: Pick<NodeJS.WriteStream, "write"> | null;
+  private readonly onProgressPhase: ((phase: ProgressPhase) => void) | null;
+  private readonly onProgressStop: (() => void) | null;
   private readonly idleMs: number;
   private readonly interactiveGapMs: number;
-  private readonly keepaliveMs: number;
+  private readonly progressFrameMs: number;
   private readonly rawBuffers: Buffer[] = [];
   private readonly completedBursts: Burst[] = [];
   private currentBurstBuffers: Buffer[] = [];
   private mode: Mode = "undecided";
+  private progressPhase: ProgressPhase = "collecting";
   private sawRedraw = false;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private interactiveTimer: ReturnType<typeof setTimeout> | null = null;
-  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private progressTimer: ReturnType<typeof setInterval> | null = null;
   private queue: Promise<void> = Promise.resolve();
   private nextBurstId = 1;
   private renderedPairs = new Set<string>();
   private emittedWatchOutput = false;
   private passthrough = false;
-  private keepaliveVisible = false;
+  private progressVisible = false;
+  private progressFrameIndex = 0;
+  private lastProgressRenderAt = 0;
 
   constructor(options: DistillSessionOptions) {
     this.summarizer = options.summarizer;
     this.stdout = options.stdout;
     this.isTTY = options.isTTY;
     this.progress = options.progress ?? null;
+    this.onProgressPhase = options.onProgressPhase ?? null;
+    this.onProgressStop = options.onProgressStop ?? null;
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
     this.interactiveGapMs = options.interactiveGapMs ?? DEFAULT_INTERACTIVE_GAP_MS;
-    this.keepaliveMs = options.keepaliveMs ?? DEFAULT_KEEPALIVE_MS;
-    this.startKeepalive();
+    this.progressFrameMs = options.progressFrameMs ?? DEFAULT_PROGRESS_FRAME_MS;
+    this.onProgressPhase?.(this.progressPhase);
+    this.startProgress();
   }
 
   push(chunk: Buffer): void {
@@ -84,13 +102,14 @@ export class DistillSession {
 
     this.restartIdleTimer();
     this.restartInteractiveTimer();
+    this.renderProgressIfDue();
   }
 
   async end(): Promise<void> {
     this.clearTimers();
 
     if (this.passthrough) {
-      this.stopKeepalive(true);
+      this.stopProgress(true);
       return;
     }
 
@@ -105,25 +124,26 @@ export class DistillSession {
     const rawInput = Buffer.concat(this.rawBuffers).toString("utf8");
 
     if (!rawInput) {
-      this.stopKeepalive(true);
+      this.stopProgress(true);
       return;
     }
 
     try {
+      this.setProgressPhase("summarizing");
       const summary = await this.summarizer.summarizeBatch(
         normalizeForModel(rawInput)
       );
 
       if (looksLikeBadDistillation(rawInput, summary)) {
-        this.stopKeepalive(true);
+        this.stopProgress(true);
         this.stdout.write(Buffer.concat(this.rawBuffers));
         return;
       }
 
-      this.stopKeepalive(true);
+      this.stopProgress(true);
       this.stdout.write(ensureTrailingNewline(summary.trim()));
     } catch {
-      this.stopKeepalive(true);
+      this.stopProgress(true);
       this.stdout.write(Buffer.concat(this.rawBuffers));
     }
   }
@@ -170,7 +190,7 @@ export class DistillSession {
       this.mode = "interactive";
       this.passthrough = true;
       this.clearTimers();
-      this.stopKeepalive(true);
+      this.stopProgress(true);
       this.stdout.write(Buffer.concat(this.rawBuffers));
     }, this.interactiveGapMs);
   }
@@ -187,34 +207,72 @@ export class DistillSession {
     }
   }
 
-  private startKeepalive(): void {
-    if (!this.progress || this.keepaliveMs <= 0 || this.keepaliveTimer) {
+  private startProgress(): void {
+    if (!this.progress || this.progressFrameMs <= 0 || this.progressTimer) {
       return;
     }
 
-    this.keepaliveTimer = setInterval(() => {
-      if (this.keepaliveTimer === null || this.mode === "watch" || this.passthrough) {
+    this.renderProgress();
+    this.progressTimer = setInterval(() => {
+      if (this.progressTimer === null || this.mode === "watch" || this.passthrough) {
         return;
       }
 
-      this.progress!.write(".");
-      this.keepaliveVisible = true;
-    }, this.keepaliveMs);
+      this.renderProgress();
+    }, this.progressFrameMs);
   }
 
-  private stopKeepalive(clearLine = false): void {
-    if (this.keepaliveTimer) {
-      clearInterval(this.keepaliveTimer);
-      this.keepaliveTimer = null;
+  private setProgressPhase(phase: ProgressPhase): void {
+    if (this.progressPhase === phase) {
+      return;
     }
 
-    if (!clearLine || !this.keepaliveVisible || !this.progress) {
+    this.progressPhase = phase;
+    this.progressFrameIndex = 0;
+    this.onProgressPhase?.(phase);
+    this.renderProgress();
+  }
+
+  private renderProgressIfDue(): void {
+    if (!this.progress || this.mode === "watch" || this.passthrough) {
+      return;
+    }
+
+    if (Date.now() - this.lastProgressRenderAt < this.progressFrameMs) {
+      return;
+    }
+
+    this.renderProgress();
+  }
+
+  private renderProgress(): void {
+    if (!this.progress) {
+      return;
+    }
+
+    const frame = PROGRESS_FRAMES[this.progressFrameIndex % PROGRESS_FRAMES.length];
+    const dots = PROGRESS_DOT_FRAMES[Math.floor(this.progressFrameIndex / PROGRESS_FRAMES.length) % PROGRESS_DOT_FRAMES.length];
+
+    this.progressFrameIndex += 1;
+    this.lastProgressRenderAt = Date.now();
+    this.progress.write(`\r\u001b[2K${frame} ${PROGRESS_LABELS[this.progressPhase]}${dots}`);
+    this.progressVisible = true;
+  }
+
+  private stopProgress(clearLine = false): void {
+    if (this.progressTimer) {
+      clearInterval(this.progressTimer);
+      this.progressTimer = null;
+    }
+
+    this.onProgressStop?.();
+
+    if (!clearLine || !this.progressVisible || !this.progress) {
       return;
     }
 
     this.progress.write("\r\u001b[2K");
-
-    this.keepaliveVisible = false;
+    this.progressVisible = false;
   }
 
   private closeCurrentBurst(): void {
@@ -257,7 +315,7 @@ export class DistillSession {
     this.mode = "watch";
     this.rawBuffers.length = 0;
     this.clearTimers();
-    this.stopKeepalive(true);
+    this.stopProgress(true);
   }
 
   private scheduleLatestWatchRender(): void {
@@ -314,7 +372,7 @@ export class DistillSession {
   private renderWatchFallback(raw: string): void {
     this.mode = "interactive";
     this.passthrough = true;
-    this.stopKeepalive(true);
+    this.stopProgress(true);
     this.stdout.write(raw);
   }
 

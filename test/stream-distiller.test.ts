@@ -47,10 +47,10 @@ describe("DistillSession", () => {
     session.push(Buffer.from("test output\n"));
     await session.end();
 
-    expect(writer.read()).toBe("All tests passed\n");
+    expect(writer.read()).toContain("All tests passed\n");
   });
 
-  it("emits keepalive dots and clears them before the final summary", async () => {
+  it("renders spinner progress and clears it before the final summary", async () => {
     const writer = createWriter();
     const progress = createWriter();
     const session = new DistillSession({
@@ -59,27 +59,29 @@ describe("DistillSession", () => {
       isTTY: false,
       idleMs: 10,
       interactiveGapMs: 5,
-      keepaliveMs: 10,
+      progressFrameMs: 10,
       summarizer: createDelayedSummarizer(50, "All tests passed")
     });
 
+    await sleep(15);
     session.push(Buffer.from("test output\n"));
     await sleep(25);
     await session.end();
 
-    expect(writer.read()).toBe("All tests passed\n");
-    expect(progress.read()).toContain(".");
+    expect(writer.read()).toContain("All tests passed\n");
+    expect(progress.read()).toContain("distill: waiting");
+    expect(progress.read()).toContain("distill: summarizing");
     expect(progress.read().endsWith("\r\u001b[2K")).toBe(true);
   });
 
-  it("keeps output clean when progress keepalive is disabled", async () => {
+  it("keeps output clean when progress is disabled", async () => {
     const writer = createWriter();
     const session = new DistillSession({
       stdout: writer,
       isTTY: false,
       idleMs: 10,
       interactiveGapMs: 5,
-      keepaliveMs: 10,
+      progressFrameMs: 10,
       summarizer: createDelayedSummarizer(50, "All tests passed")
     });
 
@@ -87,7 +89,7 @@ describe("DistillSession", () => {
     await sleep(25);
     await session.end();
 
-    expect(writer.read()).toBe("All tests passed\n");
+    expect(writer.read()).toContain("All tests passed\n");
   });
 
   it("falls back to the raw input when batch distillation is empty", async () => {
@@ -246,7 +248,7 @@ describe("DistillSession", () => {
     expect(watchCalls).toBe(0);
   });
 
-  it("clears keepalive output before switching to interactive passthrough", async () => {
+  it("clears the progress line before switching to interactive passthrough", async () => {
     const writer = createWriter();
     const progress = createWriter();
     const session = new DistillSession({
@@ -255,7 +257,7 @@ describe("DistillSession", () => {
       isTTY: false,
       idleMs: 50,
       interactiveGapMs: 12,
-      keepaliveMs: 10,
+      progressFrameMs: 10,
       summarizer: {
         summarizeBatch: async () => "never",
         summarizeWatch: async () => "never"
@@ -268,7 +270,7 @@ describe("DistillSession", () => {
     await session.end();
 
     expect(writer.read()).toBe("Continue? [y/N]\nyes\n");
-    expect(progress.read()).toContain(".");
+    expect(progress.read()).toContain("distill: waiting");
     expect(progress.read().endsWith("\r\u001b[2K")).toBe(true);
   });
 });

@@ -8,7 +8,7 @@ export function buildBatchPrompt(question: string, input: string): string {
     "- Keep the answer extremely short (but complete) unless explicitly asked to elaborate or not summarize.",
     "- Prefer one sentence. Never exceed three short lines.",
     "- Never ask for more input.",
-    '- If the command output is insufficient, reply only with "Insufficient information try direct command." in the same language as the question.',
+    '- If the command output is insufficient, reply only with "distill: Insufficient information to output anything." in the same language as the question.',
     "- If the source is already shorter than your answer would be, prefer a minimal answer or reuse the source wording.",
     "",
     `Question: ${question}`,

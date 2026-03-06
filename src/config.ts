@@ -6,7 +6,7 @@ export const DEFAULT_HOST = "http://127.0.0.1:11434";
 export const DEFAULT_TIMEOUT_MS = 90_000;
 export const DEFAULT_IDLE_MS = 1_200;
 export const DEFAULT_INTERACTIVE_GAP_MS = 180;
-export const DEFAULT_KEEPALIVE_MS = 30_000;
+export const DEFAULT_PROGRESS_FRAME_MS = 120;
 
 export interface RuntimeConfig {
   question: string;

@@ -26,8 +26,10 @@ async function run(): Promise<number> {
     process.stdout.write(
       [
         `path=${resolveConfigPath(process.env)}`,
+        `provider=${persisted.provider ?? ""}`,
         `model=${persisted.model ?? ""}`,
         `host=${persisted.host ?? ""}`,
+        `api-key=${persisted.apiKey ? "***" : ""}`,
         `timeout-ms=${persisted.timeoutMs ?? ""}`,
         `thinking=${persisted.thinking ?? ""}`
       ].join("\n") + "\n"

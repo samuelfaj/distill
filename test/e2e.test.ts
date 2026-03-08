@@ -23,10 +23,11 @@ const INTERACTIVE_DELAY_MS = 1_000;
 const currentPlatformPackage = (() => {
   const key = `${process.platform}-${process.arch}`;
   const mapping: Record<string, string> = {
-    "darwin-arm64": "@samuelfaj/distill-darwin-arm64",
-    "darwin-x64": "@samuelfaj/distill-darwin-x64",
-    "linux-arm64": "@samuelfaj/distill-linux-arm64",
-    "linux-x64": "@samuelfaj/distill-linux-x64"
+    "darwin-arm64": "@sampurnamo/distill-darwin-arm64",
+    "darwin-x64": "@sampurnamo/distill-darwin-x64",
+    "linux-arm64": "@sampurnamo/distill-linux-arm64",
+    "linux-x64": "@sampurnamo/distill-linux-x64",
+    "win32-x64": "@sampurnamo/distill-win32-x64"
   };
 
   const value = mapping[key];
@@ -208,7 +209,7 @@ describe("distill end-to-end", () => {
       expect(fake.requests[0]).toMatchObject({
         stream: false,
         think: false,
-        model: "qwen3.5:2b"
+        model: "phi3:mini"
       });
     } finally {
       fake.stop();
@@ -216,6 +217,10 @@ describe("distill end-to-end", () => {
   });
 
   it("keeps the spinner moving in a pty while collecting streamed input and summarizing", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
     const fake = await createFakeOllama(async (_body, _index) => {
       await delay(700);
       return new Response(JSON.stringify({ response: "All tests passed." }), {
@@ -349,7 +354,7 @@ describe("distill end-to-end", () => {
       );
       runOrThrow(
         "npm",
-        ["pack", "--workspace", "@samuelfaj/distill", "--pack-destination", packDir],
+        ["pack", "--workspace", "@sampurnamo/distill", "--pack-destination", packDir],
         root
       );
       runOrThrow("npm", ["init", "-y"], installDir);
@@ -360,14 +365,18 @@ describe("distill end-to-end", () => {
       runOrThrow("npm", ["install", ...tarballs], installDir);
 
       const version = runOrThrow(
-        path.join(installDir, "node_modules", ".bin", "distill"),
+        process.platform === "win32"
+          ? path.join(installDir, "node_modules", ".bin", "distill.cmd")
+          : path.join(installDir, "node_modules", ".bin", "distill"),
         ["--version"],
         installDir
       );
       expect(version).toBe(expectedVersion);
 
       const summary = runOrThrow(
-        path.join(installDir, "node_modules", ".bin", "distill"),
+        process.platform === "win32"
+          ? path.join(installDir, "node_modules", ".bin", "distill.cmd")
+          : path.join(installDir, "node_modules", ".bin", "distill"),
         ["did the tests pass?"],
         installDir,
         {
@@ -395,7 +404,7 @@ describe("distill end-to-end", () => {
     const configPath = path.join(dir, "config.json");
 
     try {
-      const setModel = await runLauncher(["config", "model", "qwen3.5:2b"], {
+      const setModel = await runLauncher(["config", "model", "phi3:mini"], {
         env: {
           DISTILL_CONFIG_PATH: configPath
         }
@@ -415,12 +424,12 @@ describe("distill end-to-end", () => {
         inputSteps: [{ data: "all good\n" }]
       });
 
-      expect(setModel.stdout).toBe("model=qwen3.5:2b\n");
+      expect(setModel.stdout).toBe("model=phi3:mini\n");
       expect(setThinking.stdout).toBe("thinking=true\n");
       expect(result.stdout).toBe("Configured summary.\n");
       expect(fake.requests).toHaveLength(1);
       expect(fake.requests[0]).toMatchObject({
-        model: "qwen3.5:2b",
+        model: "phi3:mini",
         think: true
       });
     } finally {

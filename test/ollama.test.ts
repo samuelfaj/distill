@@ -8,7 +8,7 @@ describe("requestOllama", () => {
 
     await requestOllama({
       host: "http://127.0.0.1:11434",
-      model: "qwen3.5:2b",
+      model: "phi3:mini",
       prompt: "hi",
       timeoutMs: 100,
       thinking: false,
@@ -22,7 +22,7 @@ describe("requestOllama", () => {
     });
 
     expect(requestBody).toMatchObject({
-      model: "qwen3.5:2b",
+      model: "phi3:mini",
       prompt: "hi",
       stream: false,
       think: false
@@ -32,7 +32,7 @@ describe("requestOllama", () => {
   it("returns the trimmed response", async () => {
     const output = await requestOllama({
       host: "http://127.0.0.1:11434",
-      model: "qwen3.5:2b",
+      model: "phi3:mini",
       prompt: "hi",
       timeoutMs: 100,
       thinking: false,
@@ -49,7 +49,7 @@ describe("requestOllama", () => {
     await expect(
       requestOllama({
         host: "http://127.0.0.1:11434",
-        model: "qwen3.5:2b",
+        model: "phi3:mini",
         prompt: "hi",
         timeoutMs: 100,
         thinking: false,
@@ -62,7 +62,7 @@ describe("requestOllama", () => {
     await expect(
       requestOllama({
         host: "http://127.0.0.1:11434",
-        model: "qwen3.5:2b",
+        model: "phi3:mini",
         prompt: "hi",
         timeoutMs: 100,
         thinking: false,

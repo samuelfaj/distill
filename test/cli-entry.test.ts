@@ -7,32 +7,46 @@ import cliPackage from "../packages/cli/package.json";
 
 const root = path.resolve(import.meta.dir, "..");
 const cli = path.join(root, "src", "cli.ts");
+const bunExe = process.execPath;
+const isWindows = process.platform === "win32";
 
 describe("cli entrypoint", () => {
   it("prints help", () => {
-    const result = spawnSync("bun", ["run", cli, "--help"], {
+    const result = spawnSync(bunExe, ["run", cli, "--help"], {
       cwd: root,
       encoding: "utf8"
     });
+
+    if (result.error) {
+      throw result.error;
+    }
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('cmd 2>&1 | distill "question"');
   });
 
   it("prints the version", () => {
-    const result = spawnSync("bun", ["run", cli, "--version"], {
+    const result = spawnSync(bunExe, ["run", cli, "--version"], {
       cwd: root,
       encoding: "utf8"
     });
+
+    if (result.error) {
+      throw result.error;
+    }
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(cliPackage.version);
   });
 
   it("fails without stdin when attached to a tty", () => {
+    if (isWindows) {
+      return;
+    }
+
     const result = spawnSync(
       "script",
-      ["-q", "/dev/null", "bun", "run", cli, "is this safe?"],
+      ["-q", "/dev/null", bunExe, "run", cli, "is this safe?"],
       {
         cwd: root,
         encoding: "utf8"
@@ -49,8 +63,8 @@ describe("cli entrypoint", () => {
 
     try {
       const setModel = spawnSync(
-        "bun",
-        ["run", cli, "config", "model", "qwen3.5:2b"],
+        bunExe,
+        ["run", cli, "config", "model", "phi3:mini"],
         {
           cwd: root,
           encoding: "utf8",
@@ -62,7 +76,7 @@ describe("cli entrypoint", () => {
       );
 
       const setThinking = spawnSync(
-        "bun",
+        bunExe,
         ["run", cli, "config", "thinking", "false"],
         {
           cwd: root,
@@ -74,10 +88,17 @@ describe("cli entrypoint", () => {
         }
       );
 
+      if (setModel.error) {
+        throw setModel.error;
+      }
+      if (setThinking.error) {
+        throw setThinking.error;
+      }
+
       expect(setModel.status).toBe(0);
       expect(setThinking.status).toBe(0);
       expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
-        model: "qwen3.5:2b",
+        model: "phi3:mini",
         thinking: false
       });
     } finally {

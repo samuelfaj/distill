@@ -1,7 +1,7 @@
 import cliPackage from "../packages/cli/package.json";
 
 export const DISTILL_VERSION = cliPackage.version;
-export const DEFAULT_MODEL = "qwen3.5:2b";
+export const DEFAULT_MODEL = "phi3:mini";
 export const DEFAULT_HOST = "http://127.0.0.1:11434";
 export const DEFAULT_TIMEOUT_MS = 90_000;
 export const DEFAULT_IDLE_MS = 1_200;
@@ -265,7 +265,7 @@ export function formatUsage(): string {
   return [
     "Usage:",
     '  cmd 2>&1 | distill "question"',
-    '  distill config model "qwen3.5:2b"',
+    '  distill config model "phi3:mini"',
     "  distill config thinking false",
     "",
     "Options:",

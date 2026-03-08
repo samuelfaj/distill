@@ -78,10 +78,10 @@ describe("parseCommand", () => {
   });
 
   it("parses config set commands", () => {
-    expect(parseCommand(["config", "model", "qwen3.5:2b"], {}, {})).toEqual({
+    expect(parseCommand(["config", "model", "phi3:mini"], {}, {})).toEqual({
       kind: "configSet",
       key: "model",
-      value: "qwen3.5:2b"
+      value: "phi3:mini"
     });
 
     expect(parseCommand(["config", "thinking", "false"], {}, {})).toEqual({

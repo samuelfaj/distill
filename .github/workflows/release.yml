@@ -30,9 +30,13 @@ jobs:
 
       - name: Build platform binaries
         run: npm run build
+        env:
+          DISTILL_BUILD_ALL: "1"
 
       - name: Apply platform metadata
         run: npm run prepare:publish-platforms
+        env:
+          DISTILL_BUILD_ALL: "1"
 
       - name: Verify release inputs
         run: bun run scripts/release-check.ts --publish
@@ -42,10 +46,11 @@ jobs:
 
       - name: Publish platform packages
         run: |
-          npm publish --workspace @samuelfaj/distill-darwin-arm64 --access public
-          npm publish --workspace @samuelfaj/distill-darwin-x64 --access public
-          npm publish --workspace @samuelfaj/distill-linux-arm64 --access public
-          npm publish --workspace @samuelfaj/distill-linux-x64 --access public
+          npm publish --workspace @sampurnamo/distill-darwin-arm64 --access public
+          npm publish --workspace @sampurnamo/distill-darwin-x64 --access public
+          npm publish --workspace @sampurnamo/distill-linux-arm64 --access public
+          npm publish --workspace @sampurnamo/distill-linux-x64 --access public
+          npm publish --workspace @sampurnamo/distill-win32-x64 --access public
 
       - name: Publish main package
-        run: npm publish --workspace @samuelfaj/distill --access public
+        run: npm publish --workspace @sampurnamo/distill --access public

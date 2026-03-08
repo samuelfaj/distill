@@ -11,8 +11,8 @@ Save **up to 99% of tokens** without losing the signal.
 ## How to use
 
 ```bash
-ollama pull qwen3.5:2b
-npm i -g @samuelfaj/distill
+ollama pull phi3:mini
+npm i -g @sampurnamo/distill
 ```
 
 Add in your global agent instructions file:
@@ -45,7 +45,7 @@ terraform plan 2>&1 | distill "is this safe?"
 You can persist defaults locally:
 
 ```bash
-distill config model "qwen3.5:2b"
+distill config model "phi3:mini"
 distill config timeout-ms 90000
 distill config thinking false
 ```

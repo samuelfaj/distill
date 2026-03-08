@@ -10,7 +10,15 @@ function resolveConfigBaseDir(env: NodeJS.ProcessEnv): string {
     return path.join(xdg, "distill");
   }
 
-  const home = env.HOME?.trim();
+  const home =
+    env.HOME?.trim() ||
+    env.USERPROFILE?.trim() ||
+    (
+      env.HOMEDRIVE?.trim() &&
+      env.HOMEPATH?.trim()
+        ? `${env.HOMEDRIVE}${env.HOMEPATH}`
+        : ""
+    );
 
   if (!home) {
     throw new Error("Could not resolve a home directory for distill config.");

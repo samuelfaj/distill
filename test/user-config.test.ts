@@ -18,7 +18,7 @@ describe("user config", () => {
       await setPersistedConfigValue(
         { DISTILL_CONFIG_PATH: configPath },
         "model",
-        "qwen3.5:2b"
+        "phi3:mini"
       );
       await setPersistedConfigValue(
         { DISTILL_CONFIG_PATH: configPath },
@@ -27,13 +27,13 @@ describe("user config", () => {
       );
 
       expect(await readPersistedConfig({ DISTILL_CONFIG_PATH: configPath })).toEqual({
-        model: "qwen3.5:2b",
+        model: "phi3:mini",
         thinking: false
       });
 
       const raw = JSON.parse(await readFile(configPath, "utf8"));
       expect(raw).toEqual({
-        model: "qwen3.5:2b",
+        model: "phi3:mini",
         thinking: false
       });
     } finally {
@@ -52,6 +52,6 @@ describe("user config", () => {
       resolveConfigPath({
         XDG_CONFIG_HOME: "/tmp/xdg"
       })
-    ).toBe("/tmp/xdg/distill/config.json");
+    ).toBe(path.join("/tmp/xdg", "distill", "config.json"));
   });
 });

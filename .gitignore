@@ -2,5 +2,6 @@ node_modules/
 .dist/
 coverage/
 packages/distill-*/bin/distill
+packages/distill-*/bin/distill.exe
 npm-debug.log*
 *.tgz

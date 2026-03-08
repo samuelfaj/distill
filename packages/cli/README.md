@@ -1,7 +1,7 @@
-# @samuelfaj/distill
+# @sampurnamo/distill
 
 Install with:
 
 ```bash
-npm i -g @samuelfaj/distill
+npm i -g @sampurnamo/distill
 ```

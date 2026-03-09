@@ -12,7 +12,7 @@ Save **up to 99% of tokens** without losing the signal.
 
 ```bash
 ollama pull qwen3.5:2b
-npm i -g @samuelfaj/distill
+npm i -g @zeldocarina/distill
 ```
 
 Add in your global agent instructions file:

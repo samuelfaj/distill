@@ -8,14 +8,15 @@ import cliPackage from "../packages/cli/package.json";
 const root = path.resolve(import.meta.dir, "..");
 const packDir = await mkdtemp(path.join(tmpdir(), "distill-pack-"));
 const installDir = await mkdtemp(path.join(tmpdir(), "distill-install-"));
+const packageScope = cliPackage.name.split("/")[0];
 
 const currentPlatformPackage = (() => {
   const key = `${process.platform}-${process.arch}`;
   const mapping: Record<string, string> = {
-    "darwin-arm64": "@samuelfaj/distill-darwin-arm64",
-    "darwin-x64": "@samuelfaj/distill-darwin-x64",
-    "linux-arm64": "@samuelfaj/distill-linux-arm64",
-    "linux-x64": "@samuelfaj/distill-linux-x64"
+    "darwin-arm64": `${packageScope}/distill-darwin-arm64`,
+    "darwin-x64": `${packageScope}/distill-darwin-x64`,
+    "linux-arm64": `${packageScope}/distill-linux-arm64`,
+    "linux-x64": `${packageScope}/distill-linux-x64`
   };
 
   const value = mapping[key];
@@ -52,7 +53,7 @@ function runOrThrow(command: string, args: string[], cwd: string, env?: NodeJS.P
 
 try {
   runOrThrow("npm", ["pack", "--workspace", currentPlatformPackage, "--pack-destination", packDir], root);
-  runOrThrow("npm", ["pack", "--workspace", "@samuelfaj/distill", "--pack-destination", packDir], root);
+  runOrThrow("npm", ["pack", "--workspace", cliPackage.name, "--pack-destination", packDir], root);
   runOrThrow("npm", ["init", "-y"], installDir);
 
   const tarballs = readdirSync(packDir)

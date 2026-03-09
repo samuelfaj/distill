@@ -16,17 +16,18 @@ setDefaultTimeout(60_000);
 
 const root = path.resolve(import.meta.dir, "..");
 const launcher = path.join(root, "packages", "cli", "bin", "distill.js");
-const expectedVersion = "0.1.0";
+const expectedVersion = cliPackage.version;
+const packageScope = cliPackage.name.split("/")[0];
 const WATCH_IDLE_MS = 1_800;
 const WATCH_START_DELAY_MS = 600;
 const INTERACTIVE_DELAY_MS = 1_000;
 const currentPlatformPackage = (() => {
   const key = `${process.platform}-${process.arch}`;
   const mapping: Record<string, string> = {
-    "darwin-arm64": "@samuelfaj/distill-darwin-arm64",
-    "darwin-x64": "@samuelfaj/distill-darwin-x64",
-    "linux-arm64": "@samuelfaj/distill-linux-arm64",
-    "linux-x64": "@samuelfaj/distill-linux-x64"
+    "darwin-arm64": `${packageScope}/distill-darwin-arm64`,
+    "darwin-x64": `${packageScope}/distill-darwin-x64`,
+    "linux-arm64": `${packageScope}/distill-linux-arm64`,
+    "linux-x64": `${packageScope}/distill-linux-x64`
   };
 
   const value = mapping[key];
@@ -349,7 +350,7 @@ describe("distill end-to-end", () => {
       );
       runOrThrow(
         "npm",
-        ["pack", "--workspace", "@samuelfaj/distill", "--pack-destination", packDir],
+        ["pack", "--workspace", cliPackage.name, "--pack-destination", packDir],
         root
       );
       runOrThrow("npm", ["init", "-y"], installDir);

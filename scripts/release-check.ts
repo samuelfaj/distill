@@ -36,9 +36,22 @@ for (const binary of binaries) {
 }
 
 const cliManifest = manifests[0];
+const packageScope = cliManifest.name.split("/")[0];
+const expectedPlatformPackageNames = new Set([
+  `${packageScope}/distill-darwin-arm64`,
+  `${packageScope}/distill-darwin-x64`,
+  `${packageScope}/distill-linux-arm64`,
+  `${packageScope}/distill-linux-x64`
+]);
 
-if (cliManifest.name !== "@samuelfaj/distill") {
-  throw new Error("Main package name must stay @samuelfaj/distill.");
+if (!cliManifest.name.endsWith("/distill")) {
+  throw new Error(`Main package name must end with /distill. Received ${cliManifest.name}.`);
+}
+
+for (const manifest of manifests.slice(1)) {
+  if (!expectedPlatformPackageNames.has(manifest.name)) {
+    throw new Error(`Unexpected platform package name: ${manifest.name}`);
+  }
 }
 
 if (requirePublishMetadata) {

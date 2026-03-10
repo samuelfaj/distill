@@ -12,7 +12,7 @@ Save **up to 99% of tokens** without losing the signal.
 
 ```bash
 ollama pull phi3:mini
-npm i -g @sampurnamo/distill
+npm i -g @samuelfaj/distill
 ```
 
 Add in your global agent instructions file:

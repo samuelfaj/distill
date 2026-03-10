@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   DEFAULT_HOST,
   DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
   DEFAULT_TIMEOUT_MS,
   parseCommand,
   resolveRuntimeDefaults,
@@ -17,8 +18,10 @@ describe("parseCommand", () => {
       kind: "run",
       config: {
         question: "what changed?",
+        provider: DEFAULT_PROVIDER,
         model: DEFAULT_MODEL,
         host: DEFAULT_HOST,
+        apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
         thinking: false
       }
@@ -45,8 +48,10 @@ describe("parseCommand", () => {
       kind: "run",
       config: {
         question: "summarize",
+        provider: "ollama",
         model: "mini",
         host: "http://example.test",
+        apiKey: "",
         timeoutMs: 10,
         thinking: true
       }
@@ -69,8 +74,10 @@ describe("parseCommand", () => {
       kind: "run",
       config: {
         question: "summarize",
+        provider: "ollama",
         model: "saved-model",
         host: "http://saved.test",
+        apiKey: "",
         timeoutMs: 50,
         thinking: true
       }
@@ -108,8 +115,10 @@ describe("parseCommand", () => {
         }
       )
     ).toEqual({
+      provider: "ollama",
       model: "env-model",
       host: "http://env.test",
+      apiKey: "",
       timeoutMs: 999,
       thinking: true
     });

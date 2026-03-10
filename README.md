@@ -30,6 +30,8 @@ Examples:
 THERE ARE ONLY TWO SCENARIOS WHEN YOU ARE ALLOWED TO NOT USE `distill`:
 - Do not use `distill` if exact uncompressed output is required.
 - Do not use `distill` if it would break an interactive/TUI workflow.
+
+CRITICAL: always wait till distill finish. It may take some time and you need to wait.
 ```
 
 ## Usage

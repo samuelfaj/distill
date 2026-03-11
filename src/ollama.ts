@@ -7,14 +7,20 @@ export interface OllamaRequest {
   fetchImpl?: typeof fetch;
 }
 
-export async function requestOllama({
+export interface OllamaResponse {
+  output: string;
+  evalCount?: number;
+  evalDurationNs?: number;
+}
+
+export async function requestOllamaDetailed({
   host,
   model,
   prompt,
   timeoutMs,
   thinking,
   fetchImpl = fetch
-}: OllamaRequest): Promise<string> {
+}: OllamaRequest): Promise<OllamaResponse> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -65,8 +71,26 @@ export async function requestOllama({
       throw new Error("Ollama returned an empty response.");
     }
 
-    return output;
+    const evalCount =
+      typeof (payload as { eval_count?: unknown }).eval_count === "number"
+        ? (payload as { eval_count: number }).eval_count
+        : undefined;
+    const evalDurationNs =
+      typeof (payload as { eval_duration?: unknown }).eval_duration === "number"
+        ? (payload as { eval_duration: number }).eval_duration
+        : undefined;
+
+    return {
+      output,
+      evalCount,
+      evalDurationNs
+    };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function requestOllama(request: OllamaRequest): Promise<string> {
+  const response = await requestOllamaDetailed(request);
+  return response.output;
 }

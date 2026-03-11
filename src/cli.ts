@@ -1,5 +1,7 @@
 import { parseCommand, formatUsage, DISTILL_VERSION, UsageError } from "./config";
-import { createOllamaSummarizer } from "./summarizer";
+import { runDistillDaemon } from "./daemon";
+import { runProviderTest } from "./provider-test";
+import { createSummarizer } from "./summarizer";
 import { DistillSession, type ProgressPhase } from "./stream-distiller";
 import {
   getPersistedConfigValue,
@@ -22,10 +24,18 @@ async function run(): Promise<number> {
     return 0;
   }
 
+  if (command.kind === "daemon") {
+    await runDistillDaemon(command.config, process.env);
+    return await new Promise<number>(() => {
+      // Keep the daemon process alive until it receives a signal.
+    });
+  }
+
   if (command.kind === "configShow") {
     process.stdout.write(
       [
         `path=${resolveConfigPath(process.env)}`,
+        `provider=${persisted.provider ?? ""}`,
         `model=${persisted.model ?? ""}`,
         `host=${persisted.host ?? ""}`,
         `timeout-ms=${persisted.timeoutMs ?? ""}`,
@@ -45,6 +55,12 @@ async function run(): Promise<number> {
     await setPersistedConfigValue(process.env, command.key, command.value);
     process.stdout.write(`${command.key}=${String(command.value)}\n`);
     return 0;
+  }
+
+  if (command.kind === "test") {
+    const result = await runProviderTest(command.config);
+    process.stdout.write(`${result.lines.join("\n")}\n`);
+    return result.ok ? 0 : 1;
   }
 
   if (process.stdin.isTTY) {
@@ -71,7 +87,7 @@ async function run(): Promise<number> {
       }
     : undefined;
   const session = new DistillSession({
-    summarizer: createOllamaSummarizer(command.config),
+    summarizer: createSummarizer(command.config),
     stdout: process.stdout,
     isTTY: Boolean(process.stdout.isTTY),
     progress,

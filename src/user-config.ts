@@ -68,7 +68,9 @@ export async function setPersistedConfigValue(
 ): Promise<PersistedConfig> {
   const current = await readPersistedConfig(env);
 
-  if (key === "timeout-ms") {
+  if (key === "provider") {
+    current.provider = String(value) as PersistedConfig["provider"];
+  } else if (key === "timeout-ms") {
     current.timeoutMs = Number(value);
   } else if (key === "thinking") {
     current.thinking = Boolean(value);
@@ -86,6 +88,10 @@ export function getPersistedConfigValue(
   config: PersistedConfig,
   key: ConfigKey
 ): string | number | boolean | undefined {
+  if (key === "provider") {
+    return config.provider;
+  }
+
   if (key === "timeout-ms") {
     return config.timeoutMs;
   }

@@ -1,6 +1,6 @@
 {
   "name": "@samuelfaj/distill-linux-arm64",
-  "version": "0.1.31",
+  "version": "2.0.0",
   "license": "MIT",
   "files": [
     "bin/distill"

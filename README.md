@@ -11,11 +11,71 @@ Save **up to 99% of tokens** without losing the signal.
 ## How to use
 
 ```bash
-ollama pull qwen3.5:2b
+# Apple Silicon
+python -m pip install mlx-lm
+
+# Linux with CUDA or ROCm
+python -m pip install transformers torch
+
+# distill
 npm i -g @samuelfaj/distill
 ```
 
-Add in your global agent instructions file:
+Then just use it:
+
+```bash
+echo "3123213 test failed" | distill "o teste passou?"
+git diff | distill "o que mudou?"
+bun test 2>&1 | distill "os testes passaram?"
+```
+
+For `bitnet`, `distill` now starts and reuses its own local daemon automatically. You do not need to run `distill daemon` manually for normal use.
+
+`distill` defaults to the local `bitnet` provider:
+- Apple Silicon: `mlx-lm`
+- Linux NVIDIA/AMD: `transformers` + `torch` with CUDA or ROCm
+
+If you want the old Ollama flow instead, select it explicitly:
+
+```bash
+ollama pull qwen3.5:2b
+distill config provider ollama
+distill config model qwen3.5:2b
+```
+
+## Quick check
+
+Use this once to confirm the local runtime is working:
+
+```bash
+distill test
+```
+
+Example successful output on Apple Silicon:
+
+```text
+Original prompt:
+You are validating a local summarization model. Reply with exactly this single word and nothing else: ok
+
+Final response:
+ok
+
+Saved 96% tokens.
+
+token/s: 3.0
+
+provider: bitnet
+model: mlx-community/bitnet-b1.58-2B-4T
+python: ok (/path/to/python3)
+runtime: mlx
+backend: mlx
+model load: ok
+generate: ok
+```
+
+## Agent setup
+
+Add this to your global agent instructions file:
 
 ```md
 CRITICAL: Always when you invoke a any shell command pipe it through `distill` and tell exactly what you want to know.
@@ -35,9 +95,11 @@ THERE ARE ONLY TWO SCENARIOS WHEN YOU ARE ALLOWED TO NOT USE `distill`:
 ## Usage
 
 ```bash
+echo "3123213 test failed" | distill "o teste passou?"
 logs | distill "summarize errors"
-git diff | distill "what changed?"
 terraform plan 2>&1 | distill "is this safe?"
+distill test
+distill --provider ollama "summarize errors"
 ```
 
 ## Configurations
@@ -45,10 +107,44 @@ terraform plan 2>&1 | distill "is this safe?"
 You can persist defaults locally:
 
 ```bash
+distill config provider bitnet
+distill config model mlx-community/bitnet-b1.58-2B-4T
 distill config model "qwen3.5:2b"
 distill config timeout-ms 90000
 distill config thinking false
 ```
+
+`provider` and `model` are persisted in the same local config file. You can always override them per command:
+
+```bash
+distill --provider bitnet --model mlx-community/bitnet-b1.58-2B-4T "summarize errors"
+distill --provider ollama --model qwen3.5:2b "summarize errors"
+distill test --provider bitnet --model mlx-community/bitnet-b1.58-2B-4T
+```
+
+## Runtime check
+
+Use `distill test` to verify the configured provider, model, and runtime end to end:
+
+```bash
+distill test
+distill test --provider ollama --model qwen3.5:2b
+distill test --provider bitnet --model mlx-community/bitnet-b1.58-2B-4T
+```
+
+The command exits with code `0` only when the provider can run a real short generation.
+
+## Daemon
+
+Normal `distill` usage autostarts the daemon when needed.
+
+You only need `distill daemon` if you want to run it manually yourself:
+
+```bash
+distill daemon
+```
+
+When the daemon is already running, `distill` and `distill test` reuse it automatically.
 
 For pipeline exit mirroring, use `pipefail` in your shell:
 

@@ -1,0 +1,602 @@
+desktop/tailwind.config.ts
+59:export default config;
+
+desktop/vite.config.ts
+19:export default config;
+
+desktop/electrobun.config.ts
+19:     defaultRenderer: isCdpEnabled ? ("cef" as const) : ("native" as const),
+57:export default config;
+
+desktop/e2e/playwright/playwright.config.mjs
+9:export default defineConfig({
+
+desktop/README.md
+93:- `ELECTROBUN_WINDOW_WIDTH` / `ELECTROBUN_WINDOW_HEIGHT` (defaults: `1200x700`)
+
+desktop/src/react/components/ui/button.tsx
+9:              defaultVariants: {
+10:                     size: "default",
+11:                     variant: "default",
+15:                             default: "h-10 px-4 py-2",
+21:                             default: "bg-primary text-primary-foreground shadow-[0_12px_40px_rgba(56,189,248,0.3)] hover:bg-primary/90",
+
+desktop/e2e/playwright/tests/data-minimization-playwright.spec.ts
+103:                                    permissionMode: "default",
+123:                                    permissionMode: "default",
+226:                                                    defaultReasoningEffort: "medium",
+
+desktop/playwright-e2e/playwright-mcp-electron.ts
+10:const defaultElectrobunExecutable = path.resolve(
+18:     process.env.ELECTROBUN_EXECUTABLE_PATH ?? defaultElectrobunExecutable;
+
+desktop/src/bun/index.ts
+199:    titleBarStyle: "default",
+
+desktop/src/react/components/ui/badge.tsx
+8:              defaultVariants: {
+9:                      variant: "default",
+13:                             default: "border-transparent bg-primary/20 text-primary",
+
+desktop/playwright-e2e/README.md
+21:- `ELECTROBUN_CDP_PORT` (default `9333`)
+22:- `ELECTROBUN_WINDOW_WIDTH` (default `1200`)
+23:- `ELECTROBUN_WINDOW_HEIGHT` (default `700`)
+24:- `ELECTROBUN_CDP_TIMEOUT_MS` (default `120000`)
+25:- `ELECTROBUN_PAGE_TIMEOUT_MS` (default `60000`)
+26:- `ELECTROBUN_CAPTURE_RETRIES` (default `6`)
+27:- `ELECTROBUN_CAPTURE_RETRY_DELAY_MS` (default `1200`)
+
+desktop/src/react/shared/api/remotecode-http.unit.test.ts
+38:                                     permissionMode: "plan",
+57:                             permissionMode: "plan",
+203:                                    permissionMode: "full",
+218:                            permissionMode: "full",
+228:                                    permissionMode: "full",
+236:                            permissionMode: "full",
+255:                                            defaultReasoningEffort: "medium",
+401:test("RemoteCodeApi loads terminal history with commands and entries", async () => {
+447:            expect(pathname).toBe("/v1/chats/chat-1/terminal");
+458:test("RemoteCodeApi executes terminal command via POST /v1/chats/:id/terminal/exec", async () => {
+508:            expect(pathname).toBe("/v1/chats/chat-1/terminal/exec");
+
+desktop/e2e/playwright/tests/thread-activity-playwright.spec.ts
+105:                                    permissionMode: "default",
+123:                                    permissionMode: "default",
+262:                                                    defaultReasoningEffort: "medium",
+
+desktop/e2e/frontend/typing-fields.e2e.mjs
+16:             const terminalInput = await $("input[aria-label='Terminal command']");
+17:             await terminalInput.waitForDisplayed();
+18:             await terminalInput.waitForEnabled();
+19:             await terminalInput.click();
+20:             await terminalInput.setValue("ls -la");
+22:             assert.equal(await terminalInput.getAttribute("placeholder"), "Run command (example: ls -la)");
+23:             assert.equal(await terminalInput.getValue(), "ls -la");
+
+desktop/src/react/shared/api/remotecode-http.ts
+2:import type { CodexPermissionMode } from "../../../shared/codex-permission-mode";
+87:     permissionMode: CodexPermissionMode;
+272:    permissionMode: CodexPermissionMode;
+563:                                            permissionMode?: CodexPermissionMode;
+643:                            const path = suffix ? `/chats/${chatId}/terminal?${suffix}` : `/chats/${chatId}/terminal`;
+658:                                    path: `/chats/${chatId}/terminal/exec`,
+
+desktop/src/bun/providers/fake-codex-provider.mjs
+33:             // No default
+
+desktop/src/react/shared/realtime/remotecode-ws.ts
+1:import type { CodexPermissionMode } from "../../../shared/codex-permission-mode";
+34:             permissionMode?: CodexPermissionMode;
+614:                            permissionMode?: CodexPermissionMode,
+625:                                            ...(permissionMode ? { permissionMode } : {}),
+
+desktop/src/bun/server/scripts/live-activity-send-test.ts
+69:                     default: {
+97:                     configuredDatabasePath: serverConfig.databasePath ?? "(default)",
+
+desktop/src/shared/codex-permission-mode.ts
+1:export const CODEX_PERMISSION_MODES = ["plan", "default", "full"] as const;
+3:export type CodexPermissionMode = (typeof CODEX_PERMISSION_MODES)[number];
+5:export const DEFAULT_CODEX_PERMISSION_MODE: CodexPermissionMode = "default";
+8:      return typeof value === "string" && (CODEX_PERMISSION_MODES as readonly string[]).includes(value);
+
+desktop/src/bun/types/electrobun-bun.d.ts
+2:      export type WindowTitleBarStyle = "hidden" | "hiddenInset" | "default";
+
+desktop/src/shared/codex-model-config.ts
+11:     defaultReasoningEffort: CodexReasoningEffort;
+
+desktop/src/bun/server/modules/ws/ws.controller.e2e.test.ts
+117:                            permissionMode: "default",
+291:                                    permissionMode: "invalid-mode",
+321:            expect(events.some((event) => event.includes("invalid permission mode"))).toBe(true);
+
+desktop/src/bun/server/shared/db/db.client.ts
+70:                             terminalCommands: DatabaseSchema.terminalCommands,
+71:                             terminalEntries: DatabaseSchema.terminalEntries,
+
+desktop/src/bun/server/shared/db/db.schema.ts
+6:      isFavorite: integer("isFavorite").notNull().default(0),
+13:     diffAdded: integer("diffAdded").notNull().default(0),
+14:     diffRemoved: integer("diffRemoved").notNull().default(0),
+16:     isActive: integer("isActive").notNull().default(0),
+44:     permissionMode: text("permissionMode"),
+50:export const terminalCommands = sqliteTable("terminal_commands", {
+65:export const terminalEntries = sqliteTable("terminal_entries", {
+69:             .references(() => terminalCommands.id, { onDelete: "cascade" }),
+91:     partialText: text("partialText").notNull().default(""),
+141:export type TerminalCommandRow = typeof terminalCommands.$inferSelect;
+142:export type TerminalEntryRow = typeof terminalEntries.$inferSelect;
+158:    static readonly terminalCommands = terminalCommands;
+160:    static readonly terminalEntries = terminalEntries;
+
+desktop/src/bun/server/modules/fs/fs.controller.ts
+32:                                                     default:
+
+desktop/src/bun/server/modules/ws/ws.service.unit.test.ts
+495:test("WsService.startUserMessage forwards explicit permission mode to codex runner", async () => {
+541:                    permissionMode?: string;
+545:                    capturedPermissionMode = options.permissionMode;
+564:            permissionMode: "plan",
+574:test("WsService.startUserMessage defaults permission mode to default", async () => {
+618:                    permissionMode?: string;
+621:                    capturedPermissionMode = options.permissionMode;
+643:    expect(capturedPermissionMode).toBe("default");
+
+desktop/src/bun/server/shared/db/db.bootstrap.ts
+18:const terminalCommandsCreateSql = `
+19:     CREATE TABLE IF NOT EXISTS terminal_commands (
+33:const terminalEntriesCreateSql = `
+34:     CREATE TABLE IF NOT EXISTS terminal_entries (
+36:             commandId TEXT NOT NULL REFERENCES terminal_commands(id) ON DELETE CASCADE,
+266:                            permissionMode TEXT,
+276:            if (!this.hasColumn(database, "workspace_selection", "permissionMode")) {
+277:                    database.exec("ALTER TABLE workspace_selection ADD COLUMN permissionMode TEXT");
+290:            database.exec(terminalCommandsCreateSql);
+294:            if (!this.hasTable(database, "terminal_entries")) {
+295:                    database.exec(terminalEntriesCreateSql);
+299:            const hasCommandId = this.hasColumn(database, "terminal_entries", "commandId");
+300:            const hasStream = this.hasColumn(database, "terminal_entries", "stream");
+311:                            CREATE TABLE terminal_entries_next (
+313:                                    commandId TEXT NOT NULL REFERENCES terminal_commands(id) ON DELETE CASCADE,
+321:                    database.exec("DROP TABLE terminal_entries;");
+322:                    database.exec("ALTER TABLE terminal_entries_next RENAME TO terminal_entries;");
+353:            if (!this.hasTable(database, "terminal_sessions")) {
+358:            database.exec("DROP TABLE terminal_sessions;");
+370:                    "CREATE INDEX IF NOT EXISTS idx_terminal_commands_chat_id_desc ON terminal_commands(chatId, id DESC)",
+373:                    "CREATE INDEX IF NOT EXISTS idx_terminal_entries_chat_id ON terminal_entries(chatId, id ASC)",
+376:                    "CREATE INDEX IF NOT EXISTS idx_terminal_entries_command_id ON terminal_entries(commandId, id ASC)",
+
+desktop/src/react/features/conversation/ui/StreamingTimeline.tsx
+98:                                     ? "Planning..."
+
+desktop/src/bun/server/shared/db/db.bootstrap.integration.test.ts
+10:test("DB initialization creates schema, indices and pragmas for REST terminal model", async () => {
+18:             const terminalCommandColumns = client.sqlite
+19:                     .prepare("PRAGMA table_info(terminal_commands)")
+23:             expect(terminalCommandColumns).toEqual(
+38:                     const terminalEntryColumns = client.sqlite
+39:                             .prepare("PRAGMA table_info(terminal_entries)")
+43:                     expect(terminalEntryColumns).toEqual(
+57:                                     "permissionMode",
+83:                     .prepare("PRAGMA index_list(terminal_commands)")
+86:             expect(commandIndexes).toContain("idx_terminal_commands_chat_id_desc");
+89:                     .prepare("PRAGMA index_list(terminal_entries)")
+92:             expect(entryIndexes).toContain("idx_terminal_entries_chat_id");
+93:             expect(entryIndexes).toContain("idx_terminal_entries_command_id");
+157:                            "INSERT INTO terminal_commands (id, chatId, command, shell, cwd, status, exitCode, durationMs, startedAt, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+173:                            "INSERT INTO terminal_entries (commandId, chatId, stream, data, createdAt) VALUES (?, ?, ?, ?, ?)",
+178:                    .prepare("SELECT chatId, stream, data FROM terminal_entries WHERE commandId = ?")
+263:                            expect.arrayContaining(["permissionMode", "selectedModel", "selectedReasoningEffort"]),
+287:test("DB initialization rebuilds legacy terminal tables to REST terminal schema", async () => {
+288:    const root = mkdtempSync(join(tmpdir(), "remotecode-db-terminal-migrate-"));
+334:                    CREATE TABLE terminal_sessions (
+347:                    CREATE TABLE terminal_entries (
+349:                            sessionId TEXT NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+360:                    .prepare("SELECT COUNT(1) AS count FROM sqlite_master WHERE type = 'table' AND name = 'terminal_sessions'")
+364:            const terminalEntryColumns = client.sqlite
+365:                    .prepare("PRAGMA table_info(terminal_entries)")
+369:            expect(terminalEntryColumns).toEqual(
+372:            expect(terminalEntryColumns).not.toContain("sessionId");
+373:            expect(terminalEntryColumns).not.toContain("direction");
+380:test("terminal command and entries cascade on chat delete", async () => {
+381:    const root = mkdtempSync(join(tmpdir(), "remotecode-db-terminal-cascade-"));
+400:                            "INSERT INTO terminal_commands (id, chatId, command, shell, cwd, status, exitCode, durationMs, startedAt, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+415:                    .prepare("INSERT INTO terminal_entries (commandId, chatId, stream, data, createdAt) VALUES (?, ?, ?, ?, ?)")
+432:                    .prepare("SELECT COUNT(1) AS count FROM terminal_commands WHERE chatId = ?")
+435:                    .prepare("SELECT COUNT(1) AS count FROM terminal_entries WHERE chatId = ?")
+
+desktop/src/bun/server/modules/ws/ws.model.ts
+38:     permissionMode?: ClientMessageEvent["data"]["permissionMode"];
+
+desktop/src/bun/server/modules/ws/ws.controller.ts
+4:import { parseCodexPermissionMode } from "../../../../shared/codex-permission-mode";
+322:                                            const rawPermissionMode = (payload.data as { permissionMode?: unknown }).permissionMode;
+323:                                            const permissionMode = parseCodexPermissionMode(rawPermissionMode);
+324:                                            if (rawPermissionMode !== undefined && permissionMode === null) {
+329:                                                                    message: "validation error: invalid permission mode",
+387:                                                    permissionMode: permissionMode ?? undefined,
+
+desktop/src/bun/server/shared/core/server.types.ts
+1:import type { CodexPermissionMode } from "../../../../shared/codex-permission-mode";
+94:             permissionMode?: CodexPermissionMode;
+138:    permissionMode?: CodexPermissionMode;
+157:    permissionMode: CodexPermissionMode;
+211:    | "terminal_command_started"
+212:    | "terminal_entry_appended"
+213:    | "terminal_command_finished";
+
+desktop/src/bun/server/modules/selection/selection.service.unit.test.ts
+10:     permissionMode?: "default" | "plan" | "full";
+16:     permissionMode: input.permissionMode ?? "default",
+25:             permissionMode: "plan",
+54:                                     permissionMode: "default",
+64:                                     permissionMode: selection.permissionMode,
+85:                             permissionMode: "default",
+93:                             permissionMode: "default",
+99:     const defaultFactory = createSelectionService(repository);
+102:    expect(defaultFactory).toBeInstanceOf(WorkspaceSelectionService);
+104:    expect(defaultFactory).toBeInstanceOf(Object.getPrototypeOf(namedFactory).constructor);
+
+desktop/src/bun/server/modules/selection/selection.repository.integration.test.ts
+17:     permissionMode: "default" | "plan" | "full";
+39:                             permissionMode: "default",
+47:                                     permissionMode: "default",
+56:                             permissionMode: "plan",
+61:                     expect(second.permissionMode).toBe("plan");
+66:                             permissionMode: "full",
+74:                                     permissionMode: "full",
+84:                             permissionMode: "full",
+93:                             permissionMode: string | null;
+100:                            id: "default",
+103:                            permissionMode: "full",
+131:                            permissionMode: "plan",
+143:                                    permissionMode: "plan",
+
+desktop/src/bun/server/modules/live-activity/live-activity-push.service.ts
+67:     previewSource: "default" | "event" | "legacy-response" | "structured-response";
+238:            default: {
+308:            default: {
+332:            default: {
+362:                                    return "Planning...";
+370:                            default: {
+375:            default: {
+404:                                    return "Planning...";
+412:                            default: {
+423:            default: {
+1145:                   previewSource: "default",
+1513:                   runtime.previewSource = "default";
+1521:                   runtime.previewSource = "default";
+1545:                   && (runtime.previewSource === "default" || runtime.previewSource === "legacy-response")
+1617:                   runtime.previewSource = "default";
+1841:           firebaseProjectId: toNormalized(input.firebaseProjectId) || "default",
+
+desktop/src/bun/server/modules/ws/ws.service.ts
+3:import { DEFAULT_CODEX_PERMISSION_MODE } from "../../../../shared/codex-permission-mode";
+351:                    const permissionMode = input.permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE;
+378:                            permissionMode,
+
+desktop/src/bun/server/modules/selection/selection.controller.ts
+3:import { parseCodexPermissionMode } from "../../../../shared/codex-permission-mode";
+38:                                             const permissionMode =
+39:                                                     body.permissionMode === undefined
+40:                                                             ? current.permissionMode
+41:                                                             : parseCodexPermissionMode(body.permissionMode);
+42:                                             if (permissionMode === null) {
+45:                                                     return { error: "invalid permissionMode" };
+70:                                                     permissionMode,
+91:                                                     permissionMode: t.Optional(t.String()),
+
+desktop/src/react/features/terminal/model/useThreadTerminalSession.ts
+216:                                    const message = error instanceof Error ? error.message : "Unable to load terminal history";
+276:                            const message = error instanceof Error ? error.message : "Unable to execute terminal command";
+
+desktop/src/bun/server/modules/terminal/terminal.repository.ts
+12:import { terminalCommands, terminalEntries } from "../../shared/db/db.schema";
+31:     private static toCommandDto(row: typeof terminalCommands.$inferSelect): TerminalCommandDTO {
+46:     private static toEntryDto(row: typeof terminalEntries.$inferSelect): TerminalEntryDTO {
+68:                     .from(terminalCommands)
+69:                     .where(eq(terminalCommands.id, commandId))
+71:                     .all() as typeof terminalCommands.$inferSelect[];
+92:                     .insert(terminalCommands)
+109:                    throw new Error("failed to load created terminal command");
+117:                    .update(terminalCommands)
+124:                    .where(eq(terminalCommands.id, commandId))
+134:                    .from(terminalCommands)
+135:                    .where(eq(terminalCommands.chatId, chatId))
+136:                    .orderBy(desc(terminalCommands.id))
+138:                    .all() as typeof terminalCommands.$inferSelect[];
+147:                    .insert(terminalEntries)
+159:                    .from(terminalEntries)
+162:                                    eq(terminalEntries.chatId, chatId),
+163:                                    eq(terminalEntries.commandId, commandId),
+164:                                    eq(terminalEntries.stream, stream),
+165:                                    eq(terminalEntries.data, data),
+166:                                    eq(terminalEntries.createdAt, timestamp),
+169:                    .orderBy(desc(terminalEntries.id))
+171:                    .all() as typeof terminalEntries.$inferSelect[];
+175:                    throw new Error("failed to load appended terminal entry");
+213:                                            .from(terminalEntries)
+214:                                            .where(eq(terminalEntries.chatId, chatId))
+215:                                            .orderBy(asc(terminalEntries.id))
+217:                                            .all() as typeof terminalEntries.$inferSelect[])
+220:                                            .from(terminalEntries)
+221:                                            .where(and(eq(terminalEntries.chatId, chatId), gt(terminalEntries.id, cursor)))
+222:                                            .orderBy(asc(terminalEntries.id))
+224:                                            .all() as typeof terminalEntries.$inferSelect[]);
+
+desktop/src/bun/server/modules/live-activity/live-activity-push.service.unit.test.ts
+291:            delta: "Planning response...",
+308:    expect(endDelivery?.preview).toBe("Planning response...");
+
+desktop/src/react/features/workspace/model/useWorkspaceStore.ts
+193:    defaultItemType: AssistantStreamItemType = "reasoning",
+202:    const created = createStreamItem(itemId, defaultItemType);
+893:            default:
+
+desktop/src/bun/server/modules/selection/selection.repository.ts
+4:      DEFAULT_CODEX_PERMISSION_MODE,
+6:} from "../../../../shared/codex-permission-mode";
+12:const WORKSPACE_SELECTION_ID = "default";
+16:             const parsedPermissionMode = parseCodexPermissionMode(row?.permissionMode);
+17:             const permissionMode = parsedPermissionMode ?? DEFAULT_CODEX_PERMISSION_MODE;
+27:                     permissionMode,
+62:                             permissionMode: selection.permissionMode,
+72:                                     permissionMode: selection.permissionMode,
+
+desktop/src/bun/server/app.ts
+32:import { TerminalController } from "./modules/terminal/terminal.controller";
+33:import { createTerminalRepository } from "./modules/terminal/terminal.repository";
+34:import { createTerminalService } from "./modules/terminal/terminal.service";
+147:            const terminalRepository = createTerminalRepository(databaseClient.orm);
+160:            const terminalService = createTerminalService({
+163:                    terminal: terminalRepository,
+254:                                    .use(TerminalController.build(terminalService, workspaceEventsService))
+
+desktop/src/bun/server/modules/git/git.service.ts
+69:const defaultRunGitCommand: GitExecutor = async ({ cwd, args }) => {
+275:            private readonly executeGit: GitExecutor = defaultRunGitCommand,
+
+desktop/src/react/features/terminal/model/useThreadTerminalSession.test.ts
+5:test("thread terminal controller loads history, executes commands, and avoids duplication after reopen", async () => {
+140:test("thread terminal controller captures execution and history errors", async () => {
+
+desktop/src/bun/server/modules/selection/selection.controller.e2e.test.ts
+43:                     permissionMode: "plan",
+50:                     permissionMode: string;
+58:             expect(saved.permissionMode).toBe("plan");
+73:                     permissionMode: string;
+81:             expect(loaded.permissionMode).toBe("plan");
+145:                    permissionMode: "full",
+152:                    permissionMode: string;
+158:            expect(selectionBefore.permissionMode).toBe("full");
+167:                    permissionMode: string;
+175:            expect(restored.permissionMode).toBe("full");
+204:                    permissionMode: "plan",
+211:                    permissionMode: string;
+225:                    permissionMode: string;
+233:            expect(restored.permissionMode).toBe("plan");
+
+desktop/src/bun/server/modules/selection/selection.service.integration.test.ts
+33:                             permissionMode: "default",
+41:                             permissionMode: "plan",
+49:                             permissionMode: "plan",
+
+desktop/src/bun/server/modules/selection/selection.model.ts
+1:import type { CodexPermissionMode } from "../../../../shared/codex-permission-mode";
+7:      permissionMode: CodexPermissionMode;
+15:     permissionMode: CodexPermissionMode;
+
+desktop/src/bun/server/modules/terminal/terminal.controller.e2e.test.ts
+21:     const response = await fetch(`${baseUrl}/v1/chats/${chatId}/terminal${query}`, {
+43:     const response = await fetch(`${baseUrl}/v1/chats/${chatId}/terminal/exec`, {
+75:test("GET and POST terminal endpoints return 404 for missing chat", async () => {
+91:test("POST /v1/chats/:id/terminal/exec returns stdout/stderr and persists history", async () => {
+93:     const workspaceRoot = mkdtempSync(join(tmpdir(), "remotecode-terminal-controller-rest-"));
+98:             const chat = await client.v1.projects({ id: projectId }).chats.post({ title: "terminal rest history" });
+128:test("terminal exec is isolated per command (no persistent export between commands)", async () => {
+130:    const workspaceRoot = mkdtempSync(join(tmpdir(), "remotecode-terminal-isolated-"));
+135:            const chat = await client.v1.projects({ id: projectId }).chats.post({ title: "terminal isolation" });
+161:    const workspaceRoot = mkdtempSync(join(tmpdir(), "remotecode-terminal-timeout-"));
+166:            const chat = await client.v1.projects({ id: projectId }).chats.post({ title: "terminal timeout" });
+183:test("GET /v1/chats/:id/terminal keeps history after server restart with same sqlite file", async () => {
+184:    const root = mkdtempSync(join(tmpdir(), "remotecode-terminal-restart-"));
+185:    const workspaceRoot = mkdtempSync(join(tmpdir(), "remotecode-terminal-restart-workspace-"));
+195:            const chat = await client.v1.projects({ id: projectId }).chats.post({ title: "terminal restart" });
+221:test("deleting chat cascades terminal commands and entries", async () => {
+223:    const workspaceRoot = mkdtempSync(join(tmpdir(), "remotecode-terminal-cascade-"));
+228:            const chat = await client.v1.projects({ id: projectId }).chats.post({ title: "terminal cascade" });
+241:                            .prepare("SELECT COUNT(1) AS count FROM terminal_commands WHERE chatId = ?")
+244:                            .prepare("SELECT COUNT(1) AS count FROM terminal_entries WHERE chatId = ?")
+
+desktop/src/bun/server/modules/terminal/terminal.service.ts
+12:} from "./terminal.model";
+13:import type { TerminalRepository } from "./terminal.repository";
+219:            private readonly terminalRepository: TerminalRepository,
+233:            const commands = this.terminalRepository.listCommandsByChatId(chatId, {
+236:            const entries = this.terminalRepository.listEntriesByChatId(chatId, {
+272:            const command = this.terminalRepository.createCommand({
+290:                    const finalized = this.terminalRepository.setCommandResult(command.id, {
+298:                            error instanceof Error ? error.message : "terminal execution failed",
+301:                            ? this.terminalRepository.appendEntries(command.id, input.chatId, "stderr", `${errorMessage}\n`)
+315:                            ...this.terminalRepository.appendEntries(command.id, input.chatId, "stdout", executionOutput.stdout),
+320:                            ...this.terminalRepository.appendEntries(command.id, input.chatId, "stderr", executionOutput.stderr),
+325:            const finalized = this.terminalRepository.setCommandResult(command.id, {
+344:    terminal: TerminalRepository;
+345:}) => new TerminalService(repositories.chat, repositories.project, repositories.terminal);
+
+desktop/src/react/app/index.ts
+5:export {default} from "./App";
+
+desktop/src/react/features/terminal/model/useThreadTerminalSession.e2e.test.ts
+23:                             reject(new Error("timed out waiting for frontend terminal condition"));
+37:test("frontend terminal e2e (REST-only) runs command and replays without duplication", async () => {
+38:     const workspaceRoot = mkdtempSync(join(tmpdir(), "remotecode-frontend-terminal-rest-e2e-"));
+48:                     name: "Frontend terminal rest e2e",
+99:             await controller.runCommand(chat.id, "printf '__rest_terminal_token__%s__\\n' \"$REST_ONLY_TEST_TOKEN\"");
+106:            expect(isolationTranscript).toContain("__rest_terminal_token____");
+107:            expect(isolationTranscript).not.toContain(`__rest_terminal_token__${token}__`);
+
+desktop/src/bun/server/modules/workspace-events/workspace-events.model.ts
+11:     "terminal_command_started",
+12:     "terminal_entry_appended",
+13:     "terminal_command_finished",
+
+desktop/src/react/features/workspace/model/workspace-flow.integration.test.ts
+436:            default:
+750:            permissionMode?: "plan" | "default" | "full",
+777:                                    permissionMode,
+869:                    await harness.sendMessage("Start my thread", "default");
+879:                                            parsed.data?.permissionMode === "default"
+
+desktop/src/bun/server/modules/git/git.controller.ts
+36:                     default:
+50:                     default:
+
+desktop/src/bun/server/modules/terminal/terminal.service.unit.test.ts
+4:import { TerminalService, sanitizeTerminalOutput } from "./terminal.service";
+101:    const terminalRepository = createInMemoryTerminalRepository();
+109:            terminalRepository as never,
+135:                            path: "/tmp/workspace-terminal",
+165:                    cwd: "/tmp/workspace-terminal",
+184:                            path: "/tmp/workspace-terminal",
+
+desktop/src/react/features/composer/ui/MessageComposer.tsx
+10:import type { CodexPermissionMode } from "../../../../shared/codex-permission-mode";
+30:     permissionMode: CodexPermissionMode;
+60:     permissionMode,
+264:    const permissionSelectId = focusMode ? "permission-mode-focus" : "permission-mode";
+398:                                                                    id={permissionSelectId}
+402:                                                                    value={permissionMode}
+404:                                                                    <option value="plan">Plan</option>
+405:                                                                    <option value="default">Default</option>
+
+desktop/src/bun/server/modules/terminal/terminal.repository.unit.test.ts
+11:import { TerminalRepository } from "./terminal.repository";
+14:     const root = mkdtempSync(join(tmpdir(), "remotecode-terminal-repository-order-"));
+23:             const terminalRepository = new TerminalRepository(client.orm);
+24:             const project = await projectRepository.createProject("/tmp/terminal-order", "Terminal order");
+27:             const command = terminalRepository.createCommand({
+34:             const stdoutEntry = terminalRepository.appendEntry(command.id, chat.id, "stdout", "first\n");
+35:             const stderrEntry = terminalRepository.appendEntry(command.id, chat.id, "stderr", "warn\n");
+37:             const entries = terminalRepository.listEntriesByChatId(chat.id);
+42:             const commands = terminalRepository.listCommandsByChatId(chat.id);
+52:     const root = mkdtempSync(join(tmpdir(), "remotecode-terminal-repository-cursor-"));
+61:             const terminalRepository = new TerminalRepository(client.orm);
+62:             const project = await projectRepository.createProject("/tmp/terminal-cursor", "Terminal cursor");
+65:             const command = terminalRepository.createCommand({
+72:             const first = terminalRepository.appendEntry(command.id, chat.id, "stdout", "one\n");
+73:             const second = terminalRepository.appendEntry(command.id, chat.id, "stdout", "two\n");
+74:             const third = terminalRepository.appendEntry(command.id, chat.id, "stdout", "three\n");
+76:             const cursorEntries = terminalRepository.listEntriesByChatId(chat.id, {
+91:     const root = mkdtempSync(join(tmpdir(), "remotecode-terminal-repository-status-"));
+100:            const terminalRepository = new TerminalRepository(client.orm);
+101:            const project = await projectRepository.createProject("/tmp/terminal-status", "Terminal status");
+104:            const command = terminalRepository.createCommand({
+111:            const finalized = terminalRepository.setCommandResult(command.id, {
+
+desktop/src/bun/server/modules/terminal/terminal.controller.ts
+6:import type { TerminalService } from "./terminal.service";
+38:             return new Elysia({ name: "terminal-controller" })
+41:                             "/chats/:id/terminal",
+66:                             "/chats/:id/terminal/exec",
+92:                                             return { error: "terminal command not available" };
+97:                                             type: "terminal_command_started",
+110:                                                    type: "terminal_entry_appended",
+120:                                            type: "terminal_command_finished",
+
+desktop/src/react/features/terminal/ui/ThreadTerminalPanel.tsx
+71:                                             <p className="font-mono text-xs text-slate-500">No terminal history yet.</p>
+
+desktop/src/react/app/App.tsx
+23:import { useThreadTerminalSession } from "../features/terminal/model/useThreadTerminalSession";
+24:import { ThreadTerminalPanel } from "../features/terminal/ui/ThreadTerminalPanel";
+36:     DEFAULT_CODEX_PERMISSION_MODE,
+39:} from "../../shared/codex-permission-mode";
+136:const PERMISSION_MODE_STORAGE_KEY = "remotecode:permission-mode";
+343:    const defaultModel = models.find((item) => item.isDefault);
+344:    return defaultModel?.model ?? models[0]?.model ?? null;
+375:    if (supported.includes(model.defaultReasoningEffort)) {
+376:            return model.defaultReasoningEffort;
+452:    const terminalOpenByChatRef = useRef<Record<string, boolean>>({});
+532:    const [permissionMode, setPermissionMode] = useState<CodexPermissionMode>(() => {
+534:                    return DEFAULT_CODEX_PERMISSION_MODE;
+538:                    parseCodexPermissionMode(window.localStorage.getItem(PERMISSION_MODE_STORAGE_KEY)) ??
+539:                    DEFAULT_CODEX_PERMISSION_MODE
+559:    const permissionModeRef = useRef<CodexPermissionMode>(permissionMode);
+612:            permissionModeRef.current = permissionMode;
+613:    }, [permissionMode]);
+629:                    window.localStorage.setItem(PERMISSION_MODE_STORAGE_KEY, permissionMode);
+633:    }, [permissionMode]);
+800:            state: terminalState,
+813:                    addError(message, "rest", "terminal_error");
+819:            for (const [chatId, chatState] of Object.entries(terminalState.chats)) {
+823:            terminalOpenByChatRef.current = openByChat;
+824:    }, [terminalState.chats]);
+831:                            permissionMode?: CodexPermissionMode;
+840:                                            permissionMode: overrides?.permissionMode ?? permissionModeRef.current,
+1161:                                   permissionMode: DEFAULT_CODEX_PERMISSION_MODE,
+1172:                           parseCodexPermissionMode(selection.permissionMode) ?? DEFAULT_CODEX_PERMISSION_MODE;
+1191:                           selection.permissionMode !== nextPermissionMode ||
+1196:                                   permissionMode: nextPermissionMode,
+1485:                                           case "terminal_command_started":
+1486:                                           case "terminal_entry_appended":
+1487:                                           case "terminal_command_finished":
+1494:                                                           terminalOpenByChatRef.current[chatId]
+1575:                   if (terminalOpenByChatRef.current[state.selectedChatId]) {
+1691:                                                   permissionMode,
+1727:                   permissionMode,
+1806:                   permissionMode?: CodexPermissionMode;
+1825:                           permissionMode: mode,
+2186:           const nextOpen = !Boolean(terminalOpenByChatRef.current[state.selectedChatId]);
+2206:           ? terminalState.chats[state.selectedChatId] ?? null
+2546:                                                                                                                           aria-label={isTerminalOpen ? "Hide terminal" : "Show terminal"}
+2560:                                                                                                                                   {isTerminalOpen ? "Hide terminal" : "Show terminal"}
+2565:                                                                                                                   {isTerminalOpen ? "Hide terminal" : "Show terminal"}
+2651:                                                                   permissionMode={permissionMode}
+2714:export default App;
+
+desktop/src/bun/server/modules/provider/codex-provider-runner.unit.test.ts
+332:            permissionMode: "plan",
+358:test("CodexProviderRunner defaults to workspace-write mode when permission mode is omitted", async () => {
+377:            chatId: "chat-default",
+401:test("CodexProviderRunner builds full access resume command with workspace cwd", async () => {
+425:            permissionMode: "full",
+
+desktop/src/bun/server/modules/provider/codex-models.service.unit.test.ts
+27:                                             defaultReasoningEffort: "medium",
+49:                             defaultReasoningEffort: "medium",
+77:                                                     defaultReasoningEffort: "high",
+116:                                                            defaultReasoningEffort: "low",
+
+desktop/src/bun/server/modules/provider/provider.controller.unit.test.ts
+14:                                                     defaultReasoningEffort: "medium",
+44:                             defaultReasoningEffort: "medium",
+
+desktop/src/bun/server/modules/provider/codex-models.service.ts
+82:     const defaultReasoningEffort = parseCodexReasoningEffort(value.defaultReasoningEffort);
+86:     if (!id || !model || !displayName || !defaultReasoningEffort || supportedReasoningEfforts.length === 0) {
+91:             defaultReasoningEffort,
+218:const defaultExecuteCodexAppServer: ExecuteCodexAppServer = async (timeoutMs: number) => {
+298:            private readonly executeCodexAppServer: ExecuteCodexAppServer = defaultExecuteCodexAppServer,
+
+desktop/src/bun/server/modules/provider/codex-provider-runner.ts
+3:      DEFAULT_CODEX_PERMISSION_MODE,
+5:} from "../../../../shared/codex-permission-mode";
+200:const buildPlanSummary = (text: unknown): string => {
+203:            return "Planning...";
+208:            return "Planning...";
+211:    return `Planning: ${truncate(normalized, 180)}`;
+416:            summary = "Planning...";
+641:                    emitLegacyDelta(state, input.onDelta, "Planning...\n", true);
+786:            const summary = buildPlanSummary(event.text);
+829:const buildPermissionFlags = (permissionMode: CodexPermissionMode | undefined): string[] => {
+830:    const mode = permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE;
+844:    const permissionFlags = buildPermissionFlags(options.permissionMode);
+853:                    ...permissionFlags,
+869:            ...permissionFlags,
+881:const defaultSpawnProcess: SpawnCodexProcess = ({ cmd, env, signal }) => {
+896:    constructor(private readonly spawnProcess: SpawnCodexProcess = defaultSpawnProcess) {}
+1131:const defaultRunner = new CodexProviderRunner();
+1135:): Promise<CodexProviderResult> => await defaultRunner.run(options);

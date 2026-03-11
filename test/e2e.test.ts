@@ -6,8 +6,10 @@ import {
   setDefaultTimeout
 } from "bun:test";
 import cliPackage from "../packages/cli/package.json";
+import { stopDistillDaemon } from "../src/daemon";
+import { DISTILL_TEST_QUESTION } from "../src/provider-test-fixture";
 import { readdirSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,7 +18,7 @@ setDefaultTimeout(60_000);
 
 const root = path.resolve(import.meta.dir, "..");
 const launcher = path.join(root, "packages", "cli", "bin", "distill.js");
-const expectedVersion = "0.1.0";
+const expectedVersion = cliPackage.version;
 const WATCH_IDLE_MS = 1_800;
 const WATCH_START_DELAY_MS = 600;
 const INTERACTIVE_DELAY_MS = 1_000;
@@ -170,6 +172,145 @@ async function createFakeOllama(
   };
 }
 
+async function createFakePython(
+  responder: (payload: Record<string, unknown>) => Record<string, unknown>
+): Promise<{ path: string; stop: () => Promise<void> }> {
+  const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-python-"));
+  const scriptPath = path.join(dir, "python3");
+  const script = `#!/bin/sh
+exec node - "$@" <<'NODE'
+const net = require("node:net");
+const fs = require("node:fs");
+const socketPath = process.argv[process.argv.length - 3];
+const runtime = process.argv[process.argv.length - 2];
+
+function defaultResponse(payload) {
+  return {
+    ok: true,
+    output: "ok",
+    python: process.argv[1],
+    runtime: payload.runtime ?? runtime,
+    backend: runtime === "mlx" ? "mlx" : "cuda"
+  };
+}
+
+try {
+  fs.unlinkSync(socketPath);
+} catch {}
+
+const server = net.createServer((socket) => {
+  let input = "";
+  socket.on("data", (chunk) => {
+    input += chunk.toString();
+    if (!input.includes("\\n")) {
+      return;
+    }
+
+    const payload = JSON.parse(input.split("\\n")[0]);
+    if (payload.mode === "ping") {
+      socket.end(JSON.stringify(defaultResponse(payload)));
+      return;
+    }
+    if (payload.mode === "shutdown") {
+      socket.end(JSON.stringify(defaultResponse(payload)));
+      server.close(() => process.exit(0));
+      return;
+    }
+    const response = (${responder.toString()})(payload);
+    socket.end(JSON.stringify(response));
+  });
+});
+
+server.listen(socketPath);
+NODE
+`;
+  await writeFile(scriptPath, script, "utf8");
+  await chmod(scriptPath, 0o755);
+
+  return {
+    path: scriptPath,
+    stop: () => rm(dir, { recursive: true, force: true })
+  };
+}
+
+async function createFakePythonEngine(
+  responder?: (payload: Record<string, unknown>) => Record<string, unknown>
+): Promise<{ path: string; stop: () => Promise<void> }> {
+  const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-engine-"));
+  const scriptPath = path.join(dir, "python3");
+  const enginePath = path.join(dir, "engine.js");
+
+  const responderSource =
+    responder?.toString() ??
+    `(payload) => ({
+      id: String(payload.id ?? ""),
+      ok: true,
+      output:
+        String(payload.prompt ?? "").includes(${JSON.stringify(DISTILL_TEST_QUESTION)}) &&
+        String(payload.prompt ?? "").includes("desktop/tailwind.config.ts")
+          ? "ok"
+          : "Bitnet summary.",
+      tokenCount: 2,
+      generationMs: 10,
+      tokenPerSecond: 200
+    })`;
+
+  await writeFile(
+    enginePath,
+    `const runtime = process.argv[process.argv.length - 2];
+console.log(JSON.stringify({
+  type: "ready",
+  python: process.argv[1],
+  runtime,
+  backend: runtime === "mlx" ? "mlx" : "cuda",
+  modelLoadMs: 1
+}));
+let buffer = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() ?? "";
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const payload = JSON.parse(line);
+    if (payload.type === "shutdown") {
+      console.log(JSON.stringify({
+        id: payload.id,
+        ok: true,
+        output: "shutdown",
+        tokenCount: 0,
+        generationMs: 0
+      }));
+      process.exit(0);
+    }
+
+    const response = (${responderSource})(payload);
+
+    console.log(JSON.stringify(response));
+  }
+});
+process.stdin.resume();
+`,
+    "utf8"
+  );
+
+  await writeFile(
+    scriptPath,
+    `#!/bin/sh
+exec node ${JSON.stringify(enginePath)} "$@"
+`,
+    "utf8"
+  );
+  await chmod(scriptPath, 0o755);
+
+  return {
+    path: scriptPath,
+    stop: () => rm(dir, { recursive: true, force: true })
+  };
+}
+
 function normalizePtyOutput(output: string): string {
   return output
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
@@ -194,7 +335,7 @@ describe("distill end-to-end", () => {
     );
 
     try {
-      const result = await runLauncher(["did the tests pass?"], {
+      const result = await runLauncher(["--provider", "ollama", "did the tests pass?"], {
         env: {
           OLLAMA_HOST: fake.host
         },
@@ -226,7 +367,7 @@ describe("distill end-to-end", () => {
     const capturePath = path.join(dir, "terminal.log");
     const shellCommand =
       "perl -e '$|=1; for (1..8) { print qq(Ran chunk $_\\n); select undef,undef,undef,0.18; }' | " +
-      `node ${launcher} 'did the tests pass?'`;
+      `node ${launcher} --provider ollama 'did the tests pass?'`;
 
     try {
       runOrThrow(
@@ -254,7 +395,7 @@ describe("distill end-to-end", () => {
   });
 
   it("falls back to the raw input when Ollama is unavailable", async () => {
-    const result = await runLauncher(["summarize briefly"], {
+    const result = await runLauncher(["--provider", "ollama", "summarize briefly"], {
       env: {
         OLLAMA_HOST: "http://127.0.0.1:9",
         DISTILL_TIMEOUT_MS: "150"
@@ -283,7 +424,7 @@ describe("distill end-to-end", () => {
     });
 
     try {
-      const result = await runLauncher(["what changed?"], {
+      const result = await runLauncher(["--provider", "ollama", "what changed?"], {
         env: {
           OLLAMA_HOST: fake.host
         },
@@ -312,7 +453,7 @@ describe("distill end-to-end", () => {
     );
 
     try {
-      const result = await runLauncher(["confirm the action"], {
+      const result = await runLauncher(["--provider", "ollama", "confirm the action"], {
         env: {
           OLLAMA_HOST: fake.host
         },
@@ -368,7 +509,7 @@ describe("distill end-to-end", () => {
 
       const summary = runOrThrow(
         path.join(installDir, "node_modules", ".bin", "distill"),
-        ["did the tests pass?"],
+        ["--provider", "ollama", "did the tests pass?"],
         installDir,
         {
           OLLAMA_HOST: fake.host
@@ -410,6 +551,7 @@ describe("distill end-to-end", () => {
       const result = await runLauncher(["summarize"], {
         env: {
           DISTILL_CONFIG_PATH: configPath,
+          DISTILL_PROVIDER: "ollama",
           OLLAMA_HOST: fake.host
         },
         inputSteps: [{ data: "all good\n" }]
@@ -427,5 +569,155 @@ describe("distill end-to-end", () => {
       fake.stop();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("uses bitnet by default with a fake python runner", async () => {
+    const fake = await createFakePythonEngine();
+    const socketDir = await mkdtemp(path.join(tmpdir(), "distill-e2e-daemon-"));
+    const socketPath = path.join(socketDir, "daemon.sock");
+    const daemonEnv = {
+      ...process.env,
+      DISTILL_PYTHON_BIN: fake.path,
+      DISTILL_DAEMON_SOCKET: socketPath
+    };
+
+    try {
+      const result = await runLauncher(["did the tests pass?"], {
+        env: {
+          DISTILL_PYTHON_BIN: fake.path,
+          DISTILL_DAEMON_SOCKET: socketPath,
+          DISTILL_MODEL: "test-model"
+        },
+        inputSteps: [{ data: "Ran 12 tests\n12 passed\n" }]
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("Bitnet summary.\n");
+      expect(result.stderr).toBe("");
+    } finally {
+      await stopDistillDaemon(daemonEnv);
+      await fake.stop();
+      await rm(socketDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs distill test end-to-end for bitnet", async () => {
+    const fake = await createFakePythonEngine((payload) => ({
+      id: String(payload.id ?? ""),
+      ok: true,
+      output: "ok",
+      tokenCount: 1,
+      generationMs: 10,
+      tokenPerSecond: 100
+    }));
+    const socketDir = await mkdtemp(path.join(tmpdir(), "distill-e2e-test-daemon-"));
+    const socketPath = path.join(socketDir, "daemon.sock");
+    const daemonEnv = {
+      ...process.env,
+      DISTILL_PYTHON_BIN: fake.path,
+      DISTILL_DAEMON_SOCKET: socketPath
+    };
+
+    try {
+      const result = await runLauncher(["test"], {
+        env: {
+          DISTILL_PYTHON_BIN: fake.path,
+          DISTILL_DAEMON_SOCKET: socketPath
+        }
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Original prompt:");
+      expect(result.stdout).toContain(DISTILL_TEST_QUESTION);
+      expect(result.stdout).toContain("Final response:");
+      expect(result.stdout).toContain("Saved ");
+      expect(result.stdout).toContain("token/s:");
+      expect(result.stdout).toContain("provider: bitnet");
+      expect(result.stdout).toContain("generate: ok");
+    } finally {
+      await stopDistillDaemon(daemonEnv);
+      await fake.stop();
+      await rm(socketDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to raw input when bitnet inference fails", async () => {
+    const fake = await createFakePythonEngine((payload) => ({
+      id: String(payload.id ?? ""),
+      ok: false,
+      error: "boom",
+      stage: "generate"
+    }));
+    const socketDir = await mkdtemp(path.join(tmpdir(), "distill-e2e-fallback-daemon-"));
+    const socketPath = path.join(socketDir, "daemon.sock");
+    const daemonEnv = {
+      ...process.env,
+      DISTILL_PYTHON_BIN: fake.path,
+      DISTILL_DAEMON_SOCKET: socketPath
+    };
+
+    try {
+      const result = await runLauncher(["did the tests pass?"], {
+        env: {
+          DISTILL_PYTHON_BIN: fake.path,
+          DISTILL_DAEMON_SOCKET: socketPath
+        },
+        inputSteps: [{ data: "fallback payload\n" }]
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("fallback payload\n");
+    } finally {
+      await stopDistillDaemon(daemonEnv);
+      await fake.stop();
+      await rm(socketDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs distill test end-to-end for ollama", async () => {
+    const fake = await createFakeOllama((body, _index) =>
+      new Response(
+        JSON.stringify({
+          response:
+            String(body.prompt ?? "").includes(DISTILL_TEST_QUESTION) &&
+            String(body.prompt ?? "").includes("desktop/tailwind.config.ts")
+              ? "ok"
+              : "unexpected prompt"
+        }),
+        {
+        status: 200
+        }
+      )
+    );
+
+    try {
+      const result = await runLauncher(["test", "--provider", "ollama"], {
+        env: {
+          OLLAMA_HOST: fake.host
+        }
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Original prompt:");
+      expect(result.stdout).toContain(DISTILL_TEST_QUESTION);
+      expect(result.stdout).toContain("Final response:");
+      expect(result.stdout).toContain("provider: ollama");
+      expect(result.stdout).toContain("generate: ok");
+    } finally {
+      fake.stop();
+    }
+  });
+
+  it("fails distill test for ollama when the host is unavailable", async () => {
+    const result = await runLauncher(["test", "--provider", "ollama"], {
+      env: {
+        OLLAMA_HOST: "http://127.0.0.1:9",
+        DISTILL_TIMEOUT_MS: "150"
+      }
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("provider: ollama");
+    expect(result.stdout).toContain("generate: failed");
   });
 });

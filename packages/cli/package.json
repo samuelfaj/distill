@@ -1,6 +1,6 @@
 {
   "name": "@samuelfaj/distill",
-  "version": "0.1.31",
+  "version": "1.4.0",
   "description": "Compress command output for downstream LLMs.",
   "license": "MIT",
   "bin": {
@@ -14,10 +14,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@samuelfaj/distill-darwin-arm64": "0.1.1",
-    "@samuelfaj/distill-darwin-x64": "0.1.1",
-    "@samuelfaj/distill-linux-arm64": "0.1.1",
-    "@samuelfaj/distill-linux-x64": "0.1.1"
+    "@samuelfaj/distill-darwin-arm64": "1.4.0",
+    "@samuelfaj/distill-darwin-x64": "1.4.0",
+    "@samuelfaj/distill-linux-arm64": "1.4.0",
+    "@samuelfaj/distill-linux-x64": "1.4.0"
   },
   "publishConfig": {
     "access": "public"

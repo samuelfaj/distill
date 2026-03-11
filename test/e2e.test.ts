@@ -16,7 +16,7 @@ setDefaultTimeout(60_000);
 
 const root = path.resolve(import.meta.dir, "..");
 const launcher = path.join(root, "packages", "cli", "bin", "distill.js");
-const expectedVersion = "0.1.0";
+const expectedVersion = "1.4.0";
 const WATCH_IDLE_MS = 1_800;
 const WATCH_START_DELAY_MS = 600;
 const INTERACTIVE_DELAY_MS = 1_000;

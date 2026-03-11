@@ -11,27 +11,37 @@ Save **up to 99% of tokens** without losing the signal.
 ## How to use
 
 ```bash
-ollama pull qwen3.5:2b
 npm i -g @samuelfaj/distill
 ```
+
+You can also point `distill` at OpenAI-compatible providers such as LM Studio, Jan, LocalAI, vLLM, SGLang, llama.cpp-compatible servers, MLX-based servers, and Docker Model Runner.
 
 Add in your global agent instructions file:
 
 ```md
-CRITICAL: Always when you invoke a any shell command pipe it through `distill` and tell exactly what you want to know.
-`distill` will summarize the response to save tokens, which is critical for us.
+CRITICAL: Pipe every non-interactive shell command through `distill` unless raw output is explicitly required.
+
+CRITICAL: Your prompt to `distill` must be fully explicit. State exactly what you want to know and exactly what the output must contain. If you want only filenames, say `Return only the filenames.` If you want JSON, say `Return valid JSON only.` Do not ask vague questions.
+
+Bad:
+- `distill "Which files are shown?"`
+
+Good:
+- `distill "Which files are shown? Return only the filenames."`
 
 Examples:
-- `bun test 2>&1 | distill "did the tests pass?"`
-- `git diff 2>&1 | distill "what changed?"`
-- `terraform plan 2>&1 | distill "is this safe?"`
-- `npm audit 2>&1 | distill "extract vulnerabilities as JSON"`
+- `bun test 2>&1 | distill "Did the tests pass? Return only: PASS or FAIL, followed by failing test names if any."`
+- `git diff 2>&1 | distill "What changed? Return only the files changed and a one-line summary for each file."`
+- `terraform plan 2>&1 | distill "Is this safe? Return only: SAFE, REVIEW, or UNSAFE, followed by the exact risky changes."`
+- `npm audit 2>&1 | distill "Extract the vulnerabilities. Return valid JSON only."`
+- `rg -n "TODO|FIXME" . 2>&1 | distill "List files containing TODO or FIXME. Return only file paths, one per line."`
+- `ls -la 2>&1 | distill "Which files are shown? Return only the filenames."`
 
-THERE ARE ONLY TWO SCENARIOS WHEN YOU ARE ALLOWED TO NOT USE `distill`:
-- Do not use `distill` if exact uncompressed output is required.
-- Do not use `distill` if it would break an interactive/TUI workflow.
+You may skip `distill` only in these cases:
+- Exact uncompressed output is required.
+- Using `distill` would break an interactive or TUI workflow.
 
-CRITICAL: always wait till distill finish. It may take some time and you need to wait.
+CRITICAL: Wait for `distill` to finish before continuing.
 ```
 
 ## Usage
@@ -42,6 +52,20 @@ git diff | distill "what changed?"
 terraform plan 2>&1 | distill "is this safe?"
 ```
 
+Examples with other providers:
+
+```bash
+distill config provider lmstudio
+distill config model "your-loaded-model"
+
+distill config provider jan
+distill config api-key "secret-key-123"
+
+distill --provider localai --host http://127.0.0.1:8080/v1 "summarize errors"
+distill --provider docker-model-runner --model ai/llama3.2 "what failed?"
+distill --provider openai-compatible --host http://127.0.0.1:9000/v1 "summarize warnings"
+```
+
 ## Configurations
 
 You can persist defaults locally:
@@ -50,7 +74,23 @@ You can persist defaults locally:
 distill config model "qwen3.5:2b"
 distill config timeout-ms 90000
 distill config thinking false
+distill config provider lmstudio
+distill config host http://127.0.0.1:1234/v1
 ```
+
+Supported providers:
+
+- `ollama`
+- `openai`
+- `openai-compatible`
+- `lmstudio`
+- `jan`
+- `localai`
+- `vllm`
+- `sglang`
+- `llama.cpp`
+- `mlx-lm`
+- `docker-model-runner`
 
 For pipeline exit mirroring, use `pipefail` in your shell:
 

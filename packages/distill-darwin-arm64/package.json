@@ -1,6 +1,6 @@
 {
   "name": "@samuelfaj/distill-darwin-arm64",
-  "version": "0.1.31",
+  "version": "1.4.0",
   "license": "MIT",
   "files": [
     "bin/distill"

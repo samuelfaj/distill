@@ -14,13 +14,9 @@ Save **up to 99% of tokens** without losing the signal.
 npm i -g @samuelfaj/distill
 ```
 
-`distill` now works on macOS, Linux, and Windows x64 through the published native platform packages.
-
 You can also point `distill` at OpenAI-compatible providers such as LM Studio, Jan, LocalAI, vLLM, SGLang, llama.cpp-compatible servers, MLX-based servers, and Docker Model Runner.
 
-## GitHub Copilot CLI global instructions
-
-GitHub Copilot CLI supports local global instructions from `$HOME/.copilot/copilot-instructions.md`. Create that file and add:
+Add in your global agent instructions file:
 
 ```md
 CRITICAL: Pipe every non-interactive shell command through `distill` unless raw output is explicitly required.
@@ -47,39 +43,6 @@ You may skip `distill` only in these cases:
 
 CRITICAL: Wait for `distill` to finish before continuing.
 ```
-
-PowerShell example on Windows:
-
-```powershell
-New-Item -ItemType Directory -Force $HOME/.copilot | Out-Null
-@'
-CRITICAL: Pipe every non-interactive shell command through `distill` unless raw output is explicitly required.
-
-CRITICAL: Your prompt to `distill` must be fully explicit. State exactly what you want to know and exactly what the output must contain. If you want only filenames, say `Return only the filenames.` If you want JSON, say `Return valid JSON only.` Do not ask vague questions.
-
-Bad:
-- `distill "Which files are shown?"`
-
-Good:
-- `distill "Which files are shown? Return only the filenames."`
-
-Examples:
-- `bun test 2>&1 | distill "Did the tests pass? Return only: PASS or FAIL, followed by failing test names if any."`
-- `git diff 2>&1 | distill "What changed? Return only the files changed and a one-line summary for each file."`
-- `terraform plan 2>&1 | distill "Is this safe? Return only: SAFE, REVIEW, or UNSAFE, followed by the exact risky changes."`
-- `npm audit 2>&1 | distill "Extract the vulnerabilities. Return valid JSON only."`
-- `rg -n "TODO|FIXME" . 2>&1 | distill "List files containing TODO or FIXME. Return only file paths, one per line."`
-- `ls -la 2>&1 | distill "Which files are shown? Return only the filenames."`
-
-You may skip `distill` only in these cases:
-- Exact uncompressed output is required.
-- Using `distill` would break an interactive or TUI workflow.
-
-CRITICAL: Wait for `distill` to finish before continuing.
-'@ | Set-Content $HOME/.copilot/copilot-instructions.md
-```
-
-GitHub Copilot CLI also reads repository instructions from `.github/copilot-instructions.md`, and it can read `AGENTS.md` files from directories listed in `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`.
 
 ## Usage
 
@@ -115,8 +78,6 @@ distill config provider lmstudio
 distill config host http://127.0.0.1:1234/v1
 ```
 
-On Windows, the default config path is `%APPDATA%\distill\config.json` unless `DISTILL_CONFIG_PATH` is set.
-
 Supported providers:
 
 - `ollama`
@@ -143,10 +104,11 @@ Interactive prompts are passed through when `distill` detects simple prompt patt
 
 If you want Codex, Claude Code, or OpenCode to prefer `distill` whenever they run a command whose output will be sent to a paid LLM, add a global instruction telling the agent to pipe command output through `distill`.
 
-- GitHub Copilot CLI reads local global instructions from `$HOME/.copilot/copilot-instructions.md`.
 - Codex reads global agent instructions from `~/.codex/AGENTS.md`.
 - Claude Code supports global settings in `~/.claude/settings.json`, and its official mechanism for custom behavior is global instructions via `CLAUDE.md`.
 - OpenCode supports global instruction files through `~/.config/opencode/opencode.json`. Point its `instructions` field at a markdown file with the same rule.
+- GitHub Copilot CLI supports local global instructions from `~/.copilot/copilot-instructions.md`.
+- GitHub Copilot CLI also reads repository instructions from .github/copilot-instructions.md, and it can read AGENTS.md files from directories listed in COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
 
 ## Example:
 

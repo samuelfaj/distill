@@ -29,6 +29,8 @@ jobs:
         run: npm test
 
       - name: Build platform binaries
+        env:
+          DISTILL_BUILD_ALL: "1"
         run: npm run build
 
       - name: Apply platform metadata
@@ -46,6 +48,7 @@ jobs:
           npm publish --workspace @samuelfaj/distill-darwin-x64 --access public
           npm publish --workspace @samuelfaj/distill-linux-arm64 --access public
           npm publish --workspace @samuelfaj/distill-linux-x64 --access public
+          npm publish --workspace @samuelfaj/distill-win32-x64 --access public
 
       - name: Publish main package
         run: npm publish --workspace @samuelfaj/distill --access public

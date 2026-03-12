@@ -22,6 +22,10 @@ const WATCH_START_DELAY_MS = 600;
 const INTERACTIVE_DELAY_MS = 1_000;
 const itUnixOnly = process.platform === "win32" ? it.skip : it;
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const isolatedConfigPath = path.join(
+  tmpdir(),
+  `distill-e2e-default-config-${process.pid}.json`
+);
 const currentPlatformPackage = (() => {
   const key = `${process.platform}-${process.arch}`;
   const mapping: Record<string, string> = {
@@ -46,6 +50,24 @@ function createOllamaEnv(host: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessE
     ...env,
     DISTILL_PROVIDER: "ollama",
     OLLAMA_HOST: host
+  };
+}
+
+function createChildEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    DISTILL_CONFIG_PATH: isolatedConfigPath,
+    DISTILL_PROVIDER: undefined,
+    DISTILL_MODEL: undefined,
+    DISTILL_HOST: undefined,
+    DISTILL_API_KEY: undefined,
+    DISTILL_TIMEOUT_MS: undefined,
+    DISTILL_THINKING: undefined,
+    OLLAMA_HOST: undefined,
+    OPENAI_API_KEY: undefined,
+    OPENAI_API_BASE: undefined,
+    OPENAI_BASE_URL: undefined,
+    ...env
   };
 }
 
@@ -93,10 +115,7 @@ function runOrThrow(
 ): string {
   const result = spawnSync(command, args, {
     cwd,
-    env: {
-      ...process.env,
-      ...env
-    },
+    env: createChildEnv(env),
     encoding: "utf8",
     input
   });
@@ -126,10 +145,7 @@ async function runProcess(
 ): Promise<RunResult> {
   const child = spawn(command, args, {
     cwd: options.cwd,
-    env: {
-      ...process.env,
-      ...options.env
-    },
+    env: createChildEnv(options.env),
     stdio: ["pipe", "pipe", "pipe"]
   });
 

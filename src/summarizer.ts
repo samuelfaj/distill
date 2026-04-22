@@ -1,9 +1,4 @@
-import {
-  getProviderDisplayName,
-  getProviderTransport,
-  type RuntimeConfig
-} from "./config";
-import { requestOllama } from "./ollama";
+import type { RuntimeConfig } from "./config";
 import { requestOpenAI } from "./openai";
 import { buildBatchPrompt, buildWatchPrompt } from "./prompt";
 
@@ -17,29 +12,17 @@ function requestLLM(
   prompt: string,
   fetchImpl?: typeof fetch
 ): Promise<string> {
-  if (getProviderTransport(config.provider) === "openai-compatible") {
-    return requestOpenAI({
-      baseUrl: config.host,
-      apiKey: config.apiKey,
-      model: config.model,
-      prompt,
-      providerLabel: getProviderDisplayName(config.provider),
-      timeoutMs: config.timeoutMs,
-      fetchImpl
-    });
-  }
-
-  return requestOllama({
-    host: config.host,
+  return requestOpenAI({
+    baseUrl: config.host,
+    apiKey: config.apiKey,
     model: config.model,
     prompt,
     timeoutMs: config.timeoutMs,
-    thinking: config.thinking,
     fetchImpl
   });
 }
 
-export function createOllamaSummarizer(
+export function createSummarizer(
   config: RuntimeConfig,
   fetchImpl?: typeof fetch
 ): Summarizer {

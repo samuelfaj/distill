@@ -3,7 +3,6 @@ export interface OpenAIRequest {
   apiKey: string;
   model: string;
   prompt: string;
-  providerLabel?: string;
   timeoutMs: number;
   fetchImpl?: typeof fetch;
 }
@@ -13,7 +12,9 @@ function buildChatCompletionsUrl(baseUrl: string): URL {
   const pathname = normalized.pathname.replace(/\/+$/, "");
 
   normalized.pathname =
-    pathname === "" || pathname === "/" ? "/v1/chat/completions" : `${pathname}/chat/completions`;
+    pathname === "" || pathname === "/"
+      ? "/v1/chat/completions"
+      : `${pathname}/chat/completions`;
   normalized.search = "";
   normalized.hash = "";
 
@@ -25,7 +26,6 @@ export async function requestOpenAI({
   apiKey,
   model,
   prompt,
-  providerLabel = "OpenAI-compatible provider",
   timeoutMs,
   fetchImpl = fetch
 }: OpenAIRequest): Promise<string> {
@@ -50,7 +50,7 @@ export async function requestOpenAI({
     });
 
     if (!response.ok) {
-      throw new Error(`${providerLabel} request failed with ${response.status}.`);
+      throw new Error(`Request failed with ${response.status}.`);
     }
 
     const rawText = await response.text();
@@ -59,7 +59,7 @@ export async function requestOpenAI({
     try {
       payload = JSON.parse(rawText);
     } catch {
-      throw new Error(`${providerLabel} returned invalid JSON.`);
+      throw new Error("Provider returned invalid JSON.");
     }
 
     if (
@@ -68,15 +68,16 @@ export async function requestOpenAI({
       !Array.isArray((payload as { choices?: unknown }).choices) ||
       (payload as { choices: unknown[] }).choices.length === 0
     ) {
-      throw new Error(`${providerLabel} returned an invalid response payload.`);
+      throw new Error("Provider returned an invalid response payload.");
     }
 
-    const choice = (payload as { choices: { message?: { content?: string } }[] })
-      .choices[0];
+    const choice = (payload as {
+      choices: Array<{ message?: { content?: string } }>;
+    }).choices[0];
     const content = choice?.message?.content?.trim();
 
     if (!content) {
-      throw new Error(`${providerLabel} returned an empty response.`);
+      throw new Error("Provider returned an empty response.");
     }
 
     return content;

@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { requestOpenAI } from "../src/openai";
 
 describe("requestOpenAI", () => {
-  it("preserves provider-specific base paths", async () => {
+  it("preserves nested base paths", async () => {
     let requestUrl = "";
 
     const output = await requestOpenAI({
@@ -11,7 +11,6 @@ describe("requestOpenAI", () => {
       apiKey: "not-needed",
       model: "ai/llama3.2",
       prompt: "hi",
-      providerLabel: "Docker Model Runner",
       timeoutMs: 100,
       fetchImpl: async (input) => {
         requestUrl = String(input);

@@ -1,5 +1,10 @@
-import { parseCommand, formatUsage, DISTILL_VERSION, UsageError } from "./config";
-import { createOllamaSummarizer } from "./summarizer";
+import {
+  DISTILL_VERSION,
+  UsageError,
+  formatUsage,
+  parseCommand
+} from "./config";
+import { createSummarizer } from "./summarizer";
 import { DistillSession, type ProgressPhase } from "./stream-distiller";
 import {
   getPersistedConfigValue,
@@ -26,12 +31,10 @@ async function run(): Promise<number> {
     process.stdout.write(
       [
         `path=${resolveConfigPath(process.env)}`,
-        `provider=${persisted.provider ?? ""}`,
         `model=${persisted.model ?? ""}`,
         `host=${persisted.host ?? ""}`,
         `api-key=${persisted.apiKey ? "***" : ""}`,
-        `timeout-ms=${persisted.timeoutMs ?? ""}`,
-        `thinking=${persisted.thinking ?? ""}`
+        `timeout-ms=${persisted.timeoutMs ?? ""}`
       ].join("\n") + "\n"
     );
     return 0;
@@ -54,14 +57,13 @@ async function run(): Promise<number> {
   }
 
   const progressProtocol = process.env.DISTILL_PROGRESS_PROTOCOL === "stderr";
-  const progress =
-    progressProtocol
-      ? undefined
-      : process.stderr.isTTY
-        ? process.stderr
-        : process.stdout.isTTY
-          ? process.stdout
-          : undefined;
+  const progress = progressProtocol
+    ? undefined
+    : process.stderr.isTTY
+      ? process.stderr
+      : process.stdout.isTTY
+        ? process.stdout
+        : undefined;
   const emitProgressPhase = progressProtocol
     ? (phase: ProgressPhase) => {
         process.stderr.write(`__DISTILL_PROGRESS__:phase:${phase}\n`);
@@ -73,7 +75,7 @@ async function run(): Promise<number> {
       }
     : undefined;
   const session = new DistillSession({
-    summarizer: createOllamaSummarizer(command.config),
+    summarizer: createSummarizer(command.config),
     stdout: process.stdout,
     isTTY: Boolean(process.stdout.isTTY),
     progress,

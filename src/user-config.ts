@@ -15,6 +15,7 @@ function resolveConfigBaseDir(env: NodeJS.ProcessEnv): string {
   if (localAppData) {
     return path.join(localAppData, "distill");
   }
+
   const xdg = env.XDG_CONFIG_HOME?.trim();
 
   if (xdg) {
@@ -81,16 +82,12 @@ export async function writePersistedConfig(
 export async function setPersistedConfigValue(
   env: NodeJS.ProcessEnv,
   key: ConfigKey,
-  value: string | number | boolean
+  value: string | number
 ): Promise<PersistedConfig> {
   const current = await readPersistedConfig(env);
 
-  if (key === "provider") {
-    current.provider = String(value) as PersistedConfig["provider"];
-  } else if (key === "timeout-ms") {
+  if (key === "timeout-ms") {
     current.timeoutMs = Number(value);
-  } else if (key === "thinking") {
-    current.thinking = Boolean(value);
   } else if (key === "host") {
     current.host = String(value);
   } else if (key === "api-key") {
@@ -106,17 +103,9 @@ export async function setPersistedConfigValue(
 export function getPersistedConfigValue(
   config: PersistedConfig,
   key: ConfigKey
-): string | number | boolean | undefined {
-  if (key === "provider") {
-    return config.provider;
-  }
-
+): string | number | undefined {
   if (key === "timeout-ms") {
     return config.timeoutMs;
-  }
-
-  if (key === "thinking") {
-    return config.thinking;
   }
 
   if (key === "host") {

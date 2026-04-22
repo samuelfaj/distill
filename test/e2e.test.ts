@@ -5,13 +5,17 @@ import {
   it,
   setDefaultTimeout
 } from "bun:test";
-import cliPackage from "../packages/cli/package.json";
 import { readdirSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { getCurrentPlatformKey, getPlatformTarget } from "../scripts/platform-targets";
+import cliPackage from "../packages/cli/package.json";
+import { DEFAULT_MODEL } from "../src/config";
+import {
+  getCurrentPlatformKey,
+  getPlatformTarget
+} from "../scripts/platform-targets";
 import { createScriptCommand } from "./script-command";
 
 setDefaultTimeout(process.platform === "win32" ? 120_000 : 60_000);
@@ -22,7 +26,7 @@ const expectedVersion = cliPackage.version;
 const WATCH_IDLE_MS = 1_800;
 const WATCH_START_DELAY_MS = 600;
 const INTERACTIVE_DELAY_MS = 1_000;
-const itUnixOnly = process.platform === "win32" ? it.skip : it;
+const itPty = process.platform === "linux" ? it : it.skip;
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const isolatedConfigPath = path.join(
   tmpdir(),
@@ -38,11 +42,10 @@ const currentPlatformPackage = (() => {
   return value;
 })();
 
-function createOllamaEnv(host: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function createProviderEnv(host: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
     ...env,
-    DISTILL_PROVIDER: "ollama",
-    OLLAMA_HOST: host
+    DISTILL_HOST: host
   };
 }
 
@@ -50,16 +53,10 @@ function createChildEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
     ...process.env,
     DISTILL_CONFIG_PATH: isolatedConfigPath,
-    DISTILL_PROVIDER: undefined,
     DISTILL_MODEL: undefined,
     DISTILL_HOST: undefined,
     DISTILL_API_KEY: undefined,
     DISTILL_TIMEOUT_MS: undefined,
-    DISTILL_THINKING: undefined,
-    OLLAMA_HOST: undefined,
-    OPENAI_API_KEY: undefined,
-    OPENAI_API_BASE: undefined,
-    OPENAI_BASE_URL: undefined,
     ...env
   };
 }
@@ -199,11 +196,14 @@ async function runProcess(
   return exit;
 }
 
-async function runLauncher(args: string[], options?: {
-  env?: NodeJS.ProcessEnv;
-  inputSteps?: InputStep[];
-  finalDelayMs?: number;
-}): Promise<RunResult> {
+async function runLauncher(
+  args: string[],
+  options?: {
+    env?: NodeJS.ProcessEnv;
+    inputSteps?: InputStep[];
+    finalDelayMs?: number;
+  }
+): Promise<RunResult> {
   return runProcess("node", [launcher, ...args], {
     cwd: root,
     env: options?.env,
@@ -212,7 +212,7 @@ async function runLauncher(args: string[], options?: {
   });
 }
 
-async function createFakeOllama(
+async function createFakeChatProvider(
   responder: (
     body: Record<string, unknown>,
     index: number
@@ -226,6 +226,10 @@ async function createFakeOllama(
   const server = Bun.serve({
     port: 0,
     async fetch(request) {
+      if (new URL(request.url).pathname !== "/v1/chat/completions") {
+        return new Response("not found", { status: 404 });
+      }
+
       const payload = (await request.json()) as Record<string, unknown>;
       requests.push(payload);
       return responder(payload, requests.length - 1);
@@ -233,7 +237,7 @@ async function createFakeOllama(
   });
 
   return {
-    host: `http://127.0.0.1:${server.port}`,
+    host: `http://127.0.0.1:${server.port}/v1`,
     requests,
     stop() {
       server.stop(true);
@@ -243,9 +247,9 @@ async function createFakeOllama(
 
 function normalizePtyOutput(output: string): string {
   return output
-    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\[[0-9;]*[A-Za-z]/g, "")
     .replace(/\r/g, "\n")
-    .replace(/[\u0004\u0008]/g, "")
+    .replace(/[]/g, "")
     .split("\n")
     .map((line) => line.trimEnd())
     .filter(Boolean)
@@ -257,16 +261,19 @@ beforeAll(() => {
 });
 
 describe("distill end-to-end", () => {
-  it("summarizes batch output through the npm launcher", async () => {
-    const fake = await createFakeOllama((_body, _index) =>
-      new Response(JSON.stringify({ response: "All tests passed." }), {
-        status: 200
-      })
+  it("summarizes batch output through the launcher", async () => {
+    const fake = await createFakeChatProvider((_body, _index) =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "All tests passed." } }]
+        }),
+        { status: 200 }
+      )
     );
 
     try {
       const result = await runLauncher(["did the tests pass?"], {
-        env: createOllamaEnv(fake.host),
+        env: createProviderEnv(fake.host),
         inputSteps: [{ data: "Ran 12 tests\n12 passed\n" }]
       });
 
@@ -275,21 +282,22 @@ describe("distill end-to-end", () => {
       expect(result.stdout).toBe("All tests passed.\n");
       expect(fake.requests).toHaveLength(1);
       expect(fake.requests[0]).toMatchObject({
-        stream: false,
-        think: false,
-        model: "qwen3.5:2b"
+        model: DEFAULT_MODEL
       });
     } finally {
       fake.stop();
     }
   });
 
-  itUnixOnly("keeps the spinner moving in a pty while collecting streamed input and summarizing", async () => {
-    const fake = await createFakeOllama(async (_body, _index) => {
+  itPty("keeps the spinner moving in a pty while collecting streamed input and summarizing", async () => {
+    const fake = await createFakeChatProvider(async (_body, _index) => {
       await delay(700);
-      return new Response(JSON.stringify({ response: "All tests passed." }), {
-        status: 200
-      });
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "All tests passed." } }]
+        }),
+        { status: 200 }
+      );
     });
     const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-pty-"));
     const capturePath = path.join(dir, "terminal.log");
@@ -306,7 +314,7 @@ describe("distill end-to-end", () => {
         scriptCommand.command,
         scriptCommand.args,
         root,
-        createOllamaEnv(fake.host)
+        createProviderEnv(fake.host)
       );
 
       const output = normalizePtyOutput(await readFile(capturePath, "utf8"));
@@ -324,10 +332,10 @@ describe("distill end-to-end", () => {
     }
   });
 
-  it("falls back to the raw input when Ollama is unavailable", async () => {
+  it("falls back to the raw input when the provider is unavailable", async () => {
     const result = await runLauncher(["summarize briefly"], {
       env: {
-        OLLAMA_HOST: "http://127.0.0.1:9",
+        DISTILL_HOST: "http://127.0.0.1:9/v1",
         DISTILL_TIMEOUT_MS: "150"
       },
       inputSteps: [{ data: "fallback payload\n" }]
@@ -339,23 +347,32 @@ describe("distill end-to-end", () => {
   });
 
   it("detects watch-like recurring output and emits watch summaries", async () => {
-    const fake = await createFakeOllama((body) => {
-      const prompt = String(body.prompt ?? "");
+    const fake = await createFakeChatProvider((body) => {
+      const messages = (body.messages ?? []) as Array<{ content?: string }>;
+      const prompt = String(messages[0]?.content ?? "");
 
       if (!prompt.includes("Previous cycle:") || !prompt.includes("Current cycle:")) {
-        return new Response(JSON.stringify({ response: "unexpected prompt" }), {
-          status: 200
-        });
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "unexpected prompt" } }]
+          }),
+          { status: 200 }
+        );
       }
 
-      return new Response(JSON.stringify({ response: "Failure count changed from 0 to 1." }), {
-        status: 200
-      });
+      return new Response(
+        JSON.stringify({
+          choices: [
+            { message: { content: "Failure count changed from 0 to 1." } }
+          ]
+        }),
+        { status: 200 }
+      );
     });
 
     try {
       const result = await runLauncher(["what changed?"], {
-        env: createOllamaEnv(fake.host),
+        env: createProviderEnv(fake.host),
         inputSteps: [
           { afterMs: WATCH_START_DELAY_MS, data: "watch run\r\nfailures: 0\n" },
           { afterMs: WATCH_IDLE_MS, data: "watch run\nfailures: 1\n" }
@@ -367,22 +384,28 @@ describe("distill end-to-end", () => {
       expect(result.stderr).toBe("");
       expect(result.stdout).toBe("Failure count changed from 0 to 1.\n");
       expect(fake.requests).toHaveLength(1);
-      expect(String(fake.requests[0].prompt ?? "")).toContain("Previous cycle:");
+      const messages = (fake.requests[0].messages ?? []) as Array<{
+        content?: string;
+      }>;
+      expect(String(messages[0]?.content ?? "")).toContain("Previous cycle:");
     } finally {
       fake.stop();
     }
   });
 
-  it("passes through simple interactive prompts without calling Ollama", async () => {
-    const fake = await createFakeOllama((_body, _index) =>
-      new Response(JSON.stringify({ response: "should not happen" }), {
-        status: 200
-      })
+  it("passes through simple interactive prompts without calling the provider", async () => {
+    const fake = await createFakeChatProvider((_body, _index) =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "should not happen" } }]
+        }),
+        { status: 200 }
+      )
     );
 
     try {
       const result = await runLauncher(["confirm the action"], {
-        env: createOllamaEnv(fake.host),
+        env: createProviderEnv(fake.host),
         inputSteps: [
           { data: "Continue? [y/N]" },
           { afterMs: INTERACTIVE_DELAY_MS, data: "\ny\n" }
@@ -399,10 +422,13 @@ describe("distill end-to-end", () => {
   });
 
   it("works after packing and installing the npm package locally", async () => {
-    const fake = await createFakeOllama((_body, _index) =>
-      new Response(JSON.stringify({ response: "Tests passed." }), {
-        status: 200
-      })
+    const fake = await createFakeChatProvider((_body, _index) =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "Tests passed." } }]
+        }),
+        { status: 200 }
+      )
     );
 
     const packDir = await mkdtemp(path.join(tmpdir(), "distill-e2e-pack-"));
@@ -437,7 +463,7 @@ describe("distill end-to-end", () => {
       const installedBinary = resolveInstalledBinaryPath(installDir);
       const summary = await runProcess(installedBinary, ["did the tests pass?"], {
         cwd: installDir,
-        env: createOllamaEnv(fake.host),
+        env: createProviderEnv(fake.host),
         inputSteps: [{ data: "12 passed\n" }]
       });
 
@@ -452,23 +478,20 @@ describe("distill end-to-end", () => {
     }
   }, process.platform === "win32" ? 300_000 : undefined);
 
-  it("persists model and thinking config through the launcher", async () => {
-    const fake = await createFakeOllama((_body, _index) =>
-      new Response(JSON.stringify({ response: "Configured summary." }), {
-        status: 200
-      })
+  it("persists model config through the launcher", async () => {
+    const fake = await createFakeChatProvider((_body, _index) =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "Configured summary." } }]
+        }),
+        { status: 200 }
+      )
     );
     const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-config-"));
     const configPath = path.join(dir, "config.json");
 
     try {
-      const setModel = await runLauncher(["config", "model", "qwen3.5:2b"], {
-        env: {
-          DISTILL_CONFIG_PATH: configPath
-        }
-      });
-
-      const setThinking = await runLauncher(["config", "thinking", "true"], {
+      const setModel = await runLauncher(["config", "model", "my-model"], {
         env: {
           DISTILL_CONFIG_PATH: configPath
         }
@@ -477,19 +500,16 @@ describe("distill end-to-end", () => {
       const result = await runLauncher(["summarize"], {
         env: {
           DISTILL_CONFIG_PATH: configPath,
-          DISTILL_PROVIDER: "ollama",
-          OLLAMA_HOST: fake.host
+          DISTILL_HOST: fake.host
         },
         inputSteps: [{ data: "all good\n" }]
       });
 
-      expect(setModel.stdout).toBe("model=qwen3.5:2b\n");
-      expect(setThinking.stdout).toBe("thinking=true\n");
+      expect(setModel.stdout).toBe("model=my-model\n");
       expect(result.stdout).toBe("Configured summary.\n");
       expect(fake.requests).toHaveLength(1);
       expect(fake.requests[0]).toMatchObject({
-        model: "qwen3.5:2b",
-        think: true
+        model: "my-model"
       });
     } finally {
       fake.stop();

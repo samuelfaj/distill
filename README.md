@@ -14,7 +14,7 @@ Save **up to 99% of tokens** without losing the signal.
 npm i -g @samuelfaj/distill
 ```
 
-You can also point `distill` at OpenAI-compatible providers such as LM Studio, Jan, LocalAI, vLLM, SGLang, llama.cpp-compatible servers, MLX-based servers, and Docker Model Runner.
+`distill` speaks any OpenAI-compatible API. Point it at whatever endpoint you run locally (LM Studio, Jan, LocalAI, vLLM, SGLang, llama.cpp, MLX, Docker Model Runner, Ollama's `/v1`, DFlash, etc.) or a hosted provider (OpenAI, etc.) by setting `--host` to its base URL.
 
 Add in your global agent instructions file:
 
@@ -52,18 +52,20 @@ git diff | distill "what changed?"
 terraform plan 2>&1 | distill "is this safe?"
 ```
 
-Examples with other providers:
+Point at any OpenAI-compatible endpoint:
 
 ```bash
-distill config provider lmstudio
-distill config model "your-loaded-model"
+# LM Studio
+distill --host http://127.0.0.1:1234/v1 --model your-loaded-model "what failed?"
 
-distill config provider jan
-distill config api-key "secret-key-123"
+# Ollama (via its OpenAI-compatible /v1 endpoint)
+distill --host http://127.0.0.1:11434/v1 --model llama3.2 "what failed?"
 
-distill --provider localai --host http://127.0.0.1:8080/v1 "summarize errors"
-distill --provider docker-model-runner --model ai/llama3.2 "what failed?"
-distill --provider openai-compatible --host http://127.0.0.1:9000/v1 "summarize warnings"
+# OpenAI
+distill --host https://api.openai.com/v1 --model gpt-4o-mini --api-key sk-... "summarize"
+
+# Docker Model Runner
+distill --host http://127.0.0.1:12434/engines/v1 --model ai/llama3.2 "what failed?"
 ```
 
 ## Configurations
@@ -71,26 +73,18 @@ distill --provider openai-compatible --host http://127.0.0.1:9000/v1 "summarize 
 You can persist defaults locally:
 
 ```bash
-distill config model "qwen3.5:2b"
-distill config timeout-ms 90000
-distill config thinking false
-distill config provider lmstudio
 distill config host http://127.0.0.1:1234/v1
+distill config model "qwen3.5:2b"
+distill config api-key "secret-key-123"
+distill config timeout-ms 90000
 ```
 
-Supported providers:
+Environment variables override persisted config, and CLI flags override both:
 
-- `ollama`
-- `openai`
-- `openai-compatible`
-- `lmstudio`
-- `jan`
-- `localai`
-- `vllm`
-- `sglang`
-- `llama.cpp`
-- `mlx-lm`
-- `docker-model-runner`
+- `DISTILL_HOST`
+- `DISTILL_MODEL`
+- `DISTILL_API_KEY`
+- `DISTILL_TIMEOUT_MS`
 
 For pipeline exit mirroring, use `pipefail` in your shell:
 

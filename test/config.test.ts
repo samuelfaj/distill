@@ -2,14 +2,11 @@ import { describe, expect, it } from "bun:test";
 
 import {
   DEFAULT_HOST,
-  DEFAULT_JAN_BASE_URL,
-  DEFAULT_LMSTUDIO_BASE_URL,
   DEFAULT_MODEL,
-  DEFAULT_PROVIDER,
   DEFAULT_TIMEOUT_MS,
+  UsageError,
   parseCommand,
-  resolveRuntimeDefaults,
-  UsageError
+  resolveRuntimeDefaults
 } from "../src/config";
 
 describe("parseCommand", () => {
@@ -20,12 +17,10 @@ describe("parseCommand", () => {
       kind: "run",
       config: {
         question: "what changed?",
-        provider: DEFAULT_PROVIDER,
         model: DEFAULT_MODEL,
         host: DEFAULT_HOST,
         apiKey: "",
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        thinking: false
+        timeoutMs: DEFAULT_TIMEOUT_MS
       }
     });
   });
@@ -38,8 +33,8 @@ describe("parseCommand", () => {
         "--host=http://example.test",
         "--timeout-ms",
         "10",
-        "--thinking",
-        "true",
+        "--api-key",
+        "secret",
         "summarize"
       ],
       {},
@@ -50,50 +45,10 @@ describe("parseCommand", () => {
       kind: "run",
       config: {
         question: "summarize",
-        provider: "ollama",
         model: "mini",
         host: "http://example.test",
-        apiKey: "",
-        timeoutMs: 10,
-        thinking: true
-      }
-    });
-  });
-
-  it("supports openai-compatible provider aliases with provider defaults", () => {
-    const command = parseCommand(["--provider", "lmstudio", "summarize"], {}, {});
-
-    expect(command).toEqual({
-      kind: "run",
-      config: {
-        question: "summarize",
-        provider: "lmstudio",
-        model: DEFAULT_MODEL,
-        host: DEFAULT_LMSTUDIO_BASE_URL,
-        apiKey: "",
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        thinking: false
-      }
-    });
-  });
-
-  it("accepts the mlx-lm provider name", () => {
-    const command = parseCommand(
-      ["--provider", "mlx-lm", "--host", "http://127.0.0.1:8080/v1", "summarize"],
-      {},
-      {}
-    );
-
-    expect(command).toEqual({
-      kind: "run",
-      config: {
-        question: "summarize",
-        provider: "mlx-lm",
-        model: DEFAULT_MODEL,
-        host: "http://127.0.0.1:8080/v1",
-        apiKey: "",
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        thinking: false
+        apiKey: "secret",
+        timeoutMs: 10
       }
     });
   });
@@ -105,8 +60,8 @@ describe("parseCommand", () => {
       {
         model: "saved-model",
         host: "http://saved.test",
-        timeoutMs: 50,
-        thinking: true
+        apiKey: "saved-key",
+        timeoutMs: 50
       }
     );
 
@@ -114,113 +69,82 @@ describe("parseCommand", () => {
       kind: "run",
       config: {
         question: "summarize",
-        provider: "ollama",
         model: "saved-model",
         host: "http://saved.test",
-        apiKey: "",
-        timeoutMs: 50,
-        thinking: true
+        apiKey: "saved-key",
+        timeoutMs: 50
       }
     });
   });
 
-  it("parses config set commands", () => {
-    expect(parseCommand(["config", "model", "qwen3.5:2b"], {}, {})).toEqual({
-      kind: "configSet",
-      key: "model",
-      value: "qwen3.5:2b"
-    });
-
-    expect(parseCommand(["config", "thinking", "false"], {}, {})).toEqual({
-      kind: "configSet",
-      key: "thinking",
-      value: false
-    });
-  });
-
-  it("resolves env over persisted defaults", () => {
+  it("prefers env over persisted defaults", () => {
     expect(
       resolveRuntimeDefaults(
         {
           DISTILL_MODEL: "env-model",
-          OLLAMA_HOST: "http://env.test",
-          DISTILL_TIMEOUT_MS: "999",
-          DISTILL_THINKING: "true"
+          DISTILL_HOST: "http://env.test",
+          DISTILL_API_KEY: "env-key",
+          DISTILL_TIMEOUT_MS: "999"
         },
         {
           model: "saved-model",
           host: "http://saved.test",
-          timeoutMs: 5,
-          thinking: false
+          apiKey: "saved-key",
+          timeoutMs: 5
         }
       )
     ).toEqual({
-      provider: "ollama",
       model: "env-model",
       host: "http://env.test",
-      apiKey: "",
-      timeoutMs: 999,
-      thinking: true
+      apiKey: "env-key",
+      timeoutMs: 999
     });
   });
 
-  it("prefers generic env vars for openai-compatible providers", () => {
+  it("parses config set commands", () => {
+    expect(parseCommand(["config", "model", "my-model"], {}, {})).toEqual({
+      kind: "configSet",
+      key: "model",
+      value: "my-model"
+    });
+
     expect(
-      resolveRuntimeDefaults(
-        {
-          DISTILL_PROVIDER: "openai-compatible",
-          DISTILL_HOST: "http://127.0.0.1:9000/v1",
-          DISTILL_API_KEY: "token"
-        },
-        {}
-      )
+      parseCommand(["config", "host", "http://127.0.0.1:8010/v1"], {}, {})
     ).toEqual({
-      provider: "openai-compatible",
-      model: DEFAULT_MODEL,
-      host: "http://127.0.0.1:9000/v1",
-      apiKey: "token",
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-      thinking: false
+      kind: "configSet",
+      key: "host",
+      value: "http://127.0.0.1:8010/v1"
+    });
+
+    expect(parseCommand(["config", "timeout-ms", "30000"], {}, {})).toEqual({
+      kind: "configSet",
+      key: "timeout-ms",
+      value: 30000
     });
   });
 
-  it("requires an api key for Jan", () => {
-    expect(() => parseCommand(["--provider", "jan", "summarize"], {}, {})).toThrow(
-      "Jan"
+  it("rejects unknown config keys", () => {
+    expect(() => parseCommand(["config", "provider", "openai"], {}, {})).toThrow(
+      UsageError
     );
-
-    expect(
-      parseCommand(
-        ["--provider", "jan", "--api-key", "secret", "summarize"],
-        {},
-        {}
-      )
-    ).toEqual({
-      kind: "run",
-      config: {
-        question: "summarize",
-        provider: "jan",
-        model: DEFAULT_MODEL,
-        host: DEFAULT_JAN_BASE_URL,
-        apiKey: "secret",
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        thinking: false
-      }
-    });
   });
 
-  it("requires a host for the generic openai-compatible provider", () => {
-    expect(() =>
+  it("normalizes trailing slash on host", () => {
+    expect(
       resolveRuntimeDefaults(
-        {
-          DISTILL_PROVIDER: "openai-compatible"
-        },
+        { DISTILL_HOST: "http://example.test/v1/" },
         {}
-      )
-    ).toThrow("host is required");
+      ).host
+    ).toBe("http://example.test/v1");
   });
 
   it("throws on missing question", () => {
     expect(() => parseCommand([], {}, {})).toThrow(UsageError);
+  });
+
+  it("throws on unknown flag", () => {
+    expect(() => parseCommand(["--provider", "openai", "q"], {}, {})).toThrow(
+      UsageError
+    );
   });
 });

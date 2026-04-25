@@ -86,10 +86,21 @@ export function looksLikeBadDistillation(
   }
 
   if (normalizedSource.length > 0) {
-    return (
-      normalizedCandidate === normalizedSource ||
-      normalizedCandidate.length > normalizedSource.length + 40
-    );
+    if (normalizedCandidate === normalizedSource) {
+      return true;
+    }
+
+    const trimmedCandidate = normalizedCandidate.trim();
+    const looksStructured =
+      trimmedCandidate.startsWith("[") ||
+      trimmedCandidate.startsWith("{") ||
+      trimmedCandidate.startsWith("```");
+
+    if (looksStructured) {
+      return false;
+    }
+
+    return normalizedCandidate.length > normalizedSource.length + 40;
   }
 
   return false;

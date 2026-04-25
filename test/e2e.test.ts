@@ -349,7 +349,7 @@ describe("distill end-to-end", () => {
   it("detects watch-like recurring output and emits watch summaries", async () => {
     const fake = await createFakeChatProvider((body) => {
       const messages = (body.messages ?? []) as Array<{ content?: string }>;
-      const prompt = String(messages[0]?.content ?? "");
+      const prompt = messages.map((m) => String(m?.content ?? "")).join("\n");
 
       if (!prompt.includes("Previous cycle:") || !prompt.includes("Current cycle:")) {
         return new Response(
@@ -387,7 +387,8 @@ describe("distill end-to-end", () => {
       const messages = (fake.requests[0].messages ?? []) as Array<{
         content?: string;
       }>;
-      expect(String(messages[0]?.content ?? "")).toContain("Previous cycle:");
+      const allContent = messages.map((m) => String(m?.content ?? "")).join("\n");
+      expect(allContent).toContain("Previous cycle:");
     } finally {
       fake.stop();
     }

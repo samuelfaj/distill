@@ -1,6 +1,6 @@
 import type { RuntimeConfig } from "./config";
 import { requestOpenAI } from "./openai";
-import { buildBatchPrompt, buildWatchPrompt } from "./prompt";
+import { buildBatchPrompt, buildWatchPrompt, type PromptMessages } from "./prompt";
 
 export interface Summarizer {
   summarizeBatch(input: string): Promise<string>;
@@ -9,7 +9,7 @@ export interface Summarizer {
 
 function requestLLM(
   config: RuntimeConfig,
-  prompt: string,
+  prompt: string | PromptMessages,
   fetchImpl?: typeof fetch
 ): Promise<string> {
   return requestOpenAI({
@@ -18,6 +18,8 @@ function requestLLM(
     model: config.model,
     prompt,
     timeoutMs: config.timeoutMs,
+    temperature: 0,
+    maxTokens: 512,
     fetchImpl
   });
 }

@@ -1,9 +1,13 @@
+import type { PromptMessages } from "./prompt";
+
 export interface OpenAIRequest {
   baseUrl: string;
   apiKey: string;
   model: string;
-  prompt: string;
+  prompt: string | PromptMessages;
   timeoutMs: number;
+  maxTokens?: number;
+  temperature?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -27,6 +31,8 @@ export async function requestOpenAI({
   model,
   prompt,
   timeoutMs,
+  maxTokens,
+  temperature,
   fetchImpl = fetch
 }: OpenAIRequest): Promise<string> {
   const controller = new AbortController();
@@ -34,6 +40,13 @@ export async function requestOpenAI({
 
   try {
     const url = buildChatCompletionsUrl(baseUrl);
+    const messages =
+      typeof prompt === "string"
+        ? [{ role: "user", content: prompt }]
+        : [
+            { role: "system", content: prompt.system },
+            { role: "user", content: prompt.user }
+          ];
     const response = await fetchImpl(url, {
       method: "POST",
       headers: {
@@ -42,8 +55,9 @@ export async function requestOpenAI({
       },
       body: JSON.stringify({
         model,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1
+        messages,
+        temperature: temperature ?? 0,
+        ...(maxTokens ? { max_tokens: maxTokens } : {})
       }),
       signal: controller.signal
     });

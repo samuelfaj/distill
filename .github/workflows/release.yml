@@ -25,6 +25,9 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Use npm with trusted publishing support
+        run: npm install -g npm@latest
+
       - name: Install workspace
         run: npm install
 

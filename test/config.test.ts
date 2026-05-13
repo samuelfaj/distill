@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  DEFAULT_AUTO_LEARN,
+  DEFAULT_AUTO_LEARN_SCOPE,
+  DEFAULT_AUTO_LEARN_SOURCE,
+  DEFAULT_AUTO_PROMOTE_SCOPES,
   DEFAULT_HOST,
+  DEFAULT_MAX_PROMPT_DSL_ENTRIES,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
   UsageError,
@@ -9,9 +14,24 @@ import {
   resolveRuntimeDefaults
 } from "../src/config";
 
+const defaultAutoLearnConfig = {
+  autoLearn: DEFAULT_AUTO_LEARN,
+  autoLearnScope: DEFAULT_AUTO_LEARN_SCOPE,
+  autoLearnSource: DEFAULT_AUTO_LEARN_SOURCE,
+  autoPromoteScopes: DEFAULT_AUTO_PROMOTE_SCOPES,
+  maxPromptDslEntries: DEFAULT_MAX_PROMPT_DSL_ENTRIES
+};
+
 describe("parseCommand", () => {
   it("parses no arguments as onboarding", () => {
     expect(parseCommand([], {}, {})).toEqual({ kind: "onboard" });
+  });
+
+  it("parses dsl commands", () => {
+    expect(parseCommand(["dsl", "show", "--scope", "global"], {}, {})).toEqual({
+      kind: "dsl",
+      args: ["show", "--scope", "global"]
+    });
   });
 
   it("parses defaults and joins the question", () => {
@@ -26,7 +46,8 @@ describe("parseCommand", () => {
         apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
         datasetEnabled: true,
-        datasetPath: undefined
+        datasetPath: undefined,
+        ...defaultAutoLearnConfig
       }
     });
   });
@@ -56,7 +77,8 @@ describe("parseCommand", () => {
         apiKey: "secret",
         timeoutMs: 10,
         datasetEnabled: true,
-        datasetPath: undefined
+        datasetPath: undefined,
+        ...defaultAutoLearnConfig
       }
     });
   });
@@ -73,7 +95,8 @@ describe("parseCommand", () => {
         apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
         datasetEnabled: true,
-        datasetPath: undefined
+        datasetPath: undefined,
+        ...defaultAutoLearnConfig
       }
     });
   });
@@ -90,7 +113,8 @@ describe("parseCommand", () => {
         apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
         datasetEnabled: true,
-        datasetPath: undefined
+        datasetPath: undefined,
+        ...defaultAutoLearnConfig
       }
     });
   });
@@ -118,7 +142,8 @@ describe("parseCommand", () => {
         apiKey: "saved-key",
         timeoutMs: 50,
         datasetEnabled: false,
-        datasetPath: "/tmp/distill.jsonl"
+        datasetPath: "/tmp/distill.jsonl",
+        ...defaultAutoLearnConfig
       }
     });
   });
@@ -130,9 +155,12 @@ describe("parseCommand", () => {
           DISTILL_MODEL: "env-model",
           DISTILL_HOST: "http://env.test",
           DISTILL_API_KEY: "env-key",
-          DISTILL_TIMEOUT_MS: "999",
-          DISTILL_DATASET_ENABLED: "false",
-          DISTILL_DATASET_PATH: "/tmp/env-distill.jsonl"
+      DISTILL_TIMEOUT_MS: "999",
+      DISTILL_DATASET_ENABLED: "false",
+      DISTILL_DATASET_PATH: "/tmp/env-distill.jsonl",
+      DISTILL_AUTO_LEARN: "false",
+      DISTILL_AUTO_PROMOTE_SCOPES: "false",
+      DISTILL_MAX_PROMPT_DSL_ENTRIES: "12"
         },
         {
           model: "saved-model",
@@ -149,7 +177,12 @@ describe("parseCommand", () => {
       apiKey: "env-key",
       timeoutMs: 999,
       datasetEnabled: false,
-      datasetPath: "/tmp/env-distill.jsonl"
+      datasetPath: "/tmp/env-distill.jsonl",
+      autoLearn: false,
+      autoLearnScope: "project",
+      autoLearnSource: "output",
+      autoPromoteScopes: false,
+      maxPromptDslEntries: 12
     });
   });
 
@@ -186,6 +219,24 @@ describe("parseCommand", () => {
       kind: "configSet",
       key: "dataset-path",
       value: "/tmp/distill.jsonl"
+    });
+
+    expect(parseCommand(["config", "auto-learn", "false"], {}, {})).toEqual({
+      kind: "configSet",
+      key: "auto-learn",
+      value: false
+    });
+
+    expect(parseCommand(["config", "auto-promote-scopes", "false"], {}, {})).toEqual({
+      kind: "configSet",
+      key: "auto-promote-scopes",
+      value: false
+    });
+
+    expect(parseCommand(["config", "max-prompt-dsl-entries", "12"], {}, {})).toEqual({
+      kind: "configSet",
+      key: "max-prompt-dsl-entries",
+      value: 12
     });
   });
 

@@ -16,6 +16,8 @@ Adopt the distill language structure and keep using it for the rest of the threa
 
 Talk with the user in distill language:
 
+- English only, unless user explicitly requests another output language
+- Military English baseline
 - short command lines
 - one idea per line
 - explicit constraints
@@ -26,6 +28,7 @@ Talk with the user in distill language:
 - no long prose unless user asks for explanation
 
 Compress meaning, not characters.
+Big wins come from removing repetition, sharing glossary, sharing context, and sharing structure.
 
 ## Thread Behavior
 
@@ -37,6 +40,66 @@ After `/distill` is invoked:
 - do not output a rewritten/compressed version of the user's latest prompt unless user explicitly asks to compress text
 - keep hidden chain-of-thought private; never reveal it
 - any visible reasoning or analysis summary must use distill language
+
+## Stable DSL
+
+Use labels when they reduce repeated structure:
+
+- `T` task
+- `C` context
+- `Do` actions
+- `No` constraints
+- `Pass` pass criteria
+- `Out` required output
+
+Built-in aliases:
+
+- `A` authentication or authorization
+- `B` backend
+- `F` frontend
+- `D` database
+- `E` end-to-end tests
+- `C` configuration
+- `O` documentation
+- `V` environment
+- `X` dependencies
+- `P` permissions
+- `U` user interface
+
+Built-in macros:
+
+- `1` add failing regression test first
+- `2` run relevant tests
+- `3` report summary, files, tests, and status
+- `4` review for bugs, regressions, security, and risks
+- `5` implement smallest safe fix
+- `6` validate with tests or checks
+- `7` commit and push changes
+- `8` create or update pull request
+- `9` release or publish flow
+- `0` exact raw output required
+
+Built-in defaults:
+
+- `N1` do not change frontend
+- `N2` do not change backend
+- `N3` do not change UI
+- `N4` no broad refactor
+- `N5` preserve unrelated user changes
+- `N6` interactive or TUI command
+
+Example:
+
+```text
+T auth-fix.
+1.
+B-only.
+N1.
+2.
+3.
+```
+
+Use DSL only when the user and agent share the glossary. If meaning may be ambiguous, use the full phrase.
 
 ## Good Response Forms
 
@@ -74,7 +137,7 @@ Tests: bun test test/cli-entry.test.ts PASS.
 Risk: not committed.
 ```
 
-## Alias Dict
+## Glossary And Memory
 
 Keep an internal alias dict per conversation. Do not create files.
 
@@ -96,20 +159,32 @@ Use aliases only when they stay obvious:
 When aliases help the user, output one compact line:
 
 ```text
-Dict: be=backend fe=frontend cfg=config
+Dict: B=backend F=frontend C=config
 ```
 
 Later additions:
 
 ```text
-Dict+: perm=authorization
+Dict+: P1=extra permission rule
 ```
 
-Avoid aliases for rare, short, temporary, or ambiguous terms. Avoid `auth` when `login` versus `perm` matters.
+Avoid aliases for rare, short, temporary, or ambiguous terms. Avoid new terms when `A` authentication versus `P` permissions would be unclear.
+
+Add learned aliases/macros only when likely to repeat.
+Prefer `Dict:` for active shared terms and `Dict+` for additions. Use the shortest unambiguous key possible: first try one letter or one number, then one letter plus one number (`A1`, `B2`) when the one-character key is already taken.
+
+```text
+Dict: B=backend F=frontend 1=failing-test-first
+Dict+: A1=authentication bug fix
+```
+
+Expire learned terms mentally if they stop appearing. A term should not become part of thread DSL unless it appears at least twice in a short window or the user explicitly approves it.
 
 ## Tool Calls
 
-CRITICAL: Pipe every non-interactive shell command through `distill` unless raw output is explicitly required.
+CRITICAL: Every non-interactive, non-TUI shell/tool command must pipe output through `distill` with an explicit prompt. Do not run plain shell commands when summarized output is enough.
+
+CRITICAL: Skip `| distill` only when exact raw output is required or when `distill` would break an interactive/TUI workflow.
 
 CRITICAL: Your prompt to `distill` must be fully explicit. State exactly what you want to know and exactly what the output must contain. If you want only filenames, say `Return only the filenames.` If you want JSON, say `Return valid JSON only.` Do not ask vague questions.
 

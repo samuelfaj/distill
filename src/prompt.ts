@@ -3,6 +3,10 @@ export interface PromptMessages {
   user: string;
 }
 
+export interface BatchPromptOptions {
+  dslMemory?: string;
+}
+
 const SAFETY_BIAS = [
   "SAFETY:",
   "When the question asks to classify risk, safety, or destructiveness",
@@ -144,9 +148,23 @@ export function fitInput(input: string, maxChars: number = MAX_INPUT_CHARS): str
   return `${head}\n... [${dropped} chars truncated] ...\n${tail}`;
 }
 
-export function buildBatchPrompt(question: string, input: string): PromptMessages {
+export function buildBatchPrompt(
+  question: string,
+  input: string,
+  options: BatchPromptOptions = {}
+): PromptMessages {
+  const dslRules = options.dslMemory
+    ? [
+        "Known /distill DSL memory:",
+        options.dslMemory,
+        "Use these aliases/macros/defaults only when they reduce repeated meaning.",
+        "Do not redefine known entries. Emit Dict+ only for genuinely reusable new terms.",
+        "When emitting Dict+, use the shortest unambiguous key: one letter or one number first, then one letter plus one number if needed."
+      ].join("\n")
+    : "";
+
   return {
-    system: `${COMMON_RULES}\n\n${FEW_SHOT}`,
+    system: [COMMON_RULES, dslRules, FEW_SHOT].filter(Boolean).join("\n\n"),
     user: `Command output:\n${fitInput(input)}\n\nQuestion: ${question}`
   };
 }
@@ -180,6 +198,25 @@ export function buildTranslatePrompt(text: string, language: string): PromptMess
       "/distill input:",
       fitInput(text, 4000)
     ].join("\n")
+  };
+}
+
+export function buildDslPromotionPrompt(entries: string): PromptMessages {
+  const system = [
+    "You review learned /distill DSL entries for scope promotion.",
+    "Return valid JSON only.",
+    "Input entries are project-scoped active learned aliases/macros/defaults.",
+    "Promote only generic, stable, non-sensitive operational language.",
+    "Reject private project names, people, secrets, IDs, paths, URLs, one-off terms,",
+    "or meanings that are too ambiguous outside the current project.",
+    "Schema: [{\"key\":\"KEY\",\"decision\":\"promote|keep|reject\",\"targetScope\":\"stack|global|project\",\"reason\":\"short reason\"}]",
+    "Use targetScope stack for stack-specific engineering shorthand.",
+    "Use targetScope global only for universal agent workflow shorthand."
+  ].join(" ");
+
+  return {
+    system,
+    user: ["Entries:", fitInput(entries, 4000)].join("\n")
   };
 }
 

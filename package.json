@@ -16,5 +16,5 @@
     "release:check": "bun run scripts/release-check.ts",
     "verify": "npm run test && npm run build && npm run release:check"
   },
-  "version": "1.4.2"
+  "version": "1.4.3"
 }

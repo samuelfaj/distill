@@ -1,6 +1,7 @@
 import type { RuntimeConfig } from "./config";
 import {
   buildBatchPrompt,
+  buildDslPromotionPrompt,
   buildTranslatePrompt,
   buildWatchPrompt,
   type PromptMessages
@@ -125,9 +126,19 @@ function summarize(
 export function summarizeBatch(
   config: RuntimeConfig,
   input: string,
+  optionsOrFetchImpl: { dslMemory?: string } | typeof fetch = {},
   fetchImpl?: typeof fetch
 ): Promise<string> {
-  return summarize(config, buildBatchPrompt(config.question, input), fetchImpl);
+  const options =
+    typeof optionsOrFetchImpl === "function" ? {} : optionsOrFetchImpl;
+  const resolvedFetchImpl =
+    typeof optionsOrFetchImpl === "function" ? optionsOrFetchImpl : fetchImpl;
+
+  return summarize(
+    config,
+    buildBatchPrompt(config.question, input, options),
+    resolvedFetchImpl
+  );
 }
 
 export function summarizeTranslate(
@@ -150,4 +161,12 @@ export function summarizeWatch(
     buildWatchPrompt(config.question, previousCycle, currentCycle),
     fetchImpl
   );
+}
+
+export function summarizeDslPromotion(
+  config: RuntimeConfig,
+  entries: string,
+  fetchImpl?: typeof fetch
+): Promise<string> {
+  return summarize(config, buildDslPromotionPrompt(entries), fetchImpl);
 }

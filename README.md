@@ -22,7 +22,11 @@ Run onboarding:
 distill
 ```
 
-After onboarding you can use `/distill` skill in Claude / Codex or pipe command output into `distill`:
+After onboarding you can use `/distill` in Claude/Codex to make the agent keep talking in distill language for the whole thread.
+
+It should not return your prompt rewritten. It should adopt the language structure and keep using it.
+
+You can also pipe command output into `distill`:
 
 ```bash
 bun test 2>&1 | distill "Did tests pass? Return PASS or FAIL, followed by failing test names if any."

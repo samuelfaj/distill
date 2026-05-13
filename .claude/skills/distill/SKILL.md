@@ -1,26 +1,111 @@
 ---
 name: distill
-description: Compress prompts into Military English using short command lines, explicit constraints, pass criteria, and a per-conversation alias dict.
+description: Conversation mode that makes the LLM speak in distill compressed language for the whole thread.
 ---
 
 # Distill
 
-Use when user invokes `/distill` or wants fewer tokens in prompts, task specs, commands, or agent instructions.
+Use when user invokes `/distill` or asks to use distill language.
 
-## Rule
+This is a conversation style mode, not a prompt-compression request.
+
+Do not return the user's prompt compressed as an artifact.
+Adopt the distill language structure and keep using it for the rest of the thread.
+
+## Core Rule
+
+Talk with the user in distill language:
+
+- short command lines
+- one idea per line
+- explicit constraints
+- explicit pass criteria
+- exact paths, commands, env vars, IDs when useful
+- no filler
+- no cryptic code
+- no long prose unless user asks for explanation
 
 Compress meaning, not characters.
 
-Target: shortest prompt where correct behavior stays obvious.
+## Thread Behavior
 
-Use Military English:
+After `/distill` is invoked:
 
-- short commands
-- one idea per line
-- common words
-- explicit constraints
-- explicit pass criteria
-- no cryptic code
+- keep answering in distill language until user says normal mode or stop distill
+- use distill structure for status updates, plans, summaries, reviews, and final answers
+- do not wrap every answer in `Best`, `More aggressive`, or `Tradeoff`
+- do not output a rewritten/compressed version of the user's latest prompt unless user explicitly asks to compress text
+- keep hidden chain-of-thought private; never reveal it
+- any visible reasoning or analysis summary must use distill language
+
+## Good Response Forms
+
+Tiny status:
+
+```text
+Done.
+Changed: src/onboarding.ts, test/cli-entry.test.ts.
+Verify: bun test PASS.
+```
+
+Plan:
+
+```text
+T: fix onboarding distill mode.
+Do: inspect skill, patch wording, sync copies, run tests.
+No: unrelated refactor.
+Pass: /distill changes conversation style, not prompt output.
+Out: files, tests, risks.
+```
+
+Need info:
+
+```text
+Need: target repo or exact file.
+Blocked: cannot choose safe path from prompt alone.
+```
+
+Review/result:
+
+```text
+Result: PASS.
+Changed: skill now activates thread language mode.
+Tests: bun test test/cli-entry.test.ts PASS.
+Risk: not committed.
+```
+
+## Alias Dict
+
+Keep an internal alias dict per conversation. Do not create files.
+
+Use aliases only when they stay obvious:
+
+- `be` backend
+- `fe` frontend
+- `db` database
+- `e2e` end-to-end
+- `cfg` config
+- `docs` documentation
+- `env` environment
+- `deps` dependencies
+- `repo` repository
+- `impl` implementation
+- `ref` refactor/reference
+- `err` error
+
+When aliases help the user, output one compact line:
+
+```text
+Dict: be=backend fe=frontend cfg=config
+```
+
+Later additions:
+
+```text
+Dict+: perm=authorization
+```
+
+Avoid aliases for rare, short, temporary, or ambiguous terms. Avoid `auth` when `login` versus `perm` matters.
 
 ## Tool Calls
 
@@ -52,61 +137,6 @@ You may skip `distill` only in these cases:
 
 CRITICAL: Wait for `distill` to finish before continuing.
 
-## Default Output
-
-When compressing:
-
-```text
-Best:
-<compressed prompt>
-More aggressive:
-<shorter prompt>
-Tradeoff:
-<brief risk>
-```
-
-If user asks max compression or output only, return only the compressed prompt.
-
-## Conversation Dict
-
-Keep an internal dict per conversation. Do not create files.
-
-On first skill use in a conversation:
-
-1. infer likely repeated terms from user prompt and visible context
-2. define short aliases for repeated or likely repeated terms
-3. prefer common aliases first: `be`, `fe`, `db`, `e2e`, `cfg`, `docs`, `env`, `deps`, `repo`, `impl`, `ref`, `err`
-4. add custom aliases only for long stable terms
-5. use aliases only after they are defined
-
-When aliases help the user or future turns, output one compact line:
-
-```text
-Dict: api=backend-service ui=web-app perm=authorization
-```
-
-Later additions:
-
-```text
-Dict+: pay=payment retry
-```
-
-Avoid aliases for rare, short, temporary, or ambiguous terms. Avoid `auth` when `login` versus `perm` matters.
-
-## Compression Steps
-
-1. Find main task.
-2. Keep needed context.
-3. Keep actions.
-4. Keep constraints.
-5. Keep pass criteria.
-6. Keep required output.
-7. Remove filler.
-8. Split into short commands.
-9. Use dict aliases only when clear.
-
-Remove filler: please, carefully, make sure, try to, generally, successfully, correctly, as needed.
-
 ## Keep Explicit
 
 - security
@@ -120,56 +150,15 @@ Remove filler: please, carefully, make sure, try to, generally, successfully, co
 - test expectations
 - exact paths, endpoints, commands, env vars, IDs
 
-## Good Forms
-
-Default:
-
-```text
-Fix auth bug.
-Add failing test first.
-Backend only.
-Do not change frontend.
-Run tests.
-Report files and result.
-```
-
-Complex task:
-
-```text
-T: fix auth bug
-C: backend rejects valid user
-Do: repro, add failing test, patch backend, run tests
-No: frontend change, broad refactor
-Pass: valid user allowed, tests pass
-Out: summary, files, tests
-```
-
-Use labels only when they reduce ambiguity. Do not label tiny tasks.
-
-Bad:
-
-```text
-fix auth no fe only be test pass
-```
-
-Better:
-
-```text
-Fix auth bug.
-Backend only.
-No frontend change.
-Run tests.
-```
-
 ## Quality Gate
 
 Before returning, check:
 
-- Can agent execute without guessing?
+- Did you answer the user instead of rewriting their prompt?
 - Are constraints explicit?
-- Is success defined?
+- Is success defined when relevant?
 - Did compression remove meaning?
 - Are aliases obvious or defined?
-- Is shorter text still safe?
+- Is the answer short but still safe?
 
 If not, use more words.

@@ -9,9 +9,16 @@ import { writePersistedConfig } from "./user-config";
 
 const AGENT_INSTRUCTIONS = [
   "<!-- distill skill: begin -->",
-  "Use `/distill` whenever you need to compress prompts, task specs, commands, agent instructions, or shell-command output for another LLM.",
+  "Always communicate with the user in `/distill` compressed language: short command lines, explicit constraints, explicit pass criteria, and no filler.",
+  "Do not return a rewritten/compressed copy of the user's prompt. Adopt `/distill` as the conversation language and keep using it throughout the thread.",
+  "Use the same `/distill` compressed structure for visible planning, status, analysis summaries, and any exposed reasoning. Keep hidden chain-of-thought private; never reveal it.",
+  "When the user asks for normal prose, expand only as much as needed, then return to `/distill` compressed style.",
   "When running non-interactive shell commands, pipe output through `distill` unless exact raw output is required or `distill` would break an interactive/TUI workflow.",
   "Prompts passed to `distill` must be explicit: say exactly what to extract and exactly what format to return.",
+  "Examples:",
+  'bun test 2>&1 | distill "Did tests pass? Return PASS or FAIL, followed by failing test names if any."',
+  'git diff | distill "What changed? Return only files changed and one-line summary for each."',
+  'terraform plan 2>&1 | distill "Is this safe? Return SAFE, REVIEW, or UNSAFE, followed by risky changes."',
   "Wait for `distill` to finish before continuing.",
   "<!-- distill skill: end -->"
 ].join("\n");
@@ -67,7 +74,7 @@ function parseInstallChoice(input: string): boolean {
   return !["n", "no", "false", "0"].includes(normalized);
 }
 
-async function appendInstructionsOnce(filePath: string): Promise<void> {
+async function upsertInstructions(filePath: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
 
   let current = "";
@@ -80,7 +87,12 @@ async function appendInstructionsOnce(filePath: string): Promise<void> {
     }
   }
 
-  if (current.includes("<!-- distill skill: begin -->")) {
+  const blockPattern =
+    /(?:\n{0,2})?<!-- distill skill: begin -->[\s\S]*?<!-- distill skill: end -->(?:\n{0,2})?/;
+
+  if (blockPattern.test(current)) {
+    const next = current.replace(blockPattern, `\n\n${AGENT_INSTRUCTIONS}\n\n`).trim();
+    await writeFile(filePath, `${next}\n`);
     return;
   }
 
@@ -102,8 +114,8 @@ async function installSkill(env: NodeJS.ProcessEnv): Promise<void> {
   await rm(claudeTarget, { recursive: true, force: true });
   await cp(codexSource, codexTarget, { recursive: true });
   await cp(claudeSource, claudeTarget, { recursive: true });
-  await appendInstructionsOnce(path.join(home, ".codex", "AGENTS.md"));
-  await appendInstructionsOnce(path.join(home, ".claude", "CLAUDE.md"));
+  await upsertInstructions(path.join(home, ".codex", "AGENTS.md"));
+  await upsertInstructions(path.join(home, ".claude", "CLAUDE.md"));
 }
 
 export async function runOnboarding({

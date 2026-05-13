@@ -118,8 +118,20 @@ describe("cli entrypoint", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "distill-onboarding-"));
     const home = path.join(dir, "home");
     const configPath = path.join(dir, "config.json");
+    const oldBlock = [
+      "keep before",
+      "<!-- distill skill: begin -->",
+      "old distill instructions",
+      "<!-- distill skill: end -->",
+      "keep after"
+    ].join("\n");
 
     try {
+      await mkdir(path.join(home, ".codex"), { recursive: true });
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+      await writeFile(path.join(home, ".codex", "AGENTS.md"), oldBlock);
+      await writeFile(path.join(home, ".claude", "CLAUDE.md"), oldBlock);
+
       const result = spawnSync("bun", ["run", cli], {
         cwd: root,
         encoding: "utf8",
@@ -159,12 +171,40 @@ describe("cli entrypoint", () => {
           "utf8"
         )
       ).toContain("name: distill");
-      expect(await readFile(path.join(home, ".codex", "AGENTS.md"), "utf8")).toContain(
-        "Use `/distill` whenever"
+      const codexInstructions = await readFile(
+        path.join(home, ".codex", "AGENTS.md"),
+        "utf8"
       );
-      expect(await readFile(path.join(home, ".claude", "CLAUDE.md"), "utf8")).toContain(
-        "Use `/distill` whenever"
+      const claudeInstructions = await readFile(
+        path.join(home, ".claude", "CLAUDE.md"),
+        "utf8"
       );
+
+      for (const instructions of [codexInstructions, claudeInstructions]) {
+        expect(instructions).toContain("keep before");
+        expect(instructions).toContain("keep after");
+        expect(instructions).not.toContain("old distill instructions");
+        expect(
+          instructions.match(/<!-- distill skill: begin -->/g) ?? []
+        ).toHaveLength(1);
+        expect(instructions).toContain("Always communicate with the user in `/distill`");
+        expect(instructions).toContain(
+          "Do not return a rewritten/compressed copy of the user's prompt"
+        );
+        expect(instructions).toContain("Keep hidden chain-of-thought private");
+        expect(instructions).toContain(
+          "When running non-interactive shell commands, pipe output through `distill`"
+        );
+        expect(instructions).toContain(
+          'bun test 2>&1 | distill "Did tests pass? Return PASS or FAIL'
+        );
+        expect(instructions).toContain(
+          'git diff | distill "What changed? Return only files changed'
+        );
+        expect(instructions).toContain(
+          'terraform plan 2>&1 | distill "Is this safe? Return SAFE, REVIEW, or UNSAFE'
+        );
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

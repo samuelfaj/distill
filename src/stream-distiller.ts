@@ -49,6 +49,7 @@ export interface DistillSessionOptions {
   progress?: Pick<NodeJS.WriteStream, "write">;
   onProgressPhase?: (phase: ProgressPhase) => void;
   onProgressStop?: () => void;
+  onBatchOutput?: (output: string) => Promise<void>;
   idleMs?: number;
   interactiveGapMs?: number;
   progressFrameMs?: number;
@@ -64,6 +65,7 @@ export class DistillSession {
   private readonly progress: Pick<NodeJS.WriteStream, "write"> | null;
   private readonly onProgressPhase: ((phase: ProgressPhase) => void) | null;
   private readonly onProgressStop: (() => void) | null;
+  private readonly onBatchOutput: ((output: string) => Promise<void>) | null;
   private readonly idleMs: number;
   private readonly interactiveGapMs: number;
   private readonly progressFrameMs: number;
@@ -95,6 +97,7 @@ export class DistillSession {
     this.progress = options.progress ?? null;
     this.onProgressPhase = options.onProgressPhase ?? null;
     this.onProgressStop = options.onProgressStop ?? null;
+    this.onBatchOutput = options.onBatchOutput ?? null;
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
     this.interactiveGapMs = options.interactiveGapMs ?? DEFAULT_INTERACTIVE_GAP_MS;
     this.progressFrameMs = options.progressFrameMs ?? DEFAULT_PROGRESS_FRAME_MS;
@@ -163,9 +166,22 @@ export class DistillSession {
       this.stopProgress(true);
       this.stdout.write(ensureTrailingNewline(output));
       await this.captureDatasetRecord(normalizedInput, output);
+      await this.captureDslLearning(output);
     } catch {
       this.stopProgress(true);
       this.stdout.write(Buffer.concat(this.rawBuffers));
+    }
+  }
+
+  private async captureDslLearning(output: string): Promise<void> {
+    if (!this.onBatchOutput || !output) {
+      return;
+    }
+
+    try {
+      await this.onBatchOutput(output);
+    } catch {
+      this.stderr?.write("distill: failed to update DSL memory.\n");
     }
   }
 

@@ -289,6 +289,59 @@ describe("distill end-to-end", () => {
     }
   });
 
+  it("auto-learns Dict+ output and injects active DSL memory into later prompts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-dsl-"));
+    const env = {
+      DISTILL_CONFIG_PATH: path.join(dir, "config.json")
+    };
+    const fake = await createFakeChatProvider((_body, index) =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  index < 2
+                    ? "Out: done\nDict+: AUTH=authentication fix"
+                    : "Out: used A1"
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      )
+    );
+
+    try {
+      const first = await runLauncher(["summarize"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: "auth failed once\n" }]
+      });
+      const second = await runLauncher(["summarize"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: "auth failed twice\n" }]
+      });
+      const shown = await runLauncher(["dsl", "show", "--scope", "project"], {
+        env
+      });
+      const third = await runLauncher(["summarize"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: "auth failed later\n" }]
+      });
+      const thirdPrompt = JSON.stringify(fake.requests[2]);
+
+      expect(first.stdout).toContain("Dict+: AUTH=authentication fix");
+      expect(second.stdout).toContain("Dict+: AUTH=authentication fix");
+      expect(shown.stdout).toContain("A1\tmacro\tactive\tauthentication fix");
+      expect(third.code).toBe(0);
+      expect(thirdPrompt).toContain("Known /distill DSL memory");
+      expect(thirdPrompt).toContain("A1 = authentication fix");
+    } finally {
+      fake.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("translates /distill output without requiring stdin", async () => {
     const fake = await createFakeChatProvider((_body, _index) =>
       new Response(

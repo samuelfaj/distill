@@ -40,5 +40,4 @@ rg -n "terminal|PERMISSION|permission|Permissions|Plan|full access|default" desk
 
 - **Before:** [7648 tokens 30592 characters 10218 words](./examples/1/BEFORE.md)
 - **After:** [99 tokens 396 characters 57 words](./examples/1/AFTER.md)
-
-**🔥 Saved ~98.7% tokens**
+- **🔥 Saved ~98.7% tokens**

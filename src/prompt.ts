@@ -7,6 +7,15 @@ export interface BatchPromptOptions {
   dslMemory?: string;
 }
 
+export interface ThreadLearnPromptCandidate {
+  key: string;
+  meaning: string;
+  kind: "alias" | "macro" | "default";
+  scope: "global" | "stack" | "project";
+  occurrenceCount: number;
+  source: string;
+}
+
 const SAFETY_BIAS = [
   "SAFETY:",
   "When the question asks to classify risk, safety, or destructiveness",
@@ -217,6 +226,40 @@ export function buildDslPromotionPrompt(entries: string): PromptMessages {
   return {
     system,
     user: ["Entries:", fitInput(entries, 4000)].join("\n")
+  };
+}
+
+export function buildThreadLearnPrompt(
+  transcript: string,
+  candidates: ThreadLearnPromptCandidate[],
+  dslMemory: string
+): PromptMessages {
+  const system = [
+    "You review /distill DSL candidates learned from a whole agent thread.",
+    "Return valid JSON only.",
+    "Input candidates were extracted deterministically from repeated thread usage.",
+    "Keep only stable, reusable operational language that will reduce future repetition.",
+    "Reject secrets, tokens, emails, URLs, file paths, IDs, hashes, personal names,",
+    "package names, project-private names, one-off wording, and ambiguous meanings.",
+    "Prefer the shortest unambiguous key: one letter or one number first, then letter+number.",
+    "Do not duplicate existing DSL memory. Do not overwrite pinned meanings.",
+    "Use scope project unless the candidate is clearly generic for the requested scope.",
+    "Schema: [{\"key\":\"A\",\"meaning\":\"short meaning\",\"kind\":\"alias|macro|default\",\"scope\":\"project|stack|global\",\"reason\":\"short reason\",\"confidence\":0.0}]",
+    "Use confidence 0.65 or higher only when the candidate is safe to persist."
+  ].join(" ");
+
+  return {
+    system,
+    user: [
+      "Existing active DSL memory:",
+      dslMemory || "(empty)",
+      "",
+      "Deterministic candidates:",
+      JSON.stringify(candidates, null, 2),
+      "",
+      "Thread transcript:",
+      fitInput(transcript, 10000)
+    ].join("\n")
   };
 }
 

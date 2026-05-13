@@ -41,6 +41,8 @@ interface DslCommandContext {
   cwd: string;
   now?: Date;
   promotionReviewer?: (entries: DslEntry[]) => Promise<DslPromotionReview[]>;
+  threadLearnReviewer?: (request: DslThreadLearnReviewRequest) => Promise<DslThreadLearnReview[]>;
+  readStdin?: () => Promise<string>;
 }
 
 export interface DslPromotionReview {
@@ -48,6 +50,32 @@ export interface DslPromotionReview {
   decision: "promote" | "keep" | "reject";
   targetScope: DslScope;
   reason: string;
+}
+
+export interface DslThreadLearnCandidate {
+  key: string;
+  meaning: string;
+  kind: DslKind;
+  scope: DslScope;
+  occurrenceCount: number;
+  source: "dict" | "phrase" | "command";
+}
+
+export interface DslThreadLearnReview {
+  key: string;
+  meaning: string;
+  kind: DslKind;
+  scope: DslScope;
+  reason: string;
+  confidence: number;
+}
+
+export interface DslThreadLearnReviewRequest {
+  transcript: string;
+  candidates: DslThreadLearnCandidate[];
+  dslMemory: DslEntry[];
+  scope: DslScope;
+  stack?: string;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -204,6 +232,7 @@ function parseFlags(args: string[]): {
   stale: boolean;
   candidates: boolean;
   dryRun: boolean;
+  stdin: boolean;
 } {
   const positional: string[] = [];
   let scope: DslScope = "project";
@@ -212,6 +241,7 @@ function parseFlags(args: string[]): {
   let stale = false;
   let candidates = false;
   let dryRun = false;
+  let stdin = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -247,6 +277,11 @@ function parseFlags(args: string[]): {
       continue;
     }
 
+    if (arg === "--stdin") {
+      stdin = true;
+      continue;
+    }
+
     if (arg.startsWith("-")) {
       throw new UsageError(`Unknown DSL flag: ${arg}`);
     }
@@ -254,7 +289,7 @@ function parseFlags(args: string[]): {
     positional.push(arg);
   }
 
-  return { positional, scope, scopeProvided, stack, stale, candidates, dryRun };
+  return { positional, scope, scopeProvided, stack, stale, candidates, dryRun, stdin };
 }
 
 function gcMemory(memory: DslMemoryFile, now: Date): { memory: DslMemoryFile; changed: boolean } {
@@ -591,6 +626,273 @@ function compactLearnedEntries(
   return compacted;
 }
 
+const THREAD_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "that",
+  "this",
+  "from",
+  "into",
+  "will",
+  "must",
+  "should",
+  "when",
+  "then",
+  "than",
+  "only",
+  "using",
+  "return",
+  "output",
+  "user",
+  "thread",
+  "please",
+  "implement",
+  "plan"
+]);
+
+function normalizeMeaning(input: string): string {
+  return input
+    .trim()
+    .replace(/[`"'*_>#()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:!?]+$/g, "")
+    .toLowerCase();
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function countMeaningOccurrences(transcript: string, meaning: string): number {
+  const normalizedTranscript = normalizeMeaning(transcript);
+  const normalizedMeaning = normalizeMeaning(meaning);
+
+  if (!normalizedMeaning) {
+    return 0;
+  }
+
+  return normalizedTranscript.match(new RegExp(`\\b${escapeRegExp(normalizedMeaning)}\\b`, "g"))?.length ?? 0;
+}
+
+function looksPrivateOrNoisy(input: string): boolean {
+  return (
+    containsSensitiveValue(input) ||
+    /[/\\]/.test(input) ||
+    /@\w/.test(input) ||
+    /\b[a-f0-9]{12,}\b/i.test(input) ||
+    /\b\d{4,}\b/.test(input) ||
+    /\b(samuel|samuelfaj|fajreldines)\b/i.test(input) ||
+    /\b[A-Z][a-z]+ [A-Z][a-z]+\b/.test(input)
+  );
+}
+
+function isReusableThreadMeaning(meaning: string, occurrenceCount: number): boolean {
+  const normalized = normalizeMeaning(meaning);
+
+  if (occurrenceCount < 2 || normalized.length < 3 || normalized.length > 120) {
+    return false;
+  }
+
+  if (looksPrivateOrNoisy(meaning)) {
+    return false;
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  if (words.length === 1 && words[0].length < 4) {
+    return false;
+  }
+
+  if (words.every((word) => THREAD_STOP_WORDS.has(word))) {
+    return false;
+  }
+
+  return true;
+}
+
+function candidateKeyFromMeaning(meaning: string): string {
+  const normalized = normalizeMeaning(meaning);
+  const important = normalized
+    .split(/\s+/)
+    .filter((word) => word && !THREAD_STOP_WORDS.has(word));
+
+  return (important[0] ?? normalized)[0]?.toUpperCase() ?? "Z";
+}
+
+function addThreadCandidate(
+  byMeaning: Map<string, DslThreadLearnCandidate>,
+  scope: DslScope,
+  kind: DslKind,
+  meaning: string,
+  occurrenceCount: number,
+  source: DslThreadLearnCandidate["source"],
+  rawKey?: string
+): void {
+  const normalized = normalizeMeaning(meaning);
+
+  if (!isReusableThreadMeaning(normalized, occurrenceCount)) {
+    return;
+  }
+
+  const existing = byMeaning.get(normalized);
+
+  if (existing && existing.occurrenceCount >= occurrenceCount) {
+    return;
+  }
+
+  byMeaning.set(normalized, {
+    key: rawKey ? normalizeKey(rawKey) : candidateKeyFromMeaning(normalized),
+    meaning: normalized,
+    kind,
+    scope,
+    occurrenceCount,
+    source
+  });
+}
+
+function extractRepeatedLineCommands(transcript: string): Array<{ meaning: string; count: number }> {
+  const counts = new Map<string, number>();
+
+  for (const rawLine of transcript.split(/\r?\n/)) {
+    const line = rawLine
+      .trim()
+      .replace(/^\$+\s*/, "")
+      .replace(/^>\s*/, "");
+
+    if (!line || line.length > 120) {
+      continue;
+    }
+
+    if (!/\b(bun|npm|pnpm|yarn|git|gh|glab|terraform|distill|pytest|cargo|go|swift|xcodebuild)\b/.test(line)) {
+      continue;
+    }
+
+    if (looksPrivateOrNoisy(line)) {
+      continue;
+    }
+
+    const normalized = normalizeMeaning(line);
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count >= 2)
+    .map(([meaning, count]) => ({ meaning, count }));
+}
+
+function extractRepeatedPhrases(transcript: string): Array<{ meaning: string; count: number }> {
+  const normalized = normalizeMeaning(transcript);
+  const words = normalized.split(/\s+/).filter((word) => /^[a-z][a-z0-9-]{2,}$/.test(word));
+  const counts = new Map<string, number>();
+
+  for (let size = 2; size <= 4; size += 1) {
+    for (let index = 0; index <= words.length - size; index += 1) {
+      const phraseWords = words.slice(index, index + size);
+
+      if (phraseWords.every((word) => THREAD_STOP_WORDS.has(word))) {
+        continue;
+      }
+
+      if (phraseWords.some((word) => word.length > 40)) {
+        continue;
+      }
+
+      const phrase = phraseWords.join(" ");
+      counts.set(phrase, (counts.get(phrase) ?? 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .filter(([meaning, count]) => isReusableThreadMeaning(meaning, count))
+    .sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)
+    .slice(0, 40)
+    .map(([meaning, count]) => ({ meaning, count }));
+}
+
+export function extractThreadLearnCandidates(
+  transcript: string,
+  scope: DslScope
+): DslThreadLearnCandidate[] {
+  const byMeaning = new Map<string, DslThreadLearnCandidate>();
+
+  for (const entry of parseDictEntries(transcript)) {
+    const count = Math.max(
+      countMeaningOccurrences(transcript, entry.meaning),
+      countMeaningOccurrences(transcript, entry.key)
+    );
+    addThreadCandidate(byMeaning, scope, entry.kind, entry.meaning, count, "dict", entry.key);
+  }
+
+  for (const command of extractRepeatedLineCommands(transcript)) {
+    addThreadCandidate(byMeaning, scope, "macro", command.meaning, command.count, "command");
+  }
+
+  for (const phrase of extractRepeatedPhrases(transcript)) {
+    addThreadCandidate(
+      byMeaning,
+      scope,
+      inferKind(candidateKeyFromMeaning(phrase.meaning), phrase.meaning),
+      phrase.meaning,
+      phrase.count,
+      "phrase"
+    );
+  }
+
+  return [...byMeaning.values()]
+    .sort((a, b) => b.occurrenceCount - a.occurrenceCount || a.meaning.length - b.meaning.length)
+    .slice(0, 30);
+}
+
+function deterministicThreadReviews(
+  candidates: DslThreadLearnCandidate[]
+): DslThreadLearnReview[] {
+  return candidates.map((candidate) => ({
+    key: candidate.key,
+    meaning: candidate.meaning,
+    kind: candidate.kind,
+    scope: candidate.scope,
+    reason: `${candidate.source} repeated ${candidate.occurrenceCount} times`,
+    confidence: 0.7
+  }));
+}
+
+function validThreadReview(
+  review: DslThreadLearnReview,
+  targetScope: DslScope
+): DslThreadLearnReview | undefined {
+  if (!["alias", "macro", "default"].includes(review.kind)) {
+    return undefined;
+  }
+
+  if (!["project", "stack", "global"].includes(review.scope) || review.scope !== targetScope) {
+    return undefined;
+  }
+
+  const confidence = Number(review.confidence);
+
+  if (!Number.isFinite(confidence) || confidence < 0.65) {
+    return undefined;
+  }
+
+  const key = normalizeKey(review.key);
+  const meaning = normalizeMeaning(review.meaning);
+
+  if (!isReusableThreadMeaning(meaning, 2)) {
+    return undefined;
+  }
+
+  return {
+    key,
+    meaning,
+    kind: review.kind,
+    scope: review.scope,
+    reason: String(review.reason ?? "").slice(0, 160),
+    confidence
+  };
+}
+
 export async function seedGlobalDslMemory(
   env: NodeJS.ProcessEnv,
   now: Date = new Date()
@@ -713,6 +1015,137 @@ export async function learnFromDistillOutput(
           env,
           cwd,
           "project",
+          options.stack,
+          entry.kind,
+          entry.key,
+          entry.meaning,
+          now
+        )
+      ).trim()
+    );
+  }
+
+  return `${results.join("\n")}\n`;
+}
+
+export async function learnFromThreadTranscript(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  transcript: string,
+  options: {
+    scope?: DslScope;
+    dryRun?: boolean;
+    stack?: string;
+    now?: Date;
+    reviewer?: (request: DslThreadLearnReviewRequest) => Promise<DslThreadLearnReview[]>;
+  } = {}
+): Promise<string> {
+  const now = options.now ?? new Date();
+  const scope = options.scope ?? "project";
+
+  if (!transcript.trim()) {
+    throw new UsageError("DSL learn-thread requires non-empty stdin.");
+  }
+
+  const extracted = extractThreadLearnCandidates(transcript, scope);
+  const mergedMemory = await readMergedDslMemory(env, cwd, options.stack, now);
+  const { memory: targetMemory } = await readScopedMemory(
+    env,
+    scope,
+    cwd,
+    options.stack,
+    now
+  );
+  const allExisting = [...mergedMemory, ...targetMemory.entries];
+  const compacted = compactLearnedEntries(extracted, allExisting).map((entry) => {
+    const source = extracted.find((candidate) => candidate.meaning === entry.meaning);
+    return {
+      ...entry,
+      scope,
+      occurrenceCount: source?.occurrenceCount ?? 2,
+      source: source?.source ?? "phrase"
+    } satisfies DslThreadLearnCandidate;
+  });
+
+  if (compacted.length === 0) {
+    return `${options.dryRun ? "would learn-thread" : "learn-thread"} 0 entries\n`;
+  }
+
+  let reviewed = deterministicThreadReviews(compacted);
+
+  if (options.reviewer) {
+    try {
+      reviewed = await options.reviewer({
+        transcript,
+        candidates: compacted,
+        dslMemory: mergedMemory,
+        scope,
+        stack: options.stack
+      });
+    } catch {
+      reviewed = deterministicThreadReviews(compacted);
+    }
+  }
+
+  const pinnedKeys = new Set(
+    allExisting
+      .filter((entry) => entry.status === "pinned" || entry.builtin)
+      .map((entry) => entry.key)
+  );
+  const approvedByMeaning = new Map<string, DslThreadLearnReview>();
+
+  for (const review of reviewed) {
+    const valid = validThreadReview(review, scope);
+
+    if (!valid || pinnedKeys.has(valid.key)) {
+      continue;
+    }
+
+    if (!extracted.some((candidate) => candidate.meaning === valid.meaning)) {
+      continue;
+    }
+
+    approvedByMeaning.set(valid.meaning, valid);
+  }
+
+  const approved = compactLearnedEntries(
+    [...approvedByMeaning.values()].map((entry) => ({
+      key: entry.key,
+      meaning: entry.meaning,
+      kind: entry.kind
+    })),
+    allExisting
+  )
+    .filter((entry) => !pinnedKeys.has(entry.key))
+    .map((entry) => ({
+      ...entry,
+      scope,
+      reason: approvedByMeaning.get(entry.meaning)?.reason ?? "accepted",
+      confidence: approvedByMeaning.get(entry.meaning)?.confidence ?? 0.7
+    }));
+
+  if (approved.length === 0) {
+    return `${options.dryRun ? "would learn-thread" : "learn-thread"} 0 entries\n`;
+  }
+
+  if (options.dryRun) {
+    return `would learn-thread ${approved.length} entries in ${scope}\n${approved
+      .map(
+        (entry) =>
+          `${entry.key}\t${entry.kind}\t${entry.scope}\t${entry.confidence.toFixed(2)}\t${entry.meaning}\t${entry.reason}`
+      )
+      .join("\n")}\n`;
+  }
+
+  const results: string[] = [];
+
+  for (const entry of approved) {
+    results.push(
+      (
+        await addEntry(
+          env,
+          cwd,
+          scope,
           options.stack,
           entry.kind,
           entry.key,
@@ -1074,6 +1507,24 @@ export async function runDslCommand(
     });
   }
 
+  if (action === "learn-thread") {
+    if (!parsed.stdin) {
+      throw new UsageError("DSL learn-thread requires --stdin.");
+    }
+
+    if (!context.readStdin) {
+      throw new UsageError("DSL learn-thread cannot read stdin in this context.");
+    }
+
+    return learnFromThreadTranscript(context.env, context.cwd, await context.readStdin(), {
+      scope: parsed.scope,
+      dryRun: parsed.dryRun,
+      stack: parsed.stack,
+      now,
+      reviewer: context.threadLearnReviewer
+    });
+  }
+
   if (action === "promote") {
     return promoteMemory(context, parsed.stack, parsed.dryRun, now);
   }
@@ -1082,5 +1533,7 @@ export async function runDslCommand(
     return resetMemory(context.env, context.cwd, parsed.scope, parsed.stack);
   }
 
-  throw new UsageError("DSL command must be show, add, pin, learn, promote, prune, or reset.");
+  throw new UsageError(
+    "DSL command must be show, add, pin, learn, learn-thread, promote, prune, or reset."
+  );
 }

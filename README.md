@@ -39,6 +39,7 @@ Manage DSL memory:
 distill dsl show
 distill dsl show --candidates
 distill dsl learn --dry-run "Dict+: A1=authentication fix"
+distill dsl learn-thread --stdin --dry-run < transcript.txt
 distill dsl promote --dry-run
 distill dsl add alias A1 "authentication bug fix" --scope project
 distill dsl add macro 1 "add failing regression test first" --scope global
@@ -47,6 +48,8 @@ distill dsl prune --dry-run
 ```
 
 Normal `distill` runs load only compact active DSL memory into the prompt. If the model emits reusable `Dict+` entries, `distill` learns them as project candidates using the shortest available key, promotes them after repeated use, and keeps stack/global promotion gated by `distill dsl promote`.
+
+At thread end, export or pipe the transcript through `distill dsl learn-thread --stdin`. It extracts repeated workflow language, asks the configured reviewer model for strict JSON, rejects sensitive/noisy terms, and saves approved entries as candidates.
 
 You can also pipe command output into `distill`:
 

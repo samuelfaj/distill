@@ -343,6 +343,74 @@ describe("distill end-to-end", () => {
     }
   });
 
+  it("learns DSL candidates from a thread transcript through the reviewer", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-thread-dsl-"));
+    const env = {
+      DISTILL_CONFIG_PATH: path.join(dir, "config.json")
+    };
+    const fake = await createFakeChatProvider((body) => {
+      const prompt = JSON.stringify(body);
+
+      expect(prompt).toContain("Deterministic candidates");
+      expect(prompt).toContain("Thread transcript");
+      expect(prompt).toContain("release flow");
+
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify([
+                  {
+                    key: "R",
+                    meaning: "release flow",
+                    kind: "macro",
+                    scope: "project",
+                    reason: "repeated workflow",
+                    confidence: 0.9
+                  },
+                  {
+                    key: "S",
+                    meaning: "secret token value",
+                    kind: "alias",
+                    scope: "project",
+                    reason: "sensitive",
+                    confidence: 0.99
+                  }
+                ])
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+
+    try {
+      const transcript = [
+        "release flow needs npm publish",
+        "release flow needs github release",
+        "secret token value secret token value"
+      ].join("\n");
+      const result = await runLauncher(["dsl", "learn-thread", "--stdin"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: transcript }]
+      });
+      const shown = await runLauncher(["dsl", "show", "--scope", "project"], {
+        env
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("candidate R added to project");
+      expect(shown.stdout).toContain("R\tmacro\tcandidate\trelease flow");
+      expect(shown.stdout).not.toContain("secret token value");
+      expect(fake.requests).toHaveLength(1);
+    } finally {
+      fake.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("translates /distill output without requiring stdin", async () => {
     const fake = await createFakeChatProvider((_body, _index) =>
       new Response(

@@ -139,7 +139,12 @@ Risk: not committed.
 
 ## Glossary And Memory
 
-Keep an internal alias dict per conversation. Do not create files.
+Use two memory layers:
+
+- thread dict: internal aliases for the current conversation
+- persisted dict: entries saved by `distill dsl learn`, `distill dsl learn-thread --stdin`, or explicit user action
+
+Do not manually create memory files. Let the `distill` CLI own JSON memory writes.
 
 Use aliases only when they stay obvious:
 
@@ -178,7 +183,15 @@ Dict: B=backend F=frontend 1=failing-test-first
 Dict+: A1=authentication bug fix
 ```
 
-Expire learned terms mentally if they stop appearing. A term should not become part of thread DSL unless it appears at least twice in a short window or the user explicitly approves it.
+Persisted learned terms start as candidates and promote only through lifecycle rules. A term should not become part of active DSL unless it appears at least twice in a short window or the user explicitly approves it.
+
+At thread end, when transcript export is available, run:
+
+```bash
+distill dsl learn-thread --stdin < transcript.txt
+```
+
+This analyzes repeated usage, rejects sensitive/noisy terms, asks the configured reviewer model for strict JSON, and persists only compact candidates.
 
 ## Tool Calls
 

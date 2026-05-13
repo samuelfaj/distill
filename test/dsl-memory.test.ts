@@ -6,11 +6,13 @@ import path from "node:path";
 import {
   formatPromptDslMemory,
   hashProjectPath,
+  learnFromThreadTranscript,
   learnFromDistillOutput,
   readMergedDslMemory,
   resolveDslScopePath,
   runDslCommand,
-  seedGlobalDslMemory
+  seedGlobalDslMemory,
+  type DslThreadLearnReview
 } from "../src/dsl-memory";
 
 function daysFromNow(days: number): Date {
@@ -372,6 +374,155 @@ describe("dsl memory", () => {
       expect(activeLearned).toHaveLength(20);
       expect(output).not.toContain("TERM0\talias\tactive");
       expect(output).not.toContain("TERM1\talias\tactive");
+    });
+  });
+
+  it("dry-runs thread learning with reviewed repeated candidates", async () => {
+    await withEnv(async (env, cwd) => {
+      const transcript = [
+        "Need run tests before commit.",
+        "Please run tests after patch.",
+        "Dict+: RF=release flow",
+        "release flow is repeated",
+        "release flow again"
+      ].join("\n");
+      const output = await learnFromThreadTranscript(env, cwd, transcript, {
+        dryRun: true,
+        now: daysFromNow(0),
+        reviewer: async (request): Promise<DslThreadLearnReview[]> => {
+          expect(request.candidates.some((entry) => entry.meaning === "release flow")).toBe(true);
+          return [
+            {
+              key: "R",
+              meaning: "release flow",
+              kind: "macro",
+              scope: "project",
+              reason: "stable repeated workflow",
+              confidence: 0.9
+            }
+          ];
+        }
+      });
+
+      expect(output).toContain("would learn-thread 1 entries in project");
+      expect(output).toContain("R\tmacro\tproject\t0.90\trelease flow");
+      expect(
+        await runDslCommand(["show", "--scope", "project"], {
+          env,
+          cwd,
+          now: daysFromNow(0)
+        })
+      ).toContain("(empty)");
+    });
+  });
+
+  it("writes thread-learned entries as candidates and promotes by lifecycle on repeat", async () => {
+    await withEnv(async (env, cwd) => {
+      const transcript = "review release flow\nrelease flow needs check\n";
+      const reviewer = async (): Promise<DslThreadLearnReview[]> => [
+        {
+          key: "R",
+          meaning: "release flow",
+          kind: "macro",
+          scope: "project",
+          reason: "repeated workflow",
+          confidence: 0.9
+        }
+      ];
+
+      const first = await learnFromThreadTranscript(env, cwd, transcript, {
+        now: daysFromNow(0),
+        reviewer
+      });
+      const second = await learnFromThreadTranscript(env, cwd, transcript, {
+        now: daysFromNow(1),
+        reviewer
+      });
+      const output = await runDslCommand(["show", "--scope", "project"], {
+        env,
+        cwd,
+        now: daysFromNow(1)
+      });
+
+      expect(first).toContain("candidate R added to project");
+      expect(second).toContain("active R updated in project");
+      expect(output).toContain("R\tmacro\tactive\trelease flow");
+    });
+  });
+
+  it("rejects sensitive thread candidates even when the reviewer approves them", async () => {
+    await withEnv(async (env, cwd) => {
+      const transcript = [
+        "token sk-1234567890abcdef repeated",
+        "token sk-1234567890abcdef repeated",
+        "https://example.com/path",
+        "https://example.com/path"
+      ].join("\n");
+      const output = await learnFromThreadTranscript(env, cwd, transcript, {
+        now: daysFromNow(0),
+        reviewer: async () => [
+          {
+            key: "S",
+            meaning: "secret token value",
+            kind: "alias",
+            scope: "project",
+            reason: "bad approval",
+            confidence: 0.99
+          }
+        ]
+      });
+
+      expect(output).toContain("learn-thread 0 entries");
+      expect(
+        await runDslCommand(["show", "--scope", "project"], {
+          env,
+          cwd,
+          now: daysFromNow(0)
+        })
+      ).toContain("(empty)");
+    });
+  });
+
+  it("does not overwrite pinned entries during thread learning", async () => {
+    await withEnv(async (env, cwd) => {
+      await runDslCommand(["add", "alias", "Z", "pinned meaning", "--scope", "project"], {
+        env,
+        cwd,
+        now: daysFromNow(0)
+      });
+      await runDslCommand(["pin", "Z", "--scope", "project"], {
+        env,
+        cwd,
+        now: daysFromNow(0)
+      });
+
+      const output = await learnFromThreadTranscript(
+        env,
+        cwd,
+        "release flow release flow release flow",
+        {
+          now: daysFromNow(1),
+          reviewer: async () => [
+            {
+              key: "Z",
+              meaning: "release flow",
+              kind: "macro",
+              scope: "project",
+              reason: "would overwrite pinned key",
+              confidence: 0.95
+            }
+          ]
+        }
+      );
+      const memory = await runDslCommand(["show", "--scope", "project"], {
+        env,
+        cwd,
+        now: daysFromNow(1)
+      });
+
+      expect(output).toContain("learn-thread 0 entries");
+      expect(memory).toContain("Z\talias\tpinned\tpinned meaning");
+      expect(memory).not.toContain("release flow");
     });
   });
 });

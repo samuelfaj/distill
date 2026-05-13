@@ -246,14 +246,15 @@ async function createFakeChatProvider(
 }
 
 function normalizePtyOutput(output: string): string {
-  return output
-    .replace(/\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/\r/g, "\n")
-    .replace(/[]/g, "")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .join("\n");
+	return output
+		.replace(/\[[0-9;]*[A-Za-z]/g, "")
+		.replace(/\r/g, "\n")
+		.replace(/[]/g, "")
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => !/^Script (started|done) on /.test(line))
+		.filter(Boolean)
+		.join("\n");
 }
 
 beforeAll(() => {

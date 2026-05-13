@@ -1,6 +1,6 @@
 {
   "name": "@samuelfaj/distill-win32-x64",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "license": "MIT",
   "files": [
     "bin/distill.exe"

@@ -343,6 +343,61 @@ describe("distill end-to-end", () => {
     }
   });
 
+  it("auto-learns inline variable dict and injects it into later prompts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-var-dsl-"));
+    const env = {
+      DISTILL_CONFIG_PATH: path.join(dir, "config.json")
+    };
+    const fake = await createFakeChatProvider((body, index) => {
+      if (index === 1) {
+        const prompt = JSON.stringify(body);
+
+        expect(prompt).toContain("#w3 = workspace");
+        expect(prompt).toContain("#v1 = version");
+        expect(prompt).toContain("term=#x1");
+      }
+
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  index === 0
+                    ? "S npm workspace=#w3 version=#v1 sync no-op"
+                    : "O used #w3 + #v1"
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+
+    try {
+      const first = await runLauncher(["summarize"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: "workspace version check\n" }]
+      });
+      const shown = await runLauncher(["dsl", "show", "--scope", "project"], {
+        env
+      });
+      const second = await runLauncher(["summarize"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: "workspace version later\n" }]
+      });
+
+      expect(first.stdout).toContain("workspace=#w3");
+      expect(shown.stdout).toContain("#w3\talias\tactive\tworkspace");
+      expect(shown.stdout).toContain("#v1\talias\tactive\tversion");
+      expect(second.stdout).toContain("O used #w3 + #v1");
+      expect(fake.requests).toHaveLength(2);
+    } finally {
+      fake.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("learns DSL candidates from a thread transcript through the reviewer", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-thread-dsl-"));
     const env = {

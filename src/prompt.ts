@@ -166,7 +166,10 @@ export function buildBatchPrompt(
     ? [
         "Known /distill DSL memory:",
         options.dslMemory,
-        "Use these aliases/macros/defaults only when they reduce repeated meaning.",
+        "Use these aliases/macros/defaults when the requested output format allows DSL.",
+        "When free-form /distill output is allowed, start with Dict only if needed, then use the active DSL keys.",
+        "For repeated stable nouns not already in DSL, define inline variables as term=#x1, then use #x1 instead of term.",
+        "Variable keys use # plus a letter+digit, for example workspace=#w3 and version=#v1.",
         "Do not redefine known entries. Emit Dict+ only for genuinely reusable new terms.",
         "When emitting Dict+, use the shortest unambiguous key: one letter or one number first, then one letter plus one number if needed."
       ].join("\n")
@@ -183,8 +186,9 @@ export function buildTranslatePrompt(text: string, language: string): PromptMess
     "You translate /distill output into human language for a software engineer.",
     "/distill output is compressed Military English + AR-0/AR-1 for prompts, task specs,",
     "commands, or agent instructions.",
-    "It may contain Dict/Dict+ and fixed prefixes S, C, D, R, O, N, P.",
+    "It may contain Dict/Dict+, inline variables such as workspace=#w3, and fixed prefixes S, C, D, R, O, N, P.",
     "Prefix meanings are usually S=state/status, C=cause/context, D=action/decision, R=risk/blocker, O=outcome/output, N=constraint/no-go, P=pass criteria/proof.",
+    "Expand # variables from Dict/Dict+ or inline assignments when present.",
     "It may also contain legacy sections such as Best, More aggressive, Tradeoff, T, Do, No, Pass, and Out.",
     "Expand short command lines into clear human language.",
     "Expand aliases from Dict and Dict+ when present. Keep aliases unchanged",
@@ -243,6 +247,7 @@ export function buildThreadLearnPrompt(
     "Reject secrets, tokens, emails, URLs, file paths, IDs, hashes, personal names,",
     "package names, project-private names, one-off wording, and ambiguous meanings.",
     "Prefer the shortest unambiguous key: one letter or one number first, then letter+number.",
+    "Accept # variable keys only when the transcript explicitly used term=#x1 syntax.",
     "Do not duplicate existing DSL memory. Do not overwrite pinned meanings.",
     "Use scope project unless the candidate is clearly generic for the requested scope.",
     "Schema: [{\"key\":\"A\",\"meaning\":\"short meaning\",\"kind\":\"alias|macro|default\",\"scope\":\"project|stack|global\",\"reason\":\"short reason\",\"confidence\":0.0}]",

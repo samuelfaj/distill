@@ -99,6 +99,41 @@ describe("dsl memory", () => {
     });
   });
 
+  it("learns inline variable assignments as active project aliases", async () => {
+    await withEnv(async (env, cwd) => {
+      const output = await learnFromDistillOutput(
+        env,
+        cwd,
+        [
+          "S npm workspace=#w3 version=#v1 sync no-op",
+          "D patch=#p1 package=#p2 manifests mechanically",
+          "D regen lock after #p2 manifest sync"
+        ].join("\n"),
+        { now: daysFromNow(0) }
+      );
+      const memory = await runDslCommand(["show", "--scope", "project"], {
+        env,
+        cwd,
+        now: daysFromNow(0)
+      });
+      const promptMemory = formatPromptDslMemory(
+        await readMergedDslMemory(env, cwd, undefined, daysFromNow(0)),
+        40
+      );
+
+      expect(output).toContain("active #w3 added to project");
+      expect(output).toContain("active #v1 added to project");
+      expect(output).toContain("active #p1 added to project");
+      expect(output).toContain("active #p2 added to project");
+      expect(memory).toContain("#w3\talias\tactive\tworkspace");
+      expect(memory).toContain("#v1\talias\tactive\tversion");
+      expect(memory).toContain("#p1\talias\tactive\tpatch");
+      expect(memory).toContain("#p2\talias\tactive\tpackage");
+      expect(promptMemory).toContain("#w3 = workspace");
+      expect(promptMemory).toContain("#p2 = package");
+    });
+  });
+
   it("does not learn sensitive, path-heavy, or value-like Dict+ entries", async () => {
     await withEnv(async (env, cwd) => {
       const output = await learnFromDistillOutput(
@@ -109,6 +144,7 @@ describe("dsl memory", () => {
           "TOKEN = secret token value",
           "PATH = /Users/person/project/file.ts",
           "ID = 123456789",
+          "path=#p1",
           "OK = stable meaning"
         ].join("\n"),
         { now: daysFromNow(0) }
@@ -124,6 +160,7 @@ describe("dsl memory", () => {
       expect(memory).not.toContain("TOKEN");
       expect(memory).not.toContain("PATH");
       expect(memory).not.toContain("ID");
+      expect(memory).not.toContain("#p1");
     });
   });
 

@@ -43,6 +43,14 @@ D inspect remotes + MR meta
 R merge/update may block w/o token
 ```
 
+It can also set inline variables for repeated nouns. The CLI learns these into DSL memory and injects active entries into later prompts:
+
+```text
+S npm workspace=#w3 version=#v1 sync no-op
+D patch=#p1 package=#p2 manifests mechanically
+D regen lock after #p2 manifest sync
+```
+
 Manage DSL memory:
 
 ```bash

@@ -87,6 +87,9 @@ const SCOPE_CAPS: Record<DslScope, number> = {
   stack: 30,
   project: 50
 };
+const NAMED_KEY_PATTERN = /^[A-Z0-9][A-Z0-9._-]{0,31}$/;
+const VARIABLE_KEY_PATTERN = /^#[a-z][0-9][a-z0-9._-]{0,29}$/;
+const DICT_KEY_CAPTURE = "(#[A-Za-z][0-9][A-Za-z0-9._-]{0,29}|[A-Za-z0-9._-]{1,32})";
 
 const BUILTIN_ENTRIES: Array<Pick<DslEntry, "key" | "meaning" | "kind">> = [
   { key: "S", meaning: "state or status", kind: "alias" },
@@ -192,13 +195,29 @@ function emptyMemory(scope: DslScope, now: Date): DslMemoryFile {
 }
 
 function normalizeKey(key: string): string {
-  const normalized = key.trim().toUpperCase();
+  const trimmed = key.trim();
 
-  if (!/^[A-Z0-9][A-Z0-9._-]{0,31}$/.test(normalized)) {
+  if (trimmed.startsWith("#")) {
+    const normalized = trimmed.toLowerCase();
+
+    if (!VARIABLE_KEY_PATTERN.test(normalized)) {
+      throw new UsageError("DSL variable key must be # plus letter+digit, max 32 chars.");
+    }
+
+    return normalized;
+  }
+
+  const normalized = trimmed.toUpperCase();
+
+  if (!NAMED_KEY_PATTERN.test(normalized)) {
     throw new UsageError("DSL key must be 1-32 chars: A-Z, 0-9, ., _, or -.");
   }
 
   return normalized;
+}
+
+function isVariableKey(key: string): boolean {
+  return key.startsWith("#");
 }
 
 function parseKind(kind: string | undefined): DslKind {
@@ -504,6 +523,8 @@ function inferKind(key: string, meaning: string): DslKind {
 function parseDictEntries(output: string): Array<{ key: string; meaning: string; kind: DslKind }> {
   const entries: Array<{ key: string; meaning: string; kind: DslKind }> = [];
   let inDictBlock = false;
+  const inlinePattern = new RegExp(`^Dict\\+?:\\s*${DICT_KEY_CAPTURE}\\s*=\\s*(.+)$`);
+  const blockPattern = new RegExp(`^-?\\s*${DICT_KEY_CAPTURE}\\s*=\\s*(.+)$`);
 
   for (const rawLine of output.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -513,7 +534,7 @@ function parseDictEntries(output: string): Array<{ key: string; meaning: string;
       continue;
     }
 
-    const inline = line.match(/^Dict\+?:\s*([A-Za-z0-9._-]{1,32})\s*=\s*(.+)$/);
+    const inline = line.match(inlinePattern);
 
     if (inline) {
       const key = normalizeKey(inline[1]);
@@ -537,12 +558,31 @@ function parseDictEntries(output: string): Array<{ key: string; meaning: string;
       continue;
     }
 
-    const block = line.match(/^-?\s*([A-Za-z0-9._-]{1,32})\s*=\s*(.+)$/);
+    const block = line.match(blockPattern);
 
     if (block) {
       const key = normalizeKey(block[1]);
       const meaning = block[2].trim();
       entries.push({ key, meaning, kind: inferKind(key, meaning) });
+    }
+  }
+
+  entries.push(...parseInlineVariableEntries(output));
+
+  return entries;
+}
+
+function parseInlineVariableEntries(output: string): Array<{ key: string; meaning: string; kind: DslKind }> {
+  const entries: Array<{ key: string; meaning: string; kind: DslKind }> = [];
+  const assignmentPattern =
+    /(^|[\s,;])([A-Za-z][A-Za-z0-9_-]{2,40})=(#[A-Za-z][0-9][A-Za-z0-9._-]{0,29})(?=$|[\s,;.])/g;
+
+  for (const line of output.split(/\r?\n/)) {
+    for (const match of line.matchAll(assignmentPattern)) {
+      const meaning = match[2].replace(/[-_]+/g, " ").trim();
+      const key = normalizeKey(match[3]);
+
+      entries.push({ key, meaning, kind: "alias" });
     }
   }
 
@@ -557,6 +597,17 @@ function isReusableLearnedEntry(key: string, meaning: string): boolean {
   }
 
   if (containsSensitiveValue(`${key} ${trimmed}`)) {
+    return false;
+  }
+
+  if (/^#[a-z][0-9][a-z0-9._-]{0,29}$/i.test(trimmed)) {
+    return false;
+  }
+
+  if (
+    isVariableKey(key) &&
+    /^(path|url|uri|id|ids|token|secret|password|email|person|people)$/i.test(trimmed)
+  ) {
     return false;
   }
 
@@ -583,6 +634,12 @@ function keyBase(rawKey: string, meaning: string): string {
 }
 
 function compactKeyCandidates(rawKey: string, meaning: string): string[] {
+  const variableCandidates = compactVariableKeyCandidates(rawKey);
+
+  if (variableCandidates.length > 0) {
+    return variableCandidates;
+  }
+
   const base = keyBase(rawKey, meaning);
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
   const digits = "1234567890".split("");
@@ -595,8 +652,21 @@ function compactKeyCandidates(rawKey: string, meaning: string): string[] {
   ];
 
   return [...new Set(preferred)].filter((candidate) =>
-    /^[A-Z0-9][A-Z0-9._-]{0,31}$/.test(candidate)
+    NAMED_KEY_PATTERN.test(candidate)
   );
+}
+
+function compactVariableKeyCandidates(rawKey: string): string[] {
+  if (!rawKey.trim().startsWith("#")) {
+    return [];
+  }
+
+  const normalized = normalizeKey(rawKey);
+  const base = normalized[1] ?? "x";
+  const digits = "1234567890".split("");
+
+  return [...new Set([normalized, ...digits.map((digit) => `#${base}${digit}`)])]
+    .filter((candidate) => VARIABLE_KEY_PATTERN.test(candidate));
 }
 
 function compactLearnedEntries(
@@ -950,9 +1020,10 @@ async function addEntry(
   const existing = memory.entries.find((entry) => entry.key === key);
 
   if (!existing) {
-    memory.entries.push(createEntry(scope, kind, key, meaning.trim(), now));
+    const status = isVariableKey(key) ? "active" : "candidate";
+    memory.entries.push(createEntry(scope, kind, key, meaning.trim(), now, status));
     await writeMemoryFile(resolved.path, { ...memory, updatedAt: iso(now) });
-    return `candidate ${key} added to ${scope}\n`;
+    return `${status} ${key} added to ${scope}\n`;
   }
 
   existing.meaning = meaning.trim();

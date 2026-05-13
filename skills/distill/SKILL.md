@@ -165,6 +165,35 @@ C PATH pkg bin => repo patch ignored
 R missing token => merge blocked
 ```
 
+## Variable Dict
+
+Every thread must use DSL/Dict when it helps compression.
+Start with `Dict:` when meanings are not already shared.
+Define short thread variables inline when a noun will repeat:
+
+```text
+S npm workspace=#w3 version=#v1 sync no-op
+D patch=#p1 package=#p2 manifests mechanically
+D regen lock after #p2 manifest sync
+N no release tag before clean verify
+```
+
+After definition, use the variable:
+
+```text
+D inspect #w3 config
+D bump #v1 in #p2 manifests
+```
+
+Rules:
+
+- variable key format: `#` + letter + digit, for example `#w3`
+- one stable meaning per variable inside the thread
+- do not define variables for secrets, people, IDs, paths, URLs, or one-off terms
+- do not redefine an active variable; add a new key if meaning changed
+- inline `#` variables are active immediately after explicit assignment
+- learn reusable variables with `Dict+` or transcript learning when available
+
 ## Good Response Forms
 
 Tiny status:
@@ -252,7 +281,7 @@ Dict+: A1=authentication bug fix
 
 Persisted learned terms start as candidates and promote only through lifecycle rules. A term should not become part of active DSL unless it appears at least twice in a short window or the user explicitly approves it.
 
-At thread end, when transcript export is available, run:
+At every thread end or handoff, when transcript export is available, run:
 
 ```bash
 distill dsl learn-thread --stdin < transcript.txt

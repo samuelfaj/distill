@@ -23,6 +23,8 @@ D inspect remotes + MR meta
 R merge/update may block w/o token
 ```
 
+Inline variables such as `workspace=#w3` and `version=#v1` are learned into DSL memory and reused in later prompts.
+
 `/distill` also has DSL memory:
 
 ```bash

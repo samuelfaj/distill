@@ -14,6 +14,7 @@ const baseConfig: RuntimeConfig = {
   host: "http://127.0.0.1:11434/v1",
   apiKey: "",
   timeoutMs: 100,
+  maxTokens: 1536,
   datasetEnabled: false
 };
 
@@ -75,9 +76,12 @@ describe("chatCompletion", () => {
         model: "qwen",
         prompt: "hi",
         timeoutMs: 100,
-        fetchImpl: async () => new Response("boom", { status: 500 })
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ error: { message: "boom" } }), {
+            status: 500
+          })
       })
-    ).rejects.toThrow("Request failed with 500.");
+    ).rejects.toThrow("Request failed with 500: boom");
   });
 
   it("throws when the provider returns invalid JSON", async () => {
@@ -167,11 +171,119 @@ describe("summarizeBatch", () => {
     };
     expect(body.model).toBe("qwen3.5:2b");
     expect(body.temperature).toBe(0);
-    expect(body.max_tokens).toBe(512);
+    expect(body.max_tokens).toBe(baseConfig.maxTokens);
     expect(body.messages[0].role).toBe("system");
     expect(body.messages[1].role).toBe("user");
     expect(body.messages[1].content).toContain("1 passed");
     expect(body.messages[1].content).toContain(baseConfig.question);
+  });
+
+  it("uses OpenAI Responses for official GPT-5 hosts", async () => {
+    let requestUrl = "";
+    let requestBody: unknown;
+
+    const output = await summarizeBatch(
+      {
+        ...baseConfig,
+        host: "https://api.openai.com/v1",
+        model: "gpt-5.4-mini"
+      },
+      "alpha\nbeta\ngamma",
+      async (input, init) => {
+        requestUrl = String(input);
+        requestBody = JSON.parse(String(init?.body ?? "{}"));
+
+        return new Response(
+          JSON.stringify({
+            output_text: "alpha"
+          }),
+          { status: 200 }
+        );
+      }
+    );
+
+    expect(output).toBe("alpha");
+    expect(requestUrl).toBe("https://api.openai.com/v1/responses");
+
+    const body = requestBody as {
+      model: string;
+      input: Array<{ role: string; content: string }>;
+      max_output_tokens: number;
+      temperature?: number;
+    };
+
+    expect(body.model).toBe("gpt-5.4-mini");
+    expect(body.max_output_tokens).toBe(baseConfig.maxTokens);
+    expect(body.temperature).toBeUndefined();
+    expect(body.input[0].role).toBe("system");
+    expect(body.input[1].role).toBe("user");
+    expect(body.input[1].content).toContain("alpha\nbeta\ngamma");
+  });
+
+  it("uses OpenAI Responses for official o-family hosts", async () => {
+    let requestUrl = "";
+    let requestBody: unknown;
+
+    const output = await summarizeBatch(
+      {
+        ...baseConfig,
+        host: "https://api.openai.com/v1",
+        model: "o3"
+      },
+      "alpha\nbeta\ngamma",
+      async (input, init) => {
+        requestUrl = String(input);
+        requestBody = JSON.parse(String(init?.body ?? "{}"));
+
+        return new Response(
+          JSON.stringify({
+            output_text: "alpha"
+          }),
+          { status: 200 }
+        );
+      }
+    );
+
+    expect(output).toBe("alpha");
+    expect(requestUrl).toBe("https://api.openai.com/v1/responses");
+
+    const body = requestBody as {
+      model: string;
+      input: Array<{ role: string; content: string }>;
+      max_output_tokens: number;
+      temperature?: number;
+    };
+
+    expect(body.model).toBe("o3");
+    expect(body.max_output_tokens).toBe(baseConfig.maxTokens);
+    expect(body.temperature).toBeUndefined();
+    expect(body.input[0].role).toBe("system");
+    expect(body.input[1].role).toBe("user");
+    expect(body.input[1].content).toContain("alpha\nbeta\ngamma");
+  });
+
+  it("throws when OpenAI Responses returns an incomplete payload", async () => {
+    await expect(
+      summarizeBatch(
+        {
+          ...baseConfig,
+          host: "https://api.openai.com/v1",
+          model: "gpt-5.4-mini"
+        },
+        "alpha\nbeta\ngamma",
+        async () =>
+          new Response(
+            JSON.stringify({
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
+              output_text: "partial"
+            }),
+            { status: 200 }
+          )
+      )
+    ).rejects.toThrow(
+      "Provider returned an incomplete response: max_output_tokens."
+    );
   });
 });
 

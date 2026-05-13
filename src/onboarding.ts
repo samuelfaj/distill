@@ -3,7 +3,12 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
 
-import { DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_TIMEOUT_MS } from "./config";
+import {
+  DEFAULT_HOST,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MODEL,
+  DEFAULT_TIMEOUT_MS
+} from "./config";
 import type { PersistedConfig } from "./config";
 import { writePersistedConfig } from "./user-config";
 
@@ -59,6 +64,22 @@ function parseTimeout(input: string, fallback: number): number {
 
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error("timeout-ms must be a positive number.");
+  }
+
+  return Math.floor(value);
+}
+
+function parseMaxTokens(input: string, fallback: number): number {
+  const trimmed = input.trim();
+
+  if (!trimmed) {
+    return fallback;
+  }
+
+  const value = Number(trimmed);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("max-tokens must be a positive number.");
   }
 
   return Math.floor(value);
@@ -135,6 +156,7 @@ export async function runOnboarding({
   const currentHost = persisted.host ?? DEFAULT_HOST;
   const currentModel = persisted.model ?? DEFAULT_MODEL;
   const currentTimeout = persisted.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const currentMaxTokens = persisted.maxTokens ?? DEFAULT_MAX_TOKENS;
 
   try {
     output.write("distill onboarding\n");
@@ -147,6 +169,10 @@ export async function runOnboarding({
       await ask(`timeout-ms optional [${currentTimeout}]: `),
       currentTimeout
     );
+    const maxTokens = parseMaxTokens(
+      await ask(`max-tokens optional [${currentMaxTokens}]: `),
+      currentMaxTokens
+    );
     const shouldInstall = parseInstallChoice(
       await ask("install /distill skill for Codex and Claude? [Y/n]: ")
     );
@@ -154,7 +180,8 @@ export async function runOnboarding({
       ...persisted,
       host,
       model,
-      timeoutMs
+      timeoutMs,
+      maxTokens
     };
 
     if (apiKey.trim()) {

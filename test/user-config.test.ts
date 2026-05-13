@@ -22,6 +22,11 @@ describe("user config", () => {
       );
       await setPersistedConfigValue(
         { DISTILL_CONFIG_PATH: configPath },
+        "max-tokens",
+        2048
+      );
+      await setPersistedConfigValue(
+        { DISTILL_CONFIG_PATH: configPath },
         "dataset-enabled",
         false
       );
@@ -33,6 +38,7 @@ describe("user config", () => {
 
       expect(await readPersistedConfig({ DISTILL_CONFIG_PATH: configPath })).toEqual({
         model: "qwen3.5:2b",
+        maxTokens: 2048,
         datasetEnabled: false,
         datasetPath: "/tmp/distill.jsonl"
       });
@@ -40,6 +46,7 @@ describe("user config", () => {
       const raw = JSON.parse(await readFile(configPath, "utf8"));
       expect(raw).toEqual({
         model: "qwen3.5:2b",
+        maxTokens: 2048,
         datasetEnabled: false,
         datasetPath: "/tmp/distill.jsonl"
       });

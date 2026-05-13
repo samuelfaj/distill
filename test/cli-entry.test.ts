@@ -16,11 +16,12 @@ import { createScriptCommand } from "./script-command";
 
 const root = path.resolve(import.meta.dir, "..");
 const cli = path.join(root, "src", "cli.ts");
+const bunExecutable = process.execPath;
 const itUnixOnly = process.platform === "win32" ? it.skip : it;
 
 describe("cli entrypoint", () => {
   it("prints help", () => {
-    const result = spawnSync("bun", ["run", cli, "--help"], {
+    const result = spawnSync(bunExecutable, ["run", cli, "--help"], {
       cwd: root,
       encoding: "utf8"
     });
@@ -30,7 +31,7 @@ describe("cli entrypoint", () => {
   });
 
   it("prints the version", () => {
-    const result = spawnSync("bun", ["run", cli, "--version"], {
+    const result = spawnSync(bunExecutable, ["run", cli, "--version"], {
       cwd: root,
       encoding: "utf8"
     });
@@ -78,7 +79,7 @@ describe("cli entrypoint", () => {
 
     try {
       const setModel = spawnSync(
-        "bun",
+        bunExecutable,
         ["run", cli, "config", "model", "qwen3.5:2b"],
         {
           cwd: root,
@@ -91,7 +92,7 @@ describe("cli entrypoint", () => {
       );
 
       const setDatasetEnabled = spawnSync(
-        "bun",
+        bunExecutable,
         ["run", cli, "config", "dataset-enabled", "false"],
         {
           cwd: root,
@@ -103,12 +104,38 @@ describe("cli entrypoint", () => {
         }
       );
 
+      const setMaxTokens = spawnSync(
+        bunExecutable,
+        ["run", cli, "config", "max-tokens", "2048"],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            DISTILL_CONFIG_PATH: configPath
+          }
+        }
+      );
+
+      const showConfig = spawnSync(bunExecutable, ["run", cli, "config"], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DISTILL_CONFIG_PATH: configPath
+        }
+      });
+
       expect(setModel.status).toBe(0);
       expect(setDatasetEnabled.status).toBe(0);
+      expect(setMaxTokens.status).toBe(0);
+      expect(showConfig.status).toBe(0);
       expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
         model: "qwen3.5:2b",
+        maxTokens: 2048,
         datasetEnabled: false
       });
+      expect(showConfig.stdout).toContain("max-tokens=2048");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -132,7 +159,7 @@ describe("cli entrypoint", () => {
       await writeFile(path.join(home, ".codex", "AGENTS.md"), oldBlock);
       await writeFile(path.join(home, ".claude", "CLAUDE.md"), oldBlock);
 
-      const result = spawnSync("bun", ["run", cli], {
+      const result = spawnSync(bunExecutable, ["run", cli], {
         cwd: root,
         encoding: "utf8",
         input: [
@@ -140,6 +167,7 @@ describe("cli entrypoint", () => {
           "local-model",
           "",
           "120000",
+          "2048",
           ""
         ].join("\n"),
         env: {
@@ -157,7 +185,8 @@ describe("cli entrypoint", () => {
       expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
         host: "http://127.0.0.1:1234/v1",
         model: "local-model",
-        timeoutMs: 120000
+        timeoutMs: 120000,
+        maxTokens: 2048
       });
       expect(
         await readFile(

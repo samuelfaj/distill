@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   DEFAULT_HOST,
+  DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
   UsageError,
@@ -25,6 +26,7 @@ describe("parseCommand", () => {
         host: DEFAULT_HOST,
         apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxTokens: DEFAULT_MAX_TOKENS,
         datasetEnabled: true,
         datasetPath: undefined
       }
@@ -55,6 +57,7 @@ describe("parseCommand", () => {
         host: "http://example.test",
         apiKey: "secret",
         timeoutMs: 10,
+        maxTokens: DEFAULT_MAX_TOKENS,
         datasetEnabled: true,
         datasetPath: undefined
       }
@@ -72,6 +75,7 @@ describe("parseCommand", () => {
         host: DEFAULT_HOST,
         apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxTokens: DEFAULT_MAX_TOKENS,
         datasetEnabled: true,
         datasetPath: undefined
       }
@@ -89,6 +93,7 @@ describe("parseCommand", () => {
         host: DEFAULT_HOST,
         apiKey: "",
         timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxTokens: DEFAULT_MAX_TOKENS,
         datasetEnabled: true,
         datasetPath: undefined
       }
@@ -104,6 +109,7 @@ describe("parseCommand", () => {
         host: "http://saved.test",
         apiKey: "saved-key",
         timeoutMs: 50,
+        maxTokens: 2048,
         datasetEnabled: false,
         datasetPath: "/tmp/distill.jsonl"
       }
@@ -117,6 +123,7 @@ describe("parseCommand", () => {
         host: "http://saved.test",
         apiKey: "saved-key",
         timeoutMs: 50,
+        maxTokens: 2048,
         datasetEnabled: false,
         datasetPath: "/tmp/distill.jsonl"
       }
@@ -131,6 +138,7 @@ describe("parseCommand", () => {
           DISTILL_HOST: "http://env.test",
           DISTILL_API_KEY: "env-key",
           DISTILL_TIMEOUT_MS: "999",
+          DISTILL_MAX_TOKENS: "4096",
           DISTILL_DATASET_ENABLED: "false",
           DISTILL_DATASET_PATH: "/tmp/env-distill.jsonl"
         },
@@ -139,6 +147,7 @@ describe("parseCommand", () => {
           host: "http://saved.test",
           apiKey: "saved-key",
           timeoutMs: 5,
+          maxTokens: 128,
           datasetEnabled: true,
           datasetPath: "/tmp/saved-distill.jsonl"
         }
@@ -148,6 +157,7 @@ describe("parseCommand", () => {
       host: "http://env.test",
       apiKey: "env-key",
       timeoutMs: 999,
+      maxTokens: 4096,
       datasetEnabled: false,
       datasetPath: "/tmp/env-distill.jsonl"
     });
@@ -172,6 +182,12 @@ describe("parseCommand", () => {
       kind: "configSet",
       key: "timeout-ms",
       value: 30000
+    });
+
+    expect(parseCommand(["config", "max-tokens", "2048"], {}, {})).toEqual({
+      kind: "configSet",
+      key: "max-tokens",
+      value: 2048
     });
 
     expect(parseCommand(["config", "dataset-enabled", "false"], {}, {})).toEqual({
@@ -218,5 +234,35 @@ describe("parseCommand", () => {
     expect(() => parseCommand(["--provider", "openai", "q"], {}, {})).toThrow(
       UsageError
     );
+  });
+
+  it("supports max token flags", () => {
+    expect(parseCommand(["-t", "1000", "summarize"], {}, {})).toEqual({
+      kind: "run",
+      config: {
+        question: "summarize",
+        model: DEFAULT_MODEL,
+        host: DEFAULT_HOST,
+        apiKey: "",
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxTokens: 1000,
+        datasetEnabled: true,
+        datasetPath: undefined
+      }
+    });
+
+    expect(parseCommand(["--max-tokens=2048", "summarize"], {}, {})).toEqual({
+      kind: "run",
+      config: {
+        question: "summarize",
+        model: DEFAULT_MODEL,
+        host: DEFAULT_HOST,
+        apiKey: "",
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxTokens: 2048,
+        datasetEnabled: true,
+        datasetPath: undefined
+      }
+    });
   });
 });

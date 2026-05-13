@@ -42,6 +42,7 @@ async function run(): Promise<number> {
         `host=${persisted.host ?? ""}`,
         `api-key=${persisted.apiKey ? "***" : ""}`,
         `timeout-ms=${persisted.timeoutMs ?? ""}`,
+        `max-tokens=${persisted.maxTokens ?? ""}`,
         `dataset-enabled=${persisted.datasetEnabled ?? ""}`,
         `dataset-path=${persisted.datasetPath ?? ""}`
       ].join("\n") + "\n"

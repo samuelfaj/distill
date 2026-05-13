@@ -57,6 +57,7 @@ function createChildEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     DISTILL_HOST: undefined,
     DISTILL_API_KEY: undefined,
     DISTILL_TIMEOUT_MS: undefined,
+    DISTILL_DATASET_ENABLED: "false",
     ...env
   };
 }
@@ -425,7 +426,7 @@ describe("distill end-to-end", () => {
     });
 
     expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(result.stderr).toContain("distill: batch distillation failed:");
     expect(result.stdout).toBe("fallback payload\n");
   });
 

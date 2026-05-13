@@ -163,7 +163,8 @@ export class DistillSession {
       this.stopProgress(true);
       this.stdout.write(ensureTrailingNewline(output));
       await this.captureDatasetRecord(normalizedInput, output);
-    } catch {
+    } catch (error) {
+      this.reportSummarizationError("batch", error);
       this.stopProgress(true);
       this.stdout.write(Buffer.concat(this.rawBuffers));
     }
@@ -175,16 +176,10 @@ export class DistillSession {
     }
 
     try {
-      const result = await appendDatasetRecord(
+      await appendDatasetRecord(
         this.dataset,
         buildDatasetRecord(this.runtimeConfig, input, output)
       );
-
-      if (result.firstWrite && this.dataset.enabled) {
-        this.stderr?.write(
-          `distill: capturing fine-tuning data at ${this.dataset.path}; disable with DISTILL_DATASET_ENABLED=false\n`
-        );
-      }
     } catch {
       this.stderr?.write("distill: failed to write dataset record.\n");
     }
@@ -388,10 +383,16 @@ export class DistillSession {
 
         this.renderWatchSummary(summary.trim());
         this.trimWatchHistory();
-      } catch {
+      } catch (error) {
+        this.reportSummarizationError("watch", error);
         this.renderWatchFallback(current.raw);
       }
     });
+  }
+
+  private reportSummarizationError(scope: "batch" | "watch", error: unknown): void {
+    const message = error instanceof Error ? error.message.trim() : "Unexpected error.";
+    this.stderr?.write(`distill: ${scope} distillation failed: ${message || "Unexpected error."}\n`);
   }
 
   private renderWatchSummary(summary: string): void {

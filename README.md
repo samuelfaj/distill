@@ -32,6 +32,15 @@ You can also pipe command output into `distill`:
 bun test 2>&1 | distill "Did tests pass? Return PASS or FAIL, followed by failing test names if any."
 git diff | distill "What changed? Return only files changed and one-line summary for each."
 terraform plan 2>&1 | distill "Is this safe? Return SAFE, REVIEW, or UNSAFE, followed by risky changes."
+command 2>&1 | distill -t 1000 "Return only the first actionable error."
+```
+
+Tune output limits globally or per run: let distill adapt to the verbosity your agent wants.
+
+```bash
+distill config max-tokens 1000
+DISTILL_MAX_TOKENS=2000 distill "summarize"
+command 2>&1 | distill --max-tokens 1500 "summarize"
 ```
 
 **Recommended LLM: qwen3.5-4b**

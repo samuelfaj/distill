@@ -32,7 +32,7 @@ terraform plan 2>&1 | distill "Is this safe? Return SAFE, REVIEW, or UNSAFE, fol
 
 ## How it works
 
-`distill` reads stdin, sends the command output plus your explicit question to your LLM, and prints only the useful result.
+`distill` reads the command output and send to your **local LLM** and return just what matters.
 
 ## Example
 

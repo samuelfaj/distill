@@ -10,8 +10,12 @@ for (const target of PLATFORM_TARGETS) {
     await readFile(packageJsonPath, "utf8")
   ) as Record<string, unknown>;
 
-  current.os = [...target.os];
-  current.cpu = [...target.cpu];
+	current.os = [...target.os];
+	current.cpu = [...target.cpu];
+	current.repository = {
+		type: "git",
+		url: "https://github.com/samuelfaj/distill"
+	};
 
   await writeFile(packageJsonPath, `${JSON.stringify(current, null, 2)}\n`);
 }

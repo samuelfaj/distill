@@ -141,6 +141,42 @@ describe("cli entrypoint", () => {
     }
   });
 
+  it("runs dsl memory commands", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-cli-dsl-"));
+    const configPath = path.join(dir, "config.json");
+    const env = {
+      ...process.env,
+      DISTILL_CONFIG_PATH: configPath
+    };
+
+    try {
+      const addFirst = spawnSync(
+        "bun",
+        ["run", cli, "dsl", "add", "alias", "A1", "authentication fix", "--scope", "global"],
+        { cwd: root, encoding: "utf8", env }
+      );
+      const addSecond = spawnSync(
+        "bun",
+        ["run", cli, "dsl", "add", "alias", "A1", "authentication fix", "--scope", "global"],
+        { cwd: root, encoding: "utf8", env }
+      );
+      const show = spawnSync("bun", ["run", cli, "dsl", "show", "--scope", "global"], {
+        cwd: root,
+        encoding: "utf8",
+        env
+      });
+
+      expect(addFirst.status).toBe(0);
+      expect(addFirst.stdout).toContain("candidate A1");
+      expect(addSecond.status).toBe(0);
+      expect(addSecond.stdout).toContain("active A1");
+      expect(show.status).toBe(0);
+      expect(show.stdout).toContain("A1\talias\tactive");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs onboarding with config and skill install defaults", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "distill-onboarding-"));
     const home = path.join(dir, "home");
@@ -188,6 +224,16 @@ describe("cli entrypoint", () => {
         timeoutMs: 120000,
         maxTokens: 2048
       });
+      const dslMemory = JSON.parse(
+        await readFile(path.join(dir, "dsl", "global.json"), "utf8")
+      ) as { entries: Array<{ key: string; status: string; builtin?: boolean }> };
+
+      expect(dslMemory.entries).toContainEqual(
+        expect.objectContaining({ key: "B", status: "pinned", builtin: true })
+      );
+      expect(dslMemory.entries).toContainEqual(
+        expect.objectContaining({ key: "1", status: "pinned", builtin: true })
+      );
       expect(
         await readFile(
           path.join(home, ".codex", "skills", "distill", "SKILL.md"),
@@ -221,8 +267,13 @@ describe("cli entrypoint", () => {
           "Do not return a rewritten/compressed copy of the user's prompt"
         );
         expect(instructions).toContain("Keep hidden chain-of-thought private");
+        expect(instructions).toContain("one-letter aliases A/B/F/D/E/C/O/V/X/P/U");
+        expect(instructions).toContain("shortest unambiguous key possible");
         expect(instructions).toContain(
-          "When running non-interactive shell commands, pipe output through `distill`"
+          "For every non-interactive, non-TUI shell/tool command, pipe output through `distill`"
+        );
+        expect(instructions).toContain(
+          "Skip `| distill` only when exact raw output is required"
         );
         expect(instructions).toContain(
           'bun test 2>&1 | distill "Did tests pass? Return PASS or FAIL'

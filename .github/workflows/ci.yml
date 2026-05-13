@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DISTILL_DATASET_ENABLED: "false"
+
 jobs:
   test:
     name: test (${{ matrix.os }})

@@ -10,6 +10,11 @@ export const DEFAULT_IDLE_MS = 1_200;
 export const DEFAULT_INTERACTIVE_GAP_MS = 180;
 export const DEFAULT_PROGRESS_FRAME_MS = 120;
 export const DEFAULT_DATASET_ENABLED = true;
+export const DEFAULT_AUTO_LEARN = true;
+export const DEFAULT_AUTO_LEARN_SCOPE = "project";
+export const DEFAULT_AUTO_LEARN_SOURCE = "output";
+export const DEFAULT_AUTO_PROMOTE_SCOPES = true;
+export const DEFAULT_MAX_PROMPT_DSL_ENTRIES = 40;
 
 export interface DistillSettings {
   model: string;
@@ -19,6 +24,11 @@ export interface DistillSettings {
   maxTokens: number;
   datasetEnabled: boolean;
   datasetPath?: string;
+  autoLearn?: boolean;
+  autoLearnScope?: "project";
+  autoLearnSource?: "output";
+  autoPromoteScopes?: boolean;
+  maxPromptDslEntries?: number;
 }
 
 export interface RuntimeConfig extends DistillSettings {
@@ -34,12 +44,16 @@ export type ConfigKey =
   | "timeout-ms"
   | "max-tokens"
   | "dataset-enabled"
-  | "dataset-path";
+  | "dataset-path"
+  | "auto-learn"
+  | "auto-promote-scopes"
+  | "max-prompt-dsl-entries";
 
 export type Command =
   | { kind: "onboard" }
   | { kind: "help" }
   | { kind: "version" }
+  | { kind: "dsl"; args: string[] }
   | { kind: "configShow" }
   | { kind: "configGet"; key: ConfigKey }
   | { kind: "configSet"; key: ConfigKey; value: string | number | boolean }
@@ -129,6 +143,16 @@ function coerceBoolean(input: string | boolean | undefined): boolean {
   throw new UsageError("Boolean values must be true or false.");
 }
 
+function coercePositiveInteger(input: string | number | undefined, label: string): number {
+  const value = Number(input);
+
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new UsageError(`${label} must be a positive integer.`);
+  }
+
+  return value;
+}
+
 export function resolveRuntimeDefaults(
   env: NodeJS.ProcessEnv,
   persisted: PersistedConfig
@@ -148,6 +172,20 @@ export function resolveRuntimeDefaults(
     env.DISTILL_DATASET_ENABLED ?? persisted.datasetEnabled
   );
   const datasetPath = env.DISTILL_DATASET_PATH ?? persisted.datasetPath;
+  const autoLearn = coerceBoolean(
+    env.DISTILL_AUTO_LEARN ?? persisted.autoLearn ?? DEFAULT_AUTO_LEARN
+  );
+  const autoPromoteScopes = coerceBoolean(
+    env.DISTILL_AUTO_PROMOTE_SCOPES ??
+      persisted.autoPromoteScopes ??
+      DEFAULT_AUTO_PROMOTE_SCOPES
+  );
+  const maxPromptDslEntries = coercePositiveInteger(
+    env.DISTILL_MAX_PROMPT_DSL_ENTRIES ??
+      persisted.maxPromptDslEntries ??
+      DEFAULT_MAX_PROMPT_DSL_ENTRIES,
+    "max-prompt-dsl-entries"
+  );
 
   return {
     model,
@@ -156,7 +194,12 @@ export function resolveRuntimeDefaults(
     timeoutMs,
     maxTokens,
     datasetEnabled,
-    datasetPath
+    datasetPath,
+    autoLearn,
+    autoLearnScope: DEFAULT_AUTO_LEARN_SCOPE,
+    autoLearnSource: DEFAULT_AUTO_LEARN_SOURCE,
+    autoPromoteScopes,
+    maxPromptDslEntries
   };
 }
 
@@ -175,7 +218,10 @@ function parseConfigCommand(argv: string[]): Command {
       "timeout-ms",
       "max-tokens",
       "dataset-enabled",
-      "dataset-path"
+      "dataset-path",
+      "auto-learn",
+      "auto-promote-scopes",
+      "max-prompt-dsl-entries"
     ].includes(key)
   ) {
     throw new UsageError(`Unknown config key: ${argv[1]}`);
@@ -223,6 +269,22 @@ function parseConfigCommand(argv: string[]): Command {
     };
   }
 
+  if (key === "auto-learn" || key === "auto-promote-scopes") {
+    return {
+      kind: "configSet",
+      key,
+      value: coerceBoolean(rawValue)
+    };
+  }
+
+  if (key === "max-prompt-dsl-entries") {
+    return {
+      kind: "configSet",
+      key,
+      value: coercePositiveInteger(rawValue, key)
+    };
+  }
+
   return {
     kind: "configSet",
     key,
@@ -241,6 +303,10 @@ export function parseCommand(
 
   if (argv[0] === "config") {
     return parseConfigCommand(argv);
+  }
+
+  if (argv[0] === "dsl") {
+    return { kind: "dsl", args: argv.slice(1) };
   }
 
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
@@ -274,7 +340,12 @@ export function parseCommand(
         timeoutMs: defaults.timeoutMs,
         maxTokens: defaults.maxTokens,
         datasetEnabled: defaults.datasetEnabled,
-        datasetPath: defaults.datasetPath
+        datasetPath: defaults.datasetPath,
+        autoLearn: defaults.autoLearn,
+        autoLearnScope: defaults.autoLearnScope,
+        autoLearnSource: defaults.autoLearnSource,
+        autoPromoteScopes: defaults.autoPromoteScopes,
+        maxPromptDslEntries: defaults.maxPromptDslEntries
       }
     };
   }
@@ -368,7 +439,12 @@ export function parseCommand(
       timeoutMs,
       maxTokens,
       datasetEnabled: defaults.datasetEnabled,
-      datasetPath: defaults.datasetPath
+      datasetPath: defaults.datasetPath,
+      autoLearn: defaults.autoLearn,
+      autoLearnScope: defaults.autoLearnScope,
+      autoLearnSource: defaults.autoLearnSource,
+      autoPromoteScopes: defaults.autoPromoteScopes,
+      maxPromptDslEntries: defaults.maxPromptDslEntries
     }
   };
 }
@@ -377,6 +453,11 @@ export function formatUsage(): string {
   return [
     "Usage:",
     '  cmd 2>&1 | distill "question"',
+    "  distill dsl show",
+    "  distill dsl show --candidates",
+    '  distill dsl learn --dry-run "Dict+: A1=auth fix"',
+    "  distill dsl promote --dry-run",
+    '  distill dsl add alias A1 "auth fix" --scope project',
     '  distill translate "Best: Fix auth bug. Pass: tests pass." [language]',
     '  distill config host http://127.0.0.1:11434/v1',
     '  distill config model "qwen3.5:2b"',
@@ -395,6 +476,8 @@ export function formatUsage(): string {
     "  (input + completion). The file is created with mode 0600.",
     "  DISTILL_DATASET_ENABLED=false  Disable local JSONL dataset capture",
     "  DISTILL_DATASET_PATH=<path>    Override dataset JSONL path",
+    "  DISTILL_AUTO_LEARN=false       Disable project-scoped DSL auto-learn",
+    "  DISTILL_MAX_PROMPT_DSL_ENTRIES=<n>  Limit DSL entries injected into prompts",
     "  --help                Show usage",
     "  --version             Show version"
   ].join("\n");

@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { ConfigKey, PersistedConfig } from "./config";
 
-function resolveConfigBaseDir(env: NodeJS.ProcessEnv): string {
+export function resolveConfigBaseDir(env: NodeJS.ProcessEnv): string {
   const appData = env.APPDATA?.trim();
 
   if (appData) {
@@ -94,6 +94,12 @@ export async function setPersistedConfigValue(
     current.datasetEnabled = Boolean(value);
   } else if (key === "dataset-path") {
     current.datasetPath = String(value);
+  } else if (key === "auto-learn") {
+    current.autoLearn = Boolean(value);
+  } else if (key === "auto-promote-scopes") {
+    current.autoPromoteScopes = Boolean(value);
+  } else if (key === "max-prompt-dsl-entries") {
+    current.maxPromptDslEntries = Number(value);
   } else if (key === "host") {
     current.host = String(value);
   } else if (key === "api-key") {
@@ -126,6 +132,20 @@ export function getPersistedConfigValue(
 
   if (key === "dataset-path") {
     return config.datasetPath;
+  }
+
+  if (key === "auto-learn") {
+    return config.autoLearn === undefined ? undefined : String(config.autoLearn);
+  }
+
+  if (key === "auto-promote-scopes") {
+    return config.autoPromoteScopes === undefined
+      ? undefined
+      : String(config.autoPromoteScopes);
+  }
+
+  if (key === "max-prompt-dsl-entries") {
+    return config.maxPromptDslEntries;
   }
 
   if (key === "host") {

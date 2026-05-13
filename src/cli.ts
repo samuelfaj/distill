@@ -2,9 +2,22 @@ import {
   DISTILL_VERSION,
   UsageError,
   formatUsage,
-  parseCommand
+  parseCommand,
+  resolveRuntimeDefaults
 } from "./config";
-import { summarizeBatch, summarizeTranslate, summarizeWatch } from "./llm";
+import {
+  formatPromptDslMemory,
+  learnFromDistillOutput,
+  readMergedDslMemory,
+  runDslCommand,
+  type DslPromotionReview
+} from "./dsl-memory";
+import {
+  summarizeBatch,
+  summarizeDslPromotion,
+  summarizeTranslate,
+  summarizeWatch
+} from "./llm";
 import { runOnboarding } from "./onboarding";
 import { DistillSession, type ProgressPhase } from "./stream-distiller";
 import { resolveDatasetPath } from "./dataset";
@@ -34,6 +47,43 @@ async function run(): Promise<number> {
     return 0;
   }
 
+  if (command.kind === "dsl") {
+    const defaults = resolveRuntimeDefaults(process.env, persisted);
+    process.stdout.write(
+      await runDslCommand(command.args, {
+        env: process.env,
+        cwd: process.cwd(),
+        promotionReviewer: async (entries) => {
+          const response = await summarizeDslPromotion(
+            {
+              question: "Review DSL promotion candidates.",
+              model: defaults.model,
+              host: defaults.host,
+              apiKey: defaults.apiKey,
+              timeoutMs: defaults.timeoutMs,
+              datasetEnabled: defaults.datasetEnabled,
+              datasetPath: defaults.datasetPath,
+              autoLearn: defaults.autoLearn,
+              autoLearnScope: defaults.autoLearnScope,
+              autoLearnSource: defaults.autoLearnSource,
+              autoPromoteScopes: defaults.autoPromoteScopes,
+              maxPromptDslEntries: defaults.maxPromptDslEntries
+            },
+            entries
+              .map(
+                (entry) =>
+                  `${entry.key}\t${entry.kind}\t${entry.meaning}\tuses=${entry.useCount}`
+              )
+              .join("\n")
+          );
+
+          return JSON.parse(response) as DslPromotionReview[];
+        }
+      })
+    );
+    return 0;
+  }
+
   if (command.kind === "configShow") {
     process.stdout.write(
       [
@@ -44,7 +94,10 @@ async function run(): Promise<number> {
         `timeout-ms=${persisted.timeoutMs ?? ""}`,
         `max-tokens=${persisted.maxTokens ?? ""}`,
         `dataset-enabled=${persisted.datasetEnabled ?? ""}`,
-        `dataset-path=${persisted.datasetPath ?? ""}`
+        `dataset-path=${persisted.datasetPath ?? ""}`,
+        `auto-learn=${persisted.autoLearn ?? ""}`,
+        `auto-promote-scopes=${persisted.autoPromoteScopes ?? ""}`,
+        `max-prompt-dsl-entries=${persisted.maxPromptDslEntries ?? ""}`
       ].join("\n") + "\n"
     );
     return 0;
@@ -77,6 +130,15 @@ async function run(): Promise<number> {
   }
 
   const progressProtocol = process.env.DISTILL_PROGRESS_PROTOCOL === "stderr";
+  const mergedDslMemory = await readMergedDslMemory(
+    process.env,
+    process.cwd(),
+    undefined
+  );
+  const promptDslMemory = formatPromptDslMemory(
+    mergedDslMemory,
+    command.config.maxPromptDslEntries ?? 40
+  );
   const progress = progressProtocol
     ? undefined
     : process.stderr.isTTY
@@ -96,7 +158,8 @@ async function run(): Promise<number> {
     : undefined;
   const session = new DistillSession({
     summarizer: {
-      summarizeBatch: (input) => summarizeBatch(command.config, input),
+      summarizeBatch: (input) =>
+        summarizeBatch(command.config, input, { dslMemory: promptDslMemory }),
       summarizeWatch: (previous, current) =>
         summarizeWatch(command.config, previous, current)
     },
@@ -110,7 +173,13 @@ async function run(): Promise<number> {
     isTTY: Boolean(process.stdout.isTTY),
     progress,
     onProgressPhase: emitProgressPhase,
-    onProgressStop: emitProgressStop
+    onProgressStop: emitProgressStop,
+    onBatchOutput: command.config.autoLearn !== false
+      ? (output) =>
+          learnFromDistillOutput(process.env, process.cwd(), output, {
+            stack: undefined
+          }).then(() => undefined)
+      : undefined
   });
 
   await new Promise<void>((resolve, reject) => {

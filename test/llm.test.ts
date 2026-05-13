@@ -285,6 +285,37 @@ describe("summarizeBatch", () => {
       "Provider returned an incomplete response: max_output_tokens."
     );
   });
+
+  it("injects compact DSL memory into the batch system prompt", async () => {
+    let requestBody: unknown;
+
+    const output = await summarizeBatch(
+      baseConfig,
+      "auth failed",
+      { dslMemory: "AUTH = authentication fix (alias, project)" },
+      async (_, init) => {
+        requestBody = JSON.parse(String(init?.body ?? "{}"));
+
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "AUTH fixed" } }]
+          }),
+          { status: 200 }
+        );
+      }
+    );
+
+    const body = requestBody as {
+      messages: Array<{ role: string; content: string }>;
+    };
+
+    expect(output).toBe("AUTH fixed");
+    expect(body.messages[0].content).toContain("Known /distill DSL memory");
+    expect(body.messages[0].content).toContain(
+      "AUTH = authentication fix (alias, project)"
+    );
+    expect(body.messages[0].content).toContain("Emit Dict+ only");
+  });
 });
 
 describe("summarizeTranslate", () => {

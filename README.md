@@ -26,6 +26,28 @@ After onboarding you can use `/distill` in Claude/Codex to make the agent keep t
 
 It should not return your prompt rewritten. It should adopt the language structure and keep using it.
 
+`/distill` uses English Military English plus shared DSL memory with tiny keys:
+
+- aliases: `A` auth, `B` backend, `F` frontend, `D` database, `E` E2E, `C` config, `O` docs, `V` env, `X` deps, `P` permissions, `U` UI
+- macros: `1` test first, `2` run tests, `3` report summary/files/tests/status, `4` review, `5` fix, `6` validate, `7` commit/push, `8` PR, `9` release, `0` raw output
+- defaults: `N1` no frontend, `N2` no backend, `N3` no UI, `N4` no broad refactor, `N5` preserve user changes, `N6` TUI/interactive
+- learned terms start as candidates, promote after repeated use, and expire when unused
+
+Manage DSL memory:
+
+```bash
+distill dsl show
+distill dsl show --candidates
+distill dsl learn --dry-run "Dict+: A1=authentication fix"
+distill dsl promote --dry-run
+distill dsl add alias A1 "authentication bug fix" --scope project
+distill dsl add macro 1 "add failing regression test first" --scope global
+distill dsl pin A1 --scope project
+distill dsl prune --dry-run
+```
+
+Normal `distill` runs load only compact active DSL memory into the prompt. If the model emits reusable `Dict+` entries, `distill` learns them as project candidates using the shortest available key, promotes them after repeated use, and keeps stack/global promotion gated by `distill dsl promote`.
+
 You can also pipe command output into `distill`:
 
 ```bash

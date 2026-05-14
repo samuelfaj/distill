@@ -1,6 +1,6 @@
 {
   "name": "@samuelfaj/distill",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Compress command output for downstream LLMs.",
   "license": "MIT",
   "bin": {

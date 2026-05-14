@@ -16,7 +16,7 @@
     "release:check": "bun run scripts/release-check.ts",
     "verify": "npm run test && npm run build && npm run release:check"
   },
-  "version": "1.5.0",
+  "version": "1.5.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/samuelfaj/distill"

@@ -29,7 +29,8 @@ And that's it!
 Distill uses it's own **Expert Language Model** 
 
 https://huggingface.co/samuelfaj/distill-1.7B-MLX
-Only: 1.7B - 4bit
+
+**Only: 1.7B - 4bit**
 
 Safe recommendation: machine should have 8 GB+ RAM; 16 GB+ is comfortable.
 

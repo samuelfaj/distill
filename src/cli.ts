@@ -10,11 +10,13 @@ import {
   learnFromDistillOutput,
   readMergedDslMemory,
   runDslCommand,
-  type DslPromotionReview
+  type DslPromotionReview,
+  type DslThreadLearnReview
 } from "./dsl-memory";
 import {
   summarizeBatch,
   summarizeDslPromotion,
+  summarizeThreadLearn,
   summarizeTranslate,
   summarizeWatch
 } from "./llm";
@@ -27,6 +29,25 @@ import {
   resolveConfigPath,
   setPersistedConfigValue
 } from "./user-config";
+
+async function readAllStdin(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new UsageError("stdin is required.");
+  }
+
+  const chunks: Buffer[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    process.stdin.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    process.stdin.on("end", resolve);
+    process.stdin.on("error", reject);
+    process.stdin.resume();
+  });
+
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 async function run(): Promise<number> {
   const persisted = await readPersistedConfig(process.env);
@@ -49,26 +70,28 @@ async function run(): Promise<number> {
 
   if (command.kind === "dsl") {
     const defaults = resolveRuntimeDefaults(process.env, persisted);
+    const runtimeConfig = {
+      question: "Review DSL memory.",
+      model: defaults.model,
+      host: defaults.host,
+      apiKey: defaults.apiKey,
+      timeoutMs: defaults.timeoutMs,
+      datasetEnabled: defaults.datasetEnabled,
+      datasetPath: defaults.datasetPath,
+      autoLearn: defaults.autoLearn,
+      autoLearnScope: defaults.autoLearnScope,
+      autoLearnSource: defaults.autoLearnSource,
+      autoPromoteScopes: defaults.autoPromoteScopes,
+      maxPromptDslEntries: defaults.maxPromptDslEntries
+    };
     process.stdout.write(
       await runDslCommand(command.args, {
         env: process.env,
         cwd: process.cwd(),
+        readStdin: readAllStdin,
         promotionReviewer: async (entries) => {
           const response = await summarizeDslPromotion(
-            {
-              question: "Review DSL promotion candidates.",
-              model: defaults.model,
-              host: defaults.host,
-              apiKey: defaults.apiKey,
-              timeoutMs: defaults.timeoutMs,
-              datasetEnabled: defaults.datasetEnabled,
-              datasetPath: defaults.datasetPath,
-              autoLearn: defaults.autoLearn,
-              autoLearnScope: defaults.autoLearnScope,
-              autoLearnSource: defaults.autoLearnSource,
-              autoPromoteScopes: defaults.autoPromoteScopes,
-              maxPromptDslEntries: defaults.maxPromptDslEntries
-            },
+            { ...runtimeConfig, question: "Review DSL promotion candidates." },
             entries
               .map(
                 (entry) =>
@@ -78,6 +101,20 @@ async function run(): Promise<number> {
           );
 
           return JSON.parse(response) as DslPromotionReview[];
+        },
+        threadLearnReviewer: async (request) => {
+          const dslMemory = formatPromptDslMemory(
+            request.dslMemory,
+            defaults.maxPromptDslEntries ?? 40
+          );
+          const response = await summarizeThreadLearn(
+            { ...runtimeConfig, question: "Review thread DSL candidates." },
+            request.transcript,
+            request.candidates,
+            dslMemory
+          );
+
+          return JSON.parse(response) as DslThreadLearnReview[];
         }
       })
     );

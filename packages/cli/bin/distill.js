@@ -41,23 +41,23 @@ function resolveBinaryPath() {
     process.exit(1);
   }
 
+  const workspaceBinaryPath = path.resolve(
+    __dirname,
+    "..",
+    "..",
+    `distill-${target}`,
+    "bin",
+    targetSpec.binaryName
+  );
+
+  if (fs.existsSync(workspaceBinaryPath)) {
+    return workspaceBinaryPath;
+  }
+
   try {
     const packageJsonPath = requireFromHere.resolve(`${targetSpec.packageName}/package.json`);
     return path.join(path.dirname(packageJsonPath), "bin", targetSpec.binaryName);
   } catch (error) {
-    const workspaceBinaryPath = path.resolve(
-      __dirname,
-      "..",
-      "..",
-      `distill-${target}`,
-      "bin",
-      targetSpec.binaryName
-    );
-
-    if (fs.existsSync(workspaceBinaryPath)) {
-      return workspaceBinaryPath;
-    }
-
     console.error(
       `[distill] Missing platform package ${targetSpec.packageName}. Reinstall @samuelfaj/distill for this platform.`
     );

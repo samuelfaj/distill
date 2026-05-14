@@ -178,112 +178,40 @@ describe("summarizeBatch", () => {
     expect(body.messages[1].content).toContain(baseConfig.question);
   });
 
-  it("uses OpenAI Responses for official GPT-5 hosts", async () => {
-    let requestUrl = "";
+  it("always tells the model to create efficient inline variables", async () => {
     let requestBody: unknown;
 
     const output = await summarizeBatch(
-      {
-        ...baseConfig,
-        host: "https://api.openai.com/v1",
-        model: "gpt-5.4-mini"
-      },
-      "alpha\nbeta\ngamma",
-      async (input, init) => {
-        requestUrl = String(input);
+      baseConfig,
+      "cache warmed\ncache reused\nmodel loaded\nmodel reused",
+      async (_, init) => {
         requestBody = JSON.parse(String(init?.body ?? "{}"));
 
         return new Response(
           JSON.stringify({
-            output_text: "alpha"
+            choices: [{ message: { content: "S cache=#c1 model=#m1\nO #c1 + #m1 reused" } }]
           }),
           { status: 200 }
         );
       }
     );
 
-    expect(output).toBe("alpha");
-    expect(requestUrl).toBe("https://api.openai.com/v1/responses");
-
     const body = requestBody as {
-      model: string;
-      input: Array<{ role: string; content: string }>;
-      max_output_tokens: number;
-      temperature?: number;
+      messages: Array<{ role: string; content: string }>;
     };
 
-    expect(body.model).toBe("gpt-5.4-mini");
-    expect(body.max_output_tokens).toBe(baseConfig.maxTokens);
-    expect(body.temperature).toBeUndefined();
-    expect(body.input[0].role).toBe("system");
-    expect(body.input[1].role).toBe("user");
-    expect(body.input[1].content).toContain("alpha\nbeta\ngamma");
-  });
-
-  it("uses OpenAI Responses for official o-family hosts", async () => {
-    let requestUrl = "";
-    let requestBody: unknown;
-
-    const output = await summarizeBatch(
-      {
-        ...baseConfig,
-        host: "https://api.openai.com/v1",
-        model: "o3"
-      },
-      "alpha\nbeta\ngamma",
-      async (input, init) => {
-        requestUrl = String(input);
-        requestBody = JSON.parse(String(init?.body ?? "{}"));
-
-        return new Response(
-          JSON.stringify({
-            output_text: "alpha"
-          }),
-          { status: 200 }
-        );
-      }
-    );
-
-    expect(output).toBe("alpha");
-    expect(requestUrl).toBe("https://api.openai.com/v1/responses");
-
-    const body = requestBody as {
-      model: string;
-      input: Array<{ role: string; content: string }>;
-      max_output_tokens: number;
-      temperature?: number;
-    };
-
-    expect(body.model).toBe("o3");
-    expect(body.max_output_tokens).toBe(baseConfig.maxTokens);
-    expect(body.temperature).toBeUndefined();
-    expect(body.input[0].role).toBe("system");
-    expect(body.input[1].role).toBe("user");
-    expect(body.input[1].content).toContain("alpha\nbeta\ngamma");
-  });
-
-  it("throws when OpenAI Responses returns an incomplete payload", async () => {
-    await expect(
-      summarizeBatch(
-        {
-          ...baseConfig,
-          host: "https://api.openai.com/v1",
-          model: "gpt-5.4-mini"
-        },
-        "alpha\nbeta\ngamma",
-        async () =>
-          new Response(
-            JSON.stringify({
-              status: "incomplete",
-              incomplete_details: { reason: "max_output_tokens" },
-              output_text: "partial"
-            }),
-            { status: 200 }
-          )
-      )
-    ).rejects.toThrow(
-      "Provider returned an incomplete response: max_output_tokens."
-    );
+    expect(output).toContain("#c1");
+    expect(body.messages[0].content).toContain("Inline variable rule");
+    expect(body.messages[0].content).toContain("appears 2+ times");
+    expect(body.messages[0].content).toContain("<term>=#<letter><digit>");
+    expect(body.messages[0].content).toContain("project nouns");
+    expect(body.messages[0].content).toContain("Dict delta rule");
+    expect(body.messages[0].content).toContain("only with newly introduced variables");
+    expect(body.messages[0].content).toContain("omit Dict instead of restating old definitions");
+    expect(body.messages[0].content).toContain("Substitution pass");
+    expect(body.messages[0].content).toContain("replace every later safe occurrence");
+    expect(body.messages[0].content).not.toContain("Known /distill DSL memory");
+    expect(body.messages[0].content).not.toContain("workspace=#w3");
   });
 
   it("injects compact DSL memory into the batch system prompt", async () => {
@@ -314,6 +242,14 @@ describe("summarizeBatch", () => {
     expect(body.messages[0].content).toContain(
       "AUTH = authentication fix (alias, project)"
     );
+    expect(body.messages[0].content).toContain("Inline variable rule");
+    expect(body.messages[0].content).toContain("<term>=#<letter><digit>");
+    expect(body.messages[0].content).toContain("Dict delta rule");
+    expect(body.messages[0].content).toContain("do not repeat variables already defined");
+    expect(body.messages[0].content).toContain("Substitution pass");
+    expect(body.messages[0].content).toContain("exact model ID");
+    expect(body.messages[0].content).toContain("There is no fixed variable list");
+    expect(body.messages[0].content).not.toContain("workspace=#w3");
     expect(body.messages[0].content).toContain("Emit Dict+ only");
   });
 });

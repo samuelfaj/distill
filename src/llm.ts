@@ -2,6 +2,7 @@ import type { RuntimeConfig } from "./config";
 import {
   buildBatchPrompt,
   buildDslPromotionPrompt,
+  buildThreadLearnPrompt,
   buildTranslatePrompt,
   buildWatchPrompt,
   type PromptMessages
@@ -349,4 +350,18 @@ export function summarizeDslPromotion(
   fetchImpl?: typeof fetch
 ): Promise<string> {
   return summarize(config, buildDslPromotionPrompt(entries), fetchImpl);
+}
+
+export function summarizeThreadLearn(
+  config: RuntimeConfig,
+  transcript: string,
+  candidates: Parameters<typeof buildThreadLearnPrompt>[1],
+  dslMemory: string,
+  fetchImpl?: typeof fetch
+): Promise<string> {
+  return summarize(
+    config,
+    buildThreadLearnPrompt(transcript, candidates, dslMemory),
+    fetchImpl
+  );
 }

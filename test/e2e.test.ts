@@ -305,7 +305,7 @@ describe("distill end-to-end", () => {
                 content:
                   index < 2
                     ? "Out: done\nDict+: AUTH=authentication fix"
-                    : "Out: used A1"
+                    : "Out: used A"
               }
             }
           ]
@@ -334,12 +334,109 @@ describe("distill end-to-end", () => {
 
       expect(first.stdout).toContain("Dict+: AUTH=authentication fix");
       expect(second.stdout).toContain("Dict+: AUTH=authentication fix");
-      expect(shown.stdout).toContain("A1\tmacro\tactive\tauthentication fix");
+      expect(shown.stdout).toContain("A\tmacro\tactive\tauthentication fix");
       expect(third.code).toBe(0);
       expect(thirdPrompt).toContain("Known /distill DSL memory");
-      expect(thirdPrompt).toContain("A1 = authentication fix");
+      expect(thirdPrompt).toContain("A = authentication fix");
     } finally {
       fake.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("learns inline variable dict from thread transcript and injects it into later prompts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-var-dsl-"));
+    const env = {
+      DISTILL_CONFIG_PATH: path.join(dir, "config.json")
+    };
+    const fake = await createFakeChatProvider((body, index) => {
+      expect(index).toBe(0);
+      const prompt = JSON.stringify(body);
+
+      expect(prompt).toContain("#c1 = cache");
+      expect(prompt).toContain("#m1 = model");
+      expect(prompt).toContain("<term>=#<letter><digit>");
+      expect(prompt).not.toContain("workspace=#w3");
+
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "O used #c1 + #m1"
+              }
+            }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+
+    try {
+      const learned = await runLauncher(["dsl", "learn-thread", "--stdin"], {
+        env,
+        inputSteps: [
+          {
+            data: [
+              "S cache=#c1 warmed model=#m1",
+              "D inspect #c1 + #m1",
+              "D warm #c1 + #m1",
+              "D compare #c1 + #m1",
+              "D reuse #c1 + #m1",
+              "D keep #c1 + #m1"
+            ].join("\n")
+          }
+        ]
+      });
+      const shown = await runLauncher(["dsl", "show", "--scope", "project"], {
+        env
+      });
+      const summary = await runLauncher(["summarize"], {
+        env: createProviderEnv(fake.host, env),
+        inputSteps: [{ data: "cache model later\n" }]
+      });
+
+      expect(learned.stdout).toContain("active #c1 added to project");
+      expect(learned.stdout).toContain("active #m1 added to project");
+      expect(shown.stdout).toContain("#c1\talias\tactive\tcache");
+      expect(shown.stdout).toContain("#m1\talias\tactive\tmodel");
+      expect(summary.stdout).toContain("O used #c1 + #m1");
+      expect(fake.requests).toHaveLength(1);
+    } finally {
+      fake.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("promotes explicit inline variables from a thread transcript without reviewer calls", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "distill-e2e-thread-dsl-"));
+    const env = {
+      DISTILL_CONFIG_PATH: path.join(dir, "config.json")
+    };
+
+    try {
+      const transcript = [
+        "S release-flow=#r1 started",
+        "D inspect #r1",
+        "D verify #r1",
+        "D publish #r1",
+        "D announce #r1",
+        "D close #r1",
+        "secret token value secret token value"
+      ].join("\n");
+      const result = await runLauncher(["dsl", "learn-thread", "--stdin"], {
+        env,
+        inputSteps: [{ data: transcript }]
+      });
+      const shown = await runLauncher(["dsl", "show", "--scope", "project"], {
+        env
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("active #r1 added to project");
+      expect(shown.stdout).toContain("#r1\talias\tactive\trelease flow");
+      expect(shown.stdout).not.toContain("secret token value");
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });

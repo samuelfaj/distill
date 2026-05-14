@@ -7,6 +7,15 @@ export interface BatchPromptOptions {
   dslMemory?: string;
 }
 
+export interface ThreadLearnPromptCandidate {
+  key: string;
+  meaning: string;
+  kind: "alias" | "macro" | "default";
+  scope: "global" | "stack" | "project";
+  occurrenceCount: number;
+  source: string;
+}
+
 const SAFETY_BIAS = [
   "SAFETY:",
   "When the question asks to classify risk, safety, or destructiveness",
@@ -153,18 +162,33 @@ export function buildBatchPrompt(
   input: string,
   options: BatchPromptOptions = {}
 ): PromptMessages {
+  const inlineVariableRules = [
+    "Inline variable rule:",
+    "When free-form /distill output is allowed and the same stable noun/phrase appears 2+ times, or will likely repeat across status lines, define it once as <term>=#<letter><digit> and then reuse the # key.",
+    "Prefer inline variables for repeated project nouns, package nouns, component names, workflow names, and repeated technical objects.",
+    "Dict delta rule: each new response may update Dict only with newly introduced variables; do not repeat variables already defined earlier in the thread or known DSL memory.",
+    "If no new variable is introduced in the response, omit Dict instead of restating old definitions.",
+    "Substitution pass: after defining any Dict alias or inline variable, replace every later safe occurrence of that meaning with the alias/key.",
+    "Do not leave repeated full terms after defining their alias/key unless the full term is required as an exact model ID, package name, path, URL, quoted text, or disambiguation.",
+    "Do not define variables for secrets, people, IDs, paths, URLs, or one-off terms.",
+    "Inline variables are thread-local unless a later learn-thread pass promotes them; do not assume every inline variable is persisted.",
+    "There is no fixed variable list; choose variables from this output/task only."
+  ].join("\n");
   const dslRules = options.dslMemory
     ? [
         "Known /distill DSL memory:",
         options.dslMemory,
-        "Use these aliases/macros/defaults only when they reduce repeated meaning.",
+        "Use these learned aliases/macros/defaults when the requested output format allows DSL.",
+        "When free-form /distill output is allowed, start with Dict only if needed, then use the active DSL keys.",
         "Do not redefine known entries. Emit Dict+ only for genuinely reusable new terms.",
         "When emitting Dict+, use the shortest unambiguous key: one letter or one number first, then one letter plus one number if needed."
       ].join("\n")
     : "";
 
   return {
-    system: [COMMON_RULES, dslRules, FEW_SHOT].filter(Boolean).join("\n\n"),
+    system: [COMMON_RULES, inlineVariableRules, dslRules, FEW_SHOT]
+      .filter(Boolean)
+      .join("\n\n"),
     user: `Command output:\n${fitInput(input)}\n\nQuestion: ${question}`
   };
 }
@@ -172,10 +196,12 @@ export function buildBatchPrompt(
 export function buildTranslatePrompt(text: string, language: string): PromptMessages {
   const system = [
     "You translate /distill output into human language for a software engineer.",
-    "/distill output is compressed Military English for prompts, task specs,",
+    "/distill output is compressed Military English + AR-0/AR-1 for prompts, task specs,",
     "commands, or agent instructions.",
-    "It may contain sections such as Best, More aggressive, Tradeoff, Dict,",
-    "Dict+, T, C, Do, No, Pass, and Out.",
+    "It may contain Dict/Dict+, dynamic inline variables using <term>=#<letter><digit>, and fixed prefixes S, C, D, R, O, N, P.",
+    "Prefix meanings are usually S=state/status, C=cause/context, D=action/decision, R=risk/blocker, O=outcome/output, N=constraint/no-go, P=pass criteria/proof.",
+    "Expand # variables from Dict/Dict+ or inline assignments when present.",
+    "It may also contain legacy sections such as Best, More aggressive, Tradeoff, T, Do, No, Pass, and Out.",
     "Expand short command lines into clear human language.",
     "Expand aliases from Dict and Dict+ when present. Keep aliases unchanged",
     "when no definition is present.",
@@ -217,6 +243,41 @@ export function buildDslPromotionPrompt(entries: string): PromptMessages {
   return {
     system,
     user: ["Entries:", fitInput(entries, 4000)].join("\n")
+  };
+}
+
+export function buildThreadLearnPrompt(
+  transcript: string,
+  candidates: ThreadLearnPromptCandidate[],
+  dslMemory: string
+): PromptMessages {
+  const system = [
+    "You review /distill DSL candidates learned from a whole agent thread.",
+    "Return valid JSON only.",
+    "Input candidates were extracted deterministically from repeated thread usage.",
+    "Keep only stable, reusable operational language that will reduce future repetition.",
+    "Reject secrets, tokens, emails, URLs, file paths, IDs, hashes, personal names,",
+    "package names, project-private names, one-off wording, and ambiguous meanings.",
+    "Prefer the shortest unambiguous key: one letter or one number first, then letter+number.",
+    "Accept # variable keys only when the transcript explicitly used term=#x1 syntax.",
+    "Do not duplicate existing DSL memory. Do not overwrite pinned meanings.",
+    "Use scope project unless the candidate is clearly generic for the requested scope.",
+    "Schema: [{\"key\":\"A\",\"meaning\":\"short meaning\",\"kind\":\"alias|macro|default\",\"scope\":\"project|stack|global\",\"reason\":\"short reason\",\"confidence\":0.0}]",
+    "Use confidence 0.65 or higher only when the candidate is safe to persist."
+  ].join(" ");
+
+  return {
+    system,
+    user: [
+      "Existing active DSL memory:",
+      dslMemory || "(empty)",
+      "",
+      "Deterministic candidates:",
+      JSON.stringify(candidates, null, 2),
+      "",
+      "Thread transcript:",
+      fitInput(transcript, 10000)
+    ].join("\n")
   };
 }
 

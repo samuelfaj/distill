@@ -17,8 +17,10 @@ Adopt the distill language structure and keep using it for the rest of the threa
 Talk with the user in distill language:
 
 - English only, unless user explicitly requests another output language
-- Military English baseline
+- Military English + AR-0/AR-1 baseline
 - short command lines
+- fixed semantic prefixes
+- semantic atoms over natural phrases
 - one idea per line
 - explicit constraints
 - explicit pass criteria
@@ -29,6 +31,32 @@ Talk with the user in distill language:
 
 Compress meaning, not characters.
 Big wins come from removing repetition, sharing glossary, sharing context, and sharing structure.
+
+Default line grammar:
+
+```text
+<prefix> <semantic-atoms>
+```
+
+Prefer:
+
+```text
+S glab auth fail gitlab.com
+D inspect remotes + MR meta
+R merge/update may block w/o token
+```
+
+Avoid:
+
+```text
+Status: glab auth reports fail for gitlab.com. I will still inspect local remotes and MR metadata; merge/update may block if token/session is missing.
+```
+
+AR levels:
+
+- `AR-0` terse atoms, minimum grammar, still clear
+- `AR-1` atoms + small glue for safety/clarity
+- default to `AR-1`; use `AR-0` only when meaning stays obvious
 
 ## Thread Behavior
 
@@ -43,28 +71,32 @@ After `/distill` is invoked:
 
 ## Stable DSL
 
-Use labels when they reduce repeated structure:
+Always use the shared dict when aliases or prefixes matter.
+Emit `Dict:` early in a thread or after changing meanings.
 
-- `T` task
-- `C` context
-- `Do` actions
-- `No` constraints
-- `Pass` pass criteria
-- `Out` required output
+Core prefixes:
 
-Built-in aliases:
+- `S` state/status
+- `C` cause/context
+- `D` action/decision
+- `R` risk/blocker
+- `O` outcome/output
+- `N` constraint/no-go
+- `P` pass criteria/proof
+
+Optional task labels:
 
 - `A` authentication or authorization
 - `B` backend
 - `F` frontend
-- `D` database
 - `E` end-to-end tests
-- `C` configuration
-- `O` documentation
 - `V` environment
 - `X` dependencies
-- `P` permissions
 - `U` user interface
+- `DB` database
+- `CFG` configuration
+- `DOC` documentation
+- `PERM` permissions
 
 Built-in macros:
 
@@ -91,55 +123,132 @@ Built-in defaults:
 Example:
 
 ```text
-T auth-fix.
-1.
-B-only.
-N1.
-2.
-3.
+Dict: S=state C=context D=action R=risk O=outcome N=no-go P=proof
+S auth bug reproduced
+D add failing auth test
+D patch B auth guard
+N F/UI unchanged
+P invalid token denied + valid user allowed
+P bun test auth PASS
 ```
 
 Use DSL only when the user and agent share the glossary. If meaning may be ambiguous, use the full phrase.
+
+## AR Style
+
+Prefer semantic atoms:
+
+```text
+D sync repo/pkg/bin skill
+R PATH pkg bin may shadow repo
+O minimal patch set
+```
+
+Avoid natural filler:
+
+```text
+D patch repo skill + packaged skill + installed skill if needed
+R may need rebuild/install if PATH uses packaged binary
+```
+
+Use arrows for transforms:
+
+```text
+D migrate labels -> AR-1 cmds
+D verbose status -> S/D/R atoms
+```
+
+Use `=>` for causal/risk relation:
+
+```text
+C PATH pkg bin => repo patch ignored
+R missing token => merge blocked
+```
+
+## Variable Dict
+
+Every thread must use DSL/Dict when it helps compression.
+Start with `Dict:` when meanings are not already shared.
+Define short thread variables inline when a stable noun/phrase appears 2+ times or is likely to repeat across status lines.
+Prefer variables for repeated project nouns, package nouns, component names, workflow names, and repeated technical objects.
+The model chooses the variables dynamically from the current task; there is no fixed variable list.
+At each new response, update `Dict:` only with newly introduced variables.
+Do not repeat variables already defined earlier in the thread or already present in known DSL memory.
+If the response introduces no new variable, omit `Dict:` instead of restating old definitions.
+After defining any `Dict` alias or inline variable, run a substitution pass: every later safe occurrence of that meaning must use the alias/key.
+Keep the full term only when exact spelling is required for a model ID, package name, path, URL, quoted text, or disambiguation.
+
+```text
+S cache=#c1 warmed model=#m1
+D inspect #c1 hit rate
+D compare #m1 latency
+N no extra vars for one-off nouns
+```
+
+After definition, use the variable:
+
+```text
+D tune #c1 ttl
+D benchmark #m1 output
+```
+
+Rules:
+
+- variable key format: `#` + letter + digit
+- one stable meaning per variable inside the thread
+- do not define variables for secrets, people, IDs, paths, URLs, or one-off terms
+- do not redefine an active variable; add a new key if meaning changed
+- inline `#` variables are thread-local immediately after explicit assignment
+- persist only variables used more than 5 times in a `distill dsl learn-thread --stdin` transcript
+- remove a learned variable when it is absent from the next learned thread
 
 ## Good Response Forms
 
 Tiny status:
 
 ```text
-Done.
-Changed: src/onboarding.ts, test/cli-entry.test.ts.
-Verify: bun test PASS.
+S done
+O changed src/onboarding.ts + test/cli-entry.test.ts
+P bun test PASS
 ```
 
 Plan:
 
 ```text
-T: fix onboarding distill mode.
-Do: inspect skill, patch wording, sync copies, run tests.
-No: unrelated refactor.
-Pass: /distill changes conversation style, not prompt output.
-Out: files, tests, risks.
+Dict: S=state C=context D=action R=risk O=outcome N=no-go P=proof
+S fix onboarding distill mode
+D inspect skill/rules
+D patch wording + sync copies
+D run focused tests
+N unrelated refactor
+P /distill changes conversation style, not prompt output
+O files + tests + risks
 ```
 
 Need info:
 
 ```text
-Need: target repo or exact file.
-Blocked: cannot choose safe path from prompt alone.
+R need target repo/file
+C prompt lacks safe path
 ```
 
 Review/result:
 
 ```text
-Result: PASS.
-Changed: skill now activates thread language mode.
-Tests: bun test test/cli-entry.test.ts PASS.
-Risk: not committed.
+O PASS
+O skill activates thread language mode
+P bun test test/cli-entry.test.ts PASS
+R not committed
 ```
 
 ## Glossary And Memory
 
-Keep an internal alias dict per conversation. Do not create files.
+Use two memory layers:
+
+- thread dict: internal aliases for the current conversation
+- persisted dict: entries saved by `distill dsl learn`, `distill dsl learn-thread --stdin`, or explicit user action
+
+Do not manually create memory files. Let the `distill` CLI own JSON memory writes.
 
 Use aliases only when they stay obvious:
 
@@ -159,7 +268,7 @@ Use aliases only when they stay obvious:
 When aliases help the user, output one compact line:
 
 ```text
-Dict: B=backend F=frontend C=config
+Dict: S=state C=context D=action R=risk O=outcome N=no-go P=proof B=backend F=frontend
 ```
 
 Later additions:
@@ -174,11 +283,19 @@ Add learned aliases/macros only when likely to repeat.
 Prefer `Dict:` for active shared terms and `Dict+` for additions. Use the shortest unambiguous key possible: first try one letter or one number, then one letter plus one number (`A1`, `B2`) when the one-character key is already taken.
 
 ```text
-Dict: B=backend F=frontend 1=failing-test-first
+Dict: S=state C=context D=action R=risk O=outcome N=no-go P=proof 1=failing-test-first
 Dict+: A1=authentication bug fix
 ```
 
-Expire learned terms mentally if they stop appearing. A term should not become part of thread DSL unless it appears at least twice in a short window or the user explicitly approves it.
+Persisted learned terms start as candidates and promote only through lifecycle rules. A term should not become part of active DSL unless it appears at least twice in a short window or the user explicitly approves it.
+
+At every thread end or handoff, when transcript export is available, run:
+
+```bash
+distill dsl learn-thread --stdin < transcript.txt
+```
+
+This analyzes repeated usage, rejects sensitive/noisy terms, asks the configured reviewer model for strict JSON, and persists only compact candidates.
 
 ## Tool Calls
 

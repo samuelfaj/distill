@@ -74,8 +74,8 @@ try {
     cwd: installDir,
     env: {
       ...process.env,
-      DISTILL_PROVIDER: "ollama",
-      OLLAMA_HOST: "http://127.0.0.1:9"
+      DISTILL_PROVIDER: "external",
+      DISTILL_HOST: "http://127.0.0.1:9"
     },
     encoding: "utf8",
     input: "fallback smoke\n"

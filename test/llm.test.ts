@@ -14,6 +14,7 @@ const baseConfig: RuntimeConfig = {
   host: "http://127.0.0.1:11434/v1",
   apiKey: "",
   timeoutMs: 100,
+  maxTokens: 1536,
   datasetEnabled: false
 };
 
@@ -75,9 +76,12 @@ describe("chatCompletion", () => {
         model: "qwen",
         prompt: "hi",
         timeoutMs: 100,
-        fetchImpl: async () => new Response("boom", { status: 500 })
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ error: { message: "boom" } }), {
+            status: 500
+          })
       })
-    ).rejects.toThrow("Request failed with 500.");
+    ).rejects.toThrow("Request failed with 500: boom");
   });
 
   it("throws when the provider returns invalid JSON", async () => {
@@ -167,7 +171,7 @@ describe("summarizeBatch", () => {
     };
     expect(body.model).toBe("qwen3.5:2b");
     expect(body.temperature).toBe(0);
-    expect(body.max_tokens).toBe(512);
+    expect(body.max_tokens).toBe(baseConfig.maxTokens);
     expect(body.messages[0].role).toBe("system");
     expect(body.messages[1].role).toBe("user");
     expect(body.messages[1].content).toContain("1 passed");

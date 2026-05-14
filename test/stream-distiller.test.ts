@@ -277,10 +277,12 @@ describe("DistillSession", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "distill-session-dataset-"));
     const datasetPath = path.join(dir, "distill.jsonl");
     const writer = createWriter();
+    const stderr = createWriter();
 
     try {
       const session = new DistillSession({
         stdout: writer,
+        stderr,
         isTTY: false,
         idleMs: 10,
         interactiveGapMs: 5,
@@ -290,6 +292,7 @@ describe("DistillSession", () => {
           host: "http://127.0.0.1:11434/v1",
           apiKey: "",
           timeoutMs: 90_000,
+          maxTokens: 512,
           datasetEnabled: true
         },
         dataset: {
@@ -308,10 +311,42 @@ describe("DistillSession", () => {
       await session.end();
 
       expect(writer.read()).toBe("raw payload\n");
+      expect(stderr.read()).toContain(
+        "distill: batch distillation failed: request failed"
+      );
       await expect(readFile(datasetPath, "utf8")).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("surfaces watch summarization failures on stderr before falling back", async () => {
+    const stdout = createWriter();
+    const stderr = createWriter();
+    const session = new DistillSession({
+      stdout,
+      stderr,
+      isTTY: false,
+      idleMs: 15,
+      interactiveGapMs: 5,
+      summarizer: {
+        summarizeBatch: async () => "unused",
+        summarizeWatch: async () => {
+          throw new Error("provider rejected request");
+        }
+      }
+    });
+
+    session.push(Buffer.from("watch run\nfailed: 0\n"));
+    await sleep(25);
+    session.push(Buffer.from("watch run\nfailed: 1\n"));
+    await sleep(40);
+    await session.end();
+
+    expect(stdout.read()).toBe("watch run\nfailed: 1\n");
+    expect(stderr.read()).toContain(
+      "distill: watch distillation failed: provider rejected request"
+    );
   });
 
   it("switches to passthrough for interactive prompts", async () => {
@@ -451,7 +486,7 @@ describe("DistillSession", () => {
     expect(watchCalls).toBe(0);
   });
 
-  it("emits a one-time privacy notice on the first dataset write", async () => {
+  it("captures dataset records without emitting a privacy notice", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "distill-session-notice-"));
     const datasetPath = path.join(dir, "distill.jsonl");
     const runtimeConfig = {
@@ -483,8 +518,7 @@ describe("DistillSession", () => {
       firstSession.push(Buffer.from("1 passed\n"));
       await firstSession.end();
 
-      expect(stderrFirst.read()).toContain("capturing fine-tuning data");
-      expect(stderrFirst.read()).toContain(datasetPath);
+      expect(stderrFirst.read()).toBe("");
 
       const stdoutSecond = createWriter();
       const stderrSecond = createWriter();
@@ -505,7 +539,7 @@ describe("DistillSession", () => {
       secondSession.push(Buffer.from("1 passed\n"));
       await secondSession.end();
 
-      expect(stderrSecond.read()).not.toContain("capturing fine-tuning data");
+      expect(stderrSecond.read()).toBe("");
 
       const lines = (await readFile(datasetPath, "utf8")).trim().split("\n");
       expect(lines).toHaveLength(2);
@@ -514,7 +548,7 @@ describe("DistillSession", () => {
     }
   });
 
-  it("does not emit the privacy notice when dataset capture is disabled", async () => {
+  it("does not write dataset records when dataset capture is disabled", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "distill-session-notice-off-"));
     const datasetPath = path.join(dir, "distill.jsonl");
     const stdout = createWriter();
@@ -545,7 +579,7 @@ describe("DistillSession", () => {
       session.push(Buffer.from("1 passed\n"));
       await session.end();
 
-      expect(stderr.read()).not.toContain("capturing fine-tuning data");
+      expect(stderr.read()).toBe("");
       await expect(readFile(datasetPath, "utf8")).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });

@@ -5,6 +5,7 @@ export const DISTILL_VERSION = cliPackage.version;
 export const DEFAULT_MODEL = "qwen3.5:2b";
 export const DEFAULT_HOST = "http://127.0.0.1:11434/v1";
 export const DEFAULT_TIMEOUT_MS = 90_000;
+export const DEFAULT_MAX_TOKENS = 512;
 export const DEFAULT_IDLE_MS = 1_200;
 export const DEFAULT_INTERACTIVE_GAP_MS = 180;
 export const DEFAULT_PROGRESS_FRAME_MS = 120;
@@ -20,6 +21,7 @@ export interface DistillSettings {
   host: string;
   apiKey: string;
   timeoutMs: number;
+  maxTokens: number;
   datasetEnabled: boolean;
   datasetPath?: string;
   autoLearn?: boolean;
@@ -40,6 +42,7 @@ export type ConfigKey =
   | "host"
   | "api-key"
   | "timeout-ms"
+  | "max-tokens"
   | "dataset-enabled"
   | "dataset-path"
   | "auto-learn"
@@ -102,6 +105,16 @@ function coerceTimeout(input: string | undefined): number {
   return Math.floor(value);
 }
 
+function coerceMaxTokens(input: string | number | undefined): number {
+  const value = Number(input ?? DEFAULT_MAX_TOKENS);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new UsageError("Max tokens must be a positive number.");
+  }
+
+  return Math.floor(value);
+}
+
 function normalizeHost(input: string | undefined): string {
   const value = (input ?? DEFAULT_HOST).trim();
 
@@ -152,6 +165,9 @@ export function resolveRuntimeDefaults(
   const timeoutMs = coerceTimeout(
     env.DISTILL_TIMEOUT_MS ?? String(persisted.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   );
+  const maxTokens = coerceMaxTokens(
+    env.DISTILL_MAX_TOKENS ?? persisted.maxTokens ?? DEFAULT_MAX_TOKENS
+  );
   const datasetEnabled = coerceBoolean(
     env.DISTILL_DATASET_ENABLED ?? persisted.datasetEnabled
   );
@@ -176,6 +192,7 @@ export function resolveRuntimeDefaults(
     host,
     apiKey,
     timeoutMs,
+    maxTokens,
     datasetEnabled,
     datasetPath,
     autoLearn,
@@ -199,6 +216,7 @@ function parseConfigCommand(argv: string[]): Command {
       "host",
       "api-key",
       "timeout-ms",
+      "max-tokens",
       "dataset-enabled",
       "dataset-path",
       "auto-learn",
@@ -224,6 +242,14 @@ function parseConfigCommand(argv: string[]): Command {
       kind: "configSet",
       key,
       value: coerceTimeout(rawValue)
+    };
+  }
+
+  if (key === "max-tokens") {
+    return {
+      kind: "configSet",
+      key,
+      value: coerceMaxTokens(rawValue)
     };
   }
 
@@ -312,6 +338,7 @@ export function parseCommand(
         host: defaults.host,
         apiKey: defaults.apiKey,
         timeoutMs: defaults.timeoutMs,
+        maxTokens: defaults.maxTokens,
         datasetEnabled: defaults.datasetEnabled,
         datasetPath: defaults.datasetPath,
         autoLearn: defaults.autoLearn,
@@ -324,6 +351,7 @@ export function parseCommand(
   }
 
   let timeoutMs = defaults.timeoutMs;
+  let maxTokens = defaults.maxTokens;
   let modelOverride: string | undefined;
   let hostOverride: string | undefined;
   let apiKeyOverride: string | undefined;
@@ -365,6 +393,25 @@ export function parseCommand(
       continue;
     }
 
+    if (token === "-t") {
+      const next = argv[index + 1];
+
+      if (!next) {
+        throw new UsageError("Missing value for -t.");
+      }
+
+      maxTokens = coerceMaxTokens(next);
+      index += 1;
+      continue;
+    }
+
+    if (token === "--max-tokens" || token.startsWith("--max-tokens=")) {
+      const parsed = readFlagValue(argv, index, "--max-tokens");
+      maxTokens = coerceMaxTokens(parsed.value);
+      index = parsed.nextIndex;
+      continue;
+    }
+
     if (token.startsWith("-")) {
       throw new UsageError(`Unknown flag: ${token}`);
     }
@@ -390,6 +437,7 @@ export function parseCommand(
       host,
       apiKey,
       timeoutMs,
+      maxTokens,
       datasetEnabled: defaults.datasetEnabled,
       datasetPath: defaults.datasetPath,
       autoLearn: defaults.autoLearn,
@@ -413,13 +461,15 @@ export function formatUsage(): string {
     '  distill translate "Best: Fix auth bug. Pass: tests pass." [language]',
     '  distill config host http://127.0.0.1:11434/v1',
     '  distill config model "qwen3.5:2b"',
-    '  distill --host http://127.0.0.1:1234/v1 --model my-model "summarize"',
+    '  distill config max-tokens 1000',
+    '  distill --host http://127.0.0.1:1234/v1 --model my-model --max-tokens 1000 "summarize"',
     "",
     "Options:",
     `  --model <name>        Model name (default: ${DEFAULT_MODEL})`,
     `  --host <url>          OpenAI-compatible base URL (default: ${DEFAULT_HOST})`,
     "  --api-key <key>       API key (env: DISTILL_API_KEY)",
     `  --timeout-ms <ms>     Request timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS})`,
+    `  --max-tokens, -t <n>  Max completion/output tokens (default: ${DEFAULT_MAX_TOKENS})`,
     "",
     "Local fine-tuning capture (enabled by default):",
     "  Successful batch summaries are appended as JSONL under the config dir",

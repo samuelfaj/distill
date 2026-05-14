@@ -88,6 +88,8 @@ export async function setPersistedConfigValue(
 
   if (key === "timeout-ms") {
     current.timeoutMs = Number(value);
+  } else if (key === "max-tokens") {
+    current.maxTokens = Number(value);
   } else if (key === "dataset-enabled") {
     current.datasetEnabled = Boolean(value);
   } else if (key === "dataset-path") {
@@ -116,6 +118,10 @@ export function getPersistedConfigValue(
 ): string | number | undefined {
   if (key === "timeout-ms") {
     return config.timeoutMs;
+  }
+
+  if (key === "max-tokens") {
+    return config.maxTokens;
   }
 
   if (key === "dataset-enabled") {

@@ -26,6 +26,35 @@ fn test_manager() -> ModelsManager {
     .build()
 }
 
+/// The harness ships in auto effort: the decision layer chooses the level for
+/// each micro-action, and only an explicit `/effort <level>` (or the config key)
+/// takes that back.
+#[test]
+fn a_fresh_manager_starts_in_auto_effort() {
+    assert!(
+        test_manager().current_effort_auto(),
+        "an unset `[jev] effort_auto` means on"
+    );
+
+    let mut cfg = config::Config::default();
+    cfg.jev.effort_auto = Some(false);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let auth_manager = Arc::new(AuthManager::new(tmp.path(), GrokComConfig::default()));
+    let pinned = ModelsManagerBuilder::new(
+        None,
+        IndexMap::new(),
+        acp::ModelId::new("default"),
+        auth_manager,
+        cfg,
+    )
+    .cache(test_cache_manager(tmp.path()))
+    .build();
+    assert!(
+        !pinned.current_effort_auto(),
+        "the owner can pin one level for the session"
+    );
+}
+
 /// Cold manager (no prefetch, isolated cache and auth) over `endpoint`.
 fn cold_manager(cfg: config::Config, endpoint: Arc<dyn ModelsEndpoint>) -> ModelsManager {
     let tmp = tempfile::TempDir::new().unwrap();

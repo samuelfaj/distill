@@ -198,6 +198,10 @@ impl ModelsManagerBuilder {
         let has_session = self.auth_manager.current_or_expired().is_some();
         let fetch_auth = ModelFetchAuth::resolve(&self.cfg.endpoints, has_session);
         let current_reasoning_effort = self.cfg.models.default_reasoning_effort;
+        // Auto effort is the harness default: the decision layer picks the level
+        // per micro-action, and an explicit `/effort <level>` turns it off for
+        // the session (the last level then stays the fallback).
+        let current_effort_auto = self.cfg.jev.effort_auto.unwrap_or(true);
         ModelsManager {
             inner: Arc::new(Inner {
                 catalog: RwLock::new(CatalogState {
@@ -208,7 +212,7 @@ impl ModelsManagerBuilder {
                 }),
                 current_model_id: RwLock::new(self.current_model_id),
                 current_reasoning_effort: RwLock::new(current_reasoning_effort),
-                current_effort_auto: RwLock::new(false),
+                current_effort_auto: RwLock::new(current_effort_auto),
                 auth_manager: self.auth_manager,
                 cfg: RwLock::new(self.cfg),
                 fetch_auth: RwLock::new(fetch_auth),

@@ -22,18 +22,26 @@ use super::types::{Answer, Json, Question, QuestionId, Usage};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum JevProvider {
-    /// TypeSafe System One (`/v1/systemone`), the calibrated decision service.
+    /// TypeSafe System One (`/v1/systemone`), the calibrated decision service
+    /// on its own host.
     #[default]
     Typesafe,
-    /// OpenAI-compatible chat completions (OpenRouter, oMLX, …).
+    /// The same contract served by OpenRouter's decisions endpoint
+    /// (`POST /api/alpha/decisions`): the Jev model as one more model a
+    /// configured base URL can route to, with one key and one bill.
+    OpenRouterDecisions,
+    /// OpenAI-compatible chat completions (any chat model).
     OpenRouter,
 }
 
 impl JevProvider {
-    /// Parse a provider name from configuration (`typesafe` | `openrouter`).
+    /// Parse a provider name from configuration.
     pub fn from_name(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "typesafe" | "type-safe" | "systemone" | "" => Some(Self::Typesafe),
+            "openrouter_decisions" | "openrouter-decisions" | "decisions" | "jev" => {
+                Some(Self::OpenRouterDecisions)
+            }
             "openrouter" | "open-router" | "chat_completions" => Some(Self::OpenRouter),
             _ => None,
         }
@@ -42,6 +50,7 @@ impl JevProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Typesafe => "typesafe",
+            Self::OpenRouterDecisions => "openrouter_decisions",
             Self::OpenRouter => "openrouter",
         }
     }
@@ -50,7 +59,29 @@ impl JevProvider {
     pub fn path(self) -> &'static str {
         match self {
             Self::Typesafe => "/v1/systemone",
+            Self::OpenRouterDecisions => "/alpha/decisions",
             Self::OpenRouter => "/chat/completions",
+        }
+    }
+
+    /// Whether this backend speaks the typed envelope itself
+    /// (`{state, model, questions}` in, typed answers out) instead of needing
+    /// the questions rendered into a chat prompt.
+    ///
+    /// Both TypeSafe hosts do: OpenRouter's decisions endpoint is the same
+    /// contract behind a different URL and key.
+    pub const fn speaks_typed_envelope(self) -> bool {
+        match self {
+            Self::Typesafe | Self::OpenRouterDecisions => true,
+            Self::OpenRouter => false,
+        }
+    }
+
+    /// Whether the backend answers by generating text token by token.
+    pub const fn generates_text(self) -> bool {
+        match self {
+            Self::OpenRouter => true,
+            Self::Typesafe | Self::OpenRouterDecisions => false,
         }
     }
 }
@@ -950,6 +981,42 @@ mod tests {
         assert_eq!(effort_value("none", &advertised), None);
         // A model that advertises nothing takes the level as asked.
         assert_eq!(effort_value("high", &[]).as_deref(), Some("high"));
+    }
+
+    /// Each backend posts to its own path, and the two TypeSafe hosts share the
+    /// typed envelope (one on its own host, one behind OpenRouter).
+    #[test]
+    fn every_backend_names_its_path_and_its_payload_shape() {
+        assert_eq!(JevProvider::Typesafe.path(), "/v1/systemone");
+        assert_eq!(JevProvider::OpenRouterDecisions.path(), "/alpha/decisions");
+        assert_eq!(JevProvider::OpenRouter.path(), "/chat/completions");
+
+        assert!(JevProvider::Typesafe.speaks_typed_envelope());
+        assert!(JevProvider::OpenRouterDecisions.speaks_typed_envelope());
+        assert!(!JevProvider::OpenRouter.speaks_typed_envelope());
+
+        assert!(!JevProvider::Typesafe.generates_text());
+        assert!(!JevProvider::OpenRouterDecisions.generates_text());
+        assert!(JevProvider::OpenRouter.generates_text());
+
+        // The names an owner may write in `[jev]`.
+        assert_eq!(
+            JevProvider::from_name("openrouter_decisions"),
+            Some(JevProvider::OpenRouterDecisions)
+        );
+        assert_eq!(
+            JevProvider::from_name("openrouter-decisions"),
+            Some(JevProvider::OpenRouterDecisions)
+        );
+        assert_eq!(
+            JevProvider::from_name("decisions"),
+            Some(JevProvider::OpenRouterDecisions)
+        );
+        assert_eq!(
+            JevProvider::from_name("openrouter"),
+            Some(JevProvider::OpenRouter)
+        );
+        assert_eq!(JevProvider::from_name("nonsense"), None);
     }
 
     #[test]

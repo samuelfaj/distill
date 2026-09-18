@@ -1191,6 +1191,12 @@ pub struct JevConfig {
     pub api_key_env: Option<String>,
     /// Maximum serialized bytes of `state` for one request.
     pub max_state_bytes: Option<usize>,
+    /// Whether the session starts in auto effort (`/effort auto`): the decision
+    /// layer chooses each micro-action's effort instead of the session keeping
+    /// one level. Unset ⇒ the harness default, which is **on** — a level per
+    /// micro-action is the point of the routing, and `/effort <level>` still
+    /// overrides it for the session.
+    pub effort_auto: Option<bool>,
     /// Deadline for one catalogue item call, in milliseconds.
     ///
     /// Unset ⇒ a per-provider default: the System One service answers in well

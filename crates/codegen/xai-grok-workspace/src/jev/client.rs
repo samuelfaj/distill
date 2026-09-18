@@ -245,26 +245,28 @@ impl JevClient {
         state: &Json,
         questions: &BTreeMap<QuestionId, Question>,
     ) -> Result<Vec<u8>, JevError> {
-        let body = match self.config.provider {
-            JevProvider::Typesafe => serde_json::to_vec(&SystemOneRequest {
+        // Both TypeSafe hosts take the typed envelope as it is; only a chat
+        // backend needs the questions rendered into a prompt.
+        if self.config.provider.speaks_typed_envelope() {
+            return serde_json::to_vec(&SystemOneRequest {
                 state: state.clone(),
                 model: self.config.model.clone(),
                 questions: questions.clone(),
             })
-            .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))?,
-            JevProvider::OpenRouter => chat_request_body(
-                state,
-                questions,
-                &self.config.model,
-                self.config.reasoning_shape,
-                &self.config.reasoning_effort,
-                self.config.max_completion_tokens,
-            )
-            .and_then(|body| {
-                serde_json::to_vec(&body)
-                    .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))
-            })?,
-        };
+            .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")));
+        }
+        let body = chat_request_body(
+            state,
+            questions,
+            &self.config.model,
+            self.config.reasoning_shape,
+            &self.config.reasoning_effort,
+            self.config.max_completion_tokens,
+        )
+        .and_then(|body| {
+            serde_json::to_vec(&body)
+                .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))
+        })?;
         Ok(body)
     }
 
@@ -279,7 +281,7 @@ impl JevClient {
         request_id: Option<String>,
         latency_ms: u64,
     ) -> Result<JevAnswerSet, JevError> {
-        if self.config.provider == JevProvider::OpenRouter {
+        if !self.config.provider.speaks_typed_envelope() {
             let ChatReply {
                 model,
                 id,
@@ -336,7 +338,9 @@ impl JevClient {
             model: parsed.model,
             answers: parsed.answers,
             usage: parsed.usage.unwrap_or(Usage::default()),
-            request_id,
+            // The decisions endpoint reports its id in the body, the direct
+            // service in a header: whichever arrived names the call.
+            request_id: request_id.or(parsed.id),
             latency_ms,
         })
     }
@@ -473,6 +477,8 @@ mod tests {
     async fn spawn_stub(stub: Stub) -> String {
         let app = Router::new()
             .route("/v1/systemone", post(handler))
+            .route("/alpha/decisions", post(handler))
+            .route("/chat/completions", post(handler))
             .with_state(stub);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -587,6 +593,71 @@ mod tests {
         // The bearer token travelled in the header, never in the body.
         assert!(stub.last_auth().starts_with("Bearer "));
         assert!(!stub.last_body().contains(TEST_KEY));
+    }
+
+    /// The Jev model on OpenRouter is the same contract behind another URL: the
+    /// shipped client posts the typed envelope to `/alpha/decisions` and reads
+    /// the provider's own completion id out of the body.
+    #[tokio::test]
+    async fn the_decisions_provider_posts_the_envelope_and_reads_the_body_id() {
+        let body = serde_json::json!({
+            "model": "typesafe/jev-1.13-20260917",
+            "answers": {
+                "escapes": {"type": "noul", "noul": 0.17},
+                "risk": {"type": "choice", "choice": "routine_build", "confidence": 0.99,
+                          "probabilities": {"routine_build": 1.0, "mutating_local": 0.0,
+                                            "destructive": 0.0}},
+                "severity": {"type": "score", "score": 0.23, "confidence": 0.65,
+                              "legend": {"0": "No damage", "1": "Minor",
+                                          "2": "Data loss"},
+                              "probabilities": {"0": 0.77, "1": 0.23, "2": 0.0}}
+            },
+            "usage": {"input_tokens": 393, "output_tokens": 77},
+            "id": "gen-dec-1789771460-aYLoYIO7TRHU0lewVP1H",
+            "provider": "TypeSafe"
+        })
+        .to_string();
+        let stub = Stub::new(StubReply::Json(200, body));
+        let base = spawn_stub(stub.clone()).await;
+        let config = JevClientConfig {
+            base_url: format!("{base}/"),
+            model: "~typesafe/jev-latest".to_owned(),
+            provider: JevProvider::OpenRouterDecisions,
+            ..JevClientConfig::default()
+        };
+        assert_eq!(
+            config.endpoint(),
+            format!("{base}/alpha/decisions"),
+            "the base's trailing slash does not double up"
+        );
+        let resolver: ApiKeyResolver = Arc::new(|_| Some(TEST_KEY.to_owned()));
+        let client = JevClient::with_key_resolver(config, resolver).expect("client builds");
+        let answers = client
+            .ask(
+                &serde_json::json!({"proposed_action": {"tool": "bash"}}),
+                &sample_questions(),
+            )
+            .await
+            .expect("the decisions endpoint answers the typed contract");
+
+        assert_eq!(answers.choice("risk"), Some("routine_build"));
+        assert_eq!(answers.noul("escapes"), Some(0.17));
+        assert_eq!(answers.model, "typesafe/jev-1.13-20260917");
+        // A host that sends the request-id header wins; the body id is the
+        // fallback for the host that does not (the live decisions run asserts
+        // that side, and `SystemOneResponse` is tested for the field itself).
+        assert_eq!(answers.request_id.as_deref(), Some("req-stub-1"));
+        assert_eq!(answers.usage.input(), 393);
+
+        // The envelope travelled as the contract spells it, not as a prompt.
+        let sent: Json = serde_json::from_str(&stub.last_body()).expect("JSON body");
+        assert!(sent["state"]["proposed_action"]["tool"].is_string());
+        assert_eq!(sent["model"], "~typesafe/jev-latest");
+        assert_eq!(sent["questions"]["risk"]["type"], "choice");
+        assert!(
+            sent.get("messages").is_none(),
+            "a typed-envelope host is never sent a chat prompt"
+        );
     }
 
     #[tokio::test]

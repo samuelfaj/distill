@@ -307,13 +307,18 @@ pub struct SystemOneRequest {
     pub questions: BTreeMap<QuestionId, Question>,
 }
 
-/// Response envelope: `{model, answers, usage?}`.
+/// Response envelope: `{model, answers, usage?, id?}`.
+///
+/// `id` is the OpenRouter decisions endpoint's completion id; the direct service
+/// reports the same thing in a header instead, so the field is optional.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SystemOneResponse {
     pub model: String,
     pub answers: BTreeMap<QuestionId, Answer>,
     #[serde(default)]
     pub usage: Option<Usage>,
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// One completed round trip: typed answers plus the metadata the plan records
@@ -452,6 +457,32 @@ mod tests {
         let normalized = set.score_normalized("severity").expect("score present");
         assert!((normalized - 0.57).abs() < 1e-9);
         assert_eq!(set.total_tokens(), 545);
+    }
+
+    /// The OpenRouter decisions endpoint reports its completion id in the body
+    /// and the direct service in a header, so the envelope must carry `id` when
+    /// it is there and parse without it when it is not.
+    #[test]
+    fn the_envelope_carries_an_optional_body_id() {
+        let with_id = serde_json::json!({
+            "model": "typesafe/jev-1.13-20260917",
+            "answers": {"escapes": {"type": "noul", "noul": 0.17}},
+            "usage": {"input_tokens": 393, "output_tokens": 77},
+            "id": "gen-dec-1789771460-aYLoYIO7TRHU0lewVP1H",
+            "provider": "TypeSafe"
+        });
+        let parsed: SystemOneResponse = serde_json::from_value(with_id).expect("parses");
+        assert_eq!(
+            parsed.id.as_deref(),
+            Some("gen-dec-1789771460-aYLoYIO7TRHU0lewVP1H")
+        );
+
+        let without = serde_json::json!({
+            "model": "jev-1.13.0",
+            "answers": {"escapes": {"type": "noul", "noul": 0.17}}
+        });
+        let parsed: SystemOneResponse = serde_json::from_value(without).expect("parses");
+        assert_eq!(parsed.id, None);
     }
 
     #[test]

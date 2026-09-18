@@ -124,10 +124,15 @@ pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
         item_budget: cfg
             .item_budget_ms
             .map(core::time::Duration::from_millis)
-            .unwrap_or_else(|| match provider {
-                // A chat backend generates the answer before it can return one.
-                JevProvider::OpenRouter => CHAT_ITEM_BUDGET,
-                JevProvider::Typesafe => defaults.item_budget,
+            .unwrap_or_else(|| {
+                if provider.generates_text() {
+                    // A chat backend generates the answer before it can return one.
+                    CHAT_ITEM_BUDGET
+                } else {
+                    // Both TypeSafe hosts answer the battery in about a second
+                    // (measured 1.2 s for nine questions through OpenRouter).
+                    defaults.item_budget
+                }
             }),
     }
 }

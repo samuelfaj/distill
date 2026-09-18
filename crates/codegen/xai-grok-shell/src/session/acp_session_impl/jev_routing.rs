@@ -29,19 +29,32 @@ const REQUEST_CHARS: usize = 600;
 const MAX_SKILLS: usize = 40;
 /// Characters of each announcement description used as a criterion.
 const SKILL_DESCRIPTION_CHARS: usize = 120;
-/// Conversation items scanned for "what has this turn done so far".
+/// Conversation items scanned for the next step's description.
 const RECENT_ITEMS: usize = 12;
-/// Step descriptions handed to the effort battery.
-const MAX_RECENT_TOOLS: usize = 6;
+/// Calls of the previous step described to the battery.
+const MAX_STEP_CALLS: usize = 6;
+/// Results of the previous step described to the battery.
+const MAX_STEP_RESULTS: usize = 4;
+/// Characters of an assistant plan handed over as "what this step must do".
+const STEP_PLAN_CHARS: usize = 300;
+/// Characters of a call/result excerpt.
+const STEP_EXCERPT_CHARS: usize = 120;
 
 impl SessionActor {
     /// Records, for the turn report, that this round runs on `cfg`'s model at
     /// `cfg`'s effort. Called once per model call, after the decision layer.
     pub(super) fn note_round_for_turn_report(&self, cfg: &SamplingConfig) {
         let model = self.model_display_name(&cfg.model);
-        let effort = cfg
-            .reasoning_effort
-            .map(|effort| effort.as_ref().to_owned());
+        // A level the auto decision chose is reported as that level; otherwise
+        // the round's own effort value is what ran.
+        let effort = self
+            .jev_ledger
+            .borrow_mut()
+            .take_pending_effort_label()
+            .or_else(|| {
+                cfg.reasoning_effort
+                    .map(|effort| effort.as_ref().to_owned())
+            });
         self.jev_ledger.borrow_mut().note_round(model, effort);
     }
 
@@ -98,6 +111,18 @@ impl SessionActor {
         else {
             return;
         };
+        // A refusal earlier in this turn is remembered: one bad call does not
+        // get to fail twice.
+        if let Some(reason) = self.jev_ledger.borrow().local_failed_reason() {
+            crate::jev::record_item(
+                JevLever::B2LocalModel,
+                "cloud",
+                &format!("local routing off for this turn: {reason}"),
+                None,
+                None,
+            );
+            return;
+        }
         let Some(mut local_cfg) = self.resolve_aux_sampler_config(slug).await else {
             tracing::debug!(
                 slug,
@@ -106,6 +131,11 @@ impl SessionActor {
             return;
         };
         let window = local_cfg.context_window;
+        // The owner's speed policy can tighten the model's own window; it can
+        // never widen it.
+        let ceiling = local
+            .max_context_tokens
+            .map_or(window, |cap| window.min(cap));
         let reserve = local
             .context_reserve_tokens
             .unwrap_or(crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE);
@@ -113,17 +143,22 @@ impl SessionActor {
         let estimate = xai_chat_state::estimate_conversation_tokens(&conversation);
         let profile = routing::LocalModelProfile {
             name: self.model_display_name(&local_cfg.model),
-            context_window: window,
+            context_window: ceiling,
             notes: local.notes.clone().unwrap_or_default(),
         };
-        if estimate.saturating_add(reserve) > window {
+        if estimate.saturating_add(reserve) > ceiling {
             crate::jev::record_item(
                 JevLever::B2LocalModel,
                 "cloud",
                 &format!(
-                    "local window too small for this call: ~{estimate} tokens + {reserve} reserve > {window} \
-                     (model {})",
-                    profile.name
+                    "local context too large for this call: ~{estimate} tokens + {reserve} reserve > {ceiling} \
+                     (model {}, {} {window})",
+                    profile.name,
+                    if ceiling < window {
+                        "capped at"
+                    } else {
+                        "window"
+                    }
                 ),
                 None,
                 None,
@@ -194,7 +229,13 @@ impl SessionActor {
         let Some(menu) = self.model_effort_menu(&cfg.model) else {
             return;
         };
-        let offered = routing::offered_effort_choices(&menu, |id| effort_rank_by_id(id));
+        let offered = routing::offered_effort_choices(
+            &menu
+                .iter()
+                .map(|level| (level.id.clone(), level.description.clone()))
+                .collect::<Vec<_>>(),
+            |id| effort_rank_by_id(id),
+        );
         if offered.len() < 2 {
             // Nothing to choose between: one offered effort is not a decision.
             return;
@@ -242,17 +283,27 @@ impl SessionActor {
         let Some(picked) = picked else {
             return;
         };
-        let Some(effort) = effort_from_id(&picked) else {
+        // The pick names a palette level; the wire gets that level's own value
+        // (`medium` is sent as whatever value the model's menu maps it to).
+        let Some(level) = menu.iter().find(|level| level.id == picked) else {
             return;
         };
-        cfg.reasoning_effort = Some(effort);
-        if let Some(model_id) = self.models_manager.model_for_effort(&cfg.model, effort) {
+        cfg.reasoning_effort = Some(level.value);
+        if let Some(model_id) = self
+            .models_manager
+            .model_for_effort(&cfg.model, level.value)
+        {
             cfg.model = model_id;
         }
+        // The turn report names the level the decision chose — what the palette
+        // shows — not the value it maps onto.
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_effort_label(level.id.clone());
     }
 
     /// The effort menu the model itself offers, as `(id, description)` pairs.
-    fn model_effort_menu(&self, model: &str) -> Option<Vec<(String, String)>> {
+    fn model_effort_menu(&self, model: &str) -> Option<Vec<EffortLevel>> {
         let options = self.models_manager.model_reasoning_efforts(model);
         if options.is_empty() {
             return None;
@@ -260,12 +311,13 @@ impl SessionActor {
         Some(
             options
                 .into_iter()
-                .map(|option| {
-                    let description = option
+                .map(|option| EffortLevel {
+                    id: option.id.clone(),
+                    value: option.value,
+                    description: option
                         .description
                         .clone()
-                        .unwrap_or_else(|| option.label.clone());
-                    (option.value.as_ref().to_string(), description)
+                        .unwrap_or_else(|| option.label.clone()),
                 })
                 .collect(),
         )
@@ -293,34 +345,12 @@ impl SessionActor {
     ) -> serde_json::Value {
         let conversation = self.chat_state_handle.get_conversation().await;
         let request = self.jev_last_human_request().await.unwrap_or_default();
-        let mut recent_tools: Vec<String> = Vec::new();
-        for item in conversation.iter().rev().take(RECENT_ITEMS) {
-            match item {
-                ConversationItem::ToolResult(result) => {
-                    recent_tools.push(format!("tool result ({} bytes)", result.content.len()));
-                }
-                ConversationItem::Assistant(assistant) => {
-                    for call in &assistant.tool_calls {
-                        if recent_tools.len() < MAX_RECENT_TOOLS {
-                            recent_tools.push(format!("called {}", call.name));
-                        }
-                    }
-                }
-                ConversationItem::User(_) => break,
-                _ => {}
-            }
-        }
-        let phase = if recent_tools.iter().any(|t| t.starts_with("called ")) {
-            "mid_turn_after_tools"
-        } else {
-            "start_of_turn"
-        };
-        micro_effort_state_json(
+        let action = describe_micro_action(&conversation);
+        micro_action_state_json(
             model_name,
             &cfg.model,
             offered,
-            phase,
-            recent_tools,
+            action,
             conversation.len(),
             &request,
             context_estimate,
@@ -498,18 +528,137 @@ fn effort_rank_by_id(id: &str) -> u8 {
         .unwrap_or(u8::MAX)
 }
 
+/// What the **next single model call** is about, as the decisions see it.
+///
+/// Judging a step needs the step, not the project: the last thing the model said
+/// it was doing, the calls it just made, and what came back. Bounded by
+/// construction — one line per call and per result, no bodies.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MicroAction {
+    /// `first_step` (the request has no work on the board yet) or `after_tool_results`.
+    step: &'static str,
+    /// The last assistant text: what the model said/planned before this call.
+    plan: String,
+    last_calls: Vec<String>,
+    last_results: Vec<String>,
+}
+
+impl MicroAction {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "step": self.step,
+            "what_it_must_do": self.plan,
+            "last_calls": self.last_calls,
+            "last_results": self.last_results,
+        })
+    }
+}
+
+/// Reads the conversation tail into one bounded step description.
+fn describe_micro_action(conversation: &[ConversationItem]) -> MicroAction {
+    let mut action = MicroAction {
+        step: "first_step",
+        ..Default::default()
+    };
+    let mut call_names: BTreeMap<String, String> = BTreeMap::new();
+    let mut saw_result = false;
+    for item in conversation.iter().rev().take(RECENT_ITEMS) {
+        match item {
+            ConversationItem::ToolResult(result) => {
+                saw_result = true;
+                if action.last_results.len() < MAX_STEP_RESULTS {
+                    let tool = call_names
+                        .get(&result.tool_call_id)
+                        .map(String::as_str)
+                        .unwrap_or("tool");
+                    let excerpt = first_line(&result.content, STEP_EXCERPT_CHARS);
+                    let kind = if looks_like_failure(&result.content) {
+                        "failure"
+                    } else {
+                        "output"
+                    };
+                    action.last_results.push(format!(
+                        "{tool}: {kind}, {} bytes — {excerpt}",
+                        result.content.len()
+                    ));
+                }
+            }
+            ConversationItem::Assistant(assistant) => {
+                for call in &assistant.tool_calls {
+                    call_names.insert(call.id.to_string(), call.name.clone());
+                    if action.last_calls.len() < MAX_STEP_CALLS {
+                        let intent = first_line(&call.arguments, STEP_EXCERPT_CHARS);
+                        action.last_calls.push(format!("{} — {intent}", call.name));
+                    }
+                }
+                if action.plan.is_empty() {
+                    let text = assistant.content.trim();
+                    if !text.is_empty() {
+                        action.plan = first_line(text, STEP_PLAN_CHARS);
+                    }
+                }
+            }
+            ConversationItem::User(_) => break,
+            _ => {}
+        }
+    }
+    action.last_calls.reverse();
+    action.last_results.reverse();
+    action.step = if saw_result {
+        "after_tool_results"
+    } else {
+        "first_step"
+    };
+    action
+}
+
+/// First non-empty line of `text`, normalized and bounded.
+fn first_line(text: &str, limit: usize) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let normalized: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.chars().take(limit).collect()
+}
+
+/// Coarse read of a tool result: does the step that follows have a failure to
+/// work through? Deliberately shallow — the decision gets the excerpt too.
+fn looks_like_failure(content: &str) -> bool {
+    let head: String = content
+        .chars()
+        .take(2_000)
+        .collect::<String>()
+        .to_lowercase();
+    ["error", "failed", "panic", "traceback", "cannot find"]
+        .iter()
+        .any(|needle| head.contains(needle))
+}
+
+/// One level of a model's own effort menu.
+///
+/// The palette's level id and the value a request carries are different things:
+/// two levels can share a value (`xhigh` → `max`, `medium` → `high` on some
+/// providers). The decision sees every *level*; the wire gets the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffortLevel {
+    id: String,
+    value: ReasoningEffort,
+    description: String,
+}
+
 /// The state one auto-effort decision sees.
 ///
 /// The model is named here on purpose: how much thinking a call needs depends
 /// on the model that will run it, and the battery is told which one that is,
 /// what it offers, and what the turn has done so far. Conversation excerpts are
 /// bounded and labelled as data, never instructions.
-fn micro_effort_state_json(
+fn micro_action_state_json(
     model_name: &str,
     model_id: &str,
     offered: &[routing::EffortChoice],
-    phase: &str,
-    recent_steps: Vec<String>,
+    action: MicroAction,
     turn_items: usize,
     request: &str,
     context_estimate: u64,
@@ -521,8 +670,8 @@ fn micro_effort_state_json(
             .iter()
             .map(|choice| (choice.id.clone(), choice.description.clone()))
             .collect::<BTreeMap<String, String>>(),
-        "phase": phase,
-        "recent_steps": recent_steps,
+        // The decision is about THIS step, so the step is what it gets.
+        "micro_action": action.as_json(),
         "turn_items": turn_items,
         "context_estimate_tokens": context_estimate,
         "request": request,
@@ -562,12 +711,17 @@ mod tests {
                 description: "Deep reasoning".to_owned(),
             },
         ];
-        let state = micro_effort_state_json(
+        let action = MicroAction {
+            step: "after_tool_results",
+            plan: "fix the type error in the parser".to_owned(),
+            last_calls: vec!["read_file — src/parser.rs".to_owned()],
+            last_results: vec!["read_file: output, 480 bytes — fn lex() {".to_owned()],
+        };
+        let state = micro_action_state_json(
             "DeepSeek V4.1 Flash",
             "deepseek-v4.1-flash-max",
             &offered,
-            "mid_turn_after_tools",
-            vec!["called read_file".to_owned()],
+            action,
             12,
             "fix the failing test",
             21_500,
@@ -575,7 +729,15 @@ mod tests {
         assert_eq!(state["model"], "DeepSeek V4.1 Flash");
         assert_eq!(state["model_id"], "deepseek-v4.1-flash-max");
         assert_eq!(state["offered_efforts"]["max"], "Deep reasoning");
-        assert_eq!(state["phase"], "mid_turn_after_tools");
+        assert_eq!(state["micro_action"]["step"], "after_tool_results");
+        assert_eq!(
+            state["micro_action"]["what_it_must_do"], "fix the type error in the parser",
+            "the step's own plan travels with the decision"
+        );
+        assert_eq!(
+            state["micro_action"]["last_calls"][0],
+            "read_file — src/parser.rs"
+        );
         assert_eq!(state["turn_items"], 12);
         assert_eq!(
             state["context_estimate_tokens"], 21_500,
@@ -583,12 +745,113 @@ mod tests {
         );
     }
 
-    /// Menu ids sort by cost, and an unknown id still reaches the battery.
+    /// The step description reads the conversation tail: what the model just
+    /// said, what it called, what came back — and whether it failed.
     #[test]
-    fn effort_ids_rank_and_parse() {
+    fn the_micro_action_describes_the_next_step_not_the_project() {
+        let turns = vec![
+            ConversationItem::user("crie o jogo da cobrinha com typescript e react"),
+            ConversationItem::assistant_tool_calls(vec![
+                xai_grok_sampling_types::conversation::ToolCall {
+                    id: std::sync::Arc::from("call-1"),
+                    name: "write_file".to_owned(),
+                    arguments: std::sync::Arc::from(
+                        "{\"path\": \"src/components/Board.tsx\", \"content\": \"…\"}",
+                    ),
+                },
+            ]),
+            ConversationItem::tool_result(
+                "call-1",
+                "error[E0308]: mismatched types --> src/components/Board.tsx:12",
+            ),
+        ];
+        let action = describe_micro_action(&turns);
+        assert_eq!(action.step, "after_tool_results");
+        assert!(
+            action.last_calls[0].starts_with("write_file"),
+            "the call that just ran is named: {:?}",
+            action.last_calls
+        );
+        assert!(
+            action.last_results[0].contains("failure"),
+            "a failing step is marked as one: {:?}",
+            action.last_results
+        );
+        assert!(action.last_results[0].contains("error[E0308]"));
+        assert_eq!(
+            action.plan, "",
+            "no assistant text yet: the plan stays empty rather than invented"
+        );
+
+        // A fresh request has no step on the board.
+        let fresh = describe_micro_action(&[ConversationItem::user("faça x")]);
+        assert_eq!(fresh.step, "first_step");
+        assert!(fresh.last_calls.is_empty());
+    }
+
+    /// Menu levels sort by cost, and two levels may share one value.
+    #[test]
+    fn effort_levels_rank_by_cost_and_keep_shared_values() {
         assert!(effort_rank_by_id("low") < effort_rank_by_id("max"));
         assert_eq!(effort_rank_by_id("brand-new-level"), u8::MAX);
-        assert_eq!(effort_from_id("medium"), Some(ReasoningEffort::Medium));
-        assert_eq!(effort_from_id("brand-new-level"), None);
+        let levels = [
+            EffortLevel {
+                id: "xhigh".to_owned(),
+                value: ReasoningEffort::Max,
+                description: String::new(),
+            },
+            EffortLevel {
+                id: "medium".to_owned(),
+                value: ReasoningEffort::High,
+                description: String::new(),
+            },
+        ];
+        assert_eq!(levels.len(), 2, "distinct levels, shared values");
+        assert!(
+            levels
+                .iter()
+                .any(|level| level.value == ReasoningEffort::High && level.id == "medium"),
+            "the level keeps its own name for the report"
+        );
+    }
+}
+
+impl SessionActor {
+    /// Puts a routed round back on the session model after its endpoint refused
+    /// the request, and stops routing locally for the rest of the turn.
+    ///
+    /// The refusal is recorded with the endpoint's own words, so the turn report
+    /// and `jev.jsonl` explain why the local model disappeared mid-turn.
+    pub(super) async fn undo_local_route(
+        &self,
+        request: &mut ConversationRequest,
+        error: &xai_grok_sampler::SamplingErrorInfo,
+    ) {
+        let session = self.chat_state_handle.get_sampling_config().await;
+        request.model = session.as_ref().map(|cfg| cfg.model.clone());
+        request.reasoning_effort = session.as_ref().and_then(|cfg| cfg.reasoning_effort);
+        let reason = format!(
+            "{}: {}",
+            error.status_code.map_or_else(
+                || error.kind.as_ref().to_owned(),
+                |status| format!("HTTP {status}")
+            ),
+            error.message.chars().take(200).collect::<String>()
+        );
+        tracing::warn!(
+            session_id = %self.session_info.id.0,
+            %reason,
+            "jev local route refused by its endpoint; the round continues on the session model"
+        );
+        self.jev_ledger
+            .borrow_mut()
+            .note_local_failure(reason.clone());
+        crate::jev::record_item(
+            JevLever::B2LocalModel,
+            "fallback",
+            &format!("local endpoint refused a routed call, back on the session model · {reason}"),
+            None,
+            None,
+        );
     }
 }

@@ -208,13 +208,21 @@ pub fn local_model_questions(
             profile.notes.as_str()
         }
     );
+    // The unit of judgement is the next single model call (`micro_action` in the
+    // state): one step of the work, never the whole task. Without this the model
+    // answers "can the small model build this project?" and every step of a big
+    // job comes back unsure, even the mechanical ones.
+    let step = "Judge ONLY the next single model call described in `micro_action` — one step of the work, \
+                not the whole task. A hard project can still have easy next steps (reading a file, \
+                fixing a typo, running a test) and an easy project can have a hard one.";
     let mut questions = BTreeMap::new();
     questions.insert(
         LOCAL_CAPABLE_QUESTION.to_owned(),
         Question::noul_with_criteria(
             format!(
-                "{size} Can it fully do the next single model call — same tool calls, same output format, \
-                 same quality — with no part of the job left for a stronger model?",
+                "{step} {size} Can it fully produce that one step — the reasoning and the tool call(s) \
+                 it must emit — at the same quality as the session's model, with nothing of that step \
+                 left for a stronger model?",
             ),
             "It can do the whole call at the same quality",
             "Part of the job would be lost or done wrong",
@@ -224,7 +232,8 @@ pub fn local_model_questions(
         LOCAL_CONTEXT_QUESTION.to_owned(),
         Question::noul_with_criteria(
             format!(
-                "{size} Does this call need more context than that window (including the answer it must write)?",
+                "{step} {size} Does that one step need more context than that window (including the answer \
+                 it must write)?",
             ),
             "It needs more context than the local window holds",
             "It fits comfortably",
@@ -234,8 +243,9 @@ pub fn local_model_questions(
         LOCAL_FRONTIER_QUESTION.to_owned(),
         Question::noul_with_criteria(
             format!(
-                "{size} Does this call need frontier-level reasoning — a proof, a subtle refactor, ambiguous \
-                 requirements, or exact arithmetic — regardless of size?",
+                "{step} {size} Does that one step need frontier-level reasoning — a proof, a subtle \
+                 refactor, ambiguous requirements, or exact arithmetic — regardless of how hard the whole \
+                 project is?",
             ),
             "It needs frontier-level reasoning",
             "Ordinary capability is enough",
@@ -315,13 +325,13 @@ pub struct EffortChoice {
 
 /// Confidence needed before the auto-effort decision is applied to a call.
 ///
-/// Calibrated on live answers (2026-09-18, `deepseek-v4.1-flash`): a trivial
-/// list request answers `none` at 0.67 and 0.64, while a hard request splits
-/// medium 0.40 / high 0.31. The floor therefore sits above the uniform prior
-/// (0.14) and below a confident cheap win: below it the call keeps the session's
-/// own effort — the mode can save tokens, never quietly drop quality on a hard
-/// call.
-pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.45;
+/// Calibrated on live answers (2026-09-18, `deepseek-v4.1-flash`, six palette
+/// levels): a trivial list request answers `none` at 0.67 and 0.64; a hard
+/// request splits `medium` 0.40 / `high` 0.31; a long coding turn kept
+/// answering `low` at 0.40-0.43. With six levels the uniform prior is 0.167, so
+/// 0.40 is ~2.4x chance: above it the pick is applied, below it the call keeps
+/// the session's own effort.
+pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.40;
 
 /// B2 (auto): one `choice` over the efforts **this model** offers for a single
 /// model call. The model's own name is part of the question: "how much thinking
@@ -353,9 +363,10 @@ pub fn micro_effort_questions(
         MICRO_EFFORT_QUESTION.to_owned(),
         Question::choice(
             format!(
-                "Model `{model_name}` is about to make one more model call. Which reasoning effort should \
-                 THIS single call use? Pick the cheapest effort that still handles it; do not pick a \
-                 stronger setting than the call needs."
+                "Model `{model_name}` is about to make one more model call — the single step described \
+                 in `micro_action`. Judge that step only, not the whole task. Which reasoning effort \
+                 should THIS one call use? Pick the cheapest effort that still handles the step; do not \
+                 pick a stronger setting than the step needs."
             ),
             criteria,
         )?,
@@ -778,12 +789,14 @@ mod tests {
         else {
             panic!("auto effort is one choice question");
         };
+        let effort_text = instructions.as_str().unwrap_or_default();
         assert!(
-            instructions
-                .as_str()
-                .unwrap_or_default()
-                .contains("DeepSeek V4.1 Flash"),
+            effort_text.contains("DeepSeek V4.1 Flash"),
             "the model's own name is part of the question"
+        );
+        assert!(
+            effort_text.contains("Judge that step only, not the whole task"),
+            "the effort is chosen for the step, not the task"
         );
 
         let cheap = answers(vec![(
@@ -806,10 +819,17 @@ mod tests {
         );
 
         // Below the floor the call keeps the session's effort.
-        let unsure = answers(vec![("micro_effort", choice("low", 0.4, &[("low", 0.4)]))]);
+        let unsure = answers(vec![(
+            "micro_effort",
+            choice("low", 0.35, &[("low", 0.35)]),
+        )]);
         assert_eq!(compose_micro_effort(&unsure, &offered), None);
-        // At/above the floor it applies, even when it is not near-certain.
-        let clear = answers(vec![("micro_effort", choice("low", 0.5, &[("low", 0.5)]))]);
+        // At the floor it applies: with six levels the prior is 0.167, so a
+        // 0.40 verdict is a real signal, not noise.
+        let clear = answers(vec![(
+            "micro_effort",
+            choice("low", 0.40, &[("low", 0.40)]),
+        )]);
         assert_eq!(
             compose_micro_effort(&clear, &offered).as_deref(),
             Some("low")
@@ -871,6 +891,21 @@ mod tests {
             "the model is named: {text}"
         );
         assert!(text.contains("32768"), "the window is stated: {text}");
+        assert!(
+            text.contains("Judge ONLY the next single model call"),
+            "the unit of judgement is the step, not the task: {text}"
+        );
+        let Some(Question::Noul { instructions, .. }) = questions.get(LOCAL_FRONTIER_QUESTION)
+        else {
+            panic!("the frontier red flag is a noul");
+        };
+        assert!(
+            instructions
+                .as_str()
+                .unwrap_or_default()
+                .contains("regardless of how hard the whole project is"),
+            "the red flag is scoped to the step too"
+        );
 
         let capable = |capable: f64, context: f64, frontier: f64| {
             answers(vec![

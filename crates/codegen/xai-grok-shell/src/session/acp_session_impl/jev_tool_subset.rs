@@ -20,6 +20,10 @@ use super::*;
 /// One advisory line appended to the delegation tool's description.
 const DELEGATION_NUDGE: &str = "\n\nNote from the local decision layer: this turn looks like it has independent parts — delegating some of them can run them in parallel.";
 
+/// Added when a local model is configured: the subagent path is how a small
+/// step reaches it without the session's context travelling along.
+const LOCAL_WORKER_NUDGE: &str = " A subagent runs with its own short context: pinning one to the local model (config `[subagents.models]`, e.g. a `local-worker` definition) is the cheap way to do a small self-contained step — the session's context never goes to that call.";
+
 impl SessionActor {
     /// Runs the turn-start pass over the tool definitions.
     pub(super) async fn jev_filter_tool_definitions(
@@ -143,6 +147,15 @@ impl SessionActor {
                 && !description.contains(DELEGATION_NUDGE)
             {
                 description.push_str(DELEGATION_NUDGE);
+                // A configured local model is only useful for delegated steps if
+                // the model knows the subagent path exists.
+                if crate::jev::local_config_cached()
+                    .model
+                    .as_deref()
+                    .is_some_and(|slug| !slug.trim().is_empty())
+                {
+                    description.push_str(LOCAL_WORKER_NUDGE);
+                }
             }
         }
         defs

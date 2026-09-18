@@ -213,6 +213,34 @@ and the tool definitions ride on top. A 32k local window therefore rarely fits �
 once the window was 128k: a trivial turn ran **entirely** on the local model (126.4k tokens, 3m25s) instead of the
 cloud (about 9s) — free tokens, slower work. Disable it with `[jev.ladder] b2_local_model = false`.
 
+## Local work through a subagent (short context)
+
+Delegation is the fast path to a local model: a subagent opens its own conversation, so the session's context never
+travels with the call.
+
+```markdown
+<!-- ~/.grok/agents/local-worker.md -->
+---
+name: local-worker
+description: Small self-contained step, done on the free local model.
+model: qwen38-local
+---
+You are the local worker: a small model on this machine, used for one bounded step at a time. …
+```
+
+```toml
+[subagents.models]
+local-worker = "qwen38-local"
+
+[jev.local]
+max_context_tokens = 32768   # speed policy: above this, the call stays on the session model
+context_reserve_tokens = 2048
+```
+
+Measured on one turn (oMLX `Qwen3.8-27B-4bit`): the subagent's calls reached the local server with
+**450 → 9,935 → 10,010** prompt tokens, while main-loop rounds asked for **42–45k**. The turn report shows both
+routes, and a call above the cap records why it went back to the session model.
+
 ## Observability
 
 **In the TUI:** two places show where the Jev path stands.

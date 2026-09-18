@@ -41,6 +41,13 @@ pub(crate) struct JevTurnLedger {
     pending_route: Option<String>,
     /// Calls this turn's validation gate held back, so it cannot wedge the turn.
     holds: u32,
+    /// Why the local model is off for the rest of this turn, after its endpoint
+    /// refused a routed call (the routing is an optimization, never a single
+    /// point of failure).
+    local_failed: Option<String>,
+    /// Palette level the auto decision chose for the next round, when it chose
+    /// one (the value that level maps onto travels in the sampler config).
+    pending_effort_label: Option<String>,
 }
 
 impl JevTurnLedger {
@@ -96,6 +103,26 @@ impl JevTurnLedger {
         self.pending_route = Some(model.into());
     }
 
+    /// Remembers the palette level the decision chose for the next round.
+    pub(crate) fn set_pending_effort_label(&mut self, level: impl Into<String>) {
+        self.pending_effort_label = Some(level.into());
+    }
+
+    /// Takes that level: one round reports it, the next one derives its own.
+    pub(crate) fn take_pending_effort_label(&mut self) -> Option<String> {
+        self.pending_effort_label.take()
+    }
+
+    /// Records that the local endpoint refused a routed call.
+    pub(crate) fn note_local_failure(&mut self, reason: impl Into<String>) {
+        self.local_failed = Some(reason.into());
+    }
+
+    /// Why the local model is off for this turn, if it is.
+    pub(crate) fn local_failed_reason(&self) -> Option<String> {
+        self.local_failed.clone()
+    }
+
     /// How many calls this turn's validation gate has held.
     pub(crate) fn holds(&self) -> u32 {
         self.holds
@@ -118,6 +145,8 @@ impl JevTurnLedger {
         self.started = None;
         self.pending_route = None;
         self.holds = 0;
+        self.local_failed = None;
+        self.pending_effort_label = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())
@@ -161,6 +190,42 @@ mod tests {
         assert_eq!(local.tokens(), 220);
         assert!(ledger.window_start().is_none(), "the drain resets the turn");
         assert!(ledger.take_rows().is_empty());
+    }
+
+    /// The level the decision chose is reported for exactly one round.
+    #[test]
+    fn the_chosen_level_labels_one_round() {
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(ledger.take_pending_effort_label(), None);
+        ledger.set_pending_effort_label("medium");
+        assert_eq!(
+            ledger.take_pending_effort_label().as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            ledger.take_pending_effort_label(),
+            None,
+            "the next round reports its own effort"
+        );
+    }
+
+    /// A refused local call only ends local routing for that turn.
+    #[test]
+    fn a_local_failure_latches_until_the_turn_ends() {
+        let mut ledger = JevTurnLedger::default();
+        assert!(ledger.local_failed_reason().is_none());
+        ledger.note_local_failure("400: reasoning_content must be passed back");
+        assert!(
+            ledger
+                .local_failed_reason()
+                .is_some_and(|reason| reason.contains("reasoning_content"))
+        );
+        ledger.note_round("m", None);
+        let _ = ledger.take_rows();
+        assert!(
+            ledger.local_failed_reason().is_none(),
+            "the next turn may try the local model again"
+        );
     }
 
     /// The hold budget resets with the turn, so one bad turn cannot silence a

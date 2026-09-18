@@ -742,6 +742,30 @@ replay. Sem conteúdo, nenhum bloco.
 Testes: `jev_ledger::tests::{usage_lands_on_the_round_it_belongs_to, rows_come_back_biggest_first_and_orphan_usage_is_ignored}`
 e `views::turn_distribution::tests::{the_report_names_each_engine_and_the_jev_calls, an_empty_payload_reports_nothing, token_formatting_stays_short}`.
 
+### 12.13 Granularidade por micro-ação, teto de contexto e o caminho do subagente (2026-09-18)
+
+Três correções pedidas pelo dono, todas medidas ao vivo:
+
+1. **A capacidade é da micro-ação, não da tarefa.** O estado do Jev passou a levar `micro_action`
+   (`step`, `what_it_must_do` com o último texto do modelo, `last_calls`, `last_results` com tamanho e trecho), e os
+   pacotes ganharam a instrução explícita "julgue APENAS a próxima chamada descrita, não a tarefa inteira". Medido
+   no mesmo turno de um projeto React/TS: o passo de planejamento voltou `capable 0.56` (nuvem) e os passos
+   mecânicos `0.64 / 0.76 / 0.78` (local) — antes todos os passos vinham 0.46–0.57 e nada ia para o local.
+2. **Todos os níveis de effort.** O menu entregue ao Jev era indexado pelo *valor* das opções, que colapsa
+   `xhigh`→`max` e `medium`→`high`; agora o Jev decide sobre os **níveis da paleta** (seis no caso do DeepSeek) e o
+   request recebe o valor do nível escolhido, com o relatório nomeando o nível. O piso do pacote caiu de 0,45 para
+   0,40 (com seis níveis o prior uniforme é 0,167; o log do dono mostrava `wanted low at 0.40` sendo descartado).
+3. **Teto de contexto e subagente.** `[jev.local] max_context_tokens` (política de velocidade, nunca amplia a
+   janela do modelo) limita a rota local; e o caminho para trabalho pequeno é o **subagente** com o modelo local
+   fixado (`[subagents.models] local-worker = "qwen38-local"` + definição em `~/.grok/agents/local-worker.md`).
+   Medido: prompt do subagente 450 → 9.935 → 10.010 tokens contra 42–45k nas rodadas da sessão principal; o
+   relatório do turno mostrou as duas rotas (`DeepSeek max 85.6k` + `Qwen3.8 local 42.7k`). A dica de delegação
+   (B6) passou a mencionar o subagente local quando `[jev.local]` está configurado.
+
+Também entrou o *fallback* que faltava: quando o endpoint local recusa uma rodada roteada (visto ao vivo:
+`400 … The reasoning_content in the thinking mode must be passed back`), a rodada volta para o modelo da sessão e o
+resto do turno fica lá, com registro `b2_local_model | fallback` — a rota local é otimização, não ponto de falha.
+
 ### 12.11 Modelo local primeiro (oMLX) — 2026-09-18
 
 Pedido do dono: poder configurar o **modelo local** (oMLX, `Qwen3.8-27B-4bit`) e o Jev mandar para ele as

@@ -81,6 +81,18 @@ pub(super) fn transient_backoff_delay(attempts_used: u32) -> std::time::Duration
 
 /// Stream stalls (never retried internally), transport errors, retryable 5xx.
 /// Vetoes mirror `is_retry_vetoed`. Status-less `Api` fails closed; other kinds keep their dedicated recovery or terminal path.
+/// A 4xx (minus 408/429) or a serialization failure: the endpoint refused the
+/// request itself, so retrying it unchanged is pointless.
+pub(super) fn is_client_rejection(error: &xai_grok_sampler::SamplingErrorInfo) -> bool {
+    use xai_grok_sampler::SamplingErrorKind;
+    if matches!(error.kind, SamplingErrorKind::Serialization) {
+        return true;
+    }
+    error
+        .status_code
+        .is_some_and(|status| (400..500).contains(&status) && status != 408 && status != 429)
+}
+
 pub(super) fn transient_retry_eligible(error: &xai_grok_sampler::SamplingErrorInfo) -> bool {
     use xai_grok_sampler::SamplingErrorKind;
     if error.should_retry == Some(false)
@@ -1709,11 +1721,19 @@ impl SessionActor {
         }
         // A round the decision layer moved (e.g. to the local model) must name
         // that model in the request: the chat state built it with the session's.
+        let mut routed_local = false;
         if let Some(routed_model) = self.jev_ledger.borrow_mut().take_pending_route() {
             request.model = Some(routed_model);
             // The routed model has its own settings; the session's effort is not
             // one of them.
             request.reasoning_effort = None;
+            // Reasoning traces belong to the model that produced them, and the
+            // routed model speaks a different format: a local server refused a
+            // request that carried the session model's reasoning items.
+            request
+                .items
+                .retain(|item| !matches!(item, ConversationItem::Reasoning(_)));
+            routed_local = true;
         }
 
         if !budget.can_wait() {
@@ -1740,6 +1760,16 @@ impl SessionActor {
                     return Ok(outcome);
                 }
                 Err(info) => {
+                    // The endpoint behind a routed round may refuse the request
+                    // (observed live: a local server rejecting the session
+                    // model's reasoning payload). The routing is an optimization,
+                    // so the round goes back to the session model and the rest
+                    // of the turn stays there.
+                    if routed_local && is_client_rejection(&info) {
+                        self.undo_local_route(&mut request, &info).await;
+                        routed_local = false;
+                        continue;
+                    }
                     let decision = budget.decide(&info);
                     let RateLimitWaitDecision::Wait { attempt, backoff } = decision else {
                         self.log_rate_limit_budget_spent(decision, &info);

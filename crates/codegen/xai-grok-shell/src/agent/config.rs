@@ -1215,6 +1215,14 @@ pub struct JevLocalConfig {
     /// Tokens kept free in the local window for the answer and the tool batch.
     /// Defaults to [`DEFAULT_LOCAL_CONTEXT_RESERVE`].
     pub context_reserve_tokens: Option<u64>,
+    /// Largest context the decision layer may send to the local model, whatever
+    /// its window allows.
+    ///
+    /// A speed policy, not a limit: a local model gets slower with every token
+    /// of prefill, so a machine that can hold 128k may still want the free model
+    /// only for calls that fit in 32k. Unset ⇒ the model's own window is the
+    /// only ceiling.
+    pub max_context_tokens: Option<u64>,
     /// How sure the decision must be that the local model can fully do a call
     /// before the call runs locally. Defaults to
     /// [`xai_grok_workspace::jev::catalog::routing::LOCAL_CAPABLE_FLOOR`].

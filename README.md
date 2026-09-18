@@ -160,6 +160,52 @@ mesma tarefa). O piso `min_capability` foi calibrado em 0,60 nesta instalação 
 "capaz" nessas chamadas (com avisos vermelhos em 0,04–0,09); o padrão do pacote continua 0,70.
 Para desligar tudo: `[jev.ladder] b2_local_model = false`, ou remova `[jev.local]`.
 
+## Trabalho local por subagente (contexto curto)
+
+O caminho mais rápido para o modelo local não é a sessão principal: é **delegar**. Um subagente abre a sua própria
+conversa, então o contexto grande da sessão não viaja junto — o local recebe só o passo delegado.
+
+Duas peças de configuração (em `~/.grok/`):
+
+```markdown
+<!-- ~/.grok/agents/local-worker.md -->
+---
+name: local-worker
+description: Small self-contained step, done on the free local model.
+model: qwen38-local
+---
+You are the local worker: a small model on this machine, used for one bounded step at a time. …
+```
+
+```toml
+# ~/.grok/config.toml
+[subagents.models]
+local-worker = "qwen38-local"   # fixa o modelo do subagente (vence tudo, menos o /goal)
+```
+
+Medido nesta máquina (oMLX `Qwen3.8-27B-4bit`), mesmo turno: as chamadas do **subagente** entraram no servidor
+local com **450 → 9.935 → 10.010 tokens** de prompt, enquanto as rodadas da sessão principal pediam **42–45 mil**.
+Ou seja: delegar é o que evita pagar o prefill do contexto inteiro. O relatório do turno mostra as duas rotas:
+
+```
+5
+DeepSeek V4.1 Flash max - 85.6k tokens
+Qwen3.8 27B (local oMLX) - 42.7k tokens
+Jev - 14x
+```
+
+Para o local não pegar trabalho grande nem na sessão principal, há um **teto de contexto** (política de
+velocidade, independente da janela do modelo):
+
+```toml
+[jev.local]
+max_context_tokens = 32768   # acima disso a chamada volta para o modelo da sessão
+context_reserve_tokens = 2048
+```
+
+Acima do teto o registro diz o motivo (`local context too large for this call: ~36120 tokens + 2048 reserve >
+32768 (capped at 131072)`), e o resto do turno segue na nuvem.
+
 ## Quando **não** usamos
 
 | Ideia | Por quê |

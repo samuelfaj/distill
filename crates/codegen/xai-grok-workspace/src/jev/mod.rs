@@ -23,6 +23,7 @@ pub mod policy;
 pub mod provider;
 pub mod questions;
 pub mod reduce;
+pub mod tasks;
 pub mod types;
 
 pub use client::{JevClient, JevClientConfig};

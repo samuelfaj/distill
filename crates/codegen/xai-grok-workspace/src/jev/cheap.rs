@@ -314,8 +314,11 @@ pub fn lane_enabled(
     master && lane_flag && client.is_some_and(CheapClient::credential_present)
 }
 
+
+/// Test support shared by the modules that drive a cheap call: a stub endpoint
+/// and a client pointed at it, so a test can run the **shipped** callers.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use axum::Router;
     use axum::extract::State;
@@ -324,17 +327,27 @@ mod tests {
     use axum::routing::post;
     use std::sync::Mutex;
 
-    const TEST_KEY: &str = "sk-or-v1-test-sentinel-never-log";
+    pub(crate) const TEST_KEY: &str = "sk-or-v1-test-sentinel-never-log";
 
     #[derive(Clone)]
-    struct Stub {
-        reply: Arc<Mutex<(u16, String, bool)>>,
-        delay_ms: Arc<Mutex<u64>>,
-        bodies: Arc<Mutex<Vec<String>>>,
-        auth: Arc<Mutex<Vec<String>>>,
+    pub(crate) struct Stub {
+        pub(crate) reply: Arc<Mutex<(u16, String, bool)>>,
+        pub(crate) delay_ms: Arc<Mutex<u64>>,
+        pub(crate) bodies: Arc<Mutex<Vec<String>>>,
+        pub(crate) auth: Arc<Mutex<Vec<String>>>,
     }
 
-    fn make_stub(reply: (u16, String, bool)) -> Stub {
+    impl Stub {
+        pub(crate) fn set_reply(&self, status: u16, body: String) {
+            *self.reply.lock().expect("lock") = (status, body, false);
+        }
+
+        pub(crate) fn bodies(&self) -> Vec<String> {
+            self.bodies.lock().expect("lock").clone()
+        }
+    }
+
+    pub(crate) fn make_stub(reply: (u16, String, bool)) -> Stub {
         Stub {
             reply: Arc::new(Mutex::new(reply)),
             delay_ms: Arc::new(Mutex::new(0)),
@@ -369,17 +382,36 @@ mod tests {
             [("content-type", "application/json")],
             text,
         )
-        .into_response();
+            .into_response();
         if with_request_id {
-            response.headers_mut().insert(
-                "x-request-id",
-                "req-cheap-1".parse().expect("header value"),
-            );
+            response
+                .headers_mut()
+                .insert("x-request-id", "req-cheap-1".parse().expect("header value"));
         }
         response
     }
 
-    async fn client_for(stub: &Stub, configure: impl FnOnce(&mut CheapConfig)) -> CheapClient {
+    /// A stub answering `content` as the assistant message, plus a client for it.
+    pub(crate) async fn client_answering(content: &str) -> (Stub, CheapClient) {
+        let stub = make_stub((200, chat_reply(content, (120, 8)), true));
+        let client = client_for(&stub, |_| {}).await;
+        (stub, client)
+    }
+
+    /// A client with no credential at all.
+    pub(crate) fn client_without_credential() -> CheapClient {
+        let config = CheapConfig {
+            base_url: "http://127.0.0.1:1".to_owned(),
+            ..CheapConfig::default()
+        };
+        let resolver: ApiKeyResolver = Arc::new(|_| None);
+        CheapClient::with_key_resolver(config, resolver).expect("builds")
+    }
+
+    pub(crate) async fn client_for(
+        stub: &Stub,
+        configure: impl FnOnce(&mut CheapConfig),
+    ) -> CheapClient {
         let app = Router::new()
             .route("/chat/completions", post(handler))
             .with_state(stub.clone());
@@ -400,7 +432,7 @@ mod tests {
         CheapClient::with_key_resolver(config, resolver).expect("client builds")
     }
 
-    fn chat_reply(content: &str, usage: (u64, u64)) -> String {
+    pub(crate) fn chat_reply(content: &str, usage: (u64, u64)) -> String {
         serde_json::json!({
             "id": "gen-cheap-1",
             "model": "qwen/qwen3.7-flash",
@@ -409,6 +441,18 @@ mod tests {
         })
         .to_string()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{Stub, TEST_KEY, chat_reply, client_for, client_without_credential, make_stub};
+    use super::*;
+    use axum::Router;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use std::sync::Mutex;
 
     #[tokio::test]
     async fn the_task_asks_for_no_thinking_in_the_spelling_that_works() {
@@ -524,12 +568,7 @@ mod tests {
         assert_eq!(error.kind(), JevErrorKind::Invalid);
         assert_eq!(stub.bodies.lock().expect("lock").len(), 0, "nothing sent");
 
-        let config = CheapConfig {
-            base_url: "http://127.0.0.1:1".to_owned(),
-            ..CheapConfig::default()
-        };
-        let resolver: ApiKeyResolver = Arc::new(|_| None);
-        let client = CheapClient::with_key_resolver(config, resolver).expect("builds");
+        let client = client_without_credential();
         assert!(!client.credential_present());
         let error = client
             .ask(&CheapTask::new("id", "do it", "payload"))

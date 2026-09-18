@@ -372,12 +372,20 @@ pub fn parse_decision_answers(
             .ok_or_else(|| JevError::invalid(format!("question `{id}` was not answered")))?;
         let answer = match question {
             Question::Noul { .. } => Answer::Noul {
-                noul: yes_field(raw, id)
-                    .ok_or_else(|| JevError::invalid(format!("noul `{id}` has no usable answer")))?,
+                noul: yes_field(raw, id).ok_or_else(|| {
+                    JevError::invalid(format!(
+                        "noul `{id}` has no usable answer (answer keys: {})",
+                        answer_keys(raw)
+                    ))
+                })?,
             },
             Question::Choice { criteria, .. } => {
-                let answered = choice_field(raw, id)
-                    .ok_or_else(|| JevError::invalid(format!("choice `{id}` has no choice")))?;
+                let answered = choice_field(raw, id).ok_or_else(|| {
+                    JevError::invalid(format!(
+                        "choice `{id}` has no choice (answer keys: {})",
+                        answer_keys(raw)
+                    ))
+                })?;
                 // A chat model may spell the label with different case or add
                 // its own words around it; the label itself must still be one
                 // the question offered, so nothing is invented here.
@@ -412,8 +420,14 @@ pub fn parse_decision_answers(
                 }
             }
             Question::Score { criteria, .. } => {
-                let score = score_field(raw, criteria, id)
-                    .ok_or_else(|| JevError::invalid(format!("score `{id}` has no usable score")))?;
+                let score = score_field(raw, criteria, id).ok_or_else(|| {
+                    // Key names only, never values: enough to see what shape the
+                    // model used without putting payload in the record.
+                    JevError::invalid(format!(
+                        "score `{id}` has no usable score (answer keys: {})",
+                        answer_keys(raw)
+                    ))
+                })?;
                 if !score.is_finite() || score < 0.0 || score > (criteria.len().max(1) - 1) as f64 {
                     return Err(JevError::invalid(format!(
                         "score `{id}` answered {score}, outside its rubric"
@@ -573,6 +587,26 @@ fn match_level_label(answered: &str, criteria: &[Json]) -> Option<usize> {
             || text.contains(&needle)
             || needle.contains(text.trim())
     })
+}
+
+/// The key names of an answer object, for a diagnostic that carries no content.
+fn answer_keys(raw: &Json) -> String {
+    match raw.as_object() {
+        Some(map) if !map.is_empty() => map.keys().cloned().collect::<Vec<_>>().join(", "),
+        _ => format!("<{}>", raw_kind(raw)),
+    }
+}
+
+/// The JSON kind of a value, for diagnostics.
+fn raw_kind(value: &Json) -> &'static str {
+    match value {
+        Json::Null => "null",
+        Json::Bool(_) => "bool",
+        Json::Number(_) => "number",
+        Json::String(_) => "string",
+        Json::Array(_) => "array",
+        Json::Object(_) => "object",
+    }
 }
 
 /// The answer object when the model keyed it by the question's own id

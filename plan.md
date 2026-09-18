@@ -156,6 +156,7 @@ OPENROUTER_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ign
 | Kill switch (`GROK_JEV=0`) | ✅ zero registros novos |
 | `cargo test -p xai-grok-pager --lib` | ❌ falha **pré-existente** de feature (`WorkspaceOps::for_test` não existe sem a feature `test-support`), reproduzida também com as mudanças guardadas com `git stash` |
 | Selo na tela do TUI | ⚠️ não capturado: o driver de pty não está instalado nesta máquina e o `script(1)` não trouxe o desenho da TUI no fluxo capturado (o log de decisões e o relatório do turno são a evidência de que o caminho rodou) |
+| Terceiro turno vivo (leitura de arquivo) | ⚠️ 18 decisões, 16 aplicadas; 2 caíram no fail-defer: uma resposta sem JSON (`reply carried no JSON object`) e um `choice` respondido como `None` — os dois viram o caminho de sempre em vez de palpite, e ficam registrados com o motivo |
 
 ## 7. Riscos
 

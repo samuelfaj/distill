@@ -1262,6 +1262,24 @@ pub const DEFAULT_LOCAL_CONTEXT_RESERVE: u64 = 8_192;
 pub struct JevLadderConfig {
     /// Install the Jev-backed permission classifier ahead of the LLM one.
     pub permission_classifier: Option<bool>,
+    /// e_crushers: the `e_crushers` lane (see `list.md`).
+    pub e_crushers: Option<bool>,
+    /// e_importance: the `e_importance` lane (see `list.md`).
+    pub e_importance: Option<bool>,
+    /// e_cheap_compress: the `e_cheap_compress` lane (see `list.md`).
+    pub e_cheap_compress: Option<bool>,
+    /// e_cheap_task: the `e_cheap_task` lane (see `list.md`).
+    pub e_cheap_task: Option<bool>,
+    /// e_read_reuse: the `e_read_reuse` lane (see `list.md`).
+    pub e_read_reuse: Option<bool>,
+    /// e_lane_choice: the `e_lane_choice` lane (see `list.md`).
+    pub e_lane_choice: Option<bool>,
+    /// e_cheap_agent: the `e_cheap_agent` lane (see `list.md`).
+    pub e_cheap_agent: Option<bool>,
+    /// e_prompt_blocks: the `e_prompt_blocks` lane (see `list.md`).
+    pub e_prompt_blocks: Option<bool>,
+    /// e_breaker: the `e_breaker` lane (see `list.md`).
+    pub e_breaker: Option<bool>,
     /// P1: prune the per-turn tool set by family.
     pub p1_tool_family: Option<bool>,
     /// P2: pick line windows instead of reading whole files.

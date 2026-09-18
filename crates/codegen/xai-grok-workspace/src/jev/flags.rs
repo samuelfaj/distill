@@ -50,6 +50,24 @@ impl JevFlags {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JevLadderOverlay {
     pub permission_classifier: Option<bool>,
+    /// E10 — run the deterministic crushers on a large tool result.
+    pub e_crushers: Option<bool>,
+    /// E2 — extract by importance (errors, file:line, paths, last lines) with an elided middle.
+    pub e_importance: Option<bool>,
+    /// E3 — compress a large tool result with the cheap model, storing the original first.
+    pub e_cheap_compress: Option<bool>,
+    /// E5 — run a registered cheap task (classify/extract/digest) on a tool result and use its answer.
+    pub e_cheap_task: Option<bool>,
+    /// E4 — serve a repeated read as a pointer to the bytes already sent.
+    pub e_read_reuse: Option<bool>,
+    /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
+    pub e_lane_choice: Option<bool>,
+    /// E6 — hand a non-critical micro-task to a cheap-model subagent.
+    pub e_cheap_agent: Option<bool>,
+    /// E9 — send only the standing-prompt blocks this turn needs.
+    pub e_prompt_blocks: Option<bool>,
+    /// E8 — stop calling a lane for the rest of the turn after repeated failures.
+    pub e_breaker: Option<bool>,
     pub p1_tool_family: Option<bool>,
     pub p2_read_shortlist: Option<bool>,
     pub p3_compaction_recorte: Option<bool>,
@@ -145,6 +163,15 @@ impl JevFlags {
             c5_error_priority: true,
             c6_injection_screen: false,
             c7_change_type: true,
+            e_crushers: true,
+            e_importance: true,
+            e_cheap_compress: false,
+            e_cheap_task: false,
+            e_read_reuse: true,
+            e_lane_choice: false,
+            e_cheap_agent: false,
+            e_prompt_blocks: false,
+            e_breaker: true,
             d2_big_output_retention: true,
             d3_post_compaction: true,
         }
@@ -184,6 +211,15 @@ impl JevFlags {
         self.p6_skill_suggestion = self.enabled
             && resolve_switch(ladder.p6_skill_suggestion, None, self.p6_skill_suggestion);
         self.yolo_veto = self.enabled && resolve_switch(ladder.yolo_veto, None, self.yolo_veto);
+        self.e_crushers = self.enabled && resolve_switch(ladder.e_crushers, None, self.e_crushers);
+        self.e_importance = self.enabled && resolve_switch(ladder.e_importance, None, self.e_importance);
+        self.e_cheap_compress = self.enabled && resolve_switch(ladder.e_cheap_compress, None, self.e_cheap_compress);
+        self.e_cheap_task = self.enabled && resolve_switch(ladder.e_cheap_task, None, self.e_cheap_task);
+        self.e_read_reuse = self.enabled && resolve_switch(ladder.e_read_reuse, None, self.e_read_reuse);
+        self.e_lane_choice = self.enabled && resolve_switch(ladder.e_lane_choice, None, self.e_lane_choice);
+        self.e_cheap_agent = self.enabled && resolve_switch(ladder.e_cheap_agent, None, self.e_cheap_agent);
+        self.e_prompt_blocks = self.enabled && resolve_switch(ladder.e_prompt_blocks, None, self.e_prompt_blocks);
+        self.e_breaker = self.enabled && resolve_switch(ladder.e_breaker, None, self.e_breaker);
         self.a1_file_to_edit =
             self.enabled && resolve_switch(ladder.a1_file_to_edit, None, self.a1_file_to_edit);
         self.a3_log_lines =
@@ -242,6 +278,24 @@ pub struct JevFlags {
     pub shadow: bool,
     /// Install the Jev-backed permission classifier ahead of the LLM one.
     pub permission_classifier: bool,
+    /// E10 — run the deterministic crushers on a large tool result.
+    pub e_crushers: bool,
+    /// E2 — extract by importance (errors, file:line, paths, last lines) with an elided middle.
+    pub e_importance: bool,
+    /// E3 — compress a large tool result with the cheap model, storing the original first.
+    pub e_cheap_compress: bool,
+    /// E5 — run a registered cheap task (classify/extract/digest) on a tool result and use its answer.
+    pub e_cheap_task: bool,
+    /// E4 — serve a repeated read as a pointer to the bytes already sent.
+    pub e_read_reuse: bool,
+    /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
+    pub e_lane_choice: bool,
+    /// E6 — hand a non-critical micro-task to a cheap-model subagent.
+    pub e_cheap_agent: bool,
+    /// E9 — send only the standing-prompt blocks this turn needs.
+    pub e_prompt_blocks: bool,
+    /// E8 — stop calling a lane for the rest of the turn after repeated failures.
+    pub e_breaker: bool,
     /// P1 — prune the per-turn tool set by family.
     pub p1_tool_family: bool,
     /// P2 — pick line/segment windows instead of whole files.
@@ -329,6 +383,15 @@ impl JevFlags {
             c6_injection_screen: false,
             c7_change_type: false,
             d2_big_output_retention: false,
+            e_crushers: false,
+            e_importance: false,
+            e_cheap_compress: false,
+            e_cheap_task: false,
+            e_read_reuse: false,
+            e_lane_choice: false,
+            e_cheap_agent: false,
+            e_prompt_blocks: false,
+            e_breaker: false,
             d3_post_compaction: false,
         }
     }
@@ -412,6 +475,15 @@ impl JevFlags {
         }
         match lever {
             JevLever::PermissionClassifier => self.permission_classifier,
+            JevLever::ECrushers => self.e_crushers,
+            JevLever::EImportance => self.e_importance,
+            JevLever::ECheapCompress => self.e_cheap_compress,
+            JevLever::ECheapTask => self.e_cheap_task,
+            JevLever::EReadReuse => self.e_read_reuse,
+            JevLever::ELaneChoice => self.e_lane_choice,
+            JevLever::ECheapAgent => self.e_cheap_agent,
+            JevLever::EPromptBlocks => self.e_prompt_blocks,
+            JevLever::EBreaker => self.e_breaker,
             JevLever::P1ToolFamily => self.p1_tool_family,
             JevLever::P2ReadShortlist => self.p2_read_shortlist,
             JevLever::P3CompactionRecorte => self.p3_compaction_recorte,
@@ -446,6 +518,15 @@ impl JevFlags {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JevLever {
     PermissionClassifier,
+    ECrushers,
+    EImportance,
+    ECheapCompress,
+    ECheapTask,
+    EReadReuse,
+    ELaneChoice,
+    ECheapAgent,
+    EPromptBlocks,
+    EBreaker,
     P1ToolFamily,
     P2ReadShortlist,
     P3CompactionRecorte,
@@ -479,6 +560,15 @@ impl JevLever {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PermissionClassifier => "permission_classifier",
+            Self::ECrushers => "e_crushers",
+            Self::EImportance => "e_importance",
+            Self::ECheapCompress => "e_cheap_compress",
+            Self::ECheapTask => "e_cheap_task",
+            Self::EReadReuse => "e_read_reuse",
+            Self::ELaneChoice => "e_lane_choice",
+            Self::ECheapAgent => "e_cheap_agent",
+            Self::EPromptBlocks => "e_prompt_blocks",
+            Self::EBreaker => "e_breaker",
             Self::P1ToolFamily => "p1_tool_family",
             Self::P2ReadShortlist => "p2_read_shortlist",
             Self::P3CompactionRecorte => "p3_compaction_recorte",

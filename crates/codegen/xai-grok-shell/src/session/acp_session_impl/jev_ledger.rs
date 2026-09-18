@@ -48,6 +48,9 @@ pub(crate) struct JevTurnLedger {
     /// Palette level the auto decision chose for the next round, when it chose
     /// one (the value that level maps onto travels in the sampler config).
     pending_effort_label: Option<String>,
+    /// Effort floor for the rest of the turn, set when a change review asked
+    /// for a redo with more thinking: later rounds never run below it.
+    effort_floor: Option<(String, xai_grok_sampling_types::ReasoningEffort)>,
 }
 
 impl JevTurnLedger {
@@ -113,6 +116,32 @@ impl JevTurnLedger {
         self.pending_effort_label.take()
     }
 
+    /// Raises the turn's effort floor to `level`, keeping the highest so far.
+    pub(crate) fn raise_effort_floor(
+        &mut self,
+        level: impl Into<String>,
+        value: xai_grok_sampling_types::ReasoningEffort,
+    ) {
+        let level = level.into();
+        self.effort_floor = match self.effort_floor.take() {
+            // ReasoningEffort has no Ord (deliberately): the cost order is a
+            // judgement, and the floor only ever has to keep the highest ask.
+            Some((current_level, current_value))
+                if effort_rank_of(current_value) >= effort_rank_of(value) =>
+            {
+                Some((current_level, current_value))
+            }
+            _ => Some((level, value)),
+        };
+    }
+
+    /// The turn's effort floor, as `(level, value)`, when a redo set one.
+    pub(crate) fn effort_floor(
+        &self,
+    ) -> Option<&(String, xai_grok_sampling_types::ReasoningEffort)> {
+        self.effort_floor.as_ref()
+    }
+
     /// Records that the local endpoint refused a routed call.
     pub(crate) fn note_local_failure(&mut self, reason: impl Into<String>) {
         self.local_failed = Some(reason.into());
@@ -152,6 +181,7 @@ impl JevTurnLedger {
         self.holds = 0;
         self.local_failed = None;
         self.pending_effort_label = None;
+        self.effort_floor = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())
@@ -159,6 +189,20 @@ impl JevTurnLedger {
                 .then_with(|| a.effort.cmp(&b.effort))
         });
         rows
+    }
+}
+
+/// Cost order of the effort ladder, cheapest first (the ledger only compares).
+fn effort_rank_of(effort: xai_grok_sampling_types::ReasoningEffort) -> u8 {
+    use xai_grok_sampling_types::ReasoningEffort as E;
+    match effort {
+        E::None => 0,
+        E::Minimal => 1,
+        E::Low => 2,
+        E::Medium => 3,
+        E::High => 4,
+        E::Xhigh => 5,
+        E::Max => 6,
     }
 }
 
@@ -211,6 +255,36 @@ mod tests {
             ledger.take_pending_effort_label(),
             None,
             "the next round reports its own effort"
+        );
+    }
+
+    /// A redo floor only holds the highest value asked for, and only this turn.
+    #[test]
+    fn the_effort_floor_keeps_the_highest_and_resets_with_the_turn() {
+        use xai_grok_sampling_types::ReasoningEffort;
+        let mut ledger = JevTurnLedger::default();
+        assert!(ledger.effort_floor().is_none());
+        ledger.raise_effort_floor("high", ReasoningEffort::High);
+        assert_eq!(
+            ledger.effort_floor().map(|(level, _)| level.as_str()),
+            Some("high")
+        );
+        // A lower ask never lowers the floor.
+        ledger.raise_effort_floor("low", ReasoningEffort::Low);
+        assert_eq!(
+            ledger.effort_floor().map(|(level, _)| level.as_str()),
+            Some("high")
+        );
+        ledger.raise_effort_floor("xhigh", ReasoningEffort::Xhigh);
+        assert_eq!(
+            ledger.effort_floor().map(|(level, _)| level.as_str()),
+            Some("xhigh")
+        );
+        ledger.note_round("m", None);
+        let _ = ledger.take_rows();
+        assert!(
+            ledger.effort_floor().is_none(),
+            "the next turn starts clean"
         );
     }
 

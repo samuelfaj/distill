@@ -223,6 +223,32 @@ impl SessionActor {
         *cfg = local_cfg;
     }
 
+    /// A change review that asked for a redo "with more thinking" raises the
+    /// turn's effort floor: every later round runs at or above it, whatever the
+    /// auto-effort decision would have chosen.
+    pub(super) async fn jev_apply_effort_floor(&self, cfg: &mut SamplingConfig) {
+        let Some((level, value)) = self.jev_ledger.borrow().effort_floor().cloned() else {
+            return;
+        };
+        let current = cfg
+            .reasoning_effort
+            .or_else(|| self.models_manager.current_reasoning_effort());
+        if current.is_some_and(|current| effort_rank(current) >= effort_rank(value)) {
+            return;
+        }
+        cfg.reasoning_effort = Some(value);
+        if let Some(model_id) = self.models_manager.model_for_effort(&cfg.model, value) {
+            cfg.model = model_id;
+        }
+        crate::jev::record_item(
+            JevLever::C4DiffRisk,
+            "redo:floor",
+            &format!("the redo asked for more thinking: this round runs at `{level}`"),
+            None,
+            None,
+        );
+    }
+
     /// B2 (auto): picks the effort for **this** model call when the user asked
     /// for auto effort (`/effort auto`), and applies it to the round's config.
     ///
@@ -308,6 +334,35 @@ impl SessionActor {
         self.jev_ledger
             .borrow_mut()
             .set_pending_effort_label(level.id.clone());
+    }
+
+    /// The effort a palette level maps onto for the session's model.
+    pub(super) async fn effort_value_for_level(&self, level: &str) -> Option<ReasoningEffort> {
+        let model = self.current_model_id().await;
+        self.model_effort_menu(&model)?
+            .into_iter()
+            .find(|candidate| candidate.id == level)
+            .map(|candidate| candidate.value)
+    }
+
+    /// The level above `current` in this model's own menu, if there is one.
+    ///
+    /// Compared by the *value* the level maps onto, so a palette level that
+    /// shares the top value (`xhigh` → `max`) never counts as "higher": the wire
+    /// would not think harder.
+    pub(super) fn next_effort_level_above(
+        &self,
+        model: &str,
+        current: Option<ReasoningEffort>,
+    ) -> Option<String> {
+        let Some(current) = current else {
+            return None;
+        };
+        let menu = self.model_effort_menu(model)?;
+        menu.iter()
+            .filter(|level| effort_rank(level.value) > effort_rank(current))
+            .min_by_key(|level| (effort_rank(level.value), level.id.clone()))
+            .map(|level| level.id.clone())
     }
 
     /// The effort menu the model itself offers, as `(id, description)` pairs.

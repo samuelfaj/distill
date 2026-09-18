@@ -223,11 +223,22 @@ model:
 | `matches_step` | Does the change include what the step asked for? A wider change (whole-file rewrite) still counts when it contains the asked-for work | 0.60 to stay silent; below it the model is told to re-read and fix or revert |
 | `may_break` | Could it break something that relies on the old behaviour (signatures, callers, data shapes)? | 0.50 → "check the callers" |
 | `looks_incomplete` | Is the change unfinished in itself — stub body, truncated code, a renamed caller left behind? | 0.50 → "finish it" |
+| `step_complete` | Is the step done as it stands, nothing left to redo? | 0.60; below it the step is redone |
+| `needs_more_thinking` | If it has to be redone, does the redo need a higher reasoning effort (not just another try)? | 0.50 |
 
 The reviewer reads the step the model said it was on (not the whole request: a correct edit of a two-part request
 must not read as half-done) plus the call and its result, both bounded. Anything unusable defers: no note, and no
 claim that the change was reviewed. The verdict lands in `~/.grok/logs/jev.jsonl` as
 `review:ok | review:mismatch | review:breaks | review:incomplete`, with the step it judged.
+
+**When the step has to be redone**, the review acts instead of only advising:
+
+* needs more thinking → the harness raises the **turn's effort floor** to the next level the model offers and tells the
+  model which level the redo will run at (`redo:floor` in the log; the floor wins over the auto-effort choice for the
+  rest of the turn);
+* already at the highest setting (compared by the value the level maps onto, so a level sharing the top value does not
+  count) → the note says so and the model has to **find the actual error and redo** the step;
+* another try at the same setting is enough → the note asks for the redo plainly.
 
 ## Local work through a subagent (short context)
 

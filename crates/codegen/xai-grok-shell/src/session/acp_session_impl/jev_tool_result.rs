@@ -321,6 +321,14 @@ impl SessionActor {
                         .await
             {
                 let review = verify::compose_diff_review(&answers);
+                // What the reviewed call actually ran with: the level the round
+                // noted, or the session's effort.
+                let current_effort = self.models_manager.current_reasoning_effort().or_else(|| {
+                    self.jev_ledger
+                        .borrow()
+                        .effort_floor()
+                        .map(|(_, value)| *value)
+                });
                 let label = match (review.confidence, review.verdict) {
                     (None, _) => "review:defer",
                     (Some(_), verify::DiffReviewVerdict::Ok) => "review:ok",
@@ -338,7 +346,24 @@ impl SessionActor {
                     review.confidence,
                     Some(&answers),
                 );
-                if let Some(note) = verify::diff_review_note(&review) {
+                // A redo with more thinking raises the turn's floor, so the
+                // retry actually runs at the setting the review asked for. With
+                // nothing above the current setting, the note says so and the
+                // model has to find the error itself.
+                let session_model = self.current_model_id().await;
+                let next_level: Option<String> =
+                    self.next_effort_level_above(&session_model, current_effort);
+                if let verify::RedoAction::Redo {
+                    higher_effort: true,
+                } = review.redo
+                    && let Some(level) = next_level.as_deref()
+                    && let Some(value) = self.effort_value_for_level(&level).await
+                {
+                    self.jev_ledger
+                        .borrow_mut()
+                        .raise_effort_floor(level.to_owned(), value);
+                }
+                if let Some(note) = verify::diff_review_note_with(&review, next_level.as_deref()) {
                     hints.push(note);
                 }
             }

@@ -34,6 +34,11 @@ pub const LEFTOVER_FLOOR: f64 = 0.30;
 pub const DIFF_MATCH_FLOOR: f64 = 0.60;
 /// C4 (review) — probability at or above which a red flag is reported back.
 pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.50;
+/// C4 (review) — confidence needed that the step is done as it stands; below it
+/// the step is redone.
+pub const STEP_COMPLETE_FLOOR: f64 = 0.60;
+/// C4 (review) — probability at or above which the redo needs more thinking.
+pub const REDO_HIGHER_FLOOR: f64 = 0.50;
 /// C6 — probability at or above which a text is flagged as instruction-like.
 pub const INJECTION_FLAG_FLOOR: f64 = 0.50;
 /// C7 — confidence needed before labelling the change type.
@@ -254,6 +259,10 @@ pub const DIFF_MATCH_QUESTION: &str = "matches_step";
 pub const DIFF_BREAK_QUESTION: &str = "may_break";
 /// C4 (review) — does it leave the step half-done?
 pub const DIFF_INCOMPLETE_QUESTION: &str = "looks_incomplete";
+/// C4 (review) — is the step done as it stands?
+pub const STEP_COMPLETE_QUESTION: &str = "step_complete";
+/// C4 (review) — would a redo need more thinking than this call had?
+pub const REDO_THINKING_QUESTION: &str = "needs_more_thinking";
 
 /// C4 (review): one battery per change, asked *after* the edit lands.
 ///
@@ -298,6 +307,29 @@ pub fn diff_review_questions(
         ),
     );
     questions.insert(
+        STEP_COMPLETE_QUESTION.to_owned(),
+        Question::noul_with_criteria(
+            format!(
+                "The step was: {intent}\nThe change just applied: {change}\n\
+                 As it stands, is the step done — nothing in it left to fix or redo?",
+            ),
+            "The step is done as it stands",
+            "Something in the step still has to be redone",
+        ),
+    );
+    questions.insert(
+        REDO_THINKING_QUESTION.to_owned(),
+        Question::noul_with_criteria(
+            format!(
+                "The step was: {intent}\nThe change just applied: {change}\n\
+                 If this step has to be redone, does the redo need more thinking than this call had — \
+                 a higher reasoning effort, not just another try at the same setting?",
+            ),
+            "The redo needs more thinking than this call had",
+            "Another try at the same setting is enough",
+        ),
+    );
+    questions.insert(
         DIFF_INCOMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
             format!(
@@ -326,7 +358,16 @@ pub enum DiffReviewVerdict {
     Incomplete,
 }
 
-/// C4 (review): the verdict plus the confidence behind it.
+/// C4 (review): what the caller should do with the change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedoAction {
+    /// The step stands: nothing to redo.
+    None,
+    /// Redo the step; `higher_effort` asks for more thinking than the call had.
+    Redo { higher_effort: bool },
+}
+
+/// C4 (review): the verdict plus what to do about it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiffReview {
     pub verdict: DiffReviewVerdict,
@@ -334,6 +375,8 @@ pub struct DiffReview {
     /// flag otherwise. `None` when the answers were unusable (fail-defer: no
     /// hint, and no claim that the change was reviewed).
     pub confidence: Option<f64>,
+    /// Whether the step has to be redone, and whether it needs more thinking.
+    pub redo: RedoAction,
 }
 
 /// C4 (review): the verdict for one change.
@@ -345,33 +388,40 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
     let matches = noul_of(answers, DIFF_MATCH_QUESTION);
     let breaks = noul_of(answers, DIFF_BREAK_QUESTION);
     let incomplete = noul_of(answers, DIFF_INCOMPLETE_QUESTION);
-    let (Some(matches), Some(breaks), Some(incomplete)) = (matches, breaks, incomplete) else {
+    let complete = noul_of(answers, STEP_COMPLETE_QUESTION);
+    let more_thinking = noul_of(answers, REDO_THINKING_QUESTION);
+    let (Some(matches), Some(breaks), Some(incomplete), Some(complete), Some(more_thinking)) =
+        (matches, breaks, incomplete, complete, more_thinking)
+    else {
         return DiffReview {
             verdict: DiffReviewVerdict::Ok,
             confidence: None,
+            redo: RedoAction::None,
         };
     };
-    if matches < DIFF_MATCH_FLOOR {
-        return DiffReview {
-            verdict: DiffReviewVerdict::Mismatch,
-            confidence: Some(1.0 - matches),
-        };
-    }
-    if breaks >= DIFF_REVIEW_FLAG_FLOOR {
-        return DiffReview {
-            verdict: DiffReviewVerdict::Breaks,
-            confidence: Some(breaks),
-        };
-    }
-    if incomplete >= DIFF_REVIEW_FLAG_FLOOR {
-        return DiffReview {
-            verdict: DiffReviewVerdict::Incomplete,
-            confidence: Some(incomplete),
-        };
-    }
+    // The redo decision is its own axis: a change can read fine and still leave
+    // the step unfinished, and an unfinished step is redone — with more thinking
+    // when the battery says the setting, not the attempt, was the problem.
+    let redo = if complete >= STEP_COMPLETE_FLOOR {
+        RedoAction::None
+    } else {
+        RedoAction::Redo {
+            higher_effort: more_thinking >= REDO_HIGHER_FLOOR,
+        }
+    };
+    let (verdict, confidence) = if matches < DIFF_MATCH_FLOOR {
+        (DiffReviewVerdict::Mismatch, Some(1.0 - matches))
+    } else if breaks >= DIFF_REVIEW_FLAG_FLOOR {
+        (DiffReviewVerdict::Breaks, Some(breaks))
+    } else if incomplete >= DIFF_REVIEW_FLAG_FLOOR {
+        (DiffReviewVerdict::Incomplete, Some(incomplete))
+    } else {
+        (DiffReviewVerdict::Ok, Some(matches))
+    };
     DiffReview {
-        verdict: DiffReviewVerdict::Ok,
-        confidence: Some(matches),
+        verdict,
+        confidence,
+        redo,
     }
 }
 
@@ -382,7 +432,34 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
 /// Composed here rather than by the model: Jev answers questions, the harness
 /// writes the sentence.
 pub fn diff_review_note(review: &DiffReview) -> Option<String> {
+    diff_review_note_with(review, None)
+}
+
+/// C4 (review): the same note, told which effort a redo would run at.
+///
+/// `next_level` is the level the caller can raise to (`None` when the model is
+/// already at its top setting) — the difference between "redo it with more
+/// thinking" and "no higher setting exists, so find the error yourself".
+pub fn diff_review_note_with(review: &DiffReview, next_level: Option<&str>) -> Option<String> {
     let confidence = review.confidence?;
+    if let RedoAction::Redo { higher_effort } = review.redo {
+        return Some(match (higher_effort, next_level) {
+            (true, Some(level)) => format!(
+                "Jev reviewed this change: the step has to be redone with more thinking than this \
+                 call had (p={confidence:.2}) — redo it now; the next call of this turn runs at \
+                 `{level}`."
+            ),
+            (true, None) => format!(
+                "Jev reviewed this change: the step has to be redone, and this model is already at \
+                 its highest setting (p={confidence:.2}) — more thinking is not available, so find \
+                 the actual error and redo the step; something in it is wrong."
+            ),
+            (false, _) => format!(
+                "Jev reviewed this change: redo this step (p={confidence:.2}) — the change does not \
+                 hold up as it stands."
+            ),
+        });
+    }
     match review.verdict {
         DiffReviewVerdict::Ok => None,
         DiffReviewVerdict::Mismatch => Some(format!(
@@ -650,6 +727,10 @@ mod tests {
             (DIFF_MATCH_QUESTION, noul(0.2)),
             (DIFF_BREAK_QUESTION, noul(0.7)),
             (DIFF_INCOMPLETE_QUESTION, noul(0.7)),
+            // The verdict test judges the finding; the step is "done" so the
+            // note is the finding itself (the redo notes have their own test).
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.6)),
         ]);
         let review = compose_diff_review(&mismatched);
         assert_eq!(review.verdict, DiffReviewVerdict::Mismatch);
@@ -659,6 +740,8 @@ mod tests {
             (DIFF_MATCH_QUESTION, noul(0.85)),
             (DIFF_BREAK_QUESTION, noul(0.7)),
             (DIFF_INCOMPLETE_QUESTION, noul(0.7)),
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.6)),
         ]);
         assert_eq!(
             compose_diff_review(&breaking).verdict,
@@ -669,6 +752,8 @@ mod tests {
             (DIFF_MATCH_QUESTION, noul(0.85)),
             (DIFF_BREAK_QUESTION, noul(0.1)),
             (DIFF_INCOMPLETE_QUESTION, noul(0.62)),
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.6)),
         ]);
         let review = compose_diff_review(&unfinished);
         assert_eq!(review.verdict, DiffReviewVerdict::Incomplete);
@@ -685,7 +770,11 @@ mod tests {
         assert!(diff_review_questions("do x", "  ").is_err());
         let questions =
             diff_review_questions("add a counter", "+ let n = 0;").expect("battery builds");
-        assert_eq!(questions.len(), 3);
+        assert_eq!(
+            questions.len(),
+            5,
+            "the review asks the verdict, the two red flags and the redo"
+        );
         let Some(Question::Noul { instructions, .. }) = questions.get(DIFF_MATCH_QUESTION) else {
             panic!("the verdict is a noul");
         };
@@ -722,13 +811,77 @@ mod tests {
         );
     }
 
-    /// A change that reads as the step asked for it.
+    /// A change that reads as the step asked for it, with the step done.
     fn matching() -> JevAnswerSet {
         answers(vec![
             (DIFF_MATCH_QUESTION, noul(0.9)),
             (DIFF_BREAK_QUESTION, noul(0.05)),
             (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.1)),
         ])
+    }
+
+    /// The redo decision is its own axis: a step is redone when it is not done,
+    /// with more thinking only when the setting — not the attempt — was the
+    /// problem, and the note says what to do when more thinking is unavailable.
+    #[test]
+    fn c4_decides_whether_the_step_is_done_or_redone() {
+        let done = compose_diff_review(&matching());
+        assert_eq!(done.redo, RedoAction::None);
+        assert_eq!(diff_review_note(&done), None);
+
+        // Not done, and the battery says another try at the same setting is
+        // enough.
+        let same_level = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.8)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.2)),
+            (STEP_COMPLETE_QUESTION, noul(0.2)),
+            (REDO_THINKING_QUESTION, noul(0.2)),
+        ]);
+        let review = compose_diff_review(&same_level);
+        assert_eq!(
+            review.redo,
+            RedoAction::Redo {
+                higher_effort: false
+            }
+        );
+        let note = diff_review_note(&review).expect("a note");
+        assert!(note.contains("redo this step"), "{note}");
+
+        // Not done, and it needs more thinking: the caller is told which level
+        // the redo will run at.
+        let needs_thinking = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.7)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.2)),
+            (STEP_COMPLETE_QUESTION, noul(0.3)),
+            (REDO_THINKING_QUESTION, noul(0.8)),
+        ]);
+        let review = compose_diff_review(&needs_thinking);
+        assert_eq!(
+            review.redo,
+            RedoAction::Redo {
+                higher_effort: true
+            }
+        );
+        let note = diff_review_note_with(&review, Some("xhigh")).expect("a note");
+        assert!(note.contains("more thinking than this call had"), "{note}");
+        assert!(note.contains("`xhigh`"), "the level is named: {note}");
+
+        // At the top setting there is nothing to raise: the model has to find
+        // the error itself.
+        let note = diff_review_note_with(&review, None).expect("a note");
+        assert!(note.contains("highest setting"), "{note}");
+        assert!(note.contains("find the actual error and redo"), "{note}");
+
+        // A missing answer decides nothing at all.
+        let partial = answers(vec![(DIFF_MATCH_QUESTION, noul(0.9))]);
+        let review = compose_diff_review(&partial);
+        assert_eq!(review.redo, RedoAction::None);
+        assert_eq!(review.confidence, None);
+        assert_eq!(diff_review_note(&review), None);
     }
 
     #[test]

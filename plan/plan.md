@@ -742,6 +742,25 @@ replay. Sem conteúdo, nenhum bloco.
 Testes: `jev_ledger::tests::{usage_lands_on_the_round_it_belongs_to, rows_come_back_biggest_first_and_orphan_usage_is_ignored}`
 e `views::turn_distribution::tests::{the_report_names_each_engine_and_the_jev_calls, an_empty_payload_reports_nothing, token_formatting_stays_short}`.
 
+### 12.16 Refazer depois da revisão (2026-09-18)
+
+Pedido do dono: na revisão do diff, perguntar se a tarefa foi **concluída** ou se deve ser **refeita com um effort
+level maior** (quando existir); se decidir refazer com effort maior, refazer; se não houver nível maior, a LLM deve
+**caçar o erro e refazer**.
+
+Implementado: duas perguntas novas no C4 (`step_complete`, `needs_more_thinking`), o veredito `redo`
+(`RedoAction::{None, Redo { higher_effort }}`) com pisos 0,60/0,50, e a ação no shell —
+`next_effort_level_above` acha o próximo nível **por valor** (um nível que compartilha o valor do topo, como
+`xhigh`→`max`, não conta como maior), `effort_floor` guarda o piso do turno (mantém o maior pedido), e
+`jev_apply_effort_floor` aplica o piso a cada rodada seguinte **depois** das decisões de effort, vencendo-as.
+A nota distingue os três casos: refazer com mais thinking (dizendo o nível), refazer no mesmo nível, e "já está no
+nível mais alto — caça o erro e refaz".
+
+Testes: `c4_decides_whether_the_step_is_done_or_redone` (pacote: concluído, refazer-igual, refazer-mais, topo, e o
+deferimento por resposta faltando) e `the_effort_floor_keeps_the_highest_and_resets_with_the_turn` (livro-razão).
+Ao vivo, no turno de verificação, a revisão devolveu `review:breaks` 0,88 (mudança de assinatura pedida, aviso de
+"check the callers") — sem redo, e o modelo seguiu sozinho.
+
 ### 12.15 Revisão do diff depois de cada edição (2026-09-18)
 
 Pedido do dono: "depois de cada micro ação que altere algum script eu quero que o Jev revise o diff para ver se fez

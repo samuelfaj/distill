@@ -177,6 +177,11 @@ impl ChatCompletionRequest {
     /// request exactly as the caller built it.
     pub fn apply_reasoning_shape(&mut self, shape: ReasoningShape) {
         match shape {
+            // Thinking off, in the spelling that actually does it.
+            ReasoningShape::Disabled => {
+                self.reasoning_effort = None;
+                self.reasoning = Some(serde_json::json!({ "enabled": false }));
+            }
             // No translation: the request goes out exactly as the caller built it.
             ReasoningShape::None => {}
             // This model takes the effort name; a budget that leaked in from
@@ -857,13 +862,18 @@ pub enum ReasoningShape {
     Effort,
     /// This model takes `reasoning: {"max_tokens": <budget>}`.
     MaxTokens,
+    /// This model takes `reasoning: {"enabled": false}`: thinking off, said out
+    /// loud — measurably different from sending no field at all, which leaves a
+    /// thinking model thinking.
+    Disabled,
 }
 
 impl ReasoningShape {
     /// Parse a configuration spelling; unknown values are `None` (no shape).
     pub fn from_name(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "" | "none" | "off" => Some(Self::None),
+            "" | "none" => Some(Self::None),
+            "disabled" | "off" | "false" => Some(Self::Disabled),
             "effort" | "reasoning_effort" => Some(Self::Effort),
             "max_tokens" | "tokens" | "budget" => Some(Self::MaxTokens),
             _ => None,
@@ -875,6 +885,7 @@ impl ReasoningShape {
             Self::None => "none",
             Self::Effort => "effort",
             Self::MaxTokens => "max_tokens",
+            Self::Disabled => "disabled",
         }
     }
 

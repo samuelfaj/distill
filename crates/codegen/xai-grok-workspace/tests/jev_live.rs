@@ -916,3 +916,66 @@ async fn live_jev_decisions_via_openrouter() {
         "deleting the home directory must not be auto-allowed"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The direct cheap call (one request, one closed task)
+// ---------------------------------------------------------------------------
+
+/// The shipped direct lane against the real cheap model. One request for one
+/// closed micro-task — the form the owner described as "chamada direta via api
+/// call, simples, sem harness".
+#[tokio::test]
+#[ignore = "hits OpenRouter; requires OPENROUTER_API_KEY"]
+async fn live_direct_cheap_call_summarizes_a_tool_result() {
+    if !require_openrouter_key() {
+        return;
+    }
+    use xai_grok_workspace::jev::cheap::{CheapClient, CheapConfig, CheapTask};
+
+    let client = CheapClient::new(CheapConfig {
+        timeout: std::time::Duration::from_secs(60),
+        ..CheapConfig::default()
+    })
+    .expect("client builds without network I/O");
+    assert!(
+        client.credential_present(),
+        "credential must be resolvable from {OPENROUTER_KEY_ENV}"
+    );
+
+    // A realistic large tool result: the lane is for exactly this.
+    let payload = (0..400)
+        .map(|i| format!("   Compiling crate-{i} v0.1.0 (/Users/x/y/crate-{i})"))
+        .chain(std::iter::once(
+            "error[E0308]: mismatched types at crates/x/src/client.rs:868".to_owned(),
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let task = CheapTask::new(
+        "distill_command_output",
+        "In at most two lines, say whether this build succeeded or failed, and quote the first \
+         error line verbatim if there is one.",
+        payload,
+    );
+    let answer = client.ask(&task).await.expect("the live cheap call succeeds");
+
+    println!("--- live direct cheap call (normalized, no credential) ---");
+    println!("model: {}", answer.model);
+    println!(
+        "usage: input={} output={}",
+        answer.usage.input(),
+        answer.usage.output()
+    );
+    println!("latency_ms: {}", answer.latency_ms);
+    println!("answer: {}", answer.text);
+
+    assert!(!answer.text.trim().is_empty(), "a real answer came back");
+    assert!(answer.usage.input() > 0, "usage.input_tokens must be > 0");
+    assert!(!answer.model.is_empty(), "the serving model is reported");
+    assert!(
+        answer.text.to_ascii_lowercase().contains("fail")
+            || answer.text.contains("E0308"),
+        "the closed task was answered, not chatted about: {}",
+        answer.text
+    );
+    assert!(answer.text.len() <= task.max_answer_chars);
+}

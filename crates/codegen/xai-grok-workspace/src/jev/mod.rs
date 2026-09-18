@@ -12,6 +12,7 @@
 //! request/response bodies or the credential.
 
 pub mod catalog;
+pub mod cheap;
 pub mod client;
 pub mod crushers;
 pub mod error;

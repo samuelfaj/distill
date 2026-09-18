@@ -100,6 +100,13 @@ pub enum ReasoningShape {
     Effort,
     /// `reasoning: {"max_tokens": <budget>}` — the only shape `qwen/qwen3.7-flash` takes.
     MaxTokens,
+    /// `reasoning: {"enabled": false}`: thinking off, said out loud.
+    ///
+    /// Measured live: sending *no* reasoning field does **not** switch thinking
+    /// off for `qwen/qwen3.7-flash` — it thinks by default, and the thinking is
+    /// billed as completion tokens. A closed micro-task wants it off, and this is
+    /// the spelling that does it (the reply comes back with `reasoning: null`).
+    Disabled,
     /// The model advertises no reasoning parameter: send none.
     #[default]
     None,
@@ -109,7 +116,8 @@ impl ReasoningShape {
     /// Parse from configuration (`effort` | `max_tokens` | `none`).
     pub fn from_name(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "" | "none" | "off" => Some(Self::None),
+            "" | "none" => Some(Self::None),
+            "disabled" | "off" | "false" => Some(Self::Disabled),
             "effort" | "reasoning_effort" => Some(Self::Effort),
             "max_tokens" | "tokens" | "budget" => Some(Self::MaxTokens),
             _ => None,
@@ -141,11 +149,14 @@ pub fn reasoning_budget_tokens(level: &str) -> u32 {
 /// clamped to leave room for the answer.
 pub fn reasoning_object(shape: ReasoningShape, level: &str, max_tokens: u32) -> Option<Json> {
     let level = level.trim();
+    if shape == ReasoningShape::Disabled {
+        return Some(json!({ "enabled": false }));
+    }
     if shape == ReasoningShape::None || level.eq_ignore_ascii_case("none") || level.is_empty() {
         return None;
     }
     match shape {
-        ReasoningShape::None => None,
+        ReasoningShape::None | ReasoningShape::Disabled => None,
         ReasoningShape::Effort => Some(json!({ "effort": level })),
         ReasoningShape::MaxTokens => {
             let budget = reasoning_budget_tokens(level).min(max_tokens.saturating_sub(64));
@@ -302,18 +313,41 @@ pub fn chat_request_body(
     max_tokens: u32,
 ) -> Result<Json, JevError> {
     let prompt = render_decision_prompt(state, questions)?;
+    Ok(chat_message_body(
+        model,
+        DECISION_SYSTEM_PROMPT,
+        &prompt,
+        shape,
+        level,
+        max_tokens,
+    ))
+}
+
+/// The same chat body for a task that carries its own instruction: one system
+/// turn and one user turn, with the thinking setting in the model's own shape.
+///
+/// Shared by the decision adapter and the cheap-task lane so both send the same
+/// envelope and neither grows its own spelling of `reasoning`.
+pub fn chat_message_body(
+    model: &str,
+    system: &str,
+    user: &str,
+    shape: ReasoningShape,
+    level: &str,
+    max_tokens: u32,
+) -> Json {
     let mut body = json!({
         "model": model,
         "messages": [
-            { "role": "system", "content": DECISION_SYSTEM_PROMPT },
-            { "role": "user", "content": prompt },
+            { "role": "system", "content": system },
+            { "role": "user", "content": user },
         ],
         "max_tokens": max_tokens,
     });
     if let Some(reasoning) = reasoning_object(shape, level, max_tokens) {
         body["reasoning"] = reasoning;
     }
-    Ok(body)
+    body
 }
 
 /// The parts of a chat-completions reply the decision layer reads.

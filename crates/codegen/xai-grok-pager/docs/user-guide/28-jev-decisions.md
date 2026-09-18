@@ -213,6 +213,22 @@ and the tool definitions ride on top. A 32k local window therefore rarely fits �
 once the window was 128k: a trivial turn ran **entirely** on the local model (126.4k tokens, 3m25s) instead of the
 cloud (about 9s) — free tokens, slower work. Disable it with `[jev.ladder] b2_local_model = false`.
 
+## Reviewing a change
+
+Every tool result that changed a file goes through one review battery, and only a real finding travels back to the
+model:
+
+| Question | Meaning | Floor |
+|---|---|---|
+| `matches_step` | Does the change include what the step asked for? A wider change (whole-file rewrite) still counts when it contains the asked-for work | 0.60 to stay silent; below it the model is told to re-read and fix or revert |
+| `may_break` | Could it break something that relies on the old behaviour (signatures, callers, data shapes)? | 0.50 → "check the callers" |
+| `looks_incomplete` | Is the change unfinished in itself — stub body, truncated code, a renamed caller left behind? | 0.50 → "finish it" |
+
+The reviewer reads the step the model said it was on (not the whole request: a correct edit of a two-part request
+must not read as half-done) plus the call and its result, both bounded. Anything unusable defers: no note, and no
+claim that the change was reviewed. The verdict lands in `~/.grok/logs/jev.jsonl` as
+`review:ok | review:mismatch | review:breaks | review:incomplete`, with the step it judged.
+
 ## Local work through a subagent (short context)
 
 Delegation is the fast path to a local model: a subagent opens its own conversation, so the session's context never

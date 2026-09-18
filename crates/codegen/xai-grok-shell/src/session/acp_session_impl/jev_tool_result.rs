@@ -28,6 +28,11 @@ const MAX_HINTS: usize = 3;
 const MAX_LINE_CANDIDATES: usize = 200;
 /// How many lines a narrowed read keeps, at most.
 const READ_KEEP_LINES: usize = 120;
+/// Characters of the change handed to the diff review: enough to see the
+/// asked-for work inside a whole-file write.
+const REVIEW_CHANGE_CHARS: usize = 1_500;
+/// Conversation items scanned when building the review material.
+const REVIEW_TAIL_ITEMS: usize = 12;
 /// Holds the call-validation gate may impose on one turn before it stands down.
 /// A hold interrupts the model mid-step, so a misfiring gate must not be able to
 /// wedge a whole turn (observed live: eight consecutive holds on file writes).
@@ -43,7 +48,11 @@ impl SessionActor {
     /// Runs the Jev pass over a finished tool result and returns the text the
     /// model will see. See the module docs for the authority rules.
     pub(super) async fn jev_post_process_tool_result(&self, tool: &str, text: String) -> String {
-        if text.len() < MIN_BYTES {
+        // A change review is about the *edit*, not about a long output, and an
+        // edit's result is a one-line summary: the size guard must not swallow
+        // it.
+        let changes_files = matches!(tool, "search_replace" | "write" | "edit" | "apply_patch");
+        if text.len() < MIN_BYTES && !changes_files {
             return text;
         }
         let mut body = text;
@@ -277,8 +286,8 @@ impl SessionActor {
             }
         }
 
-        // ---- C7 + C4: label the change and flag a risky diff (advisory) ----
-        if matches!(tool, "search_replace" | "write" | "edit" | "apply_patch") {
+        // ---- C7 + C4: label the change, then review it against the step ----
+        if changes_files {
             if let Ok(questions) = verify::change_type_questions()
                 && let Some(answers) =
                     crate::jev::ask_item(JevLever::C7ChangeType, state_for(tool, &body), questions)
@@ -300,30 +309,37 @@ impl SessionActor {
                     Some(&answers),
                 );
             }
-            let hunks = diff_hunks(&body);
-            if !hunks.is_empty()
-                && let Ok(questions) = verify::diff_risk_questions(&hunks)
+            // ---- C4 (review): did this change do what the step asked for? ----
+            //
+            // One review per change, with the step's own intent in the question.
+            // An edit's result is a summary ("Replaced 1 occurrence"), so the
+            // change the reviewer reads is the call itself plus that summary.
+            let (intent, change) = self.diff_review_material(tool, &body).await;
+            if let Ok(questions) = verify::diff_review_questions(&intent, &change)
                 && let Some(answers) =
                     crate::jev::ask_item(JevLever::C4DiffRisk, state_for(tool, &body), questions)
                         .await
             {
-                let risk = verify::compose_diff_risk(&answers, &hunks);
+                let review = verify::compose_diff_review(&answers);
+                let label = match (review.confidence, review.verdict) {
+                    (None, _) => "review:defer",
+                    (Some(_), verify::DiffReviewVerdict::Ok) => "review:ok",
+                    (Some(_), verify::DiffReviewVerdict::Mismatch) => "review:mismatch",
+                    (Some(_), verify::DiffReviewVerdict::Breaks) => "review:breaks",
+                    (Some(_), verify::DiffReviewVerdict::Incomplete) => "review:incomplete",
+                };
                 crate::jev::record_item(
                     JevLever::C4DiffRisk,
-                    if risk.needs_confirmation {
-                        "flag"
-                    } else {
-                        "ok"
-                    },
-                    &format!("worst risk {:?}", risk.worst_risk),
-                    risk.worst_risk,
+                    label,
+                    &format!(
+                        "reviewed {tool} against the step · step: {}",
+                        intent.chars().take(80).collect::<String>()
+                    ),
+                    review.confidence,
                     Some(&answers),
                 );
-                if risk.needs_confirmation {
-                    hints.push(
-                        "this diff touches behaviour that deserves a second look before trusting it"
-                            .to_owned(),
-                    );
+                if let Some(note) = verify::diff_review_note(&review) {
+                    hints.push(note);
                 }
             }
         }
@@ -374,6 +390,46 @@ impl SessionActor {
         }
         body
     }
+}
+
+/// The newest call of `tool` in the tail, as `name arguments`, bounded for a
+/// review (wider than the row's excerpt, still bounded).
+fn current_call_arguments(
+    conversation: &[xai_grok_sampling_types::conversation::ConversationItem],
+    tool: &str,
+) -> Option<String> {
+    for item in conversation.iter().rev().take(REVIEW_TAIL_ITEMS) {
+        match item {
+            xai_grok_sampling_types::conversation::ConversationItem::Assistant(assistant) => {
+                if let Some(call) = assistant
+                    .tool_calls
+                    .iter()
+                    .rev()
+                    .find(|call| call.name == tool)
+                {
+                    let arguments: String = call
+                        .arguments
+                        .lines()
+                        .map(str::trim)
+                        .find(|line: &&str| !line.is_empty())
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(REVIEW_CHANGE_CHARS)
+                        .collect();
+                    return Some(match arguments.is_empty() {
+                        true => tool.to_owned(),
+                        false => format!("{tool} {arguments}"),
+                    });
+                }
+            }
+            xai_grok_sampling_types::conversation::ConversationItem::User(_) => break,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The allowlisted `state` for a result pass: the tool name, the result size and
@@ -607,6 +663,37 @@ fn _ranked_type_witness(value: Ranked) -> Vec<String> {
 }
 
 impl SessionActor {
+    /// C4 (review): what the change was supposed to do, and what changed.
+    ///
+    /// The intent is the user's request for this turn plus the step the model
+    /// said it was on; the change is the call that just ran (its target and its
+    /// arguments, from the conversation tail) followed by the result's own
+    /// summary. Both are bounded.
+    async fn diff_review_material(&self, tool: &str, body: &str) -> (String, String) {
+        let request = self.jev_last_human_request().await.unwrap_or_default();
+        let conversation = self.chat_state_handle.get_conversation().await;
+        let action = crate::session::acp_session::describe_micro_action(&conversation);
+        // The intent is the **step** the model was on, not the whole request: a
+        // correct edit of a two-part request ("add it, then run it") reads as
+        // incomplete against the request and fine against the step.
+        let intent = match (action.plan.is_empty(), request.is_empty()) {
+            (false, false) => format!("{} (the wider request: {request})", action.plan),
+            (false, true) => action.plan.clone(),
+            (true, false) => request,
+            (true, true) => "the work in progress".to_owned(),
+        };
+        let call = current_call_arguments(&conversation, tool)
+            .or_else(|| action.last_calls.last().cloned())
+            .unwrap_or_default();
+        let change = match (call.is_empty(), body.is_empty()) {
+            (false, false) => format!("{tool}: {call}\nresult: {body}"),
+            (false, true) => format!("{tool}: {call}"),
+            (true, false) => format!("{tool}: {body}"),
+            (true, true) => format!("{tool} was called"),
+        };
+        (intent, change)
+    }
+
     /// D4/P5 — validates a tool call **before** it runs.
     ///
     /// The gate may only hold a call back: a flagged call is not executed and the

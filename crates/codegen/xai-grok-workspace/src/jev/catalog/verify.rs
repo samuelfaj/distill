@@ -30,10 +30,10 @@ pub const FAILURE_CATEGORIES: &[&str] = &[
 pub const ITEM_SATISFIED_FLOOR: f64 = 0.70;
 /// C3 — "something requested is still missing" must be below this to call it done.
 pub const LEFTOVER_FLOOR: f64 = 0.30;
-/// C4 — normalized risk at or above which a diff asks for confirmation.
-pub const DIFF_RISK_FLOOR: f64 = 0.60;
-/// C4 — probability at or above which a hunk looks protected/out of scope.
-pub const DIFF_PROTECTED_FLOOR: f64 = 0.50;
+/// C4 (review) — confidence needed that the change did what the step asked for.
+pub const DIFF_MATCH_FLOOR: f64 = 0.60;
+/// C4 (review) — probability at or above which a red flag is reported back.
+pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.50;
 /// C6 — probability at or above which a text is flagged as instruction-like.
 pub const INJECTION_FLAG_FLOOR: f64 = 0.50;
 /// C7 — confidence needed before labelling the change type.
@@ -248,68 +248,155 @@ pub fn compose_completion(answers: &JevAnswerSet, items: &[String]) -> Completio
     }
 }
 
-/// C4: a risk score per hunk plus the protected-path screen.
-pub fn diff_risk_questions(hunks: &[String]) -> Result<BTreeMap<QuestionId, Question>, JevError> {
-    let mut questions = BTreeMap::new();
-    for id in hunks {
-        questions.insert(
-            format!("risk_{id}"),
-            Question::score(
-                format!("How risky is applying hunk `{id}` without a human look?"),
-                vec![
-                    Json::from("Safe: mechanical, in scope"),
-                    Json::from("Worth a look: touches behaviour"),
-                    Json::from("Risky: data, security or wide blast radius"),
-                ],
-            )?,
-        );
+/// C4 (review) — does the change do what the step asked for?
+pub const DIFF_MATCH_QUESTION: &str = "matches_step";
+/// C4 (review) — could it break something that relies on the old behaviour?
+pub const DIFF_BREAK_QUESTION: &str = "may_break";
+/// C4 (review) — does it leave the step half-done?
+pub const DIFF_INCOMPLETE_QUESTION: &str = "looks_incomplete";
+
+/// C4 (review): one battery per change, asked *after* the edit lands.
+///
+/// The step's intent and the change travel in the question text, so the answer
+/// is a judgement about this change, not about diffs in general. Three nouls:
+/// the verdict, plus the two red flags worth another pass.
+pub fn diff_review_questions(
+    intent: &str,
+    change: &str,
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    let intent = intent.trim();
+    let change = change.trim();
+    if intent.is_empty() || change.is_empty() {
+        return Err(JevError::invalid(
+            "a review needs both the step's intent and the change",
+        ));
     }
+    let mut questions = BTreeMap::new();
     questions.insert(
-        "touches_protected".to_owned(),
+        DIFF_MATCH_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            "Does any hunk touch a protected area or go beyond what was asked?",
-            "It touches something protected or out of scope",
-            "Everything stays within the requested scope",
+            format!(
+                "The step asked for: {intent}\nThe change just applied: {change}\n\
+                 Does the change include what the step asked for? A change that is broader than the \
+                 step (rewriting the whole file, touching nearby lines) still counts as long as it \
+                 contains the asked-for work and contradicts nothing.",
+            ),
+            "It includes what the step asked for",
+            "It does not include it, or it contradicts the step",
+        ),
+    );
+    questions.insert(
+        DIFF_BREAK_QUESTION.to_owned(),
+        Question::noul_with_criteria(
+            format!(
+                "The step asked for: {intent}\nThe change just applied: {change}\n\
+                 Could this change break behaviour that other code relies on — signatures, callers, \
+                 data shapes, error handling?",
+            ),
+            "It could break something that relies on the old behaviour",
+            "It stays compatible with its callers",
+        ),
+    );
+    questions.insert(
+        DIFF_INCOMPLETE_QUESTION.to_owned(),
+        Question::noul_with_criteria(
+            format!(
+                "The step was: {intent}\nThe change just applied: {change}\n\
+                 Is the change itself unfinished — a body left as a stub or TODO, truncated code, a \
+                 helper it calls but never defines, a caller it renames and forgets to update? Judge \
+                 the change in front of you: work the step still expects afterwards is not part of it.",
+            ),
+            "The change itself is unfinished",
+            "The change is complete in itself",
         ),
     );
     Ok(questions)
 }
 
-/// C4: whether the diff needs a human confirmation before being trusted.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiffRisk {
-    pub worst_risk: Option<f64>,
-    pub protected: Option<f64>,
-    pub needs_confirmation: bool,
-    pub deferred: bool,
+/// C4 (review): what the review found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffReviewVerdict {
+    /// The change reads as the step asked for it.
+    Ok,
+    /// The change does not match the step's intent.
+    Mismatch,
+    /// The change may break something that relies on the old behaviour.
+    Breaks,
+    /// The change leaves the step half-done.
+    Incomplete,
 }
 
-/// C4: confirmation is requested on high risk or a protected touch.
-pub fn compose_diff_risk(answers: &JevAnswerSet, hunks: &[String]) -> DiffRisk {
-    let mut worst: Option<f64> = None;
-    for id in hunks {
-        match score_of(answers, &format!("risk_{id}")) {
-            Some(value) => {
-                worst = Some(worst.map_or(value, |w: f64| w.max(value)));
-            }
-            None => {
-                return DiffRisk {
-                    worst_risk: None,
-                    protected: None,
-                    needs_confirmation: false,
-                    deferred: true,
-                };
-            }
-        }
+/// C4 (review): the verdict plus the confidence behind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiffReview {
+    pub verdict: DiffReviewVerdict,
+    /// Probability behind the verdict: the match score for `Ok`, the firing red
+    /// flag otherwise. `None` when the answers were unusable (fail-defer: no
+    /// hint, and no claim that the change was reviewed).
+    pub confidence: Option<f64>,
+}
+
+/// C4 (review): the verdict for one change.
+///
+/// Order matters: a mismatch outranks a break, a break outranks an unfinished
+/// step, and anything unusable defers — the reviewer never claims a change is
+/// fine on a missing answer.
+pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
+    let matches = noul_of(answers, DIFF_MATCH_QUESTION);
+    let breaks = noul_of(answers, DIFF_BREAK_QUESTION);
+    let incomplete = noul_of(answers, DIFF_INCOMPLETE_QUESTION);
+    let (Some(matches), Some(breaks), Some(incomplete)) = (matches, breaks, incomplete) else {
+        return DiffReview {
+            verdict: DiffReviewVerdict::Ok,
+            confidence: None,
+        };
+    };
+    if matches < DIFF_MATCH_FLOOR {
+        return DiffReview {
+            verdict: DiffReviewVerdict::Mismatch,
+            confidence: Some(1.0 - matches),
+        };
     }
-    let protected = noul_of(answers, "touches_protected");
-    let needs_confirmation = worst.is_some_and(|w| w >= DIFF_RISK_FLOOR)
-        || protected.is_some_and(|p| p >= DIFF_PROTECTED_FLOOR);
-    DiffRisk {
-        worst_risk: worst,
-        protected,
-        needs_confirmation,
-        deferred: worst.is_none() && protected.is_none(),
+    if breaks >= DIFF_REVIEW_FLAG_FLOOR {
+        return DiffReview {
+            verdict: DiffReviewVerdict::Breaks,
+            confidence: Some(breaks),
+        };
+    }
+    if incomplete >= DIFF_REVIEW_FLAG_FLOOR {
+        return DiffReview {
+            verdict: DiffReviewVerdict::Incomplete,
+            confidence: Some(incomplete),
+        };
+    }
+    DiffReview {
+        verdict: DiffReviewVerdict::Ok,
+        confidence: Some(matches),
+    }
+}
+
+/// C4 (review): the one-line note the model gets back, or `None` when the
+/// change reads as the step asked for it (silence costs no tokens and claims
+/// nothing) or when the review deferred.
+///
+/// Composed here rather than by the model: Jev answers questions, the harness
+/// writes the sentence.
+pub fn diff_review_note(review: &DiffReview) -> Option<String> {
+    let confidence = review.confidence?;
+    match review.verdict {
+        DiffReviewVerdict::Ok => None,
+        DiffReviewVerdict::Mismatch => Some(format!(
+            "Jev reviewed this change against the step: it does not look like what the step asked \
+             for (p={confidence:.2} that it is off) — re-read the request, then fix or revert it."
+        )),
+        DiffReviewVerdict::Breaks => Some(format!(
+            "Jev reviewed this change: it may break behaviour that relies on the old one \
+             (p={confidence:.2}) — check the callers before moving on."
+        )),
+        DiffReviewVerdict::Incomplete => Some(format!(
+            "Jev reviewed this change: it looks unfinished in itself (p={confidence:.2}) — a stub, \
+             truncated code or a caller left behind; finish it before moving on."
+        )),
     }
 }
 
@@ -553,35 +640,95 @@ mod tests {
     }
 
     #[test]
-    fn c4_asks_for_confirmation_on_risk_or_protected_paths() {
-        let hunks = ids(2);
-        let risky = answers(vec![
-            ("risk_cand-0", score(0.5)),
-            ("risk_cand-1", score(2.0)),
-            ("touches_protected", noul(0.1)),
+    fn c4_reviews_the_change_against_the_step() {
+        let review = compose_diff_review(&matching());
+        assert_eq!(review.verdict, DiffReviewVerdict::Ok);
+        assert_eq!(review.confidence, Some(0.9));
+
+        // Order: mismatch outranks a break, a break outranks an unfinished step.
+        let mismatched = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.2)),
+            (DIFF_BREAK_QUESTION, noul(0.7)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.7)),
         ]);
-        let verdict = compose_diff_risk(&risky, &hunks);
-        assert!(verdict.needs_confirmation);
+        let review = compose_diff_review(&mismatched);
+        assert_eq!(review.verdict, DiffReviewVerdict::Mismatch);
+        assert_eq!(review.confidence, Some(0.8), "1 - p(matches)");
+
+        let breaking = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.85)),
+            (DIFF_BREAK_QUESTION, noul(0.7)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.7)),
+        ]);
         assert_eq!(
-            verdict.worst_risk,
-            Some(1.0),
-            "hunk 1 normalized to the top level"
+            compose_diff_review(&breaking).verdict,
+            DiffReviewVerdict::Breaks
         );
 
-        let protected = answers(vec![
-            ("risk_cand-0", score(0.0)),
-            ("risk_cand-1", score(0.0)),
-            ("touches_protected", noul(0.8)),
+        let unfinished = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.85)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.62)),
         ]);
-        assert!(compose_diff_risk(&protected, &hunks).needs_confirmation);
+        let review = compose_diff_review(&unfinished);
+        assert_eq!(review.verdict, DiffReviewVerdict::Incomplete);
+        assert_eq!(review.confidence, Some(0.62));
 
-        let calm = answers(vec![
-            ("risk_cand-0", score(0.0)),
-            ("risk_cand-1", score(0.0)),
-            ("touches_protected", noul(0.05)),
-        ]);
-        assert!(!compose_diff_risk(&calm, &hunks).needs_confirmation);
-        assert!(compose_diff_risk(&answers(vec![]), &hunks).deferred);
+        // A missing answer never reads as "reviewed and fine".
+        let partial = answers(vec![(DIFF_MATCH_QUESTION, noul(0.95))]);
+        let review = compose_diff_review(&partial);
+        assert_eq!(review.verdict, DiffReviewVerdict::Ok);
+        assert_eq!(review.confidence, None, "deferred, so nothing is claimed");
+
+        // The battery needs both halves of the review.
+        assert!(diff_review_questions("", "diff").is_err());
+        assert!(diff_review_questions("do x", "  ").is_err());
+        let questions =
+            diff_review_questions("add a counter", "+ let n = 0;").expect("battery builds");
+        assert_eq!(questions.len(), 3);
+        let Some(Question::Noul { instructions, .. }) = questions.get(DIFF_MATCH_QUESTION) else {
+            panic!("the verdict is a noul");
+        };
+        let text = instructions.as_str().unwrap_or_default();
+        assert!(
+            text.contains("add a counter"),
+            "the step is in the question: {text}"
+        );
+        assert!(
+            text.contains("broader than the step"),
+            "a wider change that includes the work is not a mismatch: {text}"
+        );
+        assert!(
+            text.contains("+ let n = 0;"),
+            "the change is in the question: {text}"
+        );
+
+        // Only a real finding travels back: silence when it reads fine, and
+        // silence when the review deferred.
+        assert_eq!(diff_review_note(&compose_diff_review(&matching())), None);
+        let note = diff_review_note(&compose_diff_review(&mismatched)).expect("a note");
+        assert!(
+            note.contains("does not look like what the step asked for"),
+            "{note}"
+        );
+        let note = diff_review_note(&compose_diff_review(&breaking)).expect("a note");
+        assert!(note.contains("may break behaviour"), "{note}");
+        let note = diff_review_note(&compose_diff_review(&unfinished)).expect("a note");
+        assert!(note.contains("unfinished in itself"), "{note}");
+        assert_eq!(
+            diff_review_note(&compose_diff_review(&partial)),
+            None,
+            "a deferred review claims nothing"
+        );
+    }
+
+    /// A change that reads as the step asked for it.
+    fn matching() -> JevAnswerSet {
+        answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.9)),
+            (DIFF_BREAK_QUESTION, noul(0.05)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+        ])
     }
 
     #[test]

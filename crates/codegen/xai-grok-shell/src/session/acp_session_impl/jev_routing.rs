@@ -542,12 +542,12 @@ fn effort_rank_by_id(id: &str) -> u8 {
 /// it was doing, the calls it just made, and what came back. Bounded by
 /// construction — one line per call and per result, no bodies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct MicroAction {
+pub(super) struct MicroAction {
     /// `first_step` (the request has no work on the board yet) or `after_tool_results`.
     step: &'static str,
     /// The last assistant text: what the model said/planned before this call.
-    plan: String,
-    last_calls: Vec<String>,
+    pub(super) plan: String,
+    pub(super) last_calls: Vec<String>,
     last_results: Vec<String>,
 }
 
@@ -563,7 +563,7 @@ impl MicroAction {
 }
 
 /// Reads the conversation tail into one bounded step description.
-fn describe_micro_action(conversation: &[ConversationItem]) -> MicroAction {
+pub(super) fn describe_micro_action(conversation: &[ConversationItem]) -> MicroAction {
     let mut action = MicroAction {
         step: "first_step",
         ..Default::default()

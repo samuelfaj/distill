@@ -742,6 +742,29 @@ replay. Sem conteúdo, nenhum bloco.
 Testes: `jev_ledger::tests::{usage_lands_on_the_round_it_belongs_to, rows_come_back_biggest_first_and_orphan_usage_is_ignored}`
 e `views::turn_distribution::tests::{the_report_names_each_engine_and_the_jev_calls, an_empty_payload_reports_nothing, token_formatting_stays_short}`.
 
+### 12.15 Revisão do diff depois de cada edição (2026-09-18)
+
+Pedido do dono: "depois de cada micro ação que altere algum script eu quero que o Jev revise o diff para ver se fez
+sentido". O C4 deixou de ser um risco por hunk e passou a ser **uma revisão por mudança**, depois do edit:
+`matches_step` (o diff inclui o que o passo pediu?), `may_break` (quebra quem depende do comportamento antigo?) e
+`looks_incomplete` (o diff em si está inacabado?). Piso 0,60 para o veredito e 0,50 para cada aviso; sem resposta
+⇒ defere (sem nota, sem afirmar revisão). Só um achado real volta ao modelo, em uma linha composta em código; diff
+que faz sentido não gasta token.
+
+Três defeitos reais encontrados e corrigidos na verificação:
+
+1. **C7/C4 nunca rodavam**: o resultado de uma edição é um resumo curto, e o passe de resultado saía pelo guarda de
+   tamanho (`< 400 B`) antes do ramo de edição. O guarda agora não se aplica a ferramentas que mudam arquivos.
+2. **A revisão julgava a tarefa inteira**: para um pedido de duas partes ("adicione e rode"), um diff correto voltava
+   como `incomplete` (0,82 e 0,62 ao vivo). A intenção passou a ser **o passo** que o modelo disse estar fazendo, e a
+   pergunta de incompletude passou a ser sobre **o diff em si** (stub, truncado, chamador esquecido).
+3. **Falha silenciosa**: `ask_item` devolvia `None` sem registro, então uma revisão que não rodou era invisível.
+   Agora erro e timeout ficam registrados (`<lever> | error|timeout`).
+
+Medido ao vivo (oMLX/DeepSeek, arquivo `util.py`, pedido de duas partes): `review:mismatch` 0,95 e
+`review:incomplete` 0,82/0,62 **antes** das correções; `review:ok` **0,85** depois, com o passo julgado no registro
+(`step: I'll look at the workspace first, then add the function.`).
+
 ### 12.14 O chip do turno mostra o roteamento da micro-ação (2026-09-18)
 
 Pedido do dono: "quando o Jev trocar o modelo ou effort em uma micro-ação quero que apareça aqui" (na linha acima do

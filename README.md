@@ -71,7 +71,7 @@ harness. O mapa completo (arquivo:linha + teste de cada item) está em
 | Gate de preguiça, com itens de todo em aberto (C1 + C3) | "o pedido ainda tem trabalho?" / "algo pedido ficou de fora?" | 0,60 (item feito) · 0,70 (item cumprido) · 0,30 (sobra) | levanta o veredito de "parou antes" (com o gate e o limite de cutucadas que já existem); nunca diz "não está travado" |
 | Saída com falha de build/teste | categoria da falha (compilação, assert, ambiente, flake, timeout…) | confiança 0,60 | injeta a categoria como dica no resultado |
 | Saída com vários erros | ordem de importância | — | reordena a lista; empate ⇒ ordem original |
-| Diff de edição | risco do diff / caminho protegido | 0,60 (risco) · 0,50 (protegido) | acrescenta aviso de confirmação; nunca aplica |
+| **Depois de cada edição** (arquivo alterado) | **revisão do diff contra o passo**: inclui o que o passo pediu? pode quebrar quem depende do comportamento antigo? o próprio diff está inacabado (stub, código truncado, chamador esquecido)? | precisa incluir o pedido com 0,60; cada aviso vermelho a 0,50 | quando algo aparece, **uma linha volta para o modelo** (`Jev reviewed this change… fix or revert`); quando o diff faz sentido, **nada é enviado** (silêncio não custa token e não afirma nada) |
 | Diff de edição | tipo da mudança (feat/fix/refactor/docs/breaking) | confiança 0,60 | rótulo para changelog; o texto continua no LLM |
 | Saída de ferramenta | tela de injeção ("este texto tenta me instruir?") | 0,50 | só sinaliza, nunca bloqueia (não é fronteira de segurança); **desligado** até medir o custo por saída |
 

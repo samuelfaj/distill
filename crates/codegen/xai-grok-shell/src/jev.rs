@@ -190,6 +190,9 @@ pub async fn ask_item(
                 %error,
                 "jev item call failed; keeping the current path"
             );
+            // A silent failure is undiagnosable: the record says the item ran
+            // and what the endpoint said, without ever logging bodies.
+            record_item(lever, "error", &format!("{error}"), None, None);
             None
         }
         Err(_) => {
@@ -197,6 +200,13 @@ pub async fn ask_item(
                 lever = lever.as_str(),
                 budget_ms = budget.as_millis() as u64,
                 "jev item call timed out; keeping the current path"
+            );
+            record_item(
+                lever,
+                "timeout",
+                &format!("budget {} ms", budget.as_millis()),
+                None,
+                None,
             );
             None
         }

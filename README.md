@@ -144,10 +144,21 @@ cloud | Qwen3.8 27B (local oMLX) at … · capable 0.61 (floor 0.70) · frontier
 ```
 
 **Atenção à janela:** o prompt-base deste harness (system prompt + histórico do turno) já custa **~29k tokens**,
-e as definições de ferramentas vão por cima. Um modelo local com janela de 32k, portanto, quase nunca cabe — ele
-funciona para conversas curtas, e o correto é subir a janela no servidor local (no oMLX: *Settings → modelo →
-max context window*; a própria instalação aqui já tem um 27B configurado com 262144). Com 128k+ o roteamento local
-passa a acontecer de verdade. Para desligar tudo: `[jev.ladder] b2_local_model = false`, ou remova `[jev.local]`.
+e as definições de ferramentas vão por cima. Com a janela em 32k o local quase nunca cabe; a 128k ele passa a
+pegar turnos inteiros. Subida feita em 2026-09-18 nesta instalação (oMLX `Qwen3.8-27B-4bit`: 32768 → 131072, via
+`model_settings.json` + `~/.omlx/bin/omlx restart`), com o mesmo número no harness
+(`[model.qwen38-local] context_window`). Medido depois disso, num turno trivial (listar + ler um arquivo):
+
+```
+Qwen3.8 27B (local oMLX) - 126.4k tokens
+Jev - 4x
+Worked for 3m25s
+```
+
+Ou seja: **o turno inteiro rodou de graça no Mac** — o preço é a latência (3m25s contra ~9s na nuvem para a
+mesma tarefa). O piso `min_capability` foi calibrado em 0,60 nesta instalação porque o Jev pontua 0,63–0,67 de
+"capaz" nessas chamadas (com avisos vermelhos em 0,04–0,09); o padrão do pacote continua 0,70.
+Para desligar tudo: `[jev.ladder] b2_local_model = false`, ou remova `[jev.local]`.
 
 ## Quando **não** usamos
 

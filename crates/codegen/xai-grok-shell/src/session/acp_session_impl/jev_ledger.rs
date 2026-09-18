@@ -35,6 +35,10 @@ pub(crate) struct JevTurnLedger {
     /// When the turn's first call was noted, i.e. the window its decisions
     /// belong to.
     started: Option<Instant>,
+    /// Model id the next request must name, when the decision layer moved the
+    /// round off the session model (the chat state still builds the request with
+    /// the session id, and the request's own id wins on the wire).
+    pending_route: Option<String>,
 }
 
 impl JevTurnLedger {
@@ -85,11 +89,22 @@ impl JevTurnLedger {
         self.started
     }
 
+    /// Remembers the model id this round's request must name (a routed call).
+    pub(crate) fn set_pending_route(&mut self, model: impl Into<String>) {
+        self.pending_route = Some(model.into());
+    }
+
+    /// Takes the pending route, if any: the request carries it exactly once.
+    pub(crate) fn take_pending_route(&mut self) -> Option<String> {
+        self.pending_route.take()
+    }
+
     /// Drains the turn: rows biggest first, then the ledger is empty again.
     pub(crate) fn take_rows(&mut self) -> Vec<LedgerRow> {
         let mut rows = std::mem::take(&mut self.rows);
         self.pending = None;
         self.started = None;
+        self.pending_route = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())
@@ -133,6 +148,23 @@ mod tests {
         assert_eq!(local.tokens(), 220);
         assert!(ledger.window_start().is_none(), "the drain resets the turn");
         assert!(ledger.take_rows().is_empty());
+    }
+
+    /// A routed round hands its model id to the request exactly once.
+    #[test]
+    fn the_pending_route_is_consumed_once() {
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(ledger.take_pending_route(), None);
+        ledger.set_pending_route("Qwen3.8-27B-4bit");
+        assert_eq!(
+            ledger.take_pending_route().as_deref(),
+            Some("Qwen3.8-27B-4bit")
+        );
+        assert_eq!(
+            ledger.take_pending_route(),
+            None,
+            "the next round must not inherit the route"
+        );
     }
 
     #[test]

@@ -208,8 +208,10 @@ Per model call:
 
 Watch the window: this harness's base prompt (system prompt plus the turn's history) is already **~29k tokens**,
 and the tool definitions ride on top. A 32k local window therefore rarely fits — raise it on the server (oMLX:
-*Settings → model → max context window*) or point `[jev.local]` at a larger local model. Disable it with
-`[jev.ladder] b2_local_model = false`.
+*Settings → model → max context window*, then restart the server so it re-reads its settings) and keep
+`[model.<local>] context_window` at the same number, or point `[jev.local]` at a larger local model. Measured
+once the window was 128k: a trivial turn ran **entirely** on the local model (126.4k tokens, 3m25s) instead of the
+cloud (about 9s) — free tokens, slower work. Disable it with `[jev.ladder] b2_local_model = false`.
 
 ## Observability
 

@@ -760,8 +760,19 @@ do turno ganhou `·local`.
 (`tool_calls` com JSON válido, 1,9 s), janela de 32k. O prompt-base do harness mede **~29,3k tokens** já num
 projeto vazio, então com reserva a guarda manda para a nuvem; com a reserva zerada, o Jev respondeu `capable`
 0,59–0,61 (abaixo do piso 0,70) e a chamada continuou na nuvem — os dois caminhos de deferimento (guarda e
-decisão) verificados ao vivo. Conclusão operacional: para o local pegar chamadas de verdade, a janela dele no oMLX
-precisa subir (o outro 27B da instalação já está em 262144).
+decisão) verificados ao vivo. Conclusão operacional: para o local pegar chamadas de verdade, a janela dele no oMLX precisa subir.
+
+**Feito em 2026-09-18 (mesma data):** `max_context_window` do `Qwen3.8-27B-4bit` subiu de 32768 para **131072**
+(editar `~/.omlx/model_settings.json` + `~/.omlx/bin/omlx restart`, que faz o servidor reler os settings) e o
+`context_window` do harness foi para o mesmo número. Verificado com um prompt real de 48k tokens aceito pelo
+servidor. O piso de capacidade ficou em **0,60** na config do dono (o padrão do pacote segue 0,70), porque o Jev
+pontua 0,63–0,67 nessas chamadas com avisos vermelhos em 0,04–0,09.
+
+**Primeiro turno inteiramente local:** distribuição do TUI `Qwen3.8 27B (local oMLX) - 126.4k tokens` + `Jev - 4x`,
+3m25s (contra ~9s na nuvem), com os pedidos contados no próprio oMLX (32043 → 32052). Nesse caminho apareceu e foi
+corrigido um bug de fiação: o `ConversationRequest` carrega o **seu** id de modelo (vindo do chat state) e ele
+vence o config do sampler, então a chamada chegava ao oMLX como `deepseek-flash`; o roteador agora registra o id
+roteado no livro-razão do turno e `run_turn_via_sampler` o aplica ao request (limpando o effort da sessão).
 
 ### 12.9 Visibilidade do uso no TUI (2026-09-18)
 

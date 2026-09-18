@@ -174,6 +174,11 @@ impl SessionActor {
             self.client_identifier.clone(),
             cfg.max_retries,
         );
+        // The request names its own model and that one wins on the wire, so the
+        // round's model id travels with it too.
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_route(local_cfg.model.clone());
         *cfg = local_cfg;
     }
 

@@ -1696,7 +1696,7 @@ impl SessionActor {
     /// the wire bearer comes from the live resolver at send time.
     pub(crate) async fn run_turn_via_sampler(
         self: &Arc<Self>,
-        request: ConversationRequest,
+        mut request: ConversationRequest,
         budget: &mut RateLimitWaitBudget,
         transient: TransientRetryState,
         mid_salvage_continuation: bool,
@@ -1706,6 +1706,14 @@ impl SessionActor {
         // `prepare_chat_completion(false)` from the legacy path.
         if !park.is_parked() {
             self.prepare_sampler_for_turn().await;
+        }
+        // A round the decision layer moved (e.g. to the local model) must name
+        // that model in the request: the chat state built it with the session's.
+        if let Some(routed_model) = self.jev_ledger.borrow_mut().take_pending_route() {
+            request.model = Some(routed_model);
+            // The routed model has its own settings; the session's effort is not
+            // one of them.
+            request.reasoning_effort = None;
         }
 
         if !budget.can_wait() {

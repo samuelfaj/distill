@@ -244,7 +244,7 @@ pub struct JevActivity {
 }
 
 /// What the row shows about Jev for one turn.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JevTurnActivity {
     /// Decisions recorded inside the window (the current turn, when known).
     pub decisions: u32,
@@ -256,6 +256,9 @@ pub struct JevTurnActivity {
     pub last_latency_ms: u64,
     /// Model calls this turn that the decision layer ran on the **local** model.
     pub local_runs: u32,
+    /// Routing of the call that is running now, as the row shows it:
+    /// `local low`, `high`, `local`, … (`None` when the round is untouched).
+    pub route: Option<String>,
 }
 
 impl JevTurnActivity {
@@ -275,7 +278,13 @@ impl JevTurnActivity {
         if self.refused {
             return Some("jev·veto".to_owned());
         }
-        let suffix = if self.local_runs > 0 { " ·local" } else { "" };
+        // The current micro-action's routing when the decision set one, else the
+        // turn's own local marker.
+        let suffix = match &self.route {
+            Some(route) => format!(" ·{route}"),
+            None if self.local_runs > 0 => " ·local".to_owned(),
+            None => String::new(),
+        };
         match self.decisions {
             0 => (self.in_flight > 0).then(|| "jev…".to_owned()),
             1 => Some(format!(
@@ -301,6 +310,7 @@ const LOCAL_DECISION: &str = "local";
 struct ActivityState {
     ring: std::collections::VecDeque<JevActivity>,
     in_flight: u32,
+    route: Option<String>,
 }
 
 fn activity_state() -> &'static std::sync::Mutex<ActivityState> {
@@ -322,6 +332,23 @@ pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
         latency_ms,
         at: std::time::Instant::now(),
     });
+}
+
+/// Sets the routing of the call that is about to run, as the row shows it.
+///
+/// Called once per model call, after the decision layer: `local` plus the effort
+/// level it chose reads as `local low`; a plain level reads as `high`; nothing
+/// chosen reads as `None` (the row then shows only the turn's own counters).
+pub fn note_route(local: bool, level: Option<&str>) {
+    let Ok(mut state) = activity_state().lock() else {
+        return;
+    };
+    state.route = match (local, level) {
+        (true, Some(level)) => Some(format!("local {level}")),
+        (true, None) => Some("local".to_owned()),
+        (false, Some(level)) => Some(level.to_owned()),
+        (false, None) => None,
+    };
 }
 
 /// Marks a Jev call as started (`+1`) or finished (`-1`) for the row's `jev…` state.
@@ -347,6 +374,7 @@ pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
     };
     let mut activity = JevTurnActivity {
         in_flight: state.in_flight,
+        route: state.route.clone(),
         ..Default::default()
     };
     for entry in state.ring.iter().rev() {
@@ -375,6 +403,7 @@ pub fn reset_activity_for_test() {
     if let Ok(mut state) = activity_state().lock() {
         state.ring.clear();
         state.in_flight = 0;
+        state.route = None;
     }
 }
 
@@ -598,6 +627,7 @@ mod catalogue_helper_tests {
                 in_flight: 1,
                 last_latency_ms: 380,
                 local_runs: 1,
+                ..Default::default()
             }
             .label()
             .as_deref(),
@@ -615,6 +645,51 @@ mod catalogue_helper_tests {
             .as_deref(),
             Some("jev ×3 ·local")
         );
+        // The row names the routing of the call that is running: the model it
+        // went to, plus the effort level in play.
+        assert_eq!(
+            JevTurnActivity {
+                decisions: 3,
+                last_latency_ms: 420,
+                route: Some("local low".to_owned()),
+                ..Default::default()
+            }
+            .label()
+            .as_deref(),
+            Some("jev ×3 ·local low")
+        );
+        assert_eq!(
+            JevTurnActivity {
+                decisions: 1,
+                last_latency_ms: 900,
+                route: Some("medium".to_owned()),
+                ..Default::default()
+            }
+            .label()
+            .as_deref(),
+            Some("jev 0.9s ·medium")
+        );
+    }
+
+    /// The route suffix says where the next call goes: local with the level, a
+    /// bare level, or nothing at all.
+    #[test]
+    #[serial_test::serial]
+    fn the_route_suffix_describes_the_call() {
+        reset_activity_for_test();
+        note_route(true, Some("low"));
+        assert_eq!(turn_activity(None).route.as_deref(), Some("local low"));
+        note_route(true, None);
+        assert_eq!(turn_activity(None).route.as_deref(), Some("local"));
+        note_route(false, Some("xhigh"));
+        assert_eq!(turn_activity(None).route.as_deref(), Some("xhigh"));
+        note_route(false, None);
+        assert_eq!(
+            turn_activity(None).route,
+            None,
+            "an untouched round adds nothing to the row"
+        );
+        reset_activity_for_test();
     }
 
     /// The observer must keep the in-flight count honest across the future's

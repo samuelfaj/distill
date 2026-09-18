@@ -245,8 +245,10 @@ b2_local_model = true         # prioridade ao modelo local (precisa de [jev.loca
 * **Rodapé do prompt:** `jev` (ativo), `jev·shadow` (só registra), `jev·veto` (freio no always-approve),
   `jev:idle` (disponível, mas o modo atual não passa por ele), `jev:off` (desligado/sem credencial).
 * **Linha de atividade** (a linha acima do prompt, ao lado da ferramenta em execução): `jev…` enquanto uma
-  decisão está em voo, `jev 0,4s` / `jev ×3` depois de responder, `jev·veto` (vermelho) quando **recusou** uma
-  chamada. Sem uso no turno, nenhum chip aparece.
+  decisão está em voo, `jev ×3` depois de responder, `jev·veto` (vermelho) quando **recusou** uma chamada — e, logo
+  depois, **o roteamento da chamada que está rodando**: `·none` / `·low` / `·medium` (nível de effort escolhido) ou
+  `·local low` quando ela foi para o modelo local. Exemplos reais: `… · jev ×8 ·none`, `… · jev ×3 ·local low`.
+  Sem uso no turno, nenhum chip aparece.
 * **Registro:** `GROK_LOG_JEV=1` escreve uma linha JSON por decisão em `~/.grok/logs/jev.jsonl`
   (lever, decisão, confiança, modelo, tokens, latência, request id).
 * **No fim de cada turno**, um bloco com a **distribuição da tarefa**: uma linha por motor que rodou naquele

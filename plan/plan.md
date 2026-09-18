@@ -742,6 +742,15 @@ replay. Sem conteúdo, nenhum bloco.
 Testes: `jev_ledger::tests::{usage_lands_on_the_round_it_belongs_to, rows_come_back_biggest_first_and_orphan_usage_is_ignored}`
 e `views::turn_distribution::tests::{the_report_names_each_engine_and_the_jev_calls, an_empty_payload_reports_nothing, token_formatting_stays_short}`.
 
+### 12.14 O chip do turno mostra o roteamento da micro-ação (2026-09-18)
+
+Pedido do dono: "quando o Jev trocar o modelo ou effort em uma micro-ação quero que apareça aqui" (na linha acima do
+prompt). Implementado: o shell grava, por rodada, a rota no registro de atividade (`note_route(local, level)`), e o
+chip passou a exibi-la — `jev ×8 ·none` para o nível escolhido, `jev ×3 ·local low` quando a chamada foi para o
+modelo local naquele nível. Rodadas sem roteamento próprio (chamadas laterais) **não** apagam o último valor
+mostrado. Evidência: `{SCRATCH}/chip-route.log` (capturas reais), e os testes de shell
+(`the_chip_label_is_short_and_honest`, `the_route_suffix_describes_the_call`).
+
 ### 12.13 Granularidade por micro-ação, teto de contexto e o caminho do subagente (2026-09-18)
 
 Três correções pedidas pelo dono, todas medidas ao vivo:

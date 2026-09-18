@@ -55,6 +55,14 @@ impl SessionActor {
                 cfg.reasoning_effort
                     .map(|effort| effort.as_ref().to_owned())
             });
+        // The row shows what this micro-action runs with: the routed model when
+        // the decision moved it, plus the effort level in play. A round with
+        // nothing of its own to say (a side call) leaves the last routing up
+        // instead of blanking it.
+        let local = self.jev_ledger.borrow().has_pending_route();
+        if local || effort.is_some() {
+            crate::jev::note_route(local, effort.as_deref());
+        }
         self.jev_ledger.borrow_mut().note_round(model, effort);
     }
 

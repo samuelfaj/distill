@@ -253,6 +253,8 @@ The **turn status row** (the line above the prompt, next to the running tool) sh
 | **`jev 0.4s`** (green) | One decision answered, with its latency |
 | **`jev ×3`** (green) | Several decisions so far this turn |
 | **`jev·veto`** (red) | Jev refused a call in this turn (the always-approve brake) |
+| **`jev ×8 ·none`** | …plus the routing of the call that is running: the effort level Jev chose for this micro-action (`none`, `low`, `medium`, `high`, `xhigh`, `max`) |
+| **`jev ×3 ·local low`** | The call was routed to the configured local model, at that level |
 | *(nothing)* | Jev was not consulted in this turn — the row never claims otherwise |
 
 **At the end of every turn**, a block reports how the task was distributed:

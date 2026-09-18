@@ -133,6 +133,11 @@ impl JevTurnLedger {
         self.holds = self.holds.saturating_add(1);
     }
 
+    /// Whether a routed model is waiting for this round's request.
+    pub(crate) fn has_pending_route(&self) -> bool {
+        self.pending_route.is_some()
+    }
+
     /// Takes the pending route, if any: the request carries it exactly once.
     pub(crate) fn take_pending_route(&mut self) -> Option<String> {
         self.pending_route.take()

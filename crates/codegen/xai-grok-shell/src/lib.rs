@@ -39,6 +39,7 @@ pub mod inspect;
 pub mod instrumentation;
 pub mod jev;
 pub mod jev_cheap;
+pub mod jev_lanes;
 pub mod jev_store;
 pub mod leader;
 pub mod managed_config;

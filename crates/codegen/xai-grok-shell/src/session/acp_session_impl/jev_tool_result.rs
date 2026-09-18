@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 
 use xai_grok_workspace::jev::catalog::{Ranked, context, selection, verify};
 use xai_grok_workspace::jev::flags::JevLever;
+use xai_grok_workspace::jev::flags::JevLever as Lever;
 use xai_grok_workspace::jev::ladder::{self, LineCandidate};
 use xai_grok_workspace::jev::types::Json;
 
@@ -23,6 +24,9 @@ use super::SessionActor;
 /// Payloads at or above this size are remembered, so a repeat can be a pointer
 /// instead of the bytes (small results are not worth a lookup).
 const READ_REUSE_BYTES: usize = 2_000;
+/// At this size the cheap worker is asked to compress: below it the deterministic
+/// passes are the better deal (a cheap call costs more than the bytes it saves).
+const COMPRESS_BYTES: usize = 24 * 1024;
 /// Results below this size are left alone: no call, no latency, no cost.
 const MIN_BYTES: usize = 400;
 /// At most this many advisory hints are appended, whatever the answers say.
@@ -68,13 +72,11 @@ impl SessionActor {
         // nothing; the note says where the earlier copy is, and the model can
         // read it again if it wants. Only a payload large enough to matter, and
         // only when the bytes are *identical* — a changed file is never reused.
-        if body.len() >= READ_REUSE_BYTES
-            && crate::jev::lever_active(JevLever::D2BigOutputRetention)
-        {
+        if body.len() >= READ_REUSE_BYTES && crate::jev::lever_active(JevLever::EReadReuse) {
             let hash = xai_grok_workspace::jev::reduce::content_hash(&body);
             if let Some(first_at) = crate::jev::note_payload_read(&hash, tool) {
                 crate::jev::record_item(
-                    JevLever::D2BigOutputRetention,
+                    JevLever::EReadReuse,
                     "reuse",
                     &format!(
                         "{} bytes already in this conversation from {first_at} (sha {hash})",
@@ -85,6 +87,103 @@ impl SessionActor {
                 );
                 body = xai_grok_workspace::jev::reduce::reuse_note(&hash, &first_at, body.len());
             }
+        }
+
+        // ---- deterministic crushers: the lane that costs nothing ----
+        //
+        // ANSI/progress noise and whatever the payload's own class repeats go
+        // before anything is sent anywhere. Nothing unique is lost (the crushers
+        // are content-preserving by construction), so this runs before the
+        // flags that spend money and regardless of what they decide.
+        if crate::jev::lever_active(JevLever::ECrushers) && body.len() >= READ_REUSE_BYTES {
+            let (cleaned, applied) = xai_grok_workspace::jev::crushers::preclean(&body);
+            if !applied.is_empty() && cleaned.len() < body.len() {
+                crate::jev::record_item(
+                    JevLever::ECrushers,
+                    "crush",
+                    &format!(
+                        "{} bytes -> {} bytes via {}",
+                        body.len(),
+                        cleaned.len(),
+                        applied.join("+")
+                    ),
+                    None,
+                    None,
+                );
+                body = cleaned;
+            }
+        }
+
+        // ---- importance extraction: keep what a reader acts on ----
+        //
+        // Lossy, so the original is stored first and the marker names the file.
+        // The literal gate runs before the body is replaced: a reduction that
+        // would drop a path, a `file:line`, a number or an error word is refused.
+        if crate::jev::lever_active(JevLever::EImportance)
+            && body.len() >= context::BIG_OUTPUT_BYTES
+        {
+            let options = xai_grok_workspace::jev::reduce::ExtractOptions::default();
+            if let Some(extracted) = xai_grok_workspace::jev::reduce::extract_important(&body, &options)
+                && xai_grok_workspace::jev::reduce::preserves_literals(&body, &extracted.text)
+                && let Some(store) = crate::jev_store::store_payload(&body)
+            {
+                let handle = store.display().to_string();
+                crate::jev::record_item(
+                    JevLever::EImportance,
+                    "extract",
+                    &format!(
+                        "{} bytes -> {} bytes, {} lines elided, stored at {handle}",
+                        body.len(),
+                        extracted.text.len(),
+                        extracted.removed_lines
+                    ),
+                    None,
+                    None,
+                );
+                body = format!(
+                    "{}\n[full output stored at {handle} — read that file for the elided lines]",
+                    extracted.text.trim_end()
+                );
+            }
+        }
+
+        // ---- cheap compression: the model lane, last and flag-gated ----
+        //
+        // Only when the deterministic passes could not get the payload down, only
+        // for the command/build output they are meant for, and only through the
+        // shipped task (which stores the original, sends one request and refuses
+        // an answer that lost a literal).
+        if body.len() >= COMPRESS_BYTES
+            && crate::jev::lever_active(JevLever::ECheapCompress)
+            && let Some(outcome) = self.cheap_task_for(Lever::ECheapCompress, "distill_command_output", &body, "").await
+            && let Some(store) = crate::jev_store::store_payload(&body)
+        {
+            let handle = store.display().to_string();
+            crate::jev::record_item(
+                JevLever::ECheapCompress,
+                "compress",
+                &format!(
+                    "{} bytes -> {} bytes by the cheap worker, stored at {handle}",
+                    body.len(),
+                    outcome.text.len()
+                ),
+                None,
+                None,
+            );
+            body = format!(
+                "{}\n[compressed by the cheap worker; full output stored at {handle}]",
+                outcome.text.trim_end()
+            );
+        }
+
+        // ---- a closed verdict a reader can branch on ----
+        if body.len() >= READ_REUSE_BYTES
+            && crate::jev::lever_active(JevLever::ECheapTask)
+            && let Some(outcome) = self
+                .cheap_task_for(Lever::ECheapTask, "test_verdict", &body, "")
+                .await
+        {
+            hints.push(format!("cheap verdict from the tool output: {}", outcome.text.trim()));
         }
 
         // ---- A1: rank the files a grep hit, before the model reads them ----

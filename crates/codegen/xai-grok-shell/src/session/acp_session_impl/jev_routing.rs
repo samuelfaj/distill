@@ -343,6 +343,51 @@ impl SessionActor {
             .set_pending_effort_label(level.id.clone());
     }
 
+    /// The cheap worker for a lane, resolved from the model entry the owner
+    /// configured for it, or `None` when there is no entry, no credential, or the
+    /// lane's own key is off.
+    ///
+    /// One place resolves it so every cheap lane reaches the same model with the
+    /// same settings, and so a lane cannot quietly use a different one.
+    pub(super) async fn cheap_lane(&self, lever: JevLever) -> Option<crate::jev_cheap::CheapLane> {
+        if !crate::jev::lever_active(lever) {
+            return None;
+        }
+        if crate::jev_cheap::lane_tripped(lever) {
+            crate::jev::record_item(
+                lever,
+                "tripped",
+                &format!(
+                    "lane stood down for this turn after {} failures",
+                    crate::jev_cheap::BREAKER_TRIPS
+                ),
+                None,
+                None,
+            );
+            return None;
+        }
+        let slug = crate::jev::local_config_cached()
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())?;
+        let cfg = self.resolve_aux_sampler_config(slug).await?;
+        crate::jev_cheap::CheapLane::from_sampler_config(&cfg)
+    }
+
+    /// Runs one registered cheap task for a lane, recording the outcome whatever
+    /// it is. `None` ⇒ the caller keeps today's bytes.
+    pub(super) async fn cheap_task_for(
+        &self,
+        lever: JevLever,
+        task_id: &str,
+        payload: &str,
+        question: &str,
+    ) -> Option<xai_grok_workspace::jev::tasks::TaskOutcome> {
+        let lane = self.cheap_lane(lever).await?;
+        lane.run_task(lever, task_id, payload, question).await
+    }
+
     /// The effort a palette level maps onto for the session's model.
     pub(super) async fn effort_value_for_level(&self, level: &str) -> Option<ReasoningEffort> {
         let model = self.current_model_id().await;

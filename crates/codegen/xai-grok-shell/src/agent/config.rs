@@ -16,8 +16,8 @@ use xai_grok_login::{AuthManager, GrokComConfig, OidcAuthConfig};
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
-    REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption, ReasoningSummary,
-    reasoning_effort_meta_value, reasoning_efforts_meta_value,
+    REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption, ReasoningShape,
+    ReasoningSummary, reasoning_effort_meta_value, reasoning_efforts_meta_value,
 };
 use xai_grok_tools::types::compat::{
     COMPAT_CELLS, CompatConfig, CompatConfigToml, CompatRemoteKey, CompatSurface, CompatVendor,
@@ -1191,6 +1191,17 @@ pub struct JevConfig {
     pub api_key_env: Option<String>,
     /// Maximum serialized bytes of `state` for one request.
     pub max_state_bytes: Option<usize>,
+    /// Wire protocol: `typesafe` (System One, the default) or `openrouter`
+    /// (any OpenAI-compatible chat endpoint). Both serve the same typed contract.
+    pub provider: Option<String>,
+    /// How the configured model wants its thinking budget expressed:
+    /// `effort` (`reasoning.effort`), `max_tokens` (`reasoning.max_tokens`,
+    /// what `qwen/qwen3.7-flash` accepts) or `none`.
+    pub reasoning_shape: Option<String>,
+    /// Thinking level for the decision call itself (`none` = do not think).
+    pub reasoning_effort: Option<String>,
+    /// Completion ceiling for a chat-completions provider.
+    pub max_completion_tokens: Option<u32>,
     /// Per-lever switches of the token-saving ladder (§1.3.1).
     pub ladder: JevLadderConfig,
     /// Optional local model the decision layer may route a model call to.
@@ -3718,6 +3729,8 @@ struct DefaultModelJson {
     #[serde(default)]
     reasoning_efforts: Vec<ReasoningEffortOption>,
     #[serde(default)]
+    reasoning_shape: Option<ReasoningShape>,
+    #[serde(default)]
     variants: Vec<ModelVariant>,
     /// When false, only OAuth users see this in the picker.
     #[serde(default = "default_true")]
@@ -3790,6 +3803,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 reasoning_effort: m.reasoning_effort,
                 supports_reasoning_effort: m.supports_reasoning_effort,
                 reasoning_efforts: m.reasoning_efforts,
+                reasoning_shape: m.reasoning_shape,
                 variants: m.variants,
                 supports_backend_search: m.supports_backend_search,
                 compactions_remaining: m.compactions_remaining,
@@ -3850,6 +3864,11 @@ pub struct ModelEntryConfig {
     /// The two legacy fields above are derived from this list when it is non-empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    /// How this model wants the thinking setting expressed on the wire:
+    /// `effort` (default) or `max_tokens` for a model that takes a token budget
+    /// instead of an effort name (e.g. `qwen/qwen3.7-flash` on OpenRouter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_shape: Option<ReasoningShape>,
     /// The id to send for each effort, empty unless the backend spells the effort into the model id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ModelVariant>,
@@ -3947,6 +3966,7 @@ impl Default for ModelEntryConfig {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            reasoning_shape: None,
             variants: Vec::new(),
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::MIN,
@@ -4027,6 +4047,8 @@ pub struct ConfigModelOverride {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub supports_reasoning_effort: Option<bool>,
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    /// How this model wants the thinking setting expressed (a `[model.x]` key).
+    pub reasoning_shape: Option<ReasoningShape>,
     pub supports_backend_search: Option<bool>,
     /// Aliases must be registered in `config_model_override_parse::ALIASES`; serde rejects a table that contains both spellings otherwise.
     #[serde(alias = "send_compactions_remaining")]
@@ -4112,6 +4134,9 @@ impl ConfigModelOverride {
         }
         if let Some(v) = self.supported_in_api {
             entry.info.supported_in_api = v;
+        }
+        if self.reasoning_shape.is_some() {
+            entry.info.reasoning_shape = self.reasoning_shape.unwrap_or_default();
         }
         if self.reasoning_effort.is_some() {
             entry.info.reasoning_effort = self.reasoning_effort;
@@ -4226,6 +4251,10 @@ pub struct ModelInfo {
     /// Per-model reasoning-effort menu (source of truth); legacy fields derived from it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<ReasoningEffortOption>,
+    /// How this model wants the thinking setting expressed (`reasoning_effort`
+    /// or a `reasoning.max_tokens` budget). `None` sends neither.
+    #[serde(default, skip_serializing_if = "ReasoningShape::is_none")]
+    pub reasoning_shape: ReasoningShape,
     /// The id to send for each effort, empty unless the backend spells the effort into the model id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ModelVariant>,
@@ -4287,6 +4316,7 @@ impl ModelInfo {
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            reasoning_shape: ReasoningShape::default(),
             variants: Vec::new(),
             supports_backend_search: false,
             compactions_remaining: None,
@@ -4328,6 +4358,7 @@ impl ModelInfo {
             reasoning_effort: entry.reasoning_effort,
             supports_reasoning_effort: entry.supports_reasoning_effort,
             reasoning_efforts: entry.reasoning_efforts.clone(),
+            reasoning_shape: entry.reasoning_shape.unwrap_or_default(),
             variants: entry.variants.clone(),
             supports_backend_search: entry.supports_backend_search,
             compactions_remaining: entry.compactions_remaining,
@@ -5025,6 +5056,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 reasoning_effort: None,
                 supports_reasoning_effort: false,
                 reasoning_efforts: Vec::new(),
+            reasoning_shape: ReasoningShape::default(),
                 variants: Vec::new(),
                 supports_backend_search: false,
                 compactions_remaining: None,
@@ -5172,6 +5204,7 @@ pub(crate) fn sampling_config_for_model(
         context_window: info.context_window.get(),
         client_version,
         reasoning_effort: info.reasoning_effort,
+        reasoning_shape: info.reasoning_shape,
         reasoning_summary: info.reasoning_summary,
         force_http1: false,
         max_retries: info.max_retries,
@@ -5252,6 +5285,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             reasoning_effort: None,
             supports_reasoning_effort: false,
             reasoning_efforts: Vec::new(),
+            reasoning_shape: ReasoningShape::default(),
             variants: Vec::new(),
             supports_backend_search: false,
             compactions_remaining: None,

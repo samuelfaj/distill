@@ -3050,6 +3050,49 @@ fn resolve_sampling(model: &ModelEntry, session_key: Option<&str>) -> SamplerCon
     let credentials = resolve_credentials(model, session_key);
     sampling_config_for_model(model, credentials, None, None, None, None)
 }
+
+/// A model that takes a token budget instead of an effort name says so in its
+/// own entry, and that reaches the sampler config the round is built from — the
+/// value the wire translation reads (`T3`).
+#[test]
+#[serial]
+fn a_model_entry_carries_its_reasoning_shape_into_the_sampler_config() {
+    let (_, models) = resolve_models_from_toml(
+        r#"
+        [model.openrouter-qwen37]
+        model = "qwen/qwen3.7-flash"
+        base_url = "https://openrouter.ai/api/v1"
+        context_window = 1000000
+        env_key = "OPENROUTER_API_KEY"
+        reasoning_shape = "max_tokens"
+
+        [model.grok-4.5]
+        model = "grok-4.5"
+        base_url = "https://api.x.ai/v1"
+        context_window = 256000
+        "#,
+        None,
+    );
+
+    let shaped = resolve_sampling(
+        models.get("openrouter-qwen37").expect("entry exists"),
+        Some("session-key"),
+    );
+    assert_eq!(
+        shaped.reasoning_shape,
+        xai_grok_sampling_types::ReasoningShape::MaxTokens
+    );
+
+    // Every other model keeps the default: its effort travels as an effort name.
+    let plain = resolve_sampling(
+        models.get("grok-4.5").expect("entry exists"),
+        Some("session-key"),
+    );
+    assert_eq!(
+        plain.reasoning_shape,
+        xai_grok_sampling_types::ReasoningShape::None
+    );
+}
 #[test]
 #[serial]
 fn e2e_user_overrides_default_model_key_with_custom_endpoint() {

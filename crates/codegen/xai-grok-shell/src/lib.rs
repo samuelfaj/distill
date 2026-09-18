@@ -38,6 +38,7 @@ pub use xai_grok_http as http;
 pub mod inspect;
 pub mod instrumentation;
 pub mod jev;
+pub mod jev_store;
 pub mod leader;
 pub mod managed_config;
 pub mod mcp_doctor;

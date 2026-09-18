@@ -31,8 +31,8 @@ use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
     DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper,
-    ResponseModelMetadata, Result, SamplingError, SentCredential, build_messages_request,
-    is_check_event, messages, rs,
+    ReasoningEffort, ReasoningShape, ResponseModelMetadata, Result, SamplingError, SentCredential,
+    build_messages_request, is_check_event, messages, rs,
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, RequestCompression, SamplerConfig};
@@ -347,6 +347,11 @@ struct ClientDefaults {
     auth_scheme: AuthScheme,
     request_compression: RequestCompression,
     stream_tool_calls: bool,
+    /// This model's own effort, applied when the request does not carry one
+    /// (a round the decision layer moved onto another model, for instance).
+    reasoning_effort: Option<ReasoningEffort>,
+    /// How this model wants the thinking setting expressed (see [`SamplerConfig`]).
+    reasoning_shape: ReasoningShape,
     reasoning_summary: Option<xai_grok_sampling_types::ReasoningSummary>,
     extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
@@ -654,6 +659,8 @@ impl SamplingClient {
             auth_scheme: config.auth_scheme,
             request_compression: config.request_compression,
             stream_tool_calls: config.stream_tool_calls,
+            reasoning_effort: config.reasoning_effort,
+            reasoning_shape: config.reasoning_shape,
             reasoning_summary: config.reasoning_summary,
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
@@ -864,8 +871,14 @@ impl SamplingClient {
             request.top_p = self.defaults.top_p;
         }
 
-        Ok(request)
-    }
+        if request.reasoning_effort.is_none() {
+            request.reasoning_effort = self.defaults.reasoning_effort;
+        }
+        // A model that takes a token budget instead of an effort name gets the
+        // same chosen effort expressed in its own dialect.
+        request.apply_reasoning_shape(self.defaults.reasoning_shape);
+
+        Ok(request)    }
 
     /// `sent_bearer` is the fragment [`Self::post`] captured for the request that produced `response` (401 attribution).
     async fn handle_response(
@@ -2344,6 +2357,39 @@ mod tests {
         }
     }
 
+    /// The shipped path from a model's configured shape to the wire body: the
+    /// effort the decision layer chose reaches a budget-dialect model as the
+    /// budget it stands for, and reaches every other model unchanged.
+    #[test]
+    fn apply_defaults_expresses_the_effort_in_the_models_own_shape() {
+        let client = SamplingClient::new(SamplerConfig {
+            reasoning_shape: ReasoningShape::MaxTokens,
+            max_completion_tokens: Some(2_048),
+            ..minimal_config()
+        })
+        .expect("client constructs without I/O");
+
+        let mut request = ChatCompletionRequest::new("qwen/qwen3.7-flash", vec![]);
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        let payload = client.apply_defaults(request).expect("defaults apply");
+        assert_eq!(payload.reasoning_effort, None);
+        // `high` is 2048 thinking tokens, clamped just under the 2048 ceiling so
+        // the answer keeps room — the endpoint rejects a budget that does not fit.
+        assert_eq!(
+            payload.reasoning,
+            Some(serde_json::json!({ "max_tokens": 1_984 }))
+        );
+        assert_eq!(payload.max_tokens, Some(2_048));
+
+        // A model that takes the effort name is untouched: today's behaviour.
+        let client = SamplingClient::new(minimal_config()).expect("client constructs without I/O");
+        let mut request = ChatCompletionRequest::new("grok-4.5", vec![]);
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        let payload = client.apply_defaults(request).expect("defaults apply");
+        assert_eq!(payload.reasoning_effort, Some(ReasoningEffort::High));
+        assert!(payload.reasoning.is_none());
+    }
+
     /// The serialized StreamingChatRequest flattens all ChatCompletionRequest fields at top level.
     /// The wrapper adds `stream: true` and `stream_options.include_usage: true`.
     #[test]
@@ -2361,6 +2407,7 @@ mod tests {
             tool_choice: None,
             search_parameters: None,
             response_format: None,
+            reasoning: None,
             reasoning_effort: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,

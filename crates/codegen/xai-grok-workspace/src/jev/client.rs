@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::error::{JevError, JevErrorKind};
+use super::provider::{ChatReply, JevProvider, ReasoningShape, chat_request_body, parse_chat_reply};
 use super::types::{
     JevAnswerSet, Json, Question, QuestionId, SystemOneRequest, SystemOneResponse, Usage,
 };
@@ -28,6 +29,13 @@ pub const DEFAULT_API_KEY_ENV: &str = "JEV_API_KEY";
 /// State ceiling for one request (Jev's own budget is 32k tokens for state +
 /// longest question; we stop far below it so a request is cheap and focused).
 pub const DEFAULT_MAX_STATE_BYTES: usize = 32 * 1024;
+/// Completion ceiling for a chat-completions backend: a typed answer is a small
+/// JSON object, and a lower ceiling is what keeps a decision call cheap.
+pub const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
+/// Thinking level a decision call asks for when the configuration does not say.
+/// Decision calls are the cheap lane: they must answer fast and cost little, and
+/// a lever's own threshold decides what to do with a low-confidence answer.
+pub const DEFAULT_REASONING_EFFORT: &str = "low";
 
 /// Resolves the bearer token by environment variable name at call time.
 pub type ApiKeyResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -42,6 +50,15 @@ pub struct JevClientConfig {
     pub timeout: Duration,
     pub api_key_env: String,
     pub max_state_bytes: usize,
+    /// Which wire protocol the decision layer speaks (TypeSafe System One, or an
+    /// OpenAI-compatible chat endpoint such as OpenRouter).
+    pub provider: JevProvider,
+    /// How the configured model wants to be told how much to think.
+    pub reasoning_shape: ReasoningShape,
+    /// Thinking level asked for on the decision call itself (`none` disables).
+    pub reasoning_effort: String,
+    /// Completion ceiling sent to a chat-completions backend.
+    pub max_completion_tokens: u32,
 }
 
 impl Default for JevClientConfig {
@@ -52,6 +69,10 @@ impl Default for JevClientConfig {
             timeout: DEFAULT_TIMEOUT,
             api_key_env: DEFAULT_API_KEY_ENV.to_owned(),
             max_state_bytes: DEFAULT_MAX_STATE_BYTES,
+            provider: JevProvider::default(),
+            reasoning_shape: ReasoningShape::default(),
+            reasoning_effort: DEFAULT_REASONING_EFFORT.to_owned(),
+            max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
         }
     }
 }
@@ -59,7 +80,11 @@ impl Default for JevClientConfig {
 impl JevClientConfig {
     /// The endpoint used for one call, with any trailing slash removed.
     pub fn endpoint(&self) -> String {
-        format!("{}/v1/systemone", self.base_url.trim_end_matches('/'))
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.provider.path()
+        )
     }
 }
 
@@ -142,13 +167,7 @@ impl JevClient {
             ))
         })?;
 
-        let request = SystemOneRequest {
-            state: state.clone(),
-            model: self.config.model.clone(),
-            questions: questions.clone(),
-        };
-        let body = serde_json::to_vec(&request)
-            .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))?;
+        let body = self.request_body(state, questions)?;
 
         let started = Instant::now();
         let deadline = self.config.timeout;
@@ -208,37 +227,99 @@ impl JevClient {
             .redact(&secret));
         }
 
-        let parsed: SystemOneResponse = serde_json::from_slice(&bytes).map_err(|e| {
-            JevError::invalid(format!("malformed 200 response: {e}")).redact(&secret)
-        })?;
+        self.parse_reply(&bytes, questions, request_id, latency_ms)
+            .map_err(|error| error.redact(&secret))
+    }
+
+    /// One request body for the configured provider: the System One envelope, or
+    /// the chat-completions rendering of the same typed battery.
+    fn request_body(
+        &self,
+        state: &Json,
+        questions: &BTreeMap<QuestionId, Question>,
+    ) -> Result<Vec<u8>, JevError> {
+        let body = match self.config.provider {
+            JevProvider::Typesafe => serde_json::to_vec(&SystemOneRequest {
+                state: state.clone(),
+                model: self.config.model.clone(),
+                questions: questions.clone(),
+            })
+            .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))?,
+            JevProvider::OpenRouter => chat_request_body(
+                state,
+                questions,
+                &self.config.model,
+                self.config.reasoning_shape,
+                &self.config.reasoning_effort,
+                self.config.max_completion_tokens,
+            )
+            .and_then(|body| {
+                serde_json::to_vec(&body)
+                    .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))
+            })?,
+        };
+        Ok(body)
+    }
+
+    /// Turns a 200 body into typed answers, per provider.
+    ///
+    /// Both halves end on the same contract: a question that came back without a
+    /// usable answer is `Invalid`, which the caller treats as fail-defer.
+    fn parse_reply(
+        &self,
+        bytes: &[u8],
+        questions: &BTreeMap<QuestionId, Question>,
+        request_id: Option<String>,
+        latency_ms: u64,
+    ) -> Result<JevAnswerSet, JevError> {
+        if self.config.provider == JevProvider::OpenRouter {
+            let ChatReply {
+                model,
+                id,
+                content,
+                usage,
+                truncated,
+            } = parse_chat_reply(bytes)?;
+            if truncated {
+                return Err(JevError::invalid(
+                    "answer was cut at the completion ceiling, so it cannot be read",
+                ));
+            }
+            let answers = super::provider::parse_decision_answers(&content, questions)?;
+            return Ok(JevAnswerSet {
+                model: model.unwrap_or_else(|| self.config.model.clone()),
+                answers,
+                usage,
+                request_id: id.or(request_id),
+                latency_ms,
+            });
+        }
+
+        let parsed: SystemOneResponse = serde_json::from_slice(bytes)
+            .map_err(|e| JevError::invalid(format!("malformed 200 response: {e}")))?;
 
         for (id, question) in questions {
             match (parsed.answers.get(id), question) {
                 (None, _) => {
-                    return Err(
-                        JevError::invalid(format!("missing answer for `{id}`")).redact(&secret)
-                    );
+                    return Err(JevError::invalid(format!("missing answer for `{id}`")));
                 }
                 (Some(answer), Question::Noul { .. }) if answer.kind() != "noul" => {
                     return Err(JevError::invalid(format!(
                         "answer `{id}` is a {} but a noul question was asked",
                         answer.kind()
-                    ))
-                    .redact(&secret));
+                    )));
                 }
                 (Some(answer), Question::Choice { .. }) if answer.kind() != "choice" => {
                     return Err(JevError::invalid(format!(
                         "answer `{id}` is a {} but a choice question was asked",
                         answer.kind()
-                    ))
-                    .redact(&secret));
+                    )));
                 }
                 (Some(answer), Question::Score { .. }) if answer.kind() != "score" => {
                     return Err(JevError::invalid(format!(
                         "answer `{id}` is a {} but a score question was asked",
                         answer.kind()
-                    ))
-                    .redact(&secret));
+                    )));
                 }
                 (Some(_), _) => {}
             }

@@ -55,13 +55,13 @@ impl SessionActor {
                 cfg.reasoning_effort
                     .map(|effort| effort.as_ref().to_owned())
             });
-        // The row shows what this micro-action runs with: the routed model when
-        // the decision moved it, plus the effort level in play. A round with
-        // nothing of its own to say (a side call) leaves the last routing up
-        // instead of blanking it.
-        let local = self.jev_ledger.borrow().has_pending_route();
-        if local || effort.is_some() {
-            crate::jev::note_route(local, effort.as_deref());
+        // The row shows what this micro-action runs with: the model the decision
+        // moved it to, plus the effort level in play. A round with nothing of its
+        // own to say (a side call) leaves the last routing up instead of
+        // blanking it.
+        let engine = self.jev_ledger.borrow().pending_route_model();
+        if engine.is_some() || effort.is_some() {
+            crate::jev::note_route(engine.as_deref(), effort.as_deref());
         }
         self.jev_ledger.borrow_mut().note_round(model, effort);
     }
@@ -215,6 +215,13 @@ impl SessionActor {
             self.client_identifier.clone(),
             cfg.max_retries,
         );
+        // The effort this turn is running at travels with the call: the routed
+        // model expresses it in its own dialect (an effort name, or a token
+        // budget when that is what it takes), so the decision that chose the
+        // effort still decides the cheap model's thinking.
+        local_cfg.reasoning_effort = cfg
+            .reasoning_effort
+            .or_else(|| self.models_manager.current_reasoning_effort());
         // The request names its own model and that one wins on the wire, so the
         // round's model id travels with it too.
         self.jev_ledger

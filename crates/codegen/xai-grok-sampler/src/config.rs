@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, ConversationGroupId,
-    DoomLoopRecoveryPolicy, ReasoningEffort, ReasoningSummary,
+    DoomLoopRecoveryPolicy, ReasoningEffort, ReasoningShape, ReasoningSummary,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -75,6 +75,11 @@ pub struct SamplerConfig {
 
     // Reasoning effort
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// How this model wants the thinking setting expressed. `max_tokens` turns
+    /// the chosen effort into a `reasoning.max_tokens` budget for models that
+    /// reject the effort spelling (e.g. `qwen/qwen3.7-flash` on OpenRouter).
+    #[serde(default)]
+    pub reasoning_shape: ReasoningShape,
     /// Overrides the Responses API `reasoning.summary` the request builder sets; `None` leaves it as built.
     #[serde(default)]
     pub reasoning_summary: Option<ReasoningSummary>,
@@ -145,6 +150,7 @@ impl Default for SamplerConfig {
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
+            reasoning_shape: ReasoningShape::default(),
             reasoning_summary: None,
             origin_client: None,
             client_identifier: None,

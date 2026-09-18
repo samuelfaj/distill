@@ -84,7 +84,21 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
 
 /// Client configuration from `[jev]`, falling back to the plan's defaults.
 pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
+    use xai_grok_workspace::jev::provider::{JevProvider, ReasoningShape};
+
     let defaults = JevClientConfig::default();
+    // An unknown provider/shape name is ignored rather than fatal: the decision
+    // path always has a working default, and a typo must not take it down.
+    let provider = cfg
+        .provider
+        .as_deref()
+        .and_then(JevProvider::from_name)
+        .unwrap_or(defaults.provider);
+    let reasoning_shape = cfg
+        .reasoning_shape
+        .as_deref()
+        .and_then(ReasoningShape::from_name)
+        .unwrap_or(defaults.reasoning_shape);
     JevClientConfig {
         base_url: cfg.base_url.clone().unwrap_or(defaults.base_url),
         model: cfg.model.clone().unwrap_or(defaults.model),
@@ -94,6 +108,15 @@ pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
             .unwrap_or(defaults.timeout),
         api_key_env: cfg.api_key_env.clone().unwrap_or(defaults.api_key_env),
         max_state_bytes: cfg.max_state_bytes.unwrap_or(defaults.max_state_bytes),
+        provider,
+        reasoning_shape,
+        reasoning_effort: cfg
+            .reasoning_effort
+            .clone()
+            .unwrap_or(defaults.reasoning_effort),
+        max_completion_tokens: cfg
+            .max_completion_tokens
+            .unwrap_or(defaults.max_completion_tokens),
     }
 }
 
@@ -346,18 +369,19 @@ pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
 
 /// Sets the routing of the call that is about to run, as the row shows it.
 ///
-/// Called once per model call, after the decision layer: `local` plus the effort
-/// level it chose reads as `local low`; a plain level reads as `high`; nothing
-/// chosen reads as `None` (the row then shows only the turn's own counters).
-pub fn note_route(local: bool, level: Option<&str>) {
+/// Called once per model call, after the decision layer. `engine` names the
+/// model the decision moved the call to (`openrouter-qwen37`), so the row says
+/// which model is about to run and not only that something changed; `None` means
+/// the session's own model, and then only the level shows (`high`).
+pub fn note_route(engine: Option<&str>, level: Option<&str>) {
     let Ok(mut state) = activity_state().lock() else {
         return;
     };
-    state.route = match (local, level) {
-        (true, Some(level)) => Some(format!("local {level}")),
-        (true, None) => Some("local".to_owned()),
-        (false, Some(level)) => Some(level.to_owned()),
-        (false, None) => None,
+    state.route = match (engine, level) {
+        (Some(engine), Some(level)) => Some(format!("{engine} {level}")),
+        (Some(engine), None) => Some(engine.to_owned()),
+        (None, Some(level)) => Some(level.to_owned()),
+        (None, None) => None,
     };
 }
 
@@ -495,6 +519,15 @@ impl xai_grok_workspace::jev::permission::JevAsker for ObservedAsker {
 pub fn local_config_cached() -> &'static JevLocalConfig {
     static LOCAL: OnceLock<JevLocalConfig> = OnceLock::new();
     LOCAL.get_or_init(|| resolve_config_from_disk().local)
+}
+
+/// Whether one catalogue item is active right now.
+///
+/// The zero-cost gate: a lane that can do its work without a model (the
+/// deterministic reduction) asks this instead of paying for a battery it does
+/// not need, and it stays off with the same flag.
+pub fn lever_active(lever: xai_grok_workspace::jev::flags::JevLever) -> bool {
+    flags_cached().lever_active(lever)
 }
 
 /// The flags resolved once per process (configuration does not change mid-run).
@@ -681,19 +714,22 @@ mod catalogue_helper_tests {
         );
     }
 
-    /// The route suffix says where the next call goes: local with the level, a
-    /// bare level, or nothing at all.
+    /// The route suffix says where the next call goes: the model the decision
+    /// moved it to plus the level, a bare level, or nothing at all.
     #[test]
     #[serial_test::serial]
     fn the_route_suffix_describes_the_call() {
         reset_activity_for_test();
-        note_route(true, Some("low"));
-        assert_eq!(turn_activity(None).route.as_deref(), Some("local low"));
-        note_route(true, None);
-        assert_eq!(turn_activity(None).route.as_deref(), Some("local"));
-        note_route(false, Some("xhigh"));
+        note_route(Some("openrouter-qwen37"), Some("low"));
+        assert_eq!(
+            turn_activity(None).route.as_deref(),
+            Some("openrouter-qwen37 low")
+        );
+        note_route(Some("qwen38-omlx"), None);
+        assert_eq!(turn_activity(None).route.as_deref(), Some("qwen38-omlx"));
+        note_route(None, Some("xhigh"));
         assert_eq!(turn_activity(None).route.as_deref(), Some("xhigh"));
-        note_route(false, None);
+        note_route(None, None);
         assert_eq!(
             turn_activity(None).route,
             None,

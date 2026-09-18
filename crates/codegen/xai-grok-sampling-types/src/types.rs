@@ -75,6 +75,12 @@ pub struct ChatCompletionRequest {
     pub response_format: Option<crate::rs::ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Thinking budget for models that express it as tokens instead of an effort
+    /// name (`qwen/qwen3.7-flash`): `{"max_tokens": <budget>}`. Set by
+    /// [`ChatCompletionRequest::apply_reasoning_shape`] from the same effort the
+    /// caller chose, so one decision reaches either dialect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<serde_json::Value>,
 
     /// custom headers
     #[serde(skip)]
@@ -119,6 +125,7 @@ impl ChatCompletionRequest {
             search_parameters: None,
             response_format: None,
             reasoning_effort: None,
+            reasoning: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -147,6 +154,7 @@ impl ChatCompletionRequest {
             search_parameters: None,
             response_format: None,
             reasoning_effort: None,
+            reasoning: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -157,6 +165,35 @@ impl ChatCompletionRequest {
             x_grok_user_id: None,
             trace: None,
             traceparent: None,
+        }
+    }
+
+    /// Expresses the request's chosen effort in the shape this model advertises.
+    ///
+    /// [`ReasoningShape::MaxTokens`] rewrites `reasoning_effort` into a token
+    /// budget and drops the effort field, because a model that only takes a
+    /// budget rejects the effort spelling; the budget is clamped under
+    /// `max_tokens`, which the endpoint enforces. The other shapes leave the
+    /// request exactly as the caller built it.
+    pub fn apply_reasoning_shape(&mut self, shape: ReasoningShape) {
+        match shape {
+            // No translation: the request goes out exactly as the caller built it.
+            ReasoningShape::None => {}
+            // This model takes the effort name; a budget that leaked in from
+            // another model's dialect must not travel with it.
+            ReasoningShape::Effort => self.reasoning = None,
+            ReasoningShape::MaxTokens => {
+                let Some(level) = self.reasoning_effort.take() else {
+                    return;
+                };
+                let ceiling = self.max_tokens.unwrap_or(u32::MAX);
+                let budget = reasoning_budget_tokens(level).min(ceiling.saturating_sub(64));
+                if budget > 0 {
+                    self.reasoning = Some(serde_json::json!({ "max_tokens": budget }));
+                } else {
+                    self.reasoning = None;
+                }
+            }
         }
     }
 
@@ -802,6 +839,68 @@ impl std::fmt::Display for ReasoningEffort {
     }
 }
 
+/// How a provider wants the thinking setting expressed on the wire.
+///
+/// Not every model takes `reasoning_effort`: `qwen/qwen3.7-flash` advertises a
+/// token budget (`reasoning.max_tokens`) and rejects the effort spelling, while
+/// xAI and several OpenRouter models take the effort string. The shape belongs
+/// to the model entry, so the same chosen effort reaches either in its own
+/// dialect instead of being dropped or sent as a parameter the model refuses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningShape {
+    /// Leave the request as built (the default: every model that takes
+    /// `reasoning_effort` needs no translation).
+    #[default]
+    None,
+    /// This model takes `reasoning_effort: "<level>"`.
+    Effort,
+    /// This model takes `reasoning: {"max_tokens": <budget>}`.
+    MaxTokens,
+}
+
+impl ReasoningShape {
+    /// Parse a configuration spelling; unknown values are `None` (no shape).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "" | "none" | "off" => Some(Self::None),
+            "effort" | "reasoning_effort" => Some(Self::Effort),
+            "max_tokens" | "tokens" | "budget" => Some(Self::MaxTokens),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Effort => "effort",
+            Self::MaxTokens => "max_tokens",
+        }
+    }
+
+    /// Whether this shape sends no reasoning parameter at all (serde helper).
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+/// Thinking budget for one effort level, used by [`ReasoningShape::MaxTokens`].
+///
+/// The ladder mirrors the effort levels one for one so a level keeps its
+/// meaning when it is expressed as tokens instead of a name; `none` is zero,
+/// which the request builder reads as "send nothing".
+pub fn reasoning_budget_tokens(level: ReasoningEffort) -> u32 {
+    match level {
+        ReasoningEffort::None => 0,
+        ReasoningEffort::Minimal => 128,
+        ReasoningEffort::Low => 512,
+        ReasoningEffort::Medium => 1_024,
+        ReasoningEffort::High => 2_048,
+        ReasoningEffort::Xhigh => 4_096,
+        ReasoningEffort::Max => 8_192,
+    }
+}
+
 impl std::str::FromStr for ReasoningEffort {
     type Err = String;
 
@@ -1133,6 +1232,10 @@ pub struct SamplingConfig {
     /// Reasoning effort level for reasoning models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// How this model wants that effort expressed on the wire
+    /// (see [`ReasoningShape`]).
+    #[serde(default, skip_serializing_if = "ReasoningShape::is_none")]
+    pub reasoning_shape: ReasoningShape,
     /// Responses API `reasoning.summary`; `None` keeps the request builder's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_summary: Option<ReasoningSummary>,
@@ -1161,6 +1264,7 @@ impl Default for SamplingConfig {
             env_http_headers: indexmap::IndexMap::new(),
             context_window: NonZeroU64::MIN,
             reasoning_effort: None,
+            reasoning_shape: ReasoningShape::default(),
             reasoning_summary: None,
             stream_tool_calls: None,
         }
@@ -1623,6 +1727,63 @@ mod tests {
             .downcast_ref::<TestTrace>()
             .unwrap();
         assert_eq!(original.0, cloned_inner.0);
+    }
+
+    fn chat_request_at(effort: Option<ReasoningEffort>, max_tokens: Option<u32>) -> ChatCompletionRequest {
+        let mut request = ChatCompletionRequest::new("qwen/qwen3.7-flash", vec![]);
+        request.reasoning_effort = effort;
+        request.max_tokens = max_tokens;
+        request
+    }
+
+    /// The default shape is what every existing model already does: nothing moves.
+    #[test]
+    fn the_default_shape_leaves_the_request_alone() {
+        let mut request = chat_request_at(Some(ReasoningEffort::Low), Some(2_048));
+        request.apply_reasoning_shape(ReasoningShape::None);
+        assert_eq!(request.reasoning_effort, Some(ReasoningEffort::Low));
+        assert!(request.reasoning.is_none());
+    }
+
+    #[test]
+    fn a_budget_model_gets_the_same_effort_as_a_token_budget() {
+        let mut request = chat_request_at(Some(ReasoningEffort::High), Some(4_096));
+        request.apply_reasoning_shape(ReasoningShape::MaxTokens);
+        // The effort field is gone (the model rejects it) and the level survives
+        // as the budget it stands for.
+        assert_eq!(request.reasoning_effort, None);
+        assert_eq!(
+            request.reasoning,
+            Some(serde_json::json!({"max_tokens": 2_048}))
+        );
+    }
+
+    /// The budget may never reach the completion ceiling: the endpoint rejects a
+    /// request whose thinking budget does not fit under `max_tokens`.
+    #[test]
+    fn the_budget_stays_under_the_completion_ceiling() {
+        let mut request = chat_request_at(Some(ReasoningEffort::Max), Some(1_000));
+        request.apply_reasoning_shape(ReasoningShape::MaxTokens);
+        assert_eq!(
+            request.reasoning,
+            Some(serde_json::json!({"max_tokens": 936}))
+        );
+
+        // `none` asks for no thinking at all: nothing is sent.
+        let mut request = chat_request_at(Some(ReasoningEffort::None), Some(2_048));
+        request.apply_reasoning_shape(ReasoningShape::MaxTokens);
+        assert!(request.reasoning.is_none());
+    }
+
+    /// A budget that arrived from another model's dialect must not reach a model
+    /// that takes the effort name.
+    #[test]
+    fn the_effort_shape_drops_a_stale_budget() {
+        let mut request = chat_request_at(Some(ReasoningEffort::Medium), Some(2_048));
+        request.reasoning = Some(serde_json::json!({"max_tokens": 512}));
+        request.apply_reasoning_shape(ReasoningShape::Effort);
+        assert_eq!(request.reasoning_effort, Some(ReasoningEffort::Medium));
+        assert!(request.reasoning.is_none());
     }
 
     /// Verify that cloning a `ChatCompletionRequest` with a trace does not recurse.

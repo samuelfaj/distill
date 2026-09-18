@@ -167,6 +167,11 @@ impl JevTurnLedger {
         self.pending_route.is_some()
     }
 
+    /// The routed model waiting for this round, for the row's engine label.
+    pub(crate) fn pending_route_model(&self) -> Option<String> {
+        self.pending_route.clone()
+    }
+
     /// Takes the pending route, if any: the request carries it exactly once.
     pub(crate) fn take_pending_route(&mut self) -> Option<String> {
         self.pending_route.take()

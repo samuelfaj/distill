@@ -18,13 +18,16 @@ pub mod flags;
 pub mod ladder;
 pub mod permission;
 pub mod policy;
+pub mod provider;
 pub mod questions;
+pub mod reduce;
 pub mod types;
 
 pub use client::{JevClient, JevClientConfig};
 pub use error::{JevError, JevErrorKind};
 pub use flags::{JevFlags, JevLever};
 pub use policy::{DecisionRecord, DecisionSink, JevDecision, TracingSink};
+pub use provider::{JevProvider, ReasoningShape};
 pub use types::{Answer, JevAnswerSet, Question, QuestionId, Usage};
 
 /// A configured Jev client plus the flags that allowed it to exist.

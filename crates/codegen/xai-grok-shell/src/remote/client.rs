@@ -744,6 +744,9 @@ pub(crate) fn parse_remote_model_value(
             .and_then(|v| v.as_array())
             .map(|arr| xai_grok_sampling_types::parse_reasoning_effort_options(arr))
             .unwrap_or_default(),
+        // A remote catalogue entry never guesses the dialect: only a local
+        // `[model.<id>]` entry (where the owner measured the model) sets it.
+        reasoning_shape: None,
         variants: obj
             .get("variants")
             .and_then(|v| v.as_array())

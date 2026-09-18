@@ -671,6 +671,7 @@ impl SessionActor {
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
+                reasoning_shape: Default::default(),
                 reasoning_summary: None,
                 stream_tool_calls: None,
             });
@@ -757,6 +758,7 @@ impl SessionActor {
             context_window: cfg.context_window.get(),
             client_version: creds.client_version,
             reasoning_effort: cfg.reasoning_effort,
+            reasoning_shape: cfg.reasoning_shape,
             reasoning_summary: cfg.reasoning_summary,
             force_http1: false,
             max_retries: cfg.max_retries.or(Some(self.max_retries)),

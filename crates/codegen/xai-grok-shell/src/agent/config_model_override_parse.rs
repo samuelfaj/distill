@@ -446,7 +446,7 @@ mod tests {
     use crate::sampling::ApiBackend;
     use xai_grok_sampling_types::{
         CompactionAtTokens, CompactionsRemaining, ReasoningEffort, ReasoningEffortOption,
-        ReasoningSummary,
+        ReasoningShape, ReasoningSummary,
     };
 
     fn parse_cfg(toml_str: &str) -> crate::agent::config::Config {
@@ -764,6 +764,7 @@ mod tests {
             compaction_at_tokens: Some(CompactionAtTokens::Fixed(100_000)),
             show_model_fingerprint: Some(true),
             stream_tool_calls: Some(false),
+            reasoning_shape: Some(ReasoningShape::MaxTokens),
             reasoning_summary: Some(ReasoningSummary::None),
         }
     }

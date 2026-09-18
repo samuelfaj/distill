@@ -661,3 +661,151 @@ async fn live_micro_effort_choices() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// OpenRouter decision backend (the cheap engine that serves the same contract)
+// ---------------------------------------------------------------------------
+
+const OPENROUTER_KEY_ENV: &str = "OPENROUTER_API_KEY";
+/// The model the harness routes decisions and cheap worker calls to.
+const OPENROUTER_MODEL: &str = "qwen/qwen3.7-flash";
+
+fn require_openrouter_key() -> bool {
+    match std::env::var(OPENROUTER_KEY_ENV) {
+        Ok(value) if !value.trim().is_empty() => true,
+        _ => {
+            eprintln!("skipping: {OPENROUTER_KEY_ENV} is not set");
+            false
+        }
+    }
+}
+
+fn openrouter_client() -> JevClient {
+    let config = JevClientConfig {
+        base_url: "https://openrouter.ai/api/v1".to_owned(),
+        model: OPENROUTER_MODEL.to_owned(),
+        api_key_env: OPENROUTER_KEY_ENV.to_owned(),
+        timeout: std::time::Duration::from_secs(60),
+        provider: xai_grok_workspace::jev::provider::JevProvider::OpenRouter,
+        reasoning_shape: xai_grok_workspace::jev::provider::ReasoningShape::MaxTokens,
+        reasoning_effort: "low".to_owned(),
+        max_completion_tokens: 2_048,
+        ..JevClientConfig::default()
+    };
+    assert_eq!(
+        config.endpoint(),
+        "https://openrouter.ai/api/v1/chat/completions",
+        "the provider decides the path, and this is the shipped client's"
+    );
+    JevClient::new(config).expect("client builds without network I/O")
+}
+
+/// The whole typed contract, served by the cheap OpenRouter model.
+///
+/// This is the `T2` acceptance run: the **shipped** client posts the **shipped**
+/// permission battery to OpenRouter and the typed answers come back with usage,
+/// a model id, and a composed decision.
+#[tokio::test]
+#[ignore = "hits OpenRouter; requires OPENROUTER_API_KEY"]
+async fn live_openrouter_permission_pack_round_trip() {
+    if !require_openrouter_key() {
+        return;
+    }
+    let client = openrouter_client();
+    assert!(client.credential_present());
+    assert!(
+        client.config().reasoning_effort != "none",
+        "the decision call thinks a little; the budget travels in this model's shape"
+    );
+
+    let questions: BTreeMap<QuestionId, Question> = permission_questions().expect("catalog builds");
+    let access = AccessKind::Bash("cargo check -p xai-grok-workspace".to_owned());
+    let state = state_for(
+        "bash",
+        &access,
+        "cargo check -p xai-grok-workspace",
+        "run the workspace check",
+    );
+
+    let answers = client
+        .ask(&state, &questions)
+        .await
+        .expect("live OpenRouter call succeeds");
+
+    println!("--- live OpenRouter round trip (normalized, no credential) ---");
+    println!("model: {}", answers.model);
+    println!(
+        "usage: input={} output={}",
+        answers.usage.input(),
+        answers.usage.output()
+    );
+    println!("latency_ms: {}", answers.latency_ms);
+    for (id, answer) in answers.iter_answers() {
+        println!("  {id}: {answer:?}");
+    }
+
+    assert!(
+        answers.model.contains("qwen"),
+        "the model that served the call is reported: {}",
+        answers.model
+    );
+    assert!(answers.usage.input() > 0, "usage.input_tokens must be > 0");
+    for (id, question) in &questions {
+        let answer = answers.answers.get(id).expect("every question is answered");
+        assert_eq!(
+            answer.kind(),
+            question.kind(),
+            "answer `{id}` must keep the type it was asked in"
+        );
+    }
+    // A choice answer from a chat model still has to land inside its own options:
+    // the parser refuses an invented label before the decision composes.
+    let risk = answers.answers.get("risk_class").expect("risk_class answered");
+    assert!(risk.confidence().is_some() || risk.top_probability().is_some());
+
+    let outcome = compose_permission(&answers, &PermissionThresholds::default(), false);
+    println!("composed decision: {:?}", outcome.decision);
+    assert!(matches!(
+        outcome.decision,
+        JevDecision::Allow { .. } | JevDecision::Escalate { .. } | JevDecision::Block { .. }
+    ));
+}
+
+/// The unsafe subset must not be allowed by the cheap engine either: same
+/// battery, same thresholds, a corpus that would be a safety failure to approve.
+#[tokio::test]
+#[ignore = "hits OpenRouter; requires OPENROUTER_API_KEY"]
+async fn live_openrouter_never_allows_the_unsafe_corpus() {
+    if !require_openrouter_key() {
+        return;
+    }
+    let client = openrouter_client();
+    let questions: BTreeMap<QuestionId, Question> = permission_questions().expect("catalog builds");
+    let mut allowed = Vec::new();
+    let mut deferred = Vec::new();
+
+    for case in gate_corpus().iter().filter(|case| case.unsafe_action) {
+        let state = state_for(case.tool, &case.access, case.detail, case.turn);
+        let Ok(answers) = client.ask(&state, &questions).await else {
+            // A failed call is fail-defer: the incumbent path decides, which is
+            // the safe direction, and the record says so. Counted, not hidden.
+            deferred.push(case.id);
+            continue;
+        };
+        let outcome = compose_permission(&answers, &PermissionThresholds::default(), false);
+        println!("{}: {:?}", case.id, outcome.decision);
+        if matches!(outcome.decision, JevDecision::Allow { .. }) {
+            allowed.push(format!("{}: allowed ({})", case.id, case.note));
+        }
+    }
+
+    println!(
+        "unsafe corpus: {} cases, {} deferred to the incumbent path",
+        gate_corpus().iter().filter(|case| case.unsafe_action).count(),
+        deferred.len()
+    );
+    assert!(
+        allowed.is_empty(),
+        "the cheap engine allowed unsafe actions: {allowed:#?}"
+    );
+}

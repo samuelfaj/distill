@@ -55,13 +55,24 @@ pub fn classify_payload(text: &str) -> PayloadClass {
         {
             diff_markers += 1;
         }
-        if trimmed.starts_with("test ")
-            || trimmed.starts_with("warning:")
-            || trimmed.starts_with("error")
-            || trimmed.starts_with("Compiling ")
-            || trimmed.starts_with("Checking ")
-            || trimmed.starts_with("Finished ")
-            || trimmed.starts_with("running ")
+        // The vocabulary a build/test/install log actually repeats. Two hits
+        // are enough: a log whose only lines are "Compiling" and "Fresh" is
+        // still a log, and that is exactly the payload worth crushing.
+        let lowered = trimmed.to_ascii_lowercase();
+        if lowered.starts_with("test ")
+            || lowered.starts_with("running ")
+            || lowered.starts_with("compiling ")
+            || lowered.starts_with("checking ")
+            || lowered.starts_with("building ")
+            || lowered.starts_with("finished ")
+            || lowered.starts_with("fresh ")
+            || lowered.starts_with("downloading ")
+            || lowered.starts_with("installing ")
+            || lowered.starts_with("warning:")
+            || lowered.starts_with("error")
+            || lowered.contains("test result:")
+            || lowered.contains("npm warn")
+            || lowered.contains("up to date")
         {
             log_markers += 1;
         }
@@ -80,7 +91,7 @@ pub fn classify_payload(text: &str) -> PayloadClass {
     if diff_markers >= 3 {
         return PayloadClass::Diff;
     }
-    if log_markers >= 3 {
+    if log_markers >= 2 {
         return PayloadClass::BuildLog;
     }
     if listing_markers >= 5 {
@@ -187,6 +198,195 @@ pub fn reduce_redundancy(text: &str) -> Option<Reduction> {
     })
 }
 
+/// How much a line is worth keeping, from the app's own heuristic: the things a
+/// reader acts on (a failure, a location, a number that changed) score high, and
+/// progress noise scores zero.
+///
+/// Deliberately blunt and cheap: it runs on every line of every large payload,
+/// and its mistakes are recoverable because the caller always keeps the middle
+/// behind a marker and the original in the store.
+pub fn line_importance(line: &str) -> u32 {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let mut score = 1;
+    for marker in [
+        "error", "panic", "failed", "failure", "fatal", "exception", "traceback",
+        "assert", "expected", "denied", "refused", "timeout", "not found", "no such",
+    ] {
+        if lowered.contains(marker) {
+            score += 10;
+        }
+    }
+    for marker in ["warning", "warn", "deprecated"] {
+        if lowered.contains(marker) {
+            score += 4;
+        }
+    }
+    // A location: `path:line`, `path:line:col`, or a bare `at path`.
+    if has_location(trimmed) {
+        score += 6;
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        score += 2;
+    }
+    if trimmed.chars().any(|c| c.is_ascii_digit()) {
+        score += 2;
+    }
+    if lowered.contains("pass") || lowered.contains("ok") || lowered.contains("done") {
+        score += 1;
+    }
+    score
+}
+
+/// Whether a line carries a `file:line` (or `file:line:col`) location.
+fn has_location(line: &str) -> bool {
+    for token in line.split_whitespace() {
+        let token = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | ',' | ';'));
+        let mut parts = token.rsplitn(3, ':');
+        let last = parts.next().unwrap_or("");
+        if last.parse::<u32>().is_ok() && token.contains(':') {
+            return true;
+        }
+    }
+    false
+}
+
+/// The `file:line` references a payload cites, so the harness can quote the
+/// source lines it points at instead of making the model read the file.
+pub fn error_site_refs(text: &str) -> Vec<(String, usize)> {
+    let mut found: Vec<(String, usize)> = Vec::new();
+    for line in text.lines() {
+        for token in line.split_whitespace() {
+            let token = token.trim_matches(|c: char| {
+                matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | '"' | '\'')
+            });
+            // `file:line` and `file:line:col` both end in numbers; the path is
+            // everything in front of them (it may itself contain `:`).
+            let parts: Vec<&str> = token.split(':').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let last_is_number = parts[parts.len() - 1].parse::<u32>().is_ok();
+            let second_is_number = parts.len() >= 3 && parts[parts.len() - 2].parse::<u32>().is_ok();
+            let (path, line_text) = match (last_is_number, second_is_number) {
+                (true, true) => (
+                    parts[..parts.len() - 2].join(":"),
+                    parts[parts.len() - 2].to_owned(),
+                ),
+                (true, false) => (
+                    parts[..parts.len() - 1].join(":"),
+                    parts[parts.len() - 1].to_owned(),
+                ),
+                _ => continue,
+            };
+            let Ok(number) = line_text.parse::<u32>() else {
+                continue;
+            };
+            if path.is_empty() || number == 0 {
+                continue;
+            }
+            let looks_like_file = path.contains('.') || path.contains('/');
+            if !looks_like_file {
+                continue;
+            }
+            let entry = (path, number as usize);
+            if !found.contains(&entry) {
+                found.push(entry);
+            }
+        }
+    }
+    found.truncate(24);
+    found
+}
+
+/// How many lines of context an importance extraction keeps at each end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractOptions {
+    pub head_lines: usize,
+    pub tail_lines: usize,
+    /// A line at or above this importance is always kept.
+    pub keep_at_or_above: u32,
+    /// Refuse to run unless the payload is at least this big.
+    pub min_bytes: usize,
+}
+
+impl Default for ExtractOptions {
+    fn default() -> Self {
+        Self {
+            head_lines: 20,
+            tail_lines: 40,
+            keep_at_or_above: 12,
+            min_bytes: 4_096,
+        }
+    }
+}
+
+/// Keeps what matters and elides the rest: every line at or above the
+/// importance floor, the head, the tail, and one line on each side of an elided
+/// run (so a failure's context survives), with a marker that counts what went.
+///
+/// Lossy by construction, so the caller stores the original first — the marker
+/// says how many lines are missing, and [`Elision::removed_ranges`] says exactly
+/// which ones.
+pub fn extract_important(text: &str, options: &ExtractOptions) -> Option<Elision> {
+    if text.len() < options.min_bytes {
+        return None;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= options.head_lines + options.tail_lines + 4 {
+        return None;
+    }
+    let mut keep = vec![false; lines.len()];
+    for (index, line) in lines.iter().enumerate() {
+        if index < options.head_lines || index + options.tail_lines >= lines.len() {
+            keep[index] = true;
+        } else if line_importance(line) >= options.keep_at_or_above {
+            keep[index] = true;
+            // One line of context on each side of an important line.
+            if index > 0 {
+                keep[index - 1] = true;
+            }
+            if index + 1 < lines.len() {
+                keep[index + 1] = true;
+            }
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut removed_lines = 0usize;
+    let mut removed_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut index = 0usize;
+    while index < lines.len() {
+        if keep[index] {
+            out.push_str(lines[index]);
+            out.push('\n');
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < lines.len() && !keep[index] {
+            index += 1;
+        }
+        let count = index - start;
+        removed_lines += count;
+        removed_ranges.push((start, count));
+        out.push_str(&format!("[… {count} lines elided …]\n"));
+    }
+    if removed_lines == 0 {
+        return None;
+    }
+    let kept_lines = lines.len() - removed_lines;
+    Some(Elision {
+        text: out,
+        kept_lines,
+        removed_lines,
+        removed_range: removed_ranges.first().copied().unwrap_or((0, 0)),
+        removed_ranges,
+    })
+}
+
 /// What an elision removed, so the caller can store the original first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Elision {
@@ -198,6 +398,10 @@ pub struct Elision {
     /// Byte offset and length of the removed region **in the original text**, so
     /// the caller can store exactly what was lost.
     pub removed_range: (usize, usize),
+    /// Every removed run, as `(first line index, line count)` — the importance
+    /// extraction removes several runs; the simple elision removes one, and its
+    /// first entry matches [`Self::removed_range`].
+    pub removed_ranges: Vec<(usize, usize)>,
 }
 
 /// Keeps the head and the tail of a payload and replaces the middle with a
@@ -240,6 +444,7 @@ pub fn elide_middle(
         kept_lines: keep_head + keep_tail,
         removed_lines,
         removed_range: (head_end, tail_start - head_end),
+        removed_ranges: vec![(keep_head, removed_lines)],
     })
 }
 
@@ -466,6 +671,66 @@ mod tests {
             "the dropped path is named: {lost:?}"
         );
         assert!(lost.iter().any(|item| item == "E0308"));
+    }
+
+    #[test]
+    fn importance_finds_the_lines_a_reader_acts_on() {
+        assert!(line_importance("") == 0);
+        let error = line_importance("error[E0308]: mismatched types at src/client.rs:868");
+        let warning = line_importance("warning: unused variable `total`");
+        let noise = line_importance("   Fresh (0.4s)");
+        assert!(error > warning, "{error} vs {warning}");
+        assert!(warning > noise, "{warning} vs {noise}");
+
+        // `file:line` is what the autoquote lane quotes from.
+        let refs = error_site_refs(
+            "error at crates/x/src/client.rs:868:5 and also src/main.rs:12 (again src/main.rs:12)",
+        );
+        assert_eq!(
+            refs,
+            vec![
+                ("crates/x/src/client.rs".to_owned(), 868),
+                ("src/main.rs".to_owned(), 12),
+            ],
+            "duplicates collapse and the column is dropped"
+        );
+        assert!(error_site_refs("no locations here, just prose").is_empty());
+        assert!(error_site_refs("see 12:30 for the time").is_empty());
+    }
+
+    #[test]
+    fn importance_extraction_keeps_failures_head_and_tail_and_marks_the_rest() {
+        let mut log = String::new();
+        log.push_str("--- build log ---\n");
+        for i in 0..200 {
+            log.push_str(&format!("   Compiling crate-{i} v0.1.0 (/Users/x/y/crate-{i}.rs)\n"));
+        }
+        log.push_str("error[E0308]: mismatched types\n  --> src/client.rs:868:5\n");
+        for i in 0..200 {
+            log.push_str(&format!("   Fresh (0.4s) run {i}\n"));
+        }
+        log.push_str("    Finished `dev` profile in 120.5s\n");
+
+        let elided = extract_important(&log, &ExtractOptions::default()).expect("a big log elides");
+        assert!(elided.text.contains("error[E0308]: mismatched types"));
+        assert!(elided.text.contains("src/client.rs:868:5"));
+        assert!(elided.text.contains("Finished `dev` profile"), "the tail stays");
+        assert!(elided.text.contains("--- build log ---"), "the head stays");
+        assert!(elided.removed_lines > 200, "most of the middle goes");
+        assert_eq!(elided.kept_lines + elided.removed_lines, log.lines().count());
+        assert!(elided.text.len() < log.len() / 2);
+        // Every removed run is reported, so the caller can store exactly what it
+        // is about to lose.
+        assert!(!elided.removed_ranges.is_empty());
+
+        // Small payloads are not worth the store write.
+        assert!(extract_important("tiny\n", &ExtractOptions::default()).is_none());
+        // A payload with nothing to remove is left alone.
+        let short = (0..30)
+            .map(|i| format!("error line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(extract_important(&short, &ExtractOptions::default()).is_none());
     }
 
     #[test]

@@ -13,6 +13,7 @@
 
 pub mod catalog;
 pub mod client;
+pub mod crushers;
 pub mod error;
 pub mod flags;
 pub mod ladder;

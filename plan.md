@@ -1,17 +1,19 @@
 # plan.md — Jev no harness, servido pelo OpenRouter
 
 Este é o planejamento executado nesta rodada: **não existe mais app**. O token saver
-inteiro vive dentro do harness (baseado no grok-build), e o modelo que serve tanto a
-camada de decisão quanto o trabalho barato é o **modelo barato do OpenRouter**
-(`qwen/qwen3.7-flash`), no lugar do LLM local.
+inteiro vive dentro do harness (baseado no grok-build). A camada de decisão roda no
+**próprio modelo Jev** (`~typesafe/jev-latest`), servido pelo endpoint de decisões do
+OpenRouter, e o trabalho barato roda em `qwen/qwen3.7-flash` — também pelo OpenRouter,
+com uma chave só, no lugar do LLM local.
 
 ## 1. O que muda
 
 | Antes | Agora |
 | --- | --- |
-| Decisões tipadas só no TypeSafe System One (`POST /v1/systemone`) | Mesmo contrato tipado, servido também por um endpoint OpenAI-compatible (`POST /chat/completions`) — OpenRouter |
-| Micro-ação barata ia para o modelo local (oMLX, `qwen38-local`) | A mesma micro-ação vai para `qwen/qwen3.7-flash` via OpenRouter |
+| Decisões tipadas só no TypeSafe System One (`POST /v1/systemone`) | O **próprio modelo Jev** (`~typesafe/jev-latest`) pelo endpoint de decisões do OpenRouter (`POST /api/alpha/decisions`) — mesmo corpo, mesma resposta tipada, uma chave só. O TypeSafe direto continua selecionável |
+| Micro-ação barata ia para o modelo local (oMLX, `qwen38-local`) | A mesma micro-ação vai para `qwen/qwen3.7-flash` via OpenRouter (chat) |
 | Effort chegava na rede como `reasoning_effort`, ou não chegava | O effort que o Jev escolhe chega **na forma que cada modelo anuncia**: `reasoning.effort`, `reasoning.max_tokens` ou nada |
+| O effort era o da sessão | **Effort auto por padrão**: o Jev escolhe o effort de cada micro-ação (`[jev] effort_auto`, desligável com `/effort <nível>`) |
 | Um selo genérico `·local` na linha de status | O selo nomeia o **modelo** que vai rodar (`·openrouter-qwen37 low`) |
 
 O contrato tipado não muda: as perguntas continuam sendo `noul`/`choice`/`score`, com
@@ -23,20 +25,26 @@ exatamente onde estavam. Trocar de provedor é trocar `provider`/`base_url`/`mod
 
 ```
                     ┌──────────────────────────── harness ────────────────────────────┐
-micro-ação ──► Jev (typed questions) ──► JevClient ──► provider = openrouter ──► OpenRouter
-                    │                        │              /chat/completions      qwen/qwen3.7-flash
-                    │                        └── provider = typesafe ──► api.typesafe.ai /v1/systemone
+micro-ação ──► bateria tipada ──► JevClient ──► openrouter_decisions ──► openrouter.ai/api
+                    │               │               /alpha/decisions        ~typesafe/jev-latest
+                    │               ├── typesafe ──► api.typesafe.ai /v1/systemone
+                    │               └── openrouter (chat) ──► /chat/completions
                     │
                     ├── resposta tipada (choice/probabilities/confidence) ──► política de sempre
                     │
                     └── roteamento da rodada ──► modelo barato + effort na forma do modelo
 ```
 
-- `crates/codegen/xai-grok-workspace/src/jev/provider.rs` — o adaptador: renderiza as
-  perguntas tipadas num prompt estrito, lê o JSON de volta como `Answer` tipada e
-  valida cada resposta contra a própria pergunta (opção fora dos critérios, score fora
-  da rubrica, resposta faltando ⇒ `Invalid` ⇒ fail-defer). Também decide a forma do
-  `reasoning` por modelo (`ReasoningShape`) e o orçamento de pensamento por nível.
+Os dois primeiros backends falam o **mesmo envelope** (`{state, model, questions}` →
+respostas com `type`), então compartilham corpo e leitura; só o backend de chat precisa
+das perguntas renderizadas num prompt.
+
+- `crates/codegen/xai-grok-workspace/src/jev/provider.rs` — os backends: `typesafe`
+  (serviço direto), `openrouter_decisions` (o modelo Jev no OpenRouter, mesmo envelope)
+  e `openrouter` (chat: renderiza a bateria num prompt estrito, lê o JSON de volta como
+  `Answer` tipada e valida cada resposta contra a própria pergunta — opção fora dos
+  critérios, score fora da rubrica, resposta faltando ⇒ `Invalid` ⇒ fail-defer). Também
+  decide a forma do `reasoning` por modelo (`ReasoningShape`) e o orçamento por nível.
 - `crates/codegen/xai-grok-workspace/src/jev/client.rs` — o transporte: um caminho só,
   com pré-checagens (perguntas válidas, teto de bytes do estado, credencial resolvida
   em tempo de chamada), prazo único cobrindo o corpo da resposta, sem retry, sem log de
@@ -64,14 +72,12 @@ OPENROUTER_API_KEY=sk-or-v1-…     # rotacione: esta chave foi colada em texto 
 
 ```toml
 [jev]
-provider = "openrouter"                       # ou "typesafe"
-base_url = "https://openrouter.ai/api/v1"
-model = "qwen/qwen3.7-flash"
+provider = "openrouter_decisions"             # ou "openrouter" (chat) ou "typesafe"
+base_url = "https://openrouter.ai/api"        # o endpoint de decisões
+model = "~typesafe/jev-latest"                # o modelo Jev
 api_key_env = "OPENROUTER_API_KEY"
 timeout_ms = 20000
-reasoning_shape = "max_tokens"                # o que este modelo anuncia
-reasoning_effort = "low"                      # quanto a própria decisão pensa
-max_completion_tokens = 2048
+effort_auto = true                            # o Jev escolhe o effort por micro-ação
 
 [jev.local]                                   # o modelo barato das micro-ações
 model = "openrouter-qwen37"
@@ -91,34 +97,41 @@ reasoning_shape = "max_tokens"                # sem `reasoning_effort` neste mod
 ## 4. O que foi implementado
 
 1. **Chave e catálogo** — chave no ambiente global, entrada `[model.openrouter-qwen37]`,
-   `[jev]` apontando para o OpenRouter, e `OPENROUTER_API_KEY` fora do ambiente das
-   ferramentas. Verificado com uma chamada real (`GET /v1/key`, `GET /v1/models`, uma
-   completion) — foi essa chamada que mostrou que `qwen/qwen3.7-flash` anuncia
-   `reasoning` + `max_tokens` e **não** `reasoning_effort` (e que um orçamento maior que
-   o teto de completion é rejeitado: daí o clamp).
-2. **Transporte de decisão via OpenRouter** (mesmo contrato tipado, TypeSafe ainda
+   `[jev]` na camada de decisão e `OPENROUTER_API_KEY` fora do ambiente das ferramentas.
+   Verificado com chamadas reais: `GET /v1/key`, `GET /v1/models` (que mostrou que
+   `qwen/qwen3.7-flash` anuncia `reasoning` + `max_tokens` e **não** `reasoning_effort`,
+   e que um orçamento maior que o teto de completion é rejeitado — daí o clamp) e o
+   endpoint de decisões, que recusa o caminho de chat com uma mensagem explícita.
+2. **A decisão roda no modelo Jev, pelo OpenRouter** — `~typesafe/jev-latest` não é um
+   modelo de chat: é o endpoint `POST /api/alpha/decisions`, com o mesmo envelope do
+   System One. O harness o trata como um backend próprio, e não como um modelo de chat
+   com as perguntas transformadas em prompt.
+3. **Transporte de decisão tipado, com três backends** (TypeSafe direto ainda
    selecionável) com testes de unidade do adaptador e um teste vivo que roda a bateria
    real de permissão contra o OpenRouter — 9 perguntas, todas respondidas com o tipo
    pedido, `usage` 726/755 tokens, decisão composta `Allow`.
-3. **Leitura tolerante do modelo pequeno** — o mesmo contrato, lido nas grafias que um
+4. **Leitura tolerante de um modelo de chat** — o mesmo contrato, lido nas grafias que um
    modelo de chat usa (`probability`/`yes`/`answer`, `score`/`level`/a própria palavra da
    rubrica): a resposta continua sendo a que foi perguntada, e uma opção que a pergunta
    não ofereceu continua sendo recusada.
-4. **Effort na forma do modelo** — `ReasoningShape` por modelo, tradução no sampler, e o
+5. **Effort na forma do modelo** — `ReasoningShape` por modelo, tradução no sampler, e o
    effort que o Jev escolhe viaja com a rodada roteada.
-5. **Redução determinística de payload** (`jev/reduce.rs` + `jev_store.rs`), na lane D2: deduplica linhas
+6. **Redução determinística de payload** (`jev/reduce.rs` + `jev_store.rs`), na lane D2: deduplica linhas
    repetidas e colapsa linhas em branco (**nada de único se perde**; o marcador diz em
    qual linha ficou a cópia), e quando ainda é grande elide o meio **depois de gravar o
    original** em `~/.grok/jev/store/<hash>.txt`, com o caminho no marcador — o modelo lê
    de volta com o `read_file` de sempre. O guarda `preserves_literals` recusa qualquer
    redução que perderia um path, `file:line`, número ou erro.
-6. **Visibilidade** — a linha de status nomeia o modelo da micro-ação e o nível de
+7. **Effort auto por padrão** — a sessão começa com o Jev escolhendo o effort de cada
+   micro-ação (`[jev] effort_auto`, sem valor ⇒ ligado), e um `/effort <nível>` fixa um
+   nível para a sessão.
+8. **Visibilidade** — a linha de status nomeia o modelo da micro-ação e o nível de
    effort; cada decisão vai para `~/.grok/logs/jev.jsonl` com modelo, tokens, latência e
    id da requisição; o relatório do turno mostra a distribuição (modelo, effort, tokens).
 
 ### O que ainda **não** está implementado
 
-- **Compressão pelo modelo barato** (o texto grande ser resumido pelo `qwen3.7-flash`
+- **Compressão pelo modelo barato** (o texto grande ser resumido por um modelo de chat
   antes de chegar ao modelo caro) — a lane determinística existe e está ligada à flag
   `d2_big_output_retention`, mas a compressão por modelo, com o mesmo store-before-loss,
   não.
@@ -132,10 +145,11 @@ reasoning_shape = "max_tokens"                # sem `reasoning_effort` neste mod
 
 ```bash
 # unidade (sem rede)
-cargo test -p xai-grok-workspace --lib jev            # 110 testes
+cargo test -p xai-grok-workspace --lib jev            # 113 testes
 cargo test -p xai-grok-sampling-types --lib types::tests
 cargo test -p xai-grok-sampler --lib apply_defaults
-cargo test -p xai-grok-shell --lib jev                # 29 testes
+cargo test -p xai-grok-shell --lib jev                # 30 testes
+cargo test -p xai-grok-shell --lib a_fresh_manager_starts_in_auto_effort
 cargo check -p xai-grok-workspace -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-bin
 
 # vivo (usa a chave do ambiente, nunca a imprime)
@@ -157,6 +171,9 @@ OPENROUTER_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ign
 | `cargo test -p xai-grok-pager --lib` | ❌ falha **pré-existente** de feature (`WorkspaceOps::for_test` não existe sem a feature `test-support`), reproduzida também com as mudanças guardadas com `git stash` |
 | Selo na tela do TUI | ⚠️ não capturado: o driver de pty não está instalado nesta máquina e o `script(1)` não trouxe o desenho da TUI no fluxo capturado (o log de decisões e o relatório do turno são a evidência de que o caminho rodou) |
 | Terceiro turno vivo (leitura de arquivo) | ⚠️ 18 decisões, 16 aplicadas; 2 caíram no fail-defer: uma resposta sem JSON (`reply carried no JSON object`) e um `choice` respondido como `None` — os dois viram o caminho de sempre em vez de palpite, e ficam registrados com o motivo |
+| O modelo Jev pelo OpenRouter (cliente do harness) | ✅ `typesafe/jev-1.13-20260917`, 9 perguntas tipadas, 1183/181 tokens, **1,2 s**, id do corpo; `Block` para `rm -rf ~/Documents` e `Escalate` para uma ação incerta |
+| Turno real já com o modelo Jev na decisão | ✅ 21 decisões, **todas** nomeando `typesafe/jev-1.13-20260917`, **zero erros e zero timeouts** (antes: 3 erros e 8 timeouts com o modelo de chat), latência de 0,7–1,2 s por decisão |
+| Effort auto por padrão | ✅ `b2_micro_effort` decidiu `effort:none` para duas micro-ações triviais (`applied to this call · model DeepSeek V4.1 Flash`); teste `a_fresh_manager_starts_in_auto_effort` cobre o padrão ligado e a chave desligando |
 
 ## 7. Riscos
 

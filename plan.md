@@ -106,7 +106,7 @@ reasoning_shape = "max_tokens"                # sem `reasoning_effort` neste mod
    não ofereceu continua sendo recusada.
 4. **Effort na forma do modelo** — `ReasoningShape` por modelo, tradução no sampler, e o
    effort que o Jev escolhe viaja com a rodada roteada.
-5. **Redução determinística de payload** (`support/`), na lane D2: deduplica linhas
+5. **Redução determinística de payload** (`jev/reduce.rs` + `jev_store.rs`), na lane D2: deduplica linhas
    repetidas e colapsa linhas em branco (**nada de único se perde**; o marcador diz em
    qual linha ficou a cópia), e quando ainda é grande elide o meio **depois de gravar o
    original** em `~/.grok/jev/store/<hash>.txt`, com o caminho no marcador — o modelo lê
@@ -132,19 +132,38 @@ reasoning_shape = "max_tokens"                # sem `reasoning_effort` neste mod
 
 ```bash
 # unidade (sem rede)
-cargo test -p xai-grok-workspace --lib jev
+cargo test -p xai-grok-workspace --lib jev            # 110 testes
 cargo test -p xai-grok-sampling-types --lib types::tests
 cargo test -p xai-grok-sampler --lib apply_defaults
-cargo test -p xai-grok-shell --lib jev::
+cargo test -p xai-grok-shell --lib jev                # 29 testes
+cargo check -p xai-grok-workspace -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-bin
 
 # vivo (usa a chave do ambiente, nunca a imprime)
 OPENROUTER_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ignored --nocapture
 ```
 
-## 6. Riscos
+## 6. O que foi verificado nesta rodada
+
+| Verificação | Resultado |
+| --- | --- |
+| Chamada real ao OpenRouter pelo cliente do harness | ✅ 9 perguntas tipadas, `usage` 726/755, decisão `Allow`; a chave não aparece em nenhum log (`grep -c sk-or-v1` = 0) |
+| Corpus inseguro (12 casos) | ✅ 0 liberados, 11 bloqueados, 1 adiado ao caminho de sempre |
+| Effort na forma do modelo | ✅ `cargo test -p xai-grok-sampler --lib apply_defaults` + 4 testes de `ReasoningShape`; o level vira budget de tokens e o orçamento nunca passa do teto de completion |
+| Config → sampler | ✅ `[model.openrouter-qwen37] reasoning_shape` chega em `SamplerConfig.reasoning_shape` |
+| Redução determinística | ✅ 7 testes (log de build, listagem, prosa, diff, guarda de literais, elisão com range exato, hash/reuso) |
+| Entrada real, duas vezes | ✅ dois turnos completos com resposta correta; 18 e 17 decisões, todas nomeando `qwen/qwen3.7-flash`; o modelo barato roteou uma rodada de sessão (~29k/1M tokens) |
+| Kill switch (`GROK_JEV=0`) | ✅ zero registros novos |
+| `cargo test -p xai-grok-pager --lib` | ❌ falha **pré-existente** de feature (`WorkspaceOps::for_test` não existe sem a feature `test-support`), reproduzida também com as mudanças guardadas com `git stash` |
+| Selo na tela do TUI | ⚠️ não capturado: o driver de pty não está instalado nesta máquina e o `script(1)` não trouxe o desenho da TUI no fluxo capturado (o log de decisões e o relatório do turno são a evidência de que o caminho rodou) |
+
+## 7. Riscos
 
 - **Chave exposta**: foi colada em texto claro; deve ser rotacionada no OpenRouter.
 - **Modelos mudam de dialeto**: um modelo que troque o parâmetro de reasoning passa a
   recusar a requisição; por isso a forma é configuração por modelo, e não uma suposição.
 - **Decisão em modelo pequeno**: um `choice` fora das opções ou um score fora da rubrica
   é recusado e a ação cai no caminho de sempre (fail-defer) — nunca vira palpite.
+- **Latência**: a decisão agora é gerada token a token (2–4 s por item medidos, 8 s para a
+  bateria de permissão). Um turno com muitos itens ativos sente isso; o orçamento por
+  item (`item_budget_ms`) e o esforço da própria decisão (`reasoning_effort`) são os
+  botões para trocar latência por decisões mais completas.

@@ -696,6 +696,36 @@ Evidência desta rodada (em `{SCRATCH}`):
 | Interruptor mestre | TUI, `GROK_JEV=0`, um turno inteiro | 0 linhas novas, rodapé `jev:off` |
 | API real (gate) | `cargo test --test jev_live -- --ignored` | 4/4 verdes: corpus de permissão 0 falso-allow / 0 falso-block; A1/A3 e D2 com respostas tipadas e `usage > 0`; 0 descartes indevidos |
 
+### 12.10 Effort auto — uma decisão por micro-ação (2026-09-18)
+
+O dono pediu um nível **Auto Effort** no `/effort` em que o Jev escolhe o effort de **cada chamada do modelo**
+("cada micro ação"), passando o **nome do modelo** no `state` para a decisão saber o poder de quem vai executar.
+
+Implementado:
+
+* `/effort auto` → `Action::SetEffortAuto` → `SetSessionModelRequest._meta.reasoningEffortAuto = true`; um nível
+  explícito (em qualquer troca posterior) desliga o modo e continua sendo o fallback;
+* o shell guarda o modo por processo (`ModelsManager::current_effort_auto`) e decide **por rodada de amostragem**
+  (`prepare_sampler_for_turn` → `jev_choose_micro_effort`), que é onde cada chamada do modelo é montada;
+* o pacote `routing::micro_effort_questions/compose_micro_effort` restringe a escolha ao menu do próprio modelo
+  (`keep_session_effort` incluído) e o `state` leva `model` (nome de exibição), `model_id`, `offered_efforts`
+  (com as descrições do menu), `phase` (`start_of_turn` / `mid_turn_after_tools`), `recent_steps`, `turn_items` e o
+  pedido do usuário — todos limitados por construção;
+* novo lever `b2_micro_effort` (default **on**, porque só roda no modo auto, que é opt-in explícito do usuário) —
+  a alavanca antiga `b2_model_tier` (rebaixamento por turno) continua **off** até o gate dela;
+* o rodapé mostra `(auto)` e o rodapé/registro continuam separados: o chip do turno conta as decisões.
+
+Calibração medida (API real, 2026-09-18): pedido trivial → `none` 0,67/0,64; pedido difícil → `medium` 0,40 /
+`high` 0,31. Por isso o piso do pacote é **0,45**: aplica o ganho barato claro e deixa o turno difícil no effort da
+sessão em vez de baixar qualidade em silêncio. Toda decisão registra o que o Jev *queria*
+(`defer | wanted low at 0.41 below the floor`) além do que foi aplicado (`effort:none · applied to this call`).
+
+Evidência: `{SCRATCH}/auto-effort.log` (TUI real: paleta com a linha Auto Effort, rodapé `(auto)`, decisões
+`effort:none` aplicadas — o marcador de raciocínio daquela chamada caiu para `Thought for 0.2s`), mais os testes
+`jev::catalog::routing::tests::b2_auto_picks_an_offered_effort_and_defers_on_doubt`,
+`jev_routing::tests::the_micro_effort_state_names_the_model` e
+`slash::commands::effort::tests::auto_dispatches_the_auto_action_and_marks_the_palette`.
+
 ### 12.9 Visibilidade do uso no TUI (2026-09-18)
 
 O dono pediu que o uso do Jev aparecesse na **linha de atividade** (a linha acima do prompt, ao lado da ferramenta

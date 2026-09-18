@@ -41,6 +41,20 @@ pub(crate) fn legacy_effort_options() -> Vec<ReasoningEffortOption> {
         .collect()
 }
 
+/// The auto-effort row's insert text and id: the harness picks the effort for
+/// every model call instead of pinning one level.
+pub(crate) const EFFORT_AUTO_ID: &str = "auto";
+
+/// The auto row, rendered first: it is the only level that is not a level.
+pub(crate) fn effort_auto_arg_item(active: bool) -> ArgItem {
+    ArgItem {
+        display: format!("Auto Effort{}", if active { " (active)" } else { "" }),
+        match_text: format!("a {EFFORT_AUTO_ID}"),
+        insert_text: EFFORT_AUTO_ID.to_string(),
+        description: "Jev picks the reasoning effort for each model call".to_string(),
+    }
+}
+
 /// Build effort rows for autocomplete from a per-model option list. `match_text` gets an `a `/`b `/…` sort prefix
 /// so the matcher's alphabetical tiebreak preserves the option order.
 pub(crate) fn build_effort_arg_items(

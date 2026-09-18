@@ -50,6 +50,10 @@ struct Inner {
     catalog: RwLock<CatalogState>,
     current_model_id: RwLock<acp::ModelId>,
     current_reasoning_effort: RwLock<Option<ReasoningEffort>>,
+    /// Set when the user asked for auto effort (`/effort auto`): the Jev layer
+    /// then picks the effort for **each** model call, with
+    /// `current_reasoning_effort` as the fallback when it abstains.
+    current_effort_auto: RwLock<bool>,
     auth_manager: Arc<AuthManager>,
     cfg: RwLock<config::Config>,
     fetch_auth: RwLock<ModelFetchAuth>,
@@ -204,6 +208,7 @@ impl ModelsManagerBuilder {
                 }),
                 current_model_id: RwLock::new(self.current_model_id),
                 current_reasoning_effort: RwLock::new(current_reasoning_effort),
+                current_effort_auto: RwLock::new(false),
                 auth_manager: self.auth_manager,
                 cfg: RwLock::new(self.cfg),
                 fetch_auth: RwLock::new(fetch_auth),
@@ -476,6 +481,17 @@ impl ModelsManager {
 
     pub(crate) fn set_current_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
         *self.inner.current_reasoning_effort.write() = effort;
+    }
+
+    /// Whether the user asked for auto effort (`/effort auto`) in this process.
+    pub(crate) fn current_effort_auto(&self) -> bool {
+        *self.inner.current_effort_auto.read()
+    }
+
+    /// Turns auto effort on or off. An explicit level from the client turns it
+    /// off (`handlers::model_switch`), so the last level stays the fallback.
+    pub(crate) fn set_current_effort_auto(&self, auto: bool) {
+        *self.inner.current_effort_auto.write() = auto;
     }
 
     /// Run `f` on the [`ModelEntry`] for `model_id` (catalog key or wire name); `None` if absent.

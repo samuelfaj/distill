@@ -942,6 +942,30 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }]
         }
         Action::NextModel => vec![],
+        Action::SetEffortAuto { model_id } => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            agent.session.models.effort_auto = true;
+            agent
+                .scrollback
+                .push_block(crate::scrollback::block::RenderBlock::system(
+                "Auto effort on: the decision layer picks the reasoning effort for every model call \
+                 (the current level stays the fallback). /effort <level> turns it off."
+                    .to_string(),
+            ));
+            let Some(session_id) = agent.session.session_id.clone() else {
+                return vec![];
+            };
+            vec![Effect::SetEffortAuto {
+                agent_id: id,
+                session_id,
+                model_id,
+            }]
+        }
         Action::SwitchModel { model_id, effort } => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
@@ -949,6 +973,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            // An explicit level always wins over auto mode.
+            if effort.is_some() {
+                agent.session.models.effort_auto = false;
+            }
             let Some(session_id) = agent.session.session_id.clone() else {
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;

@@ -1229,6 +1229,9 @@ pub struct JevLadderConfig {
     pub b1_intent_routing: Option<bool>,
     /// B2: money lever (model tier); off until its own gate passes.
     pub b2_model_tier: Option<bool>,
+    /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
+    #[serde(default, alias = "b2_micro_effort")]
+    pub b2_micro_effort: Option<bool>,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: Option<bool>,
     /// B6: hint that delegating is worth it (never spawns).

@@ -3,12 +3,14 @@
 //! Routing may only choose **among alternatives the harness already has** (a
 //! tool family it already ships, a model tier it already offers, an agent
 //! definition the user already defined). Nothing here creates work, forces an
-//! upgrade, or spawns a subagent: B6 is a hint, and B2 only ever *downgrades*.
+//! upgrade, or spawns a subagent: B6 is a hint, and B2 only ever *downgrades* —
+//! except in the auto-effort mode, where the user asked for one effort per model
+//! call and the pick is still restricted to the model's own menu.
 
 use std::collections::BTreeMap;
 
 use crate::jev::error::JevError;
-use crate::jev::types::{JevAnswerSet, Json, Question, QuestionId};
+use crate::jev::types::{JevAnswerSet, Json, MAX_CHOICE_OPTIONS, Question, QuestionId};
 
 /// Local alias so the family battery reads the same as the other packs.
 use crate::jev::types::Question as JevAnswerSetQuestion;
@@ -156,6 +158,105 @@ pub fn compose_subagent_type(answers: &JevAnswerSet, definitions: &[String]) -> 
         Some(DEFAULT_AGENT_LABEL) | None => None,
         Some(name) => Some(name.to_owned()),
     }
+}
+
+// ---------------------------------------------------------------------------
+// B2 (auto) — the effort for ONE model call
+// ---------------------------------------------------------------------------
+
+/// One effort the current model offers, with the description the user would see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffortChoice {
+    pub id: String,
+    pub description: String,
+}
+
+/// Confidence needed before the auto-effort decision is applied to a call.
+///
+/// Calibrated on live answers (2026-09-18, `deepseek-v4.1-flash`): a trivial
+/// list request answers `none` at 0.67 and 0.64, while a hard request splits
+/// medium 0.40 / high 0.31. The floor therefore sits above the uniform prior
+/// (0.14) and below a confident cheap win: below it the call keeps the session's
+/// own effort — the mode can save tokens, never quietly drop quality on a hard
+/// call.
+pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.45;
+
+/// B2 (auto): one `choice` over the efforts **this model** offers for a single
+/// model call. The model's own name is part of the question: "how much thinking
+/// does this call need" is answered differently for a small fast model than for
+/// a frontier one.
+pub fn micro_effort_questions(
+    model_name: &str,
+    offered: &[EffortChoice],
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    if offered.is_empty() {
+        return Err(JevError::invalid("the model offers no reasoning efforts"));
+    }
+    if offered.len() + 1 > MAX_CHOICE_OPTIONS {
+        return Err(JevError::invalid(format!(
+            "{} efforts over the ceiling for one choice question",
+            offered.len()
+        )));
+    }
+    let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
+    for choice in offered {
+        criteria.insert(choice.id.clone(), Json::String(choice.description.clone()));
+    }
+    criteria.insert(
+        MICRO_EFFORT_FALLBACK_LABEL.to_owned(),
+        Json::String("Keep the session's own effort for this call".to_owned()),
+    );
+    let mut questions = BTreeMap::new();
+    questions.insert(
+        MICRO_EFFORT_QUESTION.to_owned(),
+        Question::choice(
+            format!(
+                "Model `{model_name}` is about to make one more model call. Which reasoning effort should \
+                 THIS single call use? Pick the cheapest effort that still handles it; do not pick a \
+                 stronger setting than the call needs."
+            ),
+            criteria,
+        )?,
+    );
+    Ok(questions)
+}
+
+/// Label used for "keep whatever the session already uses".
+pub const MICRO_EFFORT_FALLBACK_LABEL: &str = "keep_session_effort";
+/// Question id of the auto-effort choice.
+pub const MICRO_EFFORT_QUESTION: &str = "micro_effort";
+
+/// B2 (auto): the effort to use for this call, or `None` to keep the session's.
+pub fn compose_micro_effort(answers: &JevAnswerSet, offered: &[EffortChoice]) -> Option<String> {
+    let mut allowed: Vec<&str> = offered.iter().map(|c| c.id.as_str()).collect();
+    allowed.push(MICRO_EFFORT_FALLBACK_LABEL);
+    let pick = pick_one(
+        answers,
+        MICRO_EFFORT_QUESTION,
+        &allowed,
+        MICRO_EFFORT_MIN_CONFIDENCE,
+    );
+    pick.choice
+        .filter(|choice| choice != MICRO_EFFORT_FALLBACK_LABEL)
+}
+
+/// B2 (auto): the offered efforts, cheapest first, from the model's own menu.
+///
+/// The order is the cost order the wire uses; `keep_session_effort` is appended
+/// by [`micro_effort_questions`], never here.
+pub fn offered_effort_choices(
+    menu: &[(String, String)],
+    rank: impl Fn(&str) -> u8,
+) -> Vec<EffortChoice> {
+    let mut choices: Vec<EffortChoice> = menu
+        .iter()
+        .map(|(id, description)| EffortChoice {
+            id: id.clone(),
+            description: description.clone(),
+        })
+        .collect();
+    choices.sort_by_key(|choice| (rank(&choice.id), choice.id.clone()));
+    choices
 }
 
 /// B6: two `noul`s that decide whether delegating is worth suggesting.
@@ -513,5 +614,97 @@ mod tests {
             compose_delegation(&partial).deferred,
             "missing answer ⇒ no hint"
         );
+    }
+
+    /// Auto effort: the pick must be one the model offers, must clear the
+    /// confidence floor, and must defer (keep the session's effort) on doubt.
+    #[test]
+    fn b2_auto_picks_an_offered_effort_and_defers_on_doubt() {
+        let offered = vec![
+            EffortChoice {
+                id: "low".to_owned(),
+                description: "Faster, lighter reasoning".to_owned(),
+            },
+            EffortChoice {
+                id: "high".to_owned(),
+                description: "Heavy reasoning".to_owned(),
+            },
+        ];
+        let questions =
+            micro_effort_questions("DeepSeek V4.1 Flash", &offered).expect("battery builds");
+        let Some(Question::Choice { instructions, .. }) = questions.get(MICRO_EFFORT_QUESTION)
+        else {
+            panic!("auto effort is one choice question");
+        };
+        assert!(
+            instructions
+                .as_str()
+                .unwrap_or_default()
+                .contains("DeepSeek V4.1 Flash"),
+            "the model's own name is part of the question"
+        );
+
+        let cheap = answers(vec![(
+            "micro_effort",
+            choice("low", 0.92, &[("low", 0.92)]),
+        )]);
+        assert_eq!(
+            compose_micro_effort(&cheap, &offered).as_deref(),
+            Some("low")
+        );
+
+        let keep = answers(vec![(
+            "micro_effort",
+            choice("keep_session_effort", 0.9, &[("keep_session_effort", 0.9)]),
+        )]);
+        assert_eq!(
+            compose_micro_effort(&keep, &offered),
+            None,
+            "the fallback label keeps the session's effort"
+        );
+
+        // Below the floor the call keeps the session's effort.
+        let unsure = answers(vec![("micro_effort", choice("low", 0.4, &[("low", 0.4)]))]);
+        assert_eq!(compose_micro_effort(&unsure, &offered), None);
+        // At/above the floor it applies, even when it is not near-certain.
+        let clear = answers(vec![("micro_effort", choice("low", 0.5, &[("low", 0.5)]))]);
+        assert_eq!(
+            compose_micro_effort(&clear, &offered).as_deref(),
+            Some("low")
+        );
+
+        let invented = answers(vec![(
+            "micro_effort",
+            choice("quantum", 0.99, &[("quantum", 0.99)]),
+        )]);
+        assert_eq!(
+            compose_micro_effort(&invented, &offered),
+            None,
+            "an effort the model does not offer must never be applied"
+        );
+
+        assert!(micro_effort_questions("m", &[]).is_err());
+    }
+
+    /// The menu handed to the battery is the model's own, cheapest first.
+    #[test]
+    fn b2_auto_orders_the_offered_efforts_cheapest_first() {
+        let rank = |id: &str| match id {
+            "none" => 0,
+            "low" => 2,
+            "medium" => 3,
+            "high" => 4,
+            other => panic!("unexpected {other}"),
+        };
+        let menu = vec![
+            ("high".to_owned(), "Heavy reasoning".to_owned()),
+            ("low".to_owned(), "Light".to_owned()),
+            ("none".to_owned(), "No reasoning".to_owned()),
+        ];
+        let ordered: Vec<String> = offered_effort_choices(&menu, rank)
+            .into_iter()
+            .map(|choice| choice.id)
+            .collect();
+        assert_eq!(ordered, vec!["none", "low", "high"]);
     }
 }

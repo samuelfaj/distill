@@ -1052,6 +1052,10 @@ impl SessionActor {
     pub(crate) async fn prepare_sampler_for_turn(&self) {
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
+        // B2 (auto): when the user picked `/effort auto`, the decision layer
+        // chooses the effort for THIS model call; otherwise the round keeps the
+        // session's own effort.
+        self.jev_choose_micro_effort(&mut sampler_config).await;
         // B2 (money lever): a routine turn may run at a cheaper setting; the
         // pass can only lower effort, and it is off until its gate passes.
         self.jev_apply_model_tier(&mut sampler_config).await;

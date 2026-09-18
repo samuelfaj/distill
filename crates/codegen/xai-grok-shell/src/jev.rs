@@ -65,6 +65,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             a6_test_to_run: cfg.ladder.a6_test_to_run,
             b1_intent_routing: cfg.ladder.b1_intent_routing,
             b2_model_tier: cfg.ladder.b2_model_tier,
+            b2_micro_effort: cfg.ladder.b2_micro_effort,
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,

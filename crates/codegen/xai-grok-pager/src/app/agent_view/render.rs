@@ -2348,9 +2348,15 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match self.session.models.reasoning_effort {
-            Some(eff) => format!("{model_id} ({eff})"),
-            None => model_id,
+        let model_label = if self.session.models.effort_auto {
+            // Auto effort: the level is per model call, so the footer names the
+            // mode instead of a level.
+            format!("{model_id} (auto)")
+        } else {
+            match self.session.models.reasoning_effort {
+                Some(eff) => format!("{model_id} ({eff})"),
+                None => model_id,
+            }
         };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {

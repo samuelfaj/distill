@@ -10,6 +10,7 @@ use crate::session::{SessionCommand, SessionModelSwitch};
 use agent_client_protocol::{self as acp};
 use tokio::sync::oneshot;
 use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_sampling_types::{parse_reasoning_effort_auto_meta, parse_reasoning_effort_meta};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigNotice {
     Send,
@@ -37,6 +38,12 @@ pub(crate) async fn apply(
         Some(serde_json::json!({"model": args.model_id.0.as_ref()})),
     );
     tracing::debug!("session_session_model::mvp_agent: {:?}", &args);
+    // Auto effort (`/effort auto`) rides the same request as an explicit meta
+    // flag: it asks the decision layer to pick the effort for each model call.
+    // An explicit level in the same request (or a later switch) turns it back
+    // off, so the request's own effort stays the fallback.
+    let wants_auto_effort = parse_reasoning_effort_auto_meta(args.meta.as_ref());
+    let explicit_effort = parse_reasoning_effort_meta(args.meta.as_ref());
     let acp::SetSessionModelRequest {
         session_id,
         model_id,
@@ -156,6 +163,20 @@ pub(crate) async fn apply(
             .await
             .and_then(|cfg| cfg.reasoning_effort),
     };
+    // Auto effort is a session mode, not a level: an explicit level in this
+    // request (or any later one) clears it, and asking for auto keeps whatever
+    // level the session already had as the fallback.
+    if wants_auto_effort && explicit_effort.is_none() {
+        agent.models_manager.set_current_effort_auto(true);
+        tracing::info!(
+            session_id = %session_id.0,
+            model_id = %model_id.0,
+            fallback_effort = ?effective_effort,
+            "set_session_model: auto effort enabled; the decision layer picks the effort per model call"
+        );
+    } else if explicit_effort.is_some() {
+        agent.models_manager.set_current_effort_auto(false);
+    }
     let mut model_sampling =
         agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone());
     agent.models_manager.apply_supported_effort(

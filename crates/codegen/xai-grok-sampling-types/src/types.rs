@@ -906,6 +906,23 @@ pub fn reasoning_effort_meta_value(effort: ReasoningEffort) -> serde_json::Value
     serde_json::Value::String(effort.as_ref().to_string())
 }
 
+/// `_meta.reasoningEffortAuto`: ask the harness to choose the effort for **each
+/// model call** (the Jev micro-action layer) instead of pinning one.
+///
+/// The last explicit `_meta.reasoningEffort` stays the fallback the harness uses
+/// when the decision layer is off or unsure.
+pub const REASONING_EFFORT_AUTO_META_KEY: &str = "reasoningEffortAuto";
+
+/// `true` only when the client explicitly asked for auto effort; absent or
+/// non-boolean values leave the session exactly as it was.
+pub fn parse_reasoning_effort_auto_meta(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    meta.and_then(|m| m.get(REASONING_EFFORT_AUTO_META_KEY))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 pub const REASONING_EFFORTS_META_KEY: &str = "reasoningEfforts";
 
 /// A single selectable reasoning-effort option for a model.
@@ -1292,6 +1309,26 @@ impl From<crate::messages::MessagesRequest> for MessagesRequestWrapper {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The auto-effort flag is opt-in: only an explicit boolean `true` turns it
+    /// on, so an older client (or a malformed meta) never changes the session.
+    #[test]
+    fn auto_effort_meta_is_opt_in() {
+        let with = |value: serde_json::Value| {
+            let mut meta = serde_json::Map::new();
+            meta.insert(REASONING_EFFORT_AUTO_META_KEY.to_owned(), value);
+            meta
+        };
+        assert!(parse_reasoning_effort_auto_meta(Some(&with(json!(true)))));
+        assert!(!parse_reasoning_effort_auto_meta(Some(&with(json!(false)))));
+        assert!(!parse_reasoning_effort_auto_meta(Some(&with(json!(
+            "true"
+        )))));
+        assert!(!parse_reasoning_effort_auto_meta(Some(
+            &serde_json::Map::new()
+        )));
+        assert!(!parse_reasoning_effort_auto_meta(None));
+    }
 
     #[test]
     fn reasoning_effort_serde_lowercase_round_trip() {

@@ -136,6 +136,43 @@ The state is an allowlist of named fields, capped (`max_state_bytes`, 400 charac
 
 ---
 
+## Auto effort — one decision per model call
+
+`/effort auto` hands the reasoning effort to the decision layer: instead of one
+fixed level for the whole session, **every model call of the turn** gets the
+effort that call needs. The palette (`/effort`) shows it as **Auto Effort**, above
+the model's own levels, marked `(active)` while it is on.
+
+What the decision sees for each call:
+
+| Field | Content |
+|---|---|
+| `model` / `model_id` | the model's display name and the wire id that will run the call — how much thinking a call needs depends on how strong the model is |
+| `offered_efforts` | exactly the levels that model offers, cheapest first, with the same descriptions the palette shows |
+| `phase` | `start_of_turn` (the user's request) or `mid_turn_after_tools` (continuing after tool results) |
+| `recent_steps` | the last few tool calls and results, as short labels (no bodies) |
+| `turn_items` / `request` | how far the turn has progressed, and the user's request (bounded) |
+
+Rules that hold in auto mode:
+
+* the pick is always **one of the levels that model offers** — an answer naming
+  anything else is ignored;
+* the pick must clear **0.45** confidence. The floor is calibrated on live
+  answers (2026-09-18, `deepseek-v4.1-flash`): a trivial request answers `none`
+  at 0.67/0.64, while a hard one splits medium 0.40 / high 0.31 — so a clear
+  cheap win is applied and a hard call keeps the session's own level instead of
+  quietly dropping quality. Below the floor, on a timeout, on an error, or with
+  the lever off, the call keeps the session's level (the fallback);
+* Jev may answer `keep_session_effort` explicitly, which means the same;
+* every decision is recorded with what it *wanted*, so the log shows a deferral
+  (`wanted low at 0.41 below the floor`) as clearly as an application
+  (`effort:none · applied to this call`);
+* turning it off is one command: `/effort <level>` (an explicit level always wins),
+  or `[jev.ladder] b2_micro_effort = false` to keep the mode but disable the decision; the master switch (`GROK_JEV=0`) turns it off with everything else.
+
+The footer shows `(<model>) (auto)` while the mode is on, and the turn-status row
+still shows the `jev …` chip per turn.
+
 ## Observability
 
 **In the TUI:** two places show where the Jev path stands.

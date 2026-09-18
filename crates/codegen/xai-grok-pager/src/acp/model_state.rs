@@ -47,6 +47,10 @@ pub struct ModelState {
     pub available: IndexMap<acp::ModelId, acp::ModelInfo>,
     pub current: Option<acp::ModelId>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Set when the user asked for **auto effort** (`/effort auto`): the harness
+    /// picks the effort for each model call, and the footer shows `(auto)`.
+    /// A fixed level chosen afterwards clears it.
+    pub effort_auto: bool,
     /// External override for the context window size (tokens).
     /// When set, `get_context_window()` returns this instead of reading from the current model's metadata.
     /// Used for subagent views where SubagentProgress reports the actual window size.
@@ -274,6 +278,9 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                     available: models,
                     current: current_model,
                     reasoning_effort,
+                    // Auto effort is a live client-side mode, never restored
+                    // from server metadata.
+                    effort_auto: false,
                     context_window_override: None,
                 }
             })

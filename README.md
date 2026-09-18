@@ -109,7 +109,7 @@ which test covers it — is [`todo.md`](todo.md). In short:
 |------|-------|--------|
 | Permission (live today) | classifier, YOLO brake | route routine actions to *allow*, refuse a confident catastrophe in always-approve mode |
 | A — content selection | which file to edit, which lines matter, which search results to read, which memories to inject, which test to run | narrows what the model re-reads; never opens more than the code already offered |
-| B — effort routing | turn intent, tool-family pruning, model/effort tier, subagent type, skill suggestion, delegation hint | prunes tools per turn, names the relevant announced skill, resolves an unknown subagent type, hints at delegation |
+| B — effort routing | turn intent, tool-family pruning, model/effort tier, subagent type, skill suggestion, delegation hint | prunes tools per turn, names the relevant announced skill, resolves an unknown subagent type, hints at delegation, and — with `/effort auto` — picks the reasoning effort for **each model call**, with the model itself named in the decision state |
 | C — verification | premature stop, failure triage, completion check, diff risk, error priority, injection screen, change type | adds hints and refuses to call unfinished work complete |
 | D — context and cost | compaction recorte, big-output retention, post-compaction retrieval, call validation | keeps the summary and context small; holds a call that looks out of scope |
 

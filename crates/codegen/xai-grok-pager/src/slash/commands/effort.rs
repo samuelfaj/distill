@@ -6,7 +6,7 @@ use crate::app::actions::Action;
 use crate::slash::command::{
     AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand, slash_meta,
 };
-use crate::slash::commands::effort_levels::build_effort_arg_items;
+use crate::slash::commands::effort_levels::{EFFORT_AUTO_ID, build_effort_arg_items};
 
 /// Set reasoning effort for the active model.
 pub struct EffortCommand;
@@ -28,12 +28,16 @@ impl SlashCommand for EffortCommand {
         if options.is_empty() {
             return None;
         }
-        Some(build_effort_arg_items(
+        let mut items = vec![crate::slash::commands::effort_levels::effort_auto_arg_item(
+            ctx.models.effort_auto,
+        )];
+        items.extend(build_effort_arg_items(
             &options,
             ctx.models.reasoning_effort,
-            true,
+            !ctx.models.effort_auto,
             |option| option.id.clone(),
-        ))
+        ));
+        Some(items)
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -41,6 +45,13 @@ impl SlashCommand for EffortCommand {
         let Some(model_id) = ctx.models.current.clone() else {
             return CommandResult::Error("No active model".into());
         };
+
+        // `auto` is a mode, not a level: it asks the harness to let the decision
+        // layer choose the effort for each model call. It is always available,
+        // even when the model sends no effort menu of its own.
+        if trimmed.eq_ignore_ascii_case(EFFORT_AUTO_ID) {
+            return CommandResult::Action(Action::SetEffortAuto { model_id });
+        }
 
         if trimmed.is_empty() {
             let offered: Vec<String> = ctx
@@ -59,7 +70,9 @@ impl SlashCommand for EffortCommand {
             } else {
                 offered.join("|")
             };
-            return CommandResult::Error(format!("Usage: /effort <{levels}>{current}"));
+            return CommandResult::Error(format!(
+                "Usage: /effort <{EFFORT_AUTO_ID}|{levels}>{current}"
+            ));
         }
 
         // Same gate-first policy as the CLI (`--effort`) and headless.
@@ -127,6 +140,22 @@ mod tests {
         }
     }
 
+    /// Command context for suggestion tests (the palette path).
+    fn app_ctx(models: &ModelState) -> AppCtx<'_> {
+        AppCtx {
+            models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            billing_surface_visible: true,
+            usage_command_visible: true,
+            workflows_available: false,
+            saved_workflows: &[],
+            workflow_runs: &[],
+            screen_mode: crate::app::ScreenMode::Inline,
+            current_title: None,
+        }
+    }
+
     #[test]
     fn empty_args_errors_with_usage() {
         let mut state = ModelState::default();
@@ -184,6 +213,58 @@ mod tests {
             }
             other => panic!("expected SwitchModel with effort, got {other:?}"),
         }
+    }
+
+    /// `/effort auto` is a mode, not a level: it must dispatch the auto action
+    /// even for a model whose menu offers nothing, and it must show up in the
+    /// palette marked active once it is on.
+    #[test]
+    fn auto_dispatches_the_auto_action_and_marks_the_palette() {
+        let mut state = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("plain"));
+        state
+            .available
+            .insert(id.clone(), plain_model("plain", "Plain").1);
+        state.current = Some(id.clone());
+        let mut ctx = dummy_exec_ctx(&state);
+        match EffortCommand.run(&mut ctx, "auto") {
+            CommandResult::Action(Action::SetEffortAuto { model_id }) => {
+                assert_eq!(model_id, id, "auto applies to the current model")
+            }
+            other => panic!("expected SetEffortAuto, got {other:?}"),
+        }
+        match EffortCommand.run(&mut ctx, "AUTO") {
+            CommandResult::Action(Action::SetEffortAuto { .. }) => {}
+            other => panic!("auto is case-insensitive, got {other:?}"),
+        }
+
+        // The palette always offers the auto row, first, and marks it active.
+        let (reasoning_id, info) = model_with_reasoning("reasoning-x", "Reasoning X");
+        state.available.insert(reasoning_id.clone(), info);
+        state.current = Some(reasoning_id);
+        let items = EffortCommand
+            .suggest_args(&app_ctx(&state), "")
+            .expect("the menu is offered");
+        assert_eq!(items[0].insert_text, "auto", "auto leads the menu");
+        assert!(
+            !items[0].display.contains("(active)"),
+            "auto is not active until it is chosen: {:?}",
+            items[0].display
+        );
+        state.effort_auto = true;
+        let items = EffortCommand
+            .suggest_args(&app_ctx(&state), "")
+            .expect("menu");
+        assert!(
+            items[0].display.contains("(active)"),
+            "auto reads active once chosen: {:?}",
+            items[0].display
+        );
+        assert!(
+            items[1].display.contains("xhigh"),
+            "the model's own levels follow the auto row: {:?}",
+            items[1].display
+        );
     }
 
     #[test]
@@ -354,16 +435,19 @@ mod tests {
             current_title: None,
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();
-        assert_eq!(items.len(), EFFORT_LEVELS.len());
-        let [a, b, c, d] = items.as_slice() else {
-            panic!("expected 4 items: {items:?}");
-        };
-        assert_eq!(a.insert_text, "xhigh");
-        assert_eq!(b.insert_text, "high");
-        assert_eq!(b.display, "high (active)");
-        assert_eq!(c.insert_text, "medium");
-        assert_eq!(d.insert_text, "low");
-        assert!(a.match_text.starts_with("a "));
-        assert!(d.match_text.starts_with("d "));
+        // The auto row leads the menu; the model's own levels follow it.
+        assert_eq!(items.len(), EFFORT_LEVELS.len() + 1);
+        assert_eq!(items[0].insert_text, "auto");
+        assert_eq!(items[1].insert_text, "xhigh");
+        assert_eq!(items[2].insert_text, "high");
+        assert_eq!(items[2].display, "high (active)");
+        assert_eq!(items[3].insert_text, "medium");
+        assert_eq!(items[4].insert_text, "low");
+        assert!(items[1].match_text.starts_with("a "));
+        assert!(items[4].match_text.starts_with("d "));
+        assert!(
+            items[0].match_text.starts_with("a "),
+            "the auto row leads the tiebreak too"
+        );
     }
 }

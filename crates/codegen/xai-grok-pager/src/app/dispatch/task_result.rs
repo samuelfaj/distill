@@ -981,6 +981,25 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             result,
             prev_model_id,
         } => handle_switch_model_complete(app, agent_id, model_id, effort, result, prev_model_id),
+        TaskResult::EffortAutoSet {
+            agent_id,
+            model_id,
+            result,
+        } => {
+            if let Err(message) = result {
+                if let Some(agent) = app.agents.get_mut(&agent_id) {
+                    // The flag was set optimistically at dispatch: a rejection
+                    // means the harness never enabled auto, so undo it.
+                    agent.session.models.effort_auto = false;
+                    let display_name = agent.session.models.display_name_for(&model_id);
+                    agent.scrollback.push_block(RenderBlock::system(format!(
+                        "Couldn't enable auto effort for {display_name}: {message} \
+                             (fixed effort unchanged)"
+                    )));
+                }
+            }
+            vec![]
+        }
         TaskResult::BgTaskKilled {
             session_id,
             task_id,

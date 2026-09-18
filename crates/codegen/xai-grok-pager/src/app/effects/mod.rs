@@ -1942,6 +1942,38 @@ pub(crate) fn execute(
                     TaskResult::CancelComplete
                 });
         }
+        Effect::SetEffortAuto {
+            agent_id,
+            session_id,
+            model_id,
+        } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    use xai_grok_shell::sampling::types::REASONING_EFFORT_AUTO_META_KEY;
+                    let mut meta = acp::Meta::new();
+                    meta.insert(
+                        REASONING_EFFORT_AUTO_META_KEY.to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                    let req = acp::SetSessionModelRequest::new(session_id, model_id.clone())
+                        .meta(Some(meta));
+                    match acp_send(req, &tx).await {
+                        // The optimistic flag was set at dispatch; a rejection
+                        // means the harness never turned it on, so say so.
+                        Ok(_) => TaskResult::EffortAutoSet {
+                            agent_id,
+                            model_id,
+                            result: Ok(()),
+                        },
+                        Err(e) => TaskResult::EffortAutoSet {
+                            agent_id,
+                            model_id,
+                            result: Err(sanitize_user_error(&e.to_string())),
+                        },
+                    }
+                });
+        }
         Effect::SwitchModel {
             agent_id,
             session_id,

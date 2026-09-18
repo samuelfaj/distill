@@ -4823,3 +4823,139 @@
         assert_eq!(event, PromptEvent::Edited);
         assert_eq!(pw.textarea.text(), "hello\n");
     }
+
+    #[test]
+    fn jev_badge_only_shows_when_the_seam_can_act_in_auto_mode() {
+        let theme = Theme::current();
+        let active = xai_grok_shell::jev::JevStatus {
+            enabled: true,
+            shadow: false,
+            credential_present: true,
+        };
+        let badge = jev_flag(active, PermissionLabel::Auto, &theme).expect("badge in auto mode");
+        assert_eq!(badge.text, "jev");
+        assert!(badge.bold, "the badge stands out");
+        assert!(badge.color.is_some());
+
+        let shadow = xai_grok_shell::jev::JevStatus {
+            shadow: true,
+            ..active
+        };
+        let shadow_badge =
+            jev_flag(shadow, PermissionLabel::Auto, &theme).expect("shadow badge shows");
+        assert_eq!(shadow_badge.text, "jev·shadow");
+
+        // A missing credential still shows where the path stands: `jev:off`,
+        // dimmed — never hidden, so the user can tell why nothing is happening.
+        let no_credential = xai_grok_shell::jev::JevStatus {
+            credential_present: false,
+            ..active
+        };
+        let off = jev_flag(no_credential, PermissionLabel::Auto, &theme).expect("badge always shows");
+        assert_eq!(off.text, "jev:off");
+        assert!(!off.bold);
+
+        let disabled = xai_grok_shell::jev::JevStatus {
+            enabled: false,
+            ..active
+        };
+        assert_eq!(
+            jev_flag(disabled, PermissionLabel::Auto, &theme)
+                .expect("badge always shows")
+                .text,
+            "jev:off",
+            "kill switch is visible as off"
+        );
+
+        // Ask mode bypasses every check: idle, dim.
+        let idle = jev_flag(active, PermissionLabel::Ask, &theme).expect("badge always shows");
+        assert_eq!(idle.text, "jev:idle");
+        assert!(!idle.bold, "idle is dim, not highlighted");
+
+        // Always-approve runs everything, so the path is a live brake there.
+        let veto = jev_flag(active, PermissionLabel::AlwaysApprove, &theme).expect("badge shows");
+        assert_eq!(veto.text, "jev·veto");
+        assert!(veto.bold, "an active brake is highlighted");
+        // Shadow applies to every mode, and always wins over the mode label.
+        let shadow_anywhere = jev_flag(shadow, PermissionLabel::AlwaysApprove, &theme)
+            .expect("shadow badge shows in any mode");
+        assert_eq!(shadow_anywhere.text, "jev·shadow");
+    }
+
+    /// Render-level proof of the Jev badge: the flag must reach the buffer on the
+    /// info line, with the success accent, in auto mode only.
+    #[test]
+    fn the_jev_badge_renders_on_the_info_line() {
+        let area = Rect::new(0, 0, 60, 4);
+        let render = |status: xai_grok_shell::jev::JevStatus, mode: PermissionLabel| {
+            let theme = Theme::current();
+            let mut flags = mode_flags(Some("plan"), mode, &theme);
+            if let Some(badge) = jev_flag(status, mode, &theme) {
+                flags.push(badge);
+            }
+            let info = PromptInfo {
+                model_name: "grok",
+                flags: &flags,
+                ..Default::default()
+            };
+            let mut pw = PromptWidget::new();
+            let style = PromptStyle {
+                focused: true,
+                ..Default::default()
+            };
+            let mut buf = Buffer::empty(area);
+            pw.draw(&mut buf, area, None, &style, Some(&info), None);
+            let mut rendered = Vec::new();
+            for y in 0..area.height {
+                rendered.push(buf_text_at(&buf, 0, area.width, y));
+            }
+            (rendered.join("\n"), buf)
+        };
+
+        let active = xai_grok_shell::jev::JevStatus {
+            enabled: true,
+            shadow: false,
+            credential_present: true,
+        };
+        let (text, buf) = render(active, PermissionLabel::Auto);
+        assert!(text.contains("jev"), "badge text missing from: {text}");
+        let row = text
+            .lines()
+            .find(|line| line.contains("jev"))
+            .expect("row with the badge");
+        let byte_x = row.find("jev").expect("byte offset");
+        let x = row.get(..byte_x).map(|s| s.chars().count()).unwrap_or(0) as u16;
+        let y = text
+            .lines()
+            .position(|line| line.contains("jev"))
+            .unwrap_or(0) as u16;
+        let cell = buf.cell((x, y)).expect("badge cell");
+        assert!(cell.style().fg.is_some(), "badge keeps an accent color");
+        assert!(
+            cell.style().add_modifier.contains(Modifier::BOLD),
+            "badge renders bold"
+        );
+
+        let shadow = xai_grok_shell::jev::JevStatus {
+            shadow: true,
+            ..active
+        };
+        let (text, _) = render(shadow, PermissionLabel::Auto);
+        assert!(text.contains("jev·shadow"), "shadow badge: {text}");
+
+        // Ask mode bypasses the seam: the badge stays, saying `idle`.
+        let (text, _) = render(active, PermissionLabel::Ask);
+        assert!(text.contains("jev:idle"), "idle badge in ask mode: {text}");
+
+        // Always-approve: the brake is live.
+        let (text, _) = render(active, PermissionLabel::AlwaysApprove);
+        assert!(text.contains("jev·veto"), "veto badge in always-approve: {text}");
+
+        // Kill switch is visible as off, never hidden.
+        let disabled = xai_grok_shell::jev::JevStatus {
+            enabled: false,
+            ..active
+        };
+        let (text, _) = render(disabled, PermissionLabel::Auto);
+        assert!(text.contains("jev:off"), "off badge when disabled: {text}");
+    }

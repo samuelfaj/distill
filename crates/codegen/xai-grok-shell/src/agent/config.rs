@@ -1161,6 +1161,97 @@ pub struct StorageConfig {
     /// Number of days to keep stale sessions before cleanup. Default: 30.
     pub cleanup_ttl_days: Option<u32>,
 }
+/// `[jev]` — the Jev (TypeSafe System One) decision path.
+///
+/// Every key is `Option`: unset means "use the harness default", which for this
+/// build is **enabled** (owner override of the plan's default-OFF invariant).
+/// Disable with `enabled = false` or `GROK_JEV=0`; each lever can also be turned
+/// off on its own key under `[jev.ladder]`.
+///
+/// Enablement and `base_url` are deliberately resolvable only from
+/// managed/env/user layers (plan §1.6/I-6): a project config must not be able to
+/// turn third-party egress on or repoint the endpoint. The credential is never
+/// stored here — the client reads the environment variable named by
+/// `api_key_env` at call time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JevConfig {
+    /// Master switch. Unset ⇒ the harness default (enabled).
+    pub enabled: Option<bool>,
+    /// Shadow phase: compute and record decisions without changing behaviour.
+    /// Unset ⇒ active (the harness default).
+    pub shadow: Option<bool>,
+    /// Endpoint root. Defaults to `https://api.typesafe.ai` in the client.
+    pub base_url: Option<String>,
+    /// Model alias or pinned version. Defaults to `jev-latest` in the client.
+    pub model: Option<String>,
+    /// Per-operation deadline in milliseconds, covering the response body read.
+    pub timeout_ms: Option<u64>,
+    /// Environment variable holding the bearer token (`JEV_API_KEY` by default).
+    pub api_key_env: Option<String>,
+    /// Maximum serialized bytes of `state` for one request.
+    pub max_state_bytes: Option<usize>,
+    /// Per-lever switches of the token-saving ladder (§1.3.1).
+    pub ladder: JevLadderConfig,
+}
+/// Per-lever switches for the Jev ladder; every field defaults to false so a
+/// lever whose evaluation gate fails simply stays off (goal criterion 5).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JevLadderConfig {
+    /// Install the Jev-backed permission classifier ahead of the LLM one.
+    pub permission_classifier: Option<bool>,
+    /// P1: prune the per-turn tool set by family.
+    pub p1_tool_family: Option<bool>,
+    /// P2: pick line windows instead of reading whole files.
+    pub p2_read_shortlist: Option<bool>,
+    /// P3: choose which compaction segments the summarizer must see.
+    pub p3_compaction_recorte: Option<bool>,
+    /// P5: validate a tool call (block/ask only) before executing it.
+    pub p5_call_validation: Option<bool>,
+    /// P6: pick which announced skill matters for this turn.
+    pub p6_skill_suggestion: Option<bool>,
+    /// YOLO / always-approve brake: consult Jev before auto-approving so a
+    /// confident catastrophe is refused instead of run. Never prompts, and a
+    /// failure is fail-open (the mode keeps working with a dead service).
+    pub yolo_veto: Option<bool>,
+    /// A1: rank candidate files before reading them.
+    pub a1_file_to_edit: Option<bool>,
+    /// A3: keep only the log/test lines that explain a failure.
+    pub a3_log_lines: Option<bool>,
+    /// A4: rank search results before fetching them.
+    pub a4_web_results: Option<bool>,
+    /// A5: rank memory candidates before injecting them.
+    pub a5_memory_rank: Option<bool>,
+    /// A6: pick which test to run for a change.
+    pub a6_test_to_run: Option<bool>,
+    /// B1: classify the turn's intent and complexity.
+    pub b1_intent_routing: Option<bool>,
+    /// B2: money lever (model tier); off until its own gate passes.
+    pub b2_model_tier: Option<bool>,
+    /// B3: pick an existing agent definition for the task.
+    pub b3_subagent_type: Option<bool>,
+    /// B6: hint that delegating is worth it (never spawns).
+    pub b6_delegation_hint: Option<bool>,
+    /// C1: detect that requested work is still unfinished.
+    pub c1_premature_stop: Option<bool>,
+    /// C2: classify a failure and whether the fix is in user code.
+    pub c2_failure_triage: Option<bool>,
+    /// C3: refuse to call work complete while something is missing.
+    pub c3_completion_check: Option<bool>,
+    /// C4: flag a risky diff for confirmation (advisory).
+    pub c4_diff_risk: Option<bool>,
+    /// C5: order errors by importance.
+    pub c5_error_priority: Option<bool>,
+    /// C6: screen tool output for instruction-like text; off until its cost is measured.
+    pub c6_injection_screen: Option<bool>,
+    /// C7: label the change type for release notes.
+    pub c7_change_type: Option<bool>,
+    /// D2: drop a large inert tool output from the context.
+    pub d2_big_output_retention: Option<bool>,
+    /// D3: re-inject only still-relevant chunks after compaction.
+    pub d3_post_compaction: Option<bool>,
+}
 pub use xai_grok_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.
 /// Keys stay typed so a typo (e.g. `denny`) still warns.
@@ -1320,6 +1411,9 @@ pub struct Config {
     /// `[diagnostics]`: crash handler toggle (`load_crash_handler_enabled_sync`).
     #[serde(default, skip_serializing)]
     pub diagnostics: DiagnosticsConfig,
+    /// `[jev]`: the Jev decision path (default OFF; see [`JevConfig`]).
+    #[serde(default, skip_serializing)]
+    pub jev: JevConfig,
     /// When running in relay/headless mode, this should be set to Writeback.
     /// Defaults to reading from GROK_STORAGE_MODE env var.
     #[serde(skip)]
@@ -1645,6 +1739,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             marketplace: MarketplaceConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
+            jev: JevConfig::default(),
             storage_mode: StorageMode::resolve(None, None),
             default_model_override: None,
             reasoning_effort_override: None,

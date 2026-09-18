@@ -1,0 +1,1559 @@
+{
+  "schema_version": 1,
+  "workflow": "plan",
+  "status": "NOT_CONFIDENT",
+  "depth": "standard",
+  "case_type": "FEATURE",
+  "complexity_rationale": "Integração de um serviço de decisão externo de terceiro num caminho de autorização (permissão/auto-mode) de um harness Rust grande, com contrato de API próprio, gate de avaliação necessário e restrições de manifesto gerado; escopo reduzido a um seam de produção + fundação reutilizável.",
+  "risk_flags": [
+    "security_privacy",
+    "auth_boundary",
+    "material_uncertainty"
+  ],
+  "study": {
+    "tools_used": [
+      "grep -ri jev|typesafe (repo inteiro, 0 resultados)",
+      "leitura direta de Cargo.toml raiz/xai-grok-http/xai-grok-workspace/xai-grok-extra-ca",
+      "leitura direta de permission/auto_mode/mod.rs, xai-grok-http/src/lib.rs, config-types/registry.rs",
+      "6 mapeamentos read-only paralelos (sampling, permissão, loop do agente, compaction/memória/busca, config/env/auth/hooks/http, telemetria/custo/testes)",
+      "web_fetch docs.typesafe.ai (api, models, confidence, jaggedness, intent-routing, fan-out, parallel_questions, llm_guardrails, how-to-build-with-system-one, agent-skill)"
+    ],
+    "surfaces_mapped": [
+      "crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs",
+      "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs",
+      "crates/codegen/xai-grok-workspace/Cargo.toml",
+      "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+      "crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs",
+      "crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness_classifier.rs",
+      "crates/codegen/xai-grok-shell/src/agent/config.rs",
+      "crates/codegen/xai-grok-sampler/src/client.rs",
+      "crates/codegen/xai-grok-config-types/src/registry.rs",
+      "crates/codegen/xai-grok-config-types/src/flags.rs",
+      "crates/codegen/xai-grok-env/src/registry.rs",
+      "crates/codegen/xai-grok-http/src/lib.rs",
+      "crates/codegen/xai-grok-extra-ca/src/lib.rs",
+      "crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs",
+      "crates/codegen/xai-grok-test-support/src/mock_server.rs",
+      "crates/codegen/xai-grok-pager-pty-harness/src/scripted.rs",
+      "crates/common/xai-grok-compaction/src/select.rs",
+      "crates/codegen/xai-grok-memory/src/search.rs",
+      "crates/codegen/xai-grok-session-search/src/fts.rs",
+      "Cargo.toml"
+    ],
+    "prompt_ambiguities": [
+      "'sempre que possível' não é finito: operacionalizado pela regra de elegibilidade (§1.4 do plan.md) + backlog explícito, com v1 restrita a um seam de produção"
+    ],
+    "repo_root": "/Users/samuelfajreldines/dev/jev-build"
+  },
+  "frozen": {
+    "prompt_hash": "sha256:8a96df8aebf0be1977381b63a6358ccea7b3a2cd5f64cacdef5d31b1b798ecd4",
+    "prompt_summary": "Usar /sam-plan para verificar todo o repositório e planejar o uso do Jev (TypeSafe) sempre que possível no jev-build, com o Jev delegando à LLM o que não puder fazer.",
+    "goal": "Fazer o harness usar Jev para decisões estreitas e estruturadas sempre que a regra de elegibilidade permitir, começando pelo classificador de permissão do auto-mode, com autoridade Jev <= incumbent, fallback LLM intacto, flag default OFF, gate de avaliação medido e economia medida.",
+    "non_goals": [
+      "Jev para geração de texto",
+      "Jev como único gate de allow",
+      "remover caminhos LLM/heurísticos",
+      "criar crate novo ou editar o manifesto raiz gerado",
+      "mudar contratos públicos",
+      "egresso de conteúdo de arquivo/saída de tool por padrão",
+      "afirmação de economia em dólar não medida",
+      "criar skill/MCP/plugin/hook novo quando existe capacidade equivalente",
+      "versionar conteúdo de dependências externas (skills do usuário, plugins) como fonte do repo"
+    ],
+    "success_criteria": [
+      "Cliente+config+flag com flag OFF provadamente inerte e sem conexões",
+      "Classificador de permissão Jev-first atrás de flag com fallback LLM e autoridade <= incumbent",
+      "Gate de avaliação com falso-allow 0 no conjunto retido, falso-bloqueio no orçamento e Jev >= incumbent, com incumbent medido antes",
+      "Latência limitada e kill switch não bloqueado com Jev lento/indisponível",
+      "Economia medida (chamadas de LLM evitadas) >= piso do dono, senão abortar e registrar",
+      "Perguntas/limiares em arquivo único revisável + doc de egress/kill switch",
+      "Freeze e conselho `full` materializados e validados"
+    ],
+    "invariants": [
+      "I-1 flag OFF = comportamento idêntico + zero conexões",
+      "I-2 precedência de permissão intocada",
+      "I-3 autoridade Jev <= incumbent",
+      "I-4 allow Jev nunca zera ratchet de negações",
+      "I-5 zero retry no caminho quente, sub-deadline, pular quando ocupado",
+      "I-6 segredo nunca logado e fora do ambiente de subprocessos por padrão",
+      "I-7 toda decisão Jev observável em telemetria",
+      "I-8 nenhum caminho LLM removido",
+      "I-9 reuso antes de criação de skill/MCP/plugin/hook",
+      "I-10 capacidade de governança com rótulo explícito, sem conformidade fingida"
+    ],
+    "constraints": [
+      "Cargo.toml raiz é gerado/sincronizado",
+      "xai-grok-http depende de xai-grok-workspace (ciclo)",
+      "xai-grok-workspace já tem reqwest/serde_json/tokio/extra-ca",
+      "clippy.toml exige o builder do extra-ca",
+      "Jev é texto apenas; 64k/32k tokens"
+    ],
+    "no_go": [
+      "implementar sem o gate C",
+      "ligar por default",
+      "enviar conteúdo de arquivo/saída de tool sem opt-in",
+      "reapontar endpoint/enabled por config de projeto",
+      "retry/backoff no caminho quente"
+    ]
+  },
+  "output": {
+    "plan_dir": "/Users/samuelfajreldines/dev/jev-build/plan",
+    "html_files": [
+      "00-plano.html"
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E-001",
+      "kind": "grep",
+      "classification": "FACT",
+      "claim": "Repo não tem referências a jev/typesafe hoje",
+      "locator": "command: grep -ri jev|typesafe no repo inteiro (0 resultados)"
+    },
+    {
+      "id": "E-002",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Trait PermissionClassifier e ClassifierOutcome são o ponto de injeção existente",
+      "locator": "crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs:328"
+    },
+    {
+      "id": "E-003",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Classificador chamado inline pelo ator de permissão; falha => Unavailable => prompt humano; ator é task única",
+      "locator": "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs:913"
+    },
+    {
+      "id": "E-004",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Wiring do classificador LLM com timeout dedicado e worker serial compartilhado",
+      "locator": "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:921"
+    },
+    {
+      "id": "E-005",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Precedência de permissão fixa: deny de política > YOLO > grant > allow de política > fast path > classificador > sandbox > ask > prompt",
+      "locator": "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs:792"
+    },
+    {
+      "id": "E-006",
+      "kind": "manifest",
+      "classification": "FACT",
+      "claim": "Manifesto raiz gerado; xai-grok-http depende de xai-grok-workspace (ciclo)",
+      "locator": "Cargo.toml:1"
+    },
+    {
+      "id": "E-007",
+      "kind": "manifest",
+      "classification": "FACT",
+      "claim": "xai-grok-workspace já tem reqwest/serde/serde_json/tokio/extra-ca",
+      "locator": "crates/codegen/xai-grok-workspace/Cargo.toml:108"
+    },
+    {
+      "id": "E-008",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Registry de features com tiers pin/env/config/remote e default por linha",
+      "locator": "crates/codegen/xai-grok-config-types/src/registry.rs:56"
+    },
+    {
+      "id": "E-009",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "xai-grok-extra-ca é leaf e expõe o builder sancionado de cliente reqwest",
+      "locator": "crates/codegen/xai-grok-extra-ca/src/lib.rs:56"
+    },
+    {
+      "id": "E-010",
+      "kind": "test",
+      "classification": "FACT",
+      "claim": "Corpus de expectativas em testes de permissão (não um dataset rotulado): cargo check não é seguro; tee não é auto-aprovado",
+      "locator": "crates/codegen/xai-grok-workspace/src/permission/grants_tests.rs:360"
+    },
+    {
+      "id": "E-011",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Telemetria de decisão já carrega classifier_source/verdict/latency com enums fechados e testes de drift",
+      "locator": "crates/codegen/xai-grok-workspace/src/permission/types.rs:29"
+    },
+    {
+      "id": "E-012",
+      "kind": "test",
+      "classification": "FACT",
+      "claim": "Infra de teste: MockInferenceServer, wiremock como idioma para HTTP de saída, cenários PTY em YAML",
+      "locator": "crates/codegen/xai-grok-test-support/src/mock_server.rs:180"
+    },
+    {
+      "id": "E-013",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Existe ratchet de negações consecutivas/totais e um allow do classificador zera o contador consecutivo",
+      "locator": "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs:1034"
+    },
+    {
+      "id": "E-014",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "shell_environment_policy (exclude/include_only) existe e config de projeto não injeta sobreposição",
+      "locator": "crates/codegen/xai-grok-config/src/config_override.rs:113"
+    },
+    {
+      "id": "E-015",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Classificador de preguiça faz side call com o sampler e parseia JSON de texto livre — o padrão que uma resposta tipada elimina",
+      "locator": "crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness_classifier.rs:575"
+    },
+    {
+      "id": "E-016",
+      "kind": "docs",
+      "classification": "FACT",
+      "claim": "Contrato do Jev: endpoint POST /v1/systemone, bearer, jev-latest => jev-1.13.0, 64k/32k tokens, ~100 ms, confidence em Choice/Score, preço US$ 42 por bilhão de tokens de entrada (saída grátis), 250k tokens/s e 1200 req/min, fraquezas documentadas (sem geração; contagem/aritmética e datas não confiáveis; indireção; estado grande; state adversarial pode direcionar respostas)",
+      "locator": "command: web_fetch docs.typesafe.ai (api, models, confidence, model-jaggedness, patterns, cookbooks)"
+    },
+    {
+      "id": "E-017",
+      "kind": "code",
+      "classification": "FACT",
+      "claim": "Precedente interno de side call estreita com fallback textual: geração de título de sessão",
+      "locator": "crates/codegen/xai-grok-shell/src/session/helpers/session_summary.rs:135"
+    },
+    {
+      "id": "E-018",
+      "kind": "docs",
+      "classification": "FACT",
+      "claim": "Repo é sincronizado periodicamente do monorepo; user-guide mora no crate do pager",
+      "locator": "README.md:90"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A-001",
+      "claim": "Acurácia do Jev nas nossas decisões precisa ser medida antes de fiação de produção",
+      "state": "UNVERIFIED",
+      "decision_reason": "medida no passo S-004 (gate C); nenhuma decisão de produção antes"
+    },
+    {
+      "id": "A-002",
+      "claim": "confidence é documentado presente, não calibrado",
+      "state": "UNVERIFIED",
+      "decision_reason": "calibração medida em S-004; autoridade <= incumbent limita o dano"
+    },
+    {
+      "id": "A-003",
+      "claim": "Latência ~100 ms (docs) não medida neste host",
+      "state": "UNVERIFIED",
+      "decision_reason": "medida em S-004; desenho não depende dela"
+    },
+    {
+      "id": "A-004",
+      "claim": "Taxa de chamadas da side call do classificador incumbent é desconhecida",
+      "state": "UNVERIFIED",
+      "decision_reason": "S-001 instrumenta antes de construir"
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "U-001",
+      "claim": "Existe chave/plano Jev no ambiente?",
+      "material": true,
+      "probe": "S-000 verifica TYPESAFE_API_KEY e conta; sem chave S-004+ fica bloqueado até o dono prover"
+    },
+    {
+      "id": "U-002",
+      "claim": "Latência/jitter reais da API a partir deste host",
+      "material": true,
+      "probe": "medir p50/p95 em S-004"
+    },
+    {
+      "id": "U-003",
+      "claim": "Chamadas/tokens do classificador incumbent por classe de decisão",
+      "material": true,
+      "probe": "S-001 (instrumentação + contagem de requests no mock)"
+    },
+    {
+      "id": "U-004",
+      "claim": "Calibração das confidences do Jev nas nossas tarefas",
+      "material": true,
+      "probe": "curva confiança x acurácia em S-004"
+    }
+  ],
+  "thesis": {
+    "id": "T-001",
+    "summary": "Cliente Jev pequeno em xai-grok-workspace + camada 'decide ou escala', convertendo UM seam de produção (classificador de permissão) com autoridade Jev <= incumbent, default OFF, gate de avaliação com conjunto retido e medição de economia com critério de aborto.",
+    "approach": "Fundação reutilizável (cliente, config, flag, catálogo de perguntas, telemetria) -> instrumentar incumbent -> gate C1/C2 -> integração D1 em 2 fases -> medição/docs.",
+    "rejected_alternatives": [
+      "hooks HTTP existentes (não podem conceder allow, logo não capturam o custo)",
+      "crate novo xai-grok-jev (exige editar o manifesto raiz gerado e sincronizado)",
+      "Jev como gate autoritativo de allow (rev.1, rejeitado pelo conselho)",
+      "converter 5-6 seams de uma vez (escopo especulativo)",
+      "retry/backoff no caminho quente (autodestrutivo)",
+      "tabela de preços local (custo é reportado pelo servidor)",
+      "substituir sumário de compaction (geração é fora de escopo do Jev)"
+    ]
+  },
+  "steps": [
+    {
+      "id": "S-000",
+      "title": "Materializar o freeze e rodar o conselho full",
+      "why": "Contrato sam-plan + escalação do conselho exigem artefatos validados antes de implementar",
+      "how": [
+        "Rodar scaffold_plan_dir.py --out $PLAN_DIR e conferir assets/",
+        "Escrever plan-report.json a partir do freeze (este arquivo)",
+        "Validar com validate_plan_report.py --repo-root <repo>",
+        "Renderizar o pacote humano com render_plan_html.py e revalidar com --require-html",
+        "Rodar sam-council perfil full (6 assentos + especialistas security-privacy, reliability-performance, testability-release, cost-dependency) com scratch e validate_council_report.py",
+        "Verificar disponibilidade da chave Jev (U-001) e re-verificar os locators marcados (R)"
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "plan/plan-report.json",
+        "plan/00-plano.html"
+      ],
+      "dod": [
+        "plan-report.json e o HTML no disco validados com --require-html",
+        "relatório do conselho full validado e correções aceitas aplicadas",
+        "locators (R) reconferidos e resposta sobre a chave registrada"
+      ],
+      "proof_ids": [
+        "V-001",
+        "V-002"
+      ]
+    },
+    {
+      "id": "S-001",
+      "title": "Instrumentar o incumbent e fixar o piso de economia",
+      "why": "Critério de aborto por valor exigido pelo árbitro; medir o prêmio antes de construir",
+      "how": [
+        "Contar chamadas do classificador LLM por classe de decisão (allow/block/unavailable), tokens e latência p50/p95",
+        "Adicionar contagem de requests de side query em teste de integração com MockInferenceServer (set_conversations/requests)",
+        "Definir com o dono o piso numérico de economia e o critério de aborto"
+      ],
+      "depends_on": [
+        "S-000"
+      ],
+      "surfaces": [
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs",
+        "crates/codegen/xai-grok-test-support/src/mock_server.rs"
+      ],
+      "dod": [
+        "relatório com números reais (chamadas por classe, tokens, latência) e piso aprovado por escrito",
+        "zero mudança de comportamento: apenas medição"
+      ],
+      "proof_ids": [
+        "V-003"
+      ]
+    },
+    {
+      "id": "S-002",
+      "title": "Cliente Jev + config/flag/credencial",
+      "why": "Fundação que torna os próximos seams baratos (transporte, config e segredo resolvidos uma vez)",
+      "how": [
+        "Criar src/jev/mod.rs com tipos serde (request/questions/response/answers), cliente via xai_grok_extra_ca::build_reqwest_client, bearer por nome de env, timeout por requisição, sem retry, taxonomia de erro e contagem de tokens",
+        "Adicionar a seção [jev] ao Config e uma linha Feature::Jev no registry (key jev, path features.jev, env GROK_JEV, default false, sem tier remote)",
+        "Fixar enabled/endpoint em camadas managed/env/user e excluir JEV_API_KEY do ambiente de subprocessos por padrão",
+        "Escrever testes wiremock (200 com golden do corpo, 401, 422, 429, 529, timeout), flag OFF sem conexões e config de projeto incapaz de ligar/reapontar"
+      ],
+      "depends_on": [
+        "S-000"
+      ],
+      "surfaces": [
+        "crates/codegen/xai-grok-workspace/src/jev/mod.rs",
+        "crates/codegen/xai-grok-workspace/Cargo.toml",
+        "crates/codegen/xai-grok-shell/src/agent/config.rs",
+        "crates/codegen/xai-grok-config-types/src/registry.rs",
+        "crates/codegen/xai-grok-env/src/registry.rs"
+      ],
+      "dod": [
+        "cargo test dos crates workspace/config-types/env verde",
+        "nenhuma dependência de produção nova além de dev-dep de teste",
+        "flag OFF provadamente inerte e nenhum segredo em log"
+      ],
+      "proof_ids": [
+        "V-004"
+      ]
+    },
+    {
+      "id": "S-003",
+      "title": "Camada decide-ou-escala + catálogo único de perguntas",
+      "why": "Perguntas e limiares revisáveis num só arquivo; composição em código com autoridade limitada e telemetria",
+      "how": [
+        "Criar src/jev/questions.rs com pacotes, critérios, limiares, pesos e pisos (pacote de permissão: Nouls atômicos de escrita fora do workspace, deleção, rede, privilégio, fonte não confiável, triagem de injeção; Choice de classe de risco)",
+        "Criar src/jev/policy.rs com state por allowlist tipada, uma requisição com bateria especulativa e composição em código devolvendo JevDecision{Block|AllowEligible|Escalate}",
+        "Emitir evento de telemetria aditivo por decisão (perguntas, veredito, confiança, latência, tokens) e contar escalações",
+        "Testar composição/limiares com respostas sintéticas, golden do corpo da requisição, telemetria e flag OFF sem chamadas"
+      ],
+      "depends_on": [
+        "S-002"
+      ],
+      "surfaces": [
+        "crates/codegen/xai-grok-workspace/src/jev/questions.rs",
+        "crates/codegen/xai-grok-workspace/src/jev/policy.rs",
+        "crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs"
+      ],
+      "dod": [
+        "testes verdes de composição/limiares/golden/telemetria",
+        "pacote de perguntas revisável num único arquivo",
+        "nenhuma decisão de produção alterada (camada ainda não plugada)"
+      ],
+      "proof_ids": [
+        "V-005"
+      ]
+    },
+    {
+      "id": "S-004",
+      "title": "Gate de avaliação C1 (spike) -> C2 (fixtures)",
+      "why": "Único gate que pode reprovar a v1 por segurança e por valor, separando 'parece bom' de 'medido'",
+      "how": [
+        "C1: script offline que roda o baseline incumbent e o pacote Jev sobre contextos gravados + casos autorais com injeção em comando, caminhos e transcript",
+        "Rotular a parte insegura sob regra escrita, fora das asserções heurísticas; corpus de testes entra só como smoke",
+        "C2: promover a fixtures versionadas com teste ignorado se C1 passar",
+        "Registrar go/no-go com falso-allow, falso-bloqueio, delta vs incumbent e curva de calibração"
+      ],
+      "depends_on": [
+        "S-003"
+      ],
+      "surfaces": [
+        "crates/codegen/xai-grok-workspace/src/jev/eval/mod.rs",
+        "crates/codegen/xai-grok-test-support/src/mock_server.rs"
+      ],
+      "preconditions": [
+        "U-001"
+      ],
+      "dod": [
+        "falso-allow 0 na parte insegura retida e falso-bloqueio dentro do orçamento do dono",
+        "Jev >= incumbent no mesmo conjunto, com calibração medida",
+        "decisão go/no-go registrada com os números"
+      ],
+      "proof_ids": [
+        "V-006"
+      ]
+    },
+    {
+      "id": "S-005",
+      "title": "Integração D1: classificador de permissão Jev-first",
+      "why": "Seam de maior custo de LLM por ação no harness e experimento real de valor",
+      "how": [
+        "Implementar JevPermissionClassifier (impl PermissionClassifier) e adicionar variante de proveniência Jev nos enums fechados com testes de drift",
+        "Instalar no ponto existente com a ordem Jev -> Escalate/Unavailable -> classificador LLM -> prompt humano",
+        "Passar o orçamento fim-a-fim do chamador (mudança aditiva na trait), sub-deadline rígido, zero retry e pular o Jev quando o worker já está ocupado, garantindo que comandos de modo/kill switch não fiquem atrás da rede",
+        "Autorizar (Allow) apenas a classe rotineira sem security_findings, sem Ask de política e acima do piso de confiança, sem tocar auto_consecutive_denials",
+        "Rodar fase 1 em sombra (só telemetria) e fase 2 Jev-first na classe rotineira, ambas atrás de GROK_JEV com flag OFF igual ao comportamento atual",
+        "Provar com testes unit, mock (chamadas de LLM evitadas), wall-clock com Jev travado e cenário PTY do fluxo de permissão"
+      ],
+      "depends_on": [
+        "S-004"
+      ],
+      "surfaces": [
+        "crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs",
+        "crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs",
+        "crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs",
+        "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs",
+        "crates/codegen/xai-grok-pager-pty-harness/tests/scenarios"
+      ],
+      "dod": [
+        "todos os testes verdes, incluindo autoridade, security_findings, ratchet e flag OFF",
+        "nenhuma decisão de allow que o incumbent não daria",
+        "latência limitada e comandos de modo atendidos mesmo com Jev lento ou indisponível"
+      ],
+      "proof_ids": [
+        "V-007",
+        "V-008",
+        "V-009",
+        "V-010"
+      ]
+    },
+    {
+      "id": "S-006",
+      "title": "Medição pós-rollout, kill switch e documentação",
+      "why": "Fecha o ciclo de valor e devolve controle ao operador com critério objetivo de promover ou reverter",
+      "how": [
+        "Medir chamadas de LLM evitadas por classe, tokens Jev, custo pelo preço publicado por token, latências p50/p95 e taxa de escalação",
+        "Aplicar o critério de aborto: abaixo do piso definido em S-001, manter default OFF e registrar",
+        "Documentar na user-guide do pager a config [jev], a allowlist de campos enviados, egress/retenção, kill switch e reversão",
+        "Registrar os candidatos do backlog com o aprendizado para re-proposta individual"
+      ],
+      "depends_on": [
+        "S-005"
+      ],
+      "surfaces": [
+        "crates/codegen/xai-grok-pager/docs/user-guide",
+        "plan/plan.md"
+      ],
+      "dod": [
+        "relatório de economia com números medidos",
+        "página de documentação publicada no repo",
+        "decisão de default registrada com base no critério de aborto"
+      ],
+      "proof_ids": [
+        "V-011"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "claim": "State adversarial direciona o Jev para um falso allow (authz)",
+      "severity": "high",
+      "mitigation": "Autoridade <= incumbent; sombra primeiro; security_findings => LLM; piso de confiança; falso-allow 0 no conjunto retido; ratchet intocado",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-002",
+      "claim": "Valor não se materializa (classe rotineira pode já passar sem LLM; pular sob carga limita a economia)",
+      "severity": "high",
+      "mitigation": "S-001 mede antes; piso numérico de economia com critério de aborto; se falhar, default OFF e re-propor outro seam",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-003",
+      "claim": "Fila/bloqueio no ator de permissão (kill switch atrás de rede)",
+      "severity": "high",
+      "mitigation": "Orçamento do chamador, sub-deadline, zero retry, pular quando ocupado e prova de wall-clock V-008",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-004",
+      "claim": "Egresso de dados a terceiro (privacidade)",
+      "severity": "medium",
+      "mitigation": "Allowlist de state, sem conteúdo de arquivo/saída de tool por padrão, max_state_bytes, flag OFF por padrão, doc e revisão security-privacy no conselho full",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-005",
+      "claim": "JEV_API_KEY legível por comandos do agente",
+      "severity": "medium",
+      "mitigation": "Exclusão no shell_environment_policy por padrão, doc do risco residual e nunca logar a chave",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-006",
+      "claim": "Mudança aditiva na trait (budget) e guarda in_flight são mecanismos novos",
+      "severity": "medium",
+      "mitigation": "Diff explícito e revisado, teste dedicado V-008 e condição de fechamento do árbitro",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-007",
+      "claim": "Dependência de vendor (quota, preço, disponibilidade, lock-in)",
+      "severity": "medium",
+      "mitigation": "Endpoint/model configuráveis, sem tabela de preço local, fallback LLM sempre presente, custo medido por tokens e kill switch",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-008",
+      "claim": "Escopo 'sempre que possível' crescer sem limite",
+      "severity": "low",
+      "mitigation": "Regra de elegibilidade, backlog explícito e gate de avaliação por seam",
+      "status": "OPEN"
+    },
+    {
+      "id": "R-009",
+      "claim": "Locators marcados (R) desatualizados",
+      "severity": "low",
+      "mitigation": "Re-verificação em S-000; nenhuma decisão de desenho depende de número de linha",
+      "status": "OPEN"
+    }
+  ],
+  "verifications": [
+    {
+      "id": "V-001",
+      "proof": "validate_plan_report.py --repo-root <repo> sobre plan-report.json",
+      "status": "PLANNED",
+      "reason": "executar em S-000 (o plan mode proibiu escrita durante o planejamento)"
+    },
+    {
+      "id": "V-002",
+      "proof": "sam-council perfil full + validate_council_report.py",
+      "status": "PLANNED",
+      "reason": "executar em S-000 antes da fase 2 de S-005"
+    },
+    {
+      "id": "V-003",
+      "proof": "relatório de instrumentação do incumbent + contagem de requests via MockInferenceServer",
+      "status": "PLANNED",
+      "reason": "executar em S-001"
+    },
+    {
+      "id": "V-004",
+      "proof": "cargo test -p xai-grok-workspace -p xai-grok-config-types -p xai-grok-env (wiremock 200/401/422/429/529/timeout; flag OFF sem conexões; config de projeto não liga)",
+      "status": "PLANNED",
+      "reason": "executar em S-002"
+    },
+    {
+      "id": "V-005",
+      "proof": "testes de composição/limiares + golden do request + telemetria + flag OFF inerte",
+      "status": "PLANNED",
+      "reason": "executar em S-003"
+    },
+    {
+      "id": "V-006",
+      "proof": "relatório C1/C2 com falso-allow, falso-bloqueio, delta vs incumbent e calibração",
+      "status": "PLANNED",
+      "reason": "executar em S-004"
+    },
+    {
+      "id": "V-007",
+      "proof": "testes do classificador Jev: autoridade <= incumbent, security_findings => LLM, ratchet intacto, flag OFF",
+      "status": "PLANNED",
+      "reason": "executar em S-005"
+    },
+    {
+      "id": "V-008",
+      "proof": "teste de wall-clock com Jev travado provando orçamento por decisão e comandos de modo atendidos",
+      "status": "PLANNED",
+      "reason": "executar em S-005"
+    },
+    {
+      "id": "V-009",
+      "proof": "cenário PTY do fluxo de permissão em modo auto",
+      "status": "PLANNED",
+      "reason": "executar em S-005"
+    },
+    {
+      "id": "V-010",
+      "proof": "contagem de chamadas de LLM evitadas via MockInferenceServer (requests())",
+      "status": "PLANNED",
+      "reason": "executar em S-005"
+    },
+    {
+      "id": "V-011",
+      "proof": "relatório de economia com números medidos + página de documentação",
+      "status": "PLANNED",
+      "reason": "executar em S-006"
+    }
+  ],
+  "acceptance_trace": [
+    {
+      "criterion": "Cliente+config+flag com flag OFF provadamente inerte e sem conexões",
+      "step_ids": [
+        "S-002"
+      ],
+      "proof_ids": [
+        "V-004"
+      ]
+    },
+    {
+      "criterion": "Classificador de permissão Jev-first atrás de flag com fallback LLM e autoridade <= incumbent",
+      "step_ids": [
+        "S-005"
+      ],
+      "proof_ids": [
+        "V-007",
+        "V-009"
+      ]
+    },
+    {
+      "criterion": "Gate de avaliação com falso-allow 0 no conjunto retido, falso-bloqueio no orçamento e Jev >= incumbent, com incumbent medido antes",
+      "step_ids": [
+        "S-001",
+        "S-004"
+      ],
+      "proof_ids": [
+        "V-003",
+        "V-006"
+      ]
+    },
+    {
+      "criterion": "Latência limitada e kill switch não bloqueado com Jev lento/indisponível",
+      "step_ids": [
+        "S-005"
+      ],
+      "proof_ids": [
+        "V-008"
+      ]
+    },
+    {
+      "criterion": "Economia medida (chamadas de LLM evitadas) >= piso do dono, senão abortar e registrar",
+      "step_ids": [
+        "S-001",
+        "S-005",
+        "S-006"
+      ],
+      "proof_ids": [
+        "V-003",
+        "V-010",
+        "V-011"
+      ]
+    },
+    {
+      "criterion": "Perguntas/limiares em arquivo único revisável + doc de egress/kill switch",
+      "step_ids": [
+        "S-003",
+        "S-006"
+      ],
+      "proof_ids": [
+        "V-005",
+        "V-011"
+      ]
+    },
+    {
+      "criterion": "Freeze e conselho `full` materializados e validados",
+      "step_ids": [
+        "S-000"
+      ],
+      "proof_ids": [
+        "V-001",
+        "V-002"
+      ]
+    }
+  ],
+  "council": {
+    "required": true,
+    "skip_reason": null,
+    "runs": [
+      {
+        "profile": "fast",
+        "thesis_id": "T-001",
+        "status": "ESCALATE_TO_FULL",
+        "topology": "single-host",
+        "seats": [
+          "frame-evidence=01a0b154-21c6-70d0-a7fb-0d474bc80025",
+          "delivery-failure=01a0b154-21c6-70d0-a7fb-0d5c89c99bbe",
+          "simplification=01a0b154-21c6-70d0-a7fb-0d6575bca601"
+        ],
+        "verification": [
+          "triage-arbiter=01a0b155-a0b8-76c2-9e69-4851aee8cbc8"
+        ],
+        "specialists": [
+          "security-privacy=SELECTED",
+          "reliability-performance=SELECTED",
+          "testability-release=SELECTED",
+          "cost-dependency=SELECTED"
+        ],
+        "dispositions": [
+          "O-001 BLOCKER PARTIAL (autoridade Jev <= incumbent, sombra primeiro, state sem conteúdo de arquivo)",
+          "O-002 HIGH ACCEPT (conjunto retido com regra de rotulagem + baseline do incumbent + limiares numéricos)",
+          "O-003 MEDIUM ACCEPT (instrumentar antes, medir calibração, zero retry)",
+          "O-004 HIGH ACCEPT (orçamento do chamador, sub-deadline, pular quando ocupado, teste de wall-clock)",
+          "O-005 HIGH ACCEPT (ratchet intocado; security_findings => LLM)",
+          "O-006 MEDIUM ACCEPT (shell_environment_policy; enabled/endpoint em managed/env/user; teste de zero conexões)",
+          "O-007 HIGH PARTIAL (v1 = A+B+C+D1+E; resto no backlog com regra de elegibilidade)",
+          "O-008 HIGH PARTIAL (C1 spike -> C2 fixtures; corpus de testes só como smoke)",
+          "O-009 MEDIUM ACCEPT (reusar builder do extra-ca; uma tentativa; sem mudança na lista BYOK)"
+        ],
+        "report_path": null,
+        "limitations": "plan mode impediu council-report.json, scratch e validador; bridge de telemetria de subagente indisponível; conselho full obrigatório em S-000 antes da fase 2 de S-005"
+      }
+    ]
+  },
+  "simplicity": {
+    "cuts": [
+      "D2-D6 fora da v1 (compaction, preguiça, memória, busca, roteamento)",
+      "crate novo",
+      "retry/backoff no caminho quente",
+      "mudança na lista de credenciais BYOK",
+      "tabela de preços local",
+      "remoção de caminhos LLM",
+      "tool-subset por turno"
+    ],
+    "retained_complexity_justifications": [
+      "orçamento do chamador + sub-deadline + pular quando ocupado (R-003)",
+      "gate C1/C2 com baseline do incumbent (R-001/R-002)",
+      "fase sombra antes de Jev-first (medir sem alterar decisão)"
+    ]
+  },
+  "extensions": {
+    "maximization_ladder": {
+      "note": "Candidatos priorizados por retorno em tokens (estrutural, a medir em S-001). Cada item exige gate de avaliação e medição antes/depois; nenhum entra na v1 sem conselho full. Não substitui a tese congelada T-001.",
+      "items": [
+        {
+          "id": "P1",
+          "decision": "Subconjunto de tools por turno",
+          "cookbooks": [
+            "function calling",
+            "speculative fan-out"
+          ],
+          "why": "Schemas de ~25 tools embutidos (+MCP) são reenviados a cada rodada do loop (5-10k tokens/rodada, 20-40 rodadas)",
+          "estimated_impact": "100-400k tokens/sessão; 30-70% do payload de schemas",
+          "seam": "filter_cursor_tools_by_plan_mode (crates/codegen/xai-grok-shell/src/session/acp_session_impl/session_mode.rs:23), effective_tools (turn.rs:2856)",
+          "risk_mitigation": "núcleo obrigatório sempre presente; 'não sei => mantém tudo'; medição de sucesso de tarefa antes de ligar",
+          "gate": "avaliação de sucesso de tarefa + medição de tokens por rodada"
+        },
+        {
+          "id": "P2",
+          "decision": "Selecionar trecho em vez de ler arquivo/saída inteira, e filtrar saída de tool antes de entrar no histórico",
+          "cookbooks": [
+            "line-by-line search",
+            "classifying RAG passages"
+          ],
+          "why": "Conteúdo de arquivo/saída de tool é o maior vetor de crescimento do contexto e volta em todas as rodadas seguintes",
+          "estimated_impact": "cortes de ordem 10x no custo de uma leitura grande",
+          "seam": "caminho de read_file/grep do harness; limite de 255 opções por Choice",
+          "risk_mitigation": "fallback para o conteúdo completo; telemetria de quando a seleção foi usada",
+          "gate": "medir taxa de fallback e perda de acerto em tarefas roteirizadas"
+        },
+        {
+          "id": "P3",
+          "decision": "Decidir o recorte que o sumarizador de compaction precisa ver (o que exige sumário, o que pode ser descartado, o que preservar verbatim)",
+          "cookbooks": [
+            "classifying RAG passages",
+            "classification using confidence"
+          ],
+          "why": "A compaction reenvia o histórico para a LLM; é a maior chamada única de uma sessão longa",
+          "estimated_impact": "fração do input da compaction",
+          "seam": "select_turns_to_compact (crates/common/xai-grok-compaction/src/select.rs:61), fit_turns_for_summarizer (fit.rs:194), is_degenerate_summary (summary.rs:124)",
+          "risk_mitigation": "o sumário continua na LLM; Jev decide apenas o recorte; preservar itens fixados (arquivos editados, tarefas em execução)",
+          "gate": "medir tamanho do input e qualidade do sumário resultante"
+        },
+        {
+          "id": "P4",
+          "decision": "Modelo/effort por turno",
+          "cookbooks": [
+            "intent routing",
+            "classification using confidence"
+          ],
+          "why": "Turno simples em modelo/effort barato corta o custo do loop principal inteiro naquele turno",
+          "estimated_impact": "potencialmente a maior alavanca; a mais arriscada",
+          "seam": "resolução de modelo do subagente/agente (crates/codegen/xai-grok-shell/src/agent/subagent/mod.rs:598; handle_request.rs:770)",
+          "risk_mitigation": "avaliação de sucesso de tarefa; rampa; nunca 'always cheap'",
+          "gate": "avaliação de qualidade antes de qualquer rollout"
+        },
+        {
+          "id": "P5",
+          "decision": "Validar chamada de tool antes de executar (barrar e perguntar)",
+          "cookbooks": [
+            "function calling"
+          ],
+          "why": "Chamada que falha custa reenvio completo do prompt",
+          "estimated_impact": "proporcional à taxa de falha atual",
+          "seam": "pré-executor de tool calls (crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs)",
+          "risk_mitigation": "apenas barrar/perguntar, nunca autorizar (mesma regra de autoridade do freeze)",
+          "gate": "medir round-trips evitados com telemetria"
+        },
+        {
+          "id": "P6",
+          "decision": "Quais skills anunciadas importam neste turno",
+          "cookbooks": [
+            "skill suggestion"
+          ],
+          "why": "Skills entram como system-reminder de anúncio (não há roster estático no prompt)",
+          "estimated_impact": "ganho modesto em tokens; ganho maior em qualidade de escolha",
+          "seam": "SkillManager / anúncio de skills (crates/codegen/xai-grok-agent/src/builder.rs:641)",
+          "risk_mitigation": "texto de sugestão ignorável; medir falsos positivos/negativos",
+          "gate": "medição de escolha correta vs baseline"
+        }
+      ],
+      "not_token_savers": [
+        "guardrails de LLM (llm_guardrails) — segurança, adiciona chamadas",
+        "self-consistency — qualidade, adiciona chamadas",
+        "double-checking de citações — qualidade",
+        "entity alignment — outro domínio/offline",
+        "SDE cascade / date extraction / pre-parsed value extraction — aritmética e parsing pertencem a código",
+        "autoresearch feature discovery — offline (treino), não runtime"
+      ],
+      "hard_limits": [
+        "64k tokens por requisição (32k para state + maior pergunta)",
+        "Choice com no máximo 255 opções",
+        "Jev não gera texto",
+        "conteúdo adversarial no state pode direcionar respostas (autoridade e estado minimizado são obrigatórios)"
+      ],
+      "golden_rule": "Jev só economiza quando o código já reduziu os candidatos antes de montar o state. P1 deve perguntar por FAMÍLIA (poucos critérios), não enviar o catálogo de ~25 tools (custo do estado ≈6k/chamada superaria a economia de ~160k/sessão). P2 deve operar sobre um shortlist barato feito em código (grep/BM25/janela) com Choice <=255 opções + Noul de existência, nunca sobre o arquivo inteiro.",
+      "estimate": {
+        "baseline_session_input_tokens": "3-5M (sessão longa, ~40 rodadas; dominado pelo reenvio de histórico)",
+        "expected_savings_pct": "20-50% (central ~35%)",
+        "expected_savings_tokens": "0.8-2.2M por sessão longa",
+        "jev_own_tokens": "150-300k por sessão no desenho com candidatos pré-reduzidos (ordem de 5-15% do que economiza)",
+        "per_lever": {
+          "P1": "100-300k (schemas deixam de ser reenviados a cada rodada)",
+          "P2": "500k-1.1M (menos conteúdo entrando no histórico, multiplicado pelas rodadas seguintes)",
+          "P3": "100-250k (menor input da maior chamada única)",
+          "P4": "0 tokens — troca de modelo economiza dinheiro, não tokens",
+          "P5": "100-500k (rodadas falhas evitadas)",
+          "P6": "10-50k"
+        },
+        "caveat": "Estimativas estruturais (payload x frequência de reenvio), não medições; S-001 instrumenta tokens por rodada e por chamada antes de qualquer rollout."
+      }
+    },
+    "identity_preference": "Reusar capacidade equivalente existente (skill/MCP/plugin/hook/subagente) antes de criar forma nova; conteúdo de skill e de plugins é dado externo de runtime — Jev recebe só índice/descrição/metadados e nunca é a única fonte de um gate; capacidade de governança (auditoria/observabilidade/versionamento) leva rótulo explícito e nunca finge conformidade.",
+    "governance_registry": [
+      {
+        "surface": "hooks",
+        "locator": "crates/codegen/xai-grok-hooks/src/event.rs:79",
+        "policy": "não concede allow; sonda e trava de experimento"
+      },
+      {
+        "surface": "client hooks (ACP)",
+        "locator": "crates/codegen/xai-grok-shell/src/session/acp_session/hooks.rs:87",
+        "policy": "Ask falha aberto; nunca usar como gate"
+      },
+      {
+        "surface": "guardrails in/out",
+        "locator": "não existe hoje",
+        "policy": "segurança, não economia; custo explícito"
+      },
+      {
+        "surface": "MCP/marketplace/pager",
+        "locator": "crates/codegen/xai-grok-shell/src/session/acp_session_impl/mcp_init.rs:651",
+        "policy": "alvo da auditoria security-privacy; sem allow direto"
+      },
+      {
+        "surface": "skills (catálogo)",
+        "locator": "crates/codegen/xai-grok-agent/src/prompt/skills.rs:66",
+        "policy": "igualdade de capacidade; conteúdo externo não versionado"
+      }
+    ],
+    "changelog_ref": "plan.md §12 (varredura do menu docs.typesafe.ai: 18 cookbooks + demais seções, item a item)",
+    "docs_scan": {
+      "index_snapshot": "plan/assets/docs-review-index.md (111 itens, capturado de https://docs.typesafe.ai/llms.txt em 2026-09-17)",
+      "ledger": "plan/docs-review.md (111 entradas: lição + veredito + ajuste por item)",
+      "coverage": {
+        "items": 111,
+        "read": 111,
+        "failures": 0,
+        "applicable": 97,
+        "not_applicable": 14
+      },
+      "not_applicable_items": [
+        "19",
+        "22",
+        "25",
+        "27",
+        "29",
+        "51",
+        "56",
+        "57",
+        "72",
+        "74",
+        "75",
+        "82",
+        "105",
+        "110"
+      ],
+      "adjustments": [
+        "P1 (itens 6, 9, 109): catálogo de famílias vai em criteria (teto 255), nunca no state; taxonomia caminhável com subárvore trimada; beam K=3 como experimento",
+        "P2 (itens 97, 98, 104, 108): shortlist em código é o teto do que o Jev acha; decidível em código primeiro; candidatos viram spans; >255 ⇒ dois estágios; Noul de existência",
+        "P3 (item 99): o state domina o custo; fraseado das perguntas é parte do contrato revisável",
+        "P5 (itens 7, 8, 17, 102, 106, 107): normalizar Score por n-1; Noul com zona morta; risco como soma ponderada de Scores atômicos; alternativa Score de 3 níveis; max para red flags; min para confiança de partes",
+        "Confiança (itens 16, 94, 95, 103): piso 0.60, 0.85 para allow sensível, topo 0.60 para ação automática, banda de revisão 0.30-0.70, limiares num único dict",
+        "P6 (itens 101, 111): duas fases, texto ignorável, confiança baixa anuncia o mais genérico/default",
+        "Avaliação (item 10): calibração por faixa (0.8 deve acertar ~80%) como critério do gate C1/C2",
+        "Riscos (itens 92, 93, 103, 23, 68, 32, 62, 41, 43, 47, 48, 89): filtro do Jev não é fronteira de segurança; due diligence legal/ZDR enterprise; corpos não são redigidos; divergência deliberada de retry; deadline cobre o corpo; 404/403 como config/escopo"
+      ],
+      "traceability": {
+        "note": "plan.md §12.6 — cada um dos 97 itens aplicáveis aponta para o local onde a lição vive; os 14 não aplicáveis estão no ledger com motivo.",
+        "rows": [
+          {
+            "items": [
+              1,
+              3,
+              20
+            ],
+            "location": "§1.6 I-9 + §1.5 (tipo/confidence, nunca gera; fallback LLM/pessoa)"
+          },
+          {
+            "items": [
+              4,
+              5,
+              93
+            ],
+            "location": "§1.7 (texto apenas; tetos 64k/32k) + §12.5 (state por allowlist; caminhos em backticks)"
+          },
+          {
+            "items": [
+              6,
+              9,
+              109
+            ],
+            "location": "§1.3.1 P1 (criteria com teto 255; taxonomia trimada; beam como experimento)"
+          },
+          {
+            "items": [
+              97,
+              98,
+              104,
+              108
+            ],
+            "location": "§1.3.1 P2 (shortlist em código é o teto; decidível em código primeiro; spans; dois estágios; Noul de existência)"
+          },
+          {
+            "items": [
+              99
+            ],
+            "location": "§1.3.1 P3 (state domina o custo; fraseado é contrato)"
+          },
+          {
+            "items": [
+              7,
+              8,
+              17,
+              102,
+              106,
+              107
+            ],
+            "location": "§1.3.1 P5 (normalização por n-1; zona morta; composição ponderada; Score de 3 níveis; max/min)"
+          },
+          {
+            "items": [
+              100
+            ],
+            "location": "§1.3.1 P1/P5 (omissão via stated; confiança do julgamento mais fraco)"
+          },
+          {
+            "items": [
+              11,
+              16,
+              94,
+              95,
+              103
+            ],
+            "location": "§1.3.1 números de confiança + §1.6 I-3"
+          },
+          {
+            "items": [
+              101,
+              111
+            ],
+            "location": "§1.3.1 P6 (duas fases; ignorável; genérico quando incerto)"
+          },
+          {
+            "items": [
+              12,
+              13,
+              18
+            ],
+            "location": "§1.3.1 P4 (rotear por incerteza/intenção; Harness Engineering)"
+          },
+          {
+            "items": [
+              10
+            ],
+            "location": "§1.3.1 avaliação (calibração por faixa) + §4 S-004"
+          },
+          {
+            "items": [
+              14,
+              15,
+              96
+            ],
+            "location": "§1.3.1 + §3 S-003 (padrões oficiais; fan-out; 1 requisição por decisão)"
+          },
+          {
+            "items": [
+              91
+            ],
+            "location": "§3 S-003 (catálogo único; argmax quando basta o melhor)"
+          },
+          {
+            "items": [
+              89
+            ],
+            "location": "§3 E-016 + §6 R-007 (preço por token de entrada; pin de versão)"
+          },
+          {
+            "items": [
+              92
+            ],
+            "location": "§6 R-004 (DPA/não-treino; ZDR enterprise; minimização)"
+          },
+          {
+            "items": [
+              2,
+              21,
+              23,
+              24,
+              26,
+              28,
+              30,
+              31,
+              33,
+              35,
+              36,
+              37,
+              50,
+              53,
+              54,
+              55,
+              58,
+              59,
+              60,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71,
+              73,
+              76,
+              77,
+              78,
+              79,
+              80,
+              81,
+              83,
+              84,
+              85,
+              86,
+              87,
+              88
+            ],
+            "location": "§12.5 (contrato request/response, tipos serde, defaults, evidência por chamada) + §4 S-002"
+          },
+          {
+            "items": [
+              32,
+              34,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              52,
+              61,
+              62,
+              90
+            ],
+            "location": "§12.5 (mapa de erros e divergência de retry) + §6 R-003"
+          }
+        ],
+        "not_applicable": [
+          19,
+          22,
+          25,
+          27,
+          29,
+          51,
+          56,
+          57,
+          72,
+          74,
+          75,
+          82,
+          105,
+          110
+        ]
+      },
+      "contract": {
+        "request": "POST https://api.typesafe.ai/v1/systemone; bearer de env atrás de GROK_JEV; model resolvido antes do envio (default jev-latest); {state, model, questions}; state = string|objeto|array com nulls; questions não-vazio; Choice.criteria mapa label->descrição|null (<=255); Score.criteria array ordenado com >=2 níveis; Noul.criteria {true?, false?}",
+        "response": "{answers{<name>:{type, noul | choice+probabilities+confidence | score+legend+probabilities+confidence}}, model, usage{input_tokens, output_tokens}} (snake_case; chaves numéricas como string); capturar x-typesafe-request-id",
+        "error_map": "400/401/403/404/422 e corpo 200 inválido -> Invalid (field_path quando houver); 408/429 -> RateLimited (retry-after ms); 5xx e 529 -> Unavailable (529 é mapeamento nosso); rede/TLS -> Transport; timeout -> Timeout; abort do chamador -> estado próprio",
+        "defaults": "base URL https://api.typesafe.ai; timeout 10 s por operação/tentativa (nosso: deadline cobrindo o corpo, sem retry no caminho quente); log default warn (debug|info|warn|error|off); precedência explícito > env > default, env vazia ignorada; referência pinada no SDK 0.6.0"
+      },
+      "deliberate_divergences": [
+        "maxRetries=0 no caminho quente (SDKs: default 2 em 408/429/5xx com backoff 0,5 s->5 s e jitter 0,25)",
+        "kind de resposta desconhecido -> Invalid (SDKs registram e ignoram)"
+      ],
+      "frozen_core_check": "I-1..I-10 presentes e inalterados nesta rodada; nenhuma contradição com o material congelado; ajustes ficaram em §1.3.1/§6/§12 e neste bloco extensions"
+    },
+    "owner_overrides": [
+      {
+        "date": "2026-09-17",
+        "invariant": "I-1 (flag default OFF) e o gate de conselho para a fase 2 de S-005",
+        "override": "O dono determinou 'deixe tudo ativo por padrão': o harness passa a resolver enabled=true, shadow=false e todas as alavancas ON quando [jev]/GROK_JEV estão ausentes; a chave JEV_API_KEY foi exportada globalmente (~/.zshrc, permissão 600) e excluída do ambiente de subprocessos do agente via [shell_environment_policy] exclude.",
+        "what_is_unchanged": [
+          "kill switch intacto e testado: [jev] enabled=false ou GROK_JEV=0 nao constroi cliente nem abre conexao",
+          "JevFlags::default() continua all-off (valor inerte do tipo, usado por testes e por call sites sem política)",
+          "autoridade Jev <= incumbent, ratchet de negacoes intocado, security_findings forca o caminho do modelo, 1 tentativa sem retry, pulo com worker ocupado",
+          "serie: Jev continua adicional; nenhum caminho LLM foi removido"
+        ],
+        "residual_risks": [
+          "o conselho de perfil full exigido pelo plano ANTES da fase 2 (Jev-first ativo) NAO foi executado; a fase 2 passa a ser o default sem esse gate",
+          "a amostra de calibração medida e pequena (3 allows em 0,90-1,00; 18 casos no total)",
+          "alavancas P1/P2/P3/P5/P6 estao ligadas por flag mas ainda NAO estao fiadas nos seams vivos, logo nao mudam comportamento hoje",
+          "com a chave no ambiente global, comandos executados fora do harness (outros shells/processos) tambem a enxergam; a exclusao cobre apenas o ambiente dos subprocessos do agente",
+          "segredo em ~/.zshrc e texto plano: qualquer dotfiles repo que publique esse arquivo vaza a chave"
+        ],
+        "rationale": "instrucao explicita do dono nesta sessao, que sobrepoe o invariante congelado; registrada aqui em vez de reescrever o nucleo"
+      }
+    ]
+  },
+  "residuals": [
+    "Conselho full e artefatos do conselho pendentes (S-000)",
+    "Chave/plano Jev não verificados (U-001)",
+    "Números de valor, latência e calibração só existem após S-001/S-004",
+    "Backlog de seams deliberadamente fora da v1",
+    "Gap do bridge de telemetria do conselho"
+  ],
+  "blockers": [],
+  "chapters": [
+    {
+      "id": "00",
+      "slug": "plano",
+      "title": "Plano",
+      "summary": "Usar /sam-plan para verificar todo o repositório e planejar o uso do Jev (TypeSafe) sempre que possível no jev-build, com o Jev delegando à LLM o que não puder fazer.",
+      "sections": [
+        {
+          "heading": "Status",
+          "blocks": [
+            {
+              "type": "callout",
+              "tone": "warn",
+              "text": "Status: NOT_CONFIDENT | Depth: standard | Case: FEATURE | Risk flags: security_privacy, auth_boundary, material_uncertainty | Council: required (ESCALATE_TO_FULL) | Residuals: Conselho full e artefatos do conselho pendentes (S-000); Chave/plano Jev não verificados (U-001); Números de valor, latência e calibração só existem após S-001/S-004; Backlog de seams deliberadamente fora da v1; Gap do bridge de telemetria do conselho"
+            }
+          ]
+        },
+        {
+          "heading": "Goal & scope",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Fazer o harness usar Jev para decisões estreitas e estruturadas sempre que a regra de elegibilidade permitir, começando pelo classificador de permissão do auto-mode, com autoridade Jev <= incumbent, fallback LLM intacto, flag default OFF, gate de avaliação medido e economia medida."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Lens",
+                "Items"
+              ],
+              "rows": [
+                [
+                  "Success criteria",
+                  "Cliente+config+flag com flag OFF provadamente inerte e sem conexões • Classificador de permissão Jev-first atrás de flag com fallback LLM e autoridade <= incumbent • Gate de avaliação com falso-allow 0 no conjunto retido, falso-bloqueio no orçamento e Jev >= incumbent, com incumbent medido antes • Latência limitada e kill switch não bloqueado com Jev lento/indisponível • Economia medida (chamadas de LLM evitadas) >= piso do dono, senão abortar e registrar • Perguntas/limiares em arquivo único revisável + doc de egress/kill switch • Freeze e conselho `full` materializados e validados"
+                ],
+                [
+                  "Non-goals",
+                  "Jev para geração de texto • Jev como único gate de allow • remover caminhos LLM/heurísticos • criar crate novo ou editar o manifesto raiz gerado • mudar contratos públicos • egresso de conteúdo de arquivo/saída de tool por padrão • afirmação de economia em dólar não medida • criar skill/MCP/plugin/hook novo quando existe capacidade equivalente • versionar conteúdo de dependências externas (skills do usuário, plugins) como fonte do repo"
+                ],
+                [
+                  "Invariants",
+                  "I-1 flag OFF = comportamento idêntico + zero conexões • I-2 precedência de permissão intocada • I-3 autoridade Jev <= incumbent • I-4 allow Jev nunca zera ratchet de negações • I-5 zero retry no caminho quente, sub-deadline, pular quando ocupado • I-6 segredo nunca logado e fora do ambiente de subprocessos por padrão • I-7 toda decisão Jev observável em telemetria • I-8 nenhum caminho LLM removido • I-9 reuso antes de criação de skill/MCP/plugin/hook • I-10 capacidade de governança com rótulo explícito, sem conformidade fingida"
+                ],
+                [
+                  "Constraints",
+                  "Cargo.toml raiz é gerado/sincronizado • xai-grok-http depende de xai-grok-workspace (ciclo) • xai-grok-workspace já tem reqwest/serde_json/tokio/extra-ca • clippy.toml exige o builder do extra-ca • Jev é texto apenas; 64k/32k tokens"
+                ],
+                [
+                  "No-go",
+                  "implementar sem o gate C • ligar por default • enviar conteúdo de arquivo/saída de tool sem opt-in • reapontar endpoint/enabled por config de projeto • retry/backoff no caminho quente"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Thesis",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Fundação reutilizável (cliente, config, flag, catálogo de perguntas, telemetria) -> instrumentar incumbent -> gate C1/C2 -> integração D1 em 2 fases -> medição/docs."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Rejected: hooks HTTP existentes (não podem conceder allow, logo não capturam o custo)",
+                "Rejected: crate novo xai-grok-jev (exige editar o manifesto raiz gerado e sincronizado)",
+                "Rejected: Jev como gate autoritativo de allow (rev.1, rejeitado pelo conselho)",
+                "Rejected: converter 5-6 seams de uma vez (escopo especulativo)",
+                "Rejected: retry/backoff no caminho quente (autodestrutivo)",
+                "Rejected: tabela de preços local (custo é reportado pelo servidor)",
+                "Rejected: substituir sumário de compaction (geração é fora de escopo do Jev)"
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Steps (what / how / where / done)",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "ID",
+                "Step",
+                "Why",
+                "How",
+                "Surfaces",
+                "Deps",
+                "DoD",
+                "Proofs"
+              ],
+              "rows": [
+                [
+                  "S-000",
+                  "Materializar o freeze e rodar o conselho full",
+                  "Contrato sam-plan + escalação do conselho exigem artefatos validados antes de implementar",
+                  "Rodar scaffold_plan_dir.py --out $PLAN_DIR e conferir assets/ • Escrever plan-report.json a partir do freeze (este arquivo) • Validar com validate_plan_report.py --repo-root <repo> • Renderizar o pacote humano com render_plan_html.py e revalidar com --require-html • Rodar sam-council perfil full (6 assentos + especialistas security-privacy, reliability-performance, testability-release, cost-dependency) com scratch e validate_council_report.py • Verificar disponibilidade da chave Jev (U-001) e re-verificar os locators marcados (R)",
+                  "plan/plan-report.json • plan/00-plano.html",
+                  "—",
+                  "plan-report.json e o HTML no disco validados com --require-html • relatório do conselho full validado e correções aceitas aplicadas • locators (R) reconferidos e resposta sobre a chave registrada",
+                  "V-001 • V-002"
+                ],
+                [
+                  "S-001",
+                  "Instrumentar o incumbent e fixar o piso de economia",
+                  "Critério de aborto por valor exigido pelo árbitro; medir o prêmio antes de construir",
+                  "Contar chamadas do classificador LLM por classe de decisão (allow/block/unavailable), tokens e latência p50/p95 • Adicionar contagem de requests de side query em teste de integração com MockInferenceServer (set_conversations/requests) • Definir com o dono o piso numérico de economia e o critério de aborto",
+                  "crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs • crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs • crates/codegen/xai-grok-test-support/src/mock_server.rs",
+                  "S-000",
+                  "relatório com números reais (chamadas por classe, tokens, latência) e piso aprovado por escrito • zero mudança de comportamento: apenas medição",
+                  "V-003"
+                ],
+                [
+                  "S-002",
+                  "Cliente Jev + config/flag/credencial",
+                  "Fundação que torna os próximos seams baratos (transporte, config e segredo resolvidos uma vez)",
+                  "Criar src/jev/mod.rs com tipos serde (request/questions/response/answers), cliente via xai_grok_extra_ca::build_reqwest_client, bearer por nome de env, timeout por requisição, sem retry, taxonomia de erro e contagem de tokens • Adicionar a seção [jev] ao Config e uma linha Feature::Jev no registry (key jev, path features.jev, env GROK_JEV, default false, sem tier remote) • Fixar enabled/endpoint em camadas managed/env/user e excluir JEV_API_KEY do ambiente de subprocessos por padrão • Escrever testes wiremock (200 com golden do corpo, 401, 422, 429, 529, timeout), flag OFF sem conexões e config de projeto incapaz de ligar/reapontar",
+                  "crates/codegen/xai-grok-workspace/src/jev/mod.rs • crates/codegen/xai-grok-workspace/Cargo.toml • crates/codegen/xai-grok-shell/src/agent/config.rs • crates/codegen/xai-grok-config-types/src/registry.rs • crates/codegen/xai-grok-env/src/registry.rs",
+                  "S-000",
+                  "cargo test dos crates workspace/config-types/env verde • nenhuma dependência de produção nova além de dev-dep de teste • flag OFF provadamente inerte e nenhum segredo em log",
+                  "V-004"
+                ],
+                [
+                  "S-003",
+                  "Camada decide-ou-escala + catálogo único de perguntas",
+                  "Perguntas e limiares revisáveis num só arquivo; composição em código com autoridade limitada e telemetria",
+                  "Criar src/jev/questions.rs com pacotes, critérios, limiares, pesos e pisos (pacote de permissão: Nouls atômicos de escrita fora do workspace, deleção, rede, privilégio, fonte não confiável, triagem de injeção; Choice de classe de risco) • Criar src/jev/policy.rs com state por allowlist tipada, uma requisição com bateria especulativa e composição em código devolvendo JevDecision{Block|AllowEligible|Escalate} • Emitir evento de telemetria aditivo por decisão (perguntas, veredito, confiança, latência, tokens) e contar escalações • Testar composição/limiares com respostas sintéticas, golden do corpo da requisição, telemetria e flag OFF sem chamadas",
+                  "crates/codegen/xai-grok-workspace/src/jev/questions.rs • crates/codegen/xai-grok-workspace/src/jev/policy.rs • crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs",
+                  "S-002",
+                  "testes verdes de composição/limiares/golden/telemetria • pacote de perguntas revisável num único arquivo • nenhuma decisão de produção alterada (camada ainda não plugada)",
+                  "V-005"
+                ],
+                [
+                  "S-004",
+                  "Gate de avaliação C1 (spike) -> C2 (fixtures)",
+                  "Único gate que pode reprovar a v1 por segurança e por valor, separando 'parece bom' de 'medido'",
+                  "Pre: U-001 | How: C1: script offline que roda o baseline incumbent e o pacote Jev sobre contextos gravados + casos autorais com injeção em comando, caminhos e transcript • Rotular a parte insegura sob regra escrita, fora das asserções heurísticas; corpus de testes entra só como smoke • C2: promover a fixtures versionadas com teste ignorado se C1 passar • Registrar go/no-go com falso-allow, falso-bloqueio, delta vs incumbent e curva de calibração",
+                  "crates/codegen/xai-grok-workspace/src/jev/eval/mod.rs • crates/codegen/xai-grok-test-support/src/mock_server.rs",
+                  "S-003",
+                  "falso-allow 0 na parte insegura retida e falso-bloqueio dentro do orçamento do dono • Jev >= incumbent no mesmo conjunto, com calibração medida • decisão go/no-go registrada com os números",
+                  "V-006"
+                ],
+                [
+                  "S-005",
+                  "Integração D1: classificador de permissão Jev-first",
+                  "Seam de maior custo de LLM por ação no harness e experimento real de valor",
+                  "Implementar JevPermissionClassifier (impl PermissionClassifier) e adicionar variante de proveniência Jev nos enums fechados com testes de drift • Instalar no ponto existente com a ordem Jev -> Escalate/Unavailable -> classificador LLM -> prompt humano • Passar o orçamento fim-a-fim do chamador (mudança aditiva na trait), sub-deadline rígido, zero retry e pular o Jev quando o worker já está ocupado, garantindo que comandos de modo/kill switch não fiquem atrás da rede • Autorizar (Allow) apenas a classe rotineira sem security_findings, sem Ask de política e acima do piso de confiança, sem tocar auto_consecutive_denials • Rodar fase 1 em sombra (só telemetria) e fase 2 Jev-first na classe rotineira, ambas atrás de GROK_JEV com flag OFF igual ao comportamento atual • Provar com testes unit, mock (chamadas de LLM evitadas), wall-clock com Jev travado e cenário PTY do fluxo de permissão",
+                  "crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs • crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs • crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs • crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs • crates/codegen/xai-grok-pager-pty-harness/tests/scenarios",
+                  "S-004",
+                  "todos os testes verdes, incluindo autoridade, security_findings, ratchet e flag OFF • nenhuma decisão de allow que o incumbent não daria • latência limitada e comandos de modo atendidos mesmo com Jev lento ou indisponível",
+                  "V-007 • V-008 • V-009 • V-010"
+                ],
+                [
+                  "S-006",
+                  "Medição pós-rollout, kill switch e documentação",
+                  "Fecha o ciclo de valor e devolve controle ao operador com critério objetivo de promover ou reverter",
+                  "Medir chamadas de LLM evitadas por classe, tokens Jev, custo pelo preço publicado por token, latências p50/p95 e taxa de escalação • Aplicar o critério de aborto: abaixo do piso definido em S-001, manter default OFF e registrar • Documentar na user-guide do pager a config [jev], a allowlist de campos enviados, egress/retenção, kill switch e reversão • Registrar os candidatos do backlog com o aprendizado para re-proposta individual",
+                  "crates/codegen/xai-grok-pager/docs/user-guide • plan/plan.md",
+                  "S-005",
+                  "relatório de economia com números medidos • página de documentação publicada no repo • decisão de default registrada com base no critério de aborto",
+                  "V-011"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Acceptance map",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "Success criterion",
+                "Steps",
+                "Proofs"
+              ],
+              "rows": [
+                [
+                  "Cliente+config+flag com flag OFF provadamente inerte e sem conexões",
+                  "S-002",
+                  "V-004: cargo test -p xai-grok-workspace -p xai-grok-config-types -p xai-grok-env (wiremock 200/401/422/429/529/timeout; flag OFF sem conexões; config de projeto não liga) [PLANNED]"
+                ],
+                [
+                  "Classificador de permissão Jev-first atrás de flag com fallback LLM e autoridade <= incumbent",
+                  "S-005",
+                  "V-007: testes do classificador Jev: autoridade <= incumbent, security_findings => LLM, ratchet intacto, flag OFF [PLANNED] • V-009: cenário PTY do fluxo de permissão em modo auto [PLANNED]"
+                ],
+                [
+                  "Gate de avaliação com falso-allow 0 no conjunto retido, falso-bloqueio no orçamento e Jev >= incumbent, com incumbent medido antes",
+                  "S-001 • S-004",
+                  "V-003: relatório de instrumentação do incumbent + contagem de requests via MockInferenceServer [PLANNED] • V-006: relatório C1/C2 com falso-allow, falso-bloqueio, delta vs incumbent e calibração [PLANNED]"
+                ],
+                [
+                  "Latência limitada e kill switch não bloqueado com Jev lento/indisponível",
+                  "S-005",
+                  "V-008: teste de wall-clock com Jev travado provando orçamento por decisão e comandos de modo atendidos [PLANNED]"
+                ],
+                [
+                  "Economia medida (chamadas de LLM evitadas) >= piso do dono, senão abortar e registrar",
+                  "S-001 • S-005 • S-006",
+                  "V-003: relatório de instrumentação do incumbent + contagem de requests via MockInferenceServer [PLANNED] • V-010: contagem de chamadas de LLM evitadas via MockInferenceServer (requests()) [PLANNED] • V-011: relatório de economia com números medidos + página de documentação [PLANNED]"
+                ],
+                [
+                  "Perguntas/limiares em arquivo único revisável + doc de egress/kill switch",
+                  "S-003 • S-006",
+                  "V-005: testes de composição/limiares + golden do request + telemetria + flag OFF inerte [PLANNED] • V-011: relatório de economia com números medidos + página de documentação [PLANNED]"
+                ],
+                [
+                  "Freeze e conselho `full` materializados e validados",
+                  "S-000",
+                  "V-001: validate_plan_report.py --repo-root <repo> sobre plan-report.json [PLANNED] • V-002: sam-council perfil full + validate_council_report.py [PLANNED]"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Risks",
+          "blocks": [
+            {
+              "type": "callout",
+              "tone": "warn",
+              "text": "Risk flags: security_privacy, auth_boundary, material_uncertainty"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "ID",
+                "Severity",
+                "Status",
+                "Claim",
+                "Mitigation"
+              ],
+              "rows": [
+                [
+                  "R-001",
+                  "high",
+                  "OPEN",
+                  "State adversarial direciona o Jev para um falso allow (authz)",
+                  "Autoridade <= incumbent; sombra primeiro; security_findings => LLM; piso de confiança; falso-allow 0 no conjunto retido; ratchet intocado"
+                ],
+                [
+                  "R-002",
+                  "high",
+                  "OPEN",
+                  "Valor não se materializa (classe rotineira pode já passar sem LLM; pular sob carga limita a economia)",
+                  "S-001 mede antes; piso numérico de economia com critério de aborto; se falhar, default OFF e re-propor outro seam"
+                ],
+                [
+                  "R-003",
+                  "high",
+                  "OPEN",
+                  "Fila/bloqueio no ator de permissão (kill switch atrás de rede)",
+                  "Orçamento do chamador, sub-deadline, zero retry, pular quando ocupado e prova de wall-clock V-008"
+                ],
+                [
+                  "R-004",
+                  "medium",
+                  "OPEN",
+                  "Egresso de dados a terceiro (privacidade)",
+                  "Allowlist de state, sem conteúdo de arquivo/saída de tool por padrão, max_state_bytes, flag OFF por padrão, doc e revisão security-privacy no conselho full"
+                ],
+                [
+                  "R-005",
+                  "medium",
+                  "OPEN",
+                  "JEV_API_KEY legível por comandos do agente",
+                  "Exclusão no shell_environment_policy por padrão, doc do risco residual e nunca logar a chave"
+                ],
+                [
+                  "R-006",
+                  "medium",
+                  "OPEN",
+                  "Mudança aditiva na trait (budget) e guarda in_flight são mecanismos novos",
+                  "Diff explícito e revisado, teste dedicado V-008 e condição de fechamento do árbitro"
+                ],
+                [
+                  "R-007",
+                  "medium",
+                  "OPEN",
+                  "Dependência de vendor (quota, preço, disponibilidade, lock-in)",
+                  "Endpoint/model configuráveis, sem tabela de preço local, fallback LLM sempre presente, custo medido por tokens e kill switch"
+                ],
+                [
+                  "R-008",
+                  "low",
+                  "OPEN",
+                  "Escopo 'sempre que possível' crescer sem limite",
+                  "Regra de elegibilidade, backlog explícito e gate de avaliação por seam"
+                ],
+                [
+                  "R-009",
+                  "low",
+                  "OPEN",
+                  "Locators marcados (R) desatualizados",
+                  "Re-verificação em S-000; nenhuma decisão de desenho depende de número de linha"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Open items",
+          "blocks": [
+            {
+              "type": "callout",
+              "tone": "warn",
+              "text": "Residual: Conselho full e artefatos do conselho pendentes (S-000) | Residual: Chave/plano Jev não verificados (U-001) | Residual: Números de valor, latência e calibração só existem após S-001/S-004 | Residual: Backlog de seams deliberadamente fora da v1 | Residual: Gap do bridge de telemetria do conselho"
+            }
+          ]
+        },
+        {
+          "heading": "Evidence",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "E-001 [FACT]: Repo não tem referências a jev/typesafe hoje (command: grep -ri jev|typesafe no repo inteiro (0 resultados))",
+                "E-002 [FACT]: Trait PermissionClassifier e ClassifierOutcome são o ponto de injeção existente (crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs:328)",
+                "E-003 [FACT]: Classificador chamado inline pelo ator de permissão; falha => Unavailable => prompt humano; ator é task única (crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs:913)",
+                "E-004 [FACT]: Wiring do classificador LLM com timeout dedicado e worker serial compartilhado (crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:921)",
+                "E-005 [FACT]: Precedência de permissão fixa: deny de política > YOLO > grant > allow de política > fast path > classificador > sandbox > ask > prompt (crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs:792)",
+                "E-006 [FACT]: Manifesto raiz gerado; xai-grok-http depende de xai-grok-workspace (ciclo) (Cargo.toml:1)",
+                "E-007 [FACT]: xai-grok-workspace já tem reqwest/serde/serde_json/tokio/extra-ca (crates/codegen/xai-grok-workspace/Cargo.toml:108)",
+                "E-008 [FACT]: Registry de features com tiers pin/env/config/remote e default por linha (crates/codegen/xai-grok-config-types/src/registry.rs:56)",
+                "E-009 [FACT]: xai-grok-extra-ca é leaf e expõe o builder sancionado de cliente reqwest (crates/codegen/xai-grok-extra-ca/src/lib.rs:56)",
+                "E-010 [FACT]: Corpus de expectativas em testes de permissão (não um dataset rotulado): cargo check não é seguro; tee não é auto-aprovado (crates/codegen/xai-grok-workspace/src/permission/grants_tests.rs:360)",
+                "E-011 [FACT]: Telemetria de decisão já carrega classifier_source/verdict/latency com enums fechados e testes de drift (crates/codegen/xai-grok-workspace/src/permission/types.rs:29)",
+                "E-012 [FACT]: Infra de teste: MockInferenceServer, wiremock como idioma para HTTP de saída, cenários PTY em YAML (crates/codegen/xai-grok-test-support/src/mock_server.rs:180)",
+                "E-013 [FACT]: Existe ratchet de negações consecutivas/totais e um allow do classificador zera o contador consecutivo (crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs:1034)",
+                "E-014 [FACT]: shell_environment_policy (exclude/include_only) existe e config de projeto não injeta sobreposição (crates/codegen/xai-grok-config/src/config_override.rs:113)",
+                "E-015 [FACT]: Classificador de preguiça faz side call com o sampler e parseia JSON de texto livre — o padrão que uma resposta tipada elimina (crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness_classifier.rs:575)",
+                "E-016 [FACT]: Contrato do Jev: endpoint POST /v1/systemone, bearer, jev-latest => jev-1.13.0, 64k/32k tokens, ~100 ms, confidence em Choice/Score, preço US$ 42 por bilhão de tokens de entrada (saída grátis), 250k tokens/s e 1200 req/min, fraquezas documentadas (sem geração; contagem/aritmética e datas não confiáveis; indireção; estado grande; state adversarial pode direcionar respostas) (command: web_fetch docs.typesafe.ai (api, models, confidence, model-jaggedness, patterns, cookbooks))",
+                "E-017 [FACT]: Precedente interno de side call estreita com fallback textual: geração de título de sessão (crates/codegen/xai-grok-shell/src/session/helpers/session_summary.rs:135)",
+                "E-018 [FACT]: Repo é sincronizado periodicamente do monorepo; user-guide mora no crate do pager (README.md:90)"
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Study receipts",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "Surfaces: crates/codegen/xai-grok-workspace/src/permission/auto_mode/mod.rs, crates/codegen/xai-grok-workspace/src/permission/manager/mod.rs, crates/codegen/xai-grok-workspace/Cargo.toml, crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs, crates/codegen/xai-grok-shell/src/session/acp_session_impl/turn.rs, crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness_classifier.rs, crates/codegen/xai-grok-shell/src/agent/config.rs, crates/codegen/xai-grok-sampler/src/client.rs, crates/codegen/xai-grok-config-types/src/registry.rs, crates/codegen/xai-grok-config-types/src/flags.rs, crates/codegen/xai-grok-env/src/registry.rs, crates/codegen/xai-grok-http/src/lib.rs, crates/codegen/xai-grok-extra-ca/src/lib.rs, crates/codegen/xai-grok-telemetry/src/events/permission_analytics.rs, crates/codegen/xai-grok-test-support/src/mock_server.rs, crates/codegen/xai-grok-pager-pty-harness/src/scripted.rs, crates/common/xai-grok-compaction/src/select.rs, crates/codegen/xai-grok-memory/src/search.rs, crates/codegen/xai-grok-session-search/src/fts.rs, Cargo.toml",
+                "Tools: grep -ri jev|typesafe (repo inteiro, 0 resultados), leitura direta de Cargo.toml raiz/xai-grok-http/xai-grok-workspace/xai-grok-extra-ca, leitura direta de permission/auto_mode/mod.rs, xai-grok-http/src/lib.rs, config-types/registry.rs, 6 mapeamentos read-only paralelos (sampling, permissão, loop do agente, compaction/memória/busca, config/env/auth/hooks/http, telemetria/custo/testes), web_fetch docs.typesafe.ai (api, models, confidence, jaggedness, intent-routing, fan-out, parallel_questions, llm_guardrails, how-to-build-with-system-one, agent-skill)"
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Simplicity",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "Cut: D2-D6 fora da v1 (compaction, preguiça, memória, busca, roteamento)",
+                "Cut: crate novo",
+                "Cut: retry/backoff no caminho quente",
+                "Cut: mudança na lista de credenciais BYOK",
+                "Cut: tabela de preços local",
+                "Cut: remoção de caminhos LLM",
+                "Cut: tool-subset por turno"
+              ]
+            },
+            {
+              "type": "callout",
+              "tone": "warn",
+              "text": "Retained complexity: orçamento do chamador + sub-deadline + pular quando ocupado (R-003) | gate C1/C2 com baseline do incumbent (R-001/R-002) | fase sombra antes de Jev-first (medir sem alterar decisão)"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

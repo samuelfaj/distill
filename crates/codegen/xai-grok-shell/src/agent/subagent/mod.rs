@@ -42,6 +42,7 @@ use xai_grok_tools::types::tool::ToolKind;
 use xai_grok_workspace::file_system::AsyncFileSystem;
 use xai_hunk_tracker::HunkTrackerHandle;
 mod attempt_runner;
+mod jev_type;
 mod spawn;
 mod start_artifact_publication;
 pub(crate) use spawn::{

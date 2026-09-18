@@ -201,6 +201,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
     let registry = tracing_subscriber::registry()
         .with(fmt_layer.with_filter(env_filter))
         .with(xai_grok_telemetry::sampling_log::layer())
+        .with(xai_grok_telemetry::jev_log::layer())
         .with(xai_grok_telemetry::span_profile::layer(app_entrypoint))
         .with(xai_grok_telemetry::instrumentation::layer())
         .with(xai_grok_telemetry::hooks_log::layer())

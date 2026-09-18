@@ -2324,8 +2324,17 @@ impl AgentView {
         } else {
             self.published_mode_label()
         };
-        let flags: Vec<PromptFlag> =
+        let mut flags: Vec<PromptFlag> =
             mode_flags(plan_label, self.session.permission_label(), &theme);
+        // Tells the user the Jev decision path is live for this session's
+        // auto-mode permission checks (hidden otherwise).
+        if let Some(jev) = crate::views::prompt_widget::jev_flag(
+            xai_grok_shell::jev::current_status_cached(),
+            self.session.permission_label(),
+            &theme,
+        ) {
+            flags.push(jev);
+        }
         let multiline = self.multiline_mode;
         let warning = self.credit_balance.as_ref().and_then(|bal| {
             crate::views::credit_bar::usage_warning_for_session(

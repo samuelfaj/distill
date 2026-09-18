@@ -1,4 +1,6 @@
 pub const YOLO: &str = "yolo";
+/// YOLO/always-approve session where the Jev brake refused the call.
+pub const JEV_VETO_DENY: &str = "jev_veto_deny";
 pub const POLICY_ALLOW: &str = "policy_allow";
 pub const POLICY_DENY: &str = "policy_deny";
 pub const POLICY_ASK: &str = "policy_ask";

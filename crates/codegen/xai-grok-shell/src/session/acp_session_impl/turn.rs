@@ -2314,6 +2314,9 @@ impl SessionActor {
             }
         };
         inject_results.retain(|result| Self::is_first_turn_memory_score_visible(result.score));
+        // A5: rank the candidates with Jev before injecting them. The search
+        // already narrowed; this pass only removes what looks irrelevant.
+        inject_results = self.jev_rank_memory(inject_results).await;
         let outcome = if outcome
             == xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Results
             && inject_results.is_empty()

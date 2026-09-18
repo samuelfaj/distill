@@ -46,6 +46,7 @@ fn registered_settings() {
         rows,
         BTreeMap::from([
             ("session_search", ("GROK_SESSION_SEARCH", true)),
+            ("jev", ("GROK_JEV", true)),
             ("lsp_tools", ("GROK_LSP_TOOLS", false)),
             ("web_fetch", ("GROK_WEB_FETCH", false)),
             ("session_recap", ("GROK_SESSION_RECAP", true)),
@@ -111,6 +112,12 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             }
             Feature::Dock => settings.dock_enabled = Some(value),
             Feature::TerminalTheme => settings.terminal_theme_enabled = Some(value),
+            // No remote tier either: turning third-party decision egress on is a
+            // deliberate local (managed/env/user) decision, never a rollout.
+            Feature::Jev => {
+                assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
+                continue;
+            }
             // The one row with no remote tier, stated as such rather than as a projection that reads nothing
             Feature::BackendTools => {
                 assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);

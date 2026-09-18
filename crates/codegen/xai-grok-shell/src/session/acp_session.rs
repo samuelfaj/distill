@@ -177,10 +177,26 @@ mod session_mode;
 use session_mode::*;
 #[path = "acp_session_impl/child_tool_projection.rs"]
 mod child_tool_projection;
+#[path = "acp_session_impl/jev_laziness.rs"]
+mod jev_laziness;
+#[path = "acp_session_impl/jev_memory.rs"]
+mod jev_memory;
+#[path = "acp_session_impl/jev_routing.rs"]
+mod jev_routing;
+#[path = "acp_session_impl/jev_tool_result.rs"]
+mod jev_tool_result;
+#[path = "acp_session_impl/jev_tool_subset.rs"]
+mod jev_tool_subset;
+#[path = "acp_session_impl/jev_wiring.rs"]
+mod jev_wiring;
 #[path = "acp_session_impl/length_salvage.rs"]
 mod length_salvage;
 #[path = "acp_session_impl/sampler_turn.rs"]
 mod sampler_turn;
+pub(crate) use jev_routing::*;
+#[path = "acp_session_impl/jev_compaction.rs"]
+mod jev_compaction;
+pub(crate) use jev_compaction::*;
 use sampler_turn::*;
 #[path = "acp_session_impl/tool_dispatch.rs"]
 mod tool_dispatch;

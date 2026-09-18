@@ -2116,6 +2116,8 @@ pub(crate) async fn spawn_session_actor(
         if session.permissions.is_auto_mode() {
             session.wire_permission_auto_llm_classifier().await;
         }
+        // A session that starts in always-approve gets the Jev brake right away.
+        session.wire_jev_veto_classifier(session.permissions.is_yolo_mode());
         session
             .agent
             .borrow()

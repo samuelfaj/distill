@@ -2,7 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -138,6 +138,44 @@ fn shine_opacity(diag: f32, secs: f32) -> f32 {
         0.0
     };
     (pulse + SHINE * shine).clamp(0.0, 1.0)
+}
+
+/// Shimmering spans for the welcome wordmark.
+///
+/// The name glints with the same diagonal sweep as the art (same phase, same
+/// band), so the banner animates as one piece: the sweep starts at the left of
+/// the wordmark and travels to the top-right of the logo. Falls back to the
+/// resting text color wherever the theme cannot express a blend (legacy
+/// terminals), which keeps the title readable instead of dimming it.
+pub(crate) fn wordmark_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let secs = anim_phase_secs();
+    let cols = text.chars().count().max(1) as f32;
+    let base = theme.text_primary;
+    let hilite = theme.accent_success;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_color: Option<Color> = None;
+    for (col, ch) in text.chars().enumerate() {
+        let diag = col as f32 / cols;
+        let color = blend_color(base, hilite, shine_opacity(diag, secs)).unwrap_or(base);
+        if run_color != Some(color) {
+            if let Some(prev) = run_color {
+                spans.push(Span::styled(
+                    std::mem::take(&mut run),
+                    Style::default().fg(prev).add_modifier(Modifier::BOLD),
+                ));
+            }
+            run_color = Some(color);
+        }
+        run.push(ch);
+    }
+    if let Some(prev) = run_color {
+        spans.push(Span::styled(
+            run,
+            Style::default().fg(prev).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans
 }
 
 fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
@@ -343,5 +381,40 @@ mod tests {
         // During the rest phase the band is parked off-screen, so an interior glyph falls back to at most the gentle pulse, never full bright
         let op = shine_opacity(0.5, 6.0); // secs % 4.0 = 2.0, past SWEEP_FRAC, in the rest phase
         assert!(op < 0.2, "resting opacity {op} should stay dim");
+    }
+
+    #[test]
+    fn the_wordmark_spans_reproduce_the_text_exactly_once() {
+        let theme = Theme::current();
+        let text = "Jev Build  ";
+        let spans = wordmark_spans(text, &theme);
+        assert!(!spans.is_empty(), "the wordmark is never empty");
+        let rebuilt: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rebuilt, text, "animation must not alter the text");
+        assert!(
+            spans
+                .iter()
+                .all(|s| s.style.add_modifier.contains(Modifier::BOLD)),
+            "the wordmark stays bold while it shimmers"
+        );
+        // Colors follow the theme's text color wherever a blend is expressible.
+        assert!(
+            spans.iter().any(|s| s.style.fg.is_some()),
+            "each span carries a foreground color"
+        );
+    }
+
+    #[test]
+    fn the_wordmark_animation_advances_with_the_wall_clock() {
+        // The shimmer phase is wall-clock based, so two renders far enough apart
+        // must land on different shimmer frames (this is what drives the
+        // welcome screen's throttled repaint).
+        let first = shimmer_frame();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let second = shimmer_frame();
+        assert!(
+            second > first,
+            "the shimmer must advance: {first} -> {second}"
+        );
     }
 }

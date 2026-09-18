@@ -380,6 +380,16 @@ pub(crate) async fn run_shell_child(
             None,
         );
     }
+    if resolve_agent_definition(&request.subagent_type, &ctx).is_none()
+        && let Some(resolved) = jev_type::jev_resolve_unknown_subagent_type(&request, &ctx).await
+    {
+        tracing::info!(
+            requested = %request.subagent_type,
+            resolved,
+            "jev: unknown subagent type resolved to an allowed definition"
+        );
+        request.subagent_type = resolved;
+    }
     let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx) else {
         let msg = format!("Unknown subagent type: {}", request.subagent_type);
         return child_run_output(failure_result(&request, &msg), completion_data, None);

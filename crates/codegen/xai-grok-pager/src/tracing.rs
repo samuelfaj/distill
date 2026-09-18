@@ -350,6 +350,7 @@ pub fn init_tracing() -> TracingHandle {
         .with(fmt_layer.with_filter(env_filter))
         .with(instrumentation_layer)
         .with(sampling_log_layer)
+        .with(xai_grok_telemetry::jev_log::layer())
         .with(xai_grok_telemetry::span_profile::layer("tui"))
         .with(hooks_log_layer)
         .with(otel_layer);

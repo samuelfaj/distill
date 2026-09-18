@@ -431,7 +431,10 @@ impl SessionActor {
         let defs = bridge.tool_definitions_builtins_only().await;
 
         let plan_active = self.plan_mode.lock().is_active();
-        filter_cursor_tools_by_plan_mode(defs, plan_active)
+        let defs = filter_cursor_tools_by_plan_mode(defs, plan_active);
+        // Jev turn-start pass: intent (B1), family pruning (B4/P1), delegation
+        // hint (B6). Plan mode is left untouched inside the pass.
+        self.jev_filter_tool_definitions(defs, plan_active).await
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
@@ -917,17 +920,51 @@ impl SessionActor {
                 let _ = respond_to.send(result);
             }
         });
-        let clf =
+        let llm_classifier =
             xai_grok_workspace::permission::LlmPermissionClassifier::with_channel(tx, prompt_type);
         debug_assert!(
-            clf.has_side_query(),
+            llm_classifier.has_side_query(),
             "channel-wired classifier must report has_side_query"
         );
+        // Plan §1.2 item D1: when the Jev flags are on, the Jev seam wraps the
+        // incumbent so it can only tighten (block) or allow the routine class;
+        // everything else defers to this same LLM classifier. `classify_timeout`
+        // is the caller-owned end-to-end budget (invariant I-5).
+        let incumbent: xai_grok_workspace::permission::SharedClassifier = llm_classifier;
+        let jev_config = crate::jev::resolve_config_from_disk();
+        let clf = super::jev_wiring::maybe_wrap_with_jev(&jev_config, incumbent, classify_timeout);
         self.permissions.set_classifier_with_side_query(clf, true);
         tracing::info!(
             session_id = %self.session_info.id,
             "Wired live LLM permission auto-mode classifier (session sampling channel)"
         );
+    }
+
+    /// Install the Jev brake for an always-approve (YOLO) session.
+    ///
+    /// Synchronous by design: the brake holds no LLM side-query worker, makes a
+    /// single attempt per call, and is fail-open — so a missing credential or an
+    /// unreachable service simply leaves the mode exactly as it was.
+    pub(crate) fn wire_jev_veto_classifier(self: &Arc<Self>, enabled: bool) {
+        if !enabled {
+            return;
+        }
+        let cfg = crate::jev::resolve_config_from_disk();
+        let budget = crate::util::config::auto_mode_classify_timeout(
+            &crate::util::config::resolve_auto_mode_config_from_disk(),
+        );
+        match super::jev_wiring::maybe_wrap_with_jev_veto(&cfg, budget) {
+            Some(brake) => {
+                // `false`: the brake has no side query, so the auto-mode wiring
+                // stays free to install the LLM classifier when the mode changes.
+                self.permissions
+                    .set_classifier_with_side_query(brake, false);
+                tracing::info!("Wired the Jev brake for always-approve (YOLO) mode");
+            }
+            None => {
+                tracing::debug!("Jev brake not wired (disabled, or no credential)");
+            }
+        }
     }
 
     /// Resolve a standalone aux-model `SamplerConfig` for `slug` via the shared catalog routing, gathering the session-local auth context once.
@@ -1015,6 +1052,9 @@ impl SessionActor {
     pub(crate) async fn prepare_sampler_for_turn(&self) {
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
+        // B2 (money lever): a routine turn may run at a cheaper setting; the
+        // pass can only lower effort, and it is off until its gate passes.
+        self.jev_apply_model_tier(&mut sampler_config).await;
         if self.tool_context.task_output_token_budget.is_some()
             || self.tool_context.sampler_retry_only_before_output
         {

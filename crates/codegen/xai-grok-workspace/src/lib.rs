@@ -28,6 +28,7 @@ pub mod hub_channel;
 pub mod hub_ids;
 pub mod hub_server;
 pub mod image_capabilities;
+pub mod jev;
 pub mod mcp;
 pub(crate) mod mcp_claim;
 pub(crate) mod path_virtualization;

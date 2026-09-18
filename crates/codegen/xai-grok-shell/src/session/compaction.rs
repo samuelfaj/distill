@@ -1150,6 +1150,7 @@ impl SessionActor {
             sampling_timeout_secs: 0,
         };
         let mut request_turns = simplified_messages.clone();
+        request_turns = self.jev_compaction_recorte(request_turns).await;
         let mut input_overflow_rejections: u32 = 0;
         let two_pass_output = self
             .try_two_pass_pass2_apply(user_context.as_deref(), summary_strips_reasoning)

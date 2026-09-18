@@ -37,6 +37,7 @@ pub mod heap_profile;
 pub use xai_grok_http as http;
 pub mod inspect;
 pub mod instrumentation;
+pub mod jev;
 pub mod leader;
 pub mod managed_config;
 pub mod mcp_doctor;

@@ -8,6 +8,11 @@ pub const FIRST_PARTY_CREDENTIAL_ENV_VARS: &[&str] = &[
     "GROK_TRACE_UPLOAD_CREDENTIALS_FILE",
     "OTEL_EXPORTER_OTLP_HEADERS",
     "GROK_INTERNAL_OTLP_HEADERS",
+    // Jev/TypeSafe bearer token (plan §1.2 item B): scrubbed from child/hook
+    // environments by default. NOTE: this list only covers the BYOK login
+    // helper; the default shell environment policy is what keeps it away from
+    // agent-run commands, and that is tracked in the plan's risk R-005.
+    "JEV_API_KEY",
 ];
 
 fn parse_bool(value: &str) -> Option<bool> {

@@ -299,7 +299,7 @@ impl SessionActor {
     /// Centralized here so new call sites cannot accidentally drift the gating or tag selection.
     /// The compat preamble snapshots the full skill baseline in `<agent_skills>`, so a `BaselineChange` reminder fired for it would be redundant.
     /// The preamble cannot list those.
-    pub(super) fn wrap_skill_reminder(
+    pub(super) async fn wrap_skill_reminder(
         &self,
         effects: &xai_grok_tools::types::skill_discovery_tracker::SkillUpdateEffects,
     ) -> Option<ConversationItem> {
@@ -308,9 +308,12 @@ impl SessionActor {
             return None;
         }
         let text = effects.system_reminder.as_deref()?;
+        // B5: the announcement keeps only the skill this request needs; the
+        // session's skill catalog is untouched.
+        let narrowed = self.jev_narrow_skill_announcement(text).await;
         let tag = self.reminder_wrapper_tag();
         Some(ConversationItem::system_reminder(format!(
-            "<{tag}>\n{text}\n</{tag}>"
+            "<{tag}>\n{narrowed}\n</{tag}>"
         )))
     }
     /// The tools layer (`SkillManager`) owns skill state and the views derived from it.
@@ -325,7 +328,7 @@ impl SessionActor {
             self.send_available_commands_update(AdvertiseTrigger::from(effects.kind))
                 .await;
         }
-        let Some(item) = self.wrap_skill_reminder(&effects) else {
+        let Some(item) = self.wrap_skill_reminder(&effects).await else {
             self.persist_announcement_state().await;
             return;
         };

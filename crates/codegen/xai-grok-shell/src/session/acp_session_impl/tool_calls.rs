@@ -565,6 +565,14 @@ impl SessionActor {
                     .push_tool_result(ConversationItem::tool_result(call.id.clone(), message));
                 continue;
             }
+            // D4/P5 — validate the call before executing it. The gate can only
+            // hold a call back (never approve it): a flagged call does not run
+            // and the model is told to confirm with the user first.
+            if let Some(hold) = self.jev_validate_tool_call(&call).await {
+                self.chat_state_handle
+                    .push_tool_result(ConversationItem::tool_result(call.id.clone(), hold));
+                continue;
+            }
             self.emit_event(crate::session::events::Event::ToolStarted {
                 tool_name: call.function.name.clone(),
             });
@@ -1113,7 +1121,7 @@ impl SessionActor {
             {
                 let bridge = self.agent.borrow().tool_bridge().clone();
                 if let Some(effects) = bridge.apply_pending_skill_update().await {
-                    if let Some(item) = self.wrap_skill_reminder(&effects) {
+                    if let Some(item) = self.wrap_skill_reminder(&effects).await {
                         deferred_followups.push(item);
                     }
                     if effects.send_available_commands {
@@ -2891,6 +2899,11 @@ impl SessionActor {
             )
             .await
         };
+        // Jev pass over the finished result (todo.md areas A/C/D): it may narrow
+        // what the model re-reads or annotate it, never widen or approve.
+        let prompt_text = self
+            .jev_post_process_tool_result(requested_tool_name, prompt_text)
+            .await;
         let tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
         } else {

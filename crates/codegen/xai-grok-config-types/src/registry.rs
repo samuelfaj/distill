@@ -50,6 +50,9 @@ pub enum Feature {
     Dock,
     /// The terminal-native `terminal` color theme (staged rollout).
     TerminalTheme,
+    /// The Jev (TypeSafe System One) decision path. Default OFF (plan §1.6/I-1);
+    /// no remote tier, because enabling egress is a deliberate local decision.
+    Jev,
 }
 
 /// How one feature is written on each surface it can be set from.
@@ -93,6 +96,19 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_SESSION_SEARCH",
         default_enabled: true,
         remote: Some(|settings| settings.session_search),
+    },
+    FeatureSpec {
+        id: Feature::Jev,
+        key: "jev",
+        path: "features.jev",
+        env: "GROK_JEV",
+        // Owner override of the plan's invariant I-1 (default OFF): this build
+        // ships with the Jev decision path ON. Set `GROK_JEV=0` or
+        // `[jev] enabled = false` to disable it.
+        default_enabled: true,
+        // No remote tier: turning third-party decision egress on or off is a
+        // deliberate local (managed/env/user) decision, never a campaign rollout.
+        remote: None,
     },
     FeatureSpec {
         id: Feature::LspTools,

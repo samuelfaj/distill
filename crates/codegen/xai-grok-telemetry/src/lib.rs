@@ -30,7 +30,7 @@ pub(crate) use xai_grok_otel::redact_common;
 pub use xai_grok_otel::redact_common::redact_error_detail;
 
 pub(crate) use logs::appender;
-pub use logs::{debug_log, hooks_log, memory_log, sampling_log, unified_log};
+pub use logs::{debug_log, hooks_log, jev_log, memory_log, sampling_log, unified_log};
 pub use process::{memory_telemetry, process_info, process_metrics};
 pub use session::{activity, session_ctx, session_end, session_metrics, subagent_spawn};
 pub use spans::{instrumentation, prompt_timing, region, span_profile, startup, turn_phases};

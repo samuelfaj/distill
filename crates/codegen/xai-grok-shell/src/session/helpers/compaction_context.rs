@@ -84,7 +84,11 @@ pub async fn to_system_reminder(
                 results = results.len(),
                 "recovered memory context after compaction"
             );
-            memory_results = results;
+            memory_results = crate::session::acp_session::jev_rank_recovered(
+                ctx.last_user_query.as_deref().unwrap_or("project context"),
+                results,
+            )
+            .await;
         }
     }
 

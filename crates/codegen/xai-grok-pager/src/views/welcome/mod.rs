@@ -36,7 +36,11 @@ pub(crate) mod workspace_mode;
 pub(crate) const PROMPT_GUTTER: u16 = 1;
 
 pub(crate) use logo::shimmer_frame;
-use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier};
+use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier, wordmark_spans};
+
+/// Product name shown in the welcome banner (the art above it shimmers
+/// with the same sweep, so the two animate as one piece).
+const WORDMARK: &str = "Jev Build  ";
 use menu::render_menu;
 pub(crate) use toast::paint_welcome_toast;
 use top_bar::render_top_bar;
@@ -555,12 +559,7 @@ pub(super) fn render_version_badge(
     let channel = xai_grok_update::channel_label();
     match &mode {
         VersionBadgeMode::Full { .. } => {
-            spans.push(Span::styled(
-                "Grok Build  ",
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            spans.extend(wordmark_spans(WORDMARK, theme));
             spans.push(Span::styled(
                 format!("{}{}", xai_grok_version::VERSION, channel),
                 Style::default().fg(theme.gray),
@@ -575,12 +574,7 @@ pub(super) fn render_version_badge(
             }
         }
         VersionBadgeMode::HeroInline => {
-            spans.push(Span::styled(
-                "Grok Build  ",
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            spans.extend(wordmark_spans(WORDMARK, theme));
             spans.push(Span::styled(
                 xai_grok_version::VERSION,
                 Style::default().fg(theme.gray),
@@ -2718,8 +2712,8 @@ mod tests {
                 "badge must not label the product: {rendered:?}"
             );
         }
-        assert!(full.contains("Grok Build"), "full badge: {full:?}");
-        assert!(inline.contains("Grok Build"), "inline badge: {inline:?}");
+        assert!(full.contains("Jev Build"), "full badge: {full:?}");
+        assert!(inline.contains("Jev Build"), "inline badge: {inline:?}");
         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
         assert!(
             !footer.ends_with('\u{2502}'),

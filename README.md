@@ -92,6 +92,65 @@ The user guide ships with the pager crate:
 — getting started, keyboard shortcuts, slash commands, configuration, theming,
 MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 
+## Jev — the local decision layer
+
+This fork routes the harness's **structured decisions** to
+[Jev](https://docs.typesafe.ai) (TypeSafe System One) instead of paying a model
+to make them. Jev answers typed `choice` / `score` / `noul` questions over a
+bounded `state` with probabilities and confidence, at roughly $0.042 per
+million input tokens with output free (measured ~400 ms per battery). Jev only
+answers; the harness composes the decision in code, and everything Jev cannot do
+(text generation, arithmetic, embeddings, vision) stays with the model.
+
+**What is wired.** The full catalogue of 23 decision points — where it lives and
+which test covers it — is [`todo.md`](todo.md). In short:
+
+| Area | Items | Effect |
+|------|-------|--------|
+| Permission (live today) | classifier, YOLO brake | route routine actions to *allow*, refuse a confident catastrophe in always-approve mode |
+| A — content selection | which file to edit, which lines matter, which search results to read, which memories to inject, which test to run | narrows what the model re-reads; never opens more than the code already offered |
+| B — effort routing | turn intent, tool-family pruning, model/effort tier, subagent type, skill suggestion, delegation hint | prunes tools per turn, names the relevant announced skill, resolves an unknown subagent type, hints at delegation |
+| C — verification | premature stop, failure triage, completion check, diff risk, error priority, injection screen, change type | adds hints and refuses to call unfinished work complete |
+| D — context and cost | compaction recorte, big-output retention, post-compaction retrieval, call validation | keeps the summary and context small; holds a call that looks out of scope |
+
+**Authority is tighten-only.** No item can widen what the harness already
+allows; every item may only narrow, reorder, annotate or refuse. Any failure,
+timeout, missing answer or wrong-typed answer keeps today's path, and items that
+drop content (compaction recorte, big-output retention, read narrowing) carry
+their own flag.
+
+**Per-item switches.** Every item is behind its own key in `~/.grok/config.toml`:
+
+```toml
+[jev]
+enabled = true                    # master switch (env: GROK_JEV)
+
+[jev.ladder]
+p1_tool_family = true             # B4: prune tool families for the turn
+a1_file_to_edit = true            # A1: rank candidate files
+p3_compaction_recorte = true      # D1: which segments the summarizer must see
+b2_model_tier = false             # B2: the money lever — off until its gate passes
+c6_injection_screen = false       # C6: off until its per-output cost is measured
+# …every item has the same shape; see `JevLadderConfig` in
+# crates/codegen/xai-grok-shell/src/agent/config.rs
+```
+
+**Kill switch.** `GROK_JEV=0` (or `[jev] enabled = false`) makes the harness
+behave exactly as before: no Jev client is built and **no connection is opened**.
+The prompt footer shows the state at a glance: `jev` (active), `jev·shadow`
+(records only), `jev·veto` (always-approve brake), `jev:off` (disabled).
+
+**Where decisions are visible.** Set `GROK_LOG_JEV=1` to append one JSON line per
+decision to `~/.grok/logs/jev.jsonl` (lever, decision, confidence, model,
+tokens, request id). The user-facing reference is
+[`crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md`](crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md).
+
+**How it is tested.** Pure pack logic and thresholds are unit-tested in
+`xai-grok-workspace` (`cargo test -p xai-grok-workspace --lib jev::`); the wire
+contract, the permission gate and the selection/retention batteries run against
+the real API in `crates/codegen/xai-grok-workspace/tests/jev_live.rs`
+(`--ignored`, needs `JEV_API_KEY`).
+
 ## Repository layout
 
 | Path | Contents |

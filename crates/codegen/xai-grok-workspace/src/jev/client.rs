@@ -32,6 +32,8 @@ pub const DEFAULT_MAX_STATE_BYTES: usize = 32 * 1024;
 /// Completion ceiling for a chat-completions backend: a typed answer is a small
 /// JSON object, and a lower ceiling is what keeps a decision call cheap.
 pub const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
+/// Deadline for one catalogue item call, before the caller's own resolution.
+pub const DEFAULT_ITEM_BUDGET: Duration = Duration::from_millis(4_000);
 /// Thinking level a decision call asks for when the configuration does not say.
 /// Decision calls are the cheap lane: they must answer fast and cost little, and
 /// a lever's own threshold decides what to do with a low-confidence answer.
@@ -59,6 +61,10 @@ pub struct JevClientConfig {
     pub reasoning_effort: String,
     /// Completion ceiling sent to a chat-completions backend.
     pub max_completion_tokens: u32,
+    /// Deadline for one catalogue item call (a lever's own batch), never longer
+    /// than `timeout`. The permission actor uses `timeout`; catalogue items sit
+    /// on the tool-result path, where the answer is worth less than the wait.
+    pub item_budget: Duration,
 }
 
 impl Default for JevClientConfig {
@@ -73,6 +79,7 @@ impl Default for JevClientConfig {
             reasoning_shape: ReasoningShape::default(),
             reasoning_effort: DEFAULT_REASONING_EFFORT.to_owned(),
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            item_budget: DEFAULT_ITEM_BUDGET,
         }
     }
 }

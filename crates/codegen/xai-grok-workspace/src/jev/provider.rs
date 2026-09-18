@@ -372,11 +372,11 @@ pub fn parse_decision_answers(
             .ok_or_else(|| JevError::invalid(format!("question `{id}` was not answered")))?;
         let answer = match question {
             Question::Noul { .. } => Answer::Noul {
-                noul: yes_field(raw)
+                noul: yes_field(raw, id)
                     .ok_or_else(|| JevError::invalid(format!("noul `{id}` has no usable answer")))?,
             },
             Question::Choice { criteria, .. } => {
-                let answered = choice_field(raw)
+                let answered = choice_field(raw, id)
                     .ok_or_else(|| JevError::invalid(format!("choice `{id}` has no choice")))?;
                 // A chat model may spell the label with different case or add
                 // its own words around it; the label itself must still be one
@@ -412,7 +412,7 @@ pub fn parse_decision_answers(
                 }
             }
             Question::Score { criteria, .. } => {
-                let score = score_field(raw, criteria)
+                let score = score_field(raw, criteria, id)
                     .ok_or_else(|| JevError::invalid(format!("score `{id}` has no usable score")))?;
                 if !score.is_finite() || score < 0.0 || score > (criteria.len().max(1) - 1) as f64 {
                     return Err(JevError::invalid(format!(
@@ -452,7 +452,8 @@ fn probability_field(raw: &Json, names: &[&str]) -> Result<f64, JevError> {
 /// `probability`/`noul` are the contract's; a model that answers the question
 /// with `yes: true`, `answer: "yes"` or a bare boolean still gets read, because
 /// the alternative is throwing away an answer that said exactly what was asked.
-fn yes_field(raw: &Json) -> Option<f64> {
+fn yes_field(raw: &Json, id: &str) -> Option<f64> {
+    let raw = unwrap_answer_keyed_by_id(raw, id);
     for name in ["probability", "noul", "yes", "p", "answer", "value"] {
         let Some(value) = raw.get(name) else {
             continue;
@@ -487,7 +488,8 @@ fn yes_field(raw: &Json) -> Option<f64> {
 }
 
 /// The label of a choice answer, in any of the names a chat model reaches for.
-fn choice_field(raw: &Json) -> Option<String> {
+fn choice_field(raw: &Json, id: &str) -> Option<String> {
+    let raw = unwrap_answer_keyed_by_id(raw, id);
     for name in ["choice", "answer", "label", "option", "selected"] {
         let Some(value) = raw.get(name) else {
             continue;
@@ -513,8 +515,12 @@ fn choice_field(raw: &Json) -> Option<String> {
 /// parses as one, and otherwise matched against the rubric's own level text, so
 /// a model that answers `"serious"` is read as the level it names — but a label
 /// the rubric does not carry yields `None`, never a guess.
-fn score_field(raw: &Json, criteria: &[Json]) -> Option<f64> {
+fn score_field(raw: &Json, criteria: &[Json], id: &str) -> Option<f64> {
+    let raw = unwrap_answer_keyed_by_id(raw, id);
     let mut candidates: Vec<&Json> = Vec::new();
+    if let Some(named) = raw.get(id) {
+        candidates.push(named);
+    }
     for name in ["score", "level", "value", "rating", "answer"] {
         if let Some(value) = raw.get(name) {
             candidates.push(value);
@@ -567,6 +573,20 @@ fn match_level_label(answered: &str, criteria: &[Json]) -> Option<usize> {
             || text.contains(&needle)
             || needle.contains(text.trim())
     })
+}
+
+/// The answer object when the model keyed it by the question's own id
+/// (`{"complexity": {"score": 1}}` instead of `{"score": 1}`).
+///
+/// A model that echoes the question id is still answering the question that was
+/// asked; the alternative is throwing away a usable answer because of a wrapper.
+fn unwrap_answer_keyed_by_id<'a>(raw: &'a Json, id: &str) -> &'a Json {
+    match raw.get(id) {
+        Some(inner @ Json::Object(_)) if raw.get("score").is_none() && raw.get("choice").is_none() => {
+            inner
+        }
+        _ => raw,
+    }
 }
 
 /// The offered criterion that `answered` names, if any.
@@ -786,6 +806,21 @@ mod tests {
         )
         .expect_err("an invented label is not a criterion");
         assert_eq!(error.kind(), crate::jev::error::JevErrorKind::Invalid);
+
+        // The answer keyed by the question's own id, and a bare number for the
+        // score: observed live on `b1_intent_routing`'s complexity question.
+        let answers = parse_decision_answers(
+            r#"{"answers": {"risk": {"choice": "routine_build"}, "escapes": {"probability": 0.05}, "severity": {"severity": 1}}}"#,
+            &battery(),
+        )
+        .expect("an id-keyed answer is still an answer");
+        assert_eq!(answers.get("severity").and_then(Answer::score_value), Some(1.0));
+        let answers = parse_decision_answers(
+            r#"{"answers": {"risk": {"choice": "routine_build"}, "escapes": {"probability": 0.05}, "severity": {"severity": {"level": 2}}}}"#,
+            &battery(),
+        )
+        .expect("an id-keyed object is still an answer");
+        assert_eq!(answers.get("severity").and_then(Answer::score_value), Some(2.0));
     }
 
     #[test]

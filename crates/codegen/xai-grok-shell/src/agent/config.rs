@@ -1191,6 +1191,13 @@ pub struct JevConfig {
     pub api_key_env: Option<String>,
     /// Maximum serialized bytes of `state` for one request.
     pub max_state_bytes: Option<usize>,
+    /// Deadline for one catalogue item call, in milliseconds.
+    ///
+    /// Unset ⇒ a per-provider default: the System One service answers in well
+    /// under a second, while a chat model has to generate its answer (and any
+    /// thinking budget) first, so capping it at the tool-result budget turns
+    /// every call into a timeout.
+    pub item_budget_ms: Option<u64>,
     /// Wire protocol: `typesafe` (System One, the default) or `openrouter`
     /// (any OpenAI-compatible chat endpoint). Both serve the same typed contract.
     pub provider: Option<String>,

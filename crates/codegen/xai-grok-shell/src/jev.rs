@@ -82,6 +82,10 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
     )
 }
 
+/// Item budget for a chat backend, where the answer is generated token by token
+/// (measured: 8 s for the permission battery on `qwen/qwen3.7-flash`).
+const CHAT_ITEM_BUDGET: core::time::Duration = core::time::Duration::from_millis(15_000);
+
 /// Client configuration from `[jev]`, falling back to the plan's defaults.
 pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
     use xai_grok_workspace::jev::provider::{JevProvider, ReasoningShape};
@@ -117,6 +121,14 @@ pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
         max_completion_tokens: cfg
             .max_completion_tokens
             .unwrap_or(defaults.max_completion_tokens),
+        item_budget: cfg
+            .item_budget_ms
+            .map(core::time::Duration::from_millis)
+            .unwrap_or_else(|| match provider {
+                // A chat backend generates the answer before it can return one.
+                JevProvider::OpenRouter => CHAT_ITEM_BUDGET,
+                JevProvider::Typesafe => defaults.item_budget,
+            }),
     }
 }
 
@@ -555,12 +567,17 @@ fn client_cached() -> Option<&'static xai_grok_workspace::jev::JevClient> {
 }
 
 /// Item calls sit on the tool-result path rather than the permission actor, so
-/// they get a shorter budget than the client default.
+/// they get a shorter budget than the client default — but "shorter than the
+/// client" is not the same as "short enough for any backend".
+///
+/// The System One service answers a whole battery in well under a second, so a
+/// 4 s cap there is generous. A chat model has to *generate* the answer, and its
+/// thinking budget, token by token: live measurement on `qwen/qwen3.7-flash` was
+/// 8 s for the permission battery, which the 4 s cap turned into a timeout on
+/// **every** call. The budget is therefore resolved per backend in
+/// [`client_config_from`], and never exceeds the client's own deadline.
 fn item_budget(client: &xai_grok_workspace::jev::JevClient) -> std::time::Duration {
-    client
-        .config()
-        .timeout
-        .min(std::time::Duration::from_millis(4_000))
+    client.config().item_budget.min(client.config().timeout)
 }
 
 #[cfg(test)]
@@ -568,13 +585,31 @@ mod catalogue_helper_tests {
     use super::*;
 
     #[test]
-    fn item_budget_is_capped_for_the_tool_result_path() {
+    fn item_budget_is_capped_per_backend() {
+        // The decision service answers in well under a second: a short cap keeps
+        // the tool-result path moving if it ever stops doing so.
         let cfg = JevConfig::default();
         let client = xai_grok_workspace::jev::JevClient::new(client_config_from(&cfg))
             .expect("client builds without I/O");
         let budget = item_budget(&client);
         assert!(budget <= std::time::Duration::from_millis(4_000));
         assert!(!budget.is_zero());
+
+        // A chat backend generates its answer token by token; measured at 8 s for
+        // the permission battery, so the cap must let it finish (and never
+        // exceed the client's own deadline).
+        let chat = JevConfig {
+            provider: Some("openrouter".to_owned()),
+            ..JevConfig::default()
+        };
+        let client = xai_grok_workspace::jev::JevClient::new(client_config_from(&chat))
+            .expect("client builds without I/O");
+        let budget = item_budget(&client);
+        assert!(
+            budget > std::time::Duration::from_millis(8_000),
+            "a chat backend gets room to answer, got {budget:?}"
+        );
+        assert!(budget <= client.config().timeout);
     }
 
     #[serial_test::serial]

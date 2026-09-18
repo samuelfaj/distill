@@ -692,6 +692,7 @@ Evidência desta rodada (em `{SCRATCH}`):
 | Compilação | `cargo check -p xai-grok-workspace -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-bin` | exit 0 |
 | Execução real #1 | TUI, `--permission-mode auto`, `GROK_LOG_JEV=1` | 24 linhas novas, 8 levers do catálogo, rodapé `auto · jev` |
 | Execução real #2 | TUI, `--always-approve`, `GROK_LOG_JEV=1` | 17 linhas novas; B1/B6/P1 com a **mesma classe** da execução #1, rodapé `always-approve · jev·veto` |
+| Execução real #3 (árvore congelada) | TUI, `--permission-mode acceptEdits`, binário reconstruído | 17 linhas novas, 5 levers do catálogo (b1, b6, p1, c2, p5), rodapé `jev:idle` |
 | Interruptor mestre | TUI, `GROK_JEV=0`, um turno inteiro | 0 linhas novas, rodapé `jev:off` |
 | API real (gate) | `cargo test --test jev_live -- --ignored` | 4/4 verdes: corpus de permissão 0 falso-allow / 0 falso-block; A1/A3 e D2 com respostas tipadas e `usage > 0`; 0 descartes indevidos |
 

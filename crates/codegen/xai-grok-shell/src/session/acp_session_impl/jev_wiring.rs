@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn an_unset_config_uses_the_harness_default_of_everything_on() {
-        let flags = jev_flags_from_tiers(&JevConfig::default(), None);
+        let flags = flags_from_tiers(&JevConfig::default(), None);
         assert!(
             flags.enabled,
             "unset config resolves to the harness default"
@@ -157,15 +157,15 @@ mod tests {
             enabled: Some(false),
             ..JevConfig::default()
         };
-        assert!(!jev_flags_from_tiers(&off, None).enabled);
-        assert!(!jev_flags_from_tiers(&JevConfig::default(), Some(false)).enabled);
-        assert!(jev_flags_from_tiers(&JevConfig::default(), Some(true)).enabled);
+        assert!(!flags_from_tiers(&off, None).enabled);
+        assert!(!flags_from_tiers(&JevConfig::default(), Some(false)).enabled);
+        assert!(flags_from_tiers(&JevConfig::default(), Some(true)).enabled);
         // A config value is authoritative over the environment tier.
-        assert!(!jev_flags_from_tiers(&off, Some(true)).enabled);
+        assert!(!flags_from_tiers(&off, Some(true)).enabled);
         // A single lever can be disabled on its own key.
         let mut ladder_off = JevConfig::default();
         ladder_off.ladder.permission_classifier = Some(false);
-        let flags = jev_flags_from_tiers(&ladder_off, None);
+        let flags = flags_from_tiers(&ladder_off, None);
         assert!(flags.enabled);
         assert!(!flags.permission_classifier);
         assert!(flags.p1_tool_family);
@@ -177,7 +177,7 @@ mod tests {
             shadow: Some(true),
             ..JevConfig::default()
         };
-        assert!(jev_flags_from_tiers(&cfg, None).shadow);
+        assert!(flags_from_tiers(&cfg, None).shadow);
     }
 
     #[test]

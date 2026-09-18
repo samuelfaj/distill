@@ -18,7 +18,7 @@ Regras que valem para todo item (autoridade e segurança):
 Legenda de estado: **LIGADO** = ponto de chamada vivo no harness · **PENDENTE** = implementado mas ainda sem fiação.
 
 Formato do par exigido: **Localizador** = `arquivo.rs:linha` (o ponto de chamada) com o símbolo entre parênteses;
-**Teste** = o nome do teste que cobre o pacote (roda com `cargo test -p xai-grok-workspace --lib jev::`).
+**Teste** = o nome do teste que cobre o pacote (pacotes: `cargo test -p xai-grok-workspace --lib jev::`; chamadas no shell: `cargo test -p xai-grok-shell --lib jev`).
 Os dois são checados pelo script `{SCRATCH}/todo-coverage.py`, que falha se algum item perder qualquer um deles.
 
 ---
@@ -72,9 +72,9 @@ Os dois são checados pelo script `{SCRATCH}/todo-coverage.py`, que falha se alg
 
 | # | Decisão | Pacote (perguntas) | Composição / limiar | Localizador | Teste |
 |---|---|---|---|---|---|
-| D1 | **Recorte da compaction (= P3)** | `noul` por segmento (“precisa ser resumido verbatim?”) | fixados sempre preservados (prefixo, último segmento, turnos que tocaram arquivos); resposta faltando ⇒ mantém tudo | `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_compaction.rs:30` (`jev_compaction_recorte`), chamado em `crates/codegen/xai-grok-shell/src/session/compaction.rs:1153` | `jev::ladder::tests::p3_keeps_pinned_segments_and_falls_back_on_missing_answers` · `jev::ladder::tests::p3_segments_start_at_user_turns_and_pin_the_edges` |
+| D1 | **Recorte da compaction (= P3)** | `noul` por segmento (“precisa ser resumido verbatim?”) | fixados sempre preservados (prefixo, último segmento, turnos que tocaram arquivos); resposta faltando ⇒ mantém tudo | `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_compaction.rs:30` (`jev_compaction_recorte`), chamado em `crates/codegen/xai-grok-shell/src/session/compaction.rs:1153` | `jev::ladder::tests::p3_keeps_pinned_segments_and_falls_back_on_missing_answers` · `jev_compaction::tests::segments_start_at_user_turns_and_pin_the_edges` · `jev::ladder::tests::p3_segments_start_at_user_turns_and_pin_the_edges` |
 | D2 | **Manter/descartar saída grande** | `noul` “isto muda a tarefa?” + `score` de utilidade | descarta só com `p ≤ 0,2` **e** utilidade ≤ 0,25; senão mantém | `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_tool_result.rs:41` (`jev_post_process_tool_result`, ramo saída grande) | `jev::catalog::context::tests::d2_drops_only_inert_outputs_and_keeps_on_doubt` · `tests/jev_live.rs::live_big_output_retention_gate` |
-| D3 | **Recuperação pós-compaction** | `noul` por trecho recuperado (“isto ainda importa?”) | reinjeta só o que passa do piso (0,40); dúvida ⇒ mantém todos | `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_compaction.rs:83` (`jev_rank_recovered`), chamado em `crates/codegen/xai-grok-shell/src/session/helpers/compaction_context.rs:87` (`to_system_reminder`) | `jev::catalog::context::tests::d3_reinjects_only_still_relevant_chunks` |
+| D3 | **Recuperação pós-compaction** | `noul` por trecho recuperado (“isto ainda importa?”) | reinjeta só o que passa do piso (0,40); dúvida ⇒ mantém todos | `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_compaction.rs:85` (`jev_rank_recovered`), chamado em `crates/codegen/xai-grok-shell/src/session/helpers/compaction_context.rs:87` (`to_system_reminder`) | `jev::catalog::context::tests::d3_reinjects_only_still_relevant_chunks` |
 | D4 | **Validação de chamada (= P5)** | `noul` “o alvo bate com a intenção?” / “ultrapassa o escopo?” | qualquer sinal ≥ 0,40 ⇒ barra e pergunta; nunca libera | `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_tool_result.rs:612` (`jev_validate_tool_call`), chamado em `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tool_calls.rs:571` | `jev::ladder::tests::p5_asks_only_when_a_red_flag_fires` |
 
 ---

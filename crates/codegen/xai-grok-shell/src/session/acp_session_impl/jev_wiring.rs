@@ -14,12 +14,15 @@ use std::time::Duration;
 
 use xai_grok_workspace::jev::JevClient;
 use xai_grok_workspace::jev::permission::{JevAsker, JevAuthority, JevPermissionClassifier};
-use xai_grok_workspace::jev::policy::{DecisionSink, TracingSink};
+use xai_grok_workspace::jev::policy::DecisionSink;
 use xai_grok_workspace::jev::questions::PermissionThresholds;
 use xai_grok_workspace::permission::{ClassifierVerdict, FixedClassifier, SharedClassifier};
 
 use crate::agent::config::JevConfig;
-use crate::jev::{client_config_from as jev_client_config_from, flags_from as jev_flags_from};
+use crate::jev::{
+    ActivitySink, ObservedAsker, client_config_from as jev_client_config_from,
+    flags_from as jev_flags_from,
+};
 
 /// Wraps the incumbent classifier with the Jev seam when the flags ask for it.
 ///
@@ -51,8 +54,8 @@ pub(crate) fn maybe_wrap_with_jev(
         );
         return incumbent;
     }
-    let asker: Arc<dyn JevAsker> = Arc::new(client);
-    let sink: Arc<dyn DecisionSink> = Arc::new(TracingSink);
+    let asker: Arc<dyn JevAsker> = Arc::new(ObservedAsker::new(Arc::new(client)));
+    let sink: Arc<dyn DecisionSink> = Arc::new(ActivitySink);
     match JevPermissionClassifier::new(
         asker,
         Arc::clone(&incumbent),
@@ -106,8 +109,8 @@ pub(crate) fn maybe_wrap_with_jev_veto(
         );
         return None;
     }
-    let asker: Arc<dyn JevAsker> = Arc::new(client);
-    let sink: Arc<dyn DecisionSink> = Arc::new(TracingSink);
+    let asker: Arc<dyn JevAsker> = Arc::new(ObservedAsker::new(Arc::new(client)));
+    let sink: Arc<dyn DecisionSink> = Arc::new(ActivitySink);
     // Inert fallback: `VetoOnly` never escalates, so nothing can reach it. Using
     // a fixed classifier keeps that explicit instead of implying an LLM behind it.
     let inert: SharedClassifier = Arc::new(FixedClassifier(ClassifierVerdict::Allow));

@@ -140,9 +140,14 @@ behave exactly as before: no Jev client is built and **no connection is opened**
 The prompt footer shows the state at a glance: `jev` (active), `jev·shadow`
 (records only), `jev·veto` (always-approve brake), `jev:off` (disabled).
 
-**Where decisions are visible.** Set `GROK_LOG_JEV=1` to append one JSON line per
-decision to `~/.grok/logs/jev.jsonl` (lever, decision, confidence, model,
-tokens, request id). The user-facing reference is
+**Where decisions are visible.** The prompt footer shows whether the path is
+available (`jev`, `jev·shadow`, `jev·veto`, `jev:idle`, `jev:off`), and the turn
+status row — the line above the prompt, next to the running tool — shows when Jev
+was actually used for that turn: `jev…` while a decision is in flight,
+`jev 0.4s` / `jev ×3` once it answered, and `jev·veto` in red when a call was
+refused. Set `GROK_LOG_JEV=1` to append one JSON line per decision to
+`~/.grok/logs/jev.jsonl` (lever, decision, confidence, model, tokens, request
+id). The user-facing reference is
 [`crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md`](crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md).
 
 **How it is tested.** Pure pack logic and thresholds are unit-tested in

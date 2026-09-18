@@ -138,7 +138,19 @@ The state is an allowlist of named fields, capped (`max_state_bytes`, 400 charac
 
 ## Observability
 
-**In the TUI:** the prompt footer always shows where the Jev path stands, next to the mode flags:
+**In the TUI:** two places show where the Jev path stands.
+
+The **turn status row** (the line above the prompt, next to the running tool) shows what the decision layer did *for this turn*, and only when it did something:
+
+| Chip | Meaning |
+|---|---|
+| **`jev…`** (green) | A decision is being asked for right now — the call is in flight |
+| **`jev 0.4s`** (green) | One decision answered, with its latency |
+| **`jev ×3`** (green) | Several decisions so far this turn |
+| **`jev·veto`** (red) | Jev refused a call in this turn (the always-approve brake) |
+| *(nothing)* | Jev was not consulted in this turn — the row never claims otherwise |
+
+The **prompt footer** always shows where the path stands, next to the mode flags:
 
 | Badge | Meaning |
 |---|---|
@@ -149,6 +161,8 @@ The state is an allowlist of named fields, capped (`max_state_bytes`, 400 charac
 | **`jev:off`** (dim) | The path is disabled (`GROK_JEV=0`, `[jev] enabled = false`) or no credential is resolvable |
 
 The badge is deliberately never hidden: spotting `jev:idle` immediately explains "why is nothing happening" when you are in always-approve mode, and `jev:off` tells you the setup itself is not ready. The status is resolved once per process, like the wiring itself.
+
+Both surfaces read the same decision record, so they cannot disagree: the footer says whether the path *can* be used, the turn row says whether it *was*, and with which outcome.
 
 **In logs:** every decision is recorded with the lever, the question ids, the verdict, the confidence, the model version that answered, latency and `usage` tokens. Deferrals are recorded too, so a seam that silently adds nothing is visible. Set `GROK_LOG_JEV=1` to write them to `~/.grok/logs/jev.jsonl` (one JSON object per line, size-capped); without it the records only reach the tracing subscriber.
 

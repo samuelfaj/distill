@@ -1,10 +1,12 @@
 //! Turn status line: a single-row widget showing the current turn activity.
 //!
-//! Layout: `⠧ Run command 0.2s              1m20s ⇣12k [stop]`
+//! Layout: `⠧ Run command 0.2s · jev 0.4s            1m20s ⇣12k [stop]`
 //!
 //! - Spinner (left, slowed to ~7.5fps)
 //! - Activity label (colored per activity type, truncates if needed)
 //! - Phase timer `Xs` (gray, never truncates)
+//! - Jev chip `jev…` / `jev 0.4s` / `jev·veto` (green, error-red for a refusal):
+//!   shown while Jev is consulted for this turn, from the shell's decision record
 //! - Queued-send hint `· N queued, Enter to send now` (gray, sendable waits only)
 //! - Fill space
 //! - Turn timer `Xm Ys` and optional token count `⇣Nk` (right-aligned, gray)
@@ -173,6 +175,8 @@ pub struct TurnStatusArgs<'a> {
     pub is_pending_user_input: bool,
     pub goal_verifying: bool,
     pub watchers: Watchers,
+    /// What the Jev decision layer did for this turn (see `xai_grok_shell::jev::turn_activity`).
+    pub jev: xai_grok_shell::jev::JevTurnActivity,
     /// Parked on a sendable wait (`AgentView::renders_parked`).
     pub parked: bool,
     /// Transparent right-side background so the row blends with the terminal's own background (minimal mode).
@@ -204,6 +208,7 @@ pub fn render_turn_status(
         is_pending_user_input,
         goal_verifying,
         watchers,
+        jev,
         parked,
         flat_background,
         held_queue,
@@ -394,6 +399,21 @@ pub fn render_turn_status(
     };
     let phase_timer_width = phase_timer_str.width();
 
+    // Jev chip: shows that the local decision layer was consulted for this
+    // turn — `jev…` while a call is in flight, `jev·veto` after a refusal,
+    // `jev 0.4s` / `jev ×3` once it has answered. Never rendered when the
+    // layer did nothing, so the row stays honest about when it is used.
+    let jev_str = match jev.label() {
+        Some(label) => format!(" \u{00b7} {label}"),
+        None => String::new(),
+    };
+    let jev_width = jev_str.width();
+    let jev_fg = if jev.refused {
+        theme.accent_error
+    } else {
+        theme.accent_success
+    };
+
     // Timer style (gray for both phase and turn timers). A Style with bg:None (the default) cannot
     // restore bg after a reset, and a Style without remove_modifier cannot clear leaked modifiers.
     let timer_bg = if flat_background {
@@ -412,6 +432,7 @@ pub fn render_turn_status(
     let available_for_label = (area.width as usize)
         .saturating_sub(spinner_width)
         .saturating_sub(phase_timer_width)
+        .saturating_sub(jev_width)
         .saturating_sub(min_gap)
         .saturating_sub(right_width)
         .saturating_sub(2);
@@ -508,6 +529,15 @@ pub fn render_turn_status(
     // Phase timer (gray, never truncates)
     if !phase_timer_str.is_empty() {
         left_spans.push(Span::styled(phase_timer_str, timer_style));
+    }
+
+    // Jev chip, right after the phase timer: it says what the decision layer did
+    // while this activity ran.
+    if !jev_str.is_empty() {
+        left_spans.push(Span::styled(
+            jev_str,
+            Style::default().fg(jev_fg).bg(timer_bg),
+        ));
     }
 
     // After the phase timer, so the elapsed time reads as the wait's, not the hint's.
@@ -1003,6 +1033,7 @@ mod tests {
                 is_pending_user_input: false,
                 goal_verifying: false,
                 watchers: Watchers::default(),
+                jev: xai_grok_shell::jev::JevTurnActivity::default(),
                 parked: false,
                 flat_background: false,
                 held_queue: 0,
@@ -1115,6 +1146,7 @@ mod tests {
             is_pending_user_input: false,
             goal_verifying: false,
             watchers,
+            jev: xai_grok_shell::jev::JevTurnActivity::default(),
             parked: false,
             flat_background: false,
             held_queue: 0,
@@ -1164,6 +1196,76 @@ mod tests {
         args.turn_elapsed = Some(Duration::from_secs(5));
         args.parked = true;
         render_row_text(args, 72)
+    }
+
+    /// A running turn row with the given Jev activity, as the shell would report it.
+    fn render_running_with_jev(jev: xai_grok_shell::jev::JevTurnActivity) -> String {
+        let activity = Some(TurnActivity::ToolRunning {
+            title: "read_file".to_owned(),
+            description: None,
+        });
+        let mut args = idle_args(Watchers::default());
+        args.state = &AgentState::TurnRunning;
+        args.activity = &activity;
+        args.turn_elapsed = Some(Duration::from_secs(19));
+        args.activity_started_at = Some(Instant::now());
+        args.jev = jev;
+        render_row_text(args, 100)
+    }
+
+    /// The chip must appear exactly when Jev was used, and say what it did:
+    /// a refusal reads as `jev·veto`, a consultation in flight as `jev…`,
+    /// answers as `jev <latency>` / `jev ×N`, and nothing at all when quiet.
+    #[test]
+    fn jev_chip_reports_use_refusal_and_flight() {
+        use xai_grok_shell::jev::JevTurnActivity;
+
+        let quiet = render_running_with_jev(JevTurnActivity::default());
+        assert!(
+            !quiet.contains("jev"),
+            "a turn Jev never touched must not claim it: {quiet:?}"
+        );
+
+        let one = render_running_with_jev(JevTurnActivity {
+            decisions: 1,
+            last_latency_ms: 420,
+            ..Default::default()
+        });
+        assert!(
+            one.contains("jev 0.4s"),
+            "one answer shows its latency: {one:?}"
+        );
+
+        let many = render_running_with_jev(JevTurnActivity {
+            decisions: 3,
+            last_latency_ms: 420,
+            ..Default::default()
+        });
+        assert!(
+            many.contains("jev ×3"),
+            "repeated use shows a count: {many:?}"
+        );
+
+        let veto = render_running_with_jev(JevTurnActivity {
+            decisions: 1,
+            refused: true,
+            last_latency_ms: 380,
+            ..Default::default()
+        });
+        assert!(veto.contains("jev·veto"), "a refusal is named: {veto:?}");
+
+        let in_flight = render_running_with_jev(JevTurnActivity {
+            in_flight: 1,
+            ..Default::default()
+        });
+        assert!(
+            in_flight.contains("jev…"),
+            "a consultation in flight is visible: {in_flight:?}"
+        );
+
+        // The chip shares the row: the running tool and the timer survive it.
+        assert!(one.contains("read_file"), "the tool label stays: {one:?}");
+        assert!(one.contains("19s"), "the turn timer stays: {one:?}");
     }
 
     /// Invoke `render_turn_status` for an idle agent with the given watcher counts at the first animation tick.

@@ -101,5 +101,8 @@ não passa fica **OFF** com o número do gate registrado, nunca ligado em silên
   seção `JevLadderConfig`; o mapeamento chave→flag está em `crates/codegen/xai-grok-shell/src/jev.rs`,
   `flags_from_tiers`).
 * Decisões: `GROK_LOG_JEV=1` escreve `~/.grok/logs/jev.jsonl` (uma linha JSON por decisão, com lever/decisão/confiança/modelo/tokens).
-* Estado no TUI: selo no rodapé do prompt (`jev`, `jev·shadow`, `jev·veto`, `jev:idle`, `jev:off`).
+* Estado no TUI: selo no rodapé do prompt (`jev`, `jev·shadow`, `jev·veto`, `jev:idle`, `jev:off`) **e** o chip da
+  linha de atividade (a linha acima do prompt, ao lado da ferramenta em execução): `jev…` enquanto uma decisão
+  está em voo, `jev 0,4s` / `jev ×3` quando já respondeu, e `jev·veto` (vermelho) quando recusou uma chamada.
+  O chip só aparece quando o Jev foi realmente usado no turno (`xai_grok_shell::jev::turn_activity`).
 * Fiação: `python3 {SCRATCH}/wiring_check.py` imprime `WIRING: PASS (23/23 …)` ou a lista do que falta.

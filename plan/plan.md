@@ -696,5 +696,24 @@ Evidência desta rodada (em `{SCRATCH}`):
 | Interruptor mestre | TUI, `GROK_JEV=0`, um turno inteiro | 0 linhas novas, rodapé `jev:off` |
 | API real (gate) | `cargo test --test jev_live -- --ignored` | 4/4 verdes: corpus de permissão 0 falso-allow / 0 falso-block; A1/A3 e D2 com respostas tipadas e `usage > 0`; 0 descartes indevidos |
 
+### 12.9 Visibilidade do uso no TUI (2026-09-18)
+
+O dono pediu que o uso do Jev aparecesse na **linha de atividade** (a linha acima do prompt, ao lado da ferramenta
+em execução), e não só no selo do rodapé. Implementado:
+
+* o registro de decisões (`DecisionSink`) passou a alimentar um anel de atividade por processo
+  (`xai_grok_shell::jev::turn_activity`, 64 entradas) e um contador de chamadas em voo;
+* cada chamada marca `jev…` enquanto está em voo (`ObservedAsker` para o classificador/freio, guarda em
+  `ask_item` para os itens do catálogo);
+* a linha de turno mostra o chip: `jev…` (em voo), `jev 0,4s` / `jev ×N` (já respondeu) e `jev·veto` (vermelho,
+  quando houve recusa), e **nada** quando o Jev não foi usado no turno;
+* o classificador/freio e os itens do catálogo passaram a reportar pelo mesmo sink (`ActivitySink`), então as duas
+  superfícies (chip e rodapé) leem o mesmo registro e não podem divergir.
+
+Evidência: `{SCRATCH}/chip-live.log` (capturas reais do TUI com `jev ×14` durante uma tool e `jev ×5` num turno
+posterior), mais o teste de render `views::turn_status::tests::jev_chip_reports_use_refusal_and_flight` e os três
+testes de shell (`turn_activity_counts_the_turn_window_and_refusals`, `the_chip_label_is_short_and_honest`,
+`the_observed_asker_marks_flight_for_the_whole_call`).
+
 Os itens **B2** e **C6** continuam **OFF** por decisão do próprio gate (§ regra "item cujo gate não passa fica off
 com o número registrado"), já fiados e testados.

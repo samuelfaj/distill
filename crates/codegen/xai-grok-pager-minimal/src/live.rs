@@ -584,6 +584,7 @@ fn render_minimal_status(
             is_pending_user_input,
             goal_verifying,
             watchers,
+            jev: xai_grok_shell::jev::turn_activity(agent.turn_started_at),
             parked,
             flat_background: true,
             held_queue: minimal_api::held_queue_count(agent),

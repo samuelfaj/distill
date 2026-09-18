@@ -177,7 +177,10 @@ pub async fn ask_item(
         return None;
     }
     let budget = item_budget(client);
-    match tokio::time::timeout(budget, client.ask(&state, &questions)).await {
+    let in_flight = JevInFlight::begin();
+    let outcome = tokio::time::timeout(budget, client.ask(&state, &questions)).await;
+    drop(in_flight);
+    match outcome {
         Ok(Ok(answers)) => Some(answers),
         Ok(Err(error)) => {
             tracing::debug!(
@@ -207,7 +210,7 @@ pub fn record_item(
     confidence: Option<f64>,
     answers: Option<&xai_grok_workspace::jev::types::JevAnswerSet>,
 ) {
-    use xai_grok_workspace::jev::policy::{DecisionRecord, DecisionSink, TracingSink};
+    use xai_grok_workspace::jev::policy::{DecisionRecord, DecisionSink};
     let record = DecisionRecord {
         lever: lever.as_str().to_owned(),
         questions: Vec::new(),
@@ -221,7 +224,216 @@ pub fn record_item(
         request_id: answers.and_then(|a| a.request_id.clone()),
         escalated: false,
     };
-    TracingSink.record(&record);
+    ActivitySink.record(&record);
+}
+
+// ---------------------------------------------------------------------------
+// Activity for the turn-status row ("Jev was used here")
+// ---------------------------------------------------------------------------
+
+/// One recorded decision, as the turn-status row reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JevActivity {
+    pub lever: String,
+    /// `allow` | `block` | `escalate` | `rank` | `defer` | … (the recorded label).
+    pub decision: String,
+    pub latency_ms: u64,
+    pub at: std::time::Instant,
+}
+
+/// What the row shows about Jev for one turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JevTurnActivity {
+    /// Decisions recorded inside the window (the current turn, when known).
+    pub decisions: u32,
+    /// True when one of them was a refusal: the brake stopping a call.
+    pub refused: bool,
+    /// Calls in flight **right now** — Jev is being consulted for this step.
+    pub in_flight: u32,
+    /// Latency of the most recent decision in the window (0 without one).
+    pub last_latency_ms: u64,
+}
+
+impl JevTurnActivity {
+    /// Nothing to show: no decision in the window and nothing in flight.
+    pub const fn is_quiet(&self) -> bool {
+        self.decisions == 0 && self.in_flight == 0
+    }
+
+    /// The chip text, e.g. `jev…`, `jev·veto`, `jev ×3`. `None` when quiet.
+    ///
+    /// Kept short by construction: it shares one row with the running tool and
+    /// the turn timer.
+    pub fn label(&self) -> Option<String> {
+        if self.in_flight > 0 && self.decisions == 0 {
+            return Some("jev…".to_owned());
+        }
+        if self.refused {
+            return Some("jev·veto".to_owned());
+        }
+        match self.decisions {
+            0 => (self.in_flight > 0).then(|| "jev…".to_owned()),
+            1 => Some(format!("jev {:.1}s", self.last_latency_ms as f64 / 1000.0)),
+            n => Some(format!("jev ×{n}")),
+        }
+    }
+}
+
+/// Most recent decisions kept for the row; the row only ever looks back one turn.
+const ACTIVITY_RING: usize = 64;
+
+/// Decisions whose label means "the call was refused".
+const REFUSALS: &[&str] = &["block", "veto", "deny", "refuse", "refused"];
+
+#[derive(Debug, Default)]
+struct ActivityState {
+    ring: std::collections::VecDeque<JevActivity>,
+    in_flight: u32,
+}
+
+fn activity_state() -> &'static std::sync::Mutex<ActivityState> {
+    static STATE: OnceLock<std::sync::Mutex<ActivityState>> = OnceLock::new();
+    STATE.get_or_init(|| std::sync::Mutex::new(ActivityState::default()))
+}
+
+/// Remembers one decision for the turn-status row. Never fails the caller.
+pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
+    let Ok(mut state) = activity_state().lock() else {
+        return;
+    };
+    if state.ring.len() >= ACTIVITY_RING {
+        state.ring.pop_front();
+    }
+    state.ring.push_back(JevActivity {
+        lever: lever.to_owned(),
+        decision: decision.to_owned(),
+        latency_ms,
+        at: std::time::Instant::now(),
+    });
+}
+
+/// Marks a Jev call as started (`+1`) or finished (`-1`) for the row's `jev…` state.
+pub fn note_in_flight(started: bool) {
+    let Ok(mut state) = activity_state().lock() else {
+        return;
+    };
+    state.in_flight = if started {
+        state.in_flight.saturating_add(1)
+    } else {
+        state.in_flight.saturating_sub(1)
+    };
+}
+
+/// The row's view of Jev: decisions recorded at or after `since`.
+///
+/// `None` (no turn anchor — a wake turn, or a row rendered outside a turn)
+/// counts whatever is still in the ring, which is at most the last
+/// [`ACTIVITY_RING`] decisions of this process.
+pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
+    let Ok(state) = activity_state().lock() else {
+        return JevTurnActivity::default();
+    };
+    let mut activity = JevTurnActivity {
+        in_flight: state.in_flight,
+        ..Default::default()
+    };
+    for entry in state.ring.iter().rev() {
+        if let Some(since) = since
+            && entry.at < since
+        {
+            continue;
+        }
+        activity.decisions = activity.decisions.saturating_add(1);
+        if REFUSALS.contains(&entry.decision.as_str()) {
+            activity.refused = true;
+        }
+        if activity.last_latency_ms == 0 {
+            activity.last_latency_ms = entry.latency_ms;
+        }
+    }
+    activity
+}
+
+/// Drops everything the row remembers. Test-only: one process, one ring.
+#[doc(hidden)]
+pub fn reset_activity_for_test() {
+    if let Ok(mut state) = activity_state().lock() {
+        state.ring.clear();
+        state.in_flight = 0;
+    }
+}
+
+/// Keeps the in-flight counter honest across every early return of a call.
+pub struct JevInFlight {
+    open: bool,
+}
+
+impl JevInFlight {
+    /// Marks a call as started.
+    pub fn begin() -> Self {
+        note_in_flight(true);
+        Self { open: true }
+    }
+}
+
+impl Drop for JevInFlight {
+    fn drop(&mut self) {
+        if self.open {
+            note_in_flight(false);
+            self.open = false;
+        }
+    }
+}
+
+/// The decision sink every Jev seam reports through: the log line, plus the
+/// row's activity.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ActivitySink;
+
+impl xai_grok_workspace::jev::policy::DecisionSink for ActivitySink {
+    fn record(&self, record: &xai_grok_workspace::jev::policy::DecisionRecord) {
+        xai_grok_workspace::jev::policy::TracingSink.record(record);
+        note_decision(&record.lever, &record.decision, record.latency_ms);
+    }
+}
+
+/// Wraps a Jev asker so a consultation shows as `jev…` while it runs.
+pub struct ObservedAsker {
+    inner: std::sync::Arc<dyn xai_grok_workspace::jev::permission::JevAsker>,
+}
+
+impl ObservedAsker {
+    pub fn new(inner: std::sync::Arc<dyn xai_grok_workspace::jev::permission::JevAsker>) -> Self {
+        Self { inner }
+    }
+}
+
+impl xai_grok_workspace::jev::permission::JevAsker for ObservedAsker {
+    fn ask<'a>(
+        &'a self,
+        state: &'a serde_json::Value,
+        questions: &'a std::collections::BTreeMap<
+            xai_grok_workspace::jev::types::QuestionId,
+            xai_grok_workspace::jev::types::Question,
+        >,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        xai_grok_workspace::jev::types::JevAnswerSet,
+                        xai_grok_workspace::jev::error::JevError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        let in_flight = JevInFlight::begin();
+        Box::pin(async move {
+            let result = self.inner.ask(state, questions).await;
+            drop(in_flight);
+            result
+        })
+    }
 }
 
 /// The flags resolved once per process (configuration does not change mid-run).
@@ -271,6 +483,7 @@ mod catalogue_helper_tests {
         assert!(!budget.is_zero());
     }
 
+    #[serial_test::serial]
     #[test]
     fn recording_an_item_decision_never_panics_without_answers() {
         record_item(
@@ -280,5 +493,166 @@ mod catalogue_helper_tests {
             None,
             None,
         );
+    }
+
+    /// The turn-status row reads only what happened: a decision inside the
+    /// window is counted (refusals flagged), anything older is not, and a call
+    /// in flight shows as such.
+    #[serial_test::serial]
+    #[test]
+    fn turn_activity_counts_the_turn_window_and_refusals() {
+        reset_activity_for_test();
+        let before = std::time::Instant::now();
+        note_decision("p5_call_validation", "ask", 410);
+        note_decision("yolo_veto", "block", 380);
+        // A window that opens *after* the two decisions, offset past any clock
+        // granularity, so "was it in this turn?" cannot depend on timer detail.
+        let after = before + std::time::Duration::from_millis(50);
+
+        let turn = turn_activity(Some(before));
+        assert_eq!(turn.decisions, 2);
+        assert!(turn.refused, "a refusal must be visible on the row");
+        assert_eq!(
+            turn.last_latency_ms, 380,
+            "the newest latency is the one shown"
+        );
+        assert!(!turn.is_quiet());
+
+        // A window that opens after the decisions saw none of them.
+        assert!(turn_activity(Some(after)).is_quiet());
+
+        // An unknown window (no turn anchor) still reports the ring.
+        assert_eq!(turn_activity(None).decisions, 2);
+
+        let guard = JevInFlight::begin();
+        let in_flight = turn_activity(Some(after));
+        assert_eq!(in_flight.in_flight, 1);
+        assert_eq!(in_flight.label().as_deref(), Some("jev…"));
+        drop(guard);
+        assert_eq!(turn_activity(Some(after)).in_flight, 0);
+        reset_activity_for_test();
+    }
+
+    /// The chip text itself: quiet renders nothing, one answer shows its
+    /// latency, repeats show a count, and a refusal outranks both.
+    #[test]
+    fn the_chip_label_is_short_and_honest() {
+        assert_eq!(JevTurnActivity::default().label(), None);
+        assert_eq!(
+            JevTurnActivity {
+                in_flight: 1,
+                ..Default::default()
+            }
+            .label()
+            .as_deref(),
+            Some("jev…")
+        );
+        assert_eq!(
+            JevTurnActivity {
+                decisions: 1,
+                last_latency_ms: 420,
+                ..Default::default()
+            }
+            .label()
+            .as_deref(),
+            Some("jev 0.4s")
+        );
+        assert_eq!(
+            JevTurnActivity {
+                decisions: 4,
+                last_latency_ms: 420,
+                ..Default::default()
+            }
+            .label()
+            .as_deref(),
+            Some("jev ×4")
+        );
+        assert_eq!(
+            JevTurnActivity {
+                decisions: 2,
+                refused: true,
+                in_flight: 1,
+                last_latency_ms: 380,
+            }
+            .label()
+            .as_deref(),
+            Some("jev·veto")
+        );
+    }
+
+    /// The observer must keep the in-flight count honest across the future's
+    /// whole lifetime, not just the call that builds it.
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn the_observed_asker_marks_flight_for_the_whole_call() {
+        use std::sync::Arc;
+        use xai_grok_workspace::jev::permission::JevAsker;
+
+        reset_activity_for_test();
+        /// An asker that reports when it starts and waits to be released, so
+        /// the counter can be read mid-call without a race.
+        struct Gated {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+        impl JevAsker for Gated {
+            fn ask<'a>(
+                &'a self,
+                _state: &'a serde_json::Value,
+                _questions: &'a std::collections::BTreeMap<
+                    xai_grok_workspace::jev::types::QuestionId,
+                    xai_grok_workspace::jev::types::Question,
+                >,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<
+                                xai_grok_workspace::jev::types::JevAnswerSet,
+                                xai_grok_workspace::jev::error::JevError,
+                            >,
+                        > + Send
+                        + 'a,
+                >,
+            > {
+                let entered = Arc::clone(&self.entered);
+                let release = Arc::clone(&self.release);
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    Err(xai_grok_workspace::jev::error::JevError::invalid("gated"))
+                })
+            }
+        }
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let observed = ObservedAsker::new(Arc::new(Gated {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        }));
+        let state = serde_json::json!({});
+        let questions = std::collections::BTreeMap::new();
+        let ask = observed.ask(&state, &questions);
+        assert_eq!(
+            turn_activity(None).in_flight,
+            1,
+            "the counter opens with the call"
+        );
+        // Driver: waits until the inner future has actually started, reads the
+        // counter there, then releases it.
+        let driver = async {
+            entered.notified().await;
+            let mid = turn_activity(None).in_flight;
+            release.notify_one();
+            mid
+        };
+        let (mid, _) = tokio::join!(driver, ask);
+        assert_eq!(mid, 1, "in flight while the inner future runs");
+        assert_eq!(
+            turn_activity(None).in_flight,
+            0,
+            "the guard is dropped with the call"
+        );
+        reset_activity_for_test();
     }
 }

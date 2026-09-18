@@ -2115,6 +2115,7 @@ impl AgentView {
                         is_pending_user_input,
                         goal_verifying,
                         watchers: turn_status_watchers,
+                        jev: xai_grok_shell::jev::turn_activity(self.turn_started_at),
                         parked: turn_status_parked,
                         flat_background: false,
                         held_queue,

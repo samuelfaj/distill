@@ -341,6 +341,44 @@ impl JevTurnActivity {
     }
 }
 
+/// The content the model has already been given verbatim this process, by hash.
+///
+/// One session per process, and the payloads are already in the conversation:
+/// this holds a hash and a one-line label, never the content itself.
+fn read_index() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static INDEX: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Remembers `payload` as read and reports where it was first seen.
+///
+/// `None` means "tell the model about it": the same bytes are already in the
+/// conversation, so sending them again buys nothing. The label names the call
+/// that first carried them, so the note can point at something the reader has.
+pub fn note_payload_read(hash: &str, label: &str) -> Option<String> {
+    let Ok(mut index) = read_index().lock() else {
+        return None;
+    };
+    if let Some(first) = index.get(hash) {
+        return Some(first.clone());
+    }
+    index.insert(hash.to_owned(), label.to_owned());
+    None
+}
+
+/// How many payloads the process remembers (tests, and a bound on the map).
+pub fn remembered_reads() -> usize {
+    read_index().lock().map(|index| index.len()).unwrap_or(0)
+}
+
+/// Forgets every remembered payload (tests: the index is process-wide).
+pub fn reset_read_index_for_test() {
+    if let Ok(mut index) = read_index().lock() {
+        index.clear();
+    }
+}
+
 /// Most recent decisions kept for the row; the row only ever looks back one turn.
 const ACTIVITY_RING: usize = 64;
 
@@ -610,6 +648,34 @@ mod catalogue_helper_tests {
             "a chat backend gets room to answer, got {budget:?}"
         );
         assert!(budget <= client.config().timeout);
+    }
+
+    /// The reuse lane's rule: the first payload is remembered, the second
+    /// identical one becomes a pointer, and a changed payload is never mistaken
+    /// for a repeat.
+    #[test]
+    #[serial_test::serial]
+    fn the_read_index_points_a_repeat_at_the_first_copy() {
+        reset_read_index_for_test();
+        assert_eq!(remembered_reads(), 0);
+
+        assert_eq!(
+            note_payload_read("hash-a", "read_file"),
+            None,
+            "the first read reports nothing: it is the copy the others point at"
+        );
+        assert_eq!(
+            note_payload_read("hash-a", "read_file").as_deref(),
+            Some("read_file")
+        );
+        assert_eq!(remembered_reads(), 1, "a repeat is not remembered twice");
+        assert_eq!(
+            note_payload_read("hash-b", "grep"),
+            None,
+            "different bytes are a different payload"
+        );
+        assert_eq!(remembered_reads(), 2);
+        reset_read_index_for_test();
     }
 
     #[serial_test::serial]

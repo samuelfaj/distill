@@ -122,10 +122,10 @@ reasoning_shape = "max_tokens"                # sem `reasoning_effort` neste mod
   antes de chegar ao modelo caro) — a lane determinística existe e está ligada à flag
   `d2_big_output_retention`, mas a compressão por modelo, com o mesmo store-before-loss,
   não.
-- **Reuso de leitura entre turnos** (um `read_file` byte-idêntico ao anterior virar uma
-  nota apontando para a leitura anterior): as peças puras existem e estão testadas
-  (`content_hash`, `reuse_note`), mas o índice e o ponto de inserção no caminho do
-  `read_file` não.
+- **Reuso de leitura**: implementado e ligado ao mesmo flag da lane D2 — um payload
+  byte-idêntico a um já enviado vira uma nota que aponta para a primeira cópia
+  (`crate::jev::note_payload_read` + `reduce::reuse_note`), com teste do índice; o que
+  falta é um limite por turno e a medição no caminho vivo.
 - **Redução do prompt fixo por turno** (levar ao modelo só os blocos que o turno precisa).
 
 ## 5. Como verificar
@@ -151,6 +151,7 @@ OPENROUTER_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ign
 | Effort na forma do modelo | ✅ `cargo test -p xai-grok-sampler --lib apply_defaults` + 4 testes de `ReasoningShape`; o level vira budget de tokens e o orçamento nunca passa do teto de completion |
 | Config → sampler | ✅ `[model.openrouter-qwen37] reasoning_shape` chega em `SamplerConfig.reasoning_shape` |
 | Redução determinística | ✅ 7 testes (log de build, listagem, prosa, diff, guarda de literais, elisão com range exato, hash/reuso) |
+| Reuso de leitura | ✅ índice testado (primeira leitura lembra, repetição idêntica aponta, bytes diferentes não colidem); no caminho vivo: payload ≥ 2 KB com o flag D2 ligado |
 | Entrada real, duas vezes | ✅ dois turnos completos com resposta correta; 18 e 17 decisões, todas nomeando `qwen/qwen3.7-flash`; o modelo barato roteou uma rodada de sessão (~29k/1M tokens) |
 | Kill switch (`GROK_JEV=0`) | ✅ zero registros novos |
 | `cargo test -p xai-grok-pager --lib` | ❌ falha **pré-existente** de feature (`WorkspaceOps::for_test` não existe sem a feature `test-support`), reproduzida também com as mudanças guardadas com `git stash` |

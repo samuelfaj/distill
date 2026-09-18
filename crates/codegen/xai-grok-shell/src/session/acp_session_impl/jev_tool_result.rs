@@ -20,6 +20,9 @@ use xai_grok_workspace::jev::types::Json;
 
 use super::SessionActor;
 
+/// Payloads at or above this size are remembered, so a repeat can be a pointer
+/// instead of the bytes (small results are not worth a lookup).
+const READ_REUSE_BYTES: usize = 2_000;
 /// Results below this size are left alone: no call, no latency, no cost.
 const MIN_BYTES: usize = 400;
 /// At most this many advisory hints are appended, whatever the answers say.
@@ -57,6 +60,32 @@ impl SessionActor {
         }
         let mut body = text;
         let mut hints: Vec<String> = Vec::new();
+
+        // ---- read reuse: do not send the same bytes twice ----
+        //
+        // A file that has not changed since the model read it is already in the
+        // conversation verbatim. Re-sending it costs the whole file and buys
+        // nothing; the note says where the earlier copy is, and the model can
+        // read it again if it wants. Only a payload large enough to matter, and
+        // only when the bytes are *identical* — a changed file is never reused.
+        if body.len() >= READ_REUSE_BYTES
+            && crate::jev::lever_active(JevLever::D2BigOutputRetention)
+        {
+            let hash = xai_grok_workspace::jev::reduce::content_hash(&body);
+            if let Some(first_at) = crate::jev::note_payload_read(&hash, tool) {
+                crate::jev::record_item(
+                    JevLever::D2BigOutputRetention,
+                    "reuse",
+                    &format!(
+                        "{} bytes already in this conversation from {first_at} (sha {hash})",
+                        body.len()
+                    ),
+                    None,
+                    None,
+                );
+                body = xai_grok_workspace::jev::reduce::reuse_note(&hash, &first_at, body.len());
+            }
+        }
 
         // ---- A1: rank the files a grep hit, before the model reads them ----
         if tool == "grep" || tool == "search" {

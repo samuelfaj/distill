@@ -20,6 +20,7 @@
 //! replace an existing safety check.
 
 pub mod context;
+pub mod lanes;
 pub mod routing;
 pub mod selection;
 pub mod verify;

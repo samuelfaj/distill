@@ -147,13 +147,80 @@ impl SessionActor {
             }
         }
 
+        // ---- one decision point: who does this, how, and at which effort ----
+        //
+        // The three answers travel in ONE request (the app's invariant), and the
+        // decision gates every cheap lane below. With the key off, the lanes fall
+        // back to their own switches.
+        let mut lane_cheap = true;
+        if body.len() >= COMPRESS_BYTES
+            && crate::jev::lever_active(JevLever::ELaneChoice)
+            && let Ok(questions) = xai_grok_workspace::jev::catalog::lanes::lane_questions()
+        {
+            let cheap_slug = crate::jev::local_config_cached()
+                .model
+                .clone()
+                .unwrap_or_default();
+            // The micro-action is described from the tool that produced this
+            // payload: the battery is told what the step is, not what it read.
+            let action = format!("{tool} produced {} bytes", body.len());
+            let context = xai_grok_workspace::jev::catalog::lanes::LaneContext {
+                action,
+                payload_bytes: body.len(),
+                payload_class: format!(
+                    "{:?}",
+                    xai_grok_workspace::jev::reduce::classify_payload(&body)
+                )
+                .to_ascii_lowercase(),
+                request: String::new(),
+                main_model: self.current_model_id().await,
+                cheap_model: cheap_slug,
+            };
+            let state = xai_grok_workspace::jev::catalog::lanes::lane_state(&context);
+            if let Some(answers) =
+                crate::jev::ask_item(JevLever::ELaneChoice, state, questions).await
+            {
+                let choice = xai_grok_workspace::jev::catalog::lanes::compose_lane(
+                    &answers,
+                    !context.cheap_model.trim().is_empty(),
+                    xai_grok_workspace::jev::catalog::lanes::CHEAP_CONFIDENCE_FLOOR,
+                );
+                lane_cheap = choice.is_some();
+                crate::jev::record_item(
+                    JevLever::ELaneChoice,
+                    &choice
+                        .as_ref()
+                        .map_or_else(|| "main".to_owned(), |choice| choice.label()),
+                    &format!("{} bytes of {}", body.len(), context.payload_class),
+                    choice.as_ref().and_then(|choice| choice.confidence),
+                    Some(&answers),
+                );
+                // A subagent form is a recommendation the harness records and does
+                // not take: the cheap-agent lane is not wired yet, so the work
+                // stays with the session model rather than silently running direct.
+                if let Some(choice) = &choice
+                    && !choice.direct
+                {
+                    lane_cheap = false;
+                    crate::jev::record_item(
+                        JevLever::ECheapAgent,
+                        "defer",
+                        "the decision asked for a cheap subagent; that lane is not wired, so the session model keeps it",
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+
         // ---- cheap compression: the model lane, last and flag-gated ----
         //
         // Only when the deterministic passes could not get the payload down, only
-        // for the command/build output they are meant for, and only through the
-        // shipped task (which stores the original, sends one request and refuses
-        // an answer that lost a literal).
+        // for the command/build output they are meant for, only when the lane
+        // decision allows it, and only through the shipped task (which stores the
+        // original, sends one request and refuses an answer that lost a literal).
         if body.len() >= COMPRESS_BYTES
+            && lane_cheap
             && crate::jev::lever_active(JevLever::ECheapCompress)
             && let Some(outcome) = self.cheap_task_for(Lever::ECheapCompress, "distill_command_output", &body, "").await
             && let Some(store) = crate::jev_store::store_payload(&body)
@@ -178,6 +245,7 @@ impl SessionActor {
 
         // ---- a closed verdict a reader can branch on ----
         if body.len() >= READ_REUSE_BYTES
+            && lane_cheap
             && crate::jev::lever_active(JevLever::ECheapTask)
             && let Some(outcome) = self
                 .cheap_task_for(Lever::ECheapTask, "test_verdict", &body, "")

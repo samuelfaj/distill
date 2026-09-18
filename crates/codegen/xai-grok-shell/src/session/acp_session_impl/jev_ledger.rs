@@ -39,6 +39,8 @@ pub(crate) struct JevTurnLedger {
     /// round off the session model (the chat state still builds the request with
     /// the session id, and the request's own id wins on the wire).
     pending_route: Option<String>,
+    /// Calls this turn's validation gate held back, so it cannot wedge the turn.
+    holds: u32,
 }
 
 impl JevTurnLedger {
@@ -94,6 +96,16 @@ impl JevTurnLedger {
         self.pending_route = Some(model.into());
     }
 
+    /// How many calls this turn's validation gate has held.
+    pub(crate) fn holds(&self) -> u32 {
+        self.holds
+    }
+
+    /// Counts one held call.
+    pub(crate) fn note_hold(&mut self) {
+        self.holds = self.holds.saturating_add(1);
+    }
+
     /// Takes the pending route, if any: the request carries it exactly once.
     pub(crate) fn take_pending_route(&mut self) -> Option<String> {
         self.pending_route.take()
@@ -105,6 +117,7 @@ impl JevTurnLedger {
         self.pending = None;
         self.started = None;
         self.pending_route = None;
+        self.holds = 0;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())
@@ -148,6 +161,20 @@ mod tests {
         assert_eq!(local.tokens(), 220);
         assert!(ledger.window_start().is_none(), "the drain resets the turn");
         assert!(ledger.take_rows().is_empty());
+    }
+
+    /// The hold budget resets with the turn, so one bad turn cannot silence a
+    /// later one — and it is what stops a systematic misfire from wedging work.
+    #[test]
+    fn holds_count_within_the_turn_and_reset_with_it() {
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(ledger.holds(), 0);
+        ledger.note_hold();
+        ledger.note_hold();
+        assert_eq!(ledger.holds(), 2);
+        ledger.note_round("m", None);
+        let _ = ledger.take_rows();
+        assert_eq!(ledger.holds(), 0, "a new turn starts with a full budget");
     }
 
     /// A routed round hands its model id to the request exactly once.

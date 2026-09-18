@@ -58,12 +58,10 @@ impl SessionActor {
         &self,
         usage: &mut crate::extensions::notification::PromptUsage,
     ) {
-        let mut rows = Vec::new();
-        let window = {
+        let (rows, window) = {
             let mut ledger = self.jev_ledger.borrow_mut();
             let window = ledger.window_start();
-            rows = ledger.take_rows();
-            window
+            (ledger.take_rows(), window)
         };
         if rows.is_empty() {
             return;
@@ -465,7 +463,7 @@ impl SessionActor {
     }
 
     /// The last real human request in the conversation, bounded for a battery.
-    async fn jev_last_human_request(&self) -> Option<String> {
+    pub(super) async fn jev_last_human_request(&self) -> Option<String> {
         use xai_chat_state::compaction_utils::{extract_user_query, is_real_user_turn};
         let conversation = self.chat_state_handle.get_conversation().await;
         let text = conversation

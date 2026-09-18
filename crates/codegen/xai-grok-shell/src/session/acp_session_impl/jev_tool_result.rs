@@ -28,6 +28,10 @@ const MAX_HINTS: usize = 3;
 const MAX_LINE_CANDIDATES: usize = 200;
 /// How many lines a narrowed read keeps, at most.
 const READ_KEEP_LINES: usize = 120;
+/// Holds the call-validation gate may impose on one turn before it stands down.
+/// A hold interrupts the model mid-step, so a misfiring gate must not be able to
+/// wedge a whole turn (observed live: eight consecutive holds on file writes).
+const MAX_HOLDS_PER_TURN: u32 = 3;
 /// Marker that opens the advisory block.
 const HINT_OPEN: &str = "\n\n<jev-hints>\n";
 /// Line prefix used for each hint.
@@ -634,12 +638,29 @@ impl SessionActor {
             return None;
         }
         let target = first_path_like(&args);
+        // A hold is a real interruption, so a systematic misfire must not brick
+        // the turn: past the budget the gate stands down and records it.
+        if self.jev_ledger.borrow().holds() >= MAX_HOLDS_PER_TURN {
+            crate::jev::record_item(
+                JevLever::P5CallValidation,
+                "defer",
+                &format!("hold budget spent for this turn ({MAX_HOLDS_PER_TURN})"),
+                None,
+                None,
+            );
+            return None;
+        }
+        // The intent is the user's request for this turn. Comparing the target
+        // against the call's own arguments was meaningless (a big payload reads
+        // as "intent" text) and held every write in a long turn.
+        let intent = self
+            .jev_last_human_request()
+            .await
+            .unwrap_or_else(|| "(no request recorded)".to_owned());
         let summary = ladder::CallSummary {
             tool: tool.to_owned(),
             target: target.clone(),
-            // The call's own arguments are what we can compare the target against
-            // without pulling the transcript in; the question is worded for that.
-            intent: args.chars().take(300).collect(),
+            intent,
             protected: false,
         };
         let questions = ladder::call_validation_questions(&summary).ok()?;
@@ -655,6 +676,9 @@ impl SessionActor {
         )
         .await?;
         let verdict = ladder::compose_call_validation(&answers, &summary);
+        if let ladder::CallVerdict::Ask { .. } = verdict {
+            self.jev_ledger.borrow_mut().note_hold();
+        }
         match verdict {
             ladder::CallVerdict::Proceed => {
                 crate::jev::record_item(

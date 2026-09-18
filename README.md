@@ -192,6 +192,18 @@ b2_local_model = true         # prioridade ao modelo local (precisa de [jev.loca
   chamada. Sem uso no turno, nenhum chip aparece.
 * **Registro:** `GROK_LOG_JEV=1` escreve uma linha JSON por decisão em `~/.grok/logs/jev.jsonl`
   (lever, decisão, confiança, modelo, tokens, latência, request id).
+* **No fim de cada turno**, um bloco com a **distribuição da tarefa**: uma linha por motor que rodou naquele
+  turno, com os tokens de cada um, e o total de decisões do Jev — por exemplo:
+
+  ```
+  Qwen3.8 27B (local oMLX) - 12.4k tokens
+  DeepSeek V4.1 Flash high - 210.4k tokens
+  DeepSeek V4.1 Flash medium - 500.0k tokens
+  Jev - 41x
+  ```
+
+  Só aparece quando há o que dizer (turno com chamadas registradas ou decisões do Jev), e o número é do turno,
+  não da sessão.
 * **Guia do usuário:** [`crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md`](crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md).
 
 ## Testes

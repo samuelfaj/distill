@@ -1750,7 +1750,13 @@ impl SessionActor {
         let drain = self
             .drain_subagent_usage_for_prompt_bounded(prompt_id, max_wait)
             .await;
-        self.finalize_usage_from_outcome(prompt_id, drain).await
+        let mut usage = self.finalize_usage_from_outcome(prompt_id, drain).await;
+        // The turn report rides the same payload as the bill: one terminal, one
+        // place to read where the task went.
+        if let Some(usage) = usage.as_mut() {
+            self.attach_turn_distribution(usage);
+        }
+        usage
     }
     /// Must run on the turn task, not the session actor loop, so folds can land.
     pub(super) async fn drain_subagent_usage_for_prompt_bounded(
@@ -3279,6 +3285,10 @@ impl SessionActor {
             if let Some(usage) = response.usage.as_ref() {
                 self.chat_state_handle
                     .record_token_usage(u64::from(usage.total_tokens));
+                self.add_round_usage_for_turn_report(
+                    u64::from(usage.prompt_tokens),
+                    u64::from(usage.completion_tokens),
+                );
                 self.send_available_commands_update(AdvertiseTrigger::UsageMeta)
                     .await;
             }

@@ -123,6 +123,36 @@ pub struct PromptUsage {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub usage_is_incomplete: bool,
+    /// Where this turn's calls went: one row per (model, effort) the turn used,
+    /// biggest first. Empty when the turn never noted a round (old shells, side
+    /// calls only).
+    #[serde(default, rename = "effortUsage", skip_serializing_if = "Vec::is_empty")]
+    pub effort_usage: Vec<EffortUsageRow>,
+    /// Decisions the Jev layer took during this turn (0 when it was not used).
+    #[serde(default, rename = "jevCalls", skip_serializing_if = "is_zero")]
+    pub jev_calls: u64,
+}
+
+/// One row of a turn's distribution: which model, at which effort, how much.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortUsageRow {
+    /// Display name of the model that ran the calls (e.g. `Qwen3.8 27B (local oMLX)`).
+    pub model: String,
+    /// Reasoning effort applied to them, when the model has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Model calls made with this pair.
+    #[serde(default)]
+    pub requests: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl PromptUsage {
@@ -142,6 +172,8 @@ impl PromptUsage {
             }
             None if incomplete => Self {
                 usage_is_incomplete: true,
+                effort_usage: Vec::new(),
+                jev_calls: 0,
                 ..Default::default()
             },
             None => return None,
@@ -299,6 +331,8 @@ impl From<&xai_chat_state::UsageLedger> for PromptUsage {
                 .collect(),
             num_turns: ledger.main_loop_model_calls,
             usage_is_incomplete: ledger.incomplete,
+            effort_usage: Vec::new(),
+            jev_calls: 0,
         };
         usage.scrub_untrustworthy_costs();
         usage
@@ -2789,6 +2823,8 @@ mod tests {
             model_usage: model_usage.clone(),
             num_turns: 2,
             usage_is_incomplete: false,
+            effort_usage: Vec::new(),
+            jev_calls: 0,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &partial);
@@ -2821,6 +2857,8 @@ mod tests {
             model_usage,
             num_turns: 1,
             usage_is_incomplete: true,
+            effort_usage: Vec::new(),
+            jev_calls: 0,
         };
         incomplete.scrub_untrustworthy_costs();
         assert!(incomplete.totals.cost_usd_ticks.is_none());
@@ -2894,6 +2932,8 @@ mod tests {
             model_usage: Default::default(),
             num_turns: 1,
             usage_is_incomplete: false,
+            effort_usage: Vec::new(),
+            jev_calls: 0,
         };
         usage.scrub_untrustworthy_costs();
         assert!(usage.totals.cost_usd_ticks.is_none());
@@ -2928,6 +2968,8 @@ mod tests {
             model_usage,
             num_turns: 1,
             usage_is_incomplete: false,
+            effort_usage: Vec::new(),
+            jev_calls: 0,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &usage);

@@ -225,6 +225,19 @@ The **turn status row** (the line above the prompt, next to the running tool) sh
 | **`jev·veto`** (red) | Jev refused a call in this turn (the always-approve brake) |
 | *(nothing)* | Jev was not consulted in this turn — the row never claims otherwise |
 
+**At the end of every turn**, a block reports how the task was distributed:
+
+```
+Qwen3.8 27B (local oMLX) - 12.4k tokens
+DeepSeek V4.1 Flash high - 210.4k tokens
+Jev - 41x
+```
+
+One line per engine that ran in that turn (model plus the effort it ran at, with that turn's tokens), then the
+number of decisions the layer took during it. It comes from the harness's own per-turn ledger, rides the same
+turn-terminal payload as the bill, and is only printed when there is something to say — a turn the layer never
+touched adds no block.
+
 The **prompt footer** always shows where the path stands, next to the mode flags:
 
 | Badge | Meaning |

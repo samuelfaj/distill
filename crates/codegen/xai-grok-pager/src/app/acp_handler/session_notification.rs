@@ -333,10 +333,14 @@ pub(super) fn handle_session_notification_with_origin(
             agent_result,
             error_kind,
             elapsed_ms,
+            usage,
             ..
         } => {
             let error_kind = crate::app::error_display::wire_error_kind(error_kind.as_deref());
-            if agent.session.loading_replay {
+            // Where this turn went, from the shell's own record: one line per
+            // engine that ran, then the decision layer's call count.
+            let distribution = crate::views::turn_distribution::report(usage.as_ref());
+            let handled = if agent.session.loading_replay {
                 let first = agent.replayed_terminal_prompts.insert(prompt_id.clone());
                 if first
                     && !prompt_id.is_empty()
@@ -448,7 +452,13 @@ pub(super) fn handle_session_notification_with_origin(
                         },
                     ));
                 false
+            };
+            if let Some(distribution) = distribution {
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(distribution));
             }
+            handled
         }
         XaiSessionUpdate::SubagentSpawned {
             subagent_id,

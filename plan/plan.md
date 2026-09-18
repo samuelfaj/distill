@@ -726,6 +726,22 @@ Evidência: `{SCRATCH}/auto-effort.log` (TUI real: paleta com a linha Auto Effor
 `jev_routing::tests::the_micro_effort_state_names_the_model` e
 `slash::commands::effort::tests::auto_dispatches_the_auto_action_and_marks_the_palette`.
 
+### 12.12 Relatório de distribuição do turno — 2026-09-18
+
+Pedido do dono: ao mandar a última resposta do turno, mostrar **como a tarefa se distribuiu** entre os motores —
+por exemplo `qwen3.8 27b 4bit - 1.98M tokens`, `deepseek 4.1 flash high - 1M tokens`, `jev - 41x`.
+
+Implementado um **livro-razão por turno** no shell (`session/acp_session_impl/jev_ledger.rs`): cada rodada do loop
+anota o modelo e o effort com que vai rodar (depois das decisões do Jev, em `prepare_sampler_for_turn`), e o uso
+da resposta cai na rodada anotada por último; a soma por par (modelo, effort) vem do mesmo `usage` que o sampler
+já reporta. No fim do turno, `freeze_prompt_usage` anexa ao payload do terminal (`PromptUsage`) as linhas
+(`effortUsage`) e o número de decisões (`jevCalls`, contadas na janela do turno pelo registro de atividade), e o
+pager imprime o bloco (`views/turn_distribution.rs`) logo depois de finalizar o turno — ao vivo e também em
+replay. Sem conteúdo, nenhum bloco.
+
+Testes: `jev_ledger::tests::{usage_lands_on_the_round_it_belongs_to, rows_come_back_biggest_first_and_orphan_usage_is_ignored}`
+e `views::turn_distribution::tests::{the_report_names_each_engine_and_the_jev_calls, an_empty_payload_reports_nothing, token_formatting_stays_short}`.
+
 ### 12.11 Modelo local primeiro (oMLX) — 2026-09-18
 
 Pedido do dono: poder configurar o **modelo local** (oMLX, `Qwen3.8-27B-4bit`) e o Jev mandar para ele as

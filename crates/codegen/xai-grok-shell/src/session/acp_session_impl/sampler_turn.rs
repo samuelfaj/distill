@@ -1059,6 +1059,8 @@ impl SessionActor {
         // B2 (local): with a local model configured, the free model takes the
         // call whenever it can fully do it.
         self.jev_route_micro_call(&mut sampler_config).await;
+        // The turn report: this call runs on this model, at this effort.
+        self.note_round_for_turn_report(&sampler_config);
         // B2 (money lever): a routine turn may run at a cheaper setting; the
         // pass can only lower effort, and it is off until its gate passes.
         self.jev_apply_model_tier(&mut sampler_config).await;

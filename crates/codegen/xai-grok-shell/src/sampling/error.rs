@@ -493,6 +493,8 @@ mod tests {
             model_usage: Default::default(),
             num_turns: 1,
             usage_is_incomplete: false,
+            effort_usage: Vec::new(),
+            jev_calls: 0,
         };
         let free = "subscription:free-usage-exhausted quota hit";
         let err = attach_prompt_usage(

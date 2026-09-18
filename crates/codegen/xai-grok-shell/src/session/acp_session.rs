@@ -179,6 +179,8 @@ use session_mode::*;
 mod child_tool_projection;
 #[path = "acp_session_impl/jev_laziness.rs"]
 mod jev_laziness;
+#[path = "acp_session_impl/jev_ledger.rs"]
+pub(crate) mod jev_ledger;
 #[path = "acp_session_impl/jev_memory.rs"]
 mod jev_memory;
 #[path = "acp_session_impl/jev_routing.rs"]
@@ -759,6 +761,8 @@ pub(crate) struct SessionActor {
     /// Because a config edit can turn the selected model into a per-model BYOK model without changing its id, keying on the id alone is insufficient.
     /// Each model/credential chokepoint must clear this memo (`replace(None)`).
     pub(crate) model_auth_memo: std::cell::RefCell<Option<ModelAuthMemo>>,
+    /// This turn's model/effort distribution, reported when the turn ends.
+    pub(crate) jev_ledger: std::cell::RefCell<jev_ledger::JevTurnLedger>,
     /// The event fires at each of the six `OaiCompatClient` 401 arms in `xai-grok-sampler`.
     /// Threaded into every `SamplerConfig` reconstructed by `reconstruct_full_config`.
     /// `None` when the session was spawned without an `AuthManager` (BYOK direct mode, test fixtures).

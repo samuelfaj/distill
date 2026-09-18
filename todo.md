@@ -108,4 +108,6 @@ não passa fica **OFF** com o número do gate registrado, nunca ligado em silên
   linha de atividade (a linha acima do prompt, ao lado da ferramenta em execução): `jev…` enquanto uma decisão
   está em voo, `jev 0,4s` / `jev ×3` quando já respondeu, e `jev·veto` (vermelho) quando recusou uma chamada.
   O chip só aparece quando o Jev foi realmente usado no turno (`xai_grok_shell::jev::turn_activity`).
+* Relatório: ao fim de cada turno, um bloco com uma linha por (modelo, effort) que rodou — com os tokens do turno —
+  seguido de `Jev - Nx` (decisões do turno). Vem do livro-razão do shell (`jev_ledger`) anexado ao terminal do turno.
 * Fiação: `python3 {SCRATCH}/wiring_check.py` imprime `WIRING: PASS (23/23 …)` ou a lista do que falta.

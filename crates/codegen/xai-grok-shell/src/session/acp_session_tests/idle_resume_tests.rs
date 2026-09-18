@@ -134,6 +134,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 attribution_callback: None,
                 auth_method_id: test_auth_method_id("cached_token"),
                 model_auth_memo: std::cell::RefCell::new(None),
+                jev_ledger: std::cell::RefCell::new(Default::default()),
                 auth_manager: {
                     let dir = tempfile::tempdir().unwrap();
                     let mgr = std::sync::Arc::new(xai_grok_login::AuthManager::new(

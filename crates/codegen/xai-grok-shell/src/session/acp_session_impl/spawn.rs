@@ -1754,6 +1754,7 @@ pub(crate) async fn spawn_session_actor(
         transient_episode_start: std::cell::Cell::new(None),
         auth_method_id,
         model_auth_memo: std::cell::RefCell::new(None),
+        jev_ledger: std::cell::RefCell::new(Default::default()),
         attribution_callback,
         auth_manager,
         is_chat_kind,

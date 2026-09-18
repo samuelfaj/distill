@@ -35,6 +35,54 @@ const RECENT_ITEMS: usize = 12;
 const MAX_RECENT_TOOLS: usize = 6;
 
 impl SessionActor {
+    /// Records, for the turn report, that this round runs on `cfg`'s model at
+    /// `cfg`'s effort. Called once per model call, after the decision layer.
+    pub(super) fn note_round_for_turn_report(&self, cfg: &SamplingConfig) {
+        let model = self.model_display_name(&cfg.model);
+        let effort = cfg
+            .reasoning_effort
+            .map(|effort| effort.as_ref().to_owned());
+        self.jev_ledger.borrow_mut().note_round(model, effort);
+    }
+
+    /// Attributes one delivered response's usage to the round noted last.
+    pub(super) fn add_round_usage_for_turn_report(&self, input_tokens: u64, output_tokens: u64) {
+        self.jev_ledger
+            .borrow_mut()
+            .add_usage(input_tokens, output_tokens);
+    }
+
+    /// Fills the turn-completed payload with the turn's distribution: the
+    /// (model, effort) rows and the number of decisions Jev took during it.
+    pub(super) fn attach_turn_distribution(
+        &self,
+        usage: &mut crate::extensions::notification::PromptUsage,
+    ) {
+        let mut rows = Vec::new();
+        let window = {
+            let mut ledger = self.jev_ledger.borrow_mut();
+            let window = ledger.window_start();
+            rows = ledger.take_rows();
+            window
+        };
+        if rows.is_empty() {
+            return;
+        }
+        usage.effort_usage = rows
+            .into_iter()
+            .map(|row| crate::extensions::notification::EffortUsageRow {
+                model: row.model,
+                effort: row.effort,
+                requests: row.requests,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+            })
+            .collect();
+        // The decisions taken inside this same turn window; the ledger's first
+        // call is what anchors it, so the two halves describe one turn.
+        usage.jev_calls = crate::jev::turn_activity(window).decisions as u64;
+    }
+
     /// B2 (local): routes **this** model call to the configured local model when
     /// that model can fully do the call — it is free, so it wins whenever it is
     /// capable, and the cloud model keeps everything else.

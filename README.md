@@ -60,6 +60,7 @@ harness. O mapa completo (arquivo:linha + teste de cada item) está em
 | Início do turno | vale sugerir delegar a um subagente? | 0,60 | acrescenta **uma linha** à descrição da ferramenta de delegação; nunca cria subagente |
 | Tipo de subagente **desconhecido** pedido pelo modelo | qual definição existente serve | confiança 0,70 | resolve para uma definição que a sessão já permite (mesmos gates de lista); dúvida ⇒ erro de hoje |
 | Lembrete de skills anunciadas | qual skill o pedido atual precisa (= P6) | 0,60 | estreita o anúncio para essa skill; o catálogo de skills (slash commands) fica intacto |
+| Modelo local configurado (`[jev.local]`) | "o modelo local consegue fazer **esta** chamada inteira?" (capacidade + contexto + raciocínio frontier) | capaz ≥ 0,70 e nenhum aviso ≥ 0,40; antes disso, a janela local tem de comportar a estimativa + a reserva | manda a chamada para o **modelo local (grátis)**; qualquer dúvida ⇒ continua no modelo da sessão. É a prioridade ao local, sem nunca arriscar a tarefa |
 | **`/effort auto`** ligado | qual effort usar **naquela chamada do modelo** (ver abaixo) | 0,45 | aplica o nível escolhido **só** se ele estiver no menu do modelo; senão mantém o effort da sessão |
 | Turno simples (alavanca `b2_model_tier`, **desligada** por padrão) | rebaixar o effort do turno | confiança 0,80 | só rebaixa, nunca sobe; desligada até o gate dela passar |
 
@@ -101,6 +102,53 @@ chamada do modelo** dentro do turno, em vez de um nível fixo para a sessão:
 * `/effort <nível>` desliga o modo (nível explícito sempre ganha) e vira o fallback; `[jev.ladder]
   b2_micro_effort = false` mantém o modo mas desliga a decisão.
 
+## Modelo local (oMLX / Ollama / qualquer endpoint OpenAI)
+
+Dá para rodar as microtarefas no seu modelo local — ele é grátis, então **vem primeiro**; só fica de fora quando
+não tem capacidade total para aquela chamada. Configure duas coisas:
+
+```toml
+[model.qwen38-local]              # o endpoint local, como qualquer modelo do harness
+model = "Qwen3.8-27B-4bit"
+base_url = "http://127.0.0.1:8000/v1"
+name = "Qwen3.8 27B (local oMLX)"
+api_key = "none"                  # o oMLX aceita a chave literal "none"
+api_backend = "chat_completions"
+context_window = 32768            # a janela REAL do modelo servido
+max_completion_tokens = 4096
+stream_tool_calls = false
+
+[jev.local]
+model = "qwen38-local"            # o id da entrada acima
+notes = "tool calling OK, sem reasoning effort; fraco em provas e contagem."
+context_reserve_tokens = 8192     # espaço guardado para a resposta + ferramentas
+# min_capability = 0.70           # o quanto o Jev precisa estar certo (padrão 0,70)
+```
+
+Como a decisão funciona, por chamada do modelo:
+
+1. **Guarda de código:** a estimativa da conversa + a reserva tem de caber na janela local. Se não cabe, vai para
+   a nuvem e o registro diz por quê (`local window too small for this call: ~29250 tokens + 8192 reserve > 32768`).
+2. **Decisão do Jev:** três perguntas — *o modelo local faz esta chamada inteira com a mesma qualidade?*,
+   *precisa de mais contexto do que a janela dele?*, *precisa de raciocínio nível frontier?*. O local só ganha com
+   `capable ≥ 0,70` **e** nenhum aviso ≥ 0,40; falta de resposta, erro ou timeout ⇒ nuvem.
+3. **Aplicação:** a chamada sai com endpoint, credencial, backend e janela da entrada local, mantendo a
+   atribuição da sessão. O rodapé continua igual; a linha de atividade mostra `jev ×N ·local` quando houve chamada
+   local no turno.
+
+No `~/.grok/logs/jev.jsonl` cada decisão fica assim:
+
+```
+local | Qwen3.8 27B (local oMLX) at http://127.0.0.1:8000/v1 · capable 0.88 (floor 0.70) · frontier 0.12 · context 0.05 · ~8100/32768 tokens
+cloud | Qwen3.8 27B (local oMLX) at … · capable 0.61 (floor 0.70) · frontier 0.35 · context 0.05 · ~29250/32768 tokens
+```
+
+**Atenção à janela:** o prompt-base deste harness (system prompt + histórico do turno) já custa **~29k tokens**,
+e as definições de ferramentas vão por cima. Um modelo local com janela de 32k, portanto, quase nunca cabe — ele
+funciona para conversas curtas, e o correto é subir a janela no servidor local (no oMLX: *Settings → modelo →
+max context window*; a própria instalação aqui já tem um 27B configurado com 262144). Com 128k+ o roteamento local
+passa a acontecer de verdade. Para desligar tudo: `[jev.ladder] b2_local_model = false`, ou remova `[jev.local]`.
+
 ## Quando **não** usamos
 
 | Ideia | Por quê |
@@ -126,6 +174,7 @@ p1_tool_family = true         # e todos os demais itens do catálogo…
 b2_model_tier  = false        # rebaixamento por turno: desligado até o gate
 c6_injection_screen = false   # tela de injeção: desligado até medir o custo
 b2_micro_effort = true        # decisão por micro-ação (só roda no /effort auto)
+b2_local_model = true         # prioridade ao modelo local (precisa de [jev.local])
 ```
 
 * **Interruptor mestre:** `GROK_JEV=0` (ou `[jev] enabled = false`) ⇒ nenhum cliente é construído e **nenhuma

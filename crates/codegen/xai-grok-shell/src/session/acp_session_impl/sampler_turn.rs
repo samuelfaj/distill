@@ -1056,6 +1056,9 @@ impl SessionActor {
         // chooses the effort for THIS model call; otherwise the round keeps the
         // session's own effort.
         self.jev_choose_micro_effort(&mut sampler_config).await;
+        // B2 (local): with a local model configured, the free model takes the
+        // call whenever it can fully do it.
+        self.jev_route_micro_call(&mut sampler_config).await;
         // B2 (money lever): a routine turn may run at a cheaper setting; the
         // pass can only lower effort, and it is off until its gate passes.
         self.jev_apply_model_tier(&mut sampler_config).await;

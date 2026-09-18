@@ -726,6 +726,27 @@ Evidência: `{SCRATCH}/auto-effort.log` (TUI real: paleta com a linha Auto Effor
 `jev_routing::tests::the_micro_effort_state_names_the_model` e
 `slash::commands::effort::tests::auto_dispatches_the_auto_action_and_marks_the_palette`.
 
+### 12.11 Modelo local primeiro (oMLX) — 2026-09-18
+
+Pedido do dono: poder configurar o **modelo local** (oMLX, `Qwen3.8-27B-4bit`) e o Jev mandar para ele as
+microtarefas que ele consegue fazer, **sempre dando prioridade ao local por ser gratuito**, mas só quando ele
+tiver capacidade total para aquela chamada.
+
+Implementado: `[jev.local]` (entrada de catálogo + `notes` + `context_reserve_tokens` + `min_capability`), o lever
+`b2_local_model`, o pacote `routing::local_model_questions/compose_local_model_with_floor` (3 `noul`; local exige
+`capable ≥ piso` e nenhum aviso ≥ 0,40; falta de resposta ⇒ nuvem) e o roteamento por chamada em
+`prepare_sampler_for_turn` (`jev_route_micro_call`), com guarda de código antes (estimativa + reserva ≤ janela) e
+registro diagnosticável (`capable 0.61 (floor 0.70) · frontier 0.35 · context 0.05 · ~29250/32768 tokens`). O chip
+do turno ganhou `·local`.
+
+**Medições com o oMLX real desta máquina** (127.0.0.1:8000, chave literal `none`): só o `Qwen3.8-27B-4bit` carrega
+(os dois modelos de 256k falham com `Model type qwen4_exp not supported`), tool calling funciona
+(`tool_calls` com JSON válido, 1,9 s), janela de 32k. O prompt-base do harness mede **~29,3k tokens** já num
+projeto vazio, então com reserva a guarda manda para a nuvem; com a reserva zerada, o Jev respondeu `capable`
+0,59–0,61 (abaixo do piso 0,70) e a chamada continuou na nuvem — os dois caminhos de deferimento (guarda e
+decisão) verificados ao vivo. Conclusão operacional: para o local pegar chamadas de verdade, a janela dele no oMLX
+precisa subir (o outro 27B da instalação já está em 262144).
+
 ### 12.9 Visibilidade do uso no TUI (2026-09-18)
 
 O dono pediu que o uso do Jev aparecesse na **linha de atividade** (a linha acima do prompt, ao lado da ferramenta

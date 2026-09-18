@@ -13,7 +13,7 @@ use xai_grok_workspace::jev::flags::{JevFlags, JevLadderOverlay};
 
 pub use xai_grok_workspace::jev::flags::JevStatus;
 
-use crate::agent::config::JevConfig;
+use crate::agent::config::{JevConfig, JevLocalConfig};
 
 /// Reads `[jev]` from the merged, overlay-free config layers.
 pub fn resolve_config_from_disk() -> JevConfig {
@@ -66,6 +66,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b1_intent_routing: cfg.ladder.b1_intent_routing,
             b2_model_tier: cfg.ladder.b2_model_tier,
             b2_micro_effort: cfg.ladder.b2_micro_effort,
+            b2_local_model: cfg.ladder.b2_local_model,
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,
@@ -253,6 +254,8 @@ pub struct JevTurnActivity {
     pub in_flight: u32,
     /// Latency of the most recent decision in the window (0 without one).
     pub last_latency_ms: u64,
+    /// Model calls this turn that the decision layer ran on the **local** model.
+    pub local_runs: u32,
 }
 
 impl JevTurnActivity {
@@ -272,10 +275,14 @@ impl JevTurnActivity {
         if self.refused {
             return Some("jev·veto".to_owned());
         }
+        let suffix = if self.local_runs > 0 { " ·local" } else { "" };
         match self.decisions {
             0 => (self.in_flight > 0).then(|| "jev…".to_owned()),
-            1 => Some(format!("jev {:.1}s", self.last_latency_ms as f64 / 1000.0)),
-            n => Some(format!("jev ×{n}")),
+            1 => Some(format!(
+                "jev {:.1}s{suffix}",
+                self.last_latency_ms as f64 / 1000.0
+            )),
+            n => Some(format!("jev ×{n}{suffix}")),
         }
     }
 }
@@ -285,6 +292,10 @@ const ACTIVITY_RING: usize = 64;
 
 /// Decisions whose label means "the call was refused".
 const REFUSALS: &[&str] = &["block", "veto", "deny", "refuse", "refused"];
+
+/// Lever and label of a call that ran on the local model (see `JevLever::B2LocalModel`).
+const LOCAL_LEVER: &str = "b2_local_model";
+const LOCAL_DECISION: &str = "local";
 
 #[derive(Debug, Default)]
 struct ActivityState {
@@ -347,6 +358,9 @@ pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
         activity.decisions = activity.decisions.saturating_add(1);
         if REFUSALS.contains(&entry.decision.as_str()) {
             activity.refused = true;
+        }
+        if entry.lever == LOCAL_LEVER && entry.decision == LOCAL_DECISION {
+            activity.local_runs = activity.local_runs.saturating_add(1);
         }
         if activity.last_latency_ms == 0 {
             activity.last_latency_ms = entry.latency_ms;
@@ -437,6 +451,13 @@ impl xai_grok_workspace::jev::permission::JevAsker for ObservedAsker {
     }
 }
 
+/// The local-model section, resolved once per process: a model call must never
+/// re-read the disk, and the section does not change mid-run.
+pub fn local_config_cached() -> &'static JevLocalConfig {
+    static LOCAL: OnceLock<JevLocalConfig> = OnceLock::new();
+    LOCAL.get_or_init(|| resolve_config_from_disk().local)
+}
+
 /// The flags resolved once per process (configuration does not change mid-run).
 fn flags_cached() -> xai_grok_workspace::jev::flags::JevFlags {
     static FLAGS: OnceLock<xai_grok_workspace::jev::flags::JevFlags> = OnceLock::new();
@@ -506,15 +527,17 @@ mod catalogue_helper_tests {
         let before = std::time::Instant::now();
         note_decision("p5_call_validation", "ask", 410);
         note_decision("yolo_veto", "block", 380);
+        note_decision(LOCAL_LEVER, LOCAL_DECISION, 1200);
         // A window that opens *after* the two decisions, offset past any clock
         // granularity, so "was it in this turn?" cannot depend on timer detail.
         let after = before + std::time::Duration::from_millis(50);
 
         let turn = turn_activity(Some(before));
-        assert_eq!(turn.decisions, 2);
+        assert_eq!(turn.decisions, 3);
+        assert_eq!(turn.local_runs, 1, "a local route shows on the row");
         assert!(turn.refused, "a refusal must be visible on the row");
         assert_eq!(
-            turn.last_latency_ms, 380,
+            turn.last_latency_ms, 1200,
             "the newest latency is the one shown"
         );
         assert!(!turn.is_quiet());
@@ -523,7 +546,7 @@ mod catalogue_helper_tests {
         assert!(turn_activity(Some(after)).is_quiet());
 
         // An unknown window (no turn anchor) still reports the ring.
-        assert_eq!(turn_activity(None).decisions, 2);
+        assert_eq!(turn_activity(None).decisions, 3);
 
         let guard = JevInFlight::begin();
         let in_flight = turn_activity(Some(after));
@@ -574,10 +597,23 @@ mod catalogue_helper_tests {
                 refused: true,
                 in_flight: 1,
                 last_latency_ms: 380,
+                local_runs: 1,
             }
             .label()
             .as_deref(),
-            Some("jev·veto")
+            Some("jev·veto"),
+            "a refusal outranks the local marker"
+        );
+        assert_eq!(
+            JevTurnActivity {
+                decisions: 3,
+                last_latency_ms: 420,
+                local_runs: 2,
+                ..Default::default()
+            }
+            .label()
+            .as_deref(),
+            Some("jev ×3 ·local")
         );
     }
 

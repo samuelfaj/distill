@@ -1263,6 +1263,18 @@ mod tests {
             "a consultation in flight is visible: {in_flight:?}"
         );
 
+        // Calls the decision layer ran on the local model are marked.
+        let local = render_running_with_jev(JevTurnActivity {
+            decisions: 4,
+            local_runs: 3,
+            last_latency_ms: 900,
+            ..Default::default()
+        });
+        assert!(
+            local.contains("jev ×4 ·local"),
+            "local runs are visible on the row: {local:?}"
+        );
+
         // The chip shares the row: the running tool and the timer survive it.
         assert!(one.contains("read_file"), "the tool label stays: {one:?}");
         assert!(one.contains("19s"), "the turn timer stays: {one:?}");

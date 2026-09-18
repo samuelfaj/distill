@@ -1193,7 +1193,36 @@ pub struct JevConfig {
     pub max_state_bytes: Option<usize>,
     /// Per-lever switches of the token-saving ladder (§1.3.1).
     pub ladder: JevLadderConfig,
+    /// Optional local model the decision layer may route a model call to.
+    #[serde(default)]
+    pub local: JevLocalConfig,
 }
+
+/// `[jev.local]`: a model that runs on this machine (oMLX, Ollama, any
+/// OpenAI-compatible server already declared as `[model.<id>]`).
+///
+/// The decision layer prefers it **when it can fully do the call**, because it
+/// costs nothing; the profile below is what the decision reasons about.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JevLocalConfig {
+    /// Catalog id of the `[model.<id>]` entry to route to. Empty/absent ⇒ no
+    /// local routing at all.
+    pub model: Option<String>,
+    /// What the decision is told about this model, in one or two lines
+    /// (measured facts beat marketing: window, tool support, languages).
+    pub notes: Option<String>,
+    /// Tokens kept free in the local window for the answer and the tool batch.
+    /// Defaults to [`DEFAULT_LOCAL_CONTEXT_RESERVE`].
+    pub context_reserve_tokens: Option<u64>,
+    /// How sure the decision must be that the local model can fully do a call
+    /// before the call runs locally. Defaults to
+    /// [`xai_grok_workspace::jev::catalog::routing::LOCAL_CAPABLE_FLOOR`].
+    pub min_capability: Option<f64>,
+}
+
+/// Tokens reserved in the local model's window when the config does not say.
+pub const DEFAULT_LOCAL_CONTEXT_RESERVE: u64 = 8_192;
 /// Per-lever switches for the Jev ladder; every field defaults to false so a
 /// lever whose evaluation gate fails simply stays off (goal criterion 5).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1229,6 +1258,9 @@ pub struct JevLadderConfig {
     pub b1_intent_routing: Option<bool>,
     /// B2: money lever (model tier); off until its own gate passes.
     pub b2_model_tier: Option<bool>,
+    /// B2 (local): route a model call to the configured local model when it can
+    /// fully do it (free), falling back to the cloud model otherwise.
+    pub b2_local_model: Option<bool>,
     /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
     #[serde(default, alias = "b2_micro_effort")]
     pub b2_micro_effort: Option<bool>,

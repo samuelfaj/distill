@@ -73,6 +73,8 @@ pub struct JevLadderOverlay {
     pub b2_model_tier: Option<bool>,
     /// B2 (auto): the per-model-call effort the user opts into with `/effort auto`.
     pub b2_micro_effort: Option<bool>,
+    /// B2 (local): prefer the configured local model for calls it can fully do.
+    pub b2_local_model: Option<bool>,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: Option<bool>,
     /// B6: hint that delegating is worth it (never spawns).
@@ -133,6 +135,7 @@ impl JevFlags {
             b1_intent_routing: true,
             b2_model_tier: false,
             b2_micro_effort: true,
+            b2_local_model: true,
             b3_subagent_type: true,
             b6_delegation_hint: true,
             c1_premature_stop: true,
@@ -197,6 +200,8 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.b2_model_tier, None, self.b2_model_tier);
         self.b2_micro_effort =
             self.enabled && resolve_switch(ladder.b2_micro_effort, None, self.b2_micro_effort);
+        self.b2_local_model =
+            self.enabled && resolve_switch(ladder.b2_local_model, None, self.b2_local_model);
         self.b3_subagent_type =
             self.enabled && resolve_switch(ladder.b3_subagent_type, None, self.b3_subagent_type);
         self.b6_delegation_hint = self.enabled
@@ -266,6 +271,8 @@ pub struct JevFlags {
     pub b2_model_tier: bool,
     /// B2 (auto): pick the effort for every model call (only runs in auto mode).
     pub b2_micro_effort: bool,
+    /// B2 (local): prefer the configured local model when it can fully do the call.
+    pub b2_local_model: bool,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: bool,
     /// B6: hint that delegating is worth it (never spawns).
@@ -311,6 +318,7 @@ impl JevFlags {
             b1_intent_routing: false,
             b2_model_tier: false,
             b2_micro_effort: false,
+            b2_local_model: false,
             b3_subagent_type: false,
             b6_delegation_hint: false,
             c1_premature_stop: false,
@@ -418,6 +426,7 @@ impl JevFlags {
             JevLever::B1IntentRouting => self.b1_intent_routing,
             JevLever::B2ModelTier => self.b2_model_tier,
             JevLever::B2MicroEffort => self.b2_micro_effort,
+            JevLever::B2LocalModel => self.b2_local_model,
             JevLever::B3SubagentType => self.b3_subagent_type,
             JevLever::B6DelegationHint => self.b6_delegation_hint,
             JevLever::C1PrematureStop => self.c1_premature_stop,
@@ -451,6 +460,7 @@ pub enum JevLever {
     B1IntentRouting,
     B2ModelTier,
     B2MicroEffort,
+    B2LocalModel,
     B3SubagentType,
     B6DelegationHint,
     C1PrematureStop,
@@ -483,6 +493,7 @@ impl JevLever {
             Self::B1IntentRouting => "b1_intent_routing",
             Self::B2ModelTier => "b2_model_tier",
             Self::B2MicroEffort => "b2_micro_effort",
+            Self::B2LocalModel => "b2_local_model",
             Self::B3SubagentType => "b3_subagent_type",
             Self::B6DelegationHint => "b6_delegation_hint",
             Self::C1PrematureStop => "c1_premature_stop",

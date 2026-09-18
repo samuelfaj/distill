@@ -173,6 +173,44 @@ Rules that hold in auto mode:
 The footer shows `(<model>) (auto)` while the mode is on, and the turn-status row
 still shows the `jev …` chip per turn.
 
+## Local model first (oMLX, Ollama, any OpenAI-compatible server)
+
+The local model is free, so it takes a call whenever it can fully do it. Configure the endpoint like any custom
+model and point `[jev.local]` at it:
+
+```toml
+[model.qwen38-local]
+model = "Qwen3.8-27B-4bit"
+base_url = "http://127.0.0.1:8000/v1"
+name = "Qwen3.8 27B (local oMLX)"
+api_key = "none"
+api_backend = "chat_completions"
+context_window = 32768
+max_completion_tokens = 4096
+stream_tool_calls = false
+
+[jev.local]
+model = "qwen38-local"
+notes = "tool calling OK, no reasoning effort; weak at proofs and counting."
+context_reserve_tokens = 8192
+# min_capability = 0.70
+```
+
+Per model call:
+
+1. **Code guard** — the conversation estimate plus the reserve must fit the local window; if not, the call stays
+   on the session model and the record says why.
+2. **Decision** — three `noul` questions: *can the local model fully do this call?*, *does it need more context
+   than its window?*, *does it need frontier-level reasoning?*. Local wins only with `capable ≥ min_capability`
+   (0.70 by default) and no red flag at or above 0.40. Any missing answer, error or timeout means cloud.
+3. **Apply** — the round runs with the local endpoint, credential, backend and window; session attribution is
+   kept, and the turn row marks `jev ×N ·local`.
+
+Watch the window: this harness's base prompt (system prompt plus the turn's history) is already **~29k tokens**,
+and the tool definitions ride on top. A 32k local window therefore rarely fits — raise it on the server (oMLX:
+*Settings → model → max context window*) or point `[jev.local]` at a larger local model. Disable it with
+`[jev.ladder] b2_local_model = false`.
+
 ## Observability
 
 **In the TUI:** two places show where the Jev path stands.

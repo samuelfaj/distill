@@ -1,0 +1,24 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+name = "distill-pager-diff"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["Samuel Fajreldines"]
+description = "Diff hunk construction for the Distill TUI"
+
+[dependencies]
+# Line-level diffing (`TextDiff`) and the `ChangeTag` carried by every hunk line.
+similar = { workspace = true }
+# `SearchReplaceEditDetail` / `SearchReplaceOutput`: the edit-tool output shapes
+# the hunk builder reads.
+distill-tools = { workspace = true }
+# ACP `ToolCall` inspection for `extract_edit_hunks`.
+agent-client-protocol = { workspace = true }
+# Parsing `raw_output` / `Diff.meta` JSON payloads on ACP tool calls.
+serde_json = { workspace = true }
+# One warning when a tool call's `raw_output` fails to deserialize.
+tracing = { workspace = true }
+
+[lints]
+workspace = true

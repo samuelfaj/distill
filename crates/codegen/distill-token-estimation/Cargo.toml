@@ -1,0 +1,12 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-token-estimation"
+version = "0.1.0"
+edition.workspace = true
+description = "Pure shared token-estimation primitives."
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-http"
+version = "0.1.0"
+edition.workspace = true
+description = "Shared reqwest HTTP clients and User-Agent construction for the grok CLI."
+
+[dependencies]
+reqwest = { workspace = true, features = ["blocking", "rustls-tls-native-roots"] }
+reqwest-middleware = { workspace = true }
+# Same 0.23 as reqwest's rustls, so the certificate classifier's downcast resolves.
+rustls = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+distill-auth = { workspace = true, features = ["middleware"] }
+distill-extra-ca = { workspace = true }
+distill-sampler = { path = "../distill-sampler" }
+distill-telemetry = { workspace = true }
+distill-version = { workspace = true }
+distill-workspace = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

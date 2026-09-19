@@ -1,0 +1,295 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-shell"
+version = "1.0.35"
+edition.workspace = true
+
+[features]
+default = []
+dhat-heap = ["dep:dhat"]
+# Session synthesis + in-process e2e harness (`session::testkit`) for soak,
+# load, and bench tests. Off by default; the tests/benches that use it declare
+# it via `required-features`. Forwards login and sampler `test-support` so
+# downstream test builds see those crates' test seams.
+test-support = [
+    "distill-login/test-support",
+    "distill-sampler/test-support",
+    "distill-workspace/test-support",
+]
+test-util = []
+# Local Computer Hub workspace_server (own/attach + crash-restart). Requires
+local-workspace = []
+# CI default set (preferred over cargo `default` for hermetic CI builds):
+# `config-docs` is on this set (not cargo `default`) so hermetic lib tests
+# parse the committed config-reference page.
+config-docs = []
+default-bazel = [
+    "local-workspace",
+    "test-support",
+    "config-docs",
+]
+
+[dependencies]
+rand = { workspace = true }
+dunce = { workspace = true }
+agent-client-protocol = { workspace = true }
+anyhow = { workspace = true }
+distill-announcements = { workspace = true }
+distill-prompt-queue = { workspace = true }
+distill-version = { workspace = true }
+
+async-openai = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bm25 = "2.3"
+bytes = { workspace = true }
+chrono = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+ignore = { workspace = true }
+jsonschema = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+globset = { workspace = true }
+kanal = "0.1"
+regex = { workspace = true }
+# rmcp 2.1 + reqwest 0.13 are quarantined inside `distill-mcp`. The remaining
+# MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
+# types via `distill_mcp::rmcp::model::*`. reqwest 0.13 is a private impl
+# detail of distill-mcp::servers; shell never sees it. Every HTTP call site
+# in this crate uses workspace reqwest 0.12.
+distill-mcp = { workspace = true }
+reqwest = { workspace = true, features = ["stream", "blocking"] }
+reqwest-middleware = { workspace = true }
+serde = { workspace = true }
+serde_ignored = "0.1"
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true, features = ["preserve_order"] }
+toml_edit = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "process",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+    "env-filter",
+    "fmt",
+    "json",
+    "time",
+] }
+obfstr = { workspace = true }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
+tokio-retry = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v5", "v7"] }
+distill-acp-lib = { workspace = true }
+axum = { workspace = true, features = ["ws", "multipart"] }
+backon = { workspace = true }
+webbrowser = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "logging",
+    "tls12",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "logging",
+    "std",
+    "tls12",
+] }
+futures-util = { workspace = true }
+urlencoding = { workspace = true }
+gethostname = { workspace = true }
+gcloud-storage = { workspace = true }
+git2 = { version = "0.20", default-features = false, features = [
+    "vendored-libgit2",
+] }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+nucleo = { workspace = true }
+arc-swap = { workspace = true }
+infer = "0.15"
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
+moka = { workspace = true, features = ["future"] }
+dhat = { workspace = true, optional = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true }
+distill-fast-worktree = { path = "../distill-fast-worktree", features = ["metadata"] }
+
+distill-paths = { path = "../distill-paths" }
+distill-shell-base = { workspace = true }
+distill-shell-session-support = { workspace = true }
+distill-shell-terminal = { workspace = true }
+distill-shared = { workspace = true }
+distill-status-line = { workspace = true }
+distill-tracing-macros = { path = "../distill-tracing-macros" }
+distill-fsnotify = { path = "../distill-fsnotify" }
+distill-codebase-graph = { path = "../distill-codebase-graph" }
+distill-hunk-tracker = { path = "../distill-hunk-tracker" }
+distill-agent-lifecycle = { workspace = true }
+distill-interjection-core = { workspace = true }
+distill-message-delivery-core = { workspace = true }
+distill-sandbox = { path = "../distill-sandbox", default-features = false }
+distill-chat-state = { path = "../distill-chat-state" }
+# Segment markdown rendering + the `compaction/` store path convention.
+distill-compaction-transcript = { workspace = true }
+distill-compaction = { path = "../../common/distill-compaction" }
+distill-extra-ca = { workspace = true }
+distill-sampler = { path = "../distill-sampler" }
+# Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
+distill-session-search = { workspace = true }
+distill-token-estimation = { workspace = true }
+distill-sampling-types = { path = "../distill-sampling-types" }
+distill-tools = { path = "../distill-tools" }
+distill-tty-utils = { workspace = true }
+distill-workflow = { path = "../distill-workflow" }
+distill-workspace = { workspace = true }
+# Backs the compatibility-only `distill_shell::foreign_sessions` re-export.
+distill-foreign-sessions = { workspace = true }
+distill-subagent-resolution = { path = "../distill-subagent-resolution" }
+distill-agent = { path = "../distill-agent" }
+distill-bundle = { workspace = true }
+distill-config = { workspace = true }
+distill-feedback = { workspace = true }
+distill-config-types = { workspace = true }
+distill-env = { workspace = true }
+distill-dirs = { workspace = true }
+distill-memory = { workspace = true }
+distill-hooks = { path = "../distill-hooks" }
+distill-hooks-plugins-types = { path = "../distill-hooks-plugins-types" }
+distill-plugin-marketplace = { path = "../distill-plugin-marketplace" }
+distill-file-utils = { path = "../distill-file-utils" }
+distill-otel = { workspace = true }
+distill-session-events = { workspace = true }
+distill-auth = { workspace = true, features = ["middleware"] }
+distill-telemetry = { workspace = true }
+distill-http = { workspace = true }
+distill-login = { workspace = true }
+distill-models = { workspace = true }
+prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
+flate2 = { workspace = true }
+fs2 = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+url = { workspace = true }
+walkdir = { workspace = true }
+tdigests = "1.0"
+semver = { workspace = true }
+parking_lot.workspace = true
+dashmap.workspace = true
+
+# Used by acp_session.rs and mcp_servers.rs for the unified
+# distill_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
+distill-computer-hub-sdk = { workspace = true }
+distill-tool-runtime = { workspace = true }
+distill-tool-protocol = { workspace = true }
+distill-tool-types = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+siphasher = { workspace = true }
+windows = { workspace = true }
+
+[dev-dependencies]
+distill-dirs = { workspace = true }
+distill-status-line = { workspace = true, features = ["test-support"] }
+criterion = { workspace = true }
+# Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
+ctor = { workspace = true }
+filetime = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+# `extensions::bundle` tests build archives with `bundle::test_helpers`, which
+# is `#[cfg(test)]`-only inside distill-bundle without this feature.
+distill-bundle = { workspace = true, features = ["test-support"] }
+distill-memory = { workspace = true, features = ["test-support"] }
+# sandbox-enforce: keep tests running against the enforcing sandbox build.
+distill-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
+distill-config = { workspace = true, features = [] }
+tar = { workspace = true }
+flate2 = { workspace = true }
+semver = { workspace = true }
+serial_test = { workspace = true }
+# Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
+# this crate's test targets.
+distill-shell-base = { workspace = true, features = ["test-support"] }
+# Exposes the login crate's `#[cfg(test)]`-only auth-provider helpers
+# (`test_counting_provider`, `test_backdate_provider_mint`) to shell tests.
+distill-login = { workspace = true, features = ["test-support"] }
+# Exposes sampler's `notify_on_submit` mock to lib tests via feature unification.
+distill-sampler = { path = "../distill-sampler", features = ["test-support"] }
+distill-test-support = { workspace = true, features = [] }
+distill-test-utils = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
+# clock with auto-advance) so interval-driven loop tests in `auth::refresh`
+# can assert exact tick counts deterministically without real-time sleep.
+tokio = { workspace = true, features = ["test-util"] }
+
+[dependencies.tempfile]
+workspace = true
+
+[[bench]]
+name = "session_list"
+harness = false
+
+[[bench]]
+name = "fork_copy"
+harness = false
+required-features = ["test-support"]
+
+[[bench]]
+name = "skills_watcher_startup"
+harness = false
+
+[[bench]]
+name = "child_replay_lookup"
+harness = false
+
+# Ordinary integration tests live in `tests/all.rs` (`mod suite`) so cargo
+# links one binary. The test name is `distill-shell-all` (Bazel `//pkg:all`
+# is the package wildcard). Process-isolated suites stay as implicit
+# `tests/*.rs` binaries.
+[[test]]
+name = "test_startup_prefetch_fallback"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_overlap"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_policy"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_repair_skip"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_shared"
+required-features = ["test-support"]
+
+[lints]
+workspace = true
+[build-dependencies]
+# build.rs only downloads ripgrep — no rmcp involvement. Workspace reqwest
+# (0.12) is plenty.
+reqwest = { workspace = true, features = ["blocking"] }
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+[[bin]]
+name = "chat-history-downgrade"
+path = "src/bin/chat-history-downgrade.rs"

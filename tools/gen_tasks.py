@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified for Distill by Samuel Fajreldines, 2026.
 """Emit the Rust task table for the harness cheap-task registry.
 
 Every catalogue function that a text model can serve becomes one row:
@@ -11,7 +12,7 @@ import pathlib
 import sys
 
 CATALOG = pathlib.Path(
-    "/Users/samuelfajreldines/dev/remote-code/plan-new-llm/function-catalog.json"
+    "/Users/samuelfajreldines/dev/Distill/plan-new-llm/function-catalog.json"
 )
 
 HOST_BOUND = {

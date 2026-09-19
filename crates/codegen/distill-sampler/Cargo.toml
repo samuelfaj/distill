@@ -1,0 +1,62 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-sampler"
+version = "0.1.0"
+edition.workspace = true
+description = "Actor-based sampling/inference layer for Distill grok (HTTP streaming + retry, no shell coupling)"
+
+[dependencies]
+# Internal
+distill-auth = { workspace = true }
+distill-extra-ca = { workspace = true }
+distill-sampling-types = { path = "../distill-sampling-types" }
+distill-version = { workspace = true }
+
+# External
+async-openai = { workspace = true }
+async-stream = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+eventsource-stream = { workspace = true }
+futures-util = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+reqwest = { workspace = true, features = ["stream", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strum = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+zstd = { workspace = true }
+
+[dev-dependencies]
+# Mock HTTP server for actor / request_task integration tests.
+axum = { workspace = true }
+axum-server = { workspace = true, features = ["tls-rustls"] }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["registry"] }
+# Shared SSE generators for the happy-path mock payloads.
+distill-test-support = { workspace = true }
+# `start_paused = true` for deterministic timeout testing; `net` for
+# `TcpListener::bind` in the mock server harness.
+tokio = { workspace = true, features = [
+    "rt",
+    "macros",
+    "time",
+    "sync",
+    "test-util",
+    "net",
+    "rt-multi-thread",
+] }
+
+[features]
+# Cargo release builds omit the mock constructor. Bazel enables this via
+# `default-bazel` so shell tests link the same rlib.
+test-support = []
+default-bazel = ["test-support"]
+
+[lints]
+workspace = true

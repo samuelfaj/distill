@@ -1,7 +1,8 @@
+<!-- Modified for Distill by Samuel Fajreldines, 2026. -->
 # plan.md — Jev no harness, servido pelo OpenRouter
 
 Este é o planejamento executado nesta rodada: **não existe mais app**. O token saver
-inteiro vive dentro do harness (baseado no remote-code). A camada de decisão roda no
+inteiro vive dentro do harness (baseado no Distill). A camada de decisão roda no
 **próprio modelo Jev** (`~typesafe/jev-latest`), servido pelo endpoint de decisões do
 OpenRouter, e o trabalho barato roda em `qwen/qwen3.7-flash` — também pelo OpenRouter,
 com uma chave só, no lugar do LLM local.
@@ -39,24 +40,24 @@ Os dois primeiros backends falam o **mesmo envelope** (`{state, model, questions
 respostas com `type`), então compartilham corpo e leitura; só o backend de chat precisa
 das perguntas renderizadas num prompt.
 
-- `crates/codegen/xai-grok-workspace/src/jev/provider.rs` — os backends: `typesafe`
+- `crates/codegen/distill-workspace/src/jev/provider.rs` — os backends: `typesafe`
   (serviço direto), `openrouter_decisions` (o modelo Jev no OpenRouter, mesmo envelope)
   e `openrouter` (chat: renderiza a bateria num prompt estrito, lê o JSON de volta como
   `Answer` tipada e valida cada resposta contra a própria pergunta — opção fora dos
   critérios, score fora da rubrica, resposta faltando ⇒ `Invalid` ⇒ fail-defer). Também
   decide a forma do `reasoning` por modelo (`ReasoningShape`) e o orçamento por nível.
-- `crates/codegen/xai-grok-workspace/src/jev/client.rs` — o transporte: um caminho só,
+- `crates/codegen/distill-workspace/src/jev/client.rs` — o transporte: um caminho só,
   com pré-checagens (perguntas válidas, teto de bytes do estado, credencial resolvida
   em tempo de chamada), prazo único cobrindo o corpo da resposta, sem retry, sem log de
   corpo ou credencial, e a taxonomia de erro de sempre.
-- `crates/codegen/xai-grok-sampling-types/src/types.rs` — `ReasoningShape` e
+- `crates/codegen/distill-sampling-types/src/types.rs` — `ReasoningShape` e
   `reasoning_budget_tokens` (o vocabulário de rede) mais
   `ChatCompletionRequest::apply_reasoning_shape`.
-- `crates/codegen/xai-grok-sampler/src/client.rs` — `apply_defaults` traduz o effort da
+- `crates/codegen/distill-sampler/src/client.rs` — `apply_defaults` traduz o effort da
   rodada para a forma do modelo antes de serializar.
-- `crates/codegen/xai-grok-shell/src/agent/config.rs` — `[model.<id>] reasoning_shape`
+- `crates/codegen/distill-shell/src/agent/config.rs` — `[model.<id>] reasoning_shape`
   → `ModelInfo` → `SamplerConfig`.
-- `crates/codegen/xai-grok-shell/src/session/acp_session_impl/jev_routing.rs` — o
+- `crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs` — o
   roteamento por micro-ação (modelo barato + effort) e o selo da linha de status.
 
 ## 3. Configuração
@@ -145,15 +146,15 @@ reasoning_shape = "max_tokens"                # sem `reasoning_effort` neste mod
 
 ```bash
 # unidade (sem rede)
-cargo test -p xai-grok-workspace --lib jev            # 113 testes
-cargo test -p xai-grok-sampling-types --lib types::tests
-cargo test -p xai-grok-sampler --lib apply_defaults
-cargo test -p xai-grok-shell --lib jev                # 30 testes
-cargo test -p xai-grok-shell --lib a_fresh_manager_starts_in_auto_effort
-cargo check -p xai-grok-workspace -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-bin
+cargo test -p distill-workspace --lib jev            # 113 testes
+cargo test -p distill-sampling-types --lib types::tests
+cargo test -p distill-sampler --lib apply_defaults
+cargo test -p distill-shell --lib jev                # 30 testes
+cargo test -p distill-shell --lib a_fresh_manager_starts_in_auto_effort
+cargo check -p distill-workspace -p distill-shell -p distill-pager -p distill-pager-bin
 
 # vivo (usa a chave do ambiente, nunca a imprime)
-OPENROUTER_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ignored --nocapture
+OPENROUTER_API_KEY=… cargo test -p distill-workspace --test jev_live -- --ignored --nocapture
 ```
 
 ## 6. O que foi verificado nesta rodada
@@ -162,13 +163,13 @@ OPENROUTER_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ign
 | --- | --- |
 | Chamada real ao OpenRouter pelo cliente do harness | ✅ 9 perguntas tipadas, `usage` 726/755, decisão `Allow`; a chave não aparece em nenhum log (`grep -c sk-or-v1` = 0) |
 | Corpus inseguro (12 casos) | ✅ 0 liberados, 11 bloqueados, 1 adiado ao caminho de sempre |
-| Effort na forma do modelo | ✅ `cargo test -p xai-grok-sampler --lib apply_defaults` + 4 testes de `ReasoningShape`; o level vira budget de tokens e o orçamento nunca passa do teto de completion |
+| Effort na forma do modelo | ✅ `cargo test -p distill-sampler --lib apply_defaults` + 4 testes de `ReasoningShape`; o level vira budget de tokens e o orçamento nunca passa do teto de completion |
 | Config → sampler | ✅ `[model.openrouter-qwen37] reasoning_shape` chega em `SamplerConfig.reasoning_shape` |
 | Redução determinística | ✅ 7 testes (log de build, listagem, prosa, diff, guarda de literais, elisão com range exato, hash/reuso) |
 | Reuso de leitura | ✅ índice testado (primeira leitura lembra, repetição idêntica aponta, bytes diferentes não colidem); no caminho vivo: payload ≥ 2 KB com o flag D2 ligado |
 | Entrada real, duas vezes | ✅ dois turnos completos com resposta correta; 18 e 17 decisões, todas nomeando `qwen/qwen3.7-flash`; o modelo barato roteou uma rodada de sessão (~29k/1M tokens) |
 | Kill switch (`GROK_JEV=0`) | ✅ zero registros novos |
-| `cargo test -p xai-grok-pager --lib` | ❌ falha **pré-existente** de feature (`WorkspaceOps::for_test` não existe sem a feature `test-support`), reproduzida também com as mudanças guardadas com `git stash` |
+| `cargo test -p distill-pager --lib` | ❌ falha **pré-existente** de feature (`WorkspaceOps::for_test` não existe sem a feature `test-support`), reproduzida também com as mudanças guardadas com `git stash` |
 | Selo na tela do TUI | ⚠️ não capturado: o driver de pty não está instalado nesta máquina e o `script(1)` não trouxe o desenho da TUI no fluxo capturado (o log de decisões e o relatório do turno são a evidência de que o caminho rodou) |
 | Terceiro turno vivo (leitura de arquivo) | ⚠️ 18 decisões, 16 aplicadas; 2 caíram no fail-defer: uma resposta sem JSON (`reply carried no JSON object`) e um `choice` respondido como `None` — os dois viram o caminho de sempre em vez de palpite, e ficam registrados com o motivo |
 | O modelo Jev pelo OpenRouter (cliente do harness) | ✅ `typesafe/jev-1.13-20260917`, 9 perguntas tipadas, 1183/181 tokens, **1,2 s**, id do corpo; `Block` para `rm -rf ~/Documents` e `Escalate` para uma ação incerta |

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified for Distill by Samuel Fajreldines, 2026.
 """Run the pager on a pseudo-terminal and print what it drew.
 
 The TUI takes over the screen, so a plain pipe shows nothing useful; this gives
@@ -24,7 +25,7 @@ import termios
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BINARY = os.path.join(REPO, "target", "debug", "xai-grok-pager")
+BINARY = os.path.join(REPO, "target", "debug", "distill")
 
 # Extra argv for the child, e.g. `SPLASH_ARGS="--effort high"` to check a CLI
 # path that a bare launch never reaches.

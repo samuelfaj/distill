@@ -1,0 +1,27 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-extra-ca"
+version = "0.1.0"
+edition.workspace = true
+description = "TLS policy for the grok CLI: rustls backend pin, process crypto provider, shared root store, and opt-in GROK_EXTRA_CA_BUNDLE roots"
+
+[dependencies]
+base64 = { workspace = true }
+# Not reqwest 0.13: blocking TLS overflows on Windows arm64 (#237643).
+# native-roots + webpki-roots must ship with this crate or a broken OS store fails client build.
+reqwest = { workspace = true, features = ["blocking", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+# Both providers stay explicit: ensure_default_crypto_provider picks one per target and unification would mask either's absence.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
+rustls-native-certs = { workspace = true }
+tracing = { workspace = true }
+webpki-roots = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+# Carries the workspace rustls feature set into the test build.
+rustls = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

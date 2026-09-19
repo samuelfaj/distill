@@ -1,0 +1,92 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-login"
+version = "0.1.0"
+edition.workspace = true
+description = "Authentication subsystem for the grok shell crate family: login flows, token refresh, credential providers, and auth storage."
+
+[features]
+# Loom model-checking for src/manager/lock/flock_wait.rs; test-only
+# (compile_error!-guarded). Run in release (debug overflows loom's stacks):
+#   cargo test --release --features loom -p distill-login --lib flock_wait::loom -- --test-threads=1
+loom = ["dep:loom"]
+# Exposes `#[cfg(test)]`-only helpers to downstream crates' test targets.
+test-support = []
+default-bazel = ["test-support"]
+
+[dependencies]
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+backon = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+fs2 = { workspace = true }
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+obfstr = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["stream", "blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "process",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+    "time",
+] }
+tokio-util = { workspace = true }
+toml = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
+tracing = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v7"] }
+webbrowser = { workspace = true }
+distill-file-utils = { path = "../distill-file-utils" }
+distill-auth = { workspace = true, features = ["middleware"] }
+distill-config = { workspace = true }
+distill-config-types = { workspace = true }
+distill-env = { workspace = true }
+distill-http = { workspace = true }
+distill-memory = { workspace = true }
+distill-sampler = { workspace = true }
+distill-shell-base = { workspace = true }
+distill-telemetry = { workspace = true }
+distill-tools = { workspace = true }
+distill-version = { workspace = true }
+distill-system-power = { workspace = true }
+
+# gRPC stack for the gated login path; compiled out unless the feature is on.
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+# Loom model-checking harness; test-only, gated by the `loom` feature.
+loom = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }
+filetime = { workspace = true }
+rsa = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "time"] }
+tokio = { workspace = true, features = ["test-util"] }
+distill-test-support = { workspace = true }
+distill-extra-ca = { workspace = true }
+# Test-only builds expose `env::EnvVarGuard` to this crate's test targets.
+distill-shell-base = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,102 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+name = "distill-pager-bin"
+version = "1.0.35"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["Samuel Fajreldines"]
+default-run = "distill"
+
+# Composition-root binary for the Distill TUI. The artifact is still named
+# `distill-pager`. This package exists so the binary can link both the pager
+# library and the optional `distill-pager-minimal` render mode: `minimal`
+# depends on `distill-pager`, so the pager library cannot depend back on it
+# (cargo cycle). The binary installs the minimal-mode IoC hooks at startup.
+[[bin]]
+name = "distill"
+path = "src/main.rs"
+
+[dependencies]
+# The pager library (all application logic + the public API main.rs drives).
+distill-pager = { path = "../distill-pager" }
+# Optional scrollback-native render mode, wired in via the fn-pointer seam.
+distill-pager-minimal = { path = "../distill-pager-minimal" }
+
+# Agent runtime + leader/stdio/headless entry points.
+distill-login = { workspace = true }
+distill-shell = { workspace = true }
+distill-update = { path = "../distill-update" }
+distill-version = { workspace = true }
+distill-telemetry = { workspace = true }
+distill-workspace = { workspace = true }
+distill-crash-handler = { path = "../distill-crash-handler" }
+distill-acp-lib = { workspace = true }
+
+# Async runtime + misc.
+tokio = { workspace = true, features = [
+    "sync",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "io-util",
+    "io-std",
+] }
+tokio-util = { workspace = true, features = ["compat"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+dunce = { workspace = true }
+semver = { workspace = true }
+distill-tty-utils = { workspace = true }
+# `collect_crashed()` for the startup crash notice.
+distill-active-sessions = { workspace = true }
+distill-config = { workspace = true }
+distill-sandbox = { path = "../distill-sandbox", default-features = false }
+distill-extra-ca = { workspace = true }
+
+# Binary hardening: compile-time string + control-flow obfuscation.
+obfstr = { workspace = true }
+cryptify = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+# Default allocator on Unix; gated by the `jemalloc` feature (see main.rs
+# `#[global_allocator]`, cfg(all(feature = "jemalloc", unix))).
+# `stats` is binary-scoped only (not workspace-wide) so this CLI jemalloc
+# link gets --enable-stats for stats.allocated / stats.resident mallctl.
+tikv-jemallocator = { workspace = true, optional = true, features = ["stats"] }
+# Raw mallctl for the memory-cliff arena purge hook (see
+# `purge_jemalloc_retained_pages` + the `install_release_hook` call in
+# main.rs). Same version family as the
+# allocator; adds no new build units beyond what tikv-jemallocator pulls in.
+tikv-jemalloc-sys = { workspace = true, optional = true }
+# Heap-profile / stats mallctl helpers (prof.active, prof.dump, epoch, stats.*).
+tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats", "use_std"] }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+# `PagerArgs::try_parse_from` in the CLI-parsing unit tests (needs the
+# `clap::Parser` trait in scope).
+clap = { workspace = true, features = ["derive"] }
+
+[features]
+default = [
+    "jemalloc",
+    "sandbox-enforce",
+    ]
+default-bazel = [
+    "jemalloc",
+    "sandbox-enforce",
+    "local-workspace",
+    ]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
+# distill-workspace no longer enables sandbox-enforce by default, so enable it here.
+sandbox-enforce = ["distill-pager/sandbox-enforce", "distill-workspace/sandbox-enforce"]
+local-workspace = ["distill-pager/local-workspace"]
+release-dist = [
+    "distill-pager/release-dist",
+    ]

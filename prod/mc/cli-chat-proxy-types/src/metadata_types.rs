@@ -1,3 +1,4 @@
+// Modified for Distill by Samuel Fajreldines, 2026.
 //! Prompt metadata types shared between the CLI client and the cli-chat-proxy server.
 //!
 //! The CLI client serializes `PromptMetadata` and uploads it as `metadata.json` to GCS
@@ -38,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///        from metadata.json (prompt content is no longer uploaded in metadata).
 /// v1.24: Prompt metadata updates.
 pub const GCS_SCHEMA_VERSION: &str = "v1.24";
-/// OS-level sandbox state for a trace turn (local `xai-grok-sandbox`, not cloud sandbox).
+/// OS-level sandbox state for a trace turn (local `distill-sandbox`, not cloud sandbox).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalSandboxTelemetry {
     /// Resolved profile at process startup (e.g. "off", "workspace", "strict").
@@ -115,11 +116,11 @@ pub struct PromptMetadata {
     /// Current working directory of the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// The agent type / harness name for this session (e.g. "grok-build", "codex").
+    /// The agent type / harness name for this session (e.g. "distill", "codex").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
     /// Version of the grok-shell agent binary that handled this turn
-    /// (`xai_grok_version::VERSION`). Self-reported by the agent, so it reflects
+    /// (`distill_version::VERSION`). Self-reported by the agent, so it reflects
     /// the binary actually running. Distinct from `client_version`, which is the
     /// UI client's version — for the TUI these coincide, but for embedding clients
     /// like grok-desktop the bundled shell differs from the app version.

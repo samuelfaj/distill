@@ -1,0 +1,18 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+description = "Build protobuf"
+edition.workspace = true
+name = "distill-proto-build"
+version = "0.0.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+pbjson-build = { workspace = true }
+prost-build = { workspace = true }
+prost-reflect = { workspace = true }
+tempfile = { workspace = true }
+tonic-prost-build = { workspace = true }

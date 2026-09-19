@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified for Distill by Samuel Fajreldines, 2026.
 """Emit list.md: the capability inventory of the two source documents.
 
 Reads the catalogue JSON (outside the repo) and holds the parte-a.md rows and
@@ -11,7 +12,7 @@ import pathlib
 import sys
 
 CATALOG = pathlib.Path(
-    "/Users/samuelfajreldines/dev/remote-code/plan-new-llm/function-catalog.json"
+    "/Users/samuelfajreldines/dev/Distill/plan-new-llm/function-catalog.json"
 )
 
 HOST_BOUND = {
@@ -63,7 +64,7 @@ FLAG_FOR = {
 }
 
 
-CRUSHER_TEST = "`crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers)"
+CRUSHER_TEST = "`crushers::tests` (cargo test -p distill-workspace --lib jev::crushers)"
 HANDLE_TEST = "`crushers::tests::the_handle_primitives_read_a_stored_payload_back`"
 STORE_TEST = "`crushers::tests::the_store_primitives_measure_search_and_diff_without_payloads`"
 TASK_TEST = "`tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated`"

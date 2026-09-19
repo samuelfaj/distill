@@ -1,8 +1,0 @@
-[package]
-license = "Apache-2.0"
-name = "xai-message-delivery-core"
-version = "0.1.0"
-edition.workspace = true
-
-[lints]
-workspace = true

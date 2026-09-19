@@ -1,0 +1,25 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-config-types"
+version = "0.1.0"
+edition.workspace = true
+description = "Leaf configuration value types for the grok CLI, extracted from distill-shell for dependency inversion."
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strum = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+distill-announcements = { workspace = true }
+distill-config = { workspace = true }
+distill-mcp = { workspace = true }
+
+[features]
+default-bazel = []
+
+[lints]
+workspace = true

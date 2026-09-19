@@ -1,3 +1,4 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
 # Auto-generated workspace root. Prefer editing per-crate Cargo.toml files.
 
 [patch.crates-io]
@@ -6,102 +7,102 @@ async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "9
 [workspace]
 resolver = "2"
 members = [
-    "crates/build/xai-proto-build",
+    "crates/build/distill-proto-build",
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",
-    "crates/codegen/xai-acp-lib",
-    "crates/codegen/xai-agent-lifecycle",
-    "crates/codegen/xai-chat-state",
-    "crates/codegen/xai-codebase-graph",
-    "crates/codegen/xai-compaction-transcript",
-    "crates/codegen/xai-crash-handler",
-    "crates/codegen/xai-dirs",
-    "crates/codegen/xai-fast-worktree",
-    "crates/codegen/xai-file-utils",
-    "crates/codegen/xai-fsnotify",
-    "crates/codegen/xai-fuzzy-file-search",
-    "crates/codegen/xai-gix-status",
-    "crates/codegen/xai-grok-active-sessions",
-    "crates/codegen/xai-grok-agent",
-    "crates/codegen/xai-grok-announcements",
-    "crates/codegen/xai-grok-auth",
-    "crates/codegen/xai-grok-bundle",
-    "crates/codegen/xai-grok-config",
-    "crates/codegen/xai-grok-config-types",
-    "crates/codegen/xai-grok-dashboard-store",
-    "crates/codegen/xai-grok-diag-server",
-    "crates/codegen/xai-grok-env",
-    "crates/codegen/xai-grok-extra-ca",
-    "crates/codegen/xai-grok-feedback",
-    "crates/codegen/xai-grok-foreign-sessions",
-    "crates/codegen/xai-grok-gboom",
-    "crates/codegen/xai-grok-hooks",
-    "crates/codegen/xai-grok-http",
-    "crates/codegen/xai-grok-image",
-    "crates/codegen/xai-grok-login",
-    "crates/codegen/xai-grok-markdown",
-    "crates/codegen/xai-grok-markdown-core",
-    "crates/codegen/xai-grok-mcp",
-    "crates/codegen/xai-grok-memory",
-    "crates/codegen/xai-grok-mermaid",
-    "crates/codegen/xai-grok-models",
-    "crates/codegen/xai-grok-otel",
-    "crates/codegen/xai-grok-pager",
-    "crates/codegen/xai-grok-pager-bin",
-    "crates/codegen/xai-grok-pager-diff",
-    "crates/codegen/xai-grok-pager-minimal",
-    "crates/codegen/xai-grok-pager-pty-harness",
-    "crates/codegen/xai-grok-pager-render",
-    "crates/codegen/xai-grok-paths",
-    "crates/codegen/xai-grok-plugin-marketplace",
-    "crates/codegen/xai-grok-sampler",
-    "crates/codegen/xai-grok-sampling-types",
-    "crates/codegen/xai-grok-sandbox",
-    "crates/codegen/xai-grok-secrets",
-    "crates/codegen/xai-grok-session-events",
-    "crates/codegen/xai-grok-session-search",
-    "crates/codegen/xai-grok-shared",
-    "crates/codegen/xai-grok-shell",
-    "crates/codegen/xai-grok-shell-base",
-    "crates/codegen/xai-grok-shell-session-support",
-    "crates/codegen/xai-grok-shell-terminal",
-    "crates/codegen/xai-grok-status-line",
-    "crates/codegen/xai-grok-subagent-resolution",
-    "crates/codegen/xai-grok-telemetry",
-    "crates/codegen/xai-grok-test-support",
-    "crates/codegen/xai-grok-tools",
-    "crates/codegen/xai-grok-tools-api",
-    "crates/codegen/xai-grok-update",
-    "crates/codegen/xai-grok-version",
-    "crates/codegen/xai-grok-voice",
-    "crates/codegen/xai-grok-workspace",
-    "crates/codegen/xai-grok-workspace-client",
-    "crates/codegen/xai-grok-workspace-daemon",
-    "crates/codegen/xai-grok-workspace-types",
-    "crates/codegen/xai-hooks-plugins-types",
-    "crates/codegen/xai-hunk-tracker",
-    "crates/codegen/xai-mixpanel",
-    "crates/codegen/xai-prompt-queue",
-    "crates/codegen/xai-ratatui-inline",
-    "crates/codegen/xai-ratatui-textarea",
-    "crates/codegen/xai-sqlite-journal",
-    "crates/codegen/xai-system-power",
-    "crates/codegen/xai-token-estimation",
-    "crates/codegen/xai-tracing-macros",
-    "crates/codegen/xai-tty-utils",
-    "crates/codegen/xai-workflow",
-    "crates/common/xai-circuit-breaker",
-    "crates/common/xai-computer-hub-core",
-    "crates/common/xai-computer-hub-mcp-adapter",
-    "crates/common/xai-computer-hub-sdk",
-    "crates/common/xai-grok-compaction",
-    "crates/common/xai-interjection-core",
-    "crates/common/xai-message-delivery-core",
-    "crates/common/xai-test-utils",
-    "crates/common/xai-tool-protocol",
-    "crates/common/xai-tool-runtime",
-    "crates/common/xai-tool-types",
-    "crates/common/xai-tracing",
+    "crates/codegen/distill-acp-lib",
+    "crates/codegen/distill-agent-lifecycle",
+    "crates/codegen/distill-chat-state",
+    "crates/codegen/distill-codebase-graph",
+    "crates/codegen/distill-compaction-transcript",
+    "crates/codegen/distill-crash-handler",
+    "crates/codegen/distill-dirs",
+    "crates/codegen/distill-fast-worktree",
+    "crates/codegen/distill-file-utils",
+    "crates/codegen/distill-fsnotify",
+    "crates/codegen/distill-fuzzy-file-search",
+    "crates/codegen/distill-gix-status",
+    "crates/codegen/distill-active-sessions",
+    "crates/codegen/distill-agent",
+    "crates/codegen/distill-announcements",
+    "crates/codegen/distill-auth",
+    "crates/codegen/distill-bundle",
+    "crates/codegen/distill-config",
+    "crates/codegen/distill-config-types",
+    "crates/codegen/distill-dashboard-store",
+    "crates/codegen/distill-diag-server",
+    "crates/codegen/distill-env",
+    "crates/codegen/distill-extra-ca",
+    "crates/codegen/distill-feedback",
+    "crates/codegen/distill-foreign-sessions",
+    "crates/codegen/distill-gboom",
+    "crates/codegen/distill-hooks",
+    "crates/codegen/distill-http",
+    "crates/codegen/distill-image",
+    "crates/codegen/distill-login",
+    "crates/codegen/distill-markdown",
+    "crates/codegen/distill-markdown-core",
+    "crates/codegen/distill-mcp",
+    "crates/codegen/distill-memory",
+    "crates/codegen/distill-mermaid",
+    "crates/codegen/distill-models",
+    "crates/codegen/distill-otel",
+    "crates/codegen/distill-pager",
+    "crates/codegen/distill-pager-bin",
+    "crates/codegen/distill-pager-diff",
+    "crates/codegen/distill-pager-minimal",
+    "crates/codegen/distill-pager-pty-harness",
+    "crates/codegen/distill-pager-render",
+    "crates/codegen/distill-paths",
+    "crates/codegen/distill-plugin-marketplace",
+    "crates/codegen/distill-sampler",
+    "crates/codegen/distill-sampling-types",
+    "crates/codegen/distill-sandbox",
+    "crates/codegen/distill-secrets",
+    "crates/codegen/distill-session-events",
+    "crates/codegen/distill-session-search",
+    "crates/codegen/distill-shared",
+    "crates/codegen/distill-shell",
+    "crates/codegen/distill-shell-base",
+    "crates/codegen/distill-shell-session-support",
+    "crates/codegen/distill-shell-terminal",
+    "crates/codegen/distill-status-line",
+    "crates/codegen/distill-subagent-resolution",
+    "crates/codegen/distill-telemetry",
+    "crates/codegen/distill-test-support",
+    "crates/codegen/distill-tools",
+    "crates/codegen/distill-tools-api",
+    "crates/codegen/distill-update",
+    "crates/codegen/distill-version",
+    "crates/codegen/distill-voice",
+    "crates/codegen/distill-workspace",
+    "crates/codegen/distill-workspace-client",
+    "crates/codegen/distill-workspace-daemon",
+    "crates/codegen/distill-workspace-types",
+    "crates/codegen/distill-hooks-plugins-types",
+    "crates/codegen/distill-hunk-tracker",
+    "crates/codegen/distill-mixpanel",
+    "crates/codegen/distill-prompt-queue",
+    "crates/codegen/distill-ratatui-inline",
+    "crates/codegen/distill-ratatui-textarea",
+    "crates/codegen/distill-sqlite-journal",
+    "crates/codegen/distill-system-power",
+    "crates/codegen/distill-token-estimation",
+    "crates/codegen/distill-tracing-macros",
+    "crates/codegen/distill-tty-utils",
+    "crates/codegen/distill-workflow",
+    "crates/common/distill-circuit-breaker",
+    "crates/common/distill-computer-hub-core",
+    "crates/common/distill-computer-hub-mcp-adapter",
+    "crates/common/distill-computer-hub-sdk",
+    "crates/common/distill-compaction",
+    "crates/common/distill-interjection-core",
+    "crates/common/distill-message-delivery-core",
+    "crates/common/distill-test-utils",
+    "crates/common/distill-tool-protocol",
+    "crates/common/distill-tool-runtime",
+    "crates/common/distill-tool-types",
+    "crates/common/distill-tracing",
     "prod/mc/cli-chat-proxy-types",
     "third_party/dagre_rust",
     "third_party/graphlib_rust",
@@ -314,72 +315,72 @@ wildmatch = "2"
 windows = { version = "0.61", features = ["Win32_Security", "Win32_Security_Authorization", "Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Pipes"] }
 wiremock = "0.6"
 wl-clipboard-rs = "0.9"
-xai-acp-lib = { path = "crates/codegen/xai-acp-lib" }
-xai-agent-lifecycle = { path = "crates/codegen/xai-agent-lifecycle" }
-xai-circuit-breaker = { path = "crates/common/xai-circuit-breaker" }
-xai-compaction-transcript = { path = "crates/codegen/xai-compaction-transcript" }
-xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
-xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
-xai-dirs = { path = "crates/codegen/xai-dirs" }
-xai-fuzzy-file-search = { path = "crates/codegen/xai-fuzzy-file-search" }
-xai-gix-status = { path = "crates/codegen/xai-gix-status" }
-xai-grok-active-sessions = { path = "crates/codegen/xai-grok-active-sessions" }
-xai-grok-agent = { path = "crates/codegen/xai-grok-agent" }
-xai-grok-announcements = { path = "crates/codegen/xai-grok-announcements" }
-xai-grok-auth = { path = "crates/codegen/xai-grok-auth" }
-xai-grok-bundle = { path = "crates/codegen/xai-grok-bundle" }
-xai-grok-config = { path = "crates/codegen/xai-grok-config" }
-xai-grok-config-types = { path = "crates/codegen/xai-grok-config-types" }
-xai-grok-dashboard-store = { path = "crates/codegen/xai-grok-dashboard-store" }
-xai-grok-diag-server = { path = "crates/codegen/xai-grok-diag-server" }
-xai-grok-env = { path = "crates/codegen/xai-grok-env" }
-xai-grok-extra-ca = { path = "crates/codegen/xai-grok-extra-ca" }
-xai-grok-feedback = { path = "crates/codegen/xai-grok-feedback" }
-xai-grok-foreign-sessions = { path = "crates/codegen/xai-grok-foreign-sessions" }
-xai-grok-http = { path = "crates/codegen/xai-grok-http" }
-xai-grok-image = { path = "crates/codegen/xai-grok-image" }
-xai-grok-login = { path = "crates/codegen/xai-grok-login" }
-xai-grok-markdown = { path = "crates/codegen/xai-grok-markdown" }
-xai-grok-markdown-core = { path = "crates/codegen/xai-grok-markdown-core" }
-xai-grok-mcp = { path = "crates/codegen/xai-grok-mcp" }
-xai-grok-memory = { path = "crates/codegen/xai-grok-memory" }
-xai-grok-mermaid = { path = "crates/codegen/xai-grok-mermaid" }
-xai-grok-models = { path = "crates/codegen/xai-grok-models" }
-xai-grok-otel = { path = "crates/codegen/xai-grok-otel" }
-xai-grok-sampler = { path = "crates/codegen/xai-grok-sampler" }
-xai-grok-secrets = { path = "crates/codegen/xai-grok-secrets" }
-xai-grok-session-events = { path = "crates/codegen/xai-grok-session-events" }
-xai-grok-session-search = { path = "crates/codegen/xai-grok-session-search" }
-xai-grok-shared = { path = "crates/codegen/xai-grok-shared" }
-xai-grok-shell = { path = "crates/codegen/xai-grok-shell" }
-xai-grok-shell-base = { path = "crates/codegen/xai-grok-shell-base" }
-xai-grok-shell-session-support = { path = "crates/codegen/xai-grok-shell-session-support" }
-xai-grok-shell-terminal = { path = "crates/codegen/xai-grok-shell-terminal" }
-xai-grok-status-line = { path = "crates/codegen/xai-grok-status-line" }
-xai-grok-telemetry = { path = "crates/codegen/xai-grok-telemetry" }
-xai-grok-test-support = { path = "crates/codegen/xai-grok-test-support" }
-xai-grok-tools = { path = "crates/codegen/xai-grok-tools" }
-xai-grok-tools-api = { path = "crates/codegen/xai-grok-tools-api" }
-xai-grok-version = { path = "crates/codegen/xai-grok-version" }
-xai-grok-workspace = { path = "crates/codegen/xai-grok-workspace", default-features = false }
-xai-grok-workspace-types = { path = "crates/codegen/xai-grok-workspace-types" }
-xai-hooks-plugins-types = { path = "crates/codegen/xai-hooks-plugins-types" }
-xai-interjection-core = { path = "crates/common/xai-interjection-core" }
-xai-message-delivery-core = { path = "crates/common/xai-message-delivery-core" }
-xai-mixpanel = { path = "crates/codegen/xai-mixpanel" }
-xai-prompt-queue = { path = "crates/codegen/xai-prompt-queue" }
-xai-proto-build = { path = "crates/build/xai-proto-build" }
-xai-ratatui-inline = { path = "crates/codegen/xai-ratatui-inline" }
-xai-ratatui-textarea = { path = "crates/codegen/xai-ratatui-textarea" }
-xai-sqlite-journal = { path = "crates/codegen/xai-sqlite-journal" }
-xai-system-power = { path = "crates/codegen/xai-system-power" }
-xai-test-utils = { path = "crates/common/xai-test-utils" }
-xai-token-estimation = { path = "crates/codegen/xai-token-estimation" }
-xai-tool-protocol = { path = "crates/common/xai-tool-protocol" }
-xai-tool-runtime = { path = "crates/common/xai-tool-runtime" }
-xai-tool-types = { path = "crates/common/xai-tool-types" }
-xai-tracing = { path = "crates/common/xai-tracing" }
-xai-tty-utils = { path = "crates/codegen/xai-tty-utils" }
+distill-acp-lib = { path = "crates/codegen/distill-acp-lib" }
+distill-agent-lifecycle = { path = "crates/codegen/distill-agent-lifecycle" }
+distill-circuit-breaker = { path = "crates/common/distill-circuit-breaker" }
+distill-compaction-transcript = { path = "crates/codegen/distill-compaction-transcript" }
+distill-computer-hub-core = { path = "crates/common/distill-computer-hub-core" }
+distill-computer-hub-sdk = { path = "crates/common/distill-computer-hub-sdk" }
+distill-dirs = { path = "crates/codegen/distill-dirs" }
+distill-fuzzy-file-search = { path = "crates/codegen/distill-fuzzy-file-search" }
+distill-gix-status = { path = "crates/codegen/distill-gix-status" }
+distill-active-sessions = { path = "crates/codegen/distill-active-sessions" }
+distill-agent = { path = "crates/codegen/distill-agent" }
+distill-announcements = { path = "crates/codegen/distill-announcements" }
+distill-auth = { path = "crates/codegen/distill-auth" }
+distill-bundle = { path = "crates/codegen/distill-bundle" }
+distill-config = { path = "crates/codegen/distill-config" }
+distill-config-types = { path = "crates/codegen/distill-config-types" }
+distill-dashboard-store = { path = "crates/codegen/distill-dashboard-store" }
+distill-diag-server = { path = "crates/codegen/distill-diag-server" }
+distill-env = { path = "crates/codegen/distill-env" }
+distill-extra-ca = { path = "crates/codegen/distill-extra-ca" }
+distill-feedback = { path = "crates/codegen/distill-feedback" }
+distill-foreign-sessions = { path = "crates/codegen/distill-foreign-sessions" }
+distill-http = { path = "crates/codegen/distill-http" }
+distill-image = { path = "crates/codegen/distill-image" }
+distill-login = { path = "crates/codegen/distill-login" }
+distill-markdown = { path = "crates/codegen/distill-markdown" }
+distill-markdown-core = { path = "crates/codegen/distill-markdown-core" }
+distill-mcp = { path = "crates/codegen/distill-mcp" }
+distill-memory = { path = "crates/codegen/distill-memory" }
+distill-mermaid = { path = "crates/codegen/distill-mermaid" }
+distill-models = { path = "crates/codegen/distill-models" }
+distill-otel = { path = "crates/codegen/distill-otel" }
+distill-sampler = { path = "crates/codegen/distill-sampler" }
+distill-secrets = { path = "crates/codegen/distill-secrets" }
+distill-session-events = { path = "crates/codegen/distill-session-events" }
+distill-session-search = { path = "crates/codegen/distill-session-search" }
+distill-shared = { path = "crates/codegen/distill-shared" }
+distill-shell = { path = "crates/codegen/distill-shell" }
+distill-shell-base = { path = "crates/codegen/distill-shell-base" }
+distill-shell-session-support = { path = "crates/codegen/distill-shell-session-support" }
+distill-shell-terminal = { path = "crates/codegen/distill-shell-terminal" }
+distill-status-line = { path = "crates/codegen/distill-status-line" }
+distill-telemetry = { path = "crates/codegen/distill-telemetry" }
+distill-test-support = { path = "crates/codegen/distill-test-support" }
+distill-tools = { path = "crates/codegen/distill-tools" }
+distill-tools-api = { path = "crates/codegen/distill-tools-api" }
+distill-version = { path = "crates/codegen/distill-version" }
+distill-workspace = { path = "crates/codegen/distill-workspace", default-features = false }
+distill-workspace-types = { path = "crates/codegen/distill-workspace-types" }
+distill-hooks-plugins-types = { path = "crates/codegen/distill-hooks-plugins-types" }
+distill-interjection-core = { path = "crates/common/distill-interjection-core" }
+distill-message-delivery-core = { path = "crates/common/distill-message-delivery-core" }
+distill-mixpanel = { path = "crates/codegen/distill-mixpanel" }
+distill-prompt-queue = { path = "crates/codegen/distill-prompt-queue" }
+distill-proto-build = { path = "crates/build/distill-proto-build" }
+distill-ratatui-inline = { path = "crates/codegen/distill-ratatui-inline" }
+distill-ratatui-textarea = { path = "crates/codegen/distill-ratatui-textarea" }
+distill-sqlite-journal = { path = "crates/codegen/distill-sqlite-journal" }
+distill-system-power = { path = "crates/codegen/distill-system-power" }
+distill-test-utils = { path = "crates/common/distill-test-utils" }
+distill-token-estimation = { path = "crates/codegen/distill-token-estimation" }
+distill-tool-protocol = { path = "crates/common/distill-tool-protocol" }
+distill-tool-runtime = { path = "crates/common/distill-tool-runtime" }
+distill-tool-types = { path = "crates/common/distill-tool-types" }
+distill-tracing = { path = "crates/common/distill-tracing" }
+distill-tty-utils = { path = "crates/codegen/distill-tty-utils" }
 zbus = { version = "5" }
 zip = "3"
 zstd = "0.13"

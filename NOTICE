@@ -1,0 +1,15 @@
+Distill
+Copyright 2026 Samuel Fajreldines (Distill modifications).
+
+This distribution contains modified Apache-2.0-licensed source,
+Copyright 2023-2026 SpaceXAI. Original copyright and
+license notices are retained. Distill is an independent project; these credits
+do not imply endorsement or ownership of the original authors' work.
+
+Modifications include Distill product and package naming, independent startup,
+provider authentication and model selection, streaming response handling, and
+Jev model routing. Source distribution updates are built locally; the original
+product's automatic distribution channel is not used.
+
+Third-party license and attribution notices are in THIRD-PARTY-NOTICES and in
+the respective component directories.

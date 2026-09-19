@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Draw the Remote-Code mascot as braille art.
+# Modified for Distill by Samuel Fajreldines, 2026.
+"""Draw the Distill mascot as braille art.
 
 Braille cells are a 2x4 dot grid, so 18 cells across is 36 dots — pixel-art
 resolution in a terminal. The welcome screen draws the art one glyph at a time

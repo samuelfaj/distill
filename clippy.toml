@@ -1,3 +1,4 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
 # Clippy config for crates/codegen/**.
 #
 # NOTE: clippy uses the NEAREST clippy.toml (no merging), so this file must
@@ -23,33 +24,33 @@ allow-indexing-slicing-in-tests = true
 #
 # Ban std::env::home_dir: hand-rolled grok-home resolution drifted across
 # crates ($HOME-only reads broke Windows GUI-spawned processes, which have
-# USERPROFILE but no HOME). xai-dirs carries the one sanctioned call.
+# USERPROFILE but no HOME). distill-dirs carries the one sanctioned call.
 # Deliberately scoped to crates/codegen: the tree that ships to Windows
 # clients owns this policy, and repo-wide enforcement only produced
 # false positives in server-side code.
 #
 # Ban dirs::home_dir for the same reason: on Windows it asks the known-folder
 # API and ignores a redirected USERPROFILE, so it can disagree with
-# xai_dirs::home_dir — and with Node-based tools, whose os.homedir()
+# distill_dirs::home_dir — and with Node-based tools, whose os.homedir()
 # reads USERPROFILE. Every home-anchored path resolves
-# via xai_dirs so all sites land in the same tree.
+# via distill_dirs so all sites land in the same tree.
 #
 # The canonicalize and spawn bans below are enforced by `cargo clippy` and
 # `just lint-rs` only: the Bazel lint aspect pins the repo-root config, which
 # does not carry them.
 disallowed-methods = [
-    { path = "reqwest::Client::new", reason = "bypasses the grok TLS policy (backend pin, OS roots, GROK_EXTRA_CA_BUNDLE); build through xai_grok_extra_ca; localhost-only clients allow with a reason" },
-    { path = "reqwest::blocking::Client::new", reason = "bypasses the grok TLS policy (backend pin, OS roots, GROK_EXTRA_CA_BUNDLE); build through xai_grok_extra_ca; localhost-only clients allow with a reason" },
-    { path = "reqwest::ClientBuilder::build", reason = "use xai_grok_extra_ca::build_reqwest_client: it applies the grok TLS policy and survives a broken OS store; localhost/test clients allow with a reason" },
-    { path = "reqwest::blocking::ClientBuilder::build", reason = "use xai_grok_extra_ca::build_blocking_reqwest_client: it applies the grok TLS policy and survives a broken OS store; localhost/test clients allow with a reason" },
+    { path = "reqwest::Client::new", reason = "bypasses the grok TLS policy (backend pin, OS roots, GROK_EXTRA_CA_BUNDLE); build through distill_extra_ca; localhost-only clients allow with a reason" },
+    { path = "reqwest::blocking::Client::new", reason = "bypasses the grok TLS policy (backend pin, OS roots, GROK_EXTRA_CA_BUNDLE); build through distill_extra_ca; localhost-only clients allow with a reason" },
+    { path = "reqwest::ClientBuilder::build", reason = "use distill_extra_ca::build_reqwest_client: it applies the grok TLS policy and survives a broken OS store; localhost/test clients allow with a reason" },
+    { path = "reqwest::blocking::ClientBuilder::build", reason = "use distill_extra_ca::build_blocking_reqwest_client: it applies the grok TLS policy and survives a broken OS store; localhost/test clients allow with a reason" },
     { path = "std::fs::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use dunce::canonicalize" },
     { path = "std::path::Path::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use dunce::canonicalize" },
-    { path = "tokio::fs::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use xai_grok_tools::util::fs helpers or spawn_blocking + dunce::canonicalize" },
-    { path = "std::env::home_dir", reason = "grok-home resolution goes through xai-dirs (uncached) or xai_grok_config::grok_home (cached); generic home via xai_dirs::home_dir" },
+    { path = "tokio::fs::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use distill_tools::util::fs helpers or spawn_blocking + dunce::canonicalize" },
+    { path = "std::env::home_dir", reason = "grok-home resolution goes through distill-dirs (uncached) or distill_config::distill_home (cached); generic home via distill_dirs::home_dir" },
     # allow-invalid: most codegen crates no longer depend on `dirs` at all,
     # which would otherwise warn that the banned path is unreachable.
-    { path = "dirs::home_dir", reason = "home-anchored paths resolve via xai_dirs::home_dir so all sites agree; Node-based tools use os.homedir, which matches it, not the known-folder API", allow-invalid = true },
-    { path = "std::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll" },
-    { path = "tokio::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll" },
-    { path = "portable_pty::SlavePty::spawn_command", reason = "an unenrolled pty child outlives its session; enroll the shell with xai_tty_utils::ProcessScope::enroll_terminal_pid" },
+    { path = "dirs::home_dir", reason = "home-anchored paths resolve via distill_dirs::home_dir so all sites agree; Node-based tools use os.homedir, which matches it, not the known-folder API", allow-invalid = true },
+    { path = "std::process::Command::spawn", reason = "an unenrolled child outlives its session; use distill_tty_utils::ProcessScope::enroll" },
+    { path = "tokio::process::Command::spawn", reason = "an unenrolled child outlives its session; use distill_tty_utils::ProcessScope::enroll" },
+    { path = "portable_pty::SlavePty::spawn_command", reason = "an unenrolled pty child outlives its session; enroll the shell with distill_tty_utils::ProcessScope::enroll_terminal_pid" },
 ]

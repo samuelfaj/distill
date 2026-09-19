@@ -1,0 +1,20 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+name = "distill-tty-utils"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Lightweight process-spawning utilities for TTY safety — detach from controlling terminal, suppress interactive pagers, process-group lifecycle"
+
+[dependencies]
+tokio = { workspace = true, features = ["process", "rt", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
+[lints]
+workspace = true

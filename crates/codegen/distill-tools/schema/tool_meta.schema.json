@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CanonicalToolMeta",
+  "description": "Tool-identity envelope under [`TOOL_META_KEY`]. `label` joins equivalent tools; `input` is a\nprojection (bulky edit/write fields stay on `raw_input`). `version` bumps only on removal or\nmeaning change; a new `namespace` fails strict decode so typed consumers must update.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "name": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/definitions/ToolKind"
+    },
+    "namespace": {
+      "$ref": "#/definitions/ToolNamespace"
+    },
+    "label": {
+      "type": "string"
+    },
+    "read_only": {
+      "type": "boolean"
+    },
+    "input": true
+  },
+  "required": [
+    "version",
+    "name",
+    "kind",
+    "namespace",
+    "label",
+    "read_only"
+  ],
+  "definitions": {
+    "ToolKind": {
+      "description": "Categorizes what a tool does at a high level. Open set — consumers must tolerate unknown values (Rust deserializes them to `other` via `#[serde(other)]`). Known values: `read`, `edit`, `delete`, `list_dir`, `write`, `move`, `search`, `lsp`, `execute`, `plan`, `web_search`, `web_fetch`, `background_task_action`, `wait_tasks_action`, `kill_task_action`, `list`, `skill`, `memory_search`, `memory_get`, `task`, `active_agent_message`, `enter_plan`, `exit_plan`, `ask_user`, `image_gen`, `video_gen`, `image_to_video`, `reference_to_video`, `deploy_app`, `init_or_update_app`, `search_tool`, `use_tool`, `monitor`, `goal_update`, `workflow`, `feedback`, `other`.",
+      "type": "string"
+    },
+    "ToolNamespace": {
+      "description": "The toolset a tool belongs to. Serializes to snake_case (`remote_code`, `mcp`, …) for the canonical tool `_meta` wire contract. PascalCase\naliases are accepted on deserialize so legacy persisted/manifest values still parse. The `Display` impl remains PascalCase for existing\nqualified id strings (e.g. `\"Distill:read_file\"`); only the serde form goes on the wire.",
+      "type": "string",
+      "enum": [
+        "remote_code",
+        "remote_code_concise",
+        "remote_code_hashline",
+        "codex",
+        "opencode",
+        "mcp"
+      ]
+    }
+  }
+}

@@ -16565,7 +16565,7 @@ PART I (continued) — BUNDLED UI / SYNTAX THEMES
 ================================================================================
 
 In-tree TUI palettes and bundled TextMate (.tmTheme) assets under
-xai-grok-pager-render / xai-grok-markdown. Not crates.io dependencies.
+distill-pager-render / distill-markdown. Not crates.io dependencies.
 
 First-party themes (not listed as third-party entries):
   - groknight, grokday, auto — xAI original
@@ -16588,10 +16588,10 @@ License text: see Part II — Apache-2.0
 
 Additional requirements / notices:
   UI palette for theme `tokyonight` (Night/Storm hexes) in
-  xai-grok-pager-render/src/theme/tokyonight.rs.
+  distill-pager-render/src/theme/tokyonight.rs.
   Bundled TextMate syntax theme:
-    crates/codegen/xai-grok-pager-render/assets/tokyo-night.tmTheme
-    crates/codegen/xai-grok-markdown/assets/tokyo-night.tmTheme
+    crates/codegen/distill-pager-render/assets/tokyo-night.tmTheme
+    crates/codegen/distill-markdown/assets/tokyo-night.tmTheme
   First-party theme `groknight` reuses Tokyo Night accent hexes (same entry).
   Palette hexes match the Tokyo Night Night/Storm colors shared by the nvim
   port (Apache-2.0) and the original VS Code theme (MIT). This distribution
@@ -16613,7 +16613,7 @@ License text: see Part II — MIT
 
 Additional requirements / notices:
   UI palette for theme `rosepine-moon` in
-  xai-grok-pager-render/src/theme/rosepine.rs (Moon variant hexes from the
+  distill-pager-render/src/theme/rosepine.rs (Moon variant hexes from the
   Rosé Pine palette).
 
 
@@ -16630,7 +16630,7 @@ License text: see Part II — MIT
 
 Additional requirements / notices:
   UI palette for theme `oscura-midnight` in
-  xai-grok-pager-render/src/theme/oscura.rs.
+  distill-pager-render/src/theme/oscura.rs.
   Ported from the desktop app design tokens in
   frontend/apps/grok-desktop/src/themes/oscura-midnight.json (OKLCH→sRGB),
   which implement the Oscura Midnight aesthetic from narative/oscura (MIT).
@@ -16651,7 +16651,7 @@ to this repository root. Ported files have been modified from their originals
 APIs/runtimes, and extended); this section constitutes the prominent notice
 of those changes required by Apache License 2.0 §4(b). Full license texts are
 in Part II. A crate-local copy of these notices (with the same license bodies)
-ships at crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md.
+ships at crates/codegen/distill-tools/THIRD_PARTY_NOTICES.md.
 
 
 --------------------------------------------------------------------------------
@@ -16668,7 +16668,7 @@ License text: see Part II — Apache-2.0
 
 Additional requirements / notices:
   Tool implementations under:
-    crates/codegen/xai-grok-tools/src/implementations/codex/
+    crates/codegen/distill-tools/src/implementations/codex/
   Modules: apply_patch, grep_files, list_dir, read_file.
   These are derived/portions of openai/codex tool handlers, adapted to this
   crate's Tool trait and runtime. Apache-2.0 §4 requires retention of
@@ -16690,7 +16690,7 @@ License text: see Part II — MIT
 
 Additional requirements / notices:
   Tool implementations under:
-    crates/codegen/xai-grok-tools/src/implementations/opencode/
+    crates/codegen/distill-tools/src/implementations/opencode/
   Modules: bash, edit, glob, grep, read, skill, todowrite, write.
   These are derived/portions of sst/opencode tools, adapted to this crate's
   Tool trait and runtime. The MIT copyright and permission notice must be

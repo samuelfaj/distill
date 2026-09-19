@@ -1,0 +1,135 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+edition.workspace = true
+name = "distill-tools"
+version = "0.1.220-alpha.4"
+description = "Grok tools library"
+
+[dependencies]
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+distill-dirs = { workspace = true }
+derive_more = { workspace = true, features = ["from", "try_into"] }
+dunce = { workspace = true }
+encoding_rs = { workspace = true, optional = true }
+fs2 = { workspace = true }
+educe = { workspace = true, features = ["Debug"] }
+async-openai = { workspace = true }
+distill-tty-utils = { workspace = true }
+distill-auth = { workspace = true }
+distill-config = { path = "../distill-config" }
+distill-extra-ca = { workspace = true }
+distill-feedback = { workspace = true }
+distill-tools-api = { path = "../distill-tools-api" }
+distill-workspace-types = { path = "../distill-workspace-types" }
+distill-version = { workspace = true }
+distill-interjection-core = { workspace = true }
+distill-message-delivery-core = { workspace = true }
+distill-token-estimation = { workspace = true }
+async-lsp = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+distill-image = { workspace = true }
+ignore = { workspace = true }
+infer = { workspace = true }
+globset = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+kamadak-exif = { workspace = true, optional = true }
+pdf_oxide = { workspace = true }
+# PPTX text extraction (implementations/read_file/pptx.rs). Deliberately NOT
+# `workspace = true`: the workspace `zip` pin has default features on, which
+# drag aes/bzip2/lzma/zstd into the shipped pager binary. PPTX entries are
+# only ever stored or deflated.
+zip = { version = "3", default-features = false, features = ["deflate-flate2"] }
+quick-xml = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+minijinja = { version = "2", features = ["custom_syntax"] }
+parking_lot = { workspace = true }
+htmd = { workspace = true }
+scraper = { workspace = true }
+reqwest = { workspace = true, features = ["rustls-tls", "json", "gzip", "brotli", "deflate"] }
+pulldown-cmark = { workspace = true }
+regex = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
+distill-tool-runtime = { workspace = true }
+distill-tool-types = { workspace = true }
+distill-tool-protocol = { workspace = true }
+distill-computer-hub-core = { workspace = true }
+distill-computer-hub-sdk = { workspace = true }
+
+futures = { workspace = true }
+similar = { workspace = true }
+strum = { version = "0.26", features = ["derive"] }
+strip-ansi-escapes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "process",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+] }
+tokio-util = { workspace = true, features = ["compat"] }
+tonic = { workspace = true }
+tracing = { workspace = true }
+unicode-normalization = { workspace = true, optional = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
+wildmatch = { workspace = true }
+distill-env = { workspace = true }
+serde_yaml = { workspace = true }
+shellexpand = "3.1"
+tempfile = { workspace = true }
+which = { workspace = true }
+
+chrono = { workspace = true }
+futures-util = { workspace = true }
+distill-sandbox = { path = "../distill-sandbox", default-features = false }
+distill-file-utils = { path = "../distill-file-utils" }
+distill-otel = { workspace = true }
+dhat = { workspace = true, optional = true }
+zstd = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+command-fds = { version = "0.3", features = ["tokio"] }
+nix = { workspace = true, features = ["signal", "process", "fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+# windows: util::spawn uses Win32 Job Objects (CreateJobObjectW,
+# AssignProcessToJobObject, TerminateJobObject) and process creation flags
+# (CREATE_NO_WINDOW, DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP).
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+wiremock = { workspace = true }
+distill-test-support = { workspace = true }
+distill-test-utils = { workspace = true }
+
+[build-dependencies]
+reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+zstd = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default-bazel = ["serde"]
+default = ["serde"]
+serde = []
+dhat-heap = ["dep:dhat"]

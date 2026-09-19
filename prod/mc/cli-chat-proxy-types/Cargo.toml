@@ -1,3 +1,4 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
 [package]
 license = "Apache-2.0"
 name = "prod-mc-cli-chat-proxy-types"
@@ -13,7 +14,7 @@ chrono = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_json.workspace = true
 # The canonical requirements-TOML fail_closed parse, shared by the signer
-# (cli-chat-proxy) and the client (xai-grok-config) so they can't drift.
+# (cli-chat-proxy) and the client (distill-config) so they can't drift.
 toml.workspace = true
 
 [lints]

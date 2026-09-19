@@ -1,0 +1,21 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-tool-types"
+version = "0.1.0"
+edition.workspace = true
+description = "Canonical tool-description types for the Distill platform"
+
+[features]
+# Enables `BuiltinSubagent::render_prompt` (MiniJinja rendering of the
+# built-in subagent prompt bodies).
+prompt-render = ["dep:minijinja"]
+
+[dependencies]
+minijinja = { workspace = true, features = ["custom_syntax"], optional = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

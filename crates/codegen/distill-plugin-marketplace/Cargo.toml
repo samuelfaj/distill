@@ -1,0 +1,26 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-plugin-marketplace"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+distill-dirs = { workspace = true }
+dunce = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+distill-tty-utils = { workspace = true }
+distill-agent = { workspace = true }
+distill-config = { workspace = true }
+distill-hooks-plugins-types = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

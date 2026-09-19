@@ -1,0 +1,53 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-shell-base"
+version = "0.1.0"
+edition.workspace = true
+description = "Foundation modules for the grok shell crate family: environment presets, CPU profiling, and process/filesystem utilities."
+
+[features]
+# Forwarded from shell; empty here (no local-ws code in this crate).
+local-workspace = []
+# Exposes `#[cfg(test)]`-only helpers (`env::EnvVarGuard`,
+# `cpu_profile` test seams) to downstream crates' test targets. Enabled by
+test-support = ["distill-env/test-support"]
+default-bazel = ["test-support"]
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+distill-extra-ca = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+url = { workspace = true }
+distill-dirs = { workspace = true }
+distill-config = { workspace = true }
+distill-env = { workspace = true }
+distill-shared = { workspace = true }
+distill-version = { workspace = true }
+distill-tty-utils = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+nix = { workspace = true }
+# No `flamegraph` feature: that pulls in inferno (CDDL-1.0), which we keep out
+# of shipped binaries. stop() emits folded stacks via pprof's public Report
+# API instead; render externally with speedscope or inferno-flamegraph.
+pprof = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `cfg(test)` in this crate does not enable features on dependencies, so the
+# tests' `EnvVarGuard` re-export needs the feature turned on explicitly.
+distill-env = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

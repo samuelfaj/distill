@@ -1,4 +1,5 @@
-Parte A — O que o app macOS (remote-code/macos-app) faz com o modelo local para poupar tokens
+<!-- Modified for Distill by Samuel Fajreldines, 2026. -->
+Parte A — O que o app macOS (Distill/macos-app) faz com o modelo local para poupar tokens
 
 A.0 O encanamento (onde o local entra)
 

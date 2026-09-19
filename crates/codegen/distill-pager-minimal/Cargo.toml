@@ -1,0 +1,60 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+name = "distill-pager-minimal"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["Samuel Fajreldines"]
+
+# `distill-ratatui-inline` is reached only through the pager's re-exported
+# `PagerTerminal` type (its `insert_before` / viewport methods), so this crate
+# never names the crate in code — only in intra-doc links. cargo-shear can't see
+# doc links, so keep it ignored rather than dropping the dep (which would break
+# those links).
+[package.metadata.cargo-shear]
+ignored = ["distill-ratatui-inline"]
+
+[dependencies]
+# The pager crate whose view-model (AppView / views / scrollback) this render
+# mode reads. NOTE: the dependency only points this way — `distill-pager` must
+# NOT depend on this crate (that would be a cargo cycle). The pager invokes this
+# crate via the `distill_pager::minimal_hook` fn-pointer seam, installed by the
+# composition-root binary; see `install()`.
+distill-pager = { path = "../distill-pager" }
+
+# Rendering primitives (must match the pager's versions).
+ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
+crossterm = { workspace = true, features = ["event-stream", "bracketed-paste"] }
+# Transcript temp-file names (`grok-transcript-<uuid>.ansi`).
+uuid = { workspace = true, features = ["v4"] }
+tracing = { workspace = true }
+
+# Native scrollback / inline viewport engine (`insert_before`, viewport sizing).
+# Used only via the pager's re-exported `PagerTerminal`; see the
+# `[package.metadata.cargo-shear]` note above.
+distill-ratatui-inline = { workspace = true }
+
+# `DiffLine` hunk fixtures for the committed-edit render tests. A normal (not
+# dev) dependency because gazelle lists `src/commit_tests.rs` in the library
+# `srcs` and so attributes its imports to the library target; a
+# `[dev-dependencies]` entry here would fail `just gazelle --check`.
+distill-pager-diff = { path = "../distill-pager-diff" }
+
+# Misc used by the commit/live/full-view paths.
+chrono = { workspace = true }
+similar = { workspace = true }
+unicode-width = { workspace = true }
+distill-shell = { workspace = true }
+distill-version = { workspace = true }
+distill-token-estimation = { workspace = true }
+
+[dev-dependencies]
+# The unit tests reuse the pager's test-only view-model constructors
+# (`test_agent_view`, yolo/auto setters), gated behind its test-only
+# helpers.
+distill-pager = { path = "../distill-pager", features = ["test-support"] }
+# The feedback-form render tests flip the pager's process-global embedded
+# modal flag and must not interleave.
+serial_test = { workspace = true }
+
+[features]

@@ -1,0 +1,13 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-version"
+version = "1.0.35"
+edition.workspace = true
+description = "Lockstepped grok CLI version."
+
+[dependencies]
+semver = { workspace = true }
+
+[lints]
+workspace = true

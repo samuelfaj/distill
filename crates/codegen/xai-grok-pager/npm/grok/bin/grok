@@ -1,4 +1,0 @@
-#!/usr/bin/env node
-// On Unix npm installs, postinstall.js replaces this entry with a symlink to
-// the sibling grok-native binary; every other install launches through node.
-require('./grok-bootstrap.js');

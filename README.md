@@ -1,11 +1,41 @@
-# Remote-Code
+<!-- Modified for Distill by Samuel Fajreldines, 2026. -->
+# Distill
 
-Um harness de código no terminal que roda em **quatro modelos diferentes** ao mesmo tempo, e usa
-**Jev** — uma camada de decisão tipada, não um LLM — para escolher qual deles faz cada chamada.
+**Distill**, criado por **Samuel Fajreldines**, é um harness de código independente
+para o terminal. Ele abre sem login no Grok, ChatGPT ou OpenRouter. Para gerar
+respostas, você pode conectar um modelo local, configurar seu próprio endpoint
+ou entrar opcionalmente em um desses provedores. O suporte ao Grok permanece.
 
-Este README responde uma pergunta só: **onde cada modelo é usado, e quem decide**. Ele descreve o
-que está nesta árvore, não o que se pretende construir. O README do upstream (instalação, build,
-licença) está em [`README.en.md`](README.en.md).
+```sh
+cargo build --release -p distill-pager-bin --bin distill
+./target/release/distill
+```
+
+Para compilar e atualizar a instalação local de desenvolvimento:
+
+```sh
+sh tools/install-local.sh
+export PATH="$HOME/.local/share/distill/bin:$PATH"
+distill
+```
+
+Adicione a linha do `PATH` ao final do `~/.zshrc` para usá-la em novas janelas.
+Essa instalação também aceita o comando `grok` e preserva os executáveis anteriores.
+Após atualizar, encerre e abra o harness novamente; sessões abertas continuam
+executando a versão anterior.
+
+Novos perfis usam `~/.distill`; `DISTILL_HOME` permite escolher outra pasta.
+Perfis antigos em `~/.grok` continuam sendo usados quando não há um perfil novo,
+preservando contas e sessões. O menu mostra login ou logout conforme o estado de
+cada provedor. As instruções para usar um modelo local sem conta estão no
+[guia de instalação e configuração](README.en.md).
+
+O projeto usa a licença [Apache 2.0](LICENSE). A autoria das modificações e os
+créditos preservados estão em [NOTICE](NOTICE). Os identificadores técnicos de
+provedores são mantidos onde necessários para login e comunicação.
+
+O restante deste guia descreve o **Jev**, a camada de decisão que distribui as
+chamadas entre os modelos configurados.
 
 ---
 
@@ -241,8 +271,8 @@ desligados ao mesmo tempo:
 
 | provedor | login | onde mora a credencial |
 |---|---|---|
-| **Grok** | `/login` na TUI, ou `remote-code login` | `auth.json` do harness |
-| **ChatGPT** | `remote-code login --chatgpt` (ou `--chatgpt --device-auth` para máquina sem navegador) | `~/.grok/codex-auth.json`, OAuth **do próprio harness**, com refresh |
+| **Grok** | `/login` na TUI, ou `Distill login` | `auth.json` do harness |
+| **ChatGPT** | `Distill login --chatgpt` (ou `--chatgpt --device-auth` para máquina sem navegador) | `~/.grok/codex-auth.json`, OAuth **do próprio harness**, com refresh |
 | **OpenRouter** | a chave em `OPENROUTER_API_KEY` | o ambiente |
 
 A home lista `Log in with Grok`, `Log in with ChatGPT` e `Log in with OpenRouter`; sem sessão Grok,

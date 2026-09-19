@@ -1,0 +1,60 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-computer-hub-sdk"
+version = "0.1.0"
+edition.workspace = true
+description = "SDK for the Distill Computer Hub: connection pool, transparent reconnect, tool harness, and tool-server runtime."
+
+[features]
+metrics = ["dep:prometheus", "dep:prometheus-parse"]
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+dashmap = { workspace = true }
+indexmap = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+http = { workspace = true }
+prometheus = { workspace = true, optional = true }
+prometheus-parse = { version = "0.2.5", optional = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+
+fastrace = { workspace = true }
+# Trace donation: spans convert via the stock fastrace -> OTel reporter
+# and ship as standard OTLP payloads.
+fastrace-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
+base64 = { workspace = true }
+
+distill-tool-protocol = { workspace = true }
+distill-tool-runtime = { workspace = true }
+distill-tool-types = { workspace = true }
+distill-computer-hub-core = { workspace = true }
+distill-tracing = { workspace = true }
+
+# Integration tests that need heavier backend deps live in a separate sibling crate to keep this dev-dep set minimal.
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+axum = { workspace = true, features = ["ws", "macros"] }
+chrono = { workspace = true }
+base64 = { workspace = true }
+schemars = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+{
+    "name": "@distill/cli",
+    "version": "0.1.220-alpha.4",
+    "description": "Distill terminal coding harness",
+    "license": "Apache-2.0",
+    "bin": {
+        "distill": "bin/distill"
+    },
+    "files": [
+        "bin/"
+    ],
+    "os": [
+        "darwin",
+        "linux",
+        "win32"
+    ],
+    "cpu": [
+        "arm64",
+        "x64"
+    ],
+    "scripts": {
+        "postinstall": "node bin/postinstall.js"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "@iarna/toml": "^3.0.0"
+    },
+    "optionalDependencies": {
+        "@distill/cli-darwin-arm64": "0.1.220-alpha.4",
+        "@distill/cli-darwin-x64": "0.1.220-alpha.4",
+        "@distill/cli-linux-arm64": "0.1.220-alpha.4",
+        "@distill/cli-linux-x64": "0.1.220-alpha.4",
+        "@distill/cli-win32-arm64": "0.1.220-alpha.4",
+        "@distill/cli-win32-x64": "0.1.220-alpha.4"
+    },
+    "private": true,
+    "author": "Samuel Fajreldines"
+}

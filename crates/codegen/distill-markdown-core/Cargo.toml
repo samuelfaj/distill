@@ -1,0 +1,14 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-markdown-core"
+version = "0.1.0"
+edition.workspace = true
+description = "Headless markdown analysis sharing Distill's exact pulldown-cmark config."
+
+[dependencies]
+pulldown-cmark = { workspace = true }
+strum = { workspace = true }
+
+[lints]
+workspace = true

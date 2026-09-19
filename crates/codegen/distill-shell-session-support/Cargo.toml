@@ -1,0 +1,28 @@
+# Modified for Distill by Samuel Fajreldines, 2026.
+[package]
+license = "Apache-2.0"
+name = "distill-shell-session-support"
+version = "0.1.0"
+edition.workspace = true
+description = "Session-support modules for the grok shell crate family: managed MCP gateway catalog/call caching and file-access tracking."
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
+tracing = { workspace = true }
+distill-file-utils = { path = "../distill-file-utils", optional = true }
+distill-http = { workspace = true }
+distill-version = { workspace = true }
+
+[features]
+default-bazel = []
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+
+[lints]
+workspace = true

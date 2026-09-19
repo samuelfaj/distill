@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified for Distill by Samuel Fajreldines, 2026.
 """Audit list.md against the two source documents and against the tree.
 
 Checks, in order:
@@ -19,7 +20,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parent.parent
 LIST = REPO / "list.md"
 CATALOG = pathlib.Path(
-    "/Users/samuelfajreldines/dev/remote-code/plan-new-llm/function-catalog.json"
+    "/Users/samuelfajreldines/dev/Distill/plan-new-llm/function-catalog.json"
 )
 
 ALLOWED_REASONS = {
@@ -33,8 +34,8 @@ ALLOWED_REASONS = {
 
 # Where a flag key named in a row must appear, and where a test name must appear.
 FLAG_SOURCES = [
-    REPO / "crates/codegen/xai-grok-workspace/src/jev/flags.rs",
-    REPO / "crates/codegen/xai-grok-shell/src/agent/config.rs",
+    REPO / "crates/codegen/distill-workspace/src/jev/flags.rs",
+    REPO / "crates/codegen/distill-shell/src/agent/config.rs",
 ]
 SOURCE_FILES = list((REPO / "crates/codegen").rglob("*.rs"))
 SOURCE_BLOB = "\n".join(

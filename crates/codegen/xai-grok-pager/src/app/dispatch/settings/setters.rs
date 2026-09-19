@@ -1866,6 +1866,38 @@ pub(in crate::app::dispatch) fn clear_fork_secondary_model(app: &mut AppView) ->
 // The `web_search_model`, `session_summary_model`, and `default_reasoning_effort` setters were removed alongside their registry entries
 // Mirror fields and TOML schema stay for compat
 
+/// Outer dispatcher for `Action::SetCheapModel`: which entry serves the cheap lane.
+/// The entry is validated at the slash boundary against the configured OpenRouter
+/// entries, so this only writes and reports.
+/// Empty string clears the pick. Next session, not this one: the jev lane resolves
+/// `[jev.local]` once per process.
+pub(in crate::app::dispatch) fn set_cheap_model(app: &mut AppView, entry: String) -> Vec<Effect> {
+    let prev = xai_grok_shell::jev::local_config_cached()
+        .model
+        .clone()
+        .unwrap_or_default();
+    if prev == entry {
+        app.show_toast(&format!("\u{2713} Cheap lane model: already {entry}"));
+        return vec![];
+    }
+    let shown = if entry.is_empty() { "(cleared)" } else { &entry };
+    tracing::info!(
+        target: "settings",
+        key = "cheap_model",
+        new = %shown,
+        prev = %prev,
+        "setting changed",
+    );
+    app.show_toast(&format!(
+        "\u{2713} Cheap lane model: {shown} \u{2014} next session"
+    ));
+    vec![Effect::PersistSetting {
+        key: "cheap_model",
+        value: crate::settings::SettingValue::String(entry),
+        rollback_value: crate::settings::SettingValue::String(prev),
+    }]
+}
+
 // max_thoughts_width is an Int-valued setting
 // The registry hands over an `i64`; it is clamped to `(min, max)` bounds and cast to `u16`
 // Live application goes through `app.current_ui.max_thoughts_width`

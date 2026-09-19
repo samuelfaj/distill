@@ -1,6 +1,26 @@
 use super::*;
 use serde::Deserialize;
 
+/// Whether the backend's announcement banners are shown.
+///
+/// Off unless the owner asks for them: the banner is provider marketing, and a
+/// harness that routes to several providers should not advertise one of them.
+fn announcements_enabled() -> bool {
+    if let Ok(value) = std::env::var("REMOTE_CODE_ANNOUNCEMENTS") {
+        return !value.trim().is_empty() && value.trim() != "0";
+    }
+    xai_grok_shell::config::ConfigLayers::load()
+        .map(|layers| layers.effective_config_base_without_overlay())
+        .ok()
+        .and_then(|merged| {
+            merged
+                .get("announcements")
+                .and_then(|section| section.get("enabled"))
+                .and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
 /// Handle `x.ai/models/update`: the model list changed (etag-triggered refresh).
 pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     if let Ok(model_state) = serde_json::from_str::<acp::SessionModelState>(notif.params.get()) {
@@ -462,7 +482,15 @@ pub(super) fn apply_announcements_update(
         managed_config,
         Some(remote),
     );
-    let announcements = xai_grok_announcements::filter_expired(merged);
+    let announcements = if announcements_enabled() {
+        xai_grok_announcements::filter_expired(merged)
+    } else {
+        // Remote-Code ships with the provider's promotional banners off: they are
+        // marketing served by the backend, not part of the harness.
+        // `[announcements] enabled = true` in the user config, or
+        // `REMOTE_CODE_ANNOUNCEMENTS=1`, brings them back.
+        Vec::new()
+    };
 
     app.announcement = match app.announcement.as_ref() {
         Some(current) => announcements

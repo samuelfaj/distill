@@ -234,6 +234,24 @@ pub async fn set_fork_secondary_model(value: String) -> Result<()> {
     .await
 }
 
+/// Persist `[jev.local].model`: the `[model.<id>]` entry that serves the cheap lane.
+/// Empty string clears the pick — the file keeps `model = ""`, which the jev
+/// resolver reads as "no cheap lane", because the merge never deletes keys.
+/// Caller must validate the entry against the configured OpenRouter entries first.
+pub async fn set_jev_local_model(value: String) -> Result<()> {
+    if value.len() > MAX_DEFAULT_MODEL_LEN {
+        anyhow::bail!(
+            "jev local model name too long ({} > {} bytes)",
+            value.len(),
+            MAX_DEFAULT_MODEL_LEN
+        );
+    }
+    update_config(|cfg| {
+        cfg.jev.local = Some(super::mcp::JevLocalPersistConfig { model: Some(value) });
+    })
+    .await
+}
+
 /// Bounds for [`set_max_thoughts_width`].
 /// They mirror the pager's registry consts; a CI test pins the agreement.
 const MAX_THOUGHTS_WIDTH_SHELL_MIN: i64 = 40;
@@ -390,3 +408,7 @@ pub async fn set_show_tips(value: bool) -> Result<()> {
 pub async fn set_auto_update(value: bool) -> Result<()> {
     update_config(|cfg| cfg.cli.auto_update = Some(value)).await
 }
+
+#[cfg(test)]
+#[path = "settings_writes_tests.rs"]
+mod tests;

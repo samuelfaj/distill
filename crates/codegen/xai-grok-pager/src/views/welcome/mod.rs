@@ -1774,7 +1774,7 @@ fn render_welcome_done(
             "ctrl+i  [x]",
         );
         // Insert the import row at the top when there are pending `.claude/` settings to import; it's the most actionable item right now
-        let mut items: Vec<(&str, &str)> = Vec::with_capacity(5);
+        let mut items: Vec<(&str, &str)> = Vec::with_capacity(9);
         if p.has_claude_import {
             // The trailing "[x]" is a clickable dismiss control
             // The welcome screen mouse handler treats clicks on the rightmost 3 cells of this row as dismiss instead of open. Keyboard: ctrl-shift-i.
@@ -1783,6 +1783,13 @@ fn render_welcome_done(
         }
         items.push((key_w, "New worktree"));
         items.push((key_resume, "Resume session"));
+        // Provider rows: Remote-Code routes to more than one backend, so signing in
+        // to each one, and picking the model for the cheap lane, belong in the menu.
+        // No shortcut: the notice they open names the command to run inside a session.
+        items.push(("", "Log in with Grok"));
+        items.push(("", "Log in with Codex"));
+        items.push(("", "Log in with OpenRouter"));
+        items.push(("", "Cheap lane model"));
         // "Changelog" above Quit; no shortcut, opened by click (row or block)
         if show_changelog_action {
             items.push(("", "Changelog"));

@@ -50,6 +50,26 @@ pub struct Config {
     pub telemetry: TelemetryPersistConfig,
     /// `[features]`: only the key the pager persists round-trips.
     pub features: FeaturesPersistConfig,
+    /// `[jev]`: only the cheap-lane model the pager picks round-trips.
+    /// The provider block and the `[jev.ladder]` levers are read-only from the
+    /// harness's side, and the deep merge in `save_config_locked` preserves them.
+    pub jev: JevPersistConfig,
+}
+
+/// The `[jev]` slice the pager is allowed to write back.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct JevPersistConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<JevLocalPersistConfig>,
+}
+
+/// The `[jev.local]` slice the pager is allowed to write back: which model entry
+/// serves the cheap lane.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct JevLocalPersistConfig {
+    /// Catalog id of the `[model.<id>]` entry the cheap lane routes to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// The `[telemetry]` slice the pager is allowed to write back.

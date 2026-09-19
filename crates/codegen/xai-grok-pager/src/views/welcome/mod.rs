@@ -1799,7 +1799,16 @@ fn render_welcome_done(
     let gate_menu;
     let owned_menu;
     let menu_items: &[(&str, &str)] = if !p.has_access {
-        gate_menu = [(key_g, cta), (key_l, "Logout"), (key_q, "Quit")];
+        // The provider rows are on this menu too: signing in to ChatGPT or
+        // OpenRouter is exactly what a user without a Grok session needs, and the
+        // harness runs on any of them — or on local models only.
+        gate_menu = [
+            (key_g, cta),
+            ("", "Log in with ChatGPT"),
+            ("", "Log in with OpenRouter"),
+            (key_l, "Logout"),
+            (key_q, "Quit"),
+        ];
         &gate_menu
     } else {
         let (key_w, key_resume, key_q, key_i_with_x) = (
@@ -1822,7 +1831,7 @@ fn render_welcome_done(
         // to each one, and picking the models a call may run on, belong in the menu.
         // No shortcut: the notice they open names the command to run inside a session.
         items.push(("", "Log in with Grok"));
-        items.push(("", "Log in with Codex"));
+        items.push(("", "Log in with ChatGPT"));
         items.push(("", "Log in with OpenRouter"));
         items.push(("", "Model tiers"));
         items.push((key_q, "Quit"));

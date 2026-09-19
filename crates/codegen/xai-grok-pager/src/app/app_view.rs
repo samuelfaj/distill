@@ -3730,7 +3730,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             if key!(Enter).matches(key)
                 && let Some(idx) = *ctx.menu_index
             {
-                return dispatch_menu_action(idx, ctx.has_claude_import, ctx.hard_model);
+                return dispatch_menu_action(
+                    idx,
+                    ctx.has_claude_import,
+                    ctx.has_access,
+                    ctx.hard_model,
+                );
             }
         }
         match ctx.auth_state {
@@ -3863,7 +3868,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         {
                             return InputOutcome::Action(Action::DismissClaudeImport);
                         }
-                        return dispatch_menu_action(i, ctx.has_claude_import, ctx.hard_model);
+                        return dispatch_menu_action(
+                            i,
+                            ctx.has_claude_import,
+                            ctx.has_access,
+                            ctx.hard_model,
+                        );
                     }
                 }
                 if let Some(rect) = ctx.refresh_rect
@@ -4117,8 +4127,28 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
 fn dispatch_menu_action(
     index: usize,
     has_claude_import: bool,
+    has_access: bool,
     hard_model: Option<&str>,
 ) -> InputOutcome {
+    // Without a Grok session the screen shows the gate menu: the subscription
+    // call to action, the two provider logins this harness owns (ChatGPT and
+    // OpenRouter), Logout and Quit. The other rows need a session to mean
+    // anything, so they are only on the menu that has one.
+    if !has_access {
+        return match index {
+            1 => InputOutcome::Action(Action::ShowReleaseNotes {
+                title: "Log in with ChatGPT".to_string(),
+                content: crate::slash::commands::provider_status::codex_status(),
+            }),
+            2 => InputOutcome::Action(Action::ShowReleaseNotes {
+                title: "Log in with OpenRouter".to_string(),
+                content: crate::slash::commands::provider_status::openrouter_status(),
+            }),
+            3 => InputOutcome::Action(Action::Logout),
+            4 => InputOutcome::Action(Action::Quit),
+            _ => InputOutcome::Unchanged,
+        };
+    }
     let base = if has_claude_import { 1 } else { 0 };
     let worktree_idx = base;
     let resume_idx = base + 1;
@@ -4144,7 +4174,7 @@ fn dispatch_menu_action(
     // environment, so the honest row shows the live state and the exact next step.
     if index == login_codex_idx {
         return InputOutcome::Action(Action::ShowReleaseNotes {
-            title: "Log in with Codex".to_string(),
+            title: "Log in with ChatGPT".to_string(),
             content: crate::slash::commands::provider_status::codex_status(),
         });
     }

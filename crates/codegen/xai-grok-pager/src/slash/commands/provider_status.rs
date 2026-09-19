@@ -1,37 +1,42 @@
 //! What the provider surfaces report, read from the same sources the lanes
 //! themselves use, so the menu cannot disagree with the runtime.
 //!
-//! None of these performs a sign-in the harness does not own: the Codex
-//! subscription belongs to the Codex CLI, the OpenRouter key belongs to the
-//! environment, and the cheap lane belongs to `[jev.local]` in the config. Each
-//! reports the live state and the exact next step — reporting a wrong state would
-//! be worse than reporting nothing.
+//! The ChatGPT sign-in is the harness's own (`remote-code login --chatgpt`, the
+//! OAuth this fork carries); the OpenRouter key belongs to the environment, the
+//! Grok sign-in to the login flow, and the cheap lane to `[jev.local]`. Each
+//! reports the live state and the exact next step — reporting a wrong state
+//! would be worse than reporting nothing.
 
-/// What the Codex subscription looks like right now.
+/// What the ChatGPT (Codex) sign-in looks like right now.
 pub fn codex_status() -> String {
-    let path = xai_grok_shell::codex_auth::auth_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "~/.codex/auth.json".to_owned());
-    match xai_grok_shell::codex_auth::read_codex_auth() {
-        Some(auth) => {
-            let account = auth
-                .account_id
-                .as_deref()
-                .map(|id| format!(" for account {id}"))
-                .unwrap_or_default();
+    let path = xai_grok_shell::codex_auth::auth_file_path();
+    let shown = path.display();
+    match xai_grok_shell::codex_auth::load_credentials() {
+        Ok(Some(credentials)) => {
+            let label = credentials
+                .email
+                .clone()
+                .or_else(|| credentials.account_id.clone())
+                .unwrap_or_else(|| "this account".to_owned());
             format!(
-                "Codex: signed in{account}.\n\n\
-                 The harness uses the Codex CLI's own sign-in ({path}) — no second login.\n\
-                 To switch account, run `codex login` and reopen this screen.\n\
-                 Models that run on it are the ones pointed at the Codex backend."
+                "ChatGPT: signed in as {label}.\n\n\
+                 Credentials: {shown} — this harness's own OAuth, refreshed by the harness.\n\
+                 Models: any `[model.<id>]` entry pointing at the Codex backend, e.g.\n  \
+                 [model.chatgpt]\n  model = \"gpt-5.6-sol\"\n  base_url = \"https://chatgpt.com/backend-api/codex\"\n  \
+                 api_backend = \"responses\"\n\
+                 Sign out with `remote-code logout --chatgpt`."
             )
         }
-        None => format!(
-            "Codex: not signed in.\n\n\
-             The harness reads the Codex CLI's credentials, so the sign-in happens there:\n\
-             1. run `codex login` in a terminal;\n\
-             2. come back and pick a Codex model (or open this screen again).\n\n\
-             Expected file: {path}"
+        Ok(None) => format!(
+            "ChatGPT: not signed in.\n\n\
+             The harness runs its own OAuth, so the sign-in happens here:\n  \
+             `remote-code login --chatgpt`\n\
+             It opens the browser (or prints a code to enter), and writes {shown}.\n\
+             Until then, ChatGPT models stay unavailable and everything else works."
+        ),
+        Err(error) => format!(
+            "ChatGPT: the credential file could not be read ({error}).\n\
+             Expected at {shown}. Sign in again with `remote-code login --chatgpt`."
         ),
     }
 }

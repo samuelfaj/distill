@@ -1,13 +1,25 @@
 //! Cross-platform secure file operations.
 //!
-//! Creates files that only the current user can read or write, for sensitive data like authentication tokens.
+//! This module provides utilities for creating files with restrictive permissions
+//! that limit access to the current user only. This is critical for storing
+//! sensitive data like authentication tokens.
 //!
-//! - **Unix**: mode 0o600 (owner read/write only)
-//! - **Windows**: an ACL that grants access only to the current user
+//! ## Security Model
 //!
-//! The data is stored in plaintext; OS file permissions are the only protection.
-//! A keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) or encryption would be stronger.
-//! The tokens stored this way are short-lived (7-30 days TTL with automatic refresh), so file permissions are enough for most use cases.
+//! - **Unix**: Files are created with mode 0o600 (owner read/write only)
+//! - **Windows**: Files are created with ACLs that grant access only to the current user
+//!
+//! ## Encryption Consideration
+//!
+//! While this module restricts file access at the OS level, the token is stored in
+//! plaintext. For additional security in high-risk environments, consider:
+//! - Using the operating system's keychain/credential manager (e.g., macOS Keychain,
+//!   Windows Credential Manager, Linux Secret Service)
+//! - Encrypting the token with a key derived from system-specific entropy
+//!
+//! The current approach balances security with simplicity - OS file permissions
+//! provide reasonable protection for most use cases, and the token is already
+//! short-lived (7-30 days TTL with automatic refresh).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -16,42 +28,70 @@ use std::path::Path;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-/// Write `contents` to `path` with secure permissions (owner read/write only).
-/// On Unix, this sets mode 0o600.
-/// On Windows, this restricts the file's ACL to grant access only to the current user.
+/// Creates or opens a file with secure permissions (owner read/write only).
+///
+/// On Unix, this sets mode 0o600. On Windows, this restricts the file's ACL
+/// to grant access only to the current user.
+///
+/// # Arguments
+/// * `path` - The path to the file to create/open
+/// * `contents` - The data to write to the file
+///
+/// # Returns
+/// An `io::Result<()>` indicating success or failure.
+///
+/// # Example
+/// ```ignore
+/// use xai_grok_shell_base::util::secure_file::write_secure_file;
+///
+/// let token = "secret_token";
+/// write_secure_file("/path/to/auth.json", token.as_bytes())?;
+/// ```
 pub fn write_secure_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
+    // Create the file with secure permissions
     let mut file = open_secure_file(path)?;
     file.write_all(contents)?;
     file.flush()?;
 
-    // Re-assert owner-only bits: `OpenOptions::mode` only applies on create, so an existing world-readable file would otherwise keep open perms
+    // Re-assert owner-only bits: `OpenOptions::mode` only applies on create,
+    // so an existing world-readable file would otherwise keep open perms.
     ensure_owner_only_permissions(path)?;
 
     Ok(())
 }
 
-/// Opens a file for writing with secure permissions set during creation (Unix) or prepares it for permission setting after creation (Windows).
-/// Callers that write secret material should also call [`ensure_owner_only_permissions`] after the write (or use [`write_secure_file`]).
-/// `mode(0o600)` only applies when the file is newly created, not when truncating an existing path.
+/// Opens a file for writing with secure permissions set during creation (Unix)
+/// or prepares it for permission setting after creation (Windows).
+///
+/// Callers that write secret material should also call
+/// [`ensure_owner_only_permissions`] after the write (or use
+/// [`write_secure_file`]), because `mode(0o600)` only applies when the file
+/// is newly created — not when truncating an existing path.
 pub fn open_secure_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.truncate(true).write(true).create(true);
 
     #[cfg(unix)]
     {
+        // Set file mode to 0o600 (owner read/write only) during creation
         options.mode(0o600);
     }
 
     options.open(path)
 }
 
-/// Ensure `path` is owner-read/write only (Unix `0o600` / Windows user ACL). Best-effort on missing files (`NotFound` is ignored). Other errors propagate so callers can fail closed when tightening a secret store.
-/// Use on **load** of credential files so a hand-copied or restored world-readable `auth.json` is tightened before the process continues.
+/// Ensure `path` is owner-read/write only (Unix `0o600` / Windows user ACL).
+///
+/// Best-effort on missing files (`NotFound` is ignored). Other errors
+/// propagate so callers can fail closed when tightening a secret store.
+///
+/// Use on **load** of credential files so a hand-copied or restored
+/// world-readable `auth.json` is tightened before the process continues.
 pub fn ensure_owner_only_permissions(path: &Path) -> io::Result<()> {
     match ensure_owner_only_permissions_inner(path) {
         Ok(()) => Ok(()),
@@ -84,7 +124,11 @@ fn ensure_owner_only_permissions_inner(path: &Path) -> io::Result<()> {
 }
 
 /// Sets Windows-specific secure permissions on a file.
-/// Grant full control only to the current user
+///
+/// This function modifies the file's ACL to:
+/// 1. Remove inherited permissions
+/// 2. Grant full control only to the current user
+///
 /// This is equivalent to Unix mode 0o600.
 #[cfg(windows)]
 pub fn set_windows_secure_permissions(path: &Path) -> io::Result<()> {

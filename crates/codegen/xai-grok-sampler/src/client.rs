@@ -723,20 +723,38 @@ impl SamplingClient {
         }
         let mut headers = self.default_headers.clone();
         if let Some(resolver) = &self.bearer_resolver {
-            // Sole auth source: without a live bearer, send no credential rather than a stale seed key.
-            headers.remove(AUTHORIZATION);
-            headers.remove(HeaderName::from_static("x-api-key"));
-            if let Some(fresh) = resolver.current_bearer() {
+            // Identity headers belong to the provider, not to the model entry: drop
+            // any the config carried before the resolver has its say.
+            for name in resolver.reserved_headers() {
+                headers.remove(*name);
+            }
+            let resolved = resolver.current_auth();
+            // Sole auth source: without a live bearer, send no credential rather
+            // than a stale seed key. A resolver that opts out of failing closed
+            // keeps the legacy fallback.
+            if resolved.is_some() || resolver.fail_closed_on_missing() {
+                headers.remove(AUTHORIZATION);
+                headers.remove(HeaderName::from_static("x-api-key"));
+            }
+            if let Some(fresh) = resolved {
                 match self.defaults.auth_scheme {
                     AuthScheme::XApiKey => {
-                        if let Ok(v) = HeaderValue::from_str(&fresh) {
+                        if let Ok(v) = HeaderValue::from_str(&fresh.bearer) {
                             headers.insert(HeaderName::from_static("x-api-key"), v);
                         }
                     }
                     AuthScheme::Bearer => {
-                        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
+                        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", fresh.bearer)) {
                             headers.insert(AUTHORIZATION, v);
                         }
+                    }
+                }
+                for (name, value) in fresh.extra_headers {
+                    match (HeaderName::try_from(name.as_str()), HeaderValue::from_str(&value)) {
+                        (Ok(name), Ok(value)) => {
+                            headers.insert(name, value);
+                        }
+                        _ => tracing::warn!("dropped an unusable auth header from the resolver"),
                     }
                 }
             }

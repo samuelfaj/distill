@@ -19,12 +19,19 @@ pub enum Command {
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
-    Logout,
-    /// Sign in to Grok
+    Logout {
+        /// Sign out of ChatGPT (Codex) instead of Grok.
+        #[arg(long = "chatgpt", alias = "codex")]
+        chatgpt: bool,
+    },
+    /// Sign in to Grok, or to ChatGPT
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
+        /// Sign in to ChatGPT (Codex) with this harness's own OAuth, instead of Grok.
+        #[arg(long = "chatgpt", alias = "codex", conflicts_with_all = ["oauth"])]
+        chatgpt: bool,
         /// Use Grok OAuth via auth.x.ai.
         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
         oauth: bool,

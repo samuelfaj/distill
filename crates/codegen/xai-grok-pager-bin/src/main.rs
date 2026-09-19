@@ -60,7 +60,7 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
-            | Command::Logout
+            | Command::Logout { .. }
             | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
@@ -100,7 +100,7 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
-            | Command::Logout
+            | Command::Logout { .. }
             | Command::Login { .. }
             | Command::Mcp(_)
             | Command::Plugin(_)
@@ -2331,12 +2331,26 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::Login {
                 legacy: _,
+                chatgpt,
                 oauth,
                 device_auth,
                 devbox,
             } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+                if chatgpt {
+                    // This harness's own ChatGPT OAuth: its own token store, its
+                    // own refresh, and the account's GPT models behind it.
+                    let account = xai_grok_shell::codex_auth::run_cli_login(device_auth).await?;
+                    let label = account
+                        .email
+                        .as_deref()
+                        .or(account.account_id.as_deref())
+                        .unwrap_or("ChatGPT account");
+                    println!("Connected ChatGPT as {label}.");
+                    println!();
+                    xai_grok_shell::instrumentation::finalize_and_exit(0);
+                }
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 let authenticated = xai_grok_login::run_cli_login(
@@ -2355,8 +2369,20 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Logout => {
+            Command::Logout { chatgpt } => {
                 init_tracing_simple("cli");
+                if chatgpt {
+                    // Only this harness's own ChatGPT credential: the Grok
+                    // sign-in is a different store and stays as it was.
+                    let removed = xai_grok_shell::codex_auth::run_cli_logout().await?;
+                    if removed {
+                        println!("Signed out of ChatGPT.");
+                    } else {
+                        println!("No ChatGPT sign-in to remove.");
+                    }
+                    println!();
+                    xai_grok_shell::instrumentation::finalize_and_exit(0);
+                }
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 xai_grok_shell::agent::init::run_cli_logout(&config.grok_com_config)?;

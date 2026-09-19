@@ -3221,7 +3221,7 @@ fn menu_action_provider_rows_route_to_login_and_notices() {
         InputOutcome::Action(Action::Login)
     ));
     for (index, title) in [
-        (3usize, "Log in with Codex"),
+        (3usize, "Log in with ChatGPT"),
         (4, "Log in with OpenRouter"),
         (5, "Model tiers"),
     ] {

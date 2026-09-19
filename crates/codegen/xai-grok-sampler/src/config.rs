@@ -173,6 +173,27 @@ impl Default for SamplerConfig {
 pub trait BearerResolver: Send + Sync + std::fmt::Debug {
     fn current_bearer(&self) -> Option<String>;
 
+    /// Resolve the bearer plus any account-scoped headers from one credential
+    /// snapshot. Resolvers that only carry a token stay bearer-only.
+    fn current_auth(&self) -> Option<ResolvedBearerAuth> {
+        self.current_bearer().map(ResolvedBearerAuth::bearer_only)
+    }
+
+    /// Headers this auth provider owns. The client removes them from the static
+    /// header bag before applying [`Self::current_auth`], so a model entry (or a
+    /// casing variant of it) cannot override an authenticated value.
+    fn reserved_headers(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// When true, an unavailable or identity-mismatched snapshot removes the
+    /// static auth fallback instead of sending a stale credential. Resolvers
+    /// fail closed by default; one that must keep the legacy stale-token
+    /// behaviour opts out explicitly.
+    fn fail_closed_on_missing(&self) -> bool {
+        true
+    }
+
     /// Awaited by the client right before it stamps a request; [`Self::current_bearer`] is read afterwards.
     /// A resolver that can renew its bearer does so here when the cached one would not survive the send, so the request never leaves with no credential.
     /// Default: no-op.
@@ -184,6 +205,23 @@ pub trait BearerResolver: Send + Sync + std::fmt::Debug {
 }
 
 pub type SharedBearerResolver = std::sync::Arc<dyn BearerResolver>;
+
+/// What one credential snapshot resolves to: the token, and any headers that
+/// belong with it (an account id, a workspace anchor).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBearerAuth {
+    pub bearer: String,
+    pub extra_headers: indexmap::IndexMap<String, String>,
+}
+
+impl ResolvedBearerAuth {
+    pub fn bearer_only(bearer: String) -> Self {
+        Self {
+            bearer,
+            extra_headers: indexmap::IndexMap::new(),
+        }
+    }
+}
 
 /// Host trace hooks for the per-attempt HTTP span; the sampler has no OpenTelemetry dependency.
 pub trait HeaderInjector: Send + Sync + std::fmt::Debug {

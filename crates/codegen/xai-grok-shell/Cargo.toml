@@ -26,6 +26,7 @@ default-bazel = [
 ]
 
 [dependencies]
+rand = { workspace = true }
 dunce = { workspace = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }

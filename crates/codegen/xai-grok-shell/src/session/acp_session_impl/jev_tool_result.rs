@@ -123,7 +123,26 @@ impl SessionActor {
             && body.len() >= context::BIG_OUTPUT_BYTES
         {
             let options = xai_grok_workspace::jev::reduce::ExtractOptions::default();
-            if let Some(extracted) = xai_grok_workspace::jev::reduce::extract_important(&body, &options)
+            let extracted = xai_grok_workspace::jev::reduce::extract_important(&body, &options);
+            if let Some(extracted) = extracted
+                && !xai_grok_workspace::jev::reduce::preserves_literals(&body, &extracted.text)
+            {
+                // A refusal is a decision too: it says the payload is not
+                // reducible without losing something a reader may need.
+                crate::jev::record_item(
+                    JevLever::EImportance,
+                    "keep",
+                    &format!(
+                        "a reduction would have dropped {} literal(s); keeping today's bytes",
+                        xai_grok_workspace::jev::reduce::lost_literals(&body, &extracted.text)
+                            .len()
+                    ),
+                    None,
+                    None,
+                );
+            }
+            let extracted = xai_grok_workspace::jev::reduce::extract_important(&body, &options);
+            if let Some(extracted) = extracted
                 && xai_grok_workspace::jev::reduce::preserves_literals(&body, &extracted.text)
                 && let Some(store) = crate::jev_store::store_payload(&body)
             {
@@ -423,80 +442,13 @@ impl SessionActor {
                 }
             }
 
-            // ---- D2: reduce a large output before it reaches the model ----
+            // ---- D2: ask the decision layer whether what is left is inert ----
             //
-            // Three steps, cheapest first, and every one of them leaves the way
-            // back to the exact original:
-            // 1. drop only what the payload repeats (no model, nothing lost);
-            // 2. when it is still large, keep the head and the tail and store the
-            //    whole original, naming the file in the marker;
-            // 3. only then ask the decision layer whether what is left is inert
-            //    enough to drop entirely.
-            if body.len() >= context::BIG_OUTPUT_BYTES
-                && crate::jev::lever_active(JevLever::D2BigOutputRetention)
-            {
-                let before = body.len();
-                if let Some(reduced) = xai_grok_workspace::jev::reduce::reduce_redundancy(&body) {
-                    // The guard is a proof, not a hope: a reduction that would
-                    // drop a literal is refused and the bytes stay as they were.
-                    if xai_grok_workspace::jev::reduce::preserves_literals(&body, &reduced.text) {
-                        crate::jev::record_item(
-                            JevLever::D2BigOutputRetention,
-                            "reduce",
-                            &format!(
-                                "{before} bytes -> {} bytes, {} repeated lines dropped, no literal lost",
-                                reduced.text.len(),
-                                reduced.removed_lines
-                            ),
-                            None,
-                            None,
-                        );
-                        body = reduced.text;
-                    } else {
-                        crate::jev::record_item(
-                            JevLever::D2BigOutputRetention,
-                            "keep",
-                            &format!(
-                                "a reduction would have dropped a literal: {:#?}",
-                                xai_grok_workspace::jev::reduce::lost_literals(&body, &reduced.text)
-                            ),
-                            None,
-                            None,
-                        );
-                    }
-                }
-            }
-            if body.len() >= context::BIG_OUTPUT_BYTES
-                && let Some(store) = crate::jev_store::store_payload(&body)
-            {
-                let handle = store.display().to_string();
-                if let Some(elided) = xai_grok_workspace::jev::reduce::elide_middle(
-                    &body,
-                    60,
-                    90,
-                    context::BIG_OUTPUT_BYTES,
-                    &format!(
-                        "[... {{lines}} lines elided from the middle; the full output is stored at \
-                         {handle} — read that file if you need the omitted lines]"
-                    ),
-                ) {
-                    let moved = xai_grok_workspace::jev::reduce::lost_literals(&body, &elided.text);
-                    crate::jev::record_item(
-                        JevLever::D2BigOutputRetention,
-                        "elide",
-                        &format!(
-                            "{} bytes -> {} bytes, {} lines elided; {} literals recoverable from {handle}",
-                            body.len(),
-                            elided.text.len(),
-                            elided.removed_lines,
-                            moved.len()
-                        ),
-                        None,
-                        None,
-                    );
-                    body = elided.text;
-                }
-            }
+            // The deterministic reduction (dedupe, crushers, importance
+            // extraction) belongs to the E-family lanes above, which gate every
+            // lossy step on the literals. What is left for D2 is its own decision:
+            // is the remaining output informational enough to drop outright?
+            // Anything else would be a second, ungated path to the same loss.
             if body.len() >= context::BIG_OUTPUT_BYTES
                 && let Ok(questions) = context::big_output_questions()
                 && let Some(answers) = crate::jev::ask_item(

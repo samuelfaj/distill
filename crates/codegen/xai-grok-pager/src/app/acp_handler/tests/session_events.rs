@@ -583,7 +583,7 @@
             &RetryState::Failed {
                 error_type: "api".into(),
                 message:
-                    "API error (status 402 Payment Required): Grok Build usage balance exhausted"
+                    "API error (status 402 Payment Required): Remote-Code usage balance exhausted"
                         .into(),
             },
             &mut session,

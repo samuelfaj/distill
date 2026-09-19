@@ -1,6 +1,6 @@
 # Coming from Claude, Cursor, or Codex?
 
-Fear not — your settings, rules, and skills come with you. Grok Build
+Fear not — your settings, rules, and skills come with you. Remote-Code
 reads the same project conventions other agents use, and imports the rest.
 
 ## Picked up automatically

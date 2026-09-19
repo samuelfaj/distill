@@ -256,7 +256,7 @@ mod tests {
         mgr.hot_swap(non_xai);
 
         let err = require_xai_auth_for_share(&mgr)
-            .expect_err("non-xAI accounts (API key, External, enterprise IdP) must be rejected");
+            .expect_err("non-Remote-Code accounts (API key, External, enterprise IdP) must be rejected");
 
         // Test the *exact* actionable data string for the non-xAI path (distinct from the generic "Authentication required to share session" path)
         let serialized =

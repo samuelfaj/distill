@@ -196,12 +196,12 @@ fn plugin_cta_default_name_only_official_mirror_selected() {
 #[test]
 fn plugin_cta_marketplace_override_selects_named_source() {
     let mut app = test_app_with_agent();
-    app.plugin_cta_marketplace = Some("SpaceX Marketplace".into());
+    app.plugin_cta_marketplace = Some("Samuel Fajreldines Marketplace".into());
     let id = AgentId(0);
 
     let response = xai_hooks_plugins_types::MarketplaceListResponse {
         sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
-            source_name: "SpaceX Marketplace".into(),
+            source_name: "Samuel Fajreldines Marketplace".into(),
             source_kind: "path".into(),
             source_url_or_path: "/srv/spacex-marketplace".into(),
             plugins: vec![
@@ -233,7 +233,7 @@ fn plugin_cta_marketplace_override_selects_named_source() {
 #[test]
 fn plugin_cta_marketplace_duplicate_named_sources_first_wins() {
     let mut app = test_app_with_agent();
-    app.plugin_cta_marketplace = Some("SpaceX Marketplace".into());
+    app.plugin_cta_marketplace = Some("Samuel Fajreldines Marketplace".into());
     let id = AgentId(0);
 
     // Two sources share the override name: candidates and install target must both come from the first
@@ -241,14 +241,14 @@ fn plugin_cta_marketplace_duplicate_named_sources_first_wins() {
     let response = xai_hooks_plugins_types::MarketplaceListResponse {
         sources: vec![
             xai_hooks_plugins_types::MarketplaceScanResult {
-                source_name: "SpaceX Marketplace".into(),
+                source_name: "Samuel Fajreldines Marketplace".into(),
                 source_kind: "path".into(),
                 source_url_or_path: "/srv/spacex-marketplace".into(),
                 plugins: vec![cta_entry("starlink", "not_installed")],
                 error: None,
             },
             xai_hooks_plugins_types::MarketplaceScanResult {
-                source_name: "SpaceX Marketplace".into(),
+                source_name: "Samuel Fajreldines Marketplace".into(),
                 source_kind: "git".into(),
                 source_url_or_path: "https://github.com/impostor/spacex.git".into(),
                 plugins: vec![cta_entry("impostor", "not_installed")],
@@ -278,7 +278,7 @@ fn plugin_cta_marketplace_override_install_targets_named_source() {
     use crate::app::agent_view::CtaPhase;
     let mut app = test_app_with_agent();
     app.plugin_cta_enabled = true;
-    app.plugin_cta_marketplace = Some("SpaceX Marketplace".into());
+    app.plugin_cta_marketplace = Some("Samuel Fajreldines Marketplace".into());
     let id = AgentId(0);
     {
         let agent = app.agents.get_mut(&id).unwrap();
@@ -291,7 +291,7 @@ fn plugin_cta_marketplace_override_install_targets_named_source() {
     entry.keywords = vec!["zzspacexcta".into()];
     let response = xai_hooks_plugins_types::MarketplaceListResponse {
         sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
-            source_name: "SpaceX Marketplace".into(),
+            source_name: "Samuel Fajreldines Marketplace".into(),
             source_kind: "path".into(),
             source_url_or_path: "/srv/spacex-marketplace".into(),
             plugins: vec![entry],
@@ -366,7 +366,7 @@ fn plugin_cta_marketplace_override_naming_official_selects_it() {
 #[test]
 fn plugin_cta_marketplace_override_excludes_official_source() {
     let mut app = test_app_with_agent();
-    app.plugin_cta_marketplace = Some("SpaceX Marketplace".into());
+    app.plugin_cta_marketplace = Some("Samuel Fajreldines Marketplace".into());
     let id = AgentId(0);
 
     let response = xai_hooks_plugins_types::MarketplaceListResponse {
@@ -379,7 +379,7 @@ fn plugin_cta_marketplace_override_excludes_official_source() {
                 error: None,
             },
             xai_hooks_plugins_types::MarketplaceScanResult {
-                source_name: "SpaceX Marketplace".into(),
+                source_name: "Samuel Fajreldines Marketplace".into(),
                 source_kind: "path".into(),
                 source_url_or_path: "/srv/spacex-marketplace".into(),
                 plugins: vec![cta_entry("starlink", "not_installed")],
@@ -407,7 +407,7 @@ fn plugin_cta_marketplace_override_absent_source_hides_cta() {
     use crate::app::agent_view::CtaPhase;
     let mut app = test_app_with_agent();
     app.plugin_cta_enabled = true;
-    app.plugin_cta_marketplace = Some("SpaceX Marketplace".into());
+    app.plugin_cta_marketplace = Some("Samuel Fajreldines Marketplace".into());
     let id = AgentId(0);
     app.agents
         .get_mut(&id)

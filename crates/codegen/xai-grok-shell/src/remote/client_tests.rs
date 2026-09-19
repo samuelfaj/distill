@@ -670,21 +670,21 @@ fn parse_remote_model_value_top_level_wins_over_meta() {
 #[test]
 fn parse_reads_show_model_fingerprint_field() {
     let value = serde_json::json!({
-        "model": "grok-build",
+        "model": "remote-code",
         "context_window": 256_000,
         "show_model_fingerprint": true
     });
     let result = parse_remote_model_value(&value, "https://default.url").unwrap();
     assert!(result.show_model_fingerprint);
     let value = serde_json::json!({
-        "model": "grok-build",
+        "model": "remote-code",
         "contextWindow": 256_000,
         "showModelFingerprint": true
     });
     let result = parse_remote_model_value(&value, "https://default.url").unwrap();
     assert!(result.show_model_fingerprint);
     let value = serde_json::json!({
-        "model": "grok-build",
+        "model": "remote-code",
         "context_window": 256_000,
         "_meta": { "showModelFingerprint": true }
     });

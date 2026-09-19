@@ -9,7 +9,7 @@
       "model": "grok-4.6",
       "model_family": "xai",
       "name": "Grok 4.6",
-      "description": "SpaceXAI's latest frontier model",
+      "description": "Samuel Fajreldines's latest frontier model",
       "context_window": 500000,
       "api_backend": "responses",
       "supports_backend_search": true,

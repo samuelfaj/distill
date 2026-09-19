@@ -21,7 +21,7 @@ pub(crate) async fn pace_uncharged_resubmit(
 ) {
     use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
     match (store, auth_manager) {
-        // Only an xAI authority stamps the token on the wire: elsewhere an early
+        // Only a Remote-Code authority stamps the token on the wire: elsewhere an early
         // release would fire unpaced doomed sends straight into the runaway guard.
         (RecoveredStore::SessionToken, Some(am))
             if ActiveAuthBackend::default().is_xai_authority() =>

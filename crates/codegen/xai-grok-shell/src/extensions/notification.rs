@@ -1485,7 +1485,7 @@ pub struct CompactionRequestFile {
     /// What kicked off the compaction: `"manual"` (user ran `/compact`) or `"auto"`.
     pub trigger: String,
     /// Which prompt template was used.
-    /// `"short"` is the concise self-summarization; `"detailed"` is the 10-section structured prompt for grok-build and similar agents.
+    /// `"short"` is the concise self-summarization; `"detailed"` is the 10-section structured prompt for remote-code and similar agents.
     pub prompt_variant: String,
     /// The model id that ran the summarization.
     pub model: String,

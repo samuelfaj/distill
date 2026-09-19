@@ -1128,7 +1128,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shell,
             label: "Coding data, retention, and training",
-            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
+            description: "Opt-in to provide Samuel Fajreldines the ability to retain and train on \
                           coding data, e.g., prompts, traces, & metrics, for training and \
                           debugging purposes. We may still collect simple user metrics, \
                           e.g. how many times you use the product or a feature.",

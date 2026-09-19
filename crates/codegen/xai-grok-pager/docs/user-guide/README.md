@@ -1,6 +1,6 @@
-# Grok Build User Guide
+# Remote-Code User Guide
 
-Learn how to install, configure, and extend Grok Build, the terminal-based AI coding assistant from SpaceXAI.
+Learn how to install, configure, and extend Remote-Code, the terminal-based AI coding assistant from Samuel Fajreldines.
 
 ---
 
@@ -20,7 +20,7 @@ Start here. These guides cover what you need on your first day.
 
 ## Tier 2: Core Feature Docs
 
-Customize and extend Grok Build.
+Customize and extend Remote-Code.
 
 | # | Document | Description |
 |---|----------|-------------|
@@ -37,7 +37,7 @@ Customize and extend Grok Build.
 
 ## Tier 3: Advanced Usage Docs
 
-Automate, script, and integrate Grok Build with other systems.
+Automate, script, and integrate Remote-Code with other systems.
 
 | # | Document | Description |
 |---|----------|-------------|

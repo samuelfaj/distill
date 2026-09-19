@@ -7,7 +7,7 @@
 Grok CLI can export usage **metrics** and **events** to your organization's
 own OpenTelemetry collector, so platform teams can monitor adoption, token
 consumption, tool-permission decisions, and errors across the fleet — without
-any data flowing through SpaceXAI.
+any data flowing through Samuel Fajreldines.
 
 ## Related settings
 
@@ -32,17 +32,17 @@ The external stream is:
 - **Content-free by default**: no prompts, no assistant prose, no code, no file
   paths (extension only), no tool arguments, no bash commands, and MCP/skill/plugin
   names collapsed to categories. Optional content gates re-enable some of these.
-- **Structurally separate** from SpaceXAI-internal telemetry: its exporters carry
-  only the headers you configure, never SpaceXAI credentials.
-- **Independent of SpaceXAI data-retention opt-outs**: it works even when
+- **Structurally separate** from Samuel Fajreldines-internal telemetry: its exporters carry
+  only the headers you configure, never Samuel Fajreldines credentials.
+- **Independent of Samuel Fajreldines data-retention opt-outs**: it works even when
   `telemetry` is disabled and for ZDR (zero-data-retention) teams. Those
-  settings govern SpaceXAI-side retention; the external stream is governed solely
+  settings govern Samuel Fajreldines-side retention; the external stream is governed solely
   by your own OTEL configuration.
 
 ### ZDR and this stream
 
 `/privacy` and Zero Data Retention do **not** disable this stream. ZDR turns
-off SpaceXAI-side retention (product analytics, session-trace upload,
+off Samuel Fajreldines-side retention (product analytics, session-trace upload,
 coding-data sharing). It does not mute `GROK_EXTERNAL_OTEL`.
 
 When the stream is on:
@@ -78,7 +78,7 @@ without the master switch.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GROK_EXTERNAL_OTEL` | `0` | Master switch. Distinct from `GROK_TELEMETRY_ENABLED`, which controls SpaceXAI-internal product analytics — the two govern opposite-pointing data flows. |
+| `GROK_EXTERNAL_OTEL` | `0` | Master switch. Distinct from `GROK_TELEMETRY_ENABLED`, which controls Samuel Fajreldines-internal product analytics — the two govern opposite-pointing data flows. |
 | `OTEL_METRICS_EXPORTER` | `none` | `otlp` \| `console` \| `none`. |
 | `OTEL_LOGS_EXPORTER` | `none` | `otlp` \| `console` \| `none`. Gates the event stream. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | `http/protobuf` \| `grpc`. Base protocol for both signals. |

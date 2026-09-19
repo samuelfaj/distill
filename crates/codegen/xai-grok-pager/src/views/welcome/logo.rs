@@ -1,4 +1,11 @@
-//! The logo is hidden entirely on legacy Windows consoles: the ConHost raster fonts do not cover the U+2800 braille block, so it renders as tofu.
+//! The mascot is the Remote-Code cat, drawn as ASCII line art.
+//!
+//! Both tiers carry the same art: the cat is one drawing, and the two files exist
+//! because the layout steps the column down when it needs the rows back. On a
+//! window too short for the art the tier goes to `Hidden`, which is what the old
+//! two-drawing scheme reached by shrinking; there is no smaller cat to show.
+//!
+//! The art is plain ASCII, so every console renders it; the hidden tier is kept for windows too short to hold it.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -386,7 +393,7 @@ mod tests {
     #[test]
     fn the_wordmark_spans_reproduce_the_text_exactly_once() {
         let theme = Theme::current();
-        let text = "Jev Build  ";
+        let text = "Remote-Code  ";
         let spans = wordmark_spans(text, &theme);
         assert!(!spans.is_empty(), "the wordmark is never empty");
         let rebuilt: String = spans.iter().map(|s| s.content.as_ref()).collect();

@@ -28,7 +28,7 @@ that a later consolidation pass (`/dream`) folds into topics. A bounded generate
 index of both scopes is injected into the model's context once per session so
 it can decide which topics to open.
 
-Notes you recorded with earlier versions of Grok Build are carried over
+Notes you recorded with earlier versions of Remote-Code are carried over
 automatically the first time a workspace is opened after updating: each section
 of the earlier notes becomes a topic, and sections whose name already matches a
 topic are appended to it under a "From earlier sessions" heading. The earlier

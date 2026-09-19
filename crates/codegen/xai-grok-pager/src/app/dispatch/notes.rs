@@ -24,7 +24,7 @@ fn next_rewrite_nonce() -> u64 {
 
 /// One copy of the send-time thank-you, shared by the immediate and modal commit paths.
 pub(crate) const FEEDBACK_THANKS_NOTICE: &str =
-    "Thanks for the feedback! The Grok Build team is on it.";
+    "Thanks for the feedback! The Remote-Code team is on it.";
 
 /// Minimal mode cannot show a toast, so the notice goes to the transcript instead.
 fn feedback_notice(app: &mut AppView, message: &str) {

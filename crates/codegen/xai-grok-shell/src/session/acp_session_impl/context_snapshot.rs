@@ -17,7 +17,7 @@ impl SessionActor {
             return;
         };
         let info = self.build_session_info().await;
-        // `/tokenize-text` is the xAI tokenizer
+        // `/tokenize-text` is the Remote-Code tokenizer
         // Always use the baked product default (grok-4.6 from `default_models.json`), not the session model
         // The session model may be a third-party id the endpoint does not serve
         let model = crate::models::default_model();
@@ -342,7 +342,7 @@ mod tests {
 
     fn info() -> SessionInfoData {
         SessionInfoData {
-            agent_name: Some("grok-build".into()),
+            agent_name: Some("remote-code".into()),
             model: Some("grok-4".into()),
             model_display_name: None,
             resolved_model_id: None,

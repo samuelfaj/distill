@@ -576,7 +576,7 @@ mod tests {
             cwd: "/Users/me/xai".into(),
             hostname: Some("devbox".into()),
             source: "local".into(),
-            model_id: Some("grok-build".into()),
+            model_id: Some("remote-code".into()),
             num_messages: 7,
             last_active_at: Some(updated_at.into()),
             branch: Some("main".into()),

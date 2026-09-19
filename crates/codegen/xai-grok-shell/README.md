@@ -398,9 +398,9 @@ curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(jq -r '."https://accounts.x.ai/sign-in".key' ~/.grok/auth.json)" \
   -H "X-XAI-Token-Auth: xai-grok-cli" \
-  -H "x-grok-model-override: grok-build" \
+  -H "x-grok-model-override: remote-code" \
   -d '{
-    "model": "grok-build",
+    "model": "remote-code",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
@@ -412,7 +412,7 @@ curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
 | -------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Authorization: Bearer <token>`  | Yes      | Session token from `~/.grok/auth.json` (set by `grok login`)                                                                                                                              |
 | `X-XAI-Token-Auth: xai-grok-cli` | Yes      | Tells the auth middleware to validate as a CLI session token                                                                                                                              |
-| `x-grok-model-override: <model>` | Yes\*    | The proxy uses this header (not the JSON body) to route to the correct backend. \*Can be omitted for `grok-build` which is on the default route, but always safe to include. |
+| `x-grok-model-override: <model>` | Yes\*    | The proxy uses this header (not the JSON body) to route to the correct backend. \*Can be omitted for `remote-code` which is on the default route, but always safe to include. |
 
 **Streaming vs non-streaming:**
 
@@ -420,7 +420,7 @@ Most models behind the proxy only support streaming. Always use `"stream": true`
 
 | Model                 | Non-streaming  | Streaming    |
 | --------------------- | -------------- | ------------ |
-| `grok-build`    | ✅ Supported   | ✅ Supported |
+| `remote-code`    | ✅ Supported   | ✅ Supported |
 
 > **Note:** `auth.json` tokens expire after 7 days. Run `grok login` to refresh.
 
@@ -511,7 +511,7 @@ Type `/` in the input to access commands:
 
 ```bash
 # Example usage in TUI:
-/model grok-build
+/model remote-code
 /new
 /rewind
 /feedback Something isn't working
@@ -572,7 +572,7 @@ grok -p "Your prompt here"
 | Flag                    | Description                                           |
 | ----------------------- | ----------------------------------------------------- |
 | `-p, --single <PROMPT>` | The prompt to send (required)                         |
-| `-m, --model <MODEL>`   | Model to use (e.g., `grok-build`)               |
+| `-m, --model <MODEL>`   | Model to use (e.g., `remote-code`)               |
 | `-s, --session-id <ID>` | Create or resume a headless session with this ID      |
 | `-r, --resume <ID_OR_TITLE>` | Resume an existing session by ID, or by title for the current directory, ignoring letter case (a sole explicitly renamed title wins among duplicates; remaining duplicates error with their IDs; UUID-shaped values are always treated as IDs) |
 | `-c, --continue`        | Continue the most recent session in current directory |
@@ -681,7 +681,7 @@ grok --allow "WebFetch(domain:docs.rs)" --deny "WebFetch(*)"
 grok -p "What does this project do?"
 
 # Use a specific model
-grok -p "Optimize this function" -m grok-build
+grok -p "Optimize this function" -m remote-code
 
 # Get JSON output for parsing
 grok -p "List all TODO comments in the codebase" --output-format json
@@ -798,7 +798,7 @@ Communication happens via JSON-RPC over stdin/stdout. This mode is used by:
 
 | Flag                  | Description                                                                         |
 | --------------------- | ----------------------------------------------------------------------------------- |
-| `-m, --model <MODEL>` | Override the default model ID (e.g., `grok-build`)                           |
+| `-m, --model <MODEL>` | Override the default model ID (e.g., `remote-code`)                           |
 | `--always-approve`    | Start in always-approve mode (auto-approve all tool executions without confirmation) |
 | `--reauth`            | Force re-authentication flow                                                        |
 
@@ -872,7 +872,7 @@ class GrokChat:
         return ["grok", "-p", prompt, "-m", model, "--cwd", self.cwd,
                 "--output-format", "streaming-json" if stream else "json", "--always-approve"]
 
-    async def create(self, messages, model="grok-build", stream=False):
+    async def create(self, messages, model="remote-code", stream=False):
         prompt = messages[-1]["content"] if len(messages) == 1 else "\n".join(
             f"{m['role']}: {m['content']}" for m in messages
         )
@@ -948,7 +948,7 @@ class GrokChat {
 
   async create(
     messages: { role: string; content: string }[],
-    { model = "grok-build", stream = false } = {},
+    { model = "remote-code", stream = false } = {},
   ) {
     const prompt =
       messages.length === 1
@@ -1057,7 +1057,7 @@ class GrokACPChat:
         line = await self.proc.stdout.readline()
         return json.loads(line).get("result", {})
 
-    async def create(self, messages, model="grok-build", stream=False):
+    async def create(self, messages, model="remote-code", stream=False):
         prompt = [{"type": "text", "text": m["content"]} for m in messages]
 
         # For streaming, yield chunks as they arrive
@@ -1186,7 +1186,7 @@ class GrokACPChat {
 
   async create(
     messages: { role: string; content: string }[],
-    { model = "grok-build", stream = false } = {},
+    { model = "remote-code", stream = false } = {},
   ) {
     const prompt = messages.map((m) => ({ type: "text", text: m.content }));
 
@@ -1532,9 +1532,9 @@ auth_token_ttl = 3600               # if your provider outputs bare tokens
 default = "company-grok"
 
 [model.company-grok]
-model = "grok-build"
+model = "remote-code"
 base_url = "https://grok-proxy.acme.com/"
-name = "Grok Build Latest (Proxy)"
+name = "Remote-Code Latest (Proxy)"
 context_window = 256000
 
 [features]
@@ -1663,7 +1663,7 @@ Grok discovers agent definitions from `.grok/agents/` (project), `~/.grok/agents
 1. `--agent-profile <PATH>` CLI flag
 2. `[agent]` section in `config.toml`
 3. `GROK_AGENT` env var
-4. Default `grok-build` agent
+4. Default `remote-code` agent
 
 ```toml
 # ~/.grok/config.toml
@@ -1706,7 +1706,7 @@ explore = true                       # default — omitted agents are enabled
 plan = false                         # disable plan subagent
 
 [subagents.models]
-explore = "grok-build"              # route explore to a lighter model
+explore = "remote-code"              # route explore to a lighter model
 ```
 
 By default a subagent inherits the parent session's model. Only an explicit
@@ -1722,7 +1722,7 @@ Roles define reusable capability/model defaults. Personas layer tone and behavio
 [subagents.roles.researcher]
 description = "Deep research agent"
 default_capability_mode = "read-only"
-model = "grok-build"
+model = "remote-code"
 prompt_file = ".grok/prompts/researcher.md"
 
 [subagents.personas.concise]
@@ -1838,7 +1838,7 @@ You can override specific fields of built-in models without redefining everythin
 
 ```toml
 # Override just the API key for a default model
-[model.grok-build]
+[model.remote-code]
 api_key = "my-api-key"
 
 # Override temperature and add a custom API key
@@ -1961,7 +1961,7 @@ If your model list endpoint differs from `{base_url}/models`, set `GROK_MODELS_L
 models_base_url = "https://api.acme.com/v1"
 
 # Override just the API key for a specific model
-[model.grok-build]
+[model.remote-code]
 api_key = "my-api-key"
 ```
 
@@ -2387,7 +2387,7 @@ disallowedTools:
 
 Fetch a specific URL and return its content as markdown. **Disabled by default** — enable with `GROK_WEB_FETCH=1`. 
 
-When no custom `allowed_domains` is set, the tool permits a default allowlist of useful documentation sites (SpaceXAI, language docs, frameworks, cloud providers, databases, etc.). Domains not on the allowlist prompt the user for approval; `--always-approve` auto-approves all. Domain matching is case-insensitive, strips `www.` prefixes, and supports path-scoped entries (e.g. `x.ai/company`).
+When no custom `allowed_domains` is set, the tool permits a default allowlist of useful documentation sites (Samuel Fajreldines, language docs, frameworks, cloud providers, databases, etc.). Domains not on the allowlist prompt the user for approval; `--always-approve` auto-approves all. Domain matching is case-insensitive, strips `www.` prefixes, and supports path-scoped entries (e.g. `x.ai/company`).
 
 ---
 

@@ -2722,7 +2722,7 @@
 ## Bug Fixes
 
 - **Background tasks** started inside subagents now continue running after the subagent session ends.
-- **Image description** now reliably uses the grok-build model instead of falling back to the active session model.
+- **Image description** now reliably uses the remote-code model instead of falling back to the active session model.
 
 
 # 0.2.5

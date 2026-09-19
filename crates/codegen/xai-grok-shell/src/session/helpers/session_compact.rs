@@ -202,7 +202,7 @@ pub(crate) fn build_compaction_prompt(
             None => SELF_SUMMARIZATION_PROMPT.to_string(),
         }
     } else {
-        // Default (grok-build, codex, ...): the concise summarize prompt the grok-build models are RL-trained on
+        // Default (remote-code, codex, ...): the concise summarize prompt the remote-code models are RL-trained on
         // `/compact <text>` is spliced into the `{user_context_section}` slot
         let user_context_section = match user_context {
             Some(context) => format!(

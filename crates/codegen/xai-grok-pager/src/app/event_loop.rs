@@ -6086,14 +6086,14 @@ mod tests {
     fn plugin_cta_marketplace_from_managed_layer() {
         let layers = xai_grok_config::ConfigLayers {
             managed: toml::from_str(
-                "[marketplace]\nplugin_cta_marketplace = \"SpaceX Marketplace\"\n",
+                "[marketplace]\nplugin_cta_marketplace = \"Samuel Fajreldines Marketplace\"\n",
             )
             .unwrap(),
             ..Default::default()
         };
         assert_eq!(
             plugin_cta_marketplace_from(&layers.effective_config_base()),
-            Some("SpaceX Marketplace".to_string())
+            Some("Samuel Fajreldines Marketplace".to_string())
         );
     }
     #[test]

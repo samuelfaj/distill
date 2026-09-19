@@ -484,7 +484,7 @@ impl AgentView {
         }
         for (pid, update, mut meta) in std::mem::take(&mut self.pending_adoption_updates) {
             if pid == prompt_id {
-                // Forward-only: the xAI rail shares this cursor and may have applied later events during the buffering window
+                // Forward-only: the Remote-Code rail shares this cursor and may have applied later events during the buffering window
                 // Assigning a buffered (older) id would re-deliver those on reconnect
                 if let (Some(seq), Some(id)) = (meta.event_seq, meta.event_id.take()) {
                     self.advance_last_seen_event_id(id, Some(seq));

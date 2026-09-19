@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-Reference for key bindings in the Grok Build TUI. Bindings are built in and cannot currently be remapped.
+Reference for key bindings in the Remote-Code TUI. Bindings are built in and cannot currently be remapped.
 
 ---
 

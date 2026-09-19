@@ -6,7 +6,7 @@
   },
   {
     "category": "fixes",
-    "description": "**Image description** now reliably uses the grok-build model instead of falling back to the active session model.",
+    "description": "**Image description** now reliably uses the remote-code model instead of falling back to the active session model.",
     "breaking_change": false
   }
 ]

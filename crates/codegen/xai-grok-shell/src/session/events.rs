@@ -488,7 +488,7 @@ pub(crate) const GOAL_ROLE_MODEL_FAIL_OPEN_TOOLSET_INCAPABLE: &str = "toolset_in
 pub(crate) const GOAL_ROLE_MODEL_FAIL_OPEN_SPAWN_FAILED: &str = "spawn_failed";
 
 /// Fail-open: the `agent_type` resolves as a STRICT harness whose subagent flavor `resolve_subagent_toolset` can't represent (e.g. `codex`).
-/// Committing it would silently run grok-build flavor.
+/// Committing it would silently run remote-code flavor.
 /// Distinct from `toolset_unknown` (a name that doesn't resolve at all).
 pub(crate) const GOAL_ROLE_MODEL_FAIL_OPEN_HARNESS_FLAVOR_UNSUPPORTED: &str =
     "harness_flavor_unsupported";

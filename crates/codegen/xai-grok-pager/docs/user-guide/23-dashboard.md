@@ -77,7 +77,7 @@ the 8 freshest, plus any active within the last hour. The rest fold into a
 `→` (or click) to expand, `←` to re-fold. The Idle header always shows the
 true total. Folding is suspended while a filter or search is active.
 
-State icons match other session lists in Grok Build:
+State icons match other session lists in Remote-Code:
 
 - `⋅`/`:`/`⸬`/`⁙` — animated spinner for **Working**
 - `●` — filled circle for **Needs input**, **Completed**, **Failed**,

@@ -904,7 +904,7 @@ impl SessionActor {
                 crate::session::storage::SessionUpdate::Xai(Box::new(notification)),
             ));
     }
-    /// Persist an xAI extension notification to `updates.jsonl` **without** sending it to the gateway/UI.
+    /// Persist a Remote-Code extension notification to `updates.jsonl` **without** sending it to the gateway/UI.
     /// Used for internal bookkeeping updates like `CompactionCheckpoint` and `RewindMarker` that are only relevant during replay.
     pub(super) fn persist_xai_update_only(&self, update: XaiSessionUpdate) {
         let notification = XaiSessionNotification {
@@ -1092,7 +1092,7 @@ mod xai_event_id_stamping_tests {
         prx: &mut tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
     ) -> String {
         loop {
-            match prx.try_recv().expect("an xAI line must be persisted") {
+            match prx.try_recv().expect("a Remote-Code line must be persisted") {
                 PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) => {
                     return notif
                         .meta

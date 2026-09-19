@@ -439,8 +439,8 @@ fn run_shell_child_passes_parent_compaction_pins_into_spawn() {
         SubagentSpawnContext::snapshot_parent_compaction_pins(
             CompactionMode::default(),
             true,
-            Some("grok-build"),
-            Some("grok-build"),
+            Some("remote-code"),
+            Some("remote-code"),
             std::path::Path::new("/tmp"),
         ),
         CompactionPins {

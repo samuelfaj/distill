@@ -14,7 +14,7 @@ impl SlashCommand for TutorialCommand {
     slash_meta! {
         name: "tutorial",
         aliases: ["tour", "onboarding"],
-        description: "Quick tips to get the most out of Grok Build",
+        description: "Quick tips to get the most out of Remote-Code",
         usage: "/tutorial",
         // Gated off rather than merely hidden: minimal has no modal host, so the overlay's input intercept would freeze the session invisibly.
         mode_support: ModeSupport::FullscreenOnly(Remedy::SwitchMode {

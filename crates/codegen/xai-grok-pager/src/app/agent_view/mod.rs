@@ -758,7 +758,7 @@ pub struct AgentView {
     pub self_originated_prompt_ids: VecDeque<String>,
     pub rewound_prompt_ids: VecDeque<String>,
     /// `session/update`s with a counter `<=` this are duplicates (replay/live overlap, a re-emit after the reconnect gate, or duplicate routing) and are dropped so each event renders exactly once. `None` until the first
-    /// ACP stream only; the xAI stream keeps its own highwater
+    /// ACP stream only; the Remote-Code stream keeps its own highwater
     /// ([`Self::last_applied_xai_event_seq`]) because the two streams are not delivered in one id order: ACP lines ride the agent's FIFO event pipeline while xAI lines are emitted direct-to-gateway, so a fresh xAI id arriving ahead of queued lower-id ACP chunks must not make the chunks look stale (silent live-text loss).
     pub last_applied_event_seq: Option<u64>,
     /// xAI-stream sibling of [`Self::last_applied_event_seq`] (see there for why the highwaters are split). Same drop rule, replay-exempt. Durable subagent lifecycle events bypass that drop check but still lift this highwater via `max` so later ordinary updates on the cursor tail stay deduped.

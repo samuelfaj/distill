@@ -26,7 +26,7 @@ pub(super) fn is_max_tier(subscription_tier: Option<&str>) -> bool {
 }
 
 /// URL for upgrading the subscription tier.
-pub(crate) const UPSELL_URL_UPGRADE: &str = "https://grok.com/supergrok?referrer=grok-build";
+pub(crate) const UPSELL_URL_UPGRADE: &str = "https://grok.com/supergrok?referrer=remote-code";
 
 /// URL for managing pay-as-you-go or on-demand spending and purchasing credits.
 pub(crate) const UPSELL_URL_PAYG: &str = "https://grok.com?_s=usage";
@@ -106,7 +106,7 @@ pub(super) fn open_credit_limit_upsell(
             heading: "You hit your weekly limit.",
             upgrade_tier_desc: "Upgrade to a higher tier for more usage",
             secondary_label: "Buy more credits",
-            secondary_desc: "Purchase credits to keep using Grok Build",
+            secondary_desc: "Purchase credits to keep using Remote-Code",
             second_choice: xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits,
             payg_telemetry: false,
         },
@@ -259,7 +259,7 @@ fn open_supergrok_upsell(
         },
         QuestionOption {
             label: "Upgrade to SuperGrok Heavy".into(),
-            description: "Get the most out of Grok Build. Highest usage limits.".into(),
+            description: "Get the most out of Remote-Code. Highest usage limits.".into(),
             preview: None,
             id: Some(UPSELL_URL_UPGRADE.into()),
         },
@@ -537,11 +537,11 @@ pub(super) fn dispatch_open_supergrok_url(app: &mut AppView) -> Vec<Effect> {
         .gate
         .as_ref()
         .and_then(|g| g.url.as_deref())
-        .unwrap_or("https://grok.com/supergrok?referrer=grok-build");
-    // Funnel attribution: tag SuperGrok upsell clicks from the CLI with `referrer=grok-build`, matching the OAuth consent flow and x.ai/cli links
+        .unwrap_or("https://grok.com/supergrok?referrer=remote-code");
+    // Funnel attribution: tag SuperGrok upsell clicks from the CLI with `referrer=remote-code`, matching the OAuth consent flow and x.ai/cli links
     // It applies even when the URL came from remote settings's `gate_url`, so nothing depends on the remote flag being configured correctly
     // If the URL already specifies a referrer it's left alone
-    let url = crate::app::link_opener::ensure_query_param(url, "referrer", "grok-build");
+    let url = crate::app::link_opener::ensure_query_param(url, "referrer", "remote-code");
     super::ctx::open_url_or_show(app, &url);
     vec![]
 }

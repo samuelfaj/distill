@@ -296,7 +296,7 @@ fn handle_list_input(ev: &Event, st: &mut TutorialState) -> TutorialOutcome {
 /// Intro copy shown above the topic list.
 /// It doesn't promise how long the tour takes, just what it is and how to leave.
 const INTRO_LINES: [&str; 2] = [
-    "Quick tips to get the most out of Grok Build.",
+    "Quick tips to get the most out of Remote-Code.",
     "Pick a topic. Esc when you're done.",
 ];
 
@@ -408,7 +408,7 @@ fn render_list(buf: &mut Buffer, area: Rect, st: &mut TutorialState, compact: bo
         },
     ];
     let modal_config = ModalWindowConfig {
-        title: "Welcome to Grok Build",
+        title: "Welcome to Remote-Code",
         tabs: None,
         shortcuts: &shortcuts,
         sizing: ModalSizing {

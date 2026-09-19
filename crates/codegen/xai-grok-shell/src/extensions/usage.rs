@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn response_serializes_ledger_as_prompt_usage_wire_shape() {
         let mut ledger = UsageLedger::default();
-        ledger.record_main_loop_call("grok-build", &usage(100, 10), Some(50), Some(20_000_000));
+        ledger.record_main_loop_call("remote-code", &usage(100, 10), Some(50), Some(20_000_000));
         let v = serde_json::to_value(&SessionUsageResponse {
             usage: PromptUsage::from(&ledger),
         })
@@ -95,7 +95,7 @@ mod tests {
             Some(&serde_json::json!(20_000_000))
         );
         assert_eq!(
-            v.pointer("/usage/modelUsage/grok-build/inputTokens"),
+            v.pointer("/usage/modelUsage/remote-code/inputTokens"),
             Some(&serde_json::json!(100))
         );
         let rt: SessionUsageResponse = serde_json::from_value(v).unwrap();

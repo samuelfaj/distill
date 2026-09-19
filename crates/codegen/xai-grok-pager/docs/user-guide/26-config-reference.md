@@ -4,7 +4,7 @@ This file ships with the CLI and is extracted to `~/.grok/docs/user-guide/26-con
 
 ## How to configure
 
-Three files configure Grok Build, and they are written by different people.
+Three files configure Remote-Code, and they are written by different people.
 
 | File | Who writes it | Where it lives | Use it to |
 | --- | --- | --- | --- |
@@ -14,7 +14,7 @@ Three files configure Grok Build, and they are written by different people.
 
 Choose `managed_config.toml` for defaults you want people to be able to adjust, and `requirements.toml` for the ones you do not.
 
-Grok Build also reads these layers, later rows winning except where a requirements pin or the Managed column says otherwise.
+Remote-Code also reads these layers, later rows winning except where a requirements pin or the Managed column says otherwise.
 
 1. Compiled defaults.
 2. `/etc/grok/managed_config.toml`, then `$GROK_HOME/managed_config.toml` (fleet defaults; console-synced).
@@ -672,7 +672,7 @@ One exception to that rule:
 | --- | --- |
 | `features.remote_fetch` | The managed value wins over the developer's. |
 
-Grok Build reads `/etc/grok/managed_config.toml` first, then `$GROK_HOME/managed_config.toml`, which the console keeps in sync. Values in the second replace values in the first.
+Remote-Code reads `/etc/grok/managed_config.toml` first, then `$GROK_HOME/managed_config.toml`, which the console keeps in sync. Values in the second replace values in the first.
 
 The **Managed** column on the tables above is the per-key answer: `fleet` means the fleet value stands, `user` means the user's file wins, `—` means this file is ignored.
 
@@ -690,11 +690,11 @@ These keys exist only in `requirements.toml`:
 
 ## What happens when a setting is refused
 
-| Situation | What Grok Build does |
+| Situation | What Remote-Code does |
 | --- | --- |
 | A developer sets a key you pinned | The pinned value applies. `grok inspect` lists the requirements file that contributed. |
 | A developer sets a key you shipped in `managed_config.toml` | Their value applies, except `features.remote_fetch`. Pin the key instead if it must hold. |
-| `requirements.toml` is missing or its signature does not verify | The pins do not apply, and Grok Build starts without them. Set `fail_closed = true` to refuse to start instead. |
+| `requirements.toml` is missing or its signature does not verify | The pins do not apply, and Remote-Code starts without them. Set `fail_closed = true` to refuse to start instead. |
 | A pinned key names a value this version does not recognise | The key is ignored and the rest of the file still applies. |
 
 ## Check what is in effect

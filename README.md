@@ -1,6 +1,6 @@
-# Jev Build — quando usamos o Jev
+# Remote-Code — quando usamos o Jev
 
-Este repositório é um fork do **Grok Build** (`grok`), o agente de código de terminal da SpaceXAI, com uma camada
+Este repositório é um fork do **Remote-Code** (`grok`), o agente de código de terminal da Samuel Fajreldines, com uma camada
 de decisão local: o **Jev** (TypeSafe System One). O Jev responde perguntas **tipadas** (`choice`, `score`,
 `noul`) sobre um `state` pequeno e devolve respostas com probabilidade e confiança. Ele não gera texto: decide.
 

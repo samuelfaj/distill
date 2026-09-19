@@ -1,6 +1,6 @@
 # xai-grok-pager
 
-Terminal UI (TUI) for Grok Build. Provides the interactive full-screen interface
+Terminal UI (TUI) for Remote-Code. Provides the interactive full-screen interface
 including the scrollback view, prompt input, session management, and all modal
 dialogs.
 

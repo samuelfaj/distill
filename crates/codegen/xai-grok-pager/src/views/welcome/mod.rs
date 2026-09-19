@@ -40,7 +40,7 @@ use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier, wordmark_sp
 
 /// Product name shown in the welcome banner (the art above it shimmers
 /// with the same sweep, so the two animate as one piece).
-const WORDMARK: &str = "Jev Build  ";
+const WORDMARK: &str = "Remote-Code  ";
 use menu::render_menu;
 pub(crate) use toast::paint_welcome_toast;
 use top_bar::render_top_bar;
@@ -499,11 +499,11 @@ impl WelcomeLayout {
 
 /// Controls what the version badge renders.
 pub(super) enum VersionBadgeMode<'a> {
-    /// Full badge: team | tier | api_key | **Grok Build** VERSION+channel (right-aligned).
+    /// Full badge: team | tier | api_key | **Remote-Code** VERSION+channel (right-aligned).
     Full { subscription_tier: Option<&'a str> },
     /// Hero footer: team | api_key | channel (right-aligned, gray).
     HeroFooter,
-    /// Hero inline: **Grok Build**  VERSION (left-aligned).
+    /// Hero inline: **Remote-Code**  VERSION (left-aligned).
     HeroInline,
 }
 
@@ -839,7 +839,7 @@ pub fn render_welcome(
                 content_area,
                 buf,
                 Some((
-                    "Grok Build is not yet available for this account.",
+                    "Remote-Code is not yet available for this account.",
                     theme.gray_bright,
                 )),
                 &menu,
@@ -1019,7 +1019,7 @@ fn render_welcome_trust(
         Line::default(),
         // Two lines so the warning never clips at narrow / compact widths (a single ~78-char line would truncate "...posing security risks")
         Line::from(Span::styled(
-            "Grok Build may run or modify contents in this directory,",
+            "Remote-Code may run or modify contents in this directory,",
             Style::default().fg(theme.gray),
         ))
         .alignment(Alignment::Center),
@@ -2087,7 +2087,7 @@ fn render_welcome_done(
             let gate_link = p
                 .gate
                 .and_then(|g| g.url.as_deref())
-                .unwrap_or("https://grok.com/supergrok?referrer=grok-build");
+                .unwrap_or("https://grok.com/supergrok?referrer=remote-code");
             let url = Line::from(Span::styled(
                 gate_link,
                 Style::default()
@@ -2712,8 +2712,8 @@ mod tests {
                 "badge must not label the product: {rendered:?}"
             );
         }
-        assert!(full.contains("Jev Build"), "full badge: {full:?}");
-        assert!(inline.contains("Jev Build"), "inline badge: {inline:?}");
+        assert!(full.contains("Remote-Code"), "full badge: {full:?}");
+        assert!(inline.contains("Remote-Code"), "inline badge: {inline:?}");
         assert!(footer.contains("acme"), "footer keeps the team: {footer:?}");
         assert!(
             !footer.ends_with('\u{2502}'),

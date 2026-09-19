@@ -26,7 +26,7 @@ const LOGO_H_PAD: u16 = 3;
 /// Reserved on top of the announcement text rows so the message never paints over the button.
 const UPGRADE_CTA_ROWS: u16 = 2;
 
-const HERO_SUBTITLE: &str = "Thanks for trying Jev Build, give feedback with /feedback!";
+const HERO_SUBTITLE: &str = "Thanks for trying Remote-Code, give feedback with /feedback!";
 
 use super::logo::LogoTier;
 use super::{PROMPT_HEIGHT, VERSION_GAP};

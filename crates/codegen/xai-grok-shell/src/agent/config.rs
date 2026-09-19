@@ -40,7 +40,7 @@ pub enum AgentMode {
     Generic,
 }
 /// Default agent type when the server or user config doesn't specify one.
-pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
+pub const DEFAULT_AGENT_TYPE: &str = "remote-code-plan";
 /// Serde default for `ModelInfo.agent_type` and `ModelEntryConfig.agent_type`.
 pub(crate) fn default_agent_type() -> String {
     DEFAULT_AGENT_TYPE.to_owned()
@@ -1710,13 +1710,13 @@ pub use xai_grok_agent::config::PermissionMode;
 pub use xai_grok_shared::ui_config::{ContextualHints, UiConfig};
 /// Set in `config.toml` under `[agent]`: Priority (highest to lowest): ACP session-level `_meta.agentProfile`
 /// CLI `--agent-profile` flag `[agent]` config.toml section (this config) `GROK_AGENT` env var
-/// Default `grok-build` agent
+/// Default `remote-code` agent
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSelectionConfig {
     /// Name of a built-in or discovered agent definition.
     /// Looked up via `xai_grok_agent::discovery::by_name_in_cwd()`.
-    /// Examples: "grok-build", "browser-use", or a custom agent name.
+    /// Examples: "remote-code", "browser-use", or a custom agent name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Path to an agent definition file (.md with YAML frontmatter).
@@ -3930,7 +3930,7 @@ pub struct ModelEntryConfig {
     #[serde(default, skip_serializing_if = "is_false")]
     pub use_concise: bool,
     /// The type of system prompt to use for this model.
-    /// e.g. "grok-build", "codex".
+    /// e.g. "remote-code", "codex".
     #[serde(default = "default_agent_type")]
     pub agent_type: String,
     /// Maximum seconds to wait between SSE chunks during inference streaming. When no chunk is received within this duration, the request fails with a non-retryable `IdleTimeout` error.
@@ -4259,7 +4259,7 @@ pub struct ModelInfo {
     pub system_prompt_label: Option<String>,
     /// When true, this model uses concise mode (compact system prompt, concise tool output, concise user message prefix, reduced toolset).
     pub use_concise: bool,
-    /// Always has a value; defaults to `"grok-build-plan"` when the server or user config doesn't specify one.
+    /// Always has a value; defaults to `"remote-code-plan"` when the server or user config doesn't specify one.
     #[serde(default = "default_agent_type")]
     pub agent_type: String,
     /// Per-chunk idle timeout for inference streaming (see `ModelEntryConfig`).
@@ -5141,7 +5141,7 @@ pub(crate) fn stamp_session_local_sampler_fields(
 }
 /// Finalize the image-describe model and sampler config for user attachments. Shared so the aux resolve happy path and the `None` fallback cannot diverge between those entry points.
 /// On aux resolve `Some`, stamp session-local fields onto the helper config. On `None`, fall back to the active session model and full config.
-/// That avoids forcing `image_description_model` onto the agent endpoint, which 404s on BYOK / non-proxy routes for internal slugs like `grok-build`.
+/// That avoids forcing `image_description_model` onto the agent endpoint, which 404s on BYOK / non-proxy routes for internal slugs like `remote-code`.
 pub(crate) fn finalize_image_describe_sampler_config(
     resolved_aux: Option<SamplerConfig>,
     active_session_config: &SamplerConfig,

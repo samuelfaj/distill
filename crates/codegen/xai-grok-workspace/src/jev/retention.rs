@@ -31,7 +31,14 @@ use super::types::{JevAnswerSet, Json, Question, QuestionId};
 
 /// Below this estimated size there is nothing to gain: a request costs more than
 /// the bytes it would remove.
-pub const MIN_TOKENS_TO_PRUNE: u64 = 10_000;
+///
+/// The plugin this lane is modelled on uses 10 000 tokens, which is right where
+/// it runs — Claude Code hands whole file dumps and build logs through. This
+/// harness caps a tool result at roughly 20 KB (≈5 000 tokens) before the lanes
+/// see it, so a 10 000-token gate would mean the lane never fires. Four thousand
+/// is the same trade at this harness's scale: the request costs about a thousand
+/// tokens, so the payload has to be able to give back several times that.
+pub const MIN_TOKENS_TO_PRUNE: u64 = 4_000;
 /// Lines per chunk. Small enough that the answer can be specific, large enough
 /// that one request covers a screenful.
 pub const CHUNK_LINES: usize = 120;

@@ -3204,9 +3204,35 @@ fn menu_action_indices_without_changelog() {
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, false, None),
+        dispatch_menu_action(6, false, false, None),
         InputOutcome::Action(Action::Quit)
     ));
+}
+/// The provider rows sit between Resume and the Changelog/Quit pair: Grok starts
+/// the real login flow, the other two open the notice that names the next step,
+/// and Cheap lane model opens the notice that names the candidate entries.
+#[test]
+fn menu_action_provider_rows_route_to_login_and_notices() {
+    assert!(matches!(
+        dispatch_menu_action(2, false, true, None),
+        InputOutcome::Action(Action::Login)
+    ));
+    for (index, title) in [
+        (3usize, "Log in with Codex"),
+        (4, "Log in with OpenRouter"),
+        (5, "Cheap lane model"),
+    ] {
+        match dispatch_menu_action(index, false, true, None) {
+            InputOutcome::Action(Action::ShowReleaseNotes {
+                title: actual,
+                content,
+            }) => {
+                assert_eq!(actual, title, "row {index}");
+                assert!(!content.trim().is_empty(), "row {index} must explain itself");
+            }
+            other => panic!("row {index}: expected a notice, got {other:?}"),
+        }
+    }
 }
 #[test]
 fn menu_action_changelog_sits_above_quit() {
@@ -3216,18 +3242,18 @@ fn menu_action_changelog_sits_above_quit() {
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, false, true, md),
+        dispatch_menu_action(6, false, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(3, false, true, md),
+        dispatch_menu_action(7, false, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }
 #[test]
 fn menu_action_changelog_before_fetch_is_noop() {
     assert!(matches!(
-        dispatch_menu_action(2, false, true, None),
+        dispatch_menu_action(6, false, true, None),
         InputOutcome::Unchanged
     ));
 }
@@ -3248,10 +3274,14 @@ fn menu_action_indices_with_import_and_changelog() {
     ));
     assert!(matches!(
         dispatch_menu_action(3, true, true, md),
+        InputOutcome::Action(Action::Login)
+    ));
+    assert!(matches!(
+        dispatch_menu_action(7, true, true, md),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(4, true, true, md),
+        dispatch_menu_action(8, true, true, md),
         InputOutcome::Action(Action::Quit)
     ));
 }

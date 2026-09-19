@@ -4,6 +4,7 @@ pub mod announcements;
 pub mod auto;
 pub mod btw;
 pub mod cd;
+pub mod cheap_model;
 pub mod compact;
 pub mod compact_mode;
 pub mod config_agents;
@@ -32,7 +33,10 @@ pub mod imagine_video;
 pub mod import_claude;
 pub mod jump;
 pub mod login;
+pub mod login_codex;
+pub mod login_openrouter;
 pub mod logout;
+pub mod provider_status;
 pub mod loop_cmd;
 pub mod mcps;
 pub mod memory;
@@ -151,6 +155,9 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(doctor::DoctorCommand),
         Arc::new(import_claude::ImportClaudeCommand),
         Arc::new(login::LoginCommand),
+        Arc::new(login_codex::LoginCodexCommand),
+        Arc::new(login_openrouter::LoginOpenrouterCommand),
+        Arc::new(cheap_model::CheapModelCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),
         Arc::new(delete::DeleteCommand),

@@ -97,8 +97,9 @@ def main():
                 reason = cells[2] if len(cells) > 2 else ""
                 if reason not in ALLOWED_REASONS:
                     failures.append(f"{first}: reason `{reason}` is not allowed")
-        elif section.startswith("4."):
-            external += 1
+        elif section.startswith("4.") or section.startswith("5."):
+            if section.startswith("4."):
+                external += 1
             for cell in cells[3:6]:
                 for name in re.findall(r"[a-z_]{8,}", cell.strip("` ")):
                     if name not in SOURCE_BLOB:

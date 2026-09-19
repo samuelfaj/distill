@@ -560,6 +560,10 @@ pub enum Action {
     /// Clear the persisted fork-secondary model, restoring the built-in default.
     /// Active agent keeps its value; next fork uses the default.
     ClearForkSecondaryModel,
+    /// Commit which `[model.<id>]` entry serves the cheap lane, persisted to
+    /// `[jev.local].model`. Empty string clears the pick.
+    /// Next-session: the jev lane resolves its local config once per process.
+    SetCheapModel(String),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required: tips are resolved once at startup.
     SetShowTips(bool),

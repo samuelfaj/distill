@@ -4124,7 +4124,8 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
     }
 }
 /// Dispatch an action for a welcome menu item by index.
-/// Menu order: `[Import]`, New worktree, Resume session, `[Changelog]`, Quit.
+/// Menu order: `[Import]`, New worktree, Resume session, Log in with Grok,
+/// Log in with Codex, Log in with OpenRouter, Cheap lane model, `[Changelog]`, Quit.
 /// `show_changelog_action` is true when the Changelog row is rendered; release notes open only once `changelog_md` is available.
 fn dispatch_menu_action(
     index: usize,
@@ -4135,10 +4136,14 @@ fn dispatch_menu_action(
     let base = if has_claude_import { 1 } else { 0 };
     let worktree_idx = base;
     let resume_idx = base + 1;
+    let login_grok_idx = base + 2;
+    let login_codex_idx = base + 3;
+    let login_openrouter_idx = base + 4;
+    let cheap_model_idx = base + 5;
     let (changelog_idx, quit_idx) = if show_changelog_action {
-        (Some(base + 2), base + 3)
+        (Some(base + 6), base + 7)
     } else {
-        (None, base + 2)
+        (None, base + 6)
     };
     if has_claude_import && index == 0 {
         return InputOutcome::Action(Action::ImportClaudeSettings);
@@ -4148,6 +4153,30 @@ fn dispatch_menu_action(
     }
     if index == resume_idx {
         return InputOutcome::Action(Action::FetchSessionList);
+    }
+    if index == login_grok_idx {
+        return InputOutcome::Action(Action::Login);
+    }
+    // The provider rows report; they cannot sign in for the user. The Codex
+    // subscription belongs to the Codex CLI and the OpenRouter key belongs to the
+    // environment, so the honest row shows the live state and the exact next step.
+    if index == login_codex_idx {
+        return InputOutcome::Action(Action::ShowReleaseNotes {
+            title: "Log in with Codex".to_string(),
+            content: crate::slash::commands::provider_status::codex_status(),
+        });
+    }
+    if index == login_openrouter_idx {
+        return InputOutcome::Action(Action::ShowReleaseNotes {
+            title: "Log in with OpenRouter".to_string(),
+            content: crate::slash::commands::provider_status::openrouter_status(),
+        });
+    }
+    if index == cheap_model_idx {
+        return InputOutcome::Action(Action::ShowReleaseNotes {
+            title: "Cheap lane model".to_string(),
+            content: crate::slash::commands::provider_status::cheap_lane_status(),
+        });
     }
     if Some(index) == changelog_idx {
         if let Some(md) = changelog_md {

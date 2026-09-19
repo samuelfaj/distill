@@ -1,5 +1,7 @@
 use super::super::load::load_config_from_toml;
-use super::super::mcp::{McpConfig, parse_mcp_config_with_oauth};
+use super::super::mcp::{
+    JevLocalPersistConfig, JevPersistConfig, McpConfig, parse_mcp_config_with_oauth,
+};
 use super::*;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
@@ -1609,5 +1611,60 @@ async fn cancelled_blocking_save_holds_write_guard_until_worker_finishes() {
     assert!(
         finished.load(Ordering::SeqCst),
         "second writer acquired locks before the detached save released them"
+    );
+}
+
+/// Picking a cheap-lane model must not cost the jev lane its other settings.
+/// The write models only `[jev.local].model`, and `[jev]` is where the provider
+/// block and the `[jev.ladder]` levers live, so a merge that dropped them would
+/// silently switch lanes off the moment the user chose a model.
+#[test]
+fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
+    let mut table = TomlMap::new();
+    let mut ladder = TomlMap::new();
+    ladder.insert("e_breaker".into(), TomlValue::Boolean(true));
+    ladder.insert("e_retention".into(), TomlValue::Boolean(true));
+    let mut jev = TomlMap::new();
+    jev.insert(
+        "provider".into(),
+        TomlValue::String("openrouter_decisions".into()),
+    );
+    jev.insert("ladder".into(), TomlValue::Table(ladder));
+    table.insert("jev".into(), TomlValue::Table(jev));
+
+    merge_section(
+        &mut table,
+        "jev",
+        &JevPersistConfig {
+            local: Some(JevLocalPersistConfig {
+                model: Some("openrouter-qwen37".into()),
+            }),
+        },
+    );
+
+    let jev = table
+        .get("jev")
+        .and_then(|v| v.as_table())
+        .expect("the `[jev]` table survives the write");
+    assert_eq!(
+        jev.get("provider").and_then(|v| v.as_str()),
+        Some("openrouter_decisions"),
+        "the provider block is not this writer's to touch"
+    );
+    assert_eq!(
+        jev.get("ladder")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("e_breaker"))
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "the ladder levers sit beside the pick and must survive it"
+    );
+    assert_eq!(
+        jev.get("local")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("model"))
+            .and_then(|v| v.as_str()),
+        Some("openrouter-qwen37"),
+        "the cheap-lane pick is the one thing this write changes"
     );
 }

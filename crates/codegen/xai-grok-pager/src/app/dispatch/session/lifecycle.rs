@@ -126,6 +126,16 @@ pub(crate) fn apply_deferred_switch_outcome(
         agent.show_toast(&msg);
         agent.scrollback.push_block(RenderBlock::system(msg));
     }
+    // An explicit level always wins over auto mode, wherever it comes from: a
+    // deferred switch carries `--effort`, which the dispatch router's own
+    // `SwitchModel` arm never sees, so the mode is cleared here too.
+    if outcome
+        .switch
+        .as_ref()
+        .is_some_and(|switch| switch.effort.is_some())
+    {
+        agent.session.models.effort_auto = false;
+    }
     outcome.switch
 }
 /// `Always` skips the popup and creates a worktree, `Never` stays in-cwd, `Ask` opens the worktree question modal (as `/fork` does).

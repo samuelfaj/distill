@@ -26,6 +26,10 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BINARY = os.path.join(REPO, "target", "debug", "xai-grok-pager")
 
+# Extra argv for the child, e.g. `SPLASH_ARGS="--effort high"` to check a CLI
+# path that a bare launch never reaches.
+EXTRA_ARGS = os.environ.get("SPLASH_ARGS", "").split()
+
 # Keys the welcome screen reacts to, as the bytes a terminal sends.
 KEY_BYTES = {
     "esc": b"\x1b",
@@ -76,12 +80,20 @@ def main() -> int:
         os.environ["COLUMNS"] = str(cols)
         os.environ["LINES"] = str(rows)
         os.chdir(REPO)
-        os.execv(BINARY, [BINARY])
+        os.execv(BINARY, [BINARY, *EXTRA_ARGS])
 
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     data = drain(fd, seconds)
     for key in keys:
-        os.write(fd, KEY_BYTES[key])
+        # `text=...` types literal bytes (starting a session needs a prompt),
+        # `wait=N` gives the child N more seconds, anything else is a named key.
+        if key.startswith("text="):
+            os.write(fd, key[len("text=") :].encode())
+        elif key.startswith("wait="):
+            data += drain(fd, float(key[len("wait=") :]))
+            continue
+        else:
+            os.write(fd, KEY_BYTES[key])
         data += drain(fd, 1.0)
     try:
         os.kill(pid, signal.SIGKILL)

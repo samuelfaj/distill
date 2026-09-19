@@ -266,6 +266,8 @@ Catálogo: **188** funções — 129 implemented, 0 planned,
 
 ## 5. Superfícies de provedor (pedido direto do dono, 2026-09-18)
 
+| effort auto no início | A sessão começa em effort auto, com o Jev escolhendo o nível de cada chamada do modelo; a barra de status diz o modo (`(auto)`) em vez do nível de fallback, e um nível explícito (`/effort <nível>`, `--effort`) desliga o modo naquela sessão | `ModelsManager` (shell) e os dois rodapés do pager | `[jev] effort_auto` (sem valor: ligado) | implemented | `effort_auto_cached`, `effort_label`, `a_session_starts_in_auto_effort` |
+
 O harness roteia para mais de um backend, então o que o provedor anuncia e o
 que o dono escolhe precisam estar visíveis onde ele entra: na tela de boas-vindas.
 

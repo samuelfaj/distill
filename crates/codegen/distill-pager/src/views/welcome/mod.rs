@@ -289,7 +289,6 @@ pub(super) struct WelcomeLayout {
     pub(super) hero_box: Rect,
     pub(super) hero_logo: Rect,
     pub(super) hero_version: Rect,
-    pub(super) hero_subtitle: Rect,
     /// In-box info slot: it shows either the announcement or the changelog (the announcement takes priority).
     pub(super) hero_info: Rect,
     pub(super) hero_menu: Rect,
@@ -324,7 +323,7 @@ struct WelcomeLayoutInput<'a> {
 }
 
 impl WelcomeLayout {
-    /// Whether the hero box (side-by-side logo and menu inside a border) is active.
+    /// Whether the hero box (side-by-side logo and menu) is active.
     pub(super) fn has_hero_box(&self) -> bool {
         self.hero_box.width > 0 && self.hero_box.height > 0
     }
@@ -350,14 +349,9 @@ impl WelcomeLayout {
         }
     }
 
-    /// Compute the welcome screen layout, allowing the wide hero-box variant.
-    /// The home: cat, wordmark, menu, downward.
-    ///
-    /// The mascot is 30 rows tall, so the screen is a column rather than a wide
-    /// box with the art beside the menu — the art is the point, and the menu
-    /// reads fine under it.
+    /// Place the menu beside the mascot when both columns fit; otherwise stack them.
     fn compute(input: WelcomeLayoutInput<'_>) -> Self {
-        Self::compute_inner(input, false)
+        Self::compute_inner(input, true)
     }
 
     /// That renderer only paints the stacked `logo`/`menu` rects (and never an announcement). The
@@ -505,7 +499,6 @@ impl WelcomeLayout {
             hero_box: zero,
             hero_logo: zero,
             hero_version: zero,
-            hero_subtitle: zero,
             hero_info: zero,
             hero_menu: zero,
             logo_tier,
@@ -3567,20 +3560,20 @@ mod tests {
 
     #[test]
     fn hero_box_active_on_wide_tall_terminal() {
-        // 90 cols, 50 rows: meets the minimum for the hero box.
-        let area = Rect::new(0, 0, 90, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             menu_height: 4,
             ..Default::default()
         });
-        assert!(layout.has_hero_box(), "hero box should be active at 90x50");
+        assert!(
+            layout.has_hero_box(),
+            "hero box should be active at the minimum width"
+        );
         assert!(layout.hero_box.width > 0);
         assert!(layout.hero_box.height > 0);
-        // Logo and menu slots are zero in hero box mode (content is inside the box).
         assert_eq!(layout.logo.width, 0);
         assert_eq!(layout.menu.width, 0);
-        // Sub-rects inside the hero box are valid.
         assert!(layout.hero_logo.height > 0);
         assert!(layout.hero_menu.height > 0);
         assert_eq!(layout.hero_version.height, 1);
@@ -3594,7 +3587,7 @@ mod tests {
         (layout.has_hero_box() || stacked_rows)
             && layout.tip.height == input.tip_height
             && layout.prompt.height == prompt_height
-            && layout.version.height == 1
+            && layout.version.height + layout.wordmark.height == 1
     }
 
     fn assert_places_every_row(layout: &WelcomeLayout, input: &WelcomeLayoutInput<'_>) {
@@ -3612,7 +3605,7 @@ mod tests {
 
     #[test]
     fn hero_box_prompt_grows_into_the_flex_gap_and_holds_the_box_still() {
-        let area = Rect::new(0, 0, 90, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let input = |prompt_height| WelcomeLayoutInput {
             content_area: area,
             menu_height: 4,
@@ -3635,8 +3628,7 @@ mod tests {
 
     #[test]
     fn hero_box_moves_up_only_once_the_flex_gap_is_gone() {
-        // 90x26: an 11-row box, a one-row flex gap and an 11-row prompt fit exactly (min_content_height 25)
-        let area = Rect::new(0, 0, 90, 26);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 49);
         let input = |prompt_height| WelcomeLayoutInput {
             content_area: area,
             menu_height: 4,
@@ -3654,8 +3646,7 @@ mod tests {
 
     #[test]
     fn hero_box_yields_to_stacked_when_the_draft_needs_its_rows() {
-        // 26 rows fit the 11-row box beside a one-line prompt, not beside a 13-row draft
-        let area = Rect::new(0, 0, 90, 26);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 49);
         let input = |prompt_height| WelcomeLayoutInput {
             content_area: area,
             menu_height: 4,
@@ -3664,10 +3655,9 @@ mod tests {
         };
         assert!(WelcomeLayout::compute(input(None)).has_hero_box());
         let max = prompt_max_height(&input(None));
-        assert_eq!(max, 13);
+        assert_eq!(max, 24);
         let tall = WelcomeLayout::compute(input(Some(max)));
         assert!(!tall.has_hero_box());
-        // Compact logo 5 + gap 1 + menu 4 + flex 1 + prompt 13 + version 2 = 26 fits exactly
         assert_eq!(tall.logo_tier, LogoTier::Compact);
         assert_places_every_row(&tall, &input(Some(max)));
     }
@@ -3915,7 +3905,6 @@ mod tests {
 
     #[test]
     fn hero_box_inactive_on_narrow_terminal() {
-        // 80 cols is below the 90-col threshold.
         let area = Rect::new(0, 0, 80, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -3931,7 +3920,7 @@ mod tests {
 
     #[test]
     fn hero_box_boundary_at_min_width() {
-        let just_below = Rect::new(0, 0, 89, 50);
+        let just_below = Rect::new(0, 0, HERO_BOX_MIN_WIDTH - 1, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: just_below,
             menu_height: 4,
@@ -3939,10 +3928,10 @@ mod tests {
         });
         assert!(
             !layout.has_hero_box(),
-            "hero box should be inactive at 89 cols"
+            "hero box should be inactive below the minimum width"
         );
 
-        let at_threshold = Rect::new(0, 0, 90, 50);
+        let at_threshold = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: at_threshold,
             menu_height: 4,
@@ -3950,13 +3939,12 @@ mod tests {
         });
         assert!(
             layout.has_hero_box(),
-            "hero box should be active at 90 cols"
+            "hero box should be active at the minimum width"
         );
     }
 
     #[test]
     fn hero_box_inactive_when_compact() {
-        // Compact mode (session picker visible) never uses the hero box.
         let area = Rect::new(0, 0, 120, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -3974,8 +3962,7 @@ mod tests {
 
     #[test]
     fn hero_box_inactive_on_short_terminal() {
-        // 16 rows is one short of the 17 the box needs (11 box + 1 flex gap + 5 fixed-below), so it falls back to the stacked layout
-        let area = Rect::new(0, 0, 90, 16);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 16);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             menu_height: 4,
@@ -3983,16 +3970,13 @@ mod tests {
         });
         assert!(
             !layout.has_hero_box(),
-            "hero box should be inactive at 90x16 (needs 17 rows)"
+            "hero box should be inactive on a short terminal"
         );
     }
 
     #[test]
     fn hero_box_inactive_when_warning_would_overflow() {
-        // Regression: the box is forced to the full 7-row logo, so even a 3-item menu needs 11 box rows
-        // A startup warning (error_height = 2) pushes the total past height 19
-        // The gate must therefore fall back to the stacked layout instead of overflowing by a row
-        let area = Rect::new(0, 0, 90, 19);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 42);
         let with_warning = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             error_height: 2,
@@ -4000,7 +3984,6 @@ mod tests {
             ..Default::default()
         });
         assert!(!with_warning.has_hero_box());
-        // The same terminal fits the box once the warning is gone.
         let no_warning = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             menu_height: 3,
@@ -4042,20 +4025,16 @@ mod tests {
 
     #[test]
     fn hero_box_does_not_overflow_with_tall_menu() {
-        // A 6-item menu makes the box 2 rows taller than the default-4 box. The centering pad (derived
-        // from the default box) must be clamped. Otherwise the box gets pushed down and the version row
-        // clips at exactly min_content_height.
-        let area = Rect::new(0, 0, 100, 19);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 43);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
-            menu_height: 6,
+            menu_height: 31,
             ..Default::default()
         });
         assert!(
             layout.has_hero_box(),
             "hero box should be active at the boundary"
         );
-        // top_pad must clamp to 0, so the box sits at the top, not pushed down.
         assert_eq!(
             layout.hero_box.y, area.y,
             "box pushed down by unclamped pad"
@@ -4071,35 +4050,30 @@ mod tests {
 
     #[test]
     fn hero_box_height_accounts_for_borders_and_padding() {
-        // At h >= 26, logo07 is used (7 lines). With menu_height=3:
-        // right_col = 2 + 0 + 0 + 1 + 3 = 6, inner = max(7, 6) = 7.
-        // hero_box_height = 2 (borders) + 2 (v_pad) + 7 = 11.
-        let area = Rect::new(0, 0, 100, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             menu_height: 3,
             ..Default::default()
         });
         assert!(layout.has_hero_box());
-        assert_eq!(layout.hero_box.height, 11);
+        assert_eq!(layout.hero_box.height, logo::full_logo_line_count() + 4);
     }
 
     #[test]
     fn hero_box_logo_top_aligned() {
-        let area = Rect::new(0, 0, 100, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             menu_height: 3,
             ..Default::default()
         });
-        // Logo y should be at hero_box.y + 1 (border) + 1 (v_pad).
         assert_eq!(layout.hero_logo.y, layout.hero_box.y + 2);
     }
 
     #[test]
     fn hero_box_with_changelog() {
-        // With no announcement, the changelog renders inside the box (info slot), not in a separate area below it
-        let area = Rect::new(0, 0, 100, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
             menu_height: 3,
@@ -4109,14 +4083,12 @@ mod tests {
         assert!(layout.has_hero_box());
         assert_eq!(layout.changelog.height, 0);
         assert_eq!(layout.hero_info.height, 5);
-        // The subtitle is hidden when the info slot is shown.
-        assert_eq!(layout.hero_subtitle.height, 0);
         assert!(layout.hero_info.y > layout.hero_version.y);
     }
 
     #[test]
     fn hero_box_with_announcement() {
-        let area = Rect::new(0, 0, 100, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let a = long_ann();
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -4125,12 +4097,8 @@ mod tests {
             ..Default::default()
         });
         assert!(layout.has_hero_box());
-        // Collapsed: title (1) + 2 wrapped message lines.
         assert_eq!(layout.hero_info.height, 3);
-        // The subtitle is hidden when the info slot is shown.
-        assert_eq!(layout.hero_subtitle.height, 0);
         assert!(layout.hero_info.y > layout.hero_version.y);
-        // The menu sits one blank row below the info block, with no divider line
         assert_eq!(
             layout.hero_menu.y,
             layout.hero_info.y + layout.hero_info.height + 1
@@ -4139,8 +4107,7 @@ mod tests {
 
     #[test]
     fn hero_box_announcement_takes_priority_over_changelog() {
-        // When both are present, the info slot is sized for the announcement and the changelog is suppressed (never shown outside the box)
-        let area = Rect::new(0, 0, 100, 50);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let a = long_ann();
         let layout = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -4156,9 +4123,7 @@ mod tests {
 
     #[test]
     fn hero_box_announcement_clamped_when_tight() {
-        // A real announcement can't disable the hero box: the slot is clamped to whatever still fits (the renderer trails a `…`)
-        // The box stays active rather than falling back to the stacked layout
-        let area = Rect::new(0, 0, 100, 17);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 40);
         let a = long_ann();
         let without = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -4191,10 +4156,8 @@ mod tests {
     }
 
     #[test]
-    fn hero_box_keeps_one_bottom_pad_below_actions() {
-        // With a changelog/announcement the subtitle is hidden, but there's still exactly one padding row between the actions and the bottom border
-        // (menu=4 + info=3 fills the inner, so the menu reaches the pad.)
-        let area = Rect::new(0, 0, 100, 50);
+    fn hero_box_centers_menu_beside_cat() {
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 50);
         let a = long_ann();
         let no_info = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: area,
@@ -4207,15 +4170,15 @@ mod tests {
             announcement: Some(&a),
             ..Default::default()
         });
-        assert_eq!(no_info.hero_subtitle.height, 1);
-        assert_eq!(with_info.hero_subtitle.height, 0);
-        let menu_bottom = with_info.hero_menu.y + with_info.hero_menu.height;
-        let border_bottom = with_info.hero_box.y + with_info.hero_box.height - 1;
-        assert_eq!(
-            border_bottom - menu_bottom,
-            1,
-            "one pad row below the actions"
-        );
+        assert!(no_info.has_hero_box());
+        for layout in [no_info, with_info] {
+            assert!(layout.hero_menu.x >= layout.hero_logo.right());
+            assert!(layout.hero_menu.width >= MENU_MIN_WIDTH);
+            let above = layout.hero_version.y - layout.hero_logo.y;
+            let below = layout.hero_logo.bottom() - layout.hero_menu.bottom();
+            assert!(above.abs_diff(below) <= 1);
+            assert!(layout.hero_menu.bottom() < layout.prompt.y);
+        }
     }
 
     /// Flatten a rendered buffer into one string for substring assertions.
@@ -4478,7 +4441,7 @@ the usual channels. "
     /// A growing draft never reflows the announcement: the hero box keeps the slot the one-line layout gave it, or yields to stacked whole.
     #[test]
     fn draft_never_shrinks_the_hero_announcement() {
-        let area = Rect::new(0, 0, 100, 32);
+        let area = Rect::new(0, 0, HERO_BOX_MIN_WIDTH, 49);
         let ann = distill_announcements::RemoteAnnouncement {
             title: Some("Upgrade".into()),
             message: Some("SuperGrok Heavy is available for your team today.".into()),
@@ -4518,7 +4481,10 @@ the usual channels. "
             }
             assert_places_every_row(&layout, &input(Some(prompt_height)));
         }
-        assert!(saw_stacked, "the cap must push the box out at 100x32");
+        assert!(
+            saw_stacked,
+            "the capped draft must leave too little room for the wide layout"
+        );
     }
 
     /// The stacked announcement outranks the logo and the draft: the cap reserves its rows, and the logo steps down before it would yield.
@@ -4636,7 +4602,7 @@ the usual channels. "
     #[test]
     fn announcement_clamped_in_short_box() {
         let tall = Rect::new(0, 0, 120, 60);
-        let short = Rect::new(0, 0, 120, 30);
+        let short = Rect::new(0, 0, 120, 40);
         let a = long_ann();
         let tall_expanded = WelcomeLayout::compute(WelcomeLayoutInput {
             content_area: tall,

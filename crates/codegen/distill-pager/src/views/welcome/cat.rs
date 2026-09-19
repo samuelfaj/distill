@@ -21,6 +21,31 @@ pub const GLYPH: &str = "\u{2580}";
 
 const ART: &str = include_str!("../../../assets/logo/cat-px.txt");
 
+// Mascot silhouette, one exclusive x-range per pixel row. Keep the dark fur
+// intact while excluding the original backdrop and the stray marks at its right.
+#[rustfmt::skip]
+const SILHOUETTE: [(u16, u16); 60] = [
+    (0,0), (0,0), (32,35), (30,36), (29,36), (28,37), (28,37), (27,37), (27,38), (26,38),
+    (25,39), (25,39), (6,40), (3,40), (3,41), (2,41), (2,42), (2,41), (2,43), (3,43),
+    (3,45), (3,45), (3,45), (4,50), (4,50), (5,47), (5,46), (5,50), (6,50), (8,48),
+    (7,47), (7,50), (6,50), (7,43), (8,42), (5,41), (4,40), (3,40), (8,41), (7,41),
+    (5,42), (5,42), (9,42), (16,43), (16,43), (15,42), (15,44), (14,44), (13,44), (12,44),
+    (11,45), (11,45), (11,45), (11,45), (12,44), (12,44), (8,49), (4,50), (1,52), (0,0),
+];
+
+fn is_mascot_pixel(x: u16, y: u16) -> bool {
+    let Some(&(start, end)) = SILHOUETTE.get(usize::from(y)) else {
+        return false;
+    };
+    let between_ears = match y {
+        12 => (10..22).contains(&x),
+        13 => (13..20).contains(&x),
+        14 => x == 16,
+        _ => false,
+    };
+    (start..end).contains(&x) && !between_ears
+}
+
 /// The pixel art, parsed once.
 pub struct Cat {
     /// Pixel rows, top to bottom; each row is the pixels left to right.
@@ -68,7 +93,7 @@ impl Cat {
 
     /// Paints the art into `area`, clipped to it. Cells outside the art keep
     /// whatever was there.
-    pub fn render(&self, area: Rect, buf: &mut Buffer) {
+    pub fn render(&self, area: Rect, buf: &mut Buffer, background: Color) {
         let cols = self.width().min(area.width);
         let rows = self.rows().min(area.height);
         for y in 0..rows {
@@ -76,8 +101,22 @@ impl Cat {
                 let Some((top, bottom)) = self.cell(x, y) else {
                     continue;
                 };
+                let top = if is_mascot_pixel(x, y * 2) {
+                    top
+                } else {
+                    background
+                };
+                let bottom = if is_mascot_pixel(x, y * 2 + 1) {
+                    bottom
+                } else {
+                    background
+                };
                 let target = &mut buf[(area.x + x, area.y + y)];
-                target.set_symbol(GLYPH);
+                target.set_symbol(if top == background && bottom == background {
+                    " "
+                } else {
+                    GLYPH
+                });
                 target.set_style(Style::default().fg(top).bg(bottom));
             }
         }
@@ -144,21 +183,25 @@ mod tests {
         assert!(matches!(top, Color::Rgb(..)));
     }
 
-    /// Painting writes the block, its colours, and nothing else: an empty cell
-    /// left behind would punch a hole in the picture.
     #[test]
-    fn rendering_paints_every_cell_of_the_grid() {
+    fn rendering_uses_theme_background_and_preserves_the_cat() {
         let cat = Cat::art();
         let area = Rect::new(0, 0, cat.width(), cat.rows());
-        let mut buf = Buffer::empty(area);
-        cat.render(area, &mut buf);
-        for y in 0..area.height {
-            for x in 0..area.width {
+        for background in [Color::Rgb(18, 18, 18), Color::Rgb(245, 245, 245)] {
+            let mut buf = Buffer::empty(area);
+            cat.render(area, &mut buf, background);
+            // Exterior, the gap between the ears, and both yellow fragments.
+            for (x, y) in [(0, 0), (51, 2), (50, 8), (15, 6), (0, 29)] {
                 let cell = &buf[(x, y)];
-                assert_eq!(cell.symbol(), GLYPH, "cell ({x},{y})");
-                let (top, bottom) = cat.cell(x, y).expect("pixel pair");
-                assert_eq!(cell.fg, top, "foreground of ({x},{y})");
-                assert_eq!(cell.bg, bottom, "background of ({x},{y})");
+                assert_eq!(cell.symbol(), " ", "cell ({x},{y})");
+                assert_eq!(cell.fg, background);
+                assert_eq!(cell.bg, background);
+            }
+            // Eyes and dark fur retain their original colors in either theme.
+            for (x, y) in [(17, 14), (35, 12), (25, 10), (25, 23)] {
+                let cell = &buf[(x, y)];
+                assert_eq!(cell.symbol(), GLYPH);
+                assert_eq!((cell.fg, cell.bg), cat.cell(x, y).unwrap());
             }
         }
     }

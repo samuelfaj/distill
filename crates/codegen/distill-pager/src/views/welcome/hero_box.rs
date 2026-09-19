@@ -1,18 +1,17 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
-//! Hero box component: the logo and menu sit side by side inside a bordered box.
+//! Wide welcome layout: mascot on the left, centered menu on the right.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::theme::Theme;
 
 use super::{WelcomeLayout, WelcomeLayoutInput};
 
 /// Minimum terminal width for the side-by-side hero box layout.
-pub(super) const HERO_BOX_MIN_WIDTH: u16 = 90;
+pub(super) const HERO_BOX_MIN_WIDTH: u16 = 118;
 
 /// Vertical padding (rows) between the box border and its inner content.
 const V_PAD: u16 = 1;
@@ -27,22 +26,14 @@ const LOGO_H_PAD: u16 = 3;
 /// Reserved on top of the announcement text rows so the message never paints over the button.
 const UPGRADE_CTA_ROWS: u16 = 2;
 
-const HERO_SUBTITLE: &str = "Thanks for trying Distill, give feedback with /feedback!";
-
 use super::logo::LogoTier;
 use super::{PROMPT_HEIGHT, VERSION_GAP};
 
-/// Rows the "thanks" subtitle occupies.
-/// Hidden when the in-box info slot (changelog or announcement) is shown, to keep the box compact.
-fn subtitle_rows(info_height: u16) -> u16 {
-    if info_height > 0 { 0 } else { 1 }
-}
-
-/// Height of the hero box's right column: version + optional subtitle + optional info block + the gap before the menu + the menu itself.
+/// Height of the hero box's right column: version + optional info block + the gap before the menu + the menu itself.
 fn right_col_height(menu_height: u16, info_height: u16) -> u16 {
     let info_gap = if info_height > 0 { 1u16 } else { 0 };
-    // version(1) + subtitle + [info_gap + info] + gap-before-menu(1) + menu
-    1 + subtitle_rows(info_height) + info_gap + info_height + 1 + menu_height
+    // version(1) + [info_gap + info] + gap-before-menu(1) + menu
+    1 + info_gap + info_height + 1 + menu_height
 }
 
 /// Minimum content-area height the hero box needs to render without truncating.
@@ -105,6 +96,9 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
     let left_col_width = left_col_width();
     let right_width = inner_width.saturating_sub(left_col_width);
     let info_slot_width = right_width.saturating_sub(H_INSET);
+    if info_slot_width < super::MENU_MIN_WIDTH {
+        return None;
+    }
     let info_height = match input.announcement {
         Some(ann) => clamp_info_height(
             announcement_desired_rows(ann, info_slot_width, input.expanded, input.has_upgrade_cta),
@@ -201,28 +195,18 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
     // The right column takes the rest of the inner width after the left column
     let right_x = inner.x + left_col_width;
 
-    // Version line at top of right column.
+    let right_y = inner.y + (inner.height - right_col_height(menu_height, info_height)) / 2;
+
+    // Center the title and menu together beside the mascot.
     let hero_version = Rect {
         x: right_x,
-        y: inner.y,
+        y: right_y,
         width: right_width,
         height: 1,
     };
 
-    // Subtitle line below the version; hidden when the info slot is shown
-    let hero_subtitle = if subtitle_rows(info_height) > 0 {
-        Rect {
-            x: right_x,
-            y: inner.y + 1,
-            width: right_width,
-            height: 1,
-        }
-    } else {
-        zero
-    };
-
-    // Info block (announcement or changelog) below the version and optional subtitle
-    let info_y = inner.y + 1 + subtitle_rows(info_height) + info_gap;
+    // Info block below the version, when present.
+    let info_y = right_y + 1 + info_gap;
     let hero_info = if info_height > 0 {
         Rect {
             x: right_x,
@@ -234,13 +218,13 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
         zero
     };
 
-    // version + subtitle + info_gap + info + gap-before-menu
-    let right_header_rows = 1 + subtitle_rows(info_height) + info_gap + info_height + 1;
+    // version + info_gap + info + gap-before-menu
+    let right_header_rows = 1 + info_gap + info_height + 1;
 
     // The menu sits below the header rows, left-aligned in the right column
     let hero_menu = Rect {
         x: right_x,
-        y: inner.y + right_header_rows,
+        y: right_y + right_header_rows,
         width: info_slot_width,
         height: menu_height.min(inner.height.saturating_sub(right_header_rows)),
     };
@@ -257,7 +241,6 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
         hero_box,
         hero_logo,
         hero_version,
-        hero_subtitle,
         hero_info,
         hero_menu,
         // The box paints the full logo through `render_hero_box`; the stacked `logo` rect is empty
@@ -281,7 +264,7 @@ pub(super) struct HeroBoxRects {
     pub(super) workspace_mode_rects: super::WorkspaceModeHitRects,
 }
 
-/// Render the bordered hero box with the logo on the left and the version, subtitle, and menu on the right.
+/// Render the mascot on the left and the title and menu on the right.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_hero_box(
     layout: &WelcomeLayout,
@@ -301,15 +284,6 @@ pub(super) fn render_hero_box(
         bool,
     )>,
 ) -> HeroBoxRects {
-    // Dim the box border toward the background for a softer, dimmer gray.
-    let border_color = crate::render::color::blend_color(theme.bg_base, theme.gray_dim, 0.45)
-        .unwrap_or(theme.gray_dim);
-    let border_block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color));
-    border_block.render(layout.hero_box, buf);
-
     super::logo::render_full_logo(layout.hero_logo, buf, theme);
 
     super::render_version_badge(
@@ -322,17 +296,6 @@ pub(super) fn render_hero_box(
         super::VersionBadgeMode::HeroInline,
         Alignment::Left,
     );
-
-    // Subtitle line below the version.
-    if layout.hero_subtitle.height > 0 {
-        let subtitle_style = Style::default().fg(theme.gray);
-        buf.set_span(
-            layout.hero_subtitle.x,
-            layout.hero_subtitle.y,
-            &Span::styled(HERO_SUBTITLE, subtitle_style),
-            layout.hero_subtitle.width,
-        );
-    }
 
     // In-box info slot: the announcement takes priority over the changelog, and only one is ever shown, always in this same position
     let mut changelog_cta_rect = None;

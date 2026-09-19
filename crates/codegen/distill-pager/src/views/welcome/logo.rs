@@ -239,7 +239,7 @@ fn render_art(area: Rect, buf: &mut Buffer, theme: &Theme, art: Art) {
     match art {
         // The picture is drawn in its own colours, so it is written cell by cell
         // and not shimmered.
-        Art::Cat => super::cat::Cat::art().render(area, buf),
+        Art::Cat => super::cat::Cat::art().render(area, buf, theme.bg_base),
         Art::Ascii(logo) => render_into(area, buf, theme, logo),
     }
 }

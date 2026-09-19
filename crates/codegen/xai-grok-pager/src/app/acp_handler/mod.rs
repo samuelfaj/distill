@@ -54,6 +54,9 @@ use permissions::{
     apply_recap_block, handle_permission_request, should_drop_duplicate_auto_recap,
     should_drop_late_auto_recap,
 };
+// The announcement gate lives with the settings producer, and the event loop's
+// resolved-settings producer calls it through here: one rule, two callers.
+pub(crate) use settings::visible_announcements;
 
 use routing::{
     SessionMatch, find_session_match, interaction_target_agent, is_matched_agent_active,

@@ -1414,7 +1414,8 @@ pub(crate) async fn run(
             managed_config.as_ref(),
             remote_announcements,
         );
-        app.active_announcements = xai_grok_announcements::filter_expired(announcements);
+        app.active_announcements =
+            crate::app::acp_handler::visible_announcements(announcements);
         if !app.active_announcements.is_empty() {
             use rand::Rng;
             let idx = rand::rng().random_range(0..app.active_announcements.len());

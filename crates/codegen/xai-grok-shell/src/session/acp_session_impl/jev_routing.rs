@@ -343,9 +343,16 @@ impl SessionActor {
             .set_pending_effort_label(level.id.clone());
     }
 
-    /// The cheap worker for a lane, resolved from the model entry the owner
-    /// configured for it, or `None` when there is no entry, no credential, or the
-    /// lane's own key is off.
+    /// The cheap worker for a lane.
+    ///
+    /// `[jev.local] model` holds either a catalog entry id — whose transport,
+    /// key and limits are the owner's — or a comma-separated priority list of
+    /// OpenRouter model ids, which rides on the shipped OpenRouter defaults.
+    /// Unset means the shipped chain: the cheap lanes are on out of the box.
+    ///
+    /// The catalog is consulted first and explicitly: the aux resolver answers
+    /// with the session's own provider when an id is unknown, and a slug list
+    /// must never be sent to the wrong endpoint.
     ///
     /// One place resolves it so every cheap lane reaches the same model with the
     /// same settings, and so a lane cannot quietly use a different one.
@@ -366,13 +373,18 @@ impl SessionActor {
             );
             return None;
         }
-        let slug = crate::jev::local_config_cached()
+        let spec = crate::jev::local_config_cached()
             .model
             .as_deref()
             .map(str::trim)
-            .filter(|slug| !slug.is_empty())?;
-        let cfg = self.resolve_aux_sampler_config(slug).await?;
-        crate::jev_cheap::CheapLane::from_sampler_config(&cfg)
+            .filter(|spec| !spec.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(crate::jev_cheap::default_model_spec);
+        if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec).is_some() {
+            let cfg = self.resolve_aux_sampler_config(&spec).await?;
+            return crate::jev_cheap::CheapLane::from_sampler_config(&cfg);
+        }
+        crate::jev_cheap::CheapLane::from_spec(&spec)
     }
 
     /// Runs one registered cheap task for a lane, recording the outcome whatever

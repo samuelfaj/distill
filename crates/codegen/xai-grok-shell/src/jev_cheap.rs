@@ -18,11 +18,20 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use xai_grok_workspace::jev::tasks;
+use xai_grok_workspace::jev::cheap::{DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODELS};
 use xai_grok_workspace::jev::flags::JevLever;
+use xai_grok_workspace::jev::tasks;
 
 /// Failures in one lane inside one turn before it stands down for that turn.
 pub const BREAKER_TRIPS: u32 = 3;
+
+/// The cheap-model spec the harness ships with, in priority order.
+///
+/// Used when `[jev.local] model` says nothing: out of the box the cheap lanes
+/// run on the shipped OpenRouter chain rather than staying off.
+pub fn default_model_spec() -> String {
+    DEFAULT_MODELS.join(",")
+}
 
 /// One cheap generation at a time, process-wide.
 ///
@@ -43,6 +52,23 @@ pub struct CheapLane {
 }
 
 impl CheapLane {
+    /// The lane for a cheap-model spec that is not a catalog entry: a
+    /// comma-separated priority list of OpenRouter model ids, on the shipped
+    /// OpenRouter transport and the key from the default env.
+    ///
+    /// The transport is not invented here — it is the pair the cheap lane has
+    /// always defaulted to ([`DEFAULT_BASE_URL`] and [`DEFAULT_API_KEY_ENV`]) —
+    /// so a spec that names slugs needs no `[model.*]` entry of its own.
+    pub fn from_spec(spec: &str) -> Option<Self> {
+        let api_key = crate::agent::config::EnvKeys::single(DEFAULT_API_KEY_ENV).resolve_value()?;
+        Self::from_sampler_config(&xai_grok_sampler::SamplerConfig {
+            api_key: Some(api_key),
+            base_url: DEFAULT_BASE_URL.to_owned(),
+            model: spec.to_owned(),
+            ..Default::default()
+        })
+    }
+
     /// Builds the lane from a resolved model entry.
     ///
     /// The key is captured once, at resolution time, and handed to the client as
@@ -233,6 +259,42 @@ mod tests {
         assert!(!lane_tripped(JevLever::ECheapTask));
         assert_eq!(lane_calls(JevLever::ECheapTask), (0, 0));
         assert!(lane_summary().is_empty());
+    }
+
+    /// The shipped default is the owner's chain, in order: the free tier first,
+    /// then the paid variants, then the older cheap model.
+    #[test]
+    fn the_shipped_cheap_spec_is_the_owner_chain_in_order() {
+        assert_eq!(
+            default_model_spec(),
+            "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash"
+        );
+    }
+
+    /// A spec that is not a catalog entry still builds a lane, on OpenRouter's
+    /// own transport and key env — that is what makes a bare slug list work.
+    #[test]
+    #[serial_test::serial]
+    fn a_standalone_spec_builds_a_lane_on_the_openrouter_defaults() {
+        let _key = xai_grok_test_support::env::EnvGuard::set("OPENROUTER_API_KEY", "sk-test");
+        let lane = CheapLane::from_spec("inclusionai/ling-3.0-flash-vl:free,qwen/qwen3.7-flash")
+            .expect("a slug list with a key present builds a lane");
+        assert_eq!(
+            lane.slug,
+            "inclusionai/ling-3.0-flash-vl:free,qwen/qwen3.7-flash"
+        );
+        assert_eq!(
+            lane.client.config().endpoint(),
+            "https://openrouter.ai/api/v1/chat/completions",
+            "the shipped transport, not the session's"
+        );
+        assert!(lane.client.credential_present());
+
+        let _no_key = xai_grok_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        assert!(
+            CheapLane::from_spec("qwen/qwen3.7-flash").is_none(),
+            "no key, no lane: the caller keeps today's bytes"
+        );
     }
 
     #[test]

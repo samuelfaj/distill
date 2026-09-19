@@ -56,13 +56,27 @@ pub fn openrouter_status() -> String {
 /// The cheap lane's model, its notes, and what else could serve it.
 pub fn cheap_lane_status() -> String {
     let local = xai_grok_shell::jev::local_config_cached();
-    let current = local
+    let mut out = match local
         .model
         .as_deref()
         .map(str::trim)
-        .filter(|slug| !slug.is_empty())
-        .unwrap_or("(unset — the session model does every call)");
-    let mut out = format!("Cheap lane model: {current}");
+        .filter(|spec| !spec.is_empty())
+    {
+        // A comma is a priority chain, not a list of options: say the order.
+        Some(spec) if spec.contains(',') => format!(
+            "Cheap lane model: {} (each one is tried after the previous fails)",
+            spec.split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .collect::<Vec<_>>()
+                .join(" → "),
+        ),
+        Some(spec) => format!("Cheap lane model: {spec}"),
+        None => format!(
+            "Cheap lane model: (unset — the shipped chain is used: {})",
+            xai_grok_shell::jev_cheap::default_model_spec().replace(',', " → "),
+        ),
+    };
     if let Some(notes) = local.notes.as_deref().filter(|notes| !notes.trim().is_empty()) {
         out.push_str(&format!("\n  {notes}"));
     }
@@ -80,8 +94,10 @@ pub fn cheap_lane_status() -> String {
         }
     }
     out.push_str(
-        "\n\nSet it with `/cheap-model <entry>` (writes `[jev.local] model` in \
-         ~/.grok/config.toml; applies next session). `/cheap-model clear` clears it.",
+        "\n\nSet it with `/cheap-model <entry>` or `/cheap-model <id>,<id>,<id>` \
+         (writes `[jev.local] model` in ~/.grok/config.toml; applies next session). \
+         A comma-separated list is a fallback chain, tried in order. \
+         `/cheap-model clear` goes back to the shipped chain.",
     );
     out
 }

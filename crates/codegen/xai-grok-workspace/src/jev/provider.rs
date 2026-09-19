@@ -336,18 +336,38 @@ pub fn chat_message_body(
     level: &str,
     max_tokens: u32,
 ) -> Json {
+    let (primary, fallbacks) = model_fallback_chain(model);
     let mut body = json!({
-        "model": model,
+        "model": primary,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
         "max_tokens": max_tokens,
     });
+    // The rest of a comma-separated spec rides in `models`: OpenRouter tries
+    // them in order when the primary's providers are down, rate-limited, or
+    // refuse to answer. A single id sends no `models` key at all.
+    if let Some(fallbacks) = fallbacks {
+        body["models"] = json!(fallbacks);
+    }
     if let Some(reasoning) = reasoning_object(shape, level, max_tokens) {
         body["reasoning"] = reasoning;
     }
     body
+}
+
+/// Split a model spec into the id the request names and the fallbacks after it.
+///
+/// A comma-separated spec is a priority chain — `a:free,b,c` means "a:free, else
+/// b, else c" — which is how OpenRouter's `models` routing is asked for. The
+/// first id is what the request's `model` says, and it is also what a record
+/// should name when the reply does not say which model served the call.
+pub fn model_fallback_chain(spec: &str) -> (String, Option<Vec<String>>) {
+    let mut ids = spec.split(',').map(str::trim).filter(|id| !id.is_empty());
+    let primary = ids.next().unwrap_or_default().to_owned();
+    let fallbacks: Vec<String> = ids.map(str::to_owned).collect();
+    (primary, (!fallbacks.is_empty()).then_some(fallbacks))
 }
 
 /// The parts of a chat-completions reply the decision layer reads.
@@ -752,6 +772,66 @@ fn extract_json_object(text: &str) -> Option<Json> {
 mod tests {
     use super::*;
     use crate::jev::types::NoulCriteria;
+
+    /// The owner's chain renders as OpenRouter's fallback routing: the primary
+    /// in `model`, the rest in `models`, in order. Getting this wrong would mean
+    /// paying for a model that was never asked for.
+    #[test]
+    fn a_comma_separated_model_spec_becomes_a_fallback_chain() {
+        let (primary, fallbacks) =
+            model_fallback_chain("inclusionai/ling-3.0-flash-vl:free, inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash");
+        assert_eq!(primary, "inclusionai/ling-3.0-flash-vl:free");
+        assert_eq!(
+            fallbacks,
+            Some(vec![
+                "inclusionai/ling-3.0-flash-vl".to_owned(),
+                "qwen/qwen3.7-flash".to_owned(),
+            ])
+        );
+
+        let body = chat_message_body(
+            "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl",
+            "sys",
+            "user",
+            ReasoningShape::Disabled,
+            "none",
+            64,
+        );
+        assert_eq!(body["model"], "inclusionai/ling-3.0-flash-vl:free");
+        assert_eq!(
+            body["models"],
+            json!(["inclusionai/ling-3.0-flash-vl"]),
+            "the fallbacks ride in `models`"
+        );
+    }
+
+    /// One id is not a chain: the body must not grow a `models` key, so a
+    /// single-model config sends exactly what it sent before.
+    #[test]
+    fn a_single_model_spec_sends_no_models_key() {
+        let (primary, fallbacks) = model_fallback_chain("qwen/qwen3.7-flash");
+        assert_eq!(primary, "qwen/qwen3.7-flash");
+        assert_eq!(fallbacks, None);
+        let body = chat_message_body(
+            "qwen/qwen3.7-flash",
+            "sys",
+            "user",
+            ReasoningShape::Disabled,
+            "none",
+            64,
+        );
+        assert_eq!(body["model"], "qwen/qwen3.7-flash");
+        assert!(body.get("models").is_none(), "{body}");
+    }
+
+    /// Blank rungs are dropped rather than sent: an empty id in `models` would
+    /// be a fallback OpenRouter cannot route.
+    #[test]
+    fn blank_rungs_are_dropped_from_the_chain() {
+        let (primary, fallbacks) = model_fallback_chain(" a/b ,, c/d ");
+        assert_eq!(primary, "a/b");
+        assert_eq!(fallbacks, Some(vec!["c/d".to_owned()]));
+    }
 
     fn labels(values: &[&str]) -> BTreeMap<String, Json> {
         values

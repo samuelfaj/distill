@@ -234,10 +234,13 @@ pub async fn set_fork_secondary_model(value: String) -> Result<()> {
     .await
 }
 
-/// Persist `[jev.local].model`: the `[model.<id>]` entry that serves the cheap lane.
-/// Empty string clears the pick — the file keeps `model = ""`, which the jev
-/// resolver reads as "no cheap lane", because the merge never deletes keys.
-/// Caller must validate the entry against the configured OpenRouter entries first.
+/// Persist `[jev.local].model`: what serves the cheap lane.
+///
+/// Either a `[model.<id>]` entry id (its transport, key and limits are the
+/// owner's) or a comma-separated priority list of OpenRouter model ids, tried in
+/// order, on the shipped OpenRouter defaults. Empty string clears the pick — the
+/// file keeps `model = ""`, which the jev resolver reads as unset, because the
+/// merge never deletes keys. Caller validates the value at the command boundary.
 pub async fn set_jev_local_model(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {
         anyhow::bail!(

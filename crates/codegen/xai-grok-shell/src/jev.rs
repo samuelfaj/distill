@@ -586,6 +586,17 @@ pub fn local_config_cached() -> &'static JevLocalConfig {
     LOCAL.get_or_init(|| resolve_config_from_disk().local)
 }
 
+/// Whether a session starts in auto effort: the decision layer picks the effort
+/// for each model call, and an explicit level turns the mode off for the session.
+///
+/// The same value `ModelsManager` seeds itself with (`[jev] effort_auto`, unset
+/// ⇒ on), resolved once per process so a client that mirrors it — the pager's
+/// footer — cannot disagree with the shell about the mode.
+pub fn effort_auto_cached() -> bool {
+    static AUTO: OnceLock<bool> = OnceLock::new();
+    *AUTO.get_or_init(|| resolve_config_from_disk().effort_auto.unwrap_or(true))
+}
+
 /// Whether one catalogue item is active right now.
 ///
 /// The zero-cost gate: a lane that can do its work without a model (the

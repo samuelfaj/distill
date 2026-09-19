@@ -63,6 +63,21 @@ impl ModelState {
     }
 
     /// Display name for the current model.
+    /// The status-bar label: in auto effort the level is per model call, so the
+    /// footer names the mode instead of the level it falls back to.
+    ///
+    /// Both footers (the welcome screen's and the session's) must agree, which is
+    /// why the rule lives here rather than in either renderer.
+    pub fn effort_label(&self, base: &str) -> String {
+        if self.effort_auto {
+            return format!("{base} (auto)");
+        }
+        match self.reasoning_effort {
+            Some(effort) => format!("{base} ({effort})"),
+            None => base.to_string(),
+        }
+    }
+
     pub fn current_model_name(&self) -> Option<String> {
         let current = self.current.as_ref()?;
         if let Some(model_info) = self.available.get(current) {
@@ -278,9 +293,13 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                     available: models,
                     current: current_model,
                     reasoning_effort,
-                    // Auto effort is a live client-side mode, never restored
-                    // from server metadata.
-                    effort_auto: false,
+                    // A session starts in auto effort: the harness ships with
+                    // `[jev] effort_auto` on (unset ⇒ on) and the shell seeds
+                    // itself from the same value, so the footer must not claim a
+                    // level the shell is not pinned to. Never restored from server
+                    // metadata: the mode is live client-side state, and an
+                    // explicit level (`/effort <level>`, `--effort`) clears it.
+                    effort_auto: xai_grok_shell::jev::effort_auto_cached(),
                     context_window_override: None,
                 }
             })
@@ -338,6 +357,15 @@ mod tests {
         assert!(state.next_model().is_none());
     }
 
+    /// The server's session model state for one model, as `session/new` reports it.
+    fn sample_session_model_state() -> acp::SessionModelState {
+        let id = acp::ModelId::new(Arc::from("m"));
+        acp::SessionModelState::new(
+            id.clone(),
+            vec![acp::ModelInfo::new(id, "M".to_string())],
+        )
+    }
+
     fn state_with_meta(meta: Option<serde_json::Value>) -> ModelState {
         let id = acp::ModelId::new(Arc::from("m"));
         let mut state = ModelState::default();
@@ -348,6 +376,20 @@ mod tests {
         );
         state.current = Some(id);
         state
+    }
+
+    /// A session starts in auto effort, mirroring the harness default the shell
+    /// seeds itself with (`[jev] effort_auto`, unset ⇒ on). Phrased as a mirror
+    /// rather than a literal so an owner who pins a level in the config is not
+    /// contradicted by this test.
+    #[test]
+    fn a_session_starts_in_auto_effort() {
+        let state = ModelState::from(Some(sample_session_model_state()));
+        assert_eq!(
+            state.effort_auto,
+            xai_grok_shell::jev::effort_auto_cached(),
+            "the footer must name the mode the shell is in, not a level",
+        );
     }
 
     #[test]

@@ -4492,12 +4492,9 @@ impl AppView {
                             } else {
                                 self.tip.as_deref()
                             };
-                            let model_name_base =
-                                self.models.current_model_name().unwrap_or_default();
-                            let model_name = match self.models.reasoning_effort {
-                                Some(eff) => format!("{model_name_base} ({eff})"),
-                                None => model_name_base,
-                            };
+                            let model_name = self
+                                .models
+                                .effort_label(&self.models.current_model_name().unwrap_or_default());
                             let hero_cta = crate::views::announcements::promo_cta(
                                 &self.active_announcements,
                                 &self.hidden_announcement_ids,

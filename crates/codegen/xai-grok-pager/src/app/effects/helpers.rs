@@ -1349,13 +1349,22 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
-        // Not a settings-modal row: `[jev.local]` is a jev-lane knob like its
-        // `[jev.ladder]` siblings, reachable through `/cheap-model`.
+        // Not settings-modal rows: `[jev.local]` and `[jev.tiers]` are jev-lane
+        // knobs like their `[jev.ladder]` siblings, reachable from the tier
+        // surfaces (`/cheap-model`, `/tiers`).
         "cheap_model" => {
             let SettingValue::String(s) = value else {
                 return Err(kind_mismatch("cheap_model", "String", &value));
             };
             xai_grok_shell::util::config::set_jev_local_model(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "tier_light" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("tier_light", "String", &value));
+            };
+            xai_grok_shell::util::config::set_jev_tier_light(s)
                 .await
                 .map_err(|e| e.to_string())
         }

@@ -564,6 +564,10 @@ pub enum Action {
     /// `[jev.local].model`. Empty string clears the pick.
     /// Next-session: the jev lane resolves its local config once per process.
     SetCheapModel(String),
+    /// Commit the session model's lighter sibling, persisted to
+    /// `[jev.tiers].light`. Empty string removes the tier.
+    /// Next-session: the tier block is resolved once per process.
+    SetTierLight(String),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required: tips are resolved once at startup.
     SetShowTips(bool),

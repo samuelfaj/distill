@@ -13,7 +13,7 @@ use xai_grok_workspace::jev::flags::{JevFlags, JevLadderOverlay};
 
 pub use xai_grok_workspace::jev::flags::JevStatus;
 
-use crate::agent::config::{JevConfig, JevLocalConfig};
+use crate::agent::config::{JevConfig, JevLocalConfig, JevTiersConfig};
 
 /// Reads `[jev]` from the merged, overlay-free config layers.
 pub fn resolve_config_from_disk() -> JevConfig {
@@ -77,6 +77,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b2_model_tier: cfg.ladder.b2_model_tier,
             b2_micro_effort: cfg.ladder.b2_micro_effort,
             b2_local_model: cfg.ladder.b2_local_model,
+            b2_light_model: cfg.ladder.b2_light_model,
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,
@@ -586,6 +587,106 @@ pub fn local_config_cached() -> &'static JevLocalConfig {
     LOCAL.get_or_init(|| resolve_config_from_disk().local)
 }
 
+/// The tier block, resolved once per process like the rest of `[jev]`.
+///
+/// The light sibling's *entry* is per-session state (it is resolved against the
+/// live catalog); only the id the owner configured is cached here.
+pub fn tiers_cached() -> &'static JevTiersConfig {
+    static TIERS: OnceLock<JevTiersConfig> = OnceLock::new();
+    TIERS.get_or_init(|| resolve_config_from_disk().tiers)
+}
+
+/// What the `[jev.tiers]` block resolves to, for the surfaces that report it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LightTierStatus {
+    /// No light sibling configured: the tier question is never asked.
+    Unset,
+    /// Configured, but unusable, with the reason.
+    Refused(String),
+    /// Configured and usable.
+    Ready {
+        id: String,
+        name: String,
+        window: u64,
+    },
+}
+
+/// Whether two models can stand in for each other for one round.
+///
+/// Same family means the same provider, the same wire backend and the same
+/// credential scheme: the pair must be interchangeable for one round of the same
+/// conversation. A swap that changes the transport mid-conversation is not a
+/// routing decision, it is a second session, so anything else is refused with
+/// the reason instead of being attempted.
+pub fn same_family(hard: &crate::agent::config::ModelInfo, light: &crate::agent::config::ModelInfo) -> Result<(), String> {
+    if light.base_url != hard.base_url {
+        return Err(format!(
+            "`{}` runs on {} while the session model runs on {}: not the same provider",
+            light.model,
+            light.base_url.trim_end_matches('/'),
+            hard.base_url.trim_end_matches('/'),
+        ));
+    }
+    if light.api_backend != hard.api_backend {
+        return Err(format!(
+            "`{}` speaks {:?} while the session model speaks {:?}",
+            light.model, light.api_backend, hard.api_backend
+        ));
+    }
+    if light.auth_scheme != hard.auth_scheme {
+        return Err(format!(
+            "`{}` and the session model sign in differently; one credential must cover both",
+            light.model
+        ));
+    }
+    Ok(())
+}
+
+/// The light tier against the on-disk catalog, for the surfaces that report it.
+///
+/// `hard_model` is the session's own model, which only the caller knows. The
+/// session itself resolves the same rule against the live catalog.
+pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
+    let Some(id) = tiers_cached()
+        .light
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+    else {
+        return LightTierStatus::Unset;
+    };
+    let catalog = || {
+        let raw = crate::config::load_effective_config().ok()?;
+        let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).ok()?;
+        Some(crate::agent::config::resolve_model_list(&cfg, None))
+    };
+    let Some(models) = catalog() else {
+        return LightTierStatus::Refused("the config could not be read".to_owned());
+    };
+    let Some(hard) = crate::agent::config::find_model_by_id(&models, hard_model) else {
+        return LightTierStatus::Refused(format!("`{hard_model}` is not in the catalog"));
+    };
+    let Some(light) = crate::agent::config::find_model_by_id(&models, &id) else {
+        return LightTierStatus::Refused(format!(
+            "`{id}` is not a catalog entry: add a [model.{id}] block so the harness knows its \
+             endpoint and window"
+        ));
+    };
+    if let Err(reason) = same_family(&hard.info, &light.info) {
+        return LightTierStatus::Refused(reason);
+    }
+    LightTierStatus::Ready {
+        id,
+        name: light
+            .info
+            .name
+            .clone()
+            .unwrap_or_else(|| light.info.model.clone()),
+        window: light.info.context_window.get(),
+    }
+}
+
 /// Whether a session starts in auto effort: the decision layer picks the effort
 /// for each model call, and an explicit level turns the mode off for the session.
 ///
@@ -939,5 +1040,62 @@ mod catalogue_helper_tests {
             "the guard is dropped with the call"
         );
         reset_activity_for_test();
+    }
+}
+
+#[cfg(test)]
+mod tier_rule_tests {
+    use super::*;
+    use crate::agent::config::ModelInfo;
+    use std::num::NonZeroU64;
+
+    fn model(slug: &str, base_url: &str) -> ModelInfo {
+        ModelInfo {
+            model: slug.to_owned(),
+            base_url: base_url.to_owned(),
+            context_window: NonZeroU64::new(272_000).unwrap(),
+            ..ModelInfo::default()
+        }
+    }
+
+    /// The rule the user asked for: hard and light must be the same family and
+    /// share the conversation. Same provider, same backend, same credential —
+    /// anything else is refused with the reason, before a round can be routed
+    /// onto a transport the conversation never ran on.
+    #[test]
+    fn the_same_family_rule_takes_a_sibling_and_refuses_a_stranger() {
+        let hard = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
+        let sibling = model("gpt-5.6-luna", "https://chatgpt.com/backend-api/codex");
+        same_family(&hard, &sibling).expect("same host, backend and scheme");
+
+        let other_provider = model("grok-4.6", "https://api.x.ai/v1");
+        let reason = same_family(&hard, &other_provider).expect_err("a stranger is refused");
+        assert!(reason.contains("not the same provider"), "{reason}");
+
+        let mut other_backend = sibling.clone();
+        other_backend.api_backend = Default::default();
+        if other_backend.api_backend != hard.api_backend {
+            let reason =
+                same_family(&hard, &other_backend).expect_err("a different wire backend is refused");
+            assert!(reason.contains("speaks"), "{reason}");
+        }
+
+        let mut other_scheme = sibling.clone();
+        other_scheme.auth_scheme = Default::default();
+        if other_scheme.auth_scheme != hard.auth_scheme {
+            let reason =
+                same_family(&hard, &other_scheme).expect_err("a different sign-in is refused");
+            assert!(reason.contains("sign in"), "{reason}");
+        }
+    }
+
+    /// The trailing slash is not a family difference: endpoints are compared as
+    /// configured, and the harness already normalises the ones it sends to.
+    #[test]
+    fn the_rule_reads_the_host_it_will_actually_call() {
+        let hard = model("a", "https://host/v1");
+        let light = model("b", "https://host/v1/");
+        let reason = same_family(&hard, &light).expect_err("a trailing slash is a different string");
+        assert!(reason.contains("not the same provider"), "{reason}");
     }
 }

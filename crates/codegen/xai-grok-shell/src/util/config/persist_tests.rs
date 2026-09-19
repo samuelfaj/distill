@@ -1,6 +1,7 @@
 use super::super::load::load_config_from_toml;
 use super::super::mcp::{
-    JevLocalPersistConfig, JevPersistConfig, McpConfig, parse_mcp_config_with_oauth,
+    JevLocalPersistConfig, JevPersistConfig, JevTiersPersistConfig, McpConfig,
+    parse_mcp_config_with_oauth,
 };
 use super::*;
 use toml::Value as TomlValue;
@@ -1639,6 +1640,9 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
             local: Some(JevLocalPersistConfig {
                 model: Some("openrouter-qwen37".into()),
             }),
+            tiers: Some(JevTiersPersistConfig {
+                light: Some("codex-luna".into()),
+            }),
         },
     );
 
@@ -1666,5 +1670,13 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
             .and_then(|v| v.as_str()),
         Some("openrouter-qwen37"),
         "the cheap-lane pick is the one thing this write changes"
+    );
+    assert_eq!(
+        jev.get("tiers")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("light"))
+            .and_then(|v| v.as_str()),
+        Some("codex-luna"),
+        "the light sibling rides in the same `[jev]` table and survives too"
     );
 }

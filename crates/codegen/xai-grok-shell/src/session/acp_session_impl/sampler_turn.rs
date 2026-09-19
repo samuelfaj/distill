@@ -1067,9 +1067,10 @@ impl SessionActor {
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
         // B2 (auto): when the user picked `/effort auto`, the decision layer
-        // chooses the effort for THIS model call; otherwise the round keeps the
-        // session's own effort.
-        self.jev_choose_micro_effort(&mut sampler_config).await;
+        // chooses which model makes THIS call — the session's, or its lighter
+        // sibling when one is configured — and its effort; otherwise the round
+        // keeps the session's own model and effort.
+        self.jev_choose_model_and_effort(&mut sampler_config).await;
         // B2 (local): with a local model configured, the free model takes the
         // call whenever it can fully do it.
         self.jev_route_micro_call(&mut sampler_config).await;

@@ -1197,6 +1197,8 @@ pub struct JevConfig {
     /// micro-action is the point of the routing, and `/effort <level>` still
     /// overrides it for the session.
     pub effort_auto: Option<bool>,
+    /// The model tiers the decision layer may pick between.
+    pub tiers: JevTiersConfig,
     /// Deadline for one catalogue item call, in milliseconds.
     ///
     /// Unset ⇒ a per-provider default: the System One service answers in well
@@ -1251,6 +1253,21 @@ pub struct JevLocalConfig {
     /// before the call runs locally. Defaults to
     /// [`xai_grok_workspace::jev::catalog::routing::LOCAL_CAPABLE_FLOOR`].
     pub min_capability: Option<f64>,
+}
+
+/// The model tiers the decision layer may pick between.
+///
+/// The **hard** tier is the session's own model — the one `/model` switches, and
+/// the one a call runs on unless something cheaper is chosen — and the **cheap**
+/// tier is `[jev.local] model`. Only the middle one needs a key of its own.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct JevTiersConfig {
+    /// `[model.<id>]` entry of the session model's lighter sibling: same
+    /// provider, same wire backend, same credential, and a window that can hold
+    /// the same conversation. Unset ⇒ no light tier, and the tier question is
+    /// never asked (a provider with a single model has nothing to pick).
+    pub light: Option<String>,
 }
 
 /// Tokens reserved in the local model's window when the config does not say.
@@ -1313,6 +1330,9 @@ pub struct JevLadderConfig {
     /// B2 (local): route a model call to the configured local model when it can
     /// fully do it (free), falling back to the cloud model otherwise.
     pub b2_local_model: Option<bool>,
+    /// B2 (tiers): the session model's lighter sibling takes a call it can
+    /// fully do. Off means every call stays on the session's model.
+    pub b2_light_model: Option<bool>,
     /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
     #[serde(default, alias = "b2_micro_effort")]
     pub b2_micro_effort: Option<bool>,
@@ -5134,6 +5154,9 @@ pub(crate) fn stamp_session_local_sampler_fields(
     cfg.client_identifier = client_identifier;
     cfg.conversation_group_id = active_session_config.conversation_group_id.clone();
     cfg.attribution_callback = active_session_config.attribution_callback.clone();
+    // A call routed to another model is still part of this session's turn: it
+    // keeps the trace parent, so the round does not vanish from the trace.
+    cfg.header_injector = active_session_config.header_injector.clone();
     if crate::util::is_xai_api_bearer_url(&cfg.base_url) {
         cfg.bearer_resolver = active_session_config.bearer_resolver.clone();
     }

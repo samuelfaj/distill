@@ -131,13 +131,48 @@ impl SessionActor {
             );
             return;
         }
-        let Some(mut local_cfg) = self.resolve_aux_sampler_config(slug).await else {
-            tracing::debug!(
-                slug,
-                "jev local model: entry did not resolve; call stays on the session model"
-            );
-            return;
-        };
+        // The spec is either a catalog entry — whose endpoint, key, backend and
+        // window are the owner's — or a raw OpenRouter chain, which has no entry
+        // to describe it. The aux resolver answers with the SESSION's own
+        // provider for an id it does not know, so it must not be asked first: a
+        // chain sent there is a request for a model that does not exist.
+        let mut local_cfg =
+            match crate::agent::config::find_model_by_id(&self.models_manager.models(), slug) {
+                Some(_) => {
+                    let Some(cfg) = self.resolve_aux_sampler_config(slug).await else {
+                        tracing::debug!(
+                            slug,
+                            "jev local model: entry did not resolve; call stays on the session model"
+                        );
+                        return;
+                    };
+                    cfg
+                }
+                None => {
+                    // A whole round carries the conversation, so the ceiling has
+                    // to come from somewhere: the owner's own cap, or no route.
+                    let Some(cap) = local.max_context_tokens else {
+                        crate::jev::record_item(
+                            JevLever::B2LocalModel,
+                            "cloud",
+                            &format!(
+                                "`{slug}` is a raw model spec with no declared window; set \
+                                 [jev.local] max_context_tokens to let it take a whole round, or \
+                                 point model at a [model.<id>] entry"
+                            ),
+                            None,
+                            None,
+                        );
+                        return;
+                    };
+                    let Some(mut cfg) = crate::jev_cheap::CheapLane::standalone_sampler_config(slug)
+                    else {
+                        return;
+                    };
+                    cfg.context_window = cap;
+                    cfg
+                }
+            };
         let window = local_cfg.context_window;
         // The owner's speed policy can tighten the model's own window; it can
         // never widen it.
@@ -263,33 +298,117 @@ impl SessionActor {
     /// decision knows how much thinking the model that will actually run needs.
     /// Anything unsure (lever off, auto off, no menu, missing answers, error or
     /// timeout) leaves the round at the session's own effort.
-    pub(super) async fn jev_choose_micro_effort(&self, cfg: &mut SamplingConfig) {
+    /// B2: one decision for the whole call — **which model** runs it and **at
+    /// what effort** — asked in a single battery, because two round-trips per
+    /// round would cost more than the routing saves.
+    ///
+    /// The tier question only exists when a light sibling is configured and
+    /// fits the session model's family; a provider with one model has nothing to
+    /// choose, and the effort question is the whole decision it was before.
+    pub(super) async fn jev_choose_model_and_effort(&self, cfg: &mut SamplingConfig) {
         if !self.models_manager.current_effort_auto() {
             return;
         }
+        let tier = self.light_tier(&cfg.model).await;
+        if let LightTier::Refused(reason) = &tier {
+            crate::jev::record_item(
+                JevLever::B2LightModel,
+                "refused",
+                &format!("light tier not usable: {reason}"),
+                None,
+                None,
+            );
+        }
+        let light = match tier {
+            LightTier::Ready(light) if crate::jev::lever_active(JevLever::B2LightModel) => {
+                // The sibling runs the same conversation or it does not run: a
+                // round it cannot hold would be trimmed or compacted mid-way,
+                // which is not a swap. Reserve room for its own answer.
+                let conversation = self.chat_state_handle.get_conversation().await;
+                let estimate = xai_chat_state::estimate_conversation_tokens(&conversation);
+                let reserve = u64::from(light.cfg.max_completion_tokens.unwrap_or(
+                    crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE as u32,
+                ));
+                if estimate.saturating_add(reserve) > light.window {
+                    crate::jev::record_item(
+                        JevLever::B2LightModel,
+                        "hard",
+                        &format!(
+                            "{} cannot hold this call: ~{estimate} tokens + {reserve} reserve > {} \
+                             window, so the session model runs it",
+                            light.name, light.window
+                        ),
+                        None,
+                        None,
+                    );
+                    None
+                } else {
+                    Some(light)
+                }
+            }
+            _ => None,
+        };
         let Some(menu) = self.model_effort_menu(&cfg.model) else {
             return;
         };
-        let offered = routing::offered_effort_choices(
-            &menu
-                .iter()
-                .map(|level| (level.id.clone(), level.description.clone()))
-                .collect::<Vec<_>>(),
-            |id| effort_rank_by_id(id),
-        );
+        // The effort menu both tiers are asked about: every id either model
+        // offers. The application re-checks it against the model that won.
+        let mut merged: Vec<(String, String)> = menu
+            .iter()
+            .map(|level| (level.id.clone(), level.description.clone()))
+            .collect();
+        if let Some(light) = &light
+            && let Some(light_menu) = self.model_effort_menu(&light.id)
+        {
+            for level in light_menu {
+                if !merged.iter().any(|(id, _)| *id == level.id) {
+                    merged.push((level.id, level.description));
+                }
+            }
+        }
+        let offered =
+            routing::offered_effort_choices(&merged, |id| effort_rank_by_id(id));
         if offered.len() < 2 {
             // Nothing to choose between: one offered effort is not a decision.
             return;
         }
         let model_name = self.model_display_name(&cfg.model);
-        let Ok(questions) = routing::micro_effort_questions(&model_name, &offered) else {
-            return;
+        let question_model = match &light {
+            Some(light) => format!("{model_name} (or its lighter sibling {})", light.name),
+            None => model_name.clone(),
         };
+        let mut questions = BTreeMap::new();
+        if let Some(light) = &light {
+            let hard_profile = routing::TierProfile {
+                id: cfg.model.clone(),
+                name: model_name.clone(),
+                context_window: cfg.context_window,
+                notes: String::new(),
+            };
+            let light_profile = routing::TierProfile {
+                id: light.id.clone(),
+                name: light.name.clone(),
+                context_window: light.window,
+                notes: light.notes.clone(),
+            };
+            match routing::micro_tier_questions(&hard_profile, &light_profile) {
+                Ok(tier_questions) => questions.extend(tier_questions),
+                Err(error) => tracing::debug!(%error, "jev tiers: tier question not asked"),
+            }
+        }
+        match routing::micro_effort_questions(&question_model, &offered) {
+            Ok(effort_questions) => questions.extend(effort_questions),
+            Err(error) => tracing::debug!(%error, "jev tiers: effort question not asked"),
+        }
+        if questions.is_empty() {
+            return;
+        }
         let state = self.micro_effort_state(cfg, &model_name, &offered, 0).await;
         let Some(answers) = crate::jev::ask_item(JevLever::B2MicroEffort, state, questions).await
         else {
             return;
         };
+        self.apply_tier_pick(cfg, light.as_deref(), &answers).await;
         let picked = routing::compose_micro_effort(&answers, &offered);
         // The record says what Jev wanted, not only what was applied: a
         // deferred pick is the signal a user tunes the floor with.
@@ -325,8 +444,20 @@ impl SessionActor {
             return;
         };
         // The pick names a palette level; the wire gets that level's own value
-        // (`medium` is sent as whatever value the model's menu maps it to).
-        let Some(level) = menu.iter().find(|level| level.id == picked) else {
+        // (`medium` is sent as whatever value the model's menu maps it to). The
+        // chosen model's menu decides: the union the decision saw may name a
+        // level this model does not offer, and then the session's effort stands.
+        let chosen_menu = self.model_effort_menu(&cfg.model).unwrap_or_default();
+        let Some(level) = chosen_menu.iter().find(|level| level.id == picked).cloned() else {
+            crate::jev::record_item(
+                JevLever::B2MicroEffort,
+                "held",
+                &format!(
+                    "model {model_name} offers no `{picked}`; the call keeps the session's effort"
+                ),
+                confidence,
+                None,
+            );
             return;
         };
         cfg.reasoning_effort = Some(level.value);
@@ -341,6 +472,102 @@ impl SessionActor {
         self.jev_ledger
             .borrow_mut()
             .set_pending_effort_label(level.id.clone());
+    }
+
+    /// Applies the tier the decision picked to this round's config.
+    ///
+    /// The light sibling replaces the round: its endpoint, model, backend,
+    /// window and dialect are its own entry's, with the session's auth and
+    /// attribution stamped on, so the conversation continues rather than
+    /// restarting somewhere else.
+    async fn apply_tier_pick(
+        &self,
+        cfg: &mut SamplingConfig,
+        light: Option<&LightModel>,
+        answers: &xai_grok_workspace::jev::JevAnswerSet,
+    ) {
+        let picked = routing::compose_micro_tier(answers);
+        let confidence = answers.confidence(routing::MICRO_TIER_QUESTION);
+        let best = answers.choice(routing::MICRO_TIER_QUESTION).unwrap_or("no answer");
+        let hard_name = self.model_display_name(&cfg.model);
+        let Some(light) = light else {
+            return;
+        };
+        let light_wins = picked.as_deref() == Some(routing::TIER_LIGHT_LABEL);
+        crate::jev::record_item(
+            JevLever::B2LightModel,
+            if light_wins { "light" } else { "hard" },
+            &format!(
+                "{} vs {} · answered `{best}` at {}",
+                light.name,
+                hard_name,
+                confidence.map_or("no confidence".to_owned(), |c| format!("{c:.2}")),
+            ),
+            confidence,
+            Some(answers),
+        );
+        if !light_wins {
+            return;
+        }
+        let mut light_cfg = light.cfg.clone();
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut light_cfg,
+            cfg,
+            self.client_identifier.clone(),
+            cfg.max_retries,
+        );
+        // The effort this round is running at travels with the call, and so does
+        // the model id the record must show.
+        light_cfg.reasoning_effort = cfg.reasoning_effort;
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_route(light_cfg.model.clone());
+        *cfg = light_cfg;
+    }
+
+    /// The session model's light sibling, resolved for a round.
+    ///
+    /// Same family means the same provider, the same wire backend and the same
+    /// credential scheme: the pair has to be interchangeable for one round of
+    /// the same conversation. Anything else is refused with the reason — a swap
+    /// that changes the transport mid-conversation is not a routing decision,
+    /// it is a second session.
+    async fn light_tier(&self, hard_model: &str) -> LightTier {
+        let Some(id) = crate::jev::tiers_cached()
+            .light
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            return LightTier::Unset;
+        };
+        let models = self.models_manager.models();
+        let Some(hard) = crate::agent::config::find_model_by_id(&models, hard_model) else {
+            return LightTier::Refused(format!("`{hard_model}` is not in the catalog"));
+        };
+        let Some(light) = crate::agent::config::find_model_by_id(&models, id) else {
+            return LightTier::Refused(format!(
+                "`{id}` is not a catalog entry: add a [model.{id}] block so the harness knows its \
+                 endpoint and window"
+            ));
+        };
+        // The rule lives in `crate::jev::same_family`, so the notice a user reads
+        // and the check a round makes cannot disagree.
+        if let Err(reason) = crate::jev::same_family(&hard.info, &light.info) {
+            return LightTier::Refused(reason);
+        }
+        let Some(cfg) = self.resolve_aux_sampler_config(id).await else {
+            return LightTier::Refused(format!("`{id}` has no usable credential"));
+        };
+        let name = self.model_display_name(id);
+        let entry = light.info.clone();
+        LightTier::Ready(Box::new(LightModel {
+            id: id.to_owned(),
+            name,
+            window: cfg.context_window,
+            notes: entry.description.clone().unwrap_or_default(),
+            cfg,
+        }))
     }
 
     /// The cheap worker for a lane.
@@ -635,6 +862,30 @@ impl SessionActor {
 
 /// Cost order of the effort ladder, cheapest first. The enum's own order is the
 /// cost order, and it deliberately does not derive `Ord` (semantic, not lexical).
+/// The light tier for one round.
+enum LightTier {
+    /// No light tier configured: the tier question is never asked.
+    Unset,
+    /// Configured, but it cannot run the session's conversation.
+    Refused(String),
+    /// Same provider family as the session model, ready to take a round.
+    Ready(Box<LightModel>),
+}
+
+/// A resolved light sibling.
+struct LightModel {
+    /// Catalog entry id, for the question and the record.
+    id: String,
+    /// Display name.
+    name: String,
+    /// Its own context window: what the same conversation is measured against.
+    window: u64,
+    /// The owner's description, when the entry carries one.
+    notes: String,
+    /// The entry's full sampler config, before the session's fields are stamped.
+    cfg: SamplingConfig,
+}
+
 fn effort_rank(effort: ReasoningEffort) -> u8 {
     match effort {
         ReasoningEffort::None => 0,

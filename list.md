@@ -252,3 +252,10 @@ Catálogo: **188** funções — 129 implemented, 0 planned,
 | 25 | Deadline por chamada + circuit breaker por lane | orçamento + breaker | ``e_breaker`` | implemented | prazo por chamada e trip por turno após 3 falhas, com teste |
 | 26 | Skip-set do que sabidamente não comprime | classificador + skip-set | ``e_crushers`` | implemented | uma listagem só de linhas únicas sai byte-idêntica, e o teste fixa isso |
 | 27 | Serializar o caminho barato (uma geração por vez) | fila da lane barata | ``e_breaker`` | implemented | `jev_cheap::lane_queue`: uma geração por vez no processo inteiro |
+
+## 4. Trabalho externo avaliado (jev-pruner, fast-jev-compaction)
+
+| capacidade | o que faz | seam | flag | status | teste / motivo |
+| --- | --- | --- | --- | --- | --- |
+| `retention` (jev-pruner) | Keep only the payload chunks the task still needs, one noul per chunk, with the document gate, the archive-before-scoring rule and the never-drop-an-unscored-chunk rule | tool result | `e_retention` | implemented | `retention::tests` (gates, chunking, keep rules, coverage, markers, batching) |
+| `per-call compaction` (fast-jev-compaction) | Decide per tool call whether the call and its result stay, are truncated, or go, replacing the summary with verbatim retention | session compaction | — | deferred | no harness seam: D1 already only narrows what the summarizer reads and never rewrites the conversation, so a per-call rewrite would be a second compaction engine with none of the safety it borrows |

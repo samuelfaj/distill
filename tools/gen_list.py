@@ -217,6 +217,32 @@ PARTE_A = [
 ]
 
 
+# Capabilities brought in from work outside the two documents, judged on their
+# own merits (`## 4` of list.md).
+EXTERNAL = [
+    (
+        "`retention` (jev-pruner)",
+        "Keep only the payload chunks the task still needs, one noul per chunk, with the "
+        "document gate, the archive-before-scoring rule and the never-drop-an-unscored-chunk rule",
+        "tool result",
+        "`e_retention`",
+        "implemented",
+        "`retention::tests` (gates, chunking, keep rules, coverage, markers, batching)",
+    ),
+    (
+        "`per-call compaction` (fast-jev-compaction)",
+        "Decide per tool call whether the call and its result stay, are truncated, or go, "
+        "replacing the summary with verbatim retention",
+        "session compaction",
+        "—",
+        "deferred",
+        "no harness seam: D1 already only narrows what the summarizer reads and never rewrites the "
+        "conversation, so a per-call rewrite would be a second compaction engine with none of the "
+        "safety it borrows",
+    ),
+]
+
+
 def main():
     data = json.loads(CATALOG.read_text())
     fns = data["functions"]
@@ -279,6 +305,13 @@ def main():
     print("| --- | --- | --- | --- | --- | --- |")
     for num, name, seam, flag, status, note in PARTE_A:
         print(f"| {num} | {name} | {seam} | `{flag}` | {status} | {note} |")
+    print()
+    print("## 4. Trabalho externo avaliado (jev-pruner, fast-jev-compaction)")
+    print()
+    print("| capacidade | o que faz | seam | flag | status | teste / motivo |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    for name, what, seam, flag, status, note in EXTERNAL:
+        print(f"| {name} | {what} | {seam} | {flag} | {status} | {note} |")
     return 0
 
 

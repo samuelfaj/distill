@@ -1264,6 +1264,8 @@ pub struct JevLadderConfig {
     pub permission_classifier: Option<bool>,
     /// e_crushers: the `e_crushers` lane (see `list.md`).
     pub e_crushers: Option<bool>,
+    /// e_retention: keep only the payload chunks the task still needs.
+    pub e_retention: Option<bool>,
     /// e_importance: the `e_importance` lane (see `list.md`).
     pub e_importance: Option<bool>,
     /// e_cheap_compress: the `e_cheap_compress` lane (see `list.md`).

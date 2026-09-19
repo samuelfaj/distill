@@ -76,7 +76,12 @@ def main() -> int:
 
     pid, fd = pty.fork()
     if pid == 0:
+        # The TUI draws in colour; a tool subprocess environment (NO_COLOR,
+        # TERM=dumb) would strip every escape and show a colourless screen.
         os.environ["TERM"] = "xterm-256color"
+        os.environ["COLORTERM"] = "truecolor"
+        os.environ.pop("NO_COLOR", None)
+        os.environ.pop("CLICOLOR", None)
         os.environ["COLUMNS"] = str(cols)
         os.environ["LINES"] = str(rows)
         os.chdir(REPO)
@@ -100,6 +105,14 @@ def main() -> int:
     except ProcessLookupError:
         pass
     os.waitpid(pid, 0)
+
+    # `SPLASH_RAW=<path>` also keeps the bytes, so `tools/term-png.py` can
+    # replay them into a picture: colour and half-block art do not survive the
+    # text strip above.
+    if raw_path := os.environ.get("SPLASH_RAW"):
+        with open(raw_path, "wb") as handle:
+            handle.write(data)
+        print(f"raw stream written to {raw_path}")
 
     lines = strip_screen(data)
     print(f"--- {len(data)} bytes, {len(lines)} lines, pty {rows}x{cols} ---")

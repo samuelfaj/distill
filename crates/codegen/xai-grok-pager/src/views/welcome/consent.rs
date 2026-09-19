@@ -4,6 +4,7 @@
 //! [`crate::app::consent::wrap`], which the validator also uses, so gate and screen agree on width.
 
 use ratatui::buffer::Buffer;
+use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -78,7 +79,16 @@ pub fn render_consent(
         &[("q", "Quit")]
     };
     let menu_area = inset_horizontal(layout.menu, prompt::prompt_inset(compact));
-    let menu_rects = render_menu(menu_area, buf, theme, menu_items, selected, None, 0);
+    let menu_rects = render_menu(
+        menu_area,
+        buf,
+        theme,
+        menu_items,
+        selected,
+        None,
+        0,
+        Alignment::Center,
+    );
 
     // The version row is the only free row, and a pending Ctrl+C matters more than the badge.
     if let Some(pending) = &pending_hint {
@@ -94,7 +104,8 @@ pub fn render_consent(
             VersionBadgeMode::Full {
                 subscription_tier: None,
             },
-        );
+                Alignment::Right,
+);
     }
 
     WelcomeRenderResult {

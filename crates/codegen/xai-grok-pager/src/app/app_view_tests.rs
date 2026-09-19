@@ -209,7 +209,6 @@ pub(crate) fn test_app() -> AppView {
         welcome_tip_typing_dismissed: false,
         welcome_menu_index: None,
         welcome_menu_rects: Vec::new(),
-        welcome_show_changelog_action: false,
         welcome_import_banner_rect: None,
         last_mouse_pos: None,
         last_scroll_pos: None,
@@ -3194,27 +3193,31 @@ fn welcome_ctrl_d_requires_confirmation() {
     );
 }
 #[test]
-fn menu_action_indices_without_changelog() {
+fn menu_action_indices_match_the_shipped_menu() {
+    // New worktree, Resume session, Log in with Grok, Log in with Codex,
+    // Log in with OpenRouter, Model tiers, Quit.
     assert!(matches!(
-        dispatch_menu_action(0, false, false, None, None),
+        dispatch_menu_action(0, false, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, false, None, None),
+        dispatch_menu_action(1, false, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(6, false, false, None, None),
+        dispatch_menu_action(6, false, None),
         InputOutcome::Action(Action::Quit)
     ));
+    assert!(matches!(dispatch_menu_action(7, false, None), InputOutcome::Unchanged));
 }
-/// The provider rows sit between Resume and the Changelog/Quit pair: Grok starts
-/// the real login flow, the other two open the notice that names the next step,
-/// and Cheap lane model opens the notice that names the candidate entries.
+
+/// The provider rows sit between Resume and Quit: Grok starts the real login
+/// flow, the other two open the notice that names the next step, and Model tiers
+/// opens the notice that names the three models.
 #[test]
 fn menu_action_provider_rows_route_to_login_and_notices() {
     assert!(matches!(
-        dispatch_menu_action(2, false, true, None, None),
+        dispatch_menu_action(2, false, None),
         InputOutcome::Action(Action::Login)
     ));
     for (index, title) in [
@@ -3222,7 +3225,7 @@ fn menu_action_provider_rows_route_to_login_and_notices() {
         (4, "Log in with OpenRouter"),
         (5, "Model tiers"),
     ] {
-        match dispatch_menu_action(index, false, true, None, None) {
+        match dispatch_menu_action(index, false, None) {
             InputOutcome::Action(Action::ShowReleaseNotes {
                 title: actual,
                 content,
@@ -3234,54 +3237,27 @@ fn menu_action_provider_rows_route_to_login_and_notices() {
         }
     }
 }
+
 #[test]
-fn menu_action_changelog_sits_above_quit() {
-    let md = Some("# notes");
+fn menu_action_indices_shift_by_the_import_row() {
     assert!(matches!(
-        dispatch_menu_action(1, false, true, md, None),
-        InputOutcome::Action(Action::FetchSessionList)
-    ));
-    assert!(matches!(
-        dispatch_menu_action(6, false, true, md, None),
-        InputOutcome::Action(Action::ShowReleaseNotes { .. })
-    ));
-    assert!(matches!(
-        dispatch_menu_action(7, false, true, md, None),
-        InputOutcome::Action(Action::Quit)
-    ));
-}
-#[test]
-fn menu_action_changelog_before_fetch_is_noop() {
-    assert!(matches!(
-        dispatch_menu_action(6, false, true, None, None),
-        InputOutcome::Unchanged
-    ));
-}
-#[test]
-fn menu_action_indices_with_import_and_changelog() {
-    let md = Some("# notes");
-    assert!(matches!(
-        dispatch_menu_action(0, true, true, md, None),
+        dispatch_menu_action(0, true, None),
         InputOutcome::Action(Action::ImportClaudeSettings)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, true, true, md, None),
+        dispatch_menu_action(1, true, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, true, true, md, None),
+        dispatch_menu_action(2, true, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(3, true, true, md, None),
+        dispatch_menu_action(3, true, None),
         InputOutcome::Action(Action::Login)
     ));
     assert!(matches!(
-        dispatch_menu_action(7, true, true, md, None),
-        InputOutcome::Action(Action::ShowReleaseNotes { .. })
-    ));
-    assert!(matches!(
-        dispatch_menu_action(8, true, true, md, None),
+        dispatch_menu_action(7, true, None),
         InputOutcome::Action(Action::Quit)
     ));
 }

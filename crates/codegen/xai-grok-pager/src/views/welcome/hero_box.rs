@@ -1,7 +1,7 @@
 //! Hero box component: the logo and menu sit side by side inside a bordered box.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
@@ -245,6 +245,7 @@ pub(super) fn compute_hero_box(input: &WelcomeLayoutInput<'_>) -> Option<Welcome
     };
 
     Some(WelcomeLayout {
+        wordmark: Rect::default(),
         logo: zero,
         error,
         menu: zero,
@@ -318,6 +319,7 @@ pub(super) fn render_hero_box(
         0,
         false,
         super::VersionBadgeMode::HeroInline,
+        Alignment::Left,
     );
 
     // Subtitle line below the version.
@@ -401,6 +403,7 @@ pub(super) fn render_hero_box(
         selected,
         mouse_pos,
         menu_area.width,
+        Alignment::Center,
     );
     HeroBoxRects {
         menu_rects,

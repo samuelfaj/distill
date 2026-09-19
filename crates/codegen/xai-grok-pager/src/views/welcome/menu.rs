@@ -1,5 +1,5 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
@@ -13,6 +13,10 @@ fn cols(text: &str) -> u16 {
 
 /// Render the welcome menu rows as `label … shortcut`, padded within each row.
 /// Returns the Rect for each item row (for hit-testing clicks and hover).
+///
+/// `align` places the block inside `area`: the home reads as a column with the
+/// cat, so its menu starts at the same left edge; the question screens centre
+/// theirs.
 pub fn render_menu(
     area: Rect,
     buf: &mut Buffer,
@@ -21,6 +25,7 @@ pub fn render_menu(
     selected: Option<usize>,
     mouse_pos: Option<(u16, u16)>,
     min_width_hint: u16,
+    align: Alignment,
 ) -> Vec<Rect> {
     let label_style = Style::default()
         .fg(theme.text_primary)
@@ -46,13 +51,20 @@ pub fn render_menu(
         .max(content_min)
         .max(min_width_hint);
 
-    let [_, menu_centered, _] = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(menu_width),
-        Constraint::Min(0),
-    ])
-    .flex(Flex::Center)
-    .areas(area);
+    let menu_centered = match align {
+        Alignment::Left => Rect { width: menu_width, ..area },
+        // The default keeps the question screens as they were: centred.
+        _ => {
+            let [_, centered, _] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(menu_width),
+                Constraint::Min(0),
+            ])
+            .flex(Flex::Center)
+            .areas(area);
+            centered
+        }
+    };
 
     let mut rects = Vec::with_capacity(items.len());
     let mut y = menu_centered.y;

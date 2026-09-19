@@ -22,6 +22,7 @@ use crate::views::prompt_widget::{PromptFlag, PromptInfo, PromptWidget};
 use crate::views::session_picker_surface::{
     SessionPickerRenderCtx, SessionPickerRenderMode, render_session_picker,
 };
+mod cat;
 mod consent;
 mod hero_box;
 pub(crate) mod logo;
@@ -36,7 +37,7 @@ pub(crate) mod workspace_mode;
 pub(crate) const PROMPT_GUTTER: u16 = 1;
 
 pub(crate) use logo::shimmer_frame;
-use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier, wordmark_spans};
+use logo::{LogoTier, logo_line_count, render_logo, render_logo_tier, title_spans};
 
 /// Product name shown in the welcome banner (the art above it shimmers
 /// with the same sweep, so the two animate as one piece).
@@ -155,9 +156,6 @@ pub struct WelcomeRenderResult {
     pub consent_link_rects: Vec<(usize, Rect)>,
     /// `None` when this frame did not paint the notice.
     pub consent_legibility: Option<crate::app::consent::ConsentLegibility>,
-    /// Whether a "Changelog" menu action was rendered (above Quit).
-    /// The input handler uses it to map the extra menu row to the release-notes action once markdown is available.
-    pub changelog_action_present: bool,
     /// Hit-test rect for the clickable changelog info block (opens release notes).
     pub changelog_cta_rect: Option<Rect>,
     /// Whether the announcement overflowed (the "expandable" signal).
@@ -242,9 +240,9 @@ impl StackedColumn {
         }
     }
 
-    /// Logo rows, the gap after them, and the error block.
+    /// Logo rows, the gap and wordmark under them, and the error block.
     fn fixed_above(&self, tier: LogoTier) -> u16 {
-        tier.rows() + 1 + self.gap_after_logo + self.error_height
+        tier.rows() + 1 + WORDMARK_ROWS + self.gap_after_logo + self.error_height
     }
 
     /// Whether the column fits with this tier beside `reserved` info rows (slot + gap) and a one-row flex gap.
@@ -268,9 +266,14 @@ impl StackedColumn {
 /// Gap between prompt and version line.
 const VERSION_GAP: u16 = 1;
 
+/// The wordmark row under the cat: the name and the version, one line.
+const WORDMARK_ROWS: u16 = 1;
+
 /// Computed areas for the welcome screen vertical layout.
 pub(super) struct WelcomeLayout {
     pub(super) logo: Rect,
+    /// The wordmark line under the cat: `Remote-Code` and the version.
+    pub(super) wordmark: Rect,
     pub(super) error: Rect,
     pub(super) menu: Rect,
     /// Stacked info slot below the menu (narrow layout only): it shows either the announcement or the changelog (the announcement takes priority).
@@ -345,8 +348,13 @@ impl WelcomeLayout {
     }
 
     /// Compute the welcome screen layout, allowing the wide hero-box variant.
+    /// The home: cat, wordmark, menu, downward.
+    ///
+    /// The mascot is 30 rows tall, so the screen is a column rather than a wide
+    /// box with the art beside the menu — the art is the point, and the menu
+    /// reads fine under it.
     fn compute(input: WelcomeLayoutInput<'_>) -> Self {
-        Self::compute_inner(input, true)
+        Self::compute_inner(input, false)
     }
 
     /// That renderer only paints the stacked `logo`/`menu` rects (and never an announcement). The
@@ -450,6 +458,7 @@ impl WelcomeLayout {
             _,
             logo,
             _,
+            wordmark,
             _,
             error,
             menu,
@@ -465,6 +474,7 @@ impl WelcomeLayout {
             Constraint::Length(top_pad),
             Constraint::Length(logo_tier.rows()),
             Constraint::Length(logo_gap), // gap after logo
+            Constraint::Length(WORDMARK_ROWS),
             Constraint::Length(gap_after_logo),
             Constraint::Length(error_height),
             Constraint::Length(menu_height),
@@ -475,11 +485,14 @@ impl WelcomeLayout {
             Constraint::Length(tip_gap),
             Constraint::Length(prompt_height),
             Constraint::Length(VERSION_GAP),
-            Constraint::Length(1), // version
+            // The badge moved up under the cat, so this row is the gap above
+            // the bottom line (where the tip or a pending hint lands).
+            Constraint::Length(0),
         ])
         .areas(content_area);
         Self {
             logo,
+            wordmark,
             error,
             menu,
             changelog,
@@ -515,6 +528,7 @@ pub(super) fn render_version_badge(
     h_margin: u16,
     is_api_key_auth: bool,
     mode: VersionBadgeMode<'_>,
+    align: Alignment,
 ) {
     let version_area = Rect {
         width: version_rect.width.saturating_sub(h_margin),
@@ -527,10 +541,12 @@ pub(super) fn render_version_badge(
     );
     let mut spans = Vec::new();
 
-    let (show_team, show_tier, show_api_key, align) = match &mode {
-        VersionBadgeMode::Full { .. } => (true, true, true, Alignment::Right),
-        VersionBadgeMode::HeroFooter => (true, false, true, Alignment::Right),
-        VersionBadgeMode::HeroInline => (false, false, false, Alignment::Left),
+    // The mode decides what the badge says; the caller decides where it sits,
+    // because the home reads as a left-aligned column.
+    let (show_team, show_tier, show_api_key) = match &mode {
+        VersionBadgeMode::Full { .. } => (true, true, true),
+        VersionBadgeMode::HeroFooter => (true, false, true),
+        VersionBadgeMode::HeroInline => (false, false, false),
     };
 
     if show_team && let Some(team) = team_name {
@@ -559,7 +575,7 @@ pub(super) fn render_version_badge(
     let channel = xai_grok_update::channel_label();
     match &mode {
         VersionBadgeMode::Full { .. } => {
-            spans.extend(wordmark_spans(WORDMARK, theme));
+            spans.extend(title_spans(WORDMARK, theme));
             spans.push(Span::styled(
                 format!("{}{}", xai_grok_version::VERSION, channel),
                 Style::default().fg(theme.gray),
@@ -574,7 +590,7 @@ pub(super) fn render_version_badge(
             }
         }
         VersionBadgeMode::HeroInline => {
-            spans.extend(wordmark_spans(WORDMARK, theme));
+            spans.extend(title_spans(WORDMARK, theme));
             spans.push(Span::styled(
                 xai_grok_version::VERSION,
                 Style::default().fg(theme.gray),
@@ -655,6 +671,7 @@ fn render_prompt_and_version(
             VersionBadgeMode::Full {
                 subscription_tier: None,
             },
+            Alignment::Right,
         );
     } else {
         render_version_badge(
@@ -665,6 +682,7 @@ fn render_prompt_and_version(
             h_margin,
             is_api_key_auth,
             VersionBadgeMode::HeroFooter,
+            Alignment::Right,
         );
     }
 
@@ -948,15 +966,24 @@ fn render_welcome_blocked(
     render_logo_tier(layout.logo, buf, &theme, layout.logo_tier);
 
     if let Some((text, color)) = message {
-        let line =
-            Line::from(Span::styled(text, Style::default().fg(color))).alignment(Alignment::Center);
+        // Left, with the rest of the home column.
+        let line = Line::from(Span::styled(text, Style::default().fg(color)));
         Paragraph::new(line).render(layout.error, buf);
     }
 
     // Inset the menu the same as the input bar / post-auth menu
     // The actions keep side spacing instead of touching the window edge on narrow terminals
     let menu_area = inset_horizontal(layout.menu, prompt::prompt_inset(compact));
-    let menu_rects = render_menu(menu_area, buf, &theme, menu_items, selected, None, 0);
+    let menu_rects = render_menu(
+        menu_area,
+        buf,
+        &theme,
+        menu_items,
+        selected,
+        None,
+        0,
+        Alignment::Center,
+    );
 
     let post_flush_escapes = if let Some((prompt_widget, info)) = prompt {
         let [_, prompt_centered, _] = Layout::horizontal([
@@ -989,6 +1016,7 @@ fn render_welcome_blocked(
         VersionBadgeMode::Full {
             subscription_tier: None,
         },
+        Alignment::Right,
     );
     (menu_rects, post_flush_escapes)
 }
@@ -1047,7 +1075,16 @@ fn render_welcome_trust(
     Paragraph::new(lines).render(layout.error, buf);
 
     let menu_area = inset_horizontal(layout.menu, prompt::prompt_inset(compact));
-    let menu_rects = render_menu(menu_area, buf, theme, &menu_items, selected, None, 0);
+    let menu_rects = render_menu(
+        menu_area,
+        buf,
+        theme,
+        &menu_items,
+        selected,
+        None,
+        0,
+        Alignment::Center,
+    );
 
     render_version_badge(
         layout.version,
@@ -1059,6 +1096,7 @@ fn render_welcome_trust(
         VersionBadgeMode::Full {
             subscription_tier: None,
         },
+        Alignment::Right,
     );
 
     // Only `menu_rects` are meaningful here; the rest are absent (no prompt, picker, auth/gate links)
@@ -1753,13 +1791,10 @@ fn render_welcome_done(
     } else {
         0
     };
-    let changelog_height = if p.has_access && !show_picker && !p.changelog_bullets.is_empty() {
-        2 + p.changelog_bullets.len() as u16
-    } else {
-        0
-    };
-    // Changelog is reachable via this menu row (ctrl+l). Show from the first frame so the menu doesn't shift while the CDN fetch completes.
-    let show_changelog_action = p.has_access && !show_picker;
+    // The home keeps no changelog: the rows belong to the cat. The release notes
+    // stay one command away (`/release-notes`), and the slot below the menu is
+    // left to an announcement when the owner has them on.
+    let changelog_height = 0;
 
     let gate_menu;
     let owned_menu;
@@ -1790,10 +1825,6 @@ fn render_welcome_done(
         items.push(("", "Log in with Codex"));
         items.push(("", "Log in with OpenRouter"));
         items.push(("", "Model tiers"));
-        // "Changelog" above Quit; no shortcut, opened by click (row or block)
-        if show_changelog_action {
-            items.push(("", "Changelog"));
-        }
         items.push((key_q, "Quit"));
         owned_menu = items;
         owned_menu.as_slice()
@@ -1939,9 +1970,21 @@ fn render_welcome_done(
         }
         (rects.menu_rects, None)
     } else {
-        // Narrow layout: stacked logo above, menu below
+        // The home column: the cat, the wordmark under it, then the menu.
         // Inset the menu the same as the input bar (`prompt_inset`) so it keeps side spacing instead of touching the window edge on narrow terminals
         render_logo_tier(layout.logo, buf, theme, layout.logo_tier);
+        render_version_badge(
+            layout.wordmark,
+            buf,
+            theme,
+            p.team_name,
+            h_margin,
+            p.is_api_key_auth,
+            // Name and version only: the tier and the auth method are setup
+            // facts, and the home is for the cat and the menu.
+            VersionBadgeMode::HeroInline,
+            Alignment::Left,
+        );
         let menu_area = inset_horizontal(layout.menu, prompt::prompt_inset(p.compact));
         #[cfg(feature = "local-workspace")]
         let menu_area = if show_workspace_picker {
@@ -1974,6 +2017,7 @@ fn render_welcome_done(
                 p.selected,
                 p.mouse_pos,
                 MENU_MIN_WIDTH,
+                Alignment::Left,
             ),
             None,
         )
@@ -1983,6 +2027,7 @@ fn render_welcome_done(
     // Inset to match the input bar so it lines up with the menu above.
     if layout.changelog.height > 0 {
         let info_area = inset_horizontal(layout.changelog, prompt::prompt_inset(p.compact));
+        // Only an announcement takes this slot now.
         if let Some(ann) = p.announcement {
             let (block, truncated, cta_rect) = render_announcement_section(
                 info_area,
@@ -2115,17 +2160,8 @@ fn render_welcome_done(
             });
         }
 
-        render_version_badge(
-            layout.version,
-            buf,
-            theme,
-            p.team_name,
-            h_margin,
-            p.is_api_key_auth,
-            VersionBadgeMode::Full {
-                subscription_tier: p.subscription_tier,
-            },
-        );
+        // The badge lives under the cat on this screen, so the bottom row keeps
+        // only what the tip slot and a pending hint need.
         (None, None)
     } else {
         // Privacy banner owns the tip slot when visible (above the prompt), except a pending-update notification, which outranks it
@@ -2283,7 +2319,6 @@ fn render_welcome_done(
         gate_url_rect: gate_url_hit_rect,
         consent_link_rects: Vec::new(),
         consent_legibility: None,
-        changelog_action_present: show_changelog_action,
         changelog_cta_rect,
         announcement_truncated,
         announcement_rect,
@@ -2692,7 +2727,7 @@ mod tests {
     fn badge_text(mode: VersionBadgeMode<'_>, team: Option<&str>) -> String {
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
-        render_version_badge(area, &mut buf, &Theme::current(), team, 0, false, mode);
+        render_version_badge(area, &mut buf, &Theme::current(), team, 0, false, mode, Alignment::Left);
         (0..area.width)
             .map(|x| buf.cell((x, 0)).map_or(" ", |c| c.symbol()).to_string())
             .collect::<String>()

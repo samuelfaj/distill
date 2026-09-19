@@ -756,7 +756,6 @@ pub struct AppView {
     pub welcome_menu_rects: Vec<ratatui::layout::Rect>,
     /// Whether the welcome menu currently includes a "Changelog" row (above Quit).
     /// Set during render; the input handler uses it to size the menu and map the extra row to the release-notes action.
-    pub welcome_show_changelog_action: bool,
     /// Hit-test rect for the import-claude banner on the welcome screen.
     pub welcome_import_banner_rect: Option<ratatui::layout::Rect>,
     /// Last known mouse position (column, row), updated on every Mouse event.
@@ -1426,7 +1425,6 @@ impl AppView {
             minimal_state: crate::minimal_api::MinimalState::default(),
             welcome_menu_index: None,
             welcome_menu_rects: Vec::new(),
-            welcome_show_changelog_action: false,
             welcome_import_banner_rect: None,
             last_mouse_pos: None,
             last_scroll_pos: None,
@@ -2432,11 +2430,6 @@ impl AppView {
                         2
                     } else {
                         3 + if self.has_claude_import { 1 } else { 0 }
-                            + if self.welcome_show_changelog_action {
-                                1
-                            } else {
-                                0
-                            }
                     },
                     prompt_rect: self.welcome_prompt_rect.as_ref(),
                     import_banner_rect: self.welcome_import_banner_rect.as_ref(),
@@ -2471,7 +2464,6 @@ impl AppView {
                     import_claude_modal: &mut self.import_claude_modal,
                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
                     changelog_markdown: &self.changelog_markdown,
-                    show_changelog_action: self.welcome_show_changelog_action,
                     has_pending_update: self.pending_update_version.is_some(),
                     has_foreign_resume,
                     cwd_has_git_ancestor: self.cwd_has_git_ancestor,
@@ -3136,7 +3128,6 @@ struct WelcomeInputCtx<'a> {
     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
     changelog_markdown: &'a Option<String>,
     /// Whether the welcome menu currently includes a "Changelog" row (above Quit), so index-to-action mapping accounts for it.
-    show_changelog_action: bool,
     has_pending_update: bool,
     /// A recent foreign session is available to resume when no update is pending.
     has_foreign_resume: bool,
@@ -3739,13 +3730,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             if key!(Enter).matches(key)
                 && let Some(idx) = *ctx.menu_index
             {
-                return dispatch_menu_action(
-                    idx,
-                    ctx.has_claude_import,
-                    ctx.show_changelog_action,
-                    ctx.changelog_markdown.as_deref(),
-                    ctx.hard_model,
-                );
+                return dispatch_menu_action(idx, ctx.has_claude_import, ctx.hard_model);
             }
         }
         match ctx.auth_state {
@@ -3878,13 +3863,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         {
                             return InputOutcome::Action(Action::DismissClaudeImport);
                         }
-                        return dispatch_menu_action(
-                            i,
-                            ctx.has_claude_import,
-                            ctx.show_changelog_action,
-                            ctx.changelog_markdown.as_deref(),
-                            ctx.hard_model,
-                        );
+                        return dispatch_menu_action(i, ctx.has_claude_import, ctx.hard_model);
                     }
                 }
                 if let Some(rect) = ctx.refresh_rect
@@ -4133,13 +4112,11 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
 }
 /// Dispatch an action for a welcome menu item by index.
 /// Menu order: `[Import]`, New worktree, Resume session, Log in with Grok,
-/// Log in with Codex, Log in with OpenRouter, Cheap lane model, `[Changelog]`, Quit.
-/// `show_changelog_action` is true when the Changelog row is rendered; release notes open only once `changelog_md` is available.
+/// Log in with Codex, Log in with OpenRouter, Model tiers, Quit.
+/// The release notes are not a row on this screen: `/release-notes` opens them.
 fn dispatch_menu_action(
     index: usize,
     has_claude_import: bool,
-    show_changelog_action: bool,
-    changelog_md: Option<&str>,
     hard_model: Option<&str>,
 ) -> InputOutcome {
     let base = if has_claude_import { 1 } else { 0 };
@@ -4149,11 +4126,7 @@ fn dispatch_menu_action(
     let login_codex_idx = base + 3;
     let login_openrouter_idx = base + 4;
     let cheap_model_idx = base + 5;
-    let (changelog_idx, quit_idx) = if show_changelog_action {
-        (Some(base + 6), base + 7)
-    } else {
-        (None, base + 6)
-    };
+    let quit_idx = base + 6;
     if has_claude_import && index == 0 {
         return InputOutcome::Action(Action::ImportClaudeSettings);
     }
@@ -4186,15 +4159,6 @@ fn dispatch_menu_action(
             title: "Model tiers".to_string(),
             content: crate::slash::commands::provider_status::tier_status(hard_model),
         });
-    }
-    if Some(index) == changelog_idx {
-        if let Some(md) = changelog_md {
-            return InputOutcome::Action(Action::ShowReleaseNotes {
-                title: "Release Notes".to_string(),
-                content: md.trim().to_string(),
-            });
-        }
-        return InputOutcome::Unchanged;
     }
     if index == quit_idx {
         return InputOutcome::Action(Action::Quit);
@@ -4597,7 +4561,6 @@ impl AppView {
                                 &mut self.session_picker_state,
                             );
                             self.welcome_menu_rects = result.menu_rects;
-                            self.welcome_show_changelog_action = result.changelog_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
                             self.welcome_import_banner_rect = result.import_banner_rect;
                             self.welcome_auth_url_rect = result.auth_url_rect;

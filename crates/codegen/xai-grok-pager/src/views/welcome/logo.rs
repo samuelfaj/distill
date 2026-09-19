@@ -1,11 +1,12 @@
-//! The mascot is the Remote-Code cat, drawn as ASCII line art.
+//! The mascot is the Remote-Code cat.
 //!
-//! Both tiers carry the same art: the cat is one drawing, and the two files exist
-//! because the layout steps the column down when it needs the rows back. On a
-//! window too short for the art the tier goes to `Hidden`, which is what the old
-//! two-drawing scheme reached by shrinking; there is no smaller cat to show.
-//!
-//! The art is plain ASCII, so every console renders it; the hidden tier is kept for windows too short to hold it.
+//! The art is the owner's: `assets/logo/cat-source.sh` paints it as a truecolor
+//! half-block picture, and [`cat`] draws exactly that (see `tools/cat-art.py`).
+//! It comes in two sizes of the same drawing — full, and half sampled
+//! nearest-neighbour — and the layout steps the column down when it needs the
+//! rows back. On a console that cannot show the blocks (legacy Windows), the
+//! ASCII cat stands in, so a mascot is always on screen; below the shortest of
+//! them the tier goes `Hidden`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -16,13 +17,18 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::render::color::blend_color;
 use crate::theme::Theme;
 
+/// The ASCII cat: the stand-in for consoles that cannot show the blocks.
 const LOGO: &str = include_str!("../../../assets/logo/logo07.txt");
 const LOGO_SMALL: &str = include_str!("../../../assets/logo/logo05.txt");
 
-/// Height at or above which the small logo is shown (below it, no logo).
+/// Height at or above which the ASCII cat is shown: 14 cell rows, and the
+/// stand-in for windows (and consoles) that cannot hold the picture.
 const SMALL_LOGO_MIN_HEIGHT: u16 = 22;
-/// Height at or above which the full logo is shown.
-const FULL_LOGO_MIN_HEIGHT: u16 = 26;
+/// Height at or above which the owner's cat is shown.
+///
+/// The picture is 30 cell rows — the size the script paints, never resampled —
+/// so the window needs those rows plus the menu, the draft and the version.
+const CAT_MIN_HEIGHT: u16 = 38;
 
 /// Which logo art the stacked column shows.
 /// The terminal height picks the tier; the stacked layout steps it down only while the column would not fit beside the draft.
@@ -39,26 +45,36 @@ impl LogoTier {
     }
 
     /// Takes the legacy-console flag as a parameter so tests can drive it directly.
-    fn for_height_and_hidden(window_height: u16, hidden: bool) -> Self {
-        if hidden || window_height < SMALL_LOGO_MIN_HEIGHT {
-            Self::Hidden
-        } else if window_height < FULL_LOGO_MIN_HEIGHT {
+    fn for_height_and_hidden(window_height: u16, legacy: bool) -> Self {
+        // Without the blocks there is only the ASCII cat, whatever the height.
+        if window_height >= CAT_MIN_HEIGHT && !legacy {
+            Self::Full
+        } else if window_height >= SMALL_LOGO_MIN_HEIGHT {
             Self::Compact
         } else {
-            Self::Full
+            Self::Hidden
         }
     }
 
-    fn art(self) -> Option<&'static str> {
+    fn art(self) -> Option<Art> {
         match self {
-            Self::Full => Some(LOGO),
-            Self::Compact => Some(LOGO_SMALL),
+            // The picture at the size the script paints it. Nothing resizes it:
+            // a smaller cat would not be this cat.
+            Self::Full => Some(Art::Cat),
+            // The ASCII cat stands in where the picture does not fit: a window
+            // too short for 30 rows, or a console without the blocks.
+            Self::Compact => Some(Art::Ascii(LOGO)),
             Self::Hidden => None,
         }
     }
 
     pub fn rows(self) -> u16 {
-        self.art().map_or(0, count_lines)
+        self.art().map_or(0, Art::rows)
+    }
+
+    /// Cell columns the art occupies.
+    pub fn width(self) -> u16 {
+        self.art().map_or(0, Art::width)
     }
 
     /// The next smaller tier; `None` once hidden.
@@ -71,12 +87,34 @@ impl LogoTier {
     }
 }
 
-fn pick_logo(window_height: u16) -> Option<&'static str> {
-    pick_logo_for(window_height, logo_hidden())
+/// The art a window of this height gets, if any.
+fn pick_logo(window_height: u16) -> Option<Art> {
+    LogoTier::for_height(window_height).art()
 }
 
-fn pick_logo_for(window_height: u16, hidden: bool) -> Option<&'static str> {
-    LogoTier::for_height_and_hidden(window_height, hidden).art()
+/// What one tier draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Art {
+    /// The owner's picture, at the size its script paints it.
+    Cat,
+    /// The ASCII cat: the stand-in for windows and consoles without the blocks.
+    Ascii(&'static str),
+}
+
+impl Art {
+    fn rows(self) -> u16 {
+        match self {
+            Self::Cat => super::cat::Cat::art().rows(),
+            Self::Ascii(art) => count_lines(art),
+        }
+    }
+
+    fn width(self) -> u16 {
+        match self {
+            Self::Cat => super::cat::Cat::art().width(),
+            Self::Ascii(art) => visual_width(art),
+        }
+    }
 }
 
 /// The braille art has no ASCII stand-in; see the module doc.
@@ -147,18 +185,28 @@ fn shine_opacity(diag: f32, secs: f32) -> f32 {
     (pulse + SHINE * shine).clamp(0.0, 1.0)
 }
 
-/// Shimmering spans for the welcome wordmark.
+/// Shimmering spans for the brand line: gold at rest, glinting toward white and
+/// bold throughout.
 ///
-/// The name glints with the same diagonal sweep as the art (same phase, same
-/// band), so the banner animates as one piece: the sweep starts at the left of
-/// the wordmark and travels to the top-right of the logo. Falls back to the
-/// resting text color wherever the theme cannot express a blend (legacy
-/// terminals), which keeps the title readable instead of dimming it.
+/// The home has one title, so it is the one thing on the screen in the accent
+/// gold — the meta rows around it stay gray, which is what makes it read as the
+/// name of the harness rather than as another line of small print.
+pub(crate) fn title_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    shimmer_spans(text, theme.accent_plan, theme.text_primary)
+}
+
+/// Shimmering spans for a wordmark that is not the title.
 pub(crate) fn wordmark_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    shimmer_spans(text, theme.text_primary, theme.accent_success)
+}
+
+/// The sweep itself: same phase and band as the art, so the banner animates as
+/// one piece. Falls back to the resting colour wherever the theme cannot express
+/// a blend (legacy terminals), which keeps the text readable instead of dimming
+/// it.
+fn shimmer_spans(text: &str, base: Color, hilite: Color) -> Vec<Span<'static>> {
     let secs = anim_phase_secs();
     let cols = text.chars().count().max(1) as f32;
-    let base = theme.text_primary;
-    let hilite = theme.accent_success;
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_color: Option<Color> = None;
@@ -183,6 +231,16 @@ pub(crate) fn wordmark_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
         ));
     }
     spans
+}
+
+/// Draws one art into `area`.
+fn render_art(area: Rect, buf: &mut Buffer, theme: &Theme, art: Art) {
+    match art {
+        // The picture is drawn in its own colours, so it is written cell by cell
+        // and not shimmered.
+        Art::Cat => super::cat::Cat::art().render(area, buf),
+        Art::Ascii(logo) => render_into(area, buf, theme, logo),
+    }
 }
 
 fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
@@ -232,49 +290,47 @@ fn render_into(area: Rect, buf: &mut Buffer, theme: &Theme, logo: &str) {
 }
 
 pub fn logo_line_count(window_height: u16) -> u16 {
-    pick_logo(window_height).map_or(0, count_lines)
+    LogoTier::for_height(window_height).rows()
 }
 
 pub fn logo_visual_width(window_height: u16) -> u16 {
-    pick_logo(window_height).map_or(24, visual_width)
+    LogoTier::for_height(window_height).width()
 }
 
 pub fn render_logo(area: Rect, buf: &mut Buffer, theme: &Theme, window_height: u16) {
-    if let Some(logo) = pick_logo(window_height) {
-        render_into(area, buf, theme, logo);
+    if let Some(art) = pick_logo(window_height) {
+        render_art(area, buf, theme, art);
     }
 }
 
 /// Paint the tier the layout reserved rows for, so the art can never outgrow its slot.
 pub fn render_logo_tier(area: Rect, buf: &mut Buffer, theme: &Theme, tier: LogoTier) {
-    if let Some(logo) = tier.art() {
-        render_into(area, buf, theme, logo);
+    if let Some(art) = tier.art() {
+        render_art(area, buf, theme, art);
     }
 }
 
-/// The hero box always shows the full logo: it is laid out beside the menu, so it fits whenever the box does.
-/// These report and render that logo directly, independent of the height-based [`pick_logo`] tiers used by the stacked layout.
-/// When [`logo_hidden`], they report 0 and render nothing.
+/// The hero box shows the cat beside the menu.
+///
+/// It uses the half-size tier: the box shares its height with the menu and the
+/// info slot, so the full 30-row cat would push the box past the fit gate on
+/// every ordinary window. These report and render that art directly, independent
+/// of the height-based [`pick_logo`] tiers the stacked layout uses.
+/// On a console without the blocks, and when [`logo_hidden`], the ASCII cat
+/// stands in — it is the same mascot in fewer rows than the picture needs.
 pub fn full_logo_line_count() -> u16 {
-    full_logo_line_count_for(logo_hidden())
-}
-
-fn full_logo_line_count_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { count_lines(LOGO) }
+    Art::Cat.rows()
 }
 
 pub fn full_logo_visual_width() -> u16 {
-    full_logo_visual_width_for(logo_hidden())
-}
-
-fn full_logo_visual_width_for(hidden: bool) -> u16 {
-    if hidden { 0 } else { visual_width(LOGO) }
+    if logo_hidden() { 0 } else { Art::Cat.width() }
 }
 
 pub fn render_full_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
-    if !logo_hidden() {
-        render_into(area, buf, theme, LOGO);
-    }
+    // The box is beside the menu, so the picture's own fit gate decides whether
+    // it is drawn at all; a console without the blocks gets the ASCII cat.
+    let art = if logo_hidden() { Art::Ascii(LOGO) } else { Art::Cat };
+    render_art(area, buf, theme, art);
 }
 
 /// Line count of the small logo used in minimal's committed welcome card (0 on a legacy Windows console, where the braille art is suppressed).
@@ -298,52 +354,42 @@ pub fn render_compact_logo(area: Rect, buf: &mut Buffer, theme: &Theme) {
 mod tests {
     use super::*;
 
+    /// The tier ladder: the picture at full size, the same picture at half, and
+    /// nothing when even that does not fit.
+    /// The ladder: the owner's cat when the window holds its 30 rows, the ASCII
+    /// stand-in when it does not, nothing when even that does not fit.
     #[test]
     fn logo_sizes_by_height() {
         assert!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT - 1, false).is_none());
         assert_eq!(
             pick_logo_for(SMALL_LOGO_MIN_HEIGHT, false),
-            Some(LOGO_SMALL)
+            Some(Art::Ascii(LOGO))
         );
         assert_eq!(
-            pick_logo_for(FULL_LOGO_MIN_HEIGHT - 1, false),
-            Some(LOGO_SMALL)
+            pick_logo_for(CAT_MIN_HEIGHT - 1, false),
+            Some(Art::Ascii(LOGO)),
+            "below the picture's height the ASCII cat holds the slot"
         );
-        assert_eq!(pick_logo_for(FULL_LOGO_MIN_HEIGHT, false), Some(LOGO));
+        assert_eq!(pick_logo_for(CAT_MIN_HEIGHT, false), Some(Art::Cat));
     }
 
-    // The braille art has no legacy-safe stand-in, so every height tier must collapse to no logo when the legacy-console flag is set
+    /// The cat is the script's size: 52 cells by 30 rows, nothing resampled.
     #[test]
-    fn logo_hidden_on_legacy_console_at_every_height() {
-        for h in [0, SMALL_LOGO_MIN_HEIGHT, FULL_LOGO_MIN_HEIGHT, u16::MAX] {
-            assert!(pick_logo_for(h, true).is_none(), "height {h}");
-        }
+    fn the_cat_keeps_the_scripts_size() {
+        assert_eq!(LogoTier::Full.rows(), 30);
+        assert_eq!(LogoTier::Full.width(), 52);
+        assert_eq!(full_logo_line_count(), 30);
+        assert_eq!(full_logo_visual_width(), 52);
     }
 
+    /// A console without the blocks gets the ASCII cat at every height, and the
+    /// hero box measures the ASCII cat there instead of the blocks it cannot
+    /// draw.
     #[test]
-    fn hero_box_always_uses_full_logo() {
-        // The box renders the full logo regardless of height (it's laid out beside the menu), and it's the large variant, never the small one
-        assert_eq!(full_logo_line_count_for(false), count_lines(LOGO));
-        assert_eq!(full_logo_visual_width_for(false), visual_width(LOGO));
-        assert!(full_logo_line_count_for(false) > count_lines(LOGO_SMALL));
-        assert!(full_logo_visual_width_for(false) > visual_width(LOGO_SMALL));
-    }
-
-    #[test]
-    fn full_logo_helpers_collapse_when_hidden() {
-        assert_eq!(full_logo_line_count_for(true), 0);
-        assert_eq!(full_logo_visual_width_for(true), 0);
-    }
-
-    #[test]
-    fn compact_logo_line_count_matches_small_logo_when_visible() {
-        // The minimal welcome card budgets exactly the small logo's rows
-        if !logo_hidden() {
-            assert_eq!(compact_logo_line_count(), count_lines(LOGO_SMALL));
-            assert!(compact_logo_line_count() < count_lines(LOGO));
-            assert!(compact_logo_line_count() > 0);
-        } else {
-            assert_eq!(compact_logo_line_count(), 0);
+    fn legacy_consoles_get_the_ascii_cat() {
+        assert!(pick_logo_for(SMALL_LOGO_MIN_HEIGHT - 1, true).is_none());
+        for h in [SMALL_LOGO_MIN_HEIGHT, CAT_MIN_HEIGHT, u16::MAX] {
+            assert_eq!(pick_logo_for(h, true), Some(Art::Ascii(LOGO)), "height {h}");
         }
     }
 

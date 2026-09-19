@@ -23,8 +23,16 @@ use super::types::{Json, Usage};
 
 /// Default endpoint root: the cheap provider.
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-/// Default model: the cheap worker the owner configured.
-pub const DEFAULT_MODEL: &str = "qwen/qwen3.7-flash";
+/// Default models, in priority order: the cheap worker the owner configured.
+///
+/// More than one id is a fallback chain, not a list of options — the free tier
+/// comes first because it costs nothing, and the paid variants follow it in the
+/// order they are worth paying for.
+pub const DEFAULT_MODELS: &[&str] = &[
+    "inclusionai/ling-3.0-flash-vl:free",
+    "inclusionai/ling-3.0-flash-vl",
+    "qwen/qwen3.7-flash",
+];
 /// Default deadline for one cheap call (generation included).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Environment variable consulted when no resolver is injected.
@@ -65,7 +73,7 @@ impl Default for CheapConfig {
     fn default() -> Self {
         Self {
             base_url: DEFAULT_BASE_URL.to_owned(),
-            model: DEFAULT_MODEL.to_owned(),
+            model: DEFAULT_MODELS.join(","),
             timeout: DEFAULT_TIMEOUT,
             api_key_env: DEFAULT_API_KEY_ENV.to_owned(),
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
@@ -294,7 +302,11 @@ impl CheapClient {
         let text: String = text.chars().take(task.max_answer_chars).collect();
         Ok(CheapAnswer {
             text,
-            model: reply.model.unwrap_or_else(|| self.config.model.clone()),
+            // The record names one model, and the reply may not say which one
+            // served the call; the primary is the only honest guess.
+            model: reply
+                .model
+                .unwrap_or_else(|| super::provider::model_fallback_chain(&self.config.model).0),
             usage: reply.usage,
             // The provider's completion id names the call; the header is the
             // fallback when the body did not carry one.

@@ -23,17 +23,34 @@ impl SlashCommand for CheapModelCommand {
         if entry == "clear" {
             return CommandResult::Action(Action::SetCheapModel(String::new()));
         }
-        // Only a configured OpenRouter entry is a valid answer: the cheap lane
-        // routes through OpenRouter, so anything else would be a wrong pick.
-        let entries = openrouter_entries();
-        if !entries.iter().any(|(key, _)| key == entry) {
-            return CommandResult::Error(format!(
-                "`{entry}` is not a configured OpenRouter entry.\n\n{}",
-                cheap_lane_status()
-            ));
+        // Two shapes are valid, and they mean different transports: a configured
+        // OpenRouter entry id (the entry's base URL and key), or one or more
+        // OpenRouter model ids, comma-separated, on the shipped defaults.
+        if standalone_chain(entry) || openrouter_entries().iter().any(|(key, _)| key == entry) {
+            return CommandResult::Action(Action::SetCheapModel(entry.to_owned()));
         }
-        CommandResult::Action(Action::SetCheapModel(entry.to_owned()))
+        CommandResult::Error(format!(
+            "`{entry}` is neither a configured OpenRouter entry nor a list of OpenRouter model \
+             ids.\n\nA chain is `vendor/model,vendor/model:free,…`.\n\n{}",
+            cheap_lane_status()
+        ))
     }
+}
+
+/// Whether the value is one or more OpenRouter model ids, comma-separated.
+///
+/// Every id must be non-empty, free of whitespace, and namespaced (`vendor/model`),
+/// which is what keeps a typo from being written into the cheap lane as a model
+/// that cannot exist.
+fn standalone_chain(value: &str) -> bool {
+    let mut seen = false;
+    for id in value.split(',').map(str::trim) {
+        if id.is_empty() || id.chars().any(char::is_whitespace) || !id.contains('/') {
+            return false;
+        }
+        seen = true;
+    }
+    seen
 }
 
 #[cfg(test)]
@@ -84,10 +101,42 @@ mod tests {
     fn an_unknown_entry_is_refused_with_the_candidates() {
         match run("definitely-not-a-configured-entry") {
             CommandResult::Error(text) => {
-                assert!(text.contains("is not a configured OpenRouter entry"), "{text}");
+                assert!(text.contains("neither a configured OpenRouter entry"), "{text}");
                 assert!(text.contains("Cheap lane model:"), "{text}");
             }
             other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// The owner's chain: a comma list of OpenRouter ids, tried in order, written
+    /// verbatim so the shell sends it as OpenRouter's `models` fallbacks.
+    #[test]
+    fn a_comma_separated_chain_is_accepted_in_order() {
+        let chain = "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,\
+                     qwen/qwen3.7-flash";
+        assert!(matches!(
+            run(chain),
+            CommandResult::Action(Action::SetCheapModel(written)) if written == chain
+        ));
+    }
+
+    /// A single namespaced id is a chain of one.
+    #[test]
+    fn a_single_model_id_is_accepted_on_its_own() {
+        assert!(matches!(
+            run("inclusionai/ling-3.0-flash-vl:free"),
+            CommandResult::Action(Action::SetCheapModel(_))
+        ));
+    }
+
+    /// A list with a hole in it is refused: `a,,c` would silently drop a rung.
+    #[test]
+    fn a_chain_with_an_empty_rung_is_refused() {
+        for bad in ["a/b,,c/d", "a/b,", ",a/b", "no-slash", "two words/model"] {
+            assert!(
+                matches!(run(bad), CommandResult::Error(_)),
+                "`{bad}` must not be written into the cheap lane"
+            );
         }
     }
 

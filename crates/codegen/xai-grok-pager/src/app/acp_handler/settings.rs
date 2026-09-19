@@ -1,6 +1,21 @@
 use super::*;
 use serde::Deserialize;
 
+/// The announcements this harness shows, filtered: none unless the owner asked.
+///
+/// Every producer goes through here — the settings push and the event loop's
+/// resolved-settings path both fill `active_announcements`, and a gate on only
+/// one of them is a banner that shows up anyway.
+pub(crate) fn visible_announcements(
+    announcements: Vec<xai_grok_announcements::RemoteAnnouncement>,
+) -> Vec<xai_grok_announcements::RemoteAnnouncement> {
+    if announcements_enabled() {
+        xai_grok_announcements::filter_expired(announcements)
+    } else {
+        Vec::new()
+    }
+}
+
 /// Whether the backend's announcement banners are shown.
 ///
 /// Off unless the owner asks for them: the banner is provider marketing, and a
@@ -482,15 +497,11 @@ pub(super) fn apply_announcements_update(
         managed_config,
         Some(remote),
     );
-    let announcements = if announcements_enabled() {
-        xai_grok_announcements::filter_expired(merged)
-    } else {
-        // Remote-Code ships with the provider's promotional banners off: they are
-        // marketing served by the backend, not part of the harness.
-        // `[announcements] enabled = true` in the user config, or
-        // `REMOTE_CODE_ANNOUNCEMENTS=1`, brings them back.
-        Vec::new()
-    };
+    // Remote-Code ships with the provider's promotional banners off: they are
+    // marketing served by the backend, not part of the harness.
+    // `[announcements] enabled = true` in the user config, or
+    // `REMOTE_CODE_ANNOUNCEMENTS=1`, brings them back.
+    let announcements = visible_announcements(merged);
 
     app.announcement = match app.announcement.as_ref() {
         Some(current) => announcements

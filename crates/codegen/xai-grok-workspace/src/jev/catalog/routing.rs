@@ -333,6 +333,12 @@ pub struct EffortChoice {
 /// the session's own effort.
 pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.40;
 
+/// The tier pick's floor. Two real options plus "keep" put chance at 0.33, and a
+/// downgrade that the decision is unsure about is a quality loss on the step, so
+/// this one sits higher than the effort floor: below it the session's model runs
+/// the call.
+pub const MICRO_TIER_MIN_CONFIDENCE: f64 = 0.55;
+
 /// B2 (auto): one `choice` over the efforts **this model** offers for a single
 /// model call. The model's own name is part of the question: "how much thinking
 /// does this call need" is answered differently for a small fast model than for
@@ -379,7 +385,99 @@ pub const MICRO_EFFORT_FALLBACK_LABEL: &str = "keep_session_effort";
 /// Question id of the auto-effort choice.
 pub const MICRO_EFFORT_QUESTION: &str = "micro_effort";
 
-/// B2 (auto): the effort to use for this call, or `None` to keep the session's.
+/// What the decision is told about one tier's model. Facts only: what it is
+/// called, its id, the window it really has, and the owner's note about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierProfile {
+    /// Catalog entry id, for the record.
+    pub id: String,
+    /// Display name, for the question text.
+    pub name: String,
+    /// Context window in tokens, from its catalog entry.
+    pub context_window: u64,
+    /// The owner's note, verbatim and bounded (may be empty).
+    pub notes: String,
+}
+
+/// Question id of the tier choice (which model runs this call).
+pub const MICRO_TIER_QUESTION: &str = "micro_tier";
+/// Label used for "keep whatever the session runs".
+pub const MICRO_TIER_KEEP_LABEL: &str = "keep_session_model";
+/// Tier labels the decision picks between. The ids are these labels, never the
+/// catalog ids: the question reads as a choice of roles, and the caller maps the
+/// role back to the model it holds.
+pub const TIER_HARD_LABEL: &str = "hard";
+/// The lighter sibling of the hard model.
+pub const TIER_LIGHT_LABEL: &str = "light";
+
+/// B2: which tier runs this call — the session's model, or its lighter sibling.
+///
+/// Only asked when a light sibling is configured; a provider with a single model
+/// (Grok, today) has nothing to choose, and a question with one real answer
+/// would only cost a decision.
+pub fn micro_tier_questions(
+    hard: &TierProfile,
+    light: &TierProfile,
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    if hard.id == light.id {
+        return Err(JevError::invalid("the light tier is the hard model"));
+    }
+    let describe = |role: &str, profile: &TierProfile| {
+        let notes = if profile.notes.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" Notes from its owner: {}", profile.notes)
+        };
+        format!(
+            "{role}: `{}` ({} tokens of context).{notes}",
+            profile.name, profile.context_window
+        )
+    };
+    let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
+    criteria.insert(
+        TIER_HARD_LABEL.to_owned(),
+        Json::String(describe("The session's model", hard)),
+    );
+    criteria.insert(
+        TIER_LIGHT_LABEL.to_owned(),
+        Json::String(describe(
+            "Its lighter sibling, same provider and same conversation",
+            light,
+        )),
+    );
+    criteria.insert(
+        MICRO_TIER_KEEP_LABEL.to_owned(),
+        Json::String("Keep the session's model for this call".to_owned()),
+    );
+    let mut questions = BTreeMap::new();
+    questions.insert(
+        MICRO_TIER_QUESTION.to_owned(),
+        Question::choice(
+            format!(
+                "The next single model call is described in `micro_action`. It runs on the session's \
+                 model `{}` unless something cheaper can do it as well. Which of the two models should \
+                 make THIS one call? Pick the lighter one only when it fully handles the step; keep the \
+                 session's model when the step needs its judgement.",
+                hard.name
+            ),
+            criteria,
+        )?,
+    );
+    Ok(questions)
+}
+
+/// B2: the tier the decision picked, or `None` to keep the session's model.
+///
+/// Unknown labels and low confidence both read as "keep": the session's model is
+/// the safe answer, and a wrong downgrade costs quality on the step.
+pub fn compose_micro_tier(answers: &JevAnswerSet) -> Option<String> {
+    let allowed = [TIER_HARD_LABEL, TIER_LIGHT_LABEL, MICRO_TIER_KEEP_LABEL];
+    let pick = pick_one(answers, MICRO_TIER_QUESTION, &allowed, MICRO_TIER_MIN_CONFIDENCE);
+    pick.choice
+        .filter(|choice| choice != MICRO_TIER_KEEP_LABEL)
+}
+
+/// B2: the effort to use for this call, or `None` to keep the session's.
 pub fn compose_micro_effort(answers: &JevAnswerSet, offered: &[EffortChoice]) -> Option<String> {
     let mut allowed: Vec<&str> = offered.iter().map(|c| c.id.as_str()).collect();
     allowed.push(MICRO_EFFORT_FALLBACK_LABEL);
@@ -953,6 +1051,88 @@ mod tests {
                 notes: String::new(),
             })
             .is_err()
+        );
+    }
+
+    /// The tier question offers the two models and a way to abstain, and never a
+    /// third answer: a decision between models that the caller cannot map back
+    /// would be a silent no-op.
+    #[test]
+    fn the_tier_question_offers_both_models_and_a_keep() {
+        let hard = TierProfile {
+            id: "codex-astra".to_owned(),
+            name: "gpt-6-astra".to_owned(),
+            context_window: 272_000,
+            notes: String::new(),
+        };
+        let light = TierProfile {
+            id: "codex-luna".to_owned(),
+            name: "gpt-5.6-luna".to_owned(),
+            context_window: 128_000,
+            notes: "The owner's note".to_owned(),
+        };
+        let questions = micro_tier_questions(&hard, &light).expect("a pair of distinct models");
+        let question = questions.get(MICRO_TIER_QUESTION).expect("tier question");
+        let criteria: Vec<&str> = match question {
+            Question::Choice { criteria, .. } => criteria.keys().map(String::as_str).collect(),
+            other => panic!("expected a choice, got {other:?}"),
+        };
+        assert_eq!(criteria, [TIER_HARD_LABEL, MICRO_TIER_KEEP_LABEL, TIER_LIGHT_LABEL]);
+    }
+
+    /// The same model twice is not a choice: asking would cost a decision and
+    /// could only answer itself.
+    #[test]
+    fn the_tier_question_refuses_a_pair_of_the_same_model() {
+        let one = TierProfile {
+            id: "codex-astra".to_owned(),
+            name: "gpt-6-astra".to_owned(),
+            context_window: 272_000,
+            notes: String::new(),
+        };
+        assert!(micro_tier_questions(&one, &one).is_err());
+    }
+
+    /// Low confidence and "keep" both read as "the session's model runs this
+    /// call": a wrong downgrade costs quality on the step, so unsure means no
+    /// change.
+    #[test]
+    fn the_tier_pick_defers_when_unsure_or_abstaining() {
+        let answers = |choice: &str, confidence: f64| JevAnswerSet {
+            model: "test".to_owned(),
+            answers: [(
+                MICRO_TIER_QUESTION.to_owned(),
+                crate::jev::types::Answer::Choice {
+                    choice: choice.to_owned(),
+                    probabilities: std::collections::BTreeMap::new(),
+                    confidence: Some(confidence),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            usage: crate::jev::types::Usage::default(),
+            request_id: None,
+            latency_ms: 0,
+        };
+        assert_eq!(
+            compose_micro_tier(&answers(TIER_LIGHT_LABEL, 0.9)).as_deref(),
+            Some(TIER_LIGHT_LABEL),
+            "a confident light pick is applied"
+        );
+        assert_eq!(
+            compose_micro_tier(&answers(TIER_LIGHT_LABEL, 0.2)),
+            None,
+            "below the floor the session's model runs"
+        );
+        assert_eq!(
+            compose_micro_tier(&answers(MICRO_TIER_KEEP_LABEL, 0.9)),
+            None,
+            "keep_session_model means no swap"
+        );
+        assert_eq!(
+            compose_micro_tier(&answers("something-else", 0.99)),
+            None,
+            "an unknown label is not a model"
         );
     }
 }

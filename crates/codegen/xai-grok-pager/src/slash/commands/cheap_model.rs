@@ -42,7 +42,7 @@ impl SlashCommand for CheapModelCommand {
 /// Every id must be non-empty, free of whitespace, and namespaced (`vendor/model`),
 /// which is what keeps a typo from being written into the cheap lane as a model
 /// that cannot exist.
-fn standalone_chain(value: &str) -> bool {
+pub(super) fn standalone_chain(value: &str) -> bool {
     let mut seen = false;
     for id in value.split(',').map(str::trim) {
         if id.is_empty() || id.chars().any(char::is_whitespace) || !id.contains('/') {

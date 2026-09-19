@@ -3196,15 +3196,15 @@ fn welcome_ctrl_d_requires_confirmation() {
 #[test]
 fn menu_action_indices_without_changelog() {
     assert!(matches!(
-        dispatch_menu_action(0, false, false, None),
+        dispatch_menu_action(0, false, false, None, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, false, false, None),
+        dispatch_menu_action(1, false, false, None, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(6, false, false, None),
+        dispatch_menu_action(6, false, false, None, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -3214,15 +3214,15 @@ fn menu_action_indices_without_changelog() {
 #[test]
 fn menu_action_provider_rows_route_to_login_and_notices() {
     assert!(matches!(
-        dispatch_menu_action(2, false, true, None),
+        dispatch_menu_action(2, false, true, None, None),
         InputOutcome::Action(Action::Login)
     ));
     for (index, title) in [
         (3usize, "Log in with Codex"),
         (4, "Log in with OpenRouter"),
-        (5, "Cheap lane model"),
+        (5, "Model tiers"),
     ] {
-        match dispatch_menu_action(index, false, true, None) {
+        match dispatch_menu_action(index, false, true, None, None) {
             InputOutcome::Action(Action::ShowReleaseNotes {
                 title: actual,
                 content,
@@ -3238,22 +3238,22 @@ fn menu_action_provider_rows_route_to_login_and_notices() {
 fn menu_action_changelog_sits_above_quit() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(1, false, true, md),
+        dispatch_menu_action(1, false, true, md, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(6, false, true, md),
+        dispatch_menu_action(6, false, true, md, None),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(7, false, true, md),
+        dispatch_menu_action(7, false, true, md, None),
         InputOutcome::Action(Action::Quit)
     ));
 }
 #[test]
 fn menu_action_changelog_before_fetch_is_noop() {
     assert!(matches!(
-        dispatch_menu_action(6, false, true, None),
+        dispatch_menu_action(6, false, true, None, None),
         InputOutcome::Unchanged
     ));
 }
@@ -3261,27 +3261,27 @@ fn menu_action_changelog_before_fetch_is_noop() {
 fn menu_action_indices_with_import_and_changelog() {
     let md = Some("# notes");
     assert!(matches!(
-        dispatch_menu_action(0, true, true, md),
+        dispatch_menu_action(0, true, true, md, None),
         InputOutcome::Action(Action::ImportClaudeSettings)
     ));
     assert!(matches!(
-        dispatch_menu_action(1, true, true, md),
+        dispatch_menu_action(1, true, true, md, None),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
     ));
     assert!(matches!(
-        dispatch_menu_action(2, true, true, md),
+        dispatch_menu_action(2, true, true, md, None),
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(3, true, true, md),
+        dispatch_menu_action(3, true, true, md, None),
         InputOutcome::Action(Action::Login)
     ));
     assert!(matches!(
-        dispatch_menu_action(7, true, true, md),
+        dispatch_menu_action(7, true, true, md, None),
         InputOutcome::Action(Action::ShowReleaseNotes { .. })
     ));
     assert!(matches!(
-        dispatch_menu_action(8, true, true, md),
+        dispatch_menu_action(8, true, true, md, None),
         InputOutcome::Action(Action::Quit)
     ));
 }

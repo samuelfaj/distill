@@ -60,8 +60,19 @@ impl CheapLane {
     /// always defaulted to ([`DEFAULT_BASE_URL`] and [`DEFAULT_API_KEY_ENV`]) —
     /// so a spec that names slugs needs no `[model.*]` entry of its own.
     pub fn from_spec(spec: &str) -> Option<Self> {
+        Self::from_sampler_config(&Self::standalone_sampler_config(spec)?)
+    }
+
+    /// The sampler config behind [`Self::from_spec`], for the lane that routes a
+    /// whole round rather than a closed task.
+    ///
+    /// A raw spec carries no catalog entry, so nothing declares its window or
+    /// backend: the shipped OpenRouter pair is assumed for the transport, and the
+    /// caller decides the context ceiling (`[jev.local] max_context_tokens` is
+    /// the owner's own cap and needs no model metadata).
+    pub fn standalone_sampler_config(spec: &str) -> Option<xai_grok_sampler::SamplerConfig> {
         let api_key = crate::agent::config::EnvKeys::single(DEFAULT_API_KEY_ENV).resolve_value()?;
-        Self::from_sampler_config(&xai_grok_sampler::SamplerConfig {
+        Some(xai_grok_sampler::SamplerConfig {
             api_key: Some(api_key),
             base_url: DEFAULT_BASE_URL.to_owned(),
             model: spec.to_owned(),
@@ -289,6 +300,15 @@ mod tests {
             "the shipped transport, not the session's"
         );
         assert!(lane.client.credential_present());
+
+        // The same config backs the lane that routes a whole round: same
+        // endpoint, same key, so a chain can take a round without a catalog
+        // entry — and never as a model id for the session's own provider.
+        let round = CheapLane::standalone_sampler_config("inclusionai/ling-3.0-flash-vl:free")
+            .expect("the round config exists while the key does");
+        assert_eq!(round.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(round.model, "inclusionai/ling-3.0-flash-vl:free");
+        assert_eq!(round.api_key.as_deref(), Some("sk-test"));
 
         let _no_key = xai_grok_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
         assert!(

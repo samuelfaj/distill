@@ -2397,6 +2397,8 @@ impl AppView {
             &self.hidden_announcement_ids,
         )
         .is_some_and(|(owner, _, _)| !crate::views::announcements::is_dismissible(owner));
+        let hard_model_name = self.models.current_model_name();
+        let hard_model = hard_model_name.as_deref();
         let has_foreign_resume = self.foreign_resume_hint().is_some();
         let sp_loading = crate::views::session_picker::loading_spinner_active(
             self.session_picker_entries.as_deref(),
@@ -2423,6 +2425,7 @@ impl AppView {
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
                     new_worktree_dialog: &mut self.new_worktree_dialog,
+                    hard_model,
                     menu_index: &mut self.welcome_menu_index,
                     menu_rects: &self.welcome_menu_rects,
                     menu_count: if zdr_blocked {
@@ -3080,6 +3083,9 @@ struct WelcomeInputCtx<'a> {
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
     new_worktree_dialog: &'a mut Option<NewWorktreeDialogState>,
+    /// The model a session would run on, for the tier notice: the hard tier is
+    /// the session's own model, so the report has to name it.
+    hard_model: Option<&'a str>,
     menu_index: &'a mut Option<usize>,
     menu_rects: &'a [ratatui::layout::Rect],
     menu_count: usize,
@@ -3738,6 +3744,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     ctx.has_claude_import,
                     ctx.show_changelog_action,
                     ctx.changelog_markdown.as_deref(),
+                    ctx.hard_model,
                 );
             }
         }
@@ -3876,6 +3883,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                             ctx.has_claude_import,
                             ctx.show_changelog_action,
                             ctx.changelog_markdown.as_deref(),
+                            ctx.hard_model,
                         );
                     }
                 }
@@ -4132,6 +4140,7 @@ fn dispatch_menu_action(
     has_claude_import: bool,
     show_changelog_action: bool,
     changelog_md: Option<&str>,
+    hard_model: Option<&str>,
 ) -> InputOutcome {
     let base = if has_claude_import { 1 } else { 0 };
     let worktree_idx = base;
@@ -4174,8 +4183,8 @@ fn dispatch_menu_action(
     }
     if index == cheap_model_idx {
         return InputOutcome::Action(Action::ShowReleaseNotes {
-            title: "Cheap lane model".to_string(),
-            content: crate::slash::commands::provider_status::cheap_lane_status(),
+            title: "Model tiers".to_string(),
+            content: crate::slash::commands::provider_status::tier_status(hard_model),
         });
     }
     if Some(index) == changelog_idx {

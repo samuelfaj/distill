@@ -37,6 +37,7 @@ pub mod login_codex;
 pub mod login_openrouter;
 pub mod logout;
 pub mod provider_status;
+pub mod tiers;
 pub mod loop_cmd;
 pub mod mcps;
 pub mod memory;
@@ -158,6 +159,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(login_codex::LoginCodexCommand),
         Arc::new(login_openrouter::LoginOpenrouterCommand),
         Arc::new(cheap_model::CheapModelCommand),
+        Arc::new(tiers::TiersCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),
         Arc::new(delete::DeleteCommand),

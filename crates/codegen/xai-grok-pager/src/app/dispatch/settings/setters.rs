@@ -1758,6 +1758,40 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
 // SHELL-OWNED. Unlike `default_model`, these do NOT mutate live runtime state; they update `current_ui` mirrors and persist.
 // No live preview. Rollback touches only the disk and the mirror.
 
+/// Outer dispatcher for `Action::SetTierLight`: the session model's lighter
+/// sibling.
+///
+/// The value is a `[model.<id>]` entry id, validated at the command boundary.
+/// The sibling rule (same provider, same backend, same credential, a window that
+/// holds the conversation) is enforced in the shell where the tier is resolved,
+/// and reported by `/tiers`; this only writes.
+pub(in crate::app::dispatch) fn set_tier_light(app: &mut AppView, id: String) -> Vec<Effect> {
+    let prev = xai_grok_shell::jev::tiers_cached()
+        .light
+        .clone()
+        .unwrap_or_default();
+    if prev == id {
+        app.show_toast(&format!("\u{2713} Light tier: already {id}"));
+        return vec![];
+    }
+    let shown = if id.is_empty() { "(removed)" } else { &id };
+    tracing::info!(
+        target: "settings",
+        key = "tier_light",
+        new = %shown,
+        prev = %prev,
+        "setting changed",
+    );
+    app.show_toast(&format!(
+        "\u{2713} Light tier: {shown} \u{2014} next session"
+    ));
+    vec![Effect::PersistSetting {
+        key: "tier_light",
+        value: crate::settings::SettingValue::String(id),
+        rollback_value: crate::settings::SettingValue::String(prev),
+    }]
+}
+
 /// State-only mutation for `fork_secondary_model`.
 /// Updates the `app.current_ui.fork_secondary_model` mirror so the modal indicator stays in sync.
 /// The shell's config-reloader propagates the disk change to any running agents on the next fork.

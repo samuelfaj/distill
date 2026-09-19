@@ -1068,10 +1068,11 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             };
             set_fork_secondary_model_inner(app, restored);
         }
-        // cheap_model: no pager-side mirror to roll back. The pick lives in the
-        // config file the jev lane resolves at startup, so the failure toast is
-        // the whole story.
+        // cheap_model / tier_light: no pager-side mirror to roll back. Both live
+        // in the config file the jev lanes resolve at startup, so the failure
+        // toast is the whole story.
         ("cheap_model", SettingValue::String(_)) => {}
+        ("tier_light", SettingValue::String(_)) => {}
 
         _ => {
             tracing::error!(

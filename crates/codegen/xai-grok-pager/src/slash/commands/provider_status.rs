@@ -102,6 +102,45 @@ pub fn cheap_lane_status() -> String {
     out
 }
 
+/// The three tiers, in the order a call falls through them: the session's model,
+/// its lighter sibling, then the cheap lanes.
+///
+/// `hard_model` is the session's own model id, which only the caller knows. The
+/// sibling's usability comes from the shell, which is where the rule is enforced
+/// — a tier the harness would refuse must not read as ready here.
+pub fn tier_status(hard_model: Option<&str>) -> String {
+    let hard = hard_model.unwrap_or("(no session model yet)");
+    let mut out = format!("Hard model (the session's): {hard}");
+    out.push_str("\n  Set it with `/model <name>` — the harness's own model picker.");
+    match hard_model.map(xai_grok_shell::jev::light_tier_status) {
+        Some(xai_grok_shell::jev::LightTierStatus::Ready { name, window, .. }) => {
+            out.push_str(&format!(
+                "\n\nLight model: {name} ({window} tokens of context)\n  \
+                 Jev may route a single model call here when the step does not need \
+                 the hard model. Same provider, same backend, same credential, same \
+                 conversation."
+            ));
+        }
+        Some(xai_grok_shell::jev::LightTierStatus::Refused(reason)) => {
+            out.push_str(&format!(
+                "\n\nLight model: refused — {reason}\n  \
+                 The tier stays off for this pairing."
+            ));
+        }
+        Some(xai_grok_shell::jev::LightTierStatus::Unset) | None => {
+            out.push_str(
+                "\n\nLight model: (none)\n  \
+                 Set it with `/tiers light <model-id>`: the session model's lighter sibling, \
+                 same provider and same conversation. A provider with a single model has none.",
+            );
+        }
+    }
+    out.push_str("\n\n");
+    out.push_str(&cheap_lane_status());
+    out.push_str("\n\nSet with `/tiers hard <name>`, `/tiers light <id|clear>`, `/tiers cheap <ids|clear>`.");
+    out
+}
+
 /// The configured model entries that point at OpenRouter, as `(key, model)`.
 ///
 /// Read from the same user config the session resolves, so the list cannot
@@ -158,6 +197,28 @@ mod tests {
         {
             assert!(!status.contains(&key), "the key value must not be echoed");
             assert!(status.contains("present"), "{status}");
+        }
+    }
+
+    /// The three tiers are read in the order a call falls through them, and a
+    /// tier the shell refuses must not read as ready.
+    #[test]
+    fn the_tier_status_names_all_three_in_fall_through_order() {
+        let text = tier_status(Some("grok-4.6"));
+        let hard = text.find("Hard model").expect("hard tier named");
+        let light = text.find("Light model").expect("light tier named");
+        let cheap = text.find("Cheap lane model:").expect("cheap tier named");
+        assert!(hard < light && light < cheap, "{text}");
+        assert!(text.contains("grok-4.6"), "{text}");
+        // Whatever the machine's config says, the three surfaces agree with the
+        // shell: a refused tier carries its reason instead of a model name.
+        if let Ok(light_id) = std::env::var("PROBE_TIER_LIGHT")
+            && !light_id.trim().is_empty()
+        {
+            assert!(
+                text.contains("refused") || text.contains(&light_id),
+                "{text}"
+            );
         }
     }
 

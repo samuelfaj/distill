@@ -1784,12 +1784,12 @@ fn render_welcome_done(
         items.push((key_w, "New worktree"));
         items.push((key_resume, "Resume session"));
         // Provider rows: Remote-Code routes to more than one backend, so signing in
-        // to each one, and picking the model for the cheap lane, belong in the menu.
+        // to each one, and picking the models a call may run on, belong in the menu.
         // No shortcut: the notice they open names the command to run inside a session.
         items.push(("", "Log in with Grok"));
         items.push(("", "Log in with Codex"));
         items.push(("", "Log in with OpenRouter"));
-        items.push(("", "Cheap lane model"));
+        items.push(("", "Model tiers"));
         // "Changelog" above Quit; no shortcut, opened by click (row or block)
         if show_changelog_action {
             items.push(("", "Changelog"));

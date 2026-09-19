@@ -95,6 +95,9 @@ pub struct JevLadderOverlay {
     pub b2_micro_effort: Option<bool>,
     /// B2 (local): prefer the configured local model for calls it can fully do.
     pub b2_local_model: Option<bool>,
+    /// B2 (tiers): prefer the session model's lighter sibling for a call that
+    /// does not need the hard one. No-op unless a light tier is configured.
+    pub b2_light_model: Option<bool>,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: Option<bool>,
     /// B6: hint that delegating is worth it (never spawns).
@@ -156,6 +159,7 @@ impl JevFlags {
             b2_model_tier: false,
             b2_micro_effort: true,
             b2_local_model: true,
+            b2_light_model: true,
             b3_subagent_type: true,
             b6_delegation_hint: true,
             c1_premature_stop: true,
@@ -243,6 +247,8 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.b2_micro_effort, None, self.b2_micro_effort);
         self.b2_local_model =
             self.enabled && resolve_switch(ladder.b2_local_model, None, self.b2_local_model);
+        self.b2_light_model =
+            self.enabled && resolve_switch(ladder.b2_light_model, None, self.b2_light_model);
         self.b3_subagent_type =
             self.enabled && resolve_switch(ladder.b3_subagent_type, None, self.b3_subagent_type);
         self.b6_delegation_hint = self.enabled
@@ -335,6 +341,9 @@ pub struct JevFlags {
     pub b2_micro_effort: bool,
     /// B2 (local): prefer the configured local model when it can fully do the call.
     pub b2_local_model: bool,
+    /// B2 (tiers): the session model's lighter sibling takes a call it can fully
+    /// do. No-op unless a light tier is configured.
+    pub b2_light_model: bool,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: bool,
     /// B6: hint that delegating is worth it (never spawns).
@@ -381,6 +390,7 @@ impl JevFlags {
             b2_model_tier: false,
             b2_micro_effort: false,
             b2_local_model: false,
+            b2_light_model: false,
             b3_subagent_type: false,
             b6_delegation_hint: false,
             c1_premature_stop: false,
@@ -509,6 +519,7 @@ impl JevFlags {
             JevLever::B2ModelTier => self.b2_model_tier,
             JevLever::B2MicroEffort => self.b2_micro_effort,
             JevLever::B2LocalModel => self.b2_local_model,
+            JevLever::B2LightModel => self.b2_light_model,
             JevLever::B3SubagentType => self.b3_subagent_type,
             JevLever::B6DelegationHint => self.b6_delegation_hint,
             JevLever::C1PrematureStop => self.c1_premature_stop,
@@ -553,6 +564,8 @@ pub enum JevLever {
     B2ModelTier,
     B2MicroEffort,
     B2LocalModel,
+    /// B2 (tiers): pick the session model's lighter sibling for this call.
+    B2LightModel,
     B3SubagentType,
     B6DelegationHint,
     C1PrematureStop,
@@ -596,6 +609,7 @@ impl JevLever {
             Self::B2ModelTier => "b2_model_tier",
             Self::B2MicroEffort => "b2_micro_effort",
             Self::B2LocalModel => "b2_local_model",
+            Self::B2LightModel => "b2_light_model",
             Self::B3SubagentType => "b3_subagent_type",
             Self::B6DelegationHint => "b6_delegation_hint",
             Self::C1PrematureStop => "c1_premature_stop",

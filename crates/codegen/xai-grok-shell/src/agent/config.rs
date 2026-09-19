@@ -5219,7 +5219,7 @@ pub(crate) fn sampling_config_for_model(
     );
     let request_compression =
         crate::util::config::request_compression_for_url(&credentials.base_url);
-    SamplerConfig {
+    let mut config = SamplerConfig {
         api_key: credentials.api_key,
         model: model_name,
         base_url: credentials.base_url,
@@ -5256,7 +5256,11 @@ pub(crate) fn sampling_config_for_model(
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,
         header_injector: None,
-    }
+    };
+    // A model pointed at the ChatGPT Codex backend needs the CLI's sign-in as its
+    // bearer and the workspace header; everything else is left alone.
+    crate::codex_auth::apply_codex_backend(&mut config);
+    config
 }
 /// Fold URL-derived headers into `extra_headers`. The sampler crate is intentionally URL-agnostic: it does not inspect `base_url` to decide which auth or staging headers to add.
 /// Replicate the URL-derived header logic at the shell boundary so callers downstream see a single homogenous header bag. cli-chat-proxy bases get `X-XAI-Token-Auth` and `x-authenticateresponse` headers.

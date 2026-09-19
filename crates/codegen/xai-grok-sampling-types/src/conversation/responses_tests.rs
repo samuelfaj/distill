@@ -1301,6 +1301,52 @@ fn upgrade_legacy_reasoning_v0_chat_request_message_shape() {
 }
 
 #[test]
+/// The Responses API refuses an empty, over-64-character or off-charset
+/// `input[i].id`; a resumed session can carry all three, and one of them fails the
+/// first request before any model output. Valid ids must survive byte-for-byte.
+#[test]
+fn patch_input_item_ids_repairs_only_what_the_api_refuses() {
+    let long = "x".repeat(85);
+    let valid_max = "y".repeat(64);
+    let too_long = "z".repeat(65);
+    let mut body = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "id": "", "summary": []},
+            {"type": "reasoning", "id": long, "summary": []},
+            {"type": "reasoning", "id": "has space!", "summary": []},
+            {"type": "reasoning", "id": valid_max, "summary": []},
+            {"type": "reasoning", "id": too_long, "summary": []},
+            {"type": "reasoning", "id": "rs_00000000-0000-7000-8000-000000000001", "summary": []},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+        ]
+    });
+    patch_input_item_ids(&mut body);
+    let items = body["input"].as_array().expect("input stays an array");
+
+    for index in [0usize, 1, 2] {
+        let id = items[index]["id"].as_str().expect("repaired ids are strings");
+        assert!(id.starts_with("cid_"), "index {index} kept an invalid id: {id:?}");
+        assert!(!id.is_empty() && id.len() <= 64);
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+    }
+    assert_eq!(items[3]["id"], valid_max, "a 64-character id is valid and stays");
+    assert!(
+        items[4]["id"].as_str().expect("string").starts_with("cid_"),
+        "65 characters is one over the limit"
+    );
+    assert_eq!(
+        items[5]["id"], "rs_00000000-0000-7000-8000-000000000001",
+        "a valid provider id is left byte-for-byte alone"
+    );
+    assert!(items[6].get("id").is_none(), "an item without an id gains none");
+
+    // Running it twice must not move the ids again: a retry of the same request
+    // has to hash to the same repair, or every retry would look like new input.
+    let once = body.clone();
+    patch_input_item_ids(&mut body);
+    assert_eq!(body, once, "the repair is idempotent");
+}
+
 fn patch_reasoning_text_types_injects_type_discriminator() {
     // Build a request body containing a reasoning item whose nested `content[]` entries lack the `type` field (the async-openai gap)
     let mut body = serde_json::json!({

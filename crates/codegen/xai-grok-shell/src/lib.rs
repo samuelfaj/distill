@@ -37,6 +37,7 @@ pub mod heap_profile;
 pub use xai_grok_http as http;
 pub mod inspect;
 pub mod instrumentation;
+pub mod codex_auth;
 pub mod jev;
 pub mod jev_cheap;
 pub mod jev_lanes;

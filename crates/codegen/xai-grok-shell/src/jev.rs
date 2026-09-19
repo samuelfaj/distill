@@ -53,6 +53,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
         JevLadderOverlay {
             permission_classifier: cfg.ladder.permission_classifier,
             e_crushers: cfg.ladder.e_crushers,
+            e_retention: cfg.ladder.e_retention,
             e_importance: cfg.ladder.e_importance,
             e_cheap_compress: cfg.ladder.e_cheap_compress,
             e_cheap_task: cfg.ladder.e_cheap_task,

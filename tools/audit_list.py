@@ -54,6 +54,8 @@ def rows():
             section = line[3:].strip()
             continue
         if line.startswith("| ") and line.count("|") >= 4 and not line.startswith("| ---"):
+            if "o que faz" in line or line.startswith("| status |"):
+                continue  # a table header, not a row
             cells = [cell.strip() for cell in line.strip("|").split("|")]
             yield section, cells
 
@@ -66,6 +68,7 @@ def main():
     parte_rows = []
     implemented = 0
     deferred = 0
+    external = 0
     planned = 0
     mapped = 0
 
@@ -94,6 +97,13 @@ def main():
                 reason = cells[2] if len(cells) > 2 else ""
                 if reason not in ALLOWED_REASONS:
                     failures.append(f"{first}: reason `{reason}` is not allowed")
+        elif section.startswith("4."):
+            external += 1
+            for cell in cells[3:6]:
+                for name in re.findall(r"[a-z_]{8,}", cell.strip("` ")):
+                    if name not in SOURCE_BLOB:
+                        failures.append(f"{first}: `{name}` not found in the tree")
+                        break
         elif re.fullmatch(r"\d+", first):
             parte_rows.append(cells)
             status = cells[4].lower() if len(cells) > 4 else ""
@@ -119,6 +129,9 @@ def main():
         )
     print(f"parte-a.md opportunities: 27, rows in list.md: {len(parte_rows)}")
     print(f"statuses: implemented {implemented}, planned {planned}, mapped {mapped}, deferred {deferred}")
+    print(f"external capabilities judged: {external}")
+    if external == 0:
+        failures.append("section 4 (external work) is missing")
     if len(parte_rows) != 27:
         failures.append(f"parte-a rows: {len(parte_rows)} instead of 27")
     if missing:

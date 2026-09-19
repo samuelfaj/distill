@@ -96,6 +96,7 @@ pub(crate) fn deserialize_response_event(data: &str) -> Result<rs::ResponseStrea
         Err(first_err) => {
             // Try sanitizing: parse as Value, strip unknown tools, retry.
             if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data) {
+                normalize_response_effort(&mut value);
                 // Strip tools that async_openai's rs::Tool can't deserialize (e.g., xAI-specific "x_search")
                 // Instead of maintaining a hardcoded allowlist, try deserializing each tool entry; if it fails, drop it
                 if let Some(tools) = value
@@ -119,6 +120,25 @@ pub(crate) fn deserialize_response_event(data: &str) -> Result<rs::ResponseStrea
     };
     apply_terminal_event_overrides(&mut event, data);
     Ok(event)
+}
+
+/// Rewrite a reasoning effort the typed SDK enum does not carry.
+///
+/// A Responses backend can echo `reasoning.effort: "disabled"` — measurably, even
+/// when the request asked for `xhigh`. `async-openai`'s `ReasoningEffort` has no
+/// `disabled`, so the event fails to deserialize and the turn aborts on the very
+/// first SSE frame, before any model output. `none` is the value the SDK does
+/// carry and the one the field means. Ported from open-grok's
+/// `normalize_codex_response_event`.
+///
+/// This runs only on the sanitizing path (the fast typed parse is tried first), so
+/// it costs nothing for the events that already parse.
+fn normalize_response_effort(value: &mut serde_json::Value) {
+    if let Some(effort) = value.pointer_mut("/response/reasoning/effort")
+        && effort.as_str() == Some("disabled")
+    {
+        *effort = serde_json::Value::String("none".to_owned());
+    }
 }
 
 /// On `response.completed` / `response.incomplete`, rewrite `usage.total_tokens` to the live context length from `context_details`.
@@ -1332,6 +1352,10 @@ impl SamplingClient {
         // async-openai's ReasoningTextContent struct omits the `type` discriminator that the Responses API requires on input
         // Patch it in after serializing
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // A resumed session can carry ids the Responses API refuses (empty, over
+        // 64 characters, off-charset): repair them at the same boundary, before
+        // the body leaves.
+        xai_grok_sampling_types::patch_input_item_ids(&mut request_body);
         self.prepare_bearer().await;
         let SentRequest {
             builder,
@@ -1477,6 +1501,10 @@ impl SamplingClient {
         splice_extra_tool_entries(&mut request_body, extra_tool_entries);
         append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // A resumed session can carry ids the Responses API refuses (empty, over
+        // 64 characters, off-charset): repair them at the same boundary, before
+        // the body leaves.
+        xai_grok_sampling_types::patch_input_item_ids(&mut request_body);
         // Fresh per attempt so signals never leak across retries; `None` (check disabled) sends no header and does no peek work per event
         let doom_loop = self
             .defaults
@@ -2254,6 +2282,39 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+
+    /// A production-shaped `response.created` whose effort the SDK enum does not
+    /// carry: without the rewrite the first SSE frame kills the turn.
+    #[test]
+    fn a_disabled_response_effort_parses_as_none() {
+        let event = serde_json::json!({
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {
+                "background": false,
+                "created_at": 0,
+                "id": "resp_1",
+                "model": "gpt-6-astra",
+                "object": "response",
+                "output": [],
+                "reasoning": {"context": "all_turns", "effort": "disabled",
+                              "mode": "standard", "summary": "detailed"},
+                "status": "in_progress",
+                "tools": []
+            }
+        })
+        .to_string();
+
+        let typed = deserialize_response_event(&event).expect("disabled effort must parse");
+        let rs::ResponseStreamEvent::ResponseCreated(created) = typed else {
+            panic!("expected response.created, got something else");
+        };
+        assert_eq!(
+            created.response.reasoning.and_then(|reasoning| reasoning.effort),
+            Some(rs::ReasoningEffort::None),
+            "the effort the API reported as `disabled` reads as `none`"
+        );
+    }
     use super::*;
 
     fn nth<T>(xs: &[T], i: usize) -> &T {

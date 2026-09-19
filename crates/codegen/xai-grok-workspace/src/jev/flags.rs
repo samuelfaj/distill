@@ -52,6 +52,8 @@ pub struct JevLadderOverlay {
     pub permission_classifier: Option<bool>,
     /// E10 — run the deterministic crushers on a large tool result.
     pub e_crushers: Option<bool>,
+    /// E12 — keep only the payload chunks the task still needs.
+    pub e_retention: Option<bool>,
     /// E2 — extract by importance (errors, file:line, paths, last lines) with an elided middle.
     pub e_importance: Option<bool>,
     /// E3 — compress a large tool result with the cheap model, storing the original first.
@@ -164,6 +166,7 @@ impl JevFlags {
             c6_injection_screen: false,
             c7_change_type: true,
             e_crushers: true,
+            e_retention: false,
             e_importance: true,
             e_cheap_compress: false,
             e_cheap_task: false,
@@ -212,6 +215,8 @@ impl JevFlags {
             && resolve_switch(ladder.p6_skill_suggestion, None, self.p6_skill_suggestion);
         self.yolo_veto = self.enabled && resolve_switch(ladder.yolo_veto, None, self.yolo_veto);
         self.e_crushers = self.enabled && resolve_switch(ladder.e_crushers, None, self.e_crushers);
+        self.e_retention =
+            self.enabled && resolve_switch(ladder.e_retention, None, self.e_retention);
         self.e_importance = self.enabled && resolve_switch(ladder.e_importance, None, self.e_importance);
         self.e_cheap_compress = self.enabled && resolve_switch(ladder.e_cheap_compress, None, self.e_cheap_compress);
         self.e_cheap_task = self.enabled && resolve_switch(ladder.e_cheap_task, None, self.e_cheap_task);
@@ -280,6 +285,9 @@ pub struct JevFlags {
     pub permission_classifier: bool,
     /// E10 — run the deterministic crushers on a large tool result.
     pub e_crushers: bool,
+    /// E12 — keep only the payload chunks the task still needs, asked of the
+    /// decision layer one question per chunk.
+    pub e_retention: bool,
     /// E2 — extract by importance (errors, file:line, paths, last lines) with an elided middle.
     pub e_importance: bool,
     /// E3 — compress a large tool result with the cheap model, storing the original first.
@@ -384,6 +392,7 @@ impl JevFlags {
             c7_change_type: false,
             d2_big_output_retention: false,
             e_crushers: false,
+            e_retention: false,
             e_importance: false,
             e_cheap_compress: false,
             e_cheap_task: false,
@@ -476,6 +485,7 @@ impl JevFlags {
         match lever {
             JevLever::PermissionClassifier => self.permission_classifier,
             JevLever::ECrushers => self.e_crushers,
+            JevLever::ERetention => self.e_retention,
             JevLever::EImportance => self.e_importance,
             JevLever::ECheapCompress => self.e_cheap_compress,
             JevLever::ECheapTask => self.e_cheap_task,
@@ -519,6 +529,7 @@ impl JevFlags {
 pub enum JevLever {
     PermissionClassifier,
     ECrushers,
+    ERetention,
     EImportance,
     ECheapCompress,
     ECheapTask,
@@ -561,6 +572,7 @@ impl JevLever {
         match self {
             Self::PermissionClassifier => "permission_classifier",
             Self::ECrushers => "e_crushers",
+            Self::ERetention => "e_retention",
             Self::EImportance => "e_importance",
             Self::ECheapCompress => "e_cheap_compress",
             Self::ECheapTask => "e_cheap_task",

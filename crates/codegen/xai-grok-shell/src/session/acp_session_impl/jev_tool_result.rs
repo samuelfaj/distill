@@ -54,7 +54,12 @@ const HINT_CLOSE: &str = "\n</jev-hints>";
 impl SessionActor {
     /// Runs the Jev pass over a finished tool result and returns the text the
     /// model will see. See the module docs for the authority rules.
-    pub(super) async fn jev_post_process_tool_result(&self, tool: &str, text: String) -> String {
+    pub(super) async fn jev_post_process_tool_result(
+        &self,
+        tool: &str,
+        tool_command: &str,
+        text: String,
+    ) -> String {
         // A change review is about the *edit*, not about a long output, and an
         // edit's result is a one-line summary: the size guard must not swallow
         // it.
@@ -95,7 +100,15 @@ impl SessionActor {
         // before anything is sent anywhere. Nothing unique is lost (the crushers
         // are content-preserving by construction), so this runs before the
         // flags that spend money and regardless of what they decide.
-        if crate::jev::lever_active(JevLever::ECrushers) && body.len() >= READ_REUSE_BYTES {
+        // A document is never crushed: the command's output *is* the answer, and
+        // cutting a hole in it leaves something that still looks complete. The
+        // check is the same one the retention lane uses, so the two cannot drift.
+        let is_document = xai_grok_workspace::jev::retention::looks_structured(tool_command, &body);
+
+        if !is_document
+            && crate::jev::lever_active(JevLever::ECrushers)
+            && body.len() >= READ_REUSE_BYTES
+        {
             let (cleaned, applied) = xai_grok_workspace::jev::crushers::preclean(&body);
             if !applied.is_empty() && cleaned.len() < body.len() {
                 crate::jev::record_item(
@@ -119,7 +132,8 @@ impl SessionActor {
         // Lossy, so the original is stored first and the marker names the file.
         // The literal gate runs before the body is replaced: a reduction that
         // would drop a path, a `file:line`, a number or an error word is refused.
-        if crate::jev::lever_active(JevLever::EImportance)
+        if !is_document
+            && crate::jev::lever_active(JevLever::EImportance)
             && body.len() >= context::BIG_OUTPUT_BYTES
         {
             let options = xai_grok_workspace::jev::reduce::ExtractOptions::default();
@@ -229,6 +243,113 @@ impl SessionActor {
                         None,
                     );
                 }
+            }
+        }
+
+        // ---- retention: which chunks does the task still need? ----
+        //
+        // The deterministic lanes above decide by shape; this one asks. One noul
+        // per chunk travels in one request (batched under the request ceiling),
+        // the original is archived before the first question, and every rule that
+        // protects a reader is a property of the code: a document is never
+        // touched, an unscored chunk is never dropped, the first and last chunks
+        // and anything carrying a failure always stay.
+        if !is_document
+            && crate::jev::lever_active(JevLever::ERetention)
+            && matches!(
+                xai_grok_workspace::jev::retention::gate(tool_command, &body),
+                xai_grok_workspace::jev::retention::Gate::Prune
+            )
+        {
+            let chunks = xai_grok_workspace::jev::retention::chunk(&body);
+            let category =
+                xai_grok_workspace::jev::retention::classify(tool_command, &body);
+            let mut scored = vec![false; chunks.len()];
+            let mut answers: Option<xai_grok_workspace::jev::types::JevAnswerSet> = None;
+            if let Ok(questions) =
+                xai_grok_workspace::jev::retention::retention_questions(&chunks, category)
+            {
+                // One request per batch: the questions are coalesced per decision
+                // point (this payload), not one request per chunk.
+                for batch in xai_grok_workspace::jev::retention::batches(
+                    &chunks,
+                    (body.len() / 4) as u64,
+                    category,
+                ) {
+                    let mut battery = std::collections::BTreeMap::new();
+                    for index in &batch {
+                        if let Some(question) = questions.get(&chunks[*index].id) {
+                            battery.insert(chunks[*index].id.clone(), question.clone());
+                        }
+                    }
+                    let state = serde_json::json!({
+                        "command": tool_command,
+                        "category": category.as_str(),
+                        "chunks_total": chunks.len(),
+                        "chunks_in_this_request": battery.len(),
+                    });
+                    if let Some(batch_answers) =
+                        crate::jev::ask_item(JevLever::ERetention, state, battery).await
+                    {
+                        for index in &batch {
+                            if batch_answers.answers.contains_key(&chunks[*index].id) {
+                                scored[*index] = true;
+                            }
+                        }
+                        answers = Some(match answers.take() {
+                            Some(mut merged) => {
+                                merged.answers.extend(batch_answers.answers);
+                                merged
+                            }
+                            None => batch_answers,
+                        });
+                    }
+                }
+            }
+            let retention = xai_grok_workspace::jev::retention::compose_retention(
+                answers.as_ref(),
+                &chunks,
+                &scored,
+                xai_grok_workspace::jev::retention::KEEP_THRESHOLD,
+            );
+            if retention.drops_anything() {
+                // Store-before-loss, with the secret rule: a payload that looks
+                // secret-bearing is not archived, and its marker says to re-run
+                // the command instead of pointing at a file that will not exist.
+                let archive = if xai_grok_workspace::jev::crushers::secret_presence(&body).is_some() {
+                    None
+                } else {
+                    crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
+                };
+                let rebuilt = xai_grok_workspace::jev::retention::apply(
+                    &chunks,
+                    &retention,
+                    archive.as_deref(),
+                    tool_command,
+                );
+                crate::jev::record_item(
+                    JevLever::ERetention,
+                    if archive.is_some() { "trim" } else { "trim-no-archive" },
+                    &format!(
+                        "{} chunks, {} dropped ({} lines), {} unscored kept, {} scored",
+                        chunks.len(),
+                        retention.keep.iter().filter(|keep| !**keep).count(),
+                        retention.dropped_lines,
+                        retention.unscored.len(),
+                        scored.iter().filter(|s| **s).count()
+                    ),
+                    None,
+                    answers.as_ref(),
+                );
+                body = rebuilt;
+            } else {
+                crate::jev::record_item(
+                    JevLever::ERetention,
+                    "keep",
+                    &format!("{} chunks, nothing dropped", chunks.len()),
+                    None,
+                    answers.as_ref(),
+                );
             }
         }
 

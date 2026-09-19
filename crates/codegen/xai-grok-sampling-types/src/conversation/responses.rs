@@ -168,6 +168,49 @@ pub(super) fn build_responses_input(req: &ConversationRequest) -> rs::InputParam
     rs::InputParam::Items(items)
 }
 
+/// Repair input-item ids the Responses API refuses.
+///
+/// The API rejects any `input[i].id` that is empty, longer than 64 characters, or
+/// carries characters outside `[A-Za-z0-9_-]`. A long session resumed under a
+/// Responses backend re-serializes its stored items verbatim, so one such id
+/// fails the very first request with a 400 — before any model output.
+///
+/// Only ids that are invalid on the wire are rewritten, and they are rewritten to
+/// a compliant generated one; a valid provider id is left byte-for-byte alone, so
+/// opaque encrypted content round-trips and the provider's prefix cache keeps its
+/// anchors. Ported from open-grok's `patch_codex_input_item_ids`.
+pub fn patch_input_item_ids(body: &mut serde_json::Value) {
+    const MAX_ID_LEN: usize = 64;
+    let Some(input) = body.get_mut("input").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for item in input {
+        let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let valid = !id.is_empty()
+            && id.len() <= MAX_ID_LEN
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if valid {
+            continue;
+        }
+        item["id"] = serde_json::Value::String(repair_suffix(id));
+    }
+}
+
+/// A compliant id for a repaired item, derived from the invalid one so a retry of
+/// the same request produces the same id and the repair stays idempotent.
+fn repair_suffix(id: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("cid_{hash:016x}")
+}
+
 /// Inject the `type: "reasoning_text"` discriminator the API requires.
 /// `async-openai`'s `ReasoningTextContent` has no `type` field, so it serializes to `{"text": ...}` and the API answers 400.
 /// Delete this once upstream grows the field.

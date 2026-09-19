@@ -2233,7 +2233,7 @@ impl MvpAgent {
             .unwrap_or_else(|| xai_grok_version::VERSION.to_string());
         let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
         let mut headers = indexmap::IndexMap::new();
-        headers.insert("user-agent".to_string(), format!("xai-grok-build/{version}"));
+        headers.insert("user-agent".to_string(), format!("xai-remote-code/{version}"));
         inject_proxy_headers(
             &mut headers,
             cfg.client_version.as_deref(),
@@ -2258,7 +2258,7 @@ impl MvpAgent {
         use xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig;
         AppBuilderDeployerConfig::Disabled
     }
-    /// Video tools call the xAI API directly.
+    /// Video tools call the Remote-Code API directly.
     pub(super) fn prepare_video_gen_config(
         &self,
     ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
@@ -2288,7 +2288,7 @@ impl MvpAgent {
             .unwrap_or_else(|| xai_grok_version::VERSION.to_string());
         let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
         let mut headers = indexmap::IndexMap::new();
-        headers.insert("user-agent".to_string(), format!("xai-grok-build/{version}"));
+        headers.insert("user-agent".to_string(), format!("xai-remote-code/{version}"));
         inject_proxy_headers(
             &mut headers,
             cfg.client_version.as_deref(),
@@ -4017,7 +4017,7 @@ impl MvpAgent {
         let agent_name = std::env::var("GROK_AGENT").ok();
         let resolved = match agent_name.as_deref() {
             Some("browser-use") | Some("browser_use") => AgentDefinition::browser_use(),
-            Some("grok-build-concise") | Some("grok_build_concise") => {
+            Some("remote-code-concise") | Some("grok_build_concise") => {
                 AgentDefinition::grok_build_concise()
             }
             Some(path) if std::path::Path::new(path).is_absolute() => {

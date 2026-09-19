@@ -608,7 +608,7 @@ mod tests {
     }
     #[test]
     fn parse_ask_user_question_returns_none_when_absent() {
-        let meta = serde_json::json!({ "agentProfile": "grok-build-plan" });
+        let meta = serde_json::json!({ "agentProfile": "remote-code-plan" });
         assert_eq!(parse_ask_user_question_from_meta(meta.as_object()), None);
     }
     #[test]

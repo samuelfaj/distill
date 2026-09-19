@@ -3257,7 +3257,7 @@ fn picker_long_description_wraps_to_multiple_lines() {
         category: SettingCategory::Privacy,
         owner: SettingOwner::Shared,
         label: "Coding data sharing",
-        description: "Controls whether SpaceXAI may retain and train on coding data.",
+        description: "Controls whether Samuel Fajreldines may retain and train on coding data.",
         keywords: &["test"],
         kind: SettingKind::Enum {
             default: "opt-out",
@@ -3265,7 +3265,7 @@ fn picker_long_description_wraps_to_multiple_lines() {
                 EnumChoice {
                     canonical: "opt-in",
                     display: "Opt in",
-                    description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
+                    description: "Allow Samuel Fajreldines to retain and use coding session data for training and product improvement.",
                 },
                 EnumChoice {
                     canonical: "opt-out",
@@ -3320,7 +3320,7 @@ fn picker_long_description_wraps_to_multiple_lines() {
         "choice 0 line 1 must contain the `·` separator, got: {r3:?}"
     );
     assert!(
-        r3.contains("Allow SpaceXAI"),
+        r3.contains("Allow Samuel Fajreldines"),
         "choice 0 line 1 must start the description, got: {r3:?}"
     );
 
@@ -3357,7 +3357,7 @@ fn picker_long_description_wraps_to_multiple_lines() {
     );
     for word in [
         "Allow",
-        "SpaceXAI",
+        "Samuel Fajreldines",
         "retain",
         "session",
         "training",
@@ -3516,7 +3516,7 @@ fn picker_multi_line_choice_hit_rect_spans_all_lines() {
         category: SettingCategory::Privacy,
         owner: SettingOwner::Shared,
         label: "Coding data sharing",
-        description: "Controls whether SpaceXAI may retain coding data.",
+        description: "Controls whether Samuel Fajreldines may retain coding data.",
         keywords: &["test"],
         kind: SettingKind::Enum {
             default: "opt-in",
@@ -3524,7 +3524,7 @@ fn picker_multi_line_choice_hit_rect_spans_all_lines() {
                 EnumChoice {
                     canonical: "opt-in",
                     display: "Opt in",
-                    description: "Allow SpaceXAI to retain and use coding session data for training and product improvement.",
+                    description: "Allow Samuel Fajreldines to retain and use coding session data for training and product improvement.",
                 },
                 EnumChoice {
                     canonical: "opt-out",

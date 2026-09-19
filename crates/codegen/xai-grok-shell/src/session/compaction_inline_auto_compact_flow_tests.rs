@@ -1666,11 +1666,11 @@ fn classify_suppress_reason_maps_error_text() {
         SuppressReason::CreditBlock
     );
     assert_eq!(
-        classify("API error (status 402 Payment Required): Grok Build usage balance exhausted"),
+        classify("API error (status 402 Payment Required): Remote-Code usage balance exhausted"),
         SuppressReason::CreditBlock
     );
     assert_eq!(
-        classify("Grok Build usage limit reached"),
+        classify("Remote-Code usage limit reached"),
         SuppressReason::CreditBlock
     );
     assert_eq!(

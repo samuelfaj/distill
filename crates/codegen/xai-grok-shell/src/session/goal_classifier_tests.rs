@@ -1298,7 +1298,7 @@ fn verifier_template_renders_per_agent_type_and_falls_back() {
     }
     assert_no_tool_placeholders(&cursor);
 
-    // grok-build explicit render: no leftover placeholder either.
+    // remote-code explicit render: no leftover placeholder either.
     let grok = RoleToolNames::from_summary(&summary_with(&[
         (xai_grok_tools::types::tool::ToolKind::Read, "read_file"),
         (xai_grok_tools::types::tool::ToolKind::ListDir, "list_dir"),

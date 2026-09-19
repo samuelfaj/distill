@@ -344,7 +344,7 @@ mod tests {
             .replace("{DETAILS_FILE}", &details_str)
             .replace("{SESSION_TRACES_DIR}", &traces_dir_str);
         let rendered = RoleToolNames::inherit_defaults().apply(&with_paths);
-        // Tool placeholders resolve to the default grok-build names
+        // Tool placeholders resolve to the default remote-code names
         assert!(rendered.contains("read_file"));
         assert!(rendered.contains("grep"));
         assert!(rendered.contains("list_dir"));

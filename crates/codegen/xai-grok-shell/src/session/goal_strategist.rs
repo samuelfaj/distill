@@ -1167,7 +1167,7 @@ mod tests {
 
     use crate::session::goal_role_tools::tests::assert_no_tool_placeholders;
 
-    /// Default/inherit render: the tool placeholders resolve to the literal parent (grok-build) names, with no placeholder left behind.
+    /// Default/inherit render: the tool placeholders resolve to the literal parent (remote-code) names, with no placeholder left behind.
     /// Guards against accidental wording drift in the strategist template.
     #[test]
     fn strategist_template_default_render_has_no_placeholders() {

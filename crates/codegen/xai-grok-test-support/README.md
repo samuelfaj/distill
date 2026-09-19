@@ -1,6 +1,6 @@
 # xai-grok-test-support
 
-Shared test infrastructure for the Grok Build crates. It provides a mock inference server, a mock OTLP server, a mock managed config server, SSE wire format generators, ACP stdio clients, a headless runner, and the `TestSandbox` and `TestProcess` owners for filesystem, environment, and subprocess lifecycle. It is consumed by `xai-grok-shell` integration tests, `xai-grok-pager-pty-harness` (`ContentController`), `xai-grok-sampler` tests, and `xai-grok-telemetry` tests.
+Shared test infrastructure for the Remote-Code crates. It provides a mock inference server, a mock OTLP server, a mock managed config server, SSE wire format generators, ACP stdio clients, a headless runner, and the `TestSandbox` and `TestProcess` owners for filesystem, environment, and subprocess lifecycle. It is consumed by `xai-grok-shell` integration tests, `xai-grok-pager-pty-harness` (`ContentController`), `xai-grok-sampler` tests, and `xai-grok-telemetry` tests.
 
 > **Freshness rule:** update this README in the same PR that changes `src/`. Treat a `src/` diff without a README diff as incomplete.
 

@@ -191,7 +191,7 @@ impl GrokHomeFixture {
             "created_at": "2026-07-01T00:00:00Z",
             "updated_at": "2026-07-01T00:00:00Z",
             "num_messages": 1,
-            "current_model_id": "grok-build",
+            "current_model_id": "remote-code",
         });
         if let Some(map) = extra.as_object() {
             for (k, val) in map {

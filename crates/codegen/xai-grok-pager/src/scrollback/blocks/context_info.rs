@@ -914,7 +914,7 @@ mod tests {
             auto_compact_threshold_percent: 65,
             usage_categories: vec![],
         };
-        let block = ContextInfoBlock::new(snap, "grok-build");
+        let block = ContextInfoBlock::new(snap, "remote-code");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::WIDE);
 

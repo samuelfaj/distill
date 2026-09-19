@@ -869,7 +869,7 @@ mod tests {
         let formatted = format_request_failure(
             None,
             Some(WireErrorType::Api),
-            "API error (status 404 Not Found): model does not exist\n\n  Model:     grok-foo\n  Auth:      ApiKey\n  Version:   0.1.0\n  Available: grok-build\n\n  'grok-foo' is not in your available models.\n  Switch models with /model or start a new session.",
+            "API error (status 404 Not Found): model does not exist\n\n  Model:     grok-foo\n  Auth:      ApiKey\n  Version:   0.1.0\n  Available: remote-code\n\n  'grok-foo' is not in your available models.\n  Switch models with /model or start a new session.",
         );
         assert_eq!(formatted.status, Some(404));
         assert_eq!(

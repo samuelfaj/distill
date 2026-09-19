@@ -1,6 +1,6 @@
 # Terminal Support and Troubleshooting
 
-Grok Build runs as a full-screen TUI. It relies on terminal support for color,
+Remote-Code runs as a full-screen TUI. It relies on terminal support for color,
 clipboard, keyboard input, mouse input, and full-screen display. Terminals,
 multiplexers, containers, and SSH sessions can handle these features differently.
 
@@ -265,7 +265,7 @@ Byobu on GNU screen has limited support. `/doctor` reports
 ### Arabic and Persian (RTL) text
 
 Many terminals already reorder right-to-left text themselves (VTE-based
-terminals, Terminal.app, Konsole, mlterm, and others). Grok Build therefore
+terminals, Terminal.app, Konsole, mlterm, and others). Remote-Code therefore
 **does not** reorder RTL by default.
 
 If Arabic or Persian in **scrollback** (or list content) reads backwards,

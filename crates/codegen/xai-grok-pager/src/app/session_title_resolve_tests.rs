@@ -10,7 +10,7 @@ fn summary(id: &str, title: Option<&str>, manual: bool) -> Summary {
         "created_at": "2026-07-01T00:00:00Z",
         "updated_at": "2026-07-01T00:00:00Z",
         "num_messages": 1,
-        "current_model_id": "grok-build",
+        "current_model_id": "remote-code",
         "generated_title": title,
         "title_is_manual": manual,
     }))

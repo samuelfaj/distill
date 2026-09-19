@@ -1435,7 +1435,7 @@ async fn same_session_monitor_event_is_injected() {
 
 #[tokio::test]
 async fn legacy_monitor_event_without_owner_is_injected() {
-    // Legacy / non-grok-build backends record no owner; such events must pass through unchanged for backwards compatibility
+    // Legacy / non-remote-code backends record no owner; such events must pass through unchanged for backwards compatibility
     let (config, mut cmd_rx) = make_test_config();
     let notification = make_monitor_event_notification("mon-legacy", None);
     let mut offsets = HashMap::new();

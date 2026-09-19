@@ -1776,7 +1776,7 @@ mod tests {
         let data = DockData {
             watchers: vec![row(
                 "Loop",
-                "Run one pass of the Grok Build feedback-ingest pipeline. STEP 1 — stale-process guard. Run: ps -eo pid,etime,command",
+                "Run one pass of the Remote-Code feedback-ingest pipeline. STEP 1 — stale-process guard. Run: ps -eo pid,etime,command",
                 "every 5m",
                 true,
             )],

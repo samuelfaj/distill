@@ -55,7 +55,7 @@ impl BashToolConfig {
         if let Some(t) = self.timeout_secs {
             map.insert("timeout_secs".into(), t.into());
         }
-        // Production grok-build opts up to 10h by sending it explicitly (overridable via config.toml)
+        // Production remote-code opts up to 10h by sending it explicitly (overridable via config.toml)
         let max_timeout_secs = self.max_timeout_secs.unwrap_or(PRODUCTION_MAX_TIMEOUT_SECS);
         map.insert("max_timeout_secs".into(), max_timeout_secs.into());
         if let Some(limit) = self.output_byte_limit {
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(
             max_timeout(&local.to_bash_params_json(None, None)),
             Some(PRODUCTION_MAX_TIMEOUT_SECS),
-            "production grok-build must set the 10h foreground ceiling"
+            "production remote-code must set the 10h foreground ceiling"
         );
     }
 

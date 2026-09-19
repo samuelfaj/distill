@@ -701,7 +701,7 @@ fn resolve_agent_definition_defaults_to_grok_build() {
         unsafe { std::env::set_var("GROK_AGENT", v) }
     }
 }
-/// When model_agent_type = Some("codex"), the codex agent is selected even though the default chain would return grok-build.
+/// When model_agent_type = Some("codex"), the codex agent is selected even though the default chain would return remote-code.
 #[test]
 #[serial_test::serial]
 fn resolve_agent_definition_model_agent_type_overrides_default() {
@@ -774,9 +774,9 @@ fn resolve_agent_definition_acp_profile_wins_when_model_agent_type_is_default() 
         unsafe { std::env::set_var("GROK_AGENT", v) }
     }
 }
-/// Regression: `DEFAULT_AGENT_TYPE` flipped to `grok-build-plan`.
-/// Models in the catalog that still declare `agent_type = "grok-build"` explicitly must NOT preempt an ACP profile.
-/// Any value in the `grok-build*` family is the stock harness with no strict requirement.
+/// Regression: `DEFAULT_AGENT_TYPE` flipped to `remote-code-plan`.
+/// Models in the catalog that still declare `agent_type = "remote-code"` explicitly must NOT preempt an ACP profile.
+/// Any value in the `remote-code*` family is the stock harness with no strict requirement.
 #[test]
 #[serial_test::serial]
 fn resolve_agent_definition_acp_profile_wins_for_explicit_grok_build_family() {
@@ -790,7 +790,7 @@ fn resolve_agent_definition_acp_profile_wins_for_explicit_grok_build_family() {
         "description": "Custom devbox profile",
     }))
     .expect("agent definition must parse");
-    for family_variant in ["grok-build", "grok-build-plan", "grok-build-concise"] {
+    for family_variant in ["remote-code", "remote-code-plan", "remote-code-concise"] {
         let def = MvpAgent::resolve_agent_definition(
             tmp.path(),
             None,
@@ -800,7 +800,7 @@ fn resolve_agent_definition_acp_profile_wins_for_explicit_grok_build_family() {
         );
         assert_eq!(
             def.name, "custom-devbox-profile",
-            "ACP profile must win for grok-build family variant `{family_variant}`"
+            "ACP profile must win for remote-code family variant `{family_variant}`"
         );
     }
     if let Some(v) = prev {
@@ -1043,59 +1043,59 @@ fn enqueue_replace_system_prompt_override_noop_when_absent_or_empty() {
     );
 }
 /// Regression for the web-client flow where `_meta.agentProfile` drives `set_session_model`.
-/// A zero-turn switch from `grok-build` (a client profile name) to `grok-build-plan` (the default model agent_type) must be treated as compatible.
+/// A zero-turn switch from `remote-code` (a client profile name) to `remote-code-plan` (the default model agent_type) must be treated as compatible.
 /// Compatible means the harness rebuild is skipped and the custom prompt body preserved.
 #[test]
 fn harnesses_are_compatible_for_stock_family_pairs() {
-    assert!(harnesses_are_compatible("grok-build", "grok-build-plan"));
-    assert!(harnesses_are_compatible("grok-build-plan", "grok-build"));
-    assert!(harnesses_are_compatible("grok-build", "grok-build"));
+    assert!(harnesses_are_compatible("remote-code", "remote-code-plan"));
+    assert!(harnesses_are_compatible("remote-code-plan", "remote-code"));
+    assert!(harnesses_are_compatible("remote-code", "remote-code"));
     assert!(harnesses_are_compatible(
-        "grok-build-concise",
-        "grok-build-plan"
+        "remote-code-concise",
+        "remote-code-plan"
     ));
     assert!(harnesses_are_compatible(
         "remote-sidebar",
-        "grok-build-plan"
+        "remote-code-plan"
     ));
 }
 #[test]
 fn harnesses_are_compatible_rejects_strict_mismatches() {
     assert!(harnesses_are_compatible("codex", "codex"));
-    assert!(!harnesses_are_compatible("grok-build-plan", "codex"));
+    assert!(!harnesses_are_compatible("remote-code-plan", "codex"));
 }
 #[test]
 fn explicit_agent_type_wins_over_session_default() {
     assert_eq!(
-        resolve_required_agent_type(Some("cursor"), "grok-build-plan"),
+        resolve_required_agent_type(Some("cursor"), "remote-code-plan"),
         "cursor"
     );
 }
 #[test]
 fn null_agent_type_falls_back_to_session_default_grok_build_plan() {
     assert_eq!(
-        resolve_required_agent_type(None, "grok-build-plan"),
-        "grok-build-plan"
+        resolve_required_agent_type(None, "remote-code-plan"),
+        "remote-code-plan"
     );
 }
 #[test]
 fn null_agent_type_falls_back_to_session_default_grok_build() {
     assert_eq!(
-        resolve_required_agent_type(None, "grok-build"),
-        "grok-build"
+        resolve_required_agent_type(None, "remote-code"),
+        "remote-code"
     );
 }
 #[test]
 fn null_agent_type_returns_to_session_default_after_cursor_switch() {
-    let session_default = "grok-build-plan";
+    let session_default = "remote-code-plan";
     let required_after_null = resolve_required_agent_type(None, session_default);
-    assert_eq!(required_after_null, "grok-build-plan");
+    assert_eq!(required_after_null, "remote-code-plan");
     assert_ne!(required_after_null, "cursor");
 }
 /// Compatible stock switches (no rebuild) must NOT mutate `agent_name`, preserving the session's original ACP `agentProfile`.
 #[test]
 fn agent_name_unchanged_without_harness_rebuild() {
-    let unchanged = agent_name_after_model_switch(false, "grok-build-plan", "remote-sidebar");
+    let unchanged = agent_name_after_model_switch(false, "remote-code-plan", "remote-sidebar");
     assert_eq!(
         unchanged, "remote-sidebar",
         "a compatible stock switch must preserve the original agent profile name"
@@ -1250,7 +1250,7 @@ fn make_test_handle(
         force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         permission_handle: xai_grok_workspace::permission::PermissionHandle::allow_all(),
         attribution_callback: None,
-        agent_name: "grok-build".to_string(),
+        agent_name: "remote-code".to_string(),
         managed_mcp_proxy_base_url: String::new(),
         session_default_agent_profile: None,
         allowed_subagent_types: None,
@@ -7364,7 +7364,7 @@ async fn settings_self_heal_refetches_after_token_rotation() {
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
     let _restore = RestoreOtelGate;
     let server = xai_grok_test_support::MockInferenceServer::start_with_required_auth(
-        vec![xai_grok_test_support::MockModelEntry::new("grok-build")],
+        vec![xai_grok_test_support::MockModelEntry::new("remote-code")],
         "rotated-key",
     )
     .await

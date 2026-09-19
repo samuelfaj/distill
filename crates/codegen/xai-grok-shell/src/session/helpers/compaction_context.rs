@@ -4,7 +4,7 @@
 //! This module adds system-reminder rendering that requires dependencies not available in `xai-chat-state`.
 //!
 //! The **common** active-agent section (Running Background Tasks: commands, loops, workflows, subagents) plus TODO is formatted by [`xai_grok_compaction::reminder`].
-//! That keeps grok-chat and grok-build in lockstep.
+//! That keeps grok-chat and remote-code in lockstep.
 //! Harness-only sections (edited files, AGENTS.md, skills, catalog workflows, MCP, memory) stay here.
 
 use std::path::PathBuf;

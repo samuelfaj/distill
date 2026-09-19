@@ -237,7 +237,7 @@ pub enum PersistenceMsg {
     SetRemoteAgentId(String),
     CurrentModel {
         model_id: acp::ModelId,
-        /// The active agent definition name (e.g. `"grok-build"`).
+        /// The active agent definition name (e.g. `"remote-code"`).
         /// Persisted in `summary.agent_name` so session resume doesn't depend on the mutable model catalog.
         agent_name: Option<String>,
         reasoning_effort: Option<Option<ReasoningEffort>>,

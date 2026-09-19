@@ -1,7 +1,7 @@
 # plan.md — Jev no harness, servido pelo OpenRouter
 
 Este é o planejamento executado nesta rodada: **não existe mais app**. O token saver
-inteiro vive dentro do harness (baseado no grok-build). A camada de decisão roda no
+inteiro vive dentro do harness (baseado no remote-code). A camada de decisão roda no
 **próprio modelo Jev** (`~typesafe/jev-latest`), servido pelo endpoint de decisões do
 OpenRouter, e o trabalho barato roda em `qwen/qwen3.7-flash` — também pelo OpenRouter,
 com uma chave só, no lugar do LLM local.

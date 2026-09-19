@@ -1,6 +1,6 @@
 # Your First Prompt
 
-Grok Build is a conversation with an agent that can read your code, run
+Remote-Code is a conversation with an agent that can read your code, run
 commands, and edit files — right here in your terminal.
 
 Type what you want and press `Enter`. Grok streams its work into the

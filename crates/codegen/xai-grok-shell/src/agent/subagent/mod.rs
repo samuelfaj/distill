@@ -341,7 +341,7 @@ pub(crate) struct SubagentSpawnContext {
     /// It is joined with the parent's live `AuthManager`. Reading from `ctx.sampling_config.attribution_callback` would not work.
     /// The baseline `MvpAgent.sampling_config` goes through `agent/config.rs::sampling_config_for_model`, which always sets that field to `None`.
     pub attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback>,
-    /// Parent session's agent name (e.g. "grok-build").
+    /// Parent session's agent name (e.g. "remote-code").
     pub parent_agent_name: Option<String>,
     /// `agent_type` of the parent's current model: the harness-flavor fallback when `parent_agent_name` is not a recognized harness.
     /// For example, a custom client profile keeps its own name but runs a strict-harness model.
@@ -1615,8 +1615,8 @@ pub(crate) fn subagent_harness_flavor_is_representable(agent_type: &str) -> bool
     xai_grok_subagent_resolution::subagent_harness_flavor_is_representable(agent_type)
 }
 /// Apply the harness-dependent toolset/prompt re-selection to a resolved agent definition.
-/// The harness flavor (alternate vs grok-build) normally follows the PARENT: `GrokBuildOrchestrator` parents give children the alternate harness.
-/// The orchestrator keeps children lean, and other parents inherit the file-tool override (hashline vs standard). A `/goal` role may pass `harness_agent_type` to OVERRIDE that flavor regardless of the parent. So a grok-build session can run an alternate-harness verifier and vice-versa. Extracted so both [`run_shell_child`] (real spawn) and [`describe_subagent_type`] (read-only probe) build the SAME `tool_config`.
+/// The harness flavor (alternate vs remote-code) normally follows the PARENT: `GrokBuildOrchestrator` parents give children the alternate harness.
+/// The orchestrator keeps children lean, and other parents inherit the file-tool override (hashline vs standard). A `/goal` role may pass `harness_agent_type` to OVERRIDE that flavor regardless of the parent. So a remote-code session can run an alternate-harness verifier and vice-versa. Extracted so both [`run_shell_child`] (real spawn) and [`describe_subagent_type`] (read-only probe) build the SAME `tool_config`.
 fn resolve_subagent_toolset(
     subagent_type: &str,
     harness_agent_type: Option<&str>,

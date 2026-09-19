@@ -440,7 +440,7 @@ fn finalize_image_describe_sampler_none_uses_active_session_model_not_forced_hel
     let (model, cfg) = finalize_image_describe_sampler_config(None, &active, None, Some(3));
     assert_eq!(model, "composer-session-model");
     assert_eq!(cfg.model, "composer-session-model");
-    assert_ne!(cfg.model, "grok-build");
+    assert_ne!(cfg.model, "remote-code");
 }
 #[test]
 fn finalize_image_describe_sampler_some_stamps_session_fields() {
@@ -449,13 +449,13 @@ fn finalize_image_describe_sampler_some_stamps_session_fields() {
         ..Default::default()
     };
     let aux = SamplerConfig {
-        model: "grok-build".into(),
+        model: "remote-code".into(),
         ..Default::default()
     };
     let (model, cfg) =
         finalize_image_describe_sampler_config(Some(aux), &active, Some("cli".into()), Some(7));
-    assert_eq!(model, "grok-build");
-    assert_eq!(cfg.model, "grok-build");
+    assert_eq!(model, "remote-code");
+    assert_eq!(cfg.model, "remote-code");
     assert_eq!(cfg.client_identifier.as_deref(), Some("cli"));
     assert_eq!(cfg.max_retries, Some(7));
 }
@@ -464,7 +464,7 @@ fn resolve_aux_model_honors_grok_build_override() {
     let endpoints = EndpointsConfig::default();
     let mut catalog = IndexMap::new();
     catalog.insert(
-        "grok-build".to_string(),
+        "remote-code".to_string(),
         test_model_entry(
             "v9m-rl-learnability-tp8",
             "https://vendor.example/v1",
@@ -474,7 +474,7 @@ fn resolve_aux_model_honors_grok_build_override() {
         ),
     );
     let resolved = resolve_aux_model_sampling_config(
-        "grok-build",
+        "remote-code",
         &catalog,
         &endpoints,
         None,
@@ -487,7 +487,7 @@ fn resolve_aux_model_honors_grok_build_override() {
     assert_eq!(resolved.base_url, "https://vendor.example/v1");
     assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
 }
-/// Cold cache falls back to the session model, never the xAI proxy; warm cache serves the provider token at the provider endpoint.
+/// Cold cache falls back to the session model, never the Remote-Code proxy; warm cache serves the provider token at the provider endpoint.
 #[tokio::test]
 async fn aux_model_with_auth_provider_never_reroutes() {
     let endpoints = EndpointsConfig::default();
@@ -516,7 +516,7 @@ async fn aux_model_with_auth_provider_never_reroutes() {
             None,
         )
         .is_none(),
-        "cold provider cache must not reroute the aux model through the xAI proxy"
+        "cold provider cache must not reroute the aux model through the Remote-Code proxy"
     );
     let _ = provider.ensure_fresh_token(None).await;
     let resolved = resolve_aux_model_sampling_config(
@@ -5239,15 +5239,15 @@ fn goal_model_pins_parse_from_toml() {
     let toml_str = r#"
 [goal]
 enabled = true
-planner_model = { model = "grok-build", agent_type = "grok-build-plan" }
+planner_model = { model = "remote-code", agent_type = "remote-code-plan" }
 
 [goal.strategist_model]
 model = "test-model-fast"
 agent_type = "cursor"
 
 [[goal.skeptic_models]]
-model = "grok-build"
-agent_type = "grok-build-plan"
+model = "remote-code"
+agent_type = "remote-code-plan"
 
 [[goal.skeptic_models]]
 model = "test-model-fast"
@@ -5255,7 +5255,7 @@ agent_type = "cursor"
 "#;
     let raw: toml::Value = toml::from_str(toml_str).unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).unwrap();
-    assert_eq!(cfg.goal.planner_model.as_ref().unwrap().model, "grok-build");
+    assert_eq!(cfg.goal.planner_model.as_ref().unwrap().model, "remote-code");
     assert_eq!(
         cfg.goal.strategist_model.as_ref().unwrap().agent_type,
         "cursor"
@@ -5263,7 +5263,7 @@ agent_type = "cursor"
     assert_eq!(cfg.goal.skeptic_models.len(), 2);
     assert_eq!(
         cfg.goal.skeptic_models.first().map(|m| m.model.as_str()),
-        Some("grok-build")
+        Some("remote-code")
     );
     assert_eq!(
         cfg.resolve_goal_planner_model(false).source,
@@ -5277,7 +5277,7 @@ fn goal_model_pin_malformed_is_dropped_not_fatal() {
 [goal]
 enabled = true
 classifier_max_runs = 6
-planner_model = { agent_type = "grok-build-plan" }
+planner_model = { agent_type = "remote-code-plan" }
 "#;
     let raw: toml::Value = toml::from_str(toml_str).unwrap();
     let cfg = Config::new_from_toml_cfg(&raw)
@@ -5292,8 +5292,8 @@ fn goal_skeptic_models_drop_malformed_entry_keep_rest() {
 enabled = true
 
 [[goal.skeptic_models]]
-model = "grok-build"
-agent_type = "grok-build-plan"
+model = "remote-code"
+agent_type = "remote-code-plan"
 
 [[goal.skeptic_models]]
 agent_type = "cursor"
@@ -5307,7 +5307,7 @@ agent_type = "cursor"
     assert_eq!(cfg.goal.skeptic_models.len(), 2);
     assert_eq!(
         cfg.goal.skeptic_models.first().map(|m| m.model.as_str()),
-        Some("grok-build")
+        Some("remote-code")
     );
     assert_eq!(
         cfg.goal.skeptic_models.get(1).map(|m| m.model.as_str()),
@@ -5328,12 +5328,12 @@ classifier_enabled = true
 planner_enabled = true
 verifier_count = 3
 classifier_max_runs = 6
-planner_model = { model = "grok-build", agent_type = "grok-build-plan" }
+planner_model = { model = "remote-code", agent_type = "remote-code-plan" }
 strategist_model = { model = "test-model-fast", agent_type = "cursor" }
 
 [[goal.skeptic_models]]
-model = "grok-build"
-agent_type = "grok-build-plan"
+model = "remote-code"
+agent_type = "remote-code-plan"
 
 [[goal.skeptic_models]]
 model = "test-model-fast"
@@ -5343,8 +5343,8 @@ agent_type = "cursor"
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).expect("[goal] config must parse");
     let grok_build = crate::util::config::GoalRoleModel {
-        model: "grok-build".into(),
-        agent_type: "grok-build-plan".into(),
+        model: "remote-code".into(),
+        agent_type: "remote-code-plan".into(),
     };
     let composer = crate::util::config::GoalRoleModel {
         model: "test-model-fast".into(),
@@ -7234,7 +7234,7 @@ fn version_overrides_apply_into_typed_config() {
     let mut value: toml::Value = toml::from_str(
         r#"
 [models]
-default = "grok-build"
+default = "remote-code"
 
 [[version_overrides]]
 minimum_version = "1.8.0"
@@ -7248,8 +7248,8 @@ default = "grok-4.5"
     let cfg = Config::new_from_toml_cfg(&value).unwrap();
     assert_eq!(cfg.models.default.as_deref(), Some("grok-4.5"));
 }
-/// Reproduce the enterprise managed config bug: [model.grok-build] sets context_window=500k for model="grok-4.5". [models].default="grok-4.5" still resolves to the bare prefetched entry (256k).
-/// Layer 3 only overrides key "grok-build", not key "grok-4.5". After the Layer 4 slug propagation fix, both keys should have 500k.
+/// Reproduce the enterprise managed config bug: [model.remote-code] sets context_window=500k for model="grok-4.5". [models].default="grok-4.5" still resolves to the bare prefetched entry (256k).
+/// Layer 3 only overrides key "remote-code", not key "grok-4.5". After the Layer 4 slug propagation fix, both keys should have 500k.
 #[test]
 fn slug_propagation_enterprise_managed_config_key_mismatch() {
     let default_cw = DEFAULT_CONTEXT_WINDOW;
@@ -7258,7 +7258,7 @@ fn slug_propagation_enterprise_managed_config_key_mismatch() {
             [models]
             default = "grok-4.5"
 
-            [model.grok-build]
+            [model.remote-code]
             model = "grok-4.5"
             context_window = 500000
             base_url = "https://inference.example.com/v1"
@@ -7279,8 +7279,8 @@ fn slug_propagation_enterprise_managed_config_key_mismatch() {
     prefetched.insert("grok-4.5".to_owned(), entry);
     let resolved = resolve_model_list(&cfg, Some(prefetched));
     let by_key = resolved
-        .get("grok-build")
-        .expect("grok-build key must exist");
+        .get("remote-code")
+        .expect("remote-code key must exist");
     assert_eq!(by_key.info.context_window.get(), 500_000);
     assert_eq!(by_key.info.model, "grok-4.5");
     let by_latest = resolved.get("grok-4.5").expect("grok-4.5 key must exist");
@@ -7288,7 +7288,7 @@ fn slug_propagation_enterprise_managed_config_key_mismatch() {
         by_latest.info.context_window.get(),
         500_000,
         "BUG: prefetched 'grok-4.5' should inherit 500k from \
-         sibling 'grok-build' (same model slug), not stay at {default_cw}"
+         sibling 'remote-code' (same model slug), not stay at {default_cw}"
     );
 }
 /// Slug propagation should carry over api_backend but NOT agent_type.
@@ -7297,12 +7297,12 @@ fn slug_propagation_inherits_api_backend_but_not_agent_type() {
     let default_cw = DEFAULT_CONTEXT_WINDOW;
     let raw: toml::Value = toml::from_str(
         r#"
-            [model.grok-build]
+            [model.remote-code]
             model = "grok-4.5"
             context_window = 500000
             base_url = "https://test.example.com/v1"
             api_backend = "responses"
-            agent_type = "grok-build"
+            agent_type = "remote-code"
             "#,
     )
     .unwrap();
@@ -7331,7 +7331,7 @@ fn slug_propagation_inherits_api_backend_but_not_agent_type() {
 fn slug_propagation_does_not_overwrite_explicit_context_window() {
     let raw: toml::Value = toml::from_str(
         r#"
-            [model.grok-build]
+            [model.remote-code]
             model = "grok-4.5"
             context_window = 500000
             base_url = "https://test.example.com/v1"

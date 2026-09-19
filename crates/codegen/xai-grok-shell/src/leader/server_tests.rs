@@ -5093,7 +5093,7 @@ async fn leader_client_id_dropped_when_target_disconnected() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // The agent emits replay lines still tagged for A, in both shapes
-    // The direct ACP shape carries `params._meta`; the nested ext/notification shape (the xAI envelope) carries `params.params._meta`
+    // The direct ACP shape carries `params._meta`; the nested ext/notification shape (the Remote-Code envelope) carries `params.params._meta`
     response_tx
         .send(format!(
             r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"agent_message_chunk"}},"_meta":{{"isReplay":true,"x.ai/leaderClientId":{}}}}}}}"#,

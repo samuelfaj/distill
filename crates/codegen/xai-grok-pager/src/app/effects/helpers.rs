@@ -498,16 +498,16 @@ pub(crate) struct SessionFlags {
 }
 impl SessionFlags {
     /// Resolve the agent profile name from the flags.
-    /// Returns `None` for the default `grok-build` profile (no `_meta` needed; it already includes TaskTool).
+    /// Returns `None` for the default `remote-code` profile (no `_meta` needed; it already includes TaskTool).
     /// Chat mode never injects a Build profile (remote owns agent behavior).
     pub(super) fn agent_profile(&self) -> Option<&'static str> {
         if self.chat_mode || self.defer_builtin_agent_profile {
             return None;
         }
         match (self.plan_mode, self.subagents, self.ask_user) {
-            (true, true, _) => Some("grok-build-plan"),
-            (true, false, _) => Some("grok-build-plan-no-subagents"),
-            (false, _, true) => Some("grok-build-ask-user"),
+            (true, true, _) => Some("remote-code-plan"),
+            (true, false, _) => Some("remote-code-plan-no-subagents"),
+            (false, _, true) => Some("remote-code-ask-user"),
             (false, _, false) => None,
         }
     }

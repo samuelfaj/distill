@@ -5,7 +5,7 @@ const DIR: &str = "/home/user/project";
 fn context() -> StatusLineContext {
     let mut ctx = crate::app::status_line::test_context(DIR);
     ctx.session_name = Some("status_line work".into());
-    ctx.model.display_name = Some("Grok Build".into());
+    ctx.model.display_name = Some("Remote-Code".into());
     ctx.cost.total_cost_usd = Some(0.3745);
     ctx.context_window.used_percentage = Some(42);
     ctx.context_window.auto_compact_threshold_percent = Some(80);
@@ -24,7 +24,7 @@ fn plain(ctx: &StatusLineContext, turn_elapsed: Option<Duration>) -> String {
 fn composes_every_segment_in_order() {
     assert_eq!(
         plain(&context(), Some(Duration::from_secs(83))),
-        "project │ Grok Build │ 42% ctx │ $0.37 │ 1m23s │ status_line work"
+        "project │ Remote-Code │ 42% ctx │ $0.37 │ 1m23s │ status_line work"
     );
 }
 
@@ -34,7 +34,7 @@ fn omits_segments_whose_data_is_missing_or_rounds_to_zero() {
     ctx.cost.total_cost_usd = Some(0.004);
     assert_eq!(
         plain(&ctx, Some(Duration::from_millis(400))),
-        "project │ Grok Build │ 42% ctx │ status_line work"
+        "project │ Remote-Code │ 42% ctx │ status_line work"
     );
 
     ctx.cost.total_cost_usd = Some(0.006);

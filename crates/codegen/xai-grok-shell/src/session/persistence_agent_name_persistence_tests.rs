@@ -74,8 +74,8 @@ fn summary_includes_agent_name_when_set() {
 fn summary_round_trips_various_agent_names() {
     for name in [
         "cursor",
-        "grok-build",
-        "grok-build-plan",
+        "remote-code",
+        "remote-code-plan",
         "codex",
         "browser-use",
     ] {

@@ -17,7 +17,7 @@ pub(crate) struct RoleToolNames {
     /// `{SEARCH_TOOL}`: `ToolKind::Search` (grep maps here).
     pub search: String,
     /// `{WRITE_TOOL}`: `ToolKind::Write`, falling back to `ToolKind::Edit` when `Write` is absent from the describe summary.
-    /// `ToolKind::Edit` is the default grok-build host's `search_replace` mutator.
+    /// `ToolKind::Edit` is the default remote-code host's `search_replace` mutator.
     pub write: String,
     /// `{EXECUTE_TOOL}`: `ToolKind::Execute` (terminal/bash maps here).
     pub execute: String,
@@ -102,7 +102,7 @@ impl RoleToolNames {
             get(ToolKind::Read),
             get(ToolKind::ListDir),
             get(ToolKind::Search),
-            // The default grok-build host's pre-spawn describe probe exposes only `Edit` (`search_replace`) as the file mutator
+            // The default remote-code host's pre-spawn describe probe exposes only `Edit` (`search_replace`) as the file mutator
             // The injection-only `write`/`Write` tool is absent there
             first_safe_tool_name(get(ToolKind::Write), get(ToolKind::Edit)),
             get(ToolKind::Execute),
@@ -261,7 +261,7 @@ pub(crate) mod tests {
 
     #[test]
     fn from_summary_uses_grok_build_names() {
-        // A grok-build toolset: client names match the literal defaults.
+        // A remote-code toolset: client names match the literal defaults.
         let tn = RoleToolNames::from_summary(&summary_with(&[
             (ToolKind::Read, "read_file"),
             (ToolKind::ListDir, "list_dir"),
@@ -322,7 +322,7 @@ pub(crate) mod tests {
     #[test]
     fn web_tools_fall_back_when_absent_from_the_toolset() {
         // Without WebSearch/WebFetch in a summary / parent bridge, both resolve to the stock client names
-        // So the planner prompt still names a real tool on the default grok-build host (the stock `web_search`/`web_fetch`)
+        // So the planner prompt still names a real tool on the default remote-code host (the stock `web_search`/`web_fetch`)
         let summary = RoleToolNames::from_summary(&summary_with(&[(ToolKind::Read, "rd")]));
         assert_eq!(summary.web_search, "web_search");
         assert_eq!(summary.web_fetch, "web_fetch");
@@ -333,7 +333,7 @@ pub(crate) mod tests {
 
     #[test]
     fn from_summary_write_falls_back_to_edit_on_default_grok_build_host() {
-        // Default grok-build host: the pre-spawn describe probe exposes only `Edit` (`search_replace`); `Write` is injection-only and absent
+        // Default remote-code host: the pre-spawn describe probe exposes only `Edit` (`search_replace`); `Write` is injection-only and absent
         // The planner gate accepts this toolset, so `{WRITE_TOOL}` must name the real mutator (`search_replace`), not the literal `write` default
         let tn = RoleToolNames::from_summary(&summary_with(&[
             (ToolKind::Read, "read_file"),
@@ -355,7 +355,7 @@ pub(crate) mod tests {
 
     #[test]
     fn from_parent_write_falls_back_to_edit_when_bridge_has_no_write() {
-        // Default grok-build parent bridge: no `Write`, only `Edit` (`search_replace`)
+        // Default remote-code parent bridge: no `Write`, only `Edit` (`search_replace`)
         let tn = RoleToolNames::from_parent(
             Some("read_file".into()),
             Some("list_dir".into()),
@@ -440,7 +440,7 @@ pub(crate) mod tests {
     #[test]
     fn parent_and_summary_renders_agree_on_default_grok_build_mutator() {
         // The explicit-pair `primary` render comes from `from_summary`; the inherit/fail-open `fallback` render comes from `from_parent`
-        // Both must name the SAME mutator on the default grok-build host (Edit-only toolset)
+        // Both must name the SAME mutator on the default remote-code host (Edit-only toolset)
         // So a fail-open retry can never disagree with the first attempt's `{WRITE_TOOL}`
         let primary = RoleToolNames::from_summary(&summary_with(&[
             (ToolKind::Read, "read_file"),

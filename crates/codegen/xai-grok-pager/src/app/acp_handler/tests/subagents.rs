@@ -500,7 +500,7 @@
             ));
         }
 
-        // A persisted active goal update can arrive ahead of a lower-ID spawn; it advances the xAI highwater without adding a scrollback block
+        // A persisted active goal update can arrive ahead of a lower-ID spawn; it advances the Remote-Code highwater without adding a scrollback block
         assert!(handle(
             notification(
                 serde_json::json!({
@@ -2190,7 +2190,7 @@
 
     #[test]
     fn a_notification_reaches_its_target_agent_even_when_another_is_active() {
-        // AutoCompactCompleted on the xAI ext path resets the context bar numerator via refresh_context_used
+        // AutoCompactCompleted on the Remote-Code ext path resets the context bar numerator via refresh_context_used
         // That side effect must run on the matched agent regardless of which view is currently active
         let mut app = make_app_with_agent("sess-A");
         insert_agent(&mut app, AgentId(1), Some("sess-B"));

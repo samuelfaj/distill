@@ -56,7 +56,7 @@ fn test_system_prompt_write_and_read() {
 
 #[test]
 fn test_system_prompt_is_plain_text_not_json() {
-    let prompt = "You are a Grok Build subagent.";
+    let prompt = "You are a Remote-Code subagent.";
     // system_prompt.txt is raw text, NOT JSON-encoded.
     assert!(!prompt.starts_with('"'), "must not be JSON-quoted");
     assert!(!prompt.starts_with('{'), "must not be JSON object");
@@ -102,7 +102,7 @@ fn test_system_prompt_matches_chat_history_system_message() {
     let session_dir = tmp.path().join("session-consistency");
     std::fs::create_dir_all(&session_dir).unwrap();
 
-    let system_prompt = "You are a Grok Build subagent.\n\n<tool_calling>\n...";
+    let system_prompt = "You are a Remote-Code subagent.\n\n<tool_calling>\n...";
 
     // Write system_prompt.txt (same string used for chat_history).
     std::fs::write(session_dir.join(SYSTEM_PROMPT_FILENAME), system_prompt).unwrap();
@@ -159,7 +159,7 @@ fn test_load_system_prompt_returns_content_when_present() {
     let session_dir = tmp.path().join("session-load-test");
     std::fs::create_dir_all(&session_dir).unwrap();
 
-    let prompt = "You are a Grok Build subagent.";
+    let prompt = "You are a Remote-Code subagent.";
     std::fs::write(session_dir.join(SYSTEM_PROMPT_FILENAME), prompt).unwrap();
 
     let loaded = load_system_prompt_from_dir(&session_dir);

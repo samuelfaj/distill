@@ -1617,7 +1617,7 @@ fn context_info_response() -> xai_grok_shell::session::SessionInfoResponse {
         cwd: "/tmp/test".to_string(),
         data: SessionInfoData {
             agent_name: None,
-            model: Some("grok-build".to_string()),
+            model: Some("remote-code".to_string()),
             model_display_name: None,
             resolved_model_id: None,
             model_fingerprint: None,

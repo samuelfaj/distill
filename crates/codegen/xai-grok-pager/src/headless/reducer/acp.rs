@@ -27,7 +27,7 @@ struct AcpUsageLine {
     signature: Option<String>,
 }
 
-/// `streaming-json` line shapes: an xAI `type`-tagged envelope derived from ACP updates.
+/// `streaming-json` line shapes: a Remote-Code `type`-tagged envelope derived from ACP updates.
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AcpLine {

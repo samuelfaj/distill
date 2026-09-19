@@ -879,7 +879,7 @@ async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
 fn model_not_found_error() -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
             kind: xai_grok_sampler::SamplingErrorKind::Api,
-            message: "API error (status 404 Not Found): The model grok-build does not exist or your team does not have access".into(),
+            message: "API error (status 404 Not Found): The model remote-code does not exist or your team does not have access".into(),
             status_code: Some(404),
             is_retryable: false,
             retry_after_secs: None,

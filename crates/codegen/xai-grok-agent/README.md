@@ -274,7 +274,7 @@ user-level definition with the same name.
 
 | Name | Prompt Mode | Description |
 |---|---|---|
-| `grok-build` | extend | Default agent for software engineering tasks |
+| `remote-code` | extend | Default agent for software engineering tasks |
 | `browser-use` | full | Web browsing and interaction agent |
 
 ## Error Handling

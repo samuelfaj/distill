@@ -25,7 +25,7 @@ fn model_with_support(id: &str, supports: bool) -> (acp::ModelId, acp::ModelInfo
 }
 
 fn models_with_current(supports: bool) -> ModelState {
-    let (id, info) = model_with_support("grok-build", supports);
+    let (id, info) = model_with_support("remote-code", supports);
     let mut models = ModelState::default();
     models.available.insert(id.clone(), info);
     models.current = Some(id);

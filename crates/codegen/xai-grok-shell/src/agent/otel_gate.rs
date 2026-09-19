@@ -13,7 +13,7 @@ pub(crate) fn suppress() {
     xai_grok_telemetry::external::set_settings_gate_max_wait(SETTINGS_GATE_MAX_WAIT);
     xai_grok_telemetry::external::suppress_external_otel_until_settings();
 }
-/// Whether an xAI fleet policy can govern this process.
+/// Whether a Remote-Code fleet policy can govern this process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PolicyChannel {
     Applies,

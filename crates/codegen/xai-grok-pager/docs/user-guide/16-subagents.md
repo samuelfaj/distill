@@ -17,7 +17,7 @@ Agents and personas both customize behavior, but they operate at different level
 | **How you set them** | At startup, or with agent definitions (`.md` files in `.grok/agents/` or `~/.grok/agents/`) | In `config.toml` (`[subagents.personas]`) or `.toml` files under `.grok/personas/`; applied during subagent resolution |
 | **What they control** | Model, tool availability, prompt body, skills | Tone, output format, task focus, and input/output contracts |
 | **Who edits them** | You -- create, delete, or toggle them in the agents modal or by editing files | You -- define custom personas in config or files; bundled personas are read-only |
-| **Examples** | `grok-build`, `explore`, `plan` | `researcher`, `concise` |
+| **Examples** | `remote-code`, `explore`, `plan` | `researcher`, `concise` |
 
 An agent defines the session itself. A persona shapes how a subagent behaves within a session. A subagent always runs as an agent type (for example, `general-purpose`), and resolution can layer a persona on top.
 
@@ -79,7 +79,7 @@ instructions = "You are a thorough researcher. Always cite specific file paths."
 description = "Deep investigator."
 ```
 
-Grok Build discovers file-based personas from these locations, in priority order:
+Remote-Code discovers file-based personas from these locations, in priority order:
 
 - `.grok/personas/*.toml` (project)
 - `~/.grok/personas/*.toml` (user)
@@ -89,7 +89,7 @@ Each file defines one persona, and the file name (without the extension) becomes
 
 Manage personas in the Personas tab of the agents modal (`/personas`). Bundled personas are read-only; personas you define are editable.
 
-> **Note:** Grok Build applies personas through subagent resolution and roles, not through a `spawn_subagent` parameter. The main agent does not pass a persona name when it spawns a child.
+> **Note:** Remote-Code applies personas through subagent resolution and roles, not through a `spawn_subagent` parameter. The main agent does not pass a persona name when it spawns a child.
 
 ### Persona Fields
 
@@ -125,7 +125,7 @@ Each field has a `name`, an `io_type` (defaults to `file`), a `required` flag, a
 
 ### Persona Resolution
 
-When a persona applies, Grok Build resolves the effective model and reasoning effort in this order, highest priority first:
+When a persona applies, Remote-Code resolves the effective model and reasoning effort in this order, highest priority first:
 
 1. Explicit spawn-time override
 2. Role default
@@ -255,7 +255,7 @@ For tasks that modify files, run a subagent in an isolated git worktree with `is
 - Its changes stay isolated from the parent until you merge them.
 - The subagent's result includes the worktree path.
 
-Grok Build manages worktrees through the `x.ai/git/worktree/*` extension methods, including an apply operation that merges changes back into the main working directory.
+Remote-Code manages worktrees through the `x.ai/git/worktree/*` extension methods, including an apply operation that merges changes back into the main working directory.
 
 ---
 
@@ -296,13 +296,13 @@ instructions = "Be concise. No filler words."
 # instructions_file = ".grok/personas/concise.md"  # or load from a file
 ```
 
-Grok Build also discovers roles from `.grok/roles/*.toml` and personas from `.grok/personas/*.toml`. Inline `config.toml` definitions take precedence over files.
+Remote-Code also discovers roles from `.grok/roles/*.toml` and personas from `.grok/personas/*.toml`. Inline `config.toml` definitions take precedence over files.
 
 ---
 
 ## The Tasks Pane (TUI)
 
-Grok Build shows running and finished work in side panes on the agent screen:
+Remote-Code shows running and finished work in side panes on the agent screen:
 
 - Press `Ctrl+G` to toggle the tasks pane, which lists active and completed subagents and background commands with their status.
 - Press `Ctrl+T` to toggle the separate todo pane.

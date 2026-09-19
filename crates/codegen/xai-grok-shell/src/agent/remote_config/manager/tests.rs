@@ -2279,8 +2279,8 @@ fn make_entry_config_with_id(
 #[test]
 fn build_prefetched_map_distinct_ids_same_slug() {
     let entries = vec![
-        make_entry_config_with_id(Some("auto"), "grok-build", Some("Auto")),
-        make_entry_config_with_id(Some("grok-build"), "grok-build", Some("Grok Build")),
+        make_entry_config_with_id(Some("auto"), "remote-code", Some("Auto")),
+        make_entry_config_with_id(Some("remote-code"), "remote-code", Some("Remote-Code")),
         make_entry_config_with_id(
             Some("experimental-fast"),
             "experimental-fast",
@@ -2291,19 +2291,19 @@ fn build_prefetched_map_distinct_ids_same_slug() {
 
     assert_eq!(map.len(), 3, "all three entries should survive");
     assert!(map.contains_key("auto"));
-    assert!(map.contains_key("grok-build"));
+    assert!(map.contains_key("remote-code"));
     assert!(map.contains_key("experimental-fast"));
     let Some(auto) = map.get("auto") else {
         panic!("expected auto: {map:?}");
     };
     assert_eq!(
-        auto.info.model, "grok-build",
-        "auto entry should still route to grok-build"
+        auto.info.model, "remote-code",
+        "auto entry should still route to remote-code"
     );
-    let Some(build) = map.get("grok-build") else {
-        panic!("expected grok-build: {map:?}");
+    let Some(build) = map.get("remote-code") else {
+        panic!("expected remote-code: {map:?}");
     };
-    assert_eq!(build.info.model, "grok-build");
+    assert_eq!(build.info.model, "remote-code");
 }
 
 #[test]
@@ -2322,14 +2322,14 @@ fn build_prefetched_map_no_id_falls_back_to_slug() {
 #[test]
 fn build_prefetched_map_duplicate_id_overwrites() {
     let entries = vec![
-        make_entry_config_with_id(Some("grok-build"), "grok-build", Some("First")),
-        make_entry_config_with_id(Some("grok-build"), "grok-build", Some("Second")),
+        make_entry_config_with_id(Some("remote-code"), "remote-code", Some("First")),
+        make_entry_config_with_id(Some("remote-code"), "remote-code", Some("Second")),
     ];
     let map = build_prefetched_map(entries, None);
 
     assert_eq!(map.len(), 1, "duplicate id: second overwrites first");
-    let Some(build) = map.get("grok-build") else {
-        panic!("expected grok-build: {map:?}");
+    let Some(build) = map.get("remote-code") else {
+        panic!("expected remote-code: {map:?}");
     };
     assert_eq!(build.info.name.as_deref(), Some("Second"));
 }
@@ -2338,30 +2338,30 @@ fn build_prefetched_map_duplicate_id_overwrites() {
 fn resolve_default_model_prefers_id_over_model_slug() {
     let mut catalog: IndexMap<String, ModelEntry> = IndexMap::new();
     catalog.insert(
-        "auto-grok-build".to_string(),
-        make_model_entry("grok-build"),
+        "auto-remote-code".to_string(),
+        make_model_entry("remote-code"),
     );
-    catalog.insert("grok-build".to_string(), make_model_entry("grok-build"));
+    catalog.insert("remote-code".to_string(), make_model_entry("remote-code"));
 
     let mut cfg = config::Config::default();
-    cfg.models.default = Some("grok-build".to_string());
+    cfg.models.default = Some("remote-code".to_string());
 
     let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
-    assert_eq!(key, "grok-build", "must match id, not first slug hit");
+    assert_eq!(key, "remote-code", "must match id, not first slug hit");
 }
 
 #[test]
 fn resolve_catalog_key_maps_routing_slug_to_config_key() {
     let mut models = IndexMap::new();
     models.insert(
-        "enterprise-grok-build".to_string(),
+        "enterprise-remote-code".to_string(),
         make_model_entry("grok-4.5"),
     );
     models.insert("grok-4.3".to_string(), make_model_entry("grok-4.3"));
 
     let persisted = acp::ModelId::new("grok-4.5");
     let key = resolve_catalog_key(&models, &persisted).expect("slug must resolve");
-    assert_eq!(key.0.as_ref(), "enterprise-grok-build");
+    assert_eq!(key.0.as_ref(), "enterprise-remote-code");
 }
 
 #[test]
@@ -2378,21 +2378,21 @@ fn resolve_catalog_key_prefers_exact_key_match() {
 fn resolve_catalog_key_last_slug_match_wins() {
     let mut models = IndexMap::new();
     models.insert(
-        "default-grok-build".to_string(),
+        "default-remote-code".to_string(),
         make_model_entry("grok-4.5"),
     );
-    models.insert("user-grok-build".to_string(), make_model_entry("grok-4.5"));
+    models.insert("user-remote-code".to_string(), make_model_entry("grok-4.5"));
 
     let persisted = acp::ModelId::new("grok-4.5");
     let key = resolve_catalog_key(&models, &persisted).expect("slug must resolve");
-    assert_eq!(key.0.as_ref(), "user-grok-build");
+    assert_eq!(key.0.as_ref(), "user-remote-code");
 }
 
 #[test]
 fn selectable_catalog_key_for_persisted_none_when_resolved_not_available() {
     let mut models = IndexMap::new();
     models.insert(
-        "enterprise-grok-build".to_string(),
+        "enterprise-remote-code".to_string(),
         make_model_entry("grok-4.5"),
     );
 
@@ -2404,57 +2404,57 @@ fn selectable_catalog_key_for_persisted_none_when_resolved_not_available() {
 #[test]
 fn selectable_prefers_available_identity_over_non_selectable_exact_key() {
     let mut models = IndexMap::new();
-    models.insert("grok-build".to_string(), make_model_entry("grok-build"));
+    models.insert("remote-code".to_string(), make_model_entry("remote-code"));
     models.insert(
-        "enterprise-grok-build".to_string(),
-        make_model_entry("grok-build"),
+        "enterprise-remote-code".to_string(),
+        make_model_entry("remote-code"),
     );
     models.insert("grok-4.3".to_string(), make_model_entry("grok-4.3"));
 
-    let available = test_available_keys(&["enterprise-grok-build", "grok-4.3"]);
+    let available = test_available_keys(&["enterprise-remote-code", "grok-4.3"]);
 
-    let persisted = acp::ModelId::new("grok-build");
+    let persisted = acp::ModelId::new("remote-code");
     assert_eq!(
         resolve_catalog_key(&models, &persisted)
             .expect("exact key exists")
             .0
             .as_ref(),
-        "grok-build"
+        "remote-code"
     );
     let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
         .expect("must resolve to selectable section");
-    assert_eq!(key.0.as_ref(), "enterprise-grok-build");
+    assert_eq!(key.0.as_ref(), "enterprise-remote-code");
 }
 
 #[test]
 fn selectable_matches_routing_slug_when_no_exact_key() {
     let mut models = IndexMap::new();
     models.insert(
-        "enterprise-grok-build".to_string(),
-        make_model_entry("grok-build"),
+        "enterprise-remote-code".to_string(),
+        make_model_entry("remote-code"),
     );
     models.insert("grok-4.3".to_string(), make_model_entry("grok-4.3"));
 
-    let available = test_available_keys(&["enterprise-grok-build", "grok-4.3"]);
+    let available = test_available_keys(&["enterprise-remote-code", "grok-4.3"]);
 
-    let persisted = acp::ModelId::new("grok-build");
+    let persisted = acp::ModelId::new("remote-code");
     let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
         .expect("slug must resolve to selectable key");
-    assert_eq!(key.0.as_ref(), "enterprise-grok-build");
+    assert_eq!(key.0.as_ref(), "enterprise-remote-code");
 }
 
 #[test]
 fn selectable_prefers_exact_key_over_later_slug_match() {
     let mut models = IndexMap::new();
-    models.insert("grok-build".to_string(), make_model_entry("grok-4.5"));
-    models.insert("other".to_string(), make_model_entry("grok-build"));
+    models.insert("remote-code".to_string(), make_model_entry("grok-4.5"));
+    models.insert("other".to_string(), make_model_entry("remote-code"));
 
-    let available = test_available_keys(&["grok-build", "other"]);
+    let available = test_available_keys(&["remote-code", "other"]);
 
-    let persisted = acp::ModelId::new("grok-build");
+    let persisted = acp::ModelId::new("remote-code");
     let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
         .expect("exact selectable key must win");
-    assert_eq!(key.0.as_ref(), "grok-build");
+    assert_eq!(key.0.as_ref(), "remote-code");
 }
 
 fn test_available_keys(keys: &[&str]) -> IndexMap<acp::ModelId, acp::ModelInfo> {

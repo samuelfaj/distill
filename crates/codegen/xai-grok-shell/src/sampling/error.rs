@@ -30,7 +30,7 @@ pub const FREE_USAGE_EXHAUSTED_ERROR_CODE: &str = "subscription:free-usage-exhau
 
 /// User-facing free-usage exhaustion copy (paywall).
 /// Promises no reset duration; the backend config drives the quota window.
-pub const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build";
+pub const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your free Remote-Code usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=remote-code";
 
 /// Whether flattened server detail is free-usage-quota exhaustion (paywall), not transient throttling.
 /// Sniffs the well-known code embedded by `parse_error_bytes`.
@@ -818,7 +818,7 @@ mod tests {
         with_api_key_env(Some("xai-test"), || {
             let err = SamplingError::Api {
                 status: StatusCode::FORBIDDEN,
-                message: "The model 'grok-build' requires a Grok subscription.".into(),
+                message: "The model 'remote-code' requires a Grok subscription.".into(),
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: None,
@@ -844,7 +844,7 @@ mod tests {
         with_api_key_env(None, || {
             let err = SamplingError::Api {
                 status: StatusCode::FORBIDDEN,
-                message: "The model 'grok-build' requires a Grok subscription.".into(),
+                message: "The model 'remote-code' requires a Grok subscription.".into(),
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: None,

@@ -22,7 +22,7 @@ pub use xai_grok_sampler::{
     SamplingErrorKind, SamplingEvent,
 };
 
-const CONVERSATION_GROUP_NAMESPACE: &str = "xai:grok-build:conversation-group:";
+const CONVERSATION_GROUP_NAMESPACE: &str = "xai:remote-code:conversation-group:";
 
 /// Derive the stable group shared by a root session and every descendant session.
 pub(crate) fn derive_conversation_group_id(root_session_id: &str) -> ConversationGroupId {

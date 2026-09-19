@@ -281,7 +281,7 @@
         assert_eq!(
             agent.last_applied_xai_event_seq,
             Some(5),
-            "the xAI highwater reverts with the transcript — left at 30 it would \
+            "the Remote-Code highwater reverts with the transcript — left at 30 it would \
              dedup-drop the next reload's re-delivery of the discarded blocks"
         );
         let next = agent.scrollback.push_block(RenderBlock::system("after"));
@@ -769,7 +769,7 @@
         assert_eq!(
             app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq,
             Some(21),
-            "…and the ACP apply must not clobber the xAI highwater either"
+            "…and the ACP apply must not clobber the Remote-Code highwater either"
         );
     }
 
@@ -947,7 +947,7 @@
         assert!(agent.finish_session_reload(1, true));
         assert!(
             !scrollback_has_system_text(agent, "pre-outage content"),
-            "an xAI replay line counts as replay for the swap decision"
+            "a Remote-Code replay line counts as replay for the swap decision"
         );
         assert_eq!(
             agent.scrollback.len(),

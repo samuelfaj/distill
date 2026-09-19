@@ -54,7 +54,12 @@ mod tests {
     };
 
     fn run(args: &str) -> CommandResult {
-        let models = ModelState::default();
+        let mut models = ModelState::default();
+        let id = agent_client_protocol::ModelId::new("codex-luna");
+        models.available.insert(
+            id.clone(),
+            agent_client_protocol::ModelInfo::new(id, "Luna"),
+        );
         let mut ctx = CommandExecCtx {
             models: &models,
             session_id: None,

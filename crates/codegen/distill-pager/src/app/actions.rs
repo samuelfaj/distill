@@ -587,11 +587,11 @@ pub enum Action {
     ClearForkSecondaryModel,
     /// Commit which `[model.<id>]` entry serves the utility model, persisted to
     /// `[jev.local].model`. Empty string clears the pick.
-    /// Next-session: the jev lane resolves its local config once per process.
+    /// Published after the config write succeeds.
     SetCheapModel(String, Option<ReasoningEffort>),
     /// Commit the session model's lighter sibling, persisted to
     /// `[jev.tiers].light`. Empty string removes the tier.
-    /// Next-session: the tier block is resolved once per process.
+    /// Published after the config write succeeds.
     SetTierLight(String, Option<ReasoningEffort>),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required: tips are resolved once at startup.
@@ -1729,13 +1729,13 @@ pub enum Effect {
         session_id: Option<acp::SessionId>,
         persist: PermissionModePersist,
     },
-    /// Persist a typed setting to `~/.grok/config.toml`. On failure,
-    /// rolls the in-memory cache back to `rollback_value`.
+    /// Persist an auxiliary model and effort together, then publish the selection.
     PersistTierModel {
         worker: bool,
         model: String,
         effort: Option<ReasoningEffort>,
     },
+    /// Persist a typed setting; roll back the cache if the write fails.
     PersistSetting {
         key: crate::settings::SettingKey,
         value: crate::settings::SettingValue,

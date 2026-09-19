@@ -976,6 +976,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 let mut effects = set_default_model(app, model_id.clone());
                 app.models.set_current(model_id.clone(), effort);
                 app.models.effort_auto = effort.is_none();
+                app.cli_effort_token = effort.map(|level| level.to_string());
                 effects.push(Effect::PersistPreferredModel {
                     model_id,
                     reasoning_effort: effort,

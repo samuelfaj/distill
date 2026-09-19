@@ -456,15 +456,17 @@ pub async fn set_jev_tier_model(
     update_config(|cfg| {
         if worker {
             cfg.jev.tiers = Some(super::mcp::JevTiersPersistConfig {
-                light: Some(model),
-                light_effort: Some(effort),
+                light: Some(model.clone()),
+                light_effort: Some(effort.clone()),
             });
         } else {
             cfg.jev.local = Some(super::mcp::JevLocalPersistConfig {
-                model: Some(model),
-                effort: Some(effort),
+                model: Some(model.clone()),
+                effort: Some(effort.clone()),
             });
         }
     })
-    .await
+    .await?;
+    crate::jev::update_tier_model_cache(worker, model, effort);
+    Ok(())
 }

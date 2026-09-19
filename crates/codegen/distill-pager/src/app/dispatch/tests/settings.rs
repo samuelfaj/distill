@@ -1400,10 +1400,23 @@ fn set_default_model_idempotent_when_already_current() {
         .session
         .models
         .set_current(id.clone(), None);
+    app.agents
+        .get_mut(&agent_id)
+        .unwrap()
+        .session
+        .models
+        .effort_auto = false;
+    let effects = dispatch(Action::SetDefaultModel(id.clone()), &mut app);
+    assert!(expect_agent(&app, agent_id).session.models.effort_auto);
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::SwitchModel { effort: None, .. }))
+    );
     let effects = dispatch(Action::SetDefaultModel(id), &mut app);
     assert!(
         effects.is_empty(),
-        "re-dispatching same model must be idempotent (no effects), got {effects:?}",
+        "selecting the same model in auto is idempotent"
     );
 }
 /// `clamp_max_thoughts_width` clamps out-of-range values to the registered `[40, 500]` bounds.

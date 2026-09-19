@@ -581,20 +581,40 @@ impl distill_workspace::jev::permission::JevAsker for ObservedAsker {
     }
 }
 
-/// The local-model section, resolved once per process: a model call must never
-/// re-read the disk, and the section does not change mid-run.
-pub fn local_config_cached() -> &'static JevLocalConfig {
-    static LOCAL: OnceLock<JevLocalConfig> = OnceLock::new();
-    LOCAL.get_or_init(|| resolve_config_from_disk().local)
+static LOCAL_MODEL_CONFIG: OnceLock<parking_lot::RwLock<JevLocalConfig>> = OnceLock::new();
+static MODEL_TIERS: OnceLock<parking_lot::RwLock<JevTiersConfig>> = OnceLock::new();
+
+/// Snapshot the configured utility model without reading disk on every call.
+pub fn local_config_cached() -> JevLocalConfig {
+    LOCAL_MODEL_CONFIG
+        .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().local))
+        .read()
+        .clone()
 }
 
-/// The tier block, resolved once per process like the rest of `[jev]`.
-///
-/// The light sibling's *entry* is per-session state (it is resolved against the
-/// live catalog); only the id the owner configured is cached here.
-pub fn tiers_cached() -> &'static JevTiersConfig {
-    static TIERS: OnceLock<JevTiersConfig> = OnceLock::new();
-    TIERS.get_or_init(|| resolve_config_from_disk().tiers)
+/// Snapshot the worker selection used by both the TUI and the next model call.
+pub fn tiers_cached() -> JevTiersConfig {
+    MODEL_TIERS
+        .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().tiers))
+        .read()
+        .clone()
+}
+
+/// Publish a selection only after its atomic config write succeeds.
+pub(crate) fn update_tier_model_cache(worker: bool, model: String, effort: String) {
+    if worker {
+        let mut config = MODEL_TIERS
+            .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().tiers))
+            .write();
+        config.light = Some(model);
+        config.light_effort = Some(effort);
+    } else {
+        let mut config = LOCAL_MODEL_CONFIG
+            .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().local))
+            .write();
+        config.model = Some(model);
+        config.effort = Some(effort);
+    }
 }
 
 /// What the `[jev.tiers]` block resolves to, for the surfaces that report it.
@@ -645,6 +665,25 @@ pub fn same_family(
         ));
     }
     Ok(())
+}
+
+/// Catalog keys that can share the reasoning model's conversation.
+pub fn compatible_worker_models(reasoning: &str) -> Vec<String> {
+    let Ok(raw) = crate::config::load_effective_config() else {
+        return Vec::new();
+    };
+    let Ok(cfg) = crate::agent::config::Config::new_from_toml_cfg(&raw) else {
+        return Vec::new();
+    };
+    let models = crate::agent::config::resolve_model_list(&cfg, None);
+    let Some(hard) = crate::agent::config::find_model_by_id(&models, reasoning) else {
+        return Vec::new();
+    };
+    models
+        .iter()
+        .filter(|(_, entry)| same_family(&hard.info, &entry.info).is_ok())
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 /// Validate a worker candidate against the currently selected reasoning model.

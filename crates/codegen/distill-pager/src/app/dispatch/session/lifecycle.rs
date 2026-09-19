@@ -130,12 +130,8 @@ pub(crate) fn apply_deferred_switch_outcome(
     // An explicit level always wins over auto mode, wherever it comes from: a
     // deferred switch carries `--effort`, which the dispatch router's own
     // `SwitchModel` arm never sees, so the mode is cleared here too.
-    if outcome
-        .switch
-        .as_ref()
-        .is_some_and(|switch| switch.effort.is_some())
-    {
-        agent.session.models.effort_auto = false;
+    if let Some(switch) = outcome.switch.as_ref() {
+        agent.session.models.effort_auto = switch.effort.is_none();
     }
     outcome.switch
 }

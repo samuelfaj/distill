@@ -411,7 +411,7 @@ mod tests {
             screen_mode: crate::app::ScreenMode::Fullscreen,
             current_title: None,
         };
-        assert!(cmd.suggest_args(&ctx, "").is_none());
+        assert_eq!(cmd.suggest_args(&ctx, "").unwrap()[0].insert_text, "auto");
     }
 
     #[test]
@@ -447,7 +447,7 @@ mod tests {
         assert!(items[1].match_text.starts_with("a "));
         assert!(items[4].match_text.starts_with("d "));
         assert!(
-            items[0].match_text.starts_with("a "),
+            items[0].match_text.starts_with("0 "),
             "the auto row leads the tiebreak too"
         );
     }

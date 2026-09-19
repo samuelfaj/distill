@@ -1655,6 +1655,10 @@ pub(in crate::app::dispatch) fn set_default_model(
         return vec![];
     }
 
+    if active_agent.is_none() {
+        app.cli_model_override = Some(new_id.clone());
+        app.cli_effort_token = None;
+    }
     let was_auto = active_agent
         .and_then(|id| app.agents.get(&id))
         .map_or(app.models.effort_auto, |agent| {
@@ -1840,7 +1844,12 @@ pub(in crate::app::dispatch) fn set_tier_light(
         prev = %prev,
         "setting changed",
     );
-    app.show_toast(&format!("\u{2713} Worker model: {shown} (next session)"));
+    app.show_toast(&format!(
+        "\u{2713} Worker model: {shown} ({})",
+        effort
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "auto".into())
+    ));
     vec![Effect::PersistTierModel {
         worker: true,
         model: id,
@@ -1959,8 +1968,7 @@ pub(in crate::app::dispatch) fn clear_fork_secondary_model(app: &mut AppView) ->
 /// Outer dispatcher for `Action::SetCheapModel`: which entry serves the utility model.
 /// The entry is validated at the slash boundary against the configured OpenRouter
 /// entries, so this only writes and reports.
-/// Empty string clears the pick. Next session, not this one: the jev lane resolves
-/// `[jev.local]` once per process.
+/// Empty string clears the pick. The saved selection is published to the live cache.
 pub(in crate::app::dispatch) fn set_cheap_model(
     app: &mut AppView,
     entry: String,
@@ -1992,7 +2000,12 @@ pub(in crate::app::dispatch) fn set_cheap_model(
         prev = %prev,
         "setting changed",
     );
-    app.show_toast(&format!("\u{2713} Utility model: {shown} (next session)"));
+    app.show_toast(&format!(
+        "\u{2713} Utility model: {shown} ({})",
+        effort
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "auto".into())
+    ));
     vec![Effect::PersistTierModel {
         worker: false,
         model: entry,

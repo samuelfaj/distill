@@ -108,7 +108,12 @@ impl CheapLane {
                 .as_deref()
                 .is_some_and(|value| value != "auto")
             {
-                distill_workspace::jev::provider::ReasoningShape::OpenRouter
+                match cfg.reasoning_shape {
+                    crate::sampling::types::ReasoningShape::MaxTokens => {
+                        distill_workspace::jev::provider::ReasoningShape::MaxTokens
+                    }
+                    _ => distill_workspace::jev::provider::ReasoningShape::Effort,
+                }
             } else {
                 distill_workspace::jev::provider::ReasoningShape::Disabled
             },

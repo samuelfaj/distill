@@ -169,36 +169,35 @@ pub(super) fn build_effort_items(models: &ModelState, model_id: &acp::ModelId) -
         is_current_model && !models.effort_auto,
         |option| format!("{model_name} {}", option.id),
     ));
+    for item in &mut items {
+        let token = item
+            .insert_text
+            .rsplit_once(' ')
+            .map(|(_, token)| token)
+            .unwrap_or("auto");
+        item.match_text
+            .push_str(&format!(" {} {token}", model_id.0));
+    }
     items
 }
 
 /// Auxiliary tiers reuse the model/effort picker, restricted to their transport.
 pub(super) fn tier_suggestions(models: &ModelState, query: &str, worker: bool) -> Vec<ArgItem> {
     let mut candidates = models.clone();
-    let catalog = distill_shell::config::load_effective_config()
-        .ok()
-        .and_then(|raw| distill_shell::agent::config::Config::new_from_toml_cfg(&raw).ok())
-        .map(|cfg| distill_shell::agent::config::resolve_model_list(&cfg, None));
-    candidates.available.retain(|id, _| {
-        let Some(catalog) = &catalog else {
-            return false;
-        };
-        let Some(candidate) =
-            distill_shell::agent::config::find_model_by_id(catalog, id.0.as_ref())
-        else {
-            return false;
-        };
-        if worker {
-            models
-                .current_model_id_str()
-                .and_then(|id| distill_shell::agent::config::find_model_by_id(catalog, id))
-                .is_some_and(|reasoning| {
-                    distill_shell::jev::same_family(&reasoning.info, &candidate.info).is_ok()
-                })
-        } else {
-            candidate.info.base_url.contains("openrouter.ai")
-        }
-    });
+    let eligible = if worker {
+        models
+            .current_model_id_str()
+            .map(distill_shell::jev::compatible_worker_models)
+            .unwrap_or_default()
+    } else {
+        super::provider_status::openrouter_entries()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    };
+    candidates
+        .available
+        .retain(|id, _| eligible.iter().any(|candidate| candidate == id.0.as_ref()));
     candidates.current = None;
     candidates.reasoning_effort = None;
     candidates.effort_auto = true;
@@ -350,9 +349,9 @@ mod tests {
             .unwrap();
         assert_eq!(reasoning.insert_text, "Reasoning X ");
 
-        // A plain model has no trailing space, so Enter commits immediately
+        // Every model offers auto, including models without fixed effort levels.
         let plain = items.iter().find(|i| i.match_text == "Grok 4.5").unwrap();
-        assert_eq!(plain.insert_text, "Grok 4.5");
+        assert_eq!(plain.insert_text, "Grok 4.5 ");
     }
 
     #[test]
@@ -377,10 +376,11 @@ mod tests {
         // The args query has a trailing space, so this is the effort phase
         // Items come out ordered xhigh to low (strongest first) per EFFORT_LEVELS
         let items = cmd.suggest_args(&ctx, "Reasoning X ").unwrap();
-        assert_eq!(items.len(), 4);
-        let [a, b, c, d] = items.as_slice() else {
-            panic!("expected 4 items: {items:?}");
+        assert_eq!(items.len(), 5);
+        let [auto, a, b, c, d] = items.as_slice() else {
+            panic!("expected auto plus 4 levels: {items:?}");
         };
+        assert_eq!(auto.insert_text, "Reasoning X auto");
         assert_eq!(a.insert_text, "Reasoning X xhigh");
         assert_eq!(b.insert_text, "Reasoning X high");
         assert_eq!(c.insert_text, "Reasoning X medium");
@@ -413,7 +413,7 @@ mod tests {
         };
         // Still in effort phase; the matcher upstream narrows to high and xhigh
         let items = cmd.suggest_args(&ctx, "Reasoning X h").unwrap();
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 5);
     }
 
     #[test]
@@ -554,5 +554,43 @@ mod tests {
             }
             other => panic!("expected Action::SetDefaultModel(<id>), got {other:?}"),
         }
+    }
+    #[test]
+    fn auto_is_offered_for_plain_models_and_accepted_by_name_or_id() {
+        let mut state = ModelState::default();
+        let (id, info) = plain_model("plain", "Plain Model");
+        state.available.insert(id.clone(), info);
+        let items = build_effort_items(&state, &id);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].insert_text, "Plain Model auto");
+        for input in ["Plain Model auto", "plain AUTO", "plain"] {
+            assert!(
+                matches!(ModelCommand.run(&mut dummy_exec_ctx(&state), input), CommandResult::Action(Action::SetDefaultModel(selected)) if selected == id)
+            );
+            assert_eq!(
+                parse_tier_selection(&state, input).unwrap(),
+                ("plain".into(), None)
+            );
+        }
+        assert_eq!(detect_effort_phase(&state, "plain "), Some(id));
+    }
+
+    #[test]
+    fn worker_selection_resolves_display_names_and_validates_effort() {
+        let mut state = ModelState::default();
+        let (id, info) = model_with_reasoning("luna", "Luna (ChatGPT)");
+        state.available.insert(id, info);
+        let cmd = super::super::worker_model::WorkerModelCommand;
+        assert!(
+            matches!(cmd.run(&mut dummy_exec_ctx(&state), "Luna (ChatGPT) high"), CommandResult::Action(Action::SetTierLight(model, Some(ReasoningEffort::High))) if model == "luna")
+        );
+        assert!(matches!(
+            cmd.run(&mut dummy_exec_ctx(&state), "luna"),
+            CommandResult::Action(Action::SetTierLight(_, None))
+        ));
+        assert!(matches!(
+            cmd.run(&mut dummy_exec_ctx(&state), "luna turbo"),
+            CommandResult::Error(_)
+        ));
     }
 }

@@ -1653,6 +1653,8 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
         .get("jev")
         .and_then(|v| v.as_table())
         .expect("the `[jev]` table survives the write");
+    assert_eq!(jev["local"]["effort"].as_str(), Some("auto"));
+    assert_eq!(jev["tiers"]["light_effort"].as_str(), Some("high"));
     assert_eq!(
         jev.get("provider").and_then(|v| v.as_str()),
         Some("openrouter_decisions"),

@@ -417,9 +417,8 @@ impl SessionActor {
             return;
         };
         self.apply_tier_pick(cfg, light.as_deref(), &answers).await;
-        if light
-            .as_ref()
-            .is_some_and(|worker| cfg.model == worker.cfg.model)
+        if light.is_some()
+            && routing::compose_micro_tier(&answers).as_deref() == Some(routing::TIER_LIGHT_LABEL)
             && let Some(effort) = crate::jev::tiers_cached()
                 .light_effort
                 .as_deref()
@@ -557,7 +556,8 @@ impl SessionActor {
     /// that changes the transport mid-conversation is not a routing decision,
     /// it is a second session.
     async fn light_tier(&self, hard_model: &str) -> LightTier {
-        let Some(id) = crate::jev::tiers_cached()
+        let tiers = crate::jev::tiers_cached();
+        let Some(id) = tiers
             .light
             .as_deref()
             .map(str::trim)

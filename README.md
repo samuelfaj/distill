@@ -1,303 +1,264 @@
-# Remote-Code — quando usamos o Jev
+# Remote-Code
 
-Este repositório é um fork do **Remote-Code** (`grok`), o agente de código de terminal da Samuel Fajreldines, com uma camada
-de decisão local: o **Jev** (TypeSafe System One). O Jev responde perguntas **tipadas** (`choice`, `score`,
-`noul`) sobre um `state` pequeno e devolve respostas com probabilidade e confiança. Ele não gera texto: decide.
+Um harness de código no terminal que roda em **quatro modelos diferentes** ao mesmo tempo, e usa
+**Jev** — uma camada de decisão tipada, não um LLM — para escolher qual deles faz cada chamada.
 
-O Jev é usado **sempre que a decisão for estruturada e cara de errar com um LLM**, e o LLM fica com o que só ele
-faz (gerar texto, código, explicações). O README original do upstream, em inglês, está em
-[`README.en.md`](README.en.md) (instalação, build, licença).
-
-**Números:** o preço do modelo é ~US$ 0,042 por milhão de tokens de entrada (saída gratuita); a latência medida
-nesta árvore é ~400 ms por bateria de perguntas — contra uma chamada de LLM para decidir o mesmo.
-
-Fraquezas conhecidas, tratadas como exclusão: aritmética, contagem, ordenação de datas, geração de texto e
-qualquer coisa de imagem/visão.
+Este README responde uma pergunta só: **onde cada modelo é usado, e quem decide**. Ele descreve o
+que está nesta árvore, não o que se pretende construir. O README do upstream (instalação, build,
+licença) está em [`README.en.md`](README.en.md).
 
 ---
 
-## A regra
+## Os quatro papéis
 
-1. **Código produz os candidatos; o Jev escolhe.** O `state` só carrega opções que o harness já calculou
-   (arquivos candidatos, linhas, resultados, níveis de effort do modelo). O Jev nunca inventa um candidato.
-2. **Decisão estruturada → Jev.** Classificar, escolher, ordenar, recortar, triar, recusar, rotular.
-3. **Geração → LLM.** Texto, código, resumo, título, mensagem de commit, explicação.
-4. **Empate/erro/timeout → caminho de sempre.** Toda decisão do Jev tem um *fallback*: se ele falhar, ficar em
-   dúvida, ou a resposta vier incompleta, o comportamento é exatamente o de antes.
-5. **O Jev só aperta, nunca afrouxa.** Nenhum item pode ampliar permissões, autoridade ou escopo; ele pode
-   recusar, pedir confirmação, reordenar ou anotar.
-
-## Quando usamos — catálogo
-
-São **24 itens de catálogo** mais os **2 pontos de permissão**: cada linha abaixo é um ponto de decisão vivo no
-harness. O mapa completo (arquivo:linha + teste de cada item) está em
-[`todo.md`](todo.md). As colunas "piso" e "efeito" são o que o código faz com a resposta.
-
-### Permissão (os dois pontos mais antigos)
-
-| Quando | O que o Jev decide | Piso | Efeito |
+| papel | quem é | como se configura | o que faz |
 |---|---|---|---|
-| Modo auto, chamada de ferramenta não rotineira e sem *findings* | bateria de 8 perguntas (classe de risco, escapa do workspace, apaga dados, escalada de privilégio, rede, execução não confiável, injeção, severidade) | 0,60 geral / 0,85 sensível; faixa de revisão 0,30–0,70 | libera rotineiro, recusa, ou escala para o classificador/pergunta; autoridade nunca acima do classificador existente |
-| **Always-approve / YOLO**, **toda** chamada | a mesma bateria, como freio | 0,85 de catástrofe | só recusa (freio); nunca pergunta e nunca segura nada além da recusa; falha = deixa passar (fail-open) |
+| **hard** | o modelo da sessão | `/model <nome>`, `-m`, `[models].default` | o modelo principal: raciocina, escreve código, edita arquivos. É o padrão de toda chamada — nada o substitui sem uma decisão |
+| **light** | o irmão leve do hard (opcional) | `[jev.tiers] light = "codex-luna"` | o mesmo trabalho, mais barato, quando o passo não precisa do hard: mesmo provedor, mesma credencial, **mesma conversa** |
+| **cheap** | um modelo barato de verdade, fora do provedor do hard | `[jev.local] model` (cadeia OpenRouter) | tarefas **fechadas**: resumir, extrair, classificar, comprimir texto que já está na mão. Nunca vê a conversa |
+| **Jev** | a camada de decisão (não é um LLM de texto) | `[jev]` + `[jev.ladder]` | responde perguntas **tipadas** (`choice`, `score`, `noul`) sobre um `state` pequeno: qual modelo, qual effort, quais linhas, manter ou descartar |
 
-### Área A — seleção de conteúdo (o que o modelo relê)
+```
+                    ┌─────────────────────────────────────────────┐
+   passo do turno → │ Jev: "quem faz esta chamada, com qual effort?"│
+                    └───────────────┬───────────────┬─────────────┘
+                                    │               │
+                        ┌───────────▼──┐      ┌─────▼────────┐
+                        │ hard (sessão)│      │ light (irmão)│   ← mesma conversa
+                        └──────────────┘      └──────────────┘
+                                    │
+                        ┌───────────▼──────────────────────────┐
+                        │ cheap: tarefa fechada, sem conversa   │  ← payload isolado
+                        └──────────────────────────────────────┘
+```
 
-| Quando | O que o Jev decide | Piso | Efeito |
-|---|---|---|---|
-| Resultado de busca de arquivos (`grep`-like) com vários candidatos | qual arquivo é o alvo provável do pedido | 0,35 | reordena os candidatos; nenhum candidato novo |
-| Leitura de arquivo grande | qual janela de linhas interessa (= P2) | 0,35 | recorta a leitura; sem resposta ⇒ lê tudo |
-| Saída de log/teste com erro | quais linhas explicam a falha | 0,50 (há erro acionável) / 0,30 (linha) | recorta às linhas úteis; sem erro acionável ⇒ passa intacto |
-| Resultados de busca web | quais valem ser lidos | 0,50, no máximo 5 | mantém os melhores; nada acima ⇒ mantém todos |
-| Candidatos de memória / AGENTS.md | quais entram no contexto | 0,40 | mantém os relevantes (listas curtas nem chamam o Jev) |
-| Falha de teste | qual teste rodar | confiança 0,60 | escolhe um teste; dúvida ⇒ suíte padrão |
+---
 
-### Área B — roteamento de esforço
+## hard — o modelo da sessão
 
-| Quando | O que o Jev decide | Piso | Efeito |
-|---|---|---|---|
-| Início do turno | intenção (pergunta/edição/pesquisa/comando) + complexidade | 0,60 | alimenta a poda de ferramentas; dúvida ⇒ não roteia |
-| Início do turno | quais famílias de ferramentas ficam neste turno (= P1) | 0,25 | poda famílias não essenciais; núcleo e ferramentas desconhecidas sempre ficam |
-| Início do turno | vale sugerir delegar a um subagente? | 0,60 | acrescenta **uma linha** à descrição da ferramenta de delegação; nunca cria subagente |
-| Tipo de subagente **desconhecido** pedido pelo modelo | qual definição existente serve | confiança 0,70 | resolve para uma definição que a sessão já permite (mesmos gates de lista); dúvida ⇒ erro de hoje |
-| Lembrete de skills anunciadas | qual skill o pedido atual precisa (= P6) | 0,60 | estreita o anúncio para essa skill; o catálogo de skills (slash commands) fica intacto |
-| Modelo local configurado (`[jev.local]`) | "o modelo local consegue fazer **esta** chamada inteira?" (capacidade + contexto + raciocínio frontier) | capaz ≥ 0,70 e nenhum aviso ≥ 0,40; antes disso, a janela local tem de comportar a estimativa + a reserva | manda a chamada para o **modelo local (grátis)**; qualquer dúvida ⇒ continua no modelo da sessão. É a prioridade ao local, sem nunca arriscar a tarefa |
-| **`/effort auto`** ligado | qual effort usar **naquela chamada do modelo** (ver abaixo) | 0,45 | aplica o nível escolhido **só** se ele estiver no menu do modelo; senão mantém o effort da sessão |
-| Turno simples (alavanca `b2_model_tier`, **desligada** por padrão) | rebaixar o effort do turno | confiança 0,80 | só rebaixa, nunca sobe; desligada até o gate dela passar |
-
-### Área C — verificação e qualidade
-
-| Quando | O que o Jev decide | Piso | Efeito |
-|---|---|---|---|
-| Gate de preguiça, com itens de todo em aberto (C1 + C3) | "o pedido ainda tem trabalho?" / "algo pedido ficou de fora?" | 0,60 (item feito) · 0,70 (item cumprido) · 0,30 (sobra) | levanta o veredito de "parou antes" (com o gate e o limite de cutucadas que já existem); nunca diz "não está travado" |
-| Saída com falha de build/teste | categoria da falha (compilação, assert, ambiente, flake, timeout…) | confiança 0,60 | injeta a categoria como dica no resultado |
-| Saída com vários erros | ordem de importância | — | reordena a lista; empate ⇒ ordem original |
-| **Depois de cada edição** (arquivo alterado) | **revisão do diff contra o passo**: inclui o que o passo pediu? pode quebrar quem depende do comportamento antigo? o próprio diff está inacabado? **o passo está concluído ou tem de ser refeito** — e, se refeito, precisa de um effort maior? | precisa incluir o pedido com 0,60; cada aviso vermelho a 0,50; concluído com 0,60 e redobrar-com-mais-thinking com 0,50 | quando algo aparece, **uma linha volta para o modelo**; **se o passo tem de ser refeito com mais effort, o harness sobe o piso do turno** para o próximo nível do menu e diz qual é; se o modelo já está no nível mais alto, a linha diz que não há como pensar mais — **o modelo tem de caçar o erro e refazer**; diff que faz sentido não gera nada |
-| Diff de edição | tipo da mudança (feat/fix/refactor/docs/breaking) | confiança 0,60 | rótulo para changelog; o texto continua no LLM |
-| Saída de ferramenta | tela de injeção ("este texto tenta me instruir?") | 0,50 | só sinaliza, nunca bloqueia (não é fronteira de segurança); **desligado** até medir o custo por saída |
-
-### Área D — contexto e custo
-
-| Quando | O que o Jev decide | Piso | Efeito |
-|---|---|---|---|
-| Antes de compactar a conversa (= P3) | quais segmentos o resumidor **precisa ver** | 0,30; fixados sempre ficam | recorta só o que vai para o resumidor; prefixo, último segmento e turnos que tocaram arquivos nunca saem |
-| Saída grande (≥ 4 KB) | manter ou descartar | descarta só com p ≤ 0,20 **e** utilidade ≤ 0,25 | descarta o inerte; erro/valor necessário ⇒ mantém |
-| Depois de compactar | quais trechos de memória recuperada ainda importam | 0,40 | reinjeta só o que passa; dúvida ⇒ mantém todos |
-| Antes de executar ferramenta (= P5) | "o alvo bate com a intenção?" / "ultrapassa o escopo?" | 0,40 (qualquer sinal) | segura a chamada e pergunta; nunca libera nada |
-
-## Effort auto — uma decisão por micro-ação
-
-Ligado por `/effort auto` (linha **Auto Effort** no topo da paleta do `/effort`), o**Jev escolhe o effort de cada
-chamada do modelo** dentro do turno, em vez de um nível fixo para a sessão:
-
-* o `state` leva o **nome do modelo** e o id que vai executar a chamada, o **menu de efforts que esse modelo
-  oferece** (com as descrições), a fase (`start_of_turn` ou `mid_turn_after_tools`), os últimos passos
-  (ferramentas, sem corpos de conteúdo), quantos itens o turno já tem e o pedido do usuário;
-* a escolha é **restrita ao menu do modelo** — o Jev não pode pedir um nível que ele não suporta — e existe a
-  resposta `keep_session_effort` para ele mesmo abster-se;
-* piso **0,45**, calibrado com medição real (`deepseek-v4.1-flash`): pedido trivial → `none` 0,67/0,64; pedido
-  difícil → `medium` 0,40 / `high` 0,31. Ou seja: ganho barato claro é aplicado, chamada difícil fica no effort
-  da sessão em vez de baixar qualidade em silêncio;
-* toda decisão registra **o que o Jev queria** além do que foi aplicado
-  (`effort:none · applied to this call` vs. `defer | wanted low at 0.41 below the floor`);
-* `/effort <nível>` desliga o modo (nível explícito sempre ganha) e vira o fallback; `[jev.ladder]
-  b2_micro_effort = false` mantém o modo mas desliga a decisão.
-
-## Modelo local (oMLX / Ollama / qualquer endpoint OpenAI)
-
-Dá para rodar as microtarefas no seu modelo local — ele é grátis, então **vem primeiro**; só fica de fora quando
-não tem capacidade total para aquela chamada. Configure duas coisas:
+É o modelo que você escolheu. Roda a conversa inteira: lê arquivos, edita, roda comandos, responde.
+Tudo que não for explicitamente roteado para outro degrau acontece nele.
 
 ```toml
-[model.qwen38-local]              # o endpoint local, como qualquer modelo do harness
-model = "Qwen3.8-27B-4bit"
-base_url = "http://127.0.0.1:8000/v1"
-name = "Qwen3.8 27B (local oMLX)"
-api_key = "none"                  # o oMLX aceita a chave literal "none"
-api_backend = "chat_completions"
-context_window = 32768            # a janela REAL do modelo servido
-max_completion_tokens = 4096
-stream_tool_calls = false
-
-[jev.local]
-model = "qwen38-local"            # o id da entrada acima
-notes = "tool calling OK, sem reasoning effort; fraco em provas e contagem."
-context_reserve_tokens = 8192     # espaço guardado para a resposta + ferramentas
-# min_capability = 0.70           # o quanto o Jev precisa estar certo (padrão 0,70)
+[models]
+default = "grok-4.6"          # o hard, quando nenhum -m/--model é passado
 ```
 
-Como a decisão funciona, por chamada do modelo:
+Um turno começa e termina no hard, a menos que Jev decida diferente **por chamada**. Duas decisões
+podem tirar uma chamada dele: o degrau `light` (mesma conversa, modelo irmão) e a lane `cheap`
+(tarefa fechada, sem conversa).
 
-1. **Guarda de código:** a estimativa da conversa + a reserva tem de caber na janela local. Se não cabe, vai para
-   a nuvem e o registro diz por quê (`local window too small for this call: ~29250 tokens + 8192 reserve > 32768`).
-2. **Decisão do Jev:** três perguntas — *o modelo local faz esta chamada inteira com a mesma qualidade?*,
-   *precisa de mais contexto do que a janela dele?*, *precisa de raciocínio nível frontier?*. O local só ganha com
-   `capable ≥ 0,70` **e** nenhum aviso ≥ 0,40; falta de resposta, erro ou timeout ⇒ nuvem.
-3. **Aplicação:** a chamada sai com endpoint, credencial, backend e janela da entrada local, mantendo a
-   atribuição da sessão. O rodapé continua igual; a linha de atividade mostra `jev ×N ·local` quando houve chamada
-   local no turno.
-
-No `~/.grok/logs/jev.jsonl` cada decisão fica assim:
-
-```
-local | Qwen3.8 27B (local oMLX) at http://127.0.0.1:8000/v1 · capable 0.88 (floor 0.70) · frontier 0.12 · context 0.05 · ~8100/32768 tokens
-cloud | Qwen3.8 27B (local oMLX) at … · capable 0.61 (floor 0.70) · frontier 0.35 · context 0.05 · ~29250/32768 tokens
-```
-
-**Atenção à janela:** o prompt-base deste harness (system prompt + histórico do turno) já custa **~29k tokens**,
-e as definições de ferramentas vão por cima. Com a janela em 32k o local quase nunca cabe; a 128k ele passa a
-pegar turnos inteiros. Subida feita em 2026-09-18 nesta instalação (oMLX `Qwen3.8-27B-4bit`: 32768 → 131072, via
-`model_settings.json` + `~/.omlx/bin/omlx restart`), com o mesmo número no harness
-(`[model.qwen38-local] context_window`). Medido depois disso, num turno trivial (listar + ler um arquivo):
-
-```
-Qwen3.8 27B (local oMLX) - 126.4k tokens
-Jev - 4x
-Worked for 3m25s
-```
-
-Ou seja: **o turno inteiro rodou de graça no Mac** — o preço é a latência (3m25s contra ~9s na nuvem para a
-mesma tarefa). O piso `min_capability` foi calibrado em 0,60 nesta instalação porque o Jev pontua 0,63–0,67 de
-"capaz" nessas chamadas (com avisos vermelhos em 0,04–0,09); o padrão do pacote continua 0,70.
-Para desligar tudo: `[jev.ladder] b2_local_model = false`, ou remova `[jev.local]`.
-
-## Trabalho local por subagente (contexto curto)
-
-O caminho mais rápido para o modelo local não é a sessão principal: é **delegar**. Um subagente abre a sua própria
-conversa, então o contexto grande da sessão não viaja junto — o local recebe só o passo delegado.
-
-Duas peças de configuração (em `~/.grok/`):
-
-```markdown
-<!-- ~/.grok/agents/local-worker.md -->
 ---
-name: local-worker
-description: Small self-contained step, done on the free local model.
-model: qwen38-local
----
-You are the local worker: a small model on this machine, used for one bounded step at a time. …
-```
+
+## light — o irmão leve do hard
+
+O light **não é outro provedor**: é um segundo modelo do mesmo provedor, com a mesma credencial, para
+que ele possa pegar **a mesma conversa** no meio do turno. É o que o harness valida antes de aceitar
+o par:
+
+* mesmo `base_url` (mesmo provedor),
+* mesmo `api_backend` (mesmo protocolo no fio),
+* mesmo `auth_scheme` (uma credencial cobre os dois),
+* e a conversa tem que **caber na janela dele** — com a reserva da resposta — senão aquela chamada
+  fica no hard. Um round que o irmão não segura seria cortado no meio; isso não é roteamento, é outra
+  sessão.
 
 ```toml
-# ~/.grok/config.toml
-[subagents.models]
-local-worker = "qwen38-local"   # fixa o modelo do subagente (vence tudo, menos o /goal)
+[jev.tiers]
+light = "codex-luna"          # id de uma entrada [model.<id>]
 ```
 
-Medido nesta máquina (oMLX `Qwen3.8-27B-4bit`), mesmo turno: as chamadas do **subagente** entraram no servidor
-local com **450 → 9.935 → 10.010 tokens** de prompt, enquanto as rodadas da sessão principal pediam **42–45 mil**.
-Ou seja: delegar é o que evita pagar o prefill do contexto inteiro. O relatório do turno mostra as duas rotas:
+Exemplo — o par ChatGPT, onde o hard é `gpt-6-astra` e o light `gpt-5.6-luna`:
 
-```
-5
-DeepSeek V4.1 Flash max - 85.6k tokens
-Qwen3.8 27B (local oMLX) - 42.7k tokens
-Jev - 14x
+```toml
+[models]
+default = "codex-astra"
+
+[model.codex-astra]
+model = "gpt-6-astra"
+base_url = "https://chatgpt.com/backend-api/codex"
+api_backend = "responses"
+
+[model.codex-luna]            # o irmão: mesmo host, mesmo backend, mesma credencial
+model = "gpt-5.6-luna"
+base_url = "https://chatgpt.com/backend-api/codex"
+api_backend = "responses"
+
+[jev.tiers]
+light = "codex-luna"
 ```
 
-Para o local não pegar trabalho grande nem na sessão principal, há um **teto de contexto** (política de
-velocidade, independente da janela do modelo):
+Provedor com um modelo só não tem irmão — é o caso do Grok hoje. Nesse caso a pergunta de degrau
+**não é feita**: não há o que escolher, e uma pergunta com uma resposta só custa uma decisão.
+
+**Quem decide:** Jev, uma vez por chamada, na mesma bateria que escolhe o effort (uma ida só, não
+duas). A pergunta é `micro_tier` — "qual dos dois modelos faz **esta** chamada?" — com o perfil dos
+dois no `state` (nome, janela, o que o dono anotou sobre cada um). Piso de confiança **0,55**, mais
+alto que o do effort: um rebaixamento incerto custa qualidade no passo, então incerto = o hard roda.
+A decisão é registrada com o que Jev quis e o que foi aplicado.
+
+**Como desligar:** `[jev.ladder] b2_light_model = false` (a pergunta não é feita), ou não configurar
+`[jev.tiers] light` (idem).
+
+**Como ver e trocar:** `/tiers` reporta os três degraus na ordem em que uma chamada cai neles e
+aceita `/tiers hard <nome>`, `/tiers light <id|clear>` e `/tiers cheap <ids|clear>`. O mesmo relatório
+é a linha **Model tiers** da home.
+
+---
+
+## cheap — o modelo barato (OpenRouter)
+
+O cheap é um modelo **de fora do provedor do hard**, alcançado por uma cadeia de fallback do
+OpenRouter. Ele nunca recebe a conversa: recebe um **payload fechado** (uma saída de ferramenta, um
+trecho de log, uma lista de candidatos) e devolve texto curto, que passa por um **guarda** antes de
+ser usado.
 
 ```toml
 [jev.local]
-max_context_tokens = 32768   # acima disso a chamada volta para o modelo da sessão
-context_reserve_tokens = 2048
+model = "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash"
+max_context_tokens = 262144      # teto do dono para uma rodada inteira no cheap
+notes = "cadeia de fallback: o OpenRouter tenta na ordem e cobra só quem responde"
 ```
 
-Acima do teto o registro diz o motivo (`local context too large for this call: ~36120 tokens + 2048 reserve >
-32768 (capped at 131072)`), e o resto do turno segue na nuvem.
+* A vírgula é **prioridade**, não lista de opções: o primeiro id é o modelo da requisição e os
+  seguintes vão em `models`, a rota de fallback do próprio OpenRouter. O tier grátis vem primeiro
+  porque custa zero.
+* A chave vem do ambiente (`OPENROUTER_API_KEY`), nunca do arquivo de config.
+* O `model` também aceita o **id de uma entrada** `[model.<id>]` — aí o transporte é o da entrada.
+* `/cheap-model` mostra o estado e troca a cadeia; `/cheap-model <ids>` grava; `clear` volta para a
+  cadeia de fábrica.
 
-## Quando **não** usamos
+### Onde o cheap é usado
 
-| Ideia | Por quê |
-|---|---|
-| Gerar título de sessão, resumos, mensagens de commit/PR, patches | é **geração de texto** — fora do que o modelo faz |
-| Aritmética, contagem, ordenação de datas | fraqueza documentada; pertence ao código |
-| Embeddings / busca vetorial | precisa de vetores, não de decisão |
-| Guardrail em toda mensagem | custa uma chamada por evento e não economiza token |
-| Qualquer coisa de imagem/visão | o Jev é **texto apenas** |
-| Decidir *o que* fazer, escrever código, explicar | é do LLM; o Jev só decide *entre* opções que o código já tem |
+**1. Tarefas fechadas (o catálogo).** 93 tarefas de texto, cada uma com um guarda que a resposta tem
+que passar:
 
-## Como ligar e desligar
+| tipo | quantas | o que devolve | guarda típico |
+|---|---|---|---|
+| `Extract` | 31 | itens verbatim (símbolos, campos, linhas) | todo literal do payload tem que reaparecer |
+| `Digest` | 22 | o que importa, em linhas curtas | idem |
+| `Compress` | 18 | o payload encolhido a ~⅓ | idem |
+| `Ask` | 9 | a menor resposta que responde, citando | spans do payload |
+| `Pick` | 7 | ids de uma lista de candidatos | só ids que o chamador ofereceu |
+| `Classify` | 6 | um rótulo de um conjunto fechado | tem que ser um dos rótulos |
+
+Dos 93 guardas, **71 exigem que todo literal** (caminho, `file:line`, número, mensagem de erro)
+sobreviva à resposta, 3 exigem spans citados do payload, e os demais exigem JSON, rótulo do conjunto
+fechado ou ids que o chamador ofereceu. Resposta que não passa no guarda é descartada, e o caminho de
+sempre segue.
+
+**2. Uma rodada inteira (`b2_local_model`).** Quando Jev julga que o cheap consegue fazer a chamada
+**inteira** (capacidade ≥ 0,70 e nenhum aviso ≥ 0,40), a rodada vai para ele — o modelo da sessão não
+é chamado. Duas travas: a estimativa da conversa + a reserva tem que caber no teto (`max_context_tokens`
+ou a janela do modelo), e o resultado volta com o mesmo guarda das tarefas.
+
+**3. A lane de retenção (`e_retention`).** Saída grande demais para caber no contexto vira N blocos,
+e Jev decide o que fica de cada um, **antes** de o texto original ser descartado (store-before-loss,
+exceto se houver segredo no payload).
+
+Cada lane tem sua própria chave em `[jev.ladder]`, um contador por turno e um **breaker**: depois de
+3 falhas a lane fica de fora pelo resto do turno — um endpoint instável não custa tempo em cada passo.
+Toda chamada barata registra uma linha sem conteúdo (lane, tarefa, decisão, modelo, tokens, latência)
+no mesmo gravador das outras decisões.
+
+---
+
+## Jev — onde ele decide
+
+O Jev responde perguntas estruturadas sobre um `state` pequeno que **o código montou**: candidatos,
+linhas, menus de effort, perfis de modelo. Ele nunca inventa um candidato, nunca gera texto e nunca
+amplia permissão — só escolhe entre o que já foi calculado, ou abstém-se.
+
+**O contrato, em uma linha:** o código produz candidatos, o Jev escolhe, o caminho de sempre é o
+fallback, e falha/empate/timeout = comportamento antigo.
+
+### Onde ele age hoje (por área)
+
+| área | quando | o que decide |
+|---|---|---|
+| **permissão** | chamada de ferramenta não rotineira; e **toda** chamada em YOLO, como freio | libera/recusa/escala; no YOLO só recusa (piso 0,85) |
+| **conteúdo** | busca de arquivos, leitura grande, log com erro, busca web, memória/`AGENTS.md`, qual teste rodar | o que o hard vai **relê** |
+| **esforço** | início do turno | intenção, famílias de ferramentas, dica de delegação, tipo de subagente |
+| **degrau e esforço** | **cada chamada**, com `/effort auto` ligado | **qual modelo (hard ou light)** e **qual effort**, na mesma bateria |
+| **barato** | resultado de ferramenta, saída grande, rodada inteira | qual das 93 tarefas serve, o que manter, se o cheap pega a rodada |
+| **qualidade** | depois de cada edição, falha de build/teste, diff, erros múltiplos | o passo precisa ser refeito? com mais effort? categoria da falha, ordem dos erros |
+| **contexto** | antes de compactar, saída ≥ 4 KB, depois de compactar | o que o resumidor precisa ver, o que é inerte, o que volta |
+| **escopo** | antes de executar ferramenta | o alvo bate com a intenção? |
+
+Cada ponto é uma **alavanca** em `[jev.ladder]` (`b2_light_model`, `b2_local_model`, `e_retention`,
+`c1_premature_stop`, …), com piso próprio. Desligar uma alavanca desliga aquele ponto, não o Jev.
+
+### Configuração
 
 ```toml
 [jev]
-enabled = true                # interruptor mestre (env: GROK_JEV=0 desliga tudo)
-shadow  = false               # true = só registra, não decide
+provider = "openrouter_decisions"                 # o transporte das decisões
+base_url = "https://openrouter.ai/api"
+model = "~typesafe/jev-latest"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_ms = 20000
+effort_auto = true                                # a sessão começa em modo auto
+
+[jev.tiers]
+light = "codex-luna"                              # opcional: o irmão leve do hard
+
+[jev.local]
+model = "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash"
 
 [jev.ladder]
-permission_classifier = true  # seam do modo auto
-yolo_veto             = true  # freio no always-approve
-p1_tool_family = true         # e todos os demais itens do catálogo…
-b2_model_tier  = false        # rebaixamento por turno: desligado até o gate
-c6_injection_screen = false   # tela de injeção: desligado até medir o custo
-b2_micro_effort = true        # decisão por micro-ação (só roda no /effort auto)
-b2_local_model = true         # prioridade ao modelo local (precisa de [jev.local])
+b2_light_model = true                             # a pergunta de degrau
+b2_local_model = true                             # a lane barata
+e_retention = true                                # a lane de retenção
 ```
 
-* **Interruptor mestre:** `GROK_JEV=0` (ou `[jev] enabled = false`) ⇒ nenhum cliente é construído e **nenhuma
-  conexão é aberta**; o comportamento é idêntico ao de antes.
-* **Por item:** `[jev.ladder] <item> = false`.
-* **Modo auto de effort:** `/effort auto` para ligar; `/effort <nível>` para voltar a um nível fixo.
-* **Chave da API:** `JEV_API_KEY` no ambiente (o harness lê no momento da chamada; o valor nunca é logado).
+### Effort auto — o modo que liga a decisão por chamada
 
-## Onde ver o que aconteceu
+`/effort auto` faz Jev escolher **degrau e effort de cada chamada** dentro do turno:
 
-* **Rodapé do prompt:** `jev` (ativo), `jev·shadow` (só registra), `jev·veto` (freio no always-approve),
-  `jev:idle` (disponível, mas o modo atual não passa por ele), `jev:off` (desligado/sem credencial).
-* **Linha de atividade** (a linha acima do prompt, ao lado da ferramenta em execução): `jev…` enquanto uma
-  decisão está em voo, `jev ×3` depois de responder, `jev·veto` (vermelho) quando **recusou** uma chamada — e, logo
-  depois, **o roteamento da chamada que está rodando**: `·none` / `·low` / `·medium` (nível de effort escolhido) ou
-  `·local low` quando ela foi para o modelo local. Exemplos reais: `… · jev ×8 ·none`, `… · jev ×3 ·local low`.
-  Sem uso no turno, nenhum chip aparece.
-* **Registro:** `GROK_LOG_JEV=1` escreve uma linha JSON por decisão em `~/.grok/logs/jev.jsonl`
-  (lever, decisão, confiança, modelo, tokens, latência, request id).
-* **No fim de cada turno**, um bloco com a **distribuição da tarefa**: uma linha por motor que rodou naquele
-  turno, com os tokens de cada um, e o total de decisões do Jev — por exemplo:
+* o `state` leva o nome e o id do modelo, o **menu de efforts que aquele modelo oferece** (com as
+  descrições), a fase (`start_of_turn` / `mid_turn_after_tools`), os últimos passos, quantos itens o
+  turno já tem e o pedido do usuário;
+* a escolha de effort fica **restrita ao menu do modelo** (ele não pode pedir um nível inexistente) e
+  existe `keep_session_effort` para ele abster-se; piso **0,40**;
+* a escolha de degrau tem piso **0,55** e a resposta `keep_session_model` para abster-se;
+* tudo é registrado — o que Jev queria, além do que foi aplicado
+  (`effort:low · applied to this call` vs. `defer | wanted low at 0.41 below the floor`);
+* `/effort <nível>` desliga o modo para a sessão (nível explícito sempre ganha); `--effort` na linha
+  de comando faz o mesmo na largada.
 
-  ```
-  Qwen3.8 27B (local oMLX) - 12.4k tokens
-  DeepSeek V4.1 Flash high - 210.4k tokens
-  DeepSeek V4.1 Flash medium - 500.0k tokens
-  Jev - 41x
-  ```
+### Como auditar
 
-  Só aparece quando há o que dizer (turno com chamadas registradas ou decisões do Jev), e o número é do turno,
-  não da sessão.
-* **Guia do usuário:** [`crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md`](crates/codegen/xai-grok-pager/docs/user-guide/28-jev-decisions.md).
+`GROK_LOG_JEV=1` grava uma linha JSON por decisão em `~/.grok/logs/jev.jsonl` (lane, decisão, motivo,
+confiança, latência, modelo). Sem isso não há como saber por que uma chamada foi parar em outro
+modelo — foi assim que este harness foi calibrado.
 
-## Testes
+---
 
-```sh
-# Pacotes de decisão (puros) e catálogo
-cargo test -p xai-grok-workspace --lib jev::                     # 92 testes
-cargo test -p xai-grok-shell --lib jev                           # 18 testes (fiação, chip, effort auto)
-cargo test -p xai-grok-pager --lib --features "xai-grok-workspace/test-support" \
-  views::turn_status slash::commands::effort                     # chip e /effort
+## Provedores: qualquer um, ou nenhum
 
-# Contrato do meta de effort (opt-in)
-cargo test -p xai-grok-sampling-types
+O harness não exige um provedor específico. Cada um tem seu caminho de login, e todos podem estar
+desligados ao mesmo tempo:
 
-# Gates contra a API real (precisam de JEV_API_KEY)
-JEV_API_KEY=… cargo test -p xai-grok-workspace --test jev_live -- --ignored --nocapture
-```
+| provedor | login | onde mora a credencial |
+|---|---|---|
+| **Grok** | `/login` na TUI, ou `remote-code login` | `auth.json` do harness |
+| **ChatGPT** | `remote-code login --chatgpt` (ou `--chatgpt --device-auth` para máquina sem navegador) | `~/.grok/codex-auth.json`, OAuth **do próprio harness**, com refresh |
+| **OpenRouter** | a chave em `OPENROUTER_API_KEY` | o ambiente |
 
-Os testes *live* medem o que importa: corpus de permissão com **0 falso-allow** e 0 falso-block, seleção de
-arquivo/linha (A1/A3), retenção de saída grande (D2, **0 descartes indevidos**) e a distribuição de effort do
-modo auto. Dois scripts de verificação estrutural acompanham o trabalho (no diretório de trabalho da sessão):
-`wiring_check.py` (`WIRING: PASS (24/24 …)`: cada item com a sua flag e o seu ponto de chamada) e
-`todo-coverage.py` (`TODO COVERAGE: PASS`: cada linha do `todo.md` com localizador e teste que existem).
+A home lista `Log in with Grok`, `Log in with ChatGPT` e `Log in with OpenRouter`; sem sessão Grok,
+a tela de gate oferece ChatGPT e OpenRouter também. **Nenhum é obrigatório:** com só modelos locais
+configurados (um endpoint OpenAI-compatible em `[model.*]`), o harness roda igual — sem credencial de
+decisão o Jev simplesmente não responde, e cada ponto que ele cobriria volta ao comportamento de
+antes (fail-open), com as lanes baratas de fora.
 
-## Build
+---
 
-Este repositório é um workspace Rust (edition 2024, toolchain 1.94+). Comandos úteis, mirando crates específicos
-(o build do workspace inteiro é lento):
+## O que decide o quê, em uma frase
 
-```sh
-cargo check -p xai-grok-shell      # agente/loop de sessão
-cargo check -p xai-grok-pager      # TUI
-cargo build -p xai-grok-pager-bin  # binário target/debug/xai-grok-pager
-cargo fmt --all
-```
+* **hard** faz o trabalho;
+* **light** faz o trabalho quando o passo não precisa do hard, na mesma conversa;
+* **cheap** faz o que é texto fechado, sem conversa;
+* **Jev** escolhe entre eles — e escolhe o resto das decisões estruturadas do harness — sempre com um
+  caminho de sempre se ele falhar.
 
-Instalação do binário oficial, layout do repositório, licença e o restante da documentação do upstream estão em
-[`README.en.md`](README.en.md).
+Detalhe item a item — arquivo, teste e piso de cada decisão — em [`list.md`](list.md).

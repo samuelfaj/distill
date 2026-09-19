@@ -1,294 +1,265 @@
 <!-- Modified for Distill by Samuel Fajreldines, 2026. -->
 # Distill
 
-**Distill**, criado por **Samuel Fajreldines**, é um harness de código independente
-para o terminal. Ele abre sem login no Grok, ChatGPT ou OpenRouter. Para gerar
-respostas, você pode conectar um modelo local, configurar seu próprio endpoint
-ou entrar opcionalmente em um desses provedores. O suporte ao Grok permanece.
+Distill is a terminal coding harness by Samuel Fajreldines. It reads your
+codebase, edits files, runs commands, and keeps the conversation in your
+terminal. Version 2.0.0 supports Grok, ChatGPT, OpenRouter, and local
+OpenAI-compatible model servers.
+
+You can open Distill without signing in to any provider. To generate an answer,
+you need a reachable model, whether it runs on your machine or through a
+provider account.
+
+## Install
+
+Download a prebuilt binary from [GitHub Releases](https://github.com/samuelfaj/distill/releases),
+or run the installer on macOS or Linux:
 
 ```sh
-cargo build --release -p distill-pager-bin --bin distill
-./target/release/distill
-```
-
-Para compilar e atualizar a instalação local de desenvolvimento:
-
-```sh
-sh tools/install-local.sh
+curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh -o /tmp/distill-install.sh
+sh /tmp/distill-install.sh
 export PATH="$HOME/.local/share/distill/bin:$PATH"
 distill
 ```
 
-Adicione a linha do `PATH` ao final do `~/.zshrc` para usá-la em novas janelas.
-Essa instalação também aceita o comando `grok` e preserva os executáveis anteriores.
-Após atualizar, encerre e abra o harness novamente; sessões abertas continuam
-executando a versão anterior.
+Add the `export PATH` line to your shell configuration, such as `~/.zshrc` or
+`~/.bashrc`, to use `distill` in new terminals. The installer selects the binary
+for your OS and CPU, checks its SHA-256 checksum, and runs `--version` before
+activating it. It does not require Rust, a GitHub account, or provider login.
 
-Novos perfis usam `~/.distill`; `DISTILL_HOME` permite escolher outra pasta.
-Perfis antigos em `~/.grok` continuam sendo usados quando não há um perfil novo,
-preservando contas e sessões. O menu mostra login ou logout conforme o estado de
-cada provedor. As instruções para usar um modelo local sem conta estão no
-[guia de instalação e configuração](README.en.md).
+Release binaries target Apple Silicon and Intel Macs, and Linux on x86_64 and
+ARM64. Linux builds use glibc; use a source build for other environments.
 
-O projeto usa a licença [Apache 2.0](LICENSE). A autoria das modificações e os
-créditos preservados estão em [NOTICE](NOTICE). Os identificadores técnicos de
-provedores são mantidos onde necessários para login e comunicação.
+To install a specific release:
 
-O restante deste guia descreve o **Jev**, a camada de decisão que distribui as
-chamadas entre os modelos configurados.
-
----
-
-## Os quatro papéis
-
-| papel | quem é | como se configura | o que faz |
-|---|---|---|---|
-| **hard** | o modelo da sessão | `/model <nome>`, `-m`, `[models].default` | o modelo principal: raciocina, escreve código, edita arquivos. É o padrão de toda chamada — nada o substitui sem uma decisão |
-| **light** | o irmão leve do hard (opcional) | `[jev.tiers] light = "codex-luna"` | o mesmo trabalho, mais barato, quando o passo não precisa do hard: mesmo provedor, mesma credencial, **mesma conversa** |
-| **cheap** | um modelo barato de verdade, fora do provedor do hard | `[jev.local] model` (cadeia OpenRouter) | tarefas **fechadas**: resumir, extrair, classificar, comprimir texto que já está na mão. Nunca vê a conversa |
-| **Jev** | a camada de decisão (não é um LLM de texto) | `[jev]` + `[jev.ladder]` | responde perguntas **tipadas** (`choice`, `score`, `noul`) sobre um `state` pequeno: qual modelo, qual effort, quais linhas, manter ou descartar |
-
-```
-                    ┌─────────────────────────────────────────────┐
-   passo do turno → │ Jev: "quem faz esta chamada, com qual effort?"│
-                    └───────────────┬───────────────┬─────────────┘
-                                    │               │
-                        ┌───────────▼──┐      ┌─────▼────────┐
-                        │ hard (sessão)│      │ light (irmão)│   ← mesma conversa
-                        └──────────────┘      └──────────────┘
-                                    │
-                        ┌───────────▼──────────────────────────┐
-                        │ cheap: tarefa fechada, sem conversa   │  ← payload isolado
-                        └──────────────────────────────────────┘
+```sh
+DISTILL_VERSION=2.0.0 sh /tmp/distill-install.sh
 ```
 
----
+Set `DISTILL_INSTALL_DIR` to choose another installation directory. Its `bin`
+subdirectory must be on your `PATH`.
 
-## hard — o modelo da sessão
+## Upgrade
 
-É o modelo que você escolheu. Roda a conversa inteira: lê arquivos, edita, roda comandos, responde.
-Tudo que não for explicitamente roteado para outro degrau acontece nele.
+For an installation made with the release installer:
+
+```sh
+distill update
+```
+
+You can also download and run `install.sh` again to install the latest release.
+Both paths verify the downloaded binary before switching the executable. Your
+settings, credentials, and sessions stay in your profile. Restart open Distill
+sessions to use the new version.
+
+Source builds are separate from release installations. Update your checkout and
+rebuild when working from source.
+
+## Choose your models
+
+Open **Model tiers** on the home screen, click **change** beside the current
+model, or enter `/tiers`. You can edit each tier in that screen.
+
+| Tier | Purpose | Picker |
+|---|---|---|
+| Reasoning model | Handles the main conversation, difficult reasoning, and code changes. | `/model` or `/tiers reasoning` |
+| Worker model | Takes suitable calls in the same conversation when a lighter model can handle them. Optional. | `/worker-model` or `/tiers worker` |
+| Utility model | Handles bounded tasks such as extraction, summaries, and compression. | `/utility-model` or `/tiers utility` |
+
+Each picker helps you choose a model and its effort. `auto` is available and is
+the default. You can also supply the selection directly:
+
+```text
+/model gpt-6-astra auto
+/worker-model gpt-5.6-luna auto
+/utility-model openrouter-qwen37 auto
+```
+
+Reasoning and Worker must use a compatible provider connection: the same base
+URL, API backend, and credential scheme. Distill checks this before accepting a
+Worker. It also checks that the conversation and response reserve fit the
+Worker's context window before routing a call to it. The Reasoning model keeps
+the call when they do not fit.
+
+OpenRouter models can fill any tier. A Worker selected through OpenRouter must
+still be compatible with the Reasoning model's connection. The Utility model
+can use a separate connection.
+
+Use `/worker-model clear` to remove the Worker. `/utility-model clear` restores
+the configured default utility chain. With a Worker, the prompt footer shows
+both models and their efforts. Without one, it shows only the current model.
+
+## Accounts and local models
+
+The home menu has separate login and logout actions for Grok, ChatGPT, and
+OpenRouter. Signing out of one does not sign out of the others. ChatGPT uses
+OAuth and the model catalog available to your account. OpenRouter supports
+browser login or an `OPENROUTER_API_KEY` environment variable.
+
+For a local model, start an OpenAI-compatible server and add an entry to your
+profile's `config.toml`. Replace the model ID and URL with your server's values:
 
 ```toml
 [models]
-default = "grok-4.6"          # o hard, quando nenhum -m/--model é passado
+default = "local"
+
+[model.local]
+name = "Local model"
+model = "your-local-model-id"
+base_url = "http://127.0.0.1:8000/v1"
+api_backend = "chat_completions"
 ```
 
-Um turno começa e termina no hard, a menos que Jev decida diferente **por chamada**. Duas decisões
-podem tirar uma chamada dele: o degrau `light` (mesma conversa, modelo irmão) e a lane `cheap`
-(tarefa fechada, sem conversa).
+New profiles use `~/.distill`. Set `DISTILL_HOME` to use another directory.
+An existing `~/.grok` profile remains supported when no new profile exists, so
+previous credentials and sessions remain accessible. An explicit
+`DISTILL_HOME` takes priority.
 
----
+## How Jev routes work
 
-## light — o irmão leve do hard
+Jev is Distill's decision layer. It answers structured questions about a small
+state assembled by the harness: which model should handle a call, how much
+effort it needs, or which parts of a tool result are worth keeping.
 
-O light **não é outro provedor**: é um segundo modelo do mesmo provedor, com a mesma credencial, para
-que ele possa pegar **a mesma conversa** no meio do turno. É o que o harness valida antes de aceitar
-o par:
+The Reasoning model handles calls unless a routing decision selects another
+path. The Worker shares the conversation. Utility tasks receive a bounded
+payload, such as a tool result, log excerpt, or candidate list, instead of the
+full conversation.
 
-* mesmo `base_url` (mesmo provedor),
-* mesmo `api_backend` (mesmo protocolo no fio),
-* mesmo `auth_scheme` (uma credencial cobre os dois),
-* e a conversa tem que **caber na janela dele** — com a reserva da resposta — senão aquela chamada
-  fica no hard. Um round que o irmão não segura seria cortado no meio; isso não é roteamento, é outra
-  sessão.
-
-```toml
-[jev.tiers]
-light = "codex-luna"          # id de uma entrada [model.<id>]
+```text
+                         Jev decision
+                              |
+                +-------------+-------------+
+                |                           |
+          Reasoning model              Worker model
+                |                  same conversation
+                |
+           Utility tasks
+     bounded payloads and checked results
 ```
 
-Exemplo — o par ChatGPT, onde o hard é `gpt-6-astra` e o light `gpt-5.6-luna`:
+Jev chooses among candidates supplied by code. It does not invent candidates
+or expand permissions. If a decision fails, times out, or lacks enough
+confidence, the harness keeps its normal execution path.
+
+### Reasoning and Worker
+
+With `/effort auto`, Jev can choose a model and effort for each call within a
+turn. It receives the model's supported effort choices, the current phase of
+the turn, recent steps, and the user's request. It can keep the session's model
+or effort instead of changing them.
+
+Worker routing requires a confidence of at least 0.55. Effort selection uses a
+floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
+takes precedence over automatic effort selection.
+
+The configuration keys retain their internal names:
 
 ```toml
-[models]
-default = "codex-astra"
-
-[model.codex-astra]
-model = "gpt-6-astra"
-base_url = "https://chatgpt.com/backend-api/codex"
-api_backend = "responses"
-
-[model.codex-luna]            # o irmão: mesmo host, mesmo backend, mesma credencial
-model = "gpt-5.6-luna"
-base_url = "https://chatgpt.com/backend-api/codex"
-api_backend = "responses"
+[jev]
+effort_auto = true
 
 [jev.tiers]
 light = "codex-luna"
+
+[jev.ladder]
+b2_light_model = true
 ```
 
-Provedor com um modelo só não tem irmão — é o caso do Grok hoje. Nesse caso a pergunta de degrau
-**não é feita**: não há o que escolher, e uma pergunta com uma resposta só custa uma decisão.
+`light` names a configured model entry. Leave it unset to run without a Worker,
+or set `b2_light_model = false` to turn off Worker routing.
 
-**Quem decide:** Jev, uma vez por chamada, na mesma bateria que escolhe o effort (uma ida só, não
-duas). A pergunta é `micro_tier` — "qual dos dois modelos faz **esta** chamada?" — com o perfil dos
-dois no `state` (nome, janela, o que o dono anotou sobre cada um). Piso de confiança **0,55**, mais
-alto que o do effort: um rebaixamento incerto custa qualidade no passo, então incerto = o hard roda.
-A decisão é registrada com o que Jev quis e o que foi aplicado.
+### Utility work
 
-**Como desligar:** `[jev.ladder] b2_light_model = false` (a pergunta não é feita), ou não configurar
-`[jev.tiers] light` (idem).
+Utility tasks extract literal values, digest logs, compress text, answer
+questions about a supplied payload, pick candidate IDs, or classify content.
+Each task checks the result before the harness uses it. Depending on the task,
+checks preserve literal paths and error messages, require quoted spans, or
+reject labels and IDs outside the supplied set. A rejected result falls back
+to the normal path.
 
-**Como ver e trocar:** `/tiers` reporta os três degraus na ordem em que uma chamada cai neles e
-aceita `/tiers hard <nome>`, `/tiers light <id|clear>` e `/tiers cheap <ids|clear>`. O mesmo relatório
-é a linha **Model tiers** da home.
-
----
-
-## cheap — o modelo barato (OpenRouter)
-
-O cheap é um modelo **de fora do provedor do hard**, alcançado por uma cadeia de fallback do
-OpenRouter. Ele nunca recebe a conversa: recebe um **payload fechado** (uma saída de ferramenta, um
-trecho de log, uma lista de candidatos) e devolve texto curto, que passa por um **guarda** antes de
-ser usado.
+You can configure a single model entry or an ordered OpenRouter fallback chain:
 
 ```toml
 [jev.local]
 model = "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash"
-max_context_tokens = 262144      # teto do dono para uma rodada inteira no cheap
-notes = "cadeia de fallback: o OpenRouter tenta na ordem e cobra só quem responde"
+max_context_tokens = 262144
+notes = "Extraction, summaries, and mechanical edits."
 ```
 
-* A vírgula é **prioridade**, não lista de opções: o primeiro id é o modelo da requisição e os
-  seguintes vão em `models`, a rota de fallback do próprio OpenRouter. O tier grátis vem primeiro
-  porque custa zero.
-* A chave vem do ambiente (`OPENROUTER_API_KEY`), nunca do arquivo de config.
-* O `model` também aceita o **id de uma entrada** `[model.<id>]` — aí o transporte é o da entrada.
-* `/cheap-model` mostra o estado e troca a cadeia; `/cheap-model <ids>` grava; `clear` volta para a
-  cadeia de fábrica.
+A comma-separated chain is tried in order. Model availability and charges come
+from the provider. Keep API keys in the environment or use provider login;
+do not paste them into this example.
 
-### Onde o cheap é usado
+The `b2_local_model` route can also hand an entire call to the Utility model
+when the capacity checks and context limit allow it. This is separate from the
+bounded utility tasks. The `e_retention` route breaks large outputs into blocks
+and decides what to retain before discarding the original text, with special
+handling for secrets. Each route has a per-turn failure limit, so a failing
+endpoint does not get retried at every step.
 
-**1. Tarefas fechadas (o catálogo).** 93 tarefas de texto, cada uma com um guarda que a resposta tem
-que passar:
+### Other decisions
 
-| tipo | quantas | o que devolve | guarda típico |
-|---|---|---|---|
-| `Extract` | 31 | itens verbatim (símbolos, campos, linhas) | todo literal do payload tem que reaparecer |
-| `Digest` | 22 | o que importa, em linhas curtas | idem |
-| `Compress` | 18 | o payload encolhido a ~⅓ | idem |
-| `Ask` | 9 | a menor resposta que responde, citando | spans do payload |
-| `Pick` | 7 | ids de uma lista de candidatos | só ids que o chamador ofereceu |
-| `Classify` | 6 | um rótulo de um conjunto fechado | tem que ser um dos rótulos |
+| Area | What Jev decides |
+|---|---|
+| Permissions | Whether to allow, reject, or escalate a nonroutine tool call. In YOLO mode it can veto a call. |
+| Content | Which files, lines, logs, search results, and instructions merit another look. |
+| Planning | Intent, relevant tool families, and delegation hints. |
+| Quality | Whether an edit or failed check needs another attempt, and which errors to address first. |
+| Context | What to preserve during compression and compaction. |
+| Scope | Whether a tool's target fits the user's request. |
 
-Dos 93 guardas, **71 exigem que todo literal** (caminho, `file:line`, número, mensagem de erro)
-sobreviva à resposta, 3 exigem spans citados do payload, e os demais exigem JSON, rótulo do conjunto
-fechado ou ids que o chamador ofereceu. Resposta que não passa no guarda é descartada, e o caminho de
-sempre segue.
-
-**2. Uma rodada inteira (`b2_local_model`).** Quando Jev julga que o cheap consegue fazer a chamada
-**inteira** (capacidade ≥ 0,70 e nenhum aviso ≥ 0,40), a rodada vai para ele — o modelo da sessão não
-é chamado. Duas travas: a estimativa da conversa + a reserva tem que caber no teto (`max_context_tokens`
-ou a janela do modelo), e o resultado volta com o mesmo guarda das tarefas.
-
-**3. A lane de retenção (`e_retention`).** Saída grande demais para caber no contexto vira N blocos,
-e Jev decide o que fica de cada um, **antes** de o texto original ser descartado (store-before-loss,
-exceto se houver segredo no payload).
-
-Cada lane tem sua própria chave em `[jev.ladder]`, um contador por turno e um **breaker**: depois de
-3 falhas a lane fica de fora pelo resto do turno — um endpoint instável não custa tempo em cada passo.
-Toda chamada barata registra uma linha sem conteúdo (lane, tarefa, decisão, modelo, tokens, latência)
-no mesmo gravador das outras decisões.
-
----
-
-## Jev — onde ele decide
-
-O Jev responde perguntas estruturadas sobre um `state` pequeno que **o código montou**: candidatos,
-linhas, menus de effort, perfis de modelo. Ele nunca inventa um candidato, nunca gera texto e nunca
-amplia permissão — só escolhe entre o que já foi calculado, ou abstém-se.
-
-**O contrato, em uma linha:** o código produz candidatos, o Jev escolhe, o caminho de sempre é o
-fallback, e falha/empate/timeout = comportamento antigo.
-
-### Onde ele age hoje (por área)
-
-| área | quando | o que decide |
-|---|---|---|
-| **permissão** | chamada de ferramenta não rotineira; e **toda** chamada em YOLO, como freio | libera/recusa/escala; no YOLO só recusa (piso 0,85) |
-| **conteúdo** | busca de arquivos, leitura grande, log com erro, busca web, memória/`AGENTS.md`, qual teste rodar | o que o hard vai **relê** |
-| **esforço** | início do turno | intenção, famílias de ferramentas, dica de delegação, tipo de subagente |
-| **degrau e esforço** | **cada chamada**, com `/effort auto` ligado | **qual modelo (hard ou light)** e **qual effort**, na mesma bateria |
-| **barato** | resultado de ferramenta, saída grande, rodada inteira | qual das 93 tarefas serve, o que manter, se o cheap pega a rodada |
-| **qualidade** | depois de cada edição, falha de build/teste, diff, erros múltiplos | o passo precisa ser refeito? com mais effort? categoria da falha, ordem dos erros |
-| **contexto** | antes de compactar, saída ≥ 4 KB, depois de compactar | o que o resumidor precisa ver, o que é inerte, o que volta |
-| **escopo** | antes de executar ferramenta | o alvo bate com a intenção? |
-
-Cada ponto é uma **alavanca** em `[jev.ladder]` (`b2_light_model`, `b2_local_model`, `e_retention`,
-`c1_premature_stop`, …), com piso próprio. Desligar uma alavanca desliga aquele ponto, não o Jev.
-
-### Configuração
+Individual switches live under `[jev.ladder]`. For example:
 
 ```toml
 [jev]
-provider = "openrouter_decisions"                 # o transporte das decisões
+provider = "openrouter_decisions"
 base_url = "https://openrouter.ai/api"
 model = "~typesafe/jev-latest"
 api_key_env = "OPENROUTER_API_KEY"
 timeout_ms = 20000
-effort_auto = true                                # a sessão começa em modo auto
-
-[jev.tiers]
-light = "codex-luna"                              # opcional: o irmão leve do hard
-
-[jev.local]
-model = "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash"
+effort_auto = true
 
 [jev.ladder]
-b2_light_model = true                             # a pergunta de degrau
-b2_local_model = true                             # a lane barata
-e_retention = true                                # a lane de retenção
+b2_light_model = true
+b2_local_model = true
+e_retention = true
 ```
 
-### Effort auto — o modo que liga a decisão por chamada
+Jev needs credentials for its configured decision endpoint. Without them, the
+harness still runs: routing decisions fall back to the session model, and
+unavailable utility routes stay out of the way.
 
-`/effort auto` faz Jev escolher **degrau e effort de cada chamada** dentro do turno:
+To inspect decisions:
 
-* o `state` leva o nome e o id do modelo, o **menu de efforts que aquele modelo oferece** (com as
-  descrições), a fase (`start_of_turn` / `mid_turn_after_tools`), os últimos passos, quantos itens o
-  turno já tem e o pedido do usuário;
-* a escolha de effort fica **restrita ao menu do modelo** (ele não pode pedir um nível inexistente) e
-  existe `keep_session_effort` para ele abster-se; piso **0,40**;
-* a escolha de degrau tem piso **0,55** e a resposta `keep_session_model` para abster-se;
-* tudo é registrado — o que Jev queria, além do que foi aplicado
-  (`effort:low · applied to this call` vs. `defer | wanted low at 0.41 below the floor`);
-* `/effort <nível>` desliga o modo para a sessão (nível explícito sempre ganha); `--effort` na linha
-  de comando faz o mesmo na largada.
+```sh
+GROK_LOG_JEV=1 distill
+```
 
-### Como auditar
+This compatibility-named variable enables `logs/jev.jsonl` inside the active
+profile. Entries record the route, decision, confidence, latency, model, and
+whether the requested choice was applied. See [the decision inventory](list.md)
+for implementation pointers.
 
-`GROK_LOG_JEV=1` grava uma linha JSON por decisão em `~/.grok/logs/jev.jsonl` (lane, decisão, motivo,
-confiança, latência, modelo). Sem isso não há como saber por que uma chamada foi parar em outro
-modelo — foi assim que este harness foi calibrado.
+## Build from source
 
----
+Install the Rust toolchain specified in `rust-toolchain.toml` and the native
+build dependencies for your platform, including a C/C++ compiler, CMake,
+pkg-config, and Protocol Buffers. The [release workflow](.github/workflows/release.yml)
+contains the build steps used for each platform.
 
-## Provedores: qualquer um, ou nenhum
+```sh
+git clone https://github.com/samuelfaj/distill.git
+cd distill
+cargo build --locked --release -p distill-pager-bin --bin distill
+./target/release/distill
+```
 
-O harness não exige um provedor específico. Cada um tem seu caminho de login, e todos podem estar
-desligados ao mesmo tempo:
+For a local debug build and installation, run `sh tools/install-local.sh`.
 
-| provedor | login | onde mora a credencial |
-|---|---|---|
-| **Grok** | `/login` na TUI, ou `Distill login` | `auth.json` do harness |
-| **ChatGPT** | `Distill login --chatgpt` (ou `--chatgpt --device-auth` para máquina sem navegador) | `~/.grok/codex-auth.json`, OAuth **do próprio harness**, com refresh |
-| **OpenRouter** | a chave em `OPENROUTER_API_KEY` | o ambiente |
+## License
 
-A home lista `Log in with Grok`, `Log in with ChatGPT` e `Log in with OpenRouter`; sem sessão Grok,
-a tela de gate oferece ChatGPT e OpenRouter também. **Nenhum é obrigatório:** com só modelos locais
-configurados (um endpoint OpenAI-compatible em `[model.*]`), o harness roda igual — sem credencial de
-decisão o Jev simplesmente não responde, e cada ponto que ele cobriria volta ao comportamento de
-antes (fail-open), com as lanes baratas de fora.
-
----
-
-## O que decide o quê, em uma frase
-
-* **hard** faz o trabalho;
-* **light** faz o trabalho quando o passo não precisa do hard, na mesma conversa;
-* **cheap** faz o que é texto fechado, sem conversa;
-* **Jev** escolhe entre eles — e escolhe o resto das decisões estruturadas do harness — sempre com um
-  caminho de sempre se ele falhar.
-
-Detalhe item a item — arquivo, teste e piso de cada decisão — em [`list.md`](list.md).
+Distill is licensed under [Apache 2.0](LICENSE). Samuel Fajreldines creates and
+maintains the Distill modifications. Preserved copyright notices and dependency
+attributions are in [NOTICE](NOTICE) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution policy.

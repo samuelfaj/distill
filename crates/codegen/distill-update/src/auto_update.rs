@@ -31,13 +31,16 @@ pub enum UpdateRunMode {
 
 const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
-const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
+const MSG_RUN_UPDATE_MANUAL: &str = "Run `distill update` to get the latest version.";
 /// Rebuild this independent source distribution locally.
 fn manual_install_cmd(_channel: &str) -> String {
     "cargo build --release -p distill-pager-bin --bin distill".to_string()
 }
 
-fn reinstall_hint(_installer: &str, channel: &str) -> String {
+fn reinstall_hint(installer: &str, channel: &str) -> String {
+    if installer == "gh-release" {
+        return "Run the installer again: https://github.com/samuelfaj/distill#install".to_string();
+    }
     format!(
         "Rebuild Distill from its source repository:\n  {}",
         manual_install_cmd(channel)
@@ -434,10 +437,20 @@ fn env_installer() -> Option<&'static str> {
     None
 }
 
-// Distill is distributed from source. Never let an inherited installer setting
-// replace this harness with another product's binary.
+// The release installer owns this directory. Source builds and inherited provider
+// installer settings must not select an unrelated update channel.
+pub(crate) fn release_install_root() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let root = exe.parent()?.parent()?;
+    (std::fs::read_to_string(root.join(".distill-release"))
+        .ok()?
+        .trim()
+        == "samuelfaj/distill")
+        .then(|| root.to_path_buf())
+}
+
 pub async fn get_installer() -> Option<&'static str> {
-    None
+    release_install_root().map(|_| "gh-release")
 }
 
 #[cfg(test)]
@@ -774,6 +787,9 @@ async fn run_update_subcommand(
 /// (see proc(5)), so it returns the old versioned target after a symlink swap. Prefer `~/.grok/bin/grok` which always
 /// points to the latest version.
 fn resolve_restart_exe() -> Result<std::path::PathBuf> {
+    if let Some(root) = release_install_root() {
+        return Ok(root.join("bin/distill"));
+    }
     let canonical = grok_application();
     if canonical.exists() {
         return Ok(canonical);
@@ -790,7 +806,7 @@ pub fn restart_grok() -> Result<()> {
     }
     cmd.env_clear();
     cmd.envs(std::env::vars_os().filter(|(k, _)| k != "GROK_AUTO_UPDATE"));
-    eprintln!("Restarting Grok...");
+    eprintln!("Restarting Distill...");
 
     // Use exec on Unix to replace the current process, avoiding stdio issues when the parent exits
     // On Windows, fall back to spawn and exit
@@ -2010,7 +2026,7 @@ fn installer_manages_bin_entrypoints(installer: &str) -> bool {
 
 #[cfg_attr(not(any(unix, windows)), allow(clippy::unused_async))]
 async fn heal_managed_install(installer: &str) {
-    if !installer_manages_bin_entrypoints(installer) {
+    if installer == "gh-release" || !installer_manages_bin_entrypoints(installer) {
         return;
     }
 
@@ -2105,131 +2121,112 @@ async fn agent_exe_differs(
     }
 }
 
-/// Download a single asset from a GitHub release via `gh release download`.
-async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -> Result<()> {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("  {spinner:.cyan} Downloading from GitHub Releases...")
-            .unwrap(),
+/// Install a public release into the directory created by install.sh.
+async fn install_gh_release(target: Option<&str>) -> Result<()> {
+    let root =
+        release_install_root().context("Use install.sh to install a managed Distill release")?;
+    let (os, arch) = detect_platform()?;
+    let version = match target {
+        Some(v) => semver::Version::parse(v)?.to_string(),
+        None => crate::version::fetch_gh_release_version("stable").await?,
+    };
+    let asset = format!("distill-{os}-{arch}");
+    let base = format!(
+        "https://github.com/{}/releases/download/v{version}",
+        crate::version::GH_RELEASE_REPO
     );
-    pb.enable_steady_tick(Duration::from_millis(100));
-
-    let mut cmd = tokio::process::Command::new("gh");
-    cmd.args([
-        "release",
-        "download",
-        tag,
-        "--repo",
-        crate::version::GH_RELEASE_REPO,
-        "--pattern",
-        pattern,
-        "--output",
-        &dest.to_string_lossy(),
-        "--clobber",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::piped());
-    distill_tools::util::detach_command(&mut cmd);
-    cmd.envs(distill_tools::util::pager_env());
-    let output = cmd.output().await?;
-
-    pb.finish_and_clear();
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "gh release download failed for {} tag {} from {}: {}",
-            pattern,
-            tag,
-            crate::version::GH_RELEASE_REPO,
-            stderr.trim()
-        );
+    let downloads = root.join("downloads");
+    tokio::fs::create_dir_all(&downloads).await?;
+    let binary = downloads.join(format!("distill-{version}-{os}-{arch}"));
+    let pending = tmp_download_path(&binary);
+    let result = async {
+        download_with_progress(&format!("{base}/{asset}"), &pending).await?;
+        let checksums = download_client()?
+            .get(format!("{base}/SHA256SUMS"))
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        verify_release_checksum(&pending, &checksums, &asset).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&pending, std::fs::Permissions::from_mode(0o755)).await?;
+        }
+        smoke_test_binary(&pending).await?;
+        // Keep a running executable's inode intact when reinstalling a version.
+        if tokio::fs::metadata(&binary).await.is_err() {
+            tokio::fs::rename(&pending, &binary).await?;
+        } else {
+            verify_release_checksum(&binary, &checksums, &asset).await?;
+        }
+        replace_managed_bins(&[(binary.clone(), root.join("bin/distill"))]).await?;
+        Ok::<(), anyhow::Error>(())
     }
+    .await;
+    let _ = tokio::fs::remove_file(&pending).await;
+    result?;
+    cleanup_old_downloads(&downloads, "distill", &version).await;
     Ok(())
 }
 
-/// Download and install grok from GitHub Releases (samuelfaj/remote-code-code). Uses `gh release download` to fetch the
-/// binary matching the current platform. This works anywhere the `gh` CLI is authenticated, without needing npm or
-/// internal network access.
-async fn install_gh_release(target: Option<&str>) -> Result<()> {
-    let (os, arch) = detect_platform()?;
-    let platform = format!("{}-{}", os, arch);
-
-    let version = match target {
-        Some(v) => v.to_string(),
-        None => crate::version::fetch_gh_release_version("stable").await?,
-    };
-
-    let distill_home = distill_home();
-    let download_dir = distill_home.join("downloads");
-    let bin_dir = distill_home.join("bin");
-    tokio::fs::create_dir_all(&download_dir).await?;
-    tokio::fs::create_dir_all(&bin_dir).await?;
-
-    let binary_name = format!("grok-{}-{}", version, platform);
-    let binary_path = download_dir.join(&binary_name);
-    let tag = format!("v{}", version);
-
-    eprintln!(
-        "  Downloading grok v{} ({}) from GitHub Releases...",
-        version, platform
+async fn verify_release_checksum(
+    path: &std::path::Path,
+    manifest: &str,
+    asset: &str,
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+    let expected = manifest
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let hash = fields.next()?;
+            (fields.next()? == asset).then_some(hash)
+        })
+        .context("Release checksum is missing for this platform")?;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hash.update(buffer.get(..count).context("Invalid read length")?);
+    }
+    anyhow::ensure!(
+        format!("{:x}", hash.finalize()) == expected,
+        "Release checksum mismatch"
     );
-
-    gh_release_download(&tag, &binary_name, &binary_path).await?;
-
-    // chmod +x
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
-    }
-
-    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
-    swap_managed_bin_links(&binary_path, &bin_dir).await?;
-
-    // Update grok-latest -> versioned binary so any existing symlinks that route
-    // through it (e.g. /usr/local/bin/grok -> ~/.grok/downloads/grok-latest)
-    // resolve to the newly installed version.
-    #[cfg(unix)]
-    {
-        let latest_path = download_dir.join("grok-latest");
-        let rel_target = relative_symlink_target(&binary_path, &latest_path);
-        if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
-            tracing::warn!("Failed to update grok-latest symlink: {e}");
-        }
-    }
-
-    // Also update /usr/local/bin/{grok,agent} if either points directly into
-    // ~/.grok/downloads/ (legacy layout — skips the grok-latest indirection).
-    // Permission errors are ignored
-    #[cfg(unix)]
-    for name in ["grok", "agent"] {
-        let system_link = std::path::PathBuf::from(format!("/usr/local/bin/{name}"));
-        if let Ok(existing_target) = tokio::fs::read_link(&system_link).await {
-            let target_str = existing_target.to_string_lossy();
-            if target_str.contains(".grok/downloads/") && !target_str.ends_with("grok-latest") {
-                let _ = atomic_symlink_swap(&binary_path, &system_link).await;
-            }
-        }
-    }
-
-    remove_stale_pager(&bin_dir).await;
-
-    eprintln!();
-
-    // Current, N-1, and any leftover a live process is still executing.
-    cleanup_old_downloads(&download_dir, "grok", &version).await;
-    cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
-
-    // Persist installer to config.toml so future runs auto-detect gh-release.
-    let _ = config::update_config(|st| {
-        st.cli.installer = Some("gh-release".to_string());
-    })
-    .await;
-
     Ok(())
+}
+
+#[cfg(test)]
+mod release_tests {
+    #[tokio::test]
+    async fn release_checksum_rejects_corruption_and_missing_assets() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"abc").unwrap();
+        let manifest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  distill-macos-aarch64\n";
+        assert!(
+            super::verify_release_checksum(file.path(), manifest, "distill-macos-aarch64")
+                .await
+                .is_ok()
+        );
+        assert!(
+            super::verify_release_checksum(file.path(), manifest, "distill-linux-x86_64")
+                .await
+                .is_err()
+        );
+        std::fs::write(file.path(), b"tampered").unwrap();
+        assert!(
+            super::verify_release_checksum(file.path(), manifest, "distill-macos-aarch64")
+                .await
+                .is_err()
+        );
+    }
 }
 
 /// Creates a temporary .npmrc file with the NPM token if present.
@@ -2422,7 +2419,7 @@ pub async fn run_update(
             anyhow::bail!("{e}");
         }
         eprintln!(
-            "Installing Grok {} (current: {})...",
+            "Installing Distill {} (current: {})...",
             version, current_version
         );
         eprintln!();
@@ -2435,8 +2432,8 @@ pub async fn run_update(
         {
             tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
         }
-        eprintln!("  ✓ grok v{} installed successfully!", version);
-        eprintln!("  Please restart Grok.");
+        eprintln!("  ✓ Distill v{} installed successfully!", version);
+        eprintln!("  Please restart Distill.");
         return Ok(Some(version.to_string()));
     }
 
@@ -2559,10 +2556,10 @@ pub async fn run_update(
     let stable_ptr = try_fetch_stable_pointer().await;
     write_version_cache(target_version, stable_ptr.as_deref()).await;
     refresh_deployment_config().await;
-    eprintln!("  ✓ grok v{} installed successfully!", target_version);
+    eprintln!("  ✓ Distill v{} installed successfully!", target_version);
 
     if !force && std::env::var_os("GROK_AUTO_UPDATE").is_none() {
-        eprintln!("  Please restart Grok.");
+        eprintln!("  Please restart Distill.");
     }
     Ok(Some(target_version.to_string()))
 }

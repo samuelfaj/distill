@@ -3,8 +3,6 @@
 //! To test them without touching the real npm registry, we install a fake `npm` shell script that logs its args and prints canned stdout.
 //! The script lives in a tempdir prepended to `PATH` for the duration of the test.
 //!
-//! The same pattern covers `gh` for the `gh-release` installer paths.
-//!
 //! All tests in this file mutate `PATH` (global), so they're serialized with `#[serial]`.
 
 #![cfg(unix)]
@@ -16,7 +14,7 @@ use serial_test::serial;
 use common::FakeBinGuard;
 use distill_update::auto_update::install_npm_for_test;
 use distill_update::version::{
-    fetch_gh_release_version, fetch_npm_tag_for_test, fetch_npm_version_for_test,
+    fetch_npm_tag_for_test, fetch_npm_version_for_test,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,113 +309,4 @@ async fn install_npm_no_token_no_userconfig() {
     install_npm_for_test(Some("0.1.181"), "stable", None).unwrap();
     let log = g.args_log();
     assert!(!log[0].contains("--userconfig"), "args: {}", log[0]);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// fetch_gh_release_version — exercises the `gh release list` shell-out.
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_stable_returns_tag_stripped() {
-    let g = FakeBinGuard::install_gh();
-    // For stable channel, only the `--exclude-pre-releases` invocation is made.
-    g.set_stable_only_stdout("v0.1.181\n");
-
-    let v = fetch_gh_release_version("stable").await.unwrap();
-    assert_eq!(v, "0.1.181");
-
-    let log = g.args_log();
-    assert_eq!(log.len(), 1);
-    assert!(
-        log[0].contains("--exclude-pre-releases"),
-        "args: {}",
-        log[0]
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_stable_handles_tag_without_v_prefix() {
-    let g = FakeBinGuard::install_gh();
-    g.set_stable_only_stdout("0.1.181");
-
-    let v = fetch_gh_release_version("stable").await.unwrap();
-    assert_eq!(v, "0.1.181");
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_alpha_returns_max_of_pre_and_stable() {
-    // Alpha channel makes two `gh release list` calls (with and without --exclude-pre-releases) and returns the semver-max
-    let g = FakeBinGuard::install_gh();
-    g.set_with_pre_stdout("v0.1.182-alpha.1");
-    g.set_stable_only_stdout("v0.1.181");
-
-    let v = fetch_gh_release_version("alpha").await.unwrap();
-    assert_eq!(v, "0.1.182-alpha.1");
-    assert_eq!(g.args_log().len(), 2);
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_alpha_returns_stable_when_higher() {
-    let g = FakeBinGuard::install_gh();
-    g.set_with_pre_stdout("v0.1.180-alpha.5");
-    g.set_stable_only_stdout("v0.1.181");
-
-    let v = fetch_gh_release_version("alpha").await.unwrap();
-    assert_eq!(v, "0.1.181");
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_propagates_gh_failure() {
-    let g = FakeBinGuard::install_gh();
-    g.set_exit_code(1);
-
-    let err = fetch_gh_release_version("stable").await.unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("gh release list"), "msg: {msg}");
-    assert!(msg.contains("failed"), "msg: {msg}");
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_empty_response_returns_err() {
-    let g = FakeBinGuard::install_gh();
-    g.set_stable_only_stdout("");
-
-    let err = fetch_gh_release_version("stable").await.unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("No releases found"), "msg: {msg}");
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_passes_repo_flag() {
-    let g = FakeBinGuard::install_gh();
-    g.set_stable_only_stdout("v0.1.181");
-
-    let _ = fetch_gh_release_version("stable").await.unwrap();
-    let log = g.args_log();
-    assert!(log[0].contains("--repo"), "args: {}", log[0]);
-    assert!(
-        log[0].contains("samuelfaj/remote-code-code"),
-        "args: {}",
-        log[0]
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn fetch_gh_release_uses_jq_to_extract_tag() {
-    // The function constructs `gh release list --json tagName --jq '.[0].tagName'`
-    let g = FakeBinGuard::install_gh();
-    g.set_stable_only_stdout("v0.1.181");
-
-    let _ = fetch_gh_release_version("stable").await.unwrap();
-    let log = g.args_log();
-    assert!(log[0].contains("--json"), "args: {}", log[0]);
-    assert!(log[0].contains("--jq"), "args: {}", log[0]);
 }

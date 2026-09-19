@@ -1,0 +1,73 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: macos-aarch64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+          - runner: ubuntu-22.04-arm
+            platform: linux-aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C force-unwind-tables=yes'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config cmake clang libssl-dev libasound2-dev libdbus-1-dev protobuf-compiler
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Test release installer
+        run: python3 tests/test_release_installer.py
+      - name: Install Rust
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and verify version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/codegen/distill-version/Cargo.toml)
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          GROK_VERSION="$version" cargo build --locked --release -p distill-pager-bin --bin distill
+          target/release/distill --version | grep -F "$version"
+          mkdir -p artifacts
+          cp target/release/distill "artifacts/distill-${{ matrix.platform }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distill-${{ matrix.platform }}
+          path: artifacts/*
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp install.sh LICENSE NOTICE THIRD-PARTY-NOTICES artifacts/
+          cd artifacts
+          sha256sum distill-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" ./* --verify-tag --title "Distill $GITHUB_REF_NAME" --generate-notes

@@ -1833,7 +1833,7 @@ fn render_welcome_done(
         items.push((
             "",
             if p.provider_auth.grok {
-                "Logout with Grok"
+                "Log out of Grok"
             } else {
                 "Log in with Grok"
             },
@@ -1841,7 +1841,7 @@ fn render_welcome_done(
         items.push((
             "",
             if p.provider_auth.chatgpt {
-                "Logout with ChatGPT"
+                "Log out of ChatGPT"
             } else {
                 "Log in with ChatGPT"
             },
@@ -1849,7 +1849,7 @@ fn render_welcome_done(
         items.push((
             "",
             if p.provider_auth.openrouter {
-                "Logout with OpenRouter"
+                "Log out of OpenRouter"
             } else {
                 "Log in with OpenRouter"
             },

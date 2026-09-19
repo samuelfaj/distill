@@ -12,7 +12,7 @@ use distill_shell::util::distill_home::distill_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
 const NPM_PACKAGE: &str = "@distill/cli";
-pub const GH_RELEASE_REPO: &str = "samuelfaj/remote-code-code";
+pub const GH_RELEASE_REPO: &str = "samuelfaj/distill";
 
 // No published binary channel is configured for Distill.
 pub(crate) const CLI_BASE_URLS: &[&str] = &[];
@@ -191,9 +191,9 @@ async fn fetch_npm_tag(tag: &str, npm_registry: Option<&str>) -> Result<String> 
     }
 }
 
-/// Fetch the latest version from GitHub Releases using `gh release list`.
+/// Fetch the latest version from the public GitHub Releases API.
 /// For alpha channel, fetches both pre-release and stable-only, returns the semver-greater.
-/// `gh release list --limit 1` orders by publication date, not semver, so we need both.
+/// No GitHub account or CLI is required.
 #[doc(hidden)]
 pub async fn fetch_gh_release_version(channel: &str) -> Result<String> {
     if channel == "alpha" {
@@ -207,40 +207,42 @@ pub async fn fetch_gh_release_version(channel: &str) -> Result<String> {
 }
 
 async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
-    let mut args = vec![
-        "release",
-        "list",
-        "--repo",
-        GH_RELEASE_REPO,
-        "--limit",
-        "1",
-        "--exclude-drafts",
-        "--json",
-        "tagName",
-        "--jq",
-        ".[0].tagName",
-    ];
-    if exclude_pre {
-        args.push("--exclude-pre-releases");
-    }
-    let mut cmd = Command::new("gh");
-    cmd.args(&args).stdin(std::process::Stdio::null());
-    distill_tools::util::detach_command(&mut cmd);
-    cmd.envs(distill_tools::util::pager_env());
-    let output = cmd.output().await?;
+    let suffix = if exclude_pre {
+        "releases/latest"
+    } else {
+        "releases?per_page=100"
+    };
+    let client = distill_extra_ca::build_reqwest_client(|builder| {
+        builder
+            .timeout(Duration::from_secs(30))
+            .user_agent("distill-updater")
+    })?;
+    let body: Value = client
+        .get(format!(
+            "https://api.github.com/repos/{GH_RELEASE_REPO}/{suffix}"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    release_version_from_json(body, exclude_pre)
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh release list failed: {}", stderr.trim());
-    }
-
-    let tag = String::from_utf8(output.stdout)?.trim().to_string();
-    // Tags are formatted as "v0.1.141", strip the leading "v"
-    let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
-    if version.is_empty() {
-        anyhow::bail!("No releases found in {}", GH_RELEASE_REPO);
-    }
-    Ok(version)
+fn release_version_from_json(body: Value, stable_only: bool) -> Result<String> {
+    let releases = if stable_only {
+        vec![body]
+    } else {
+        body.as_array().cloned().unwrap_or_default()
+    };
+    releases
+        .iter()
+        .filter(|release| release["draft"].as_bool() != Some(true))
+        .filter_map(|release| release["tag_name"].as_str())
+        .filter_map(|tag| semver::Version::parse(tag.trim_start_matches('v')).ok())
+        .max()
+        .map(|version| version.to_string())
+        .ok_or_else(|| anyhow::anyhow!("No releases found in {GH_RELEASE_REPO}"))
 }
 
 /// No auth required; the upstream bucket is public. For the alpha channel, fetches both `alpha` and `stable` pointers and
@@ -422,6 +424,12 @@ pub use distill_version::installed as get_installed_grok_version;
 pub fn installed_on_disk_version() -> Option<String> {
     #[cfg(unix)]
     {
+        if let Some(root) = crate::auto_update::release_install_root() {
+            let app = root.join("bin/distill");
+            let target = std::fs::read_link(&app).ok()?;
+            std::fs::metadata(&app).ok()?;
+            return version_from_versioned_binary_name(target.file_name()?.to_str()?, "distill");
+        }
         let app = distill_shell::util::distill_home::grok_application();
         let target = std::fs::read_link(&app).ok()?;
         // metadata() follows the symlink: Err means the target is gone (dangling link) and the version it names is not actually on disk
@@ -520,6 +528,27 @@ pub fn channel_label() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn public_release_metadata_selects_versions_and_rejects_invalid_results() {
+        use serde_json::json;
+        assert_eq!(
+            super::release_version_from_json(json!({"tag_name":"v2.0.0"}), true).unwrap(),
+            "2.0.0"
+        );
+        assert_eq!(
+            super::release_version_from_json(
+                json!([
+                    {"tag_name":"v2.0.0"}, {"tag_name":"v2.1.0-beta.1"},
+                    {"tag_name":"v9.0.0", "draft":true}
+                ]),
+                false
+            )
+            .unwrap(),
+            "2.1.0-beta.1"
+        );
+        assert!(super::release_version_from_json(json!({"message":"Not Found"}), true).is_err());
+    }
+
     #[test]
     fn loopback_base_rejects_userinfo_and_non_loopback() {
         use super::is_loopback_base;

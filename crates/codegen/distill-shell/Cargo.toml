@@ -2,7 +2,7 @@
 [package]
 license = "Apache-2.0"
 name = "distill-shell"
-version = "1.0.35"
+version = "2.0.0"
 edition.workspace = true
 
 [features]

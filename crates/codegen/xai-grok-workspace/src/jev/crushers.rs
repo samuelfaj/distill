@@ -971,6 +971,98 @@ fn validate_at(
     }
 }
 
+/// `stats`: the ledger's shape, in one line — how many entries, of which kinds,
+/// and how big they are. Never a payload, never a name.
+pub fn store_stats(entries: &[(String, usize)]) -> String {
+    if entries.is_empty() {
+        return "store: empty".to_owned();
+    }
+    let total: usize = entries.iter().map(|(_, bytes)| bytes).sum();
+    let mut by_kind: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for (name, bytes) in entries {
+        let kind = name.rsplit('.').next().unwrap_or("unknown");
+        let entry = by_kind.entry(kind).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += bytes;
+    }
+    let kinds = by_kind
+        .iter()
+        .map(|(kind, (count, bytes))| format!("{kind}: {count} ({bytes} B)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("store: {} entries, {total} B — {kinds}", entries.len())
+}
+
+/// `search_store`: which stored payloads contain `query`, with the line numbers
+/// that matched — the search a reader does before asking for a whole handle.
+pub fn search_store(query: &str, handles: &[(String, String)]) -> Vec<(String, Vec<usize>)> {
+    handles
+        .iter()
+        .filter_map(|(name, payload)| {
+            let hits = grep_handle(payload, query)
+                .into_iter()
+                .map(|(line, _)| line)
+                .collect::<Vec<_>>();
+            (!hits.is_empty()).then(|| (name.clone(), hits))
+        })
+        .collect()
+}
+
+/// `test_baseline_diff`: what a test run changed against a stored baseline —
+/// only newly failing and newly fixed names, so a pre-existing flake stops
+/// burning attention.
+pub fn test_baseline_diff(baseline: &str, current: &str) -> (Vec<String>, Vec<String>) {
+    let failures = |payload: &str| -> std::collections::BTreeSet<String> {
+        payload
+            .lines()
+            .filter(|line| {
+                let lowered = line.to_ascii_lowercase();
+                lowered.contains("failed") || lowered.contains("fail ") || lowered.contains("... fail")
+            })
+            .filter_map(|line| {
+                // `test b ... FAILED` and `FAILED tests/x.py::test_b` both name
+                // the test; taking the first word of every line would collapse
+                // them all to "test" and the diff would always look empty.
+                if let Some((head, _)) = line.split_once(" ...") {
+                    let name = head.trim().trim_start_matches("test ").trim();
+                    return (!name.is_empty()).then(|| name.to_owned());
+                }
+                let mut words = line.split_whitespace();
+                let first = words.next()?;
+                let name = first.trim_matches(':');
+                (!name.is_empty() && !name.eq_ignore_ascii_case("failed"))
+                    .then(|| name.to_owned())
+            })
+            .collect()
+    };
+    let before = failures(baseline);
+    let after = failures(current);
+    let newly_failing = after.difference(&before).cloned().collect();
+    let newly_fixed = before.difference(&after).cloned().collect();
+    (newly_failing, newly_fixed)
+}
+
+/// `repo_map_budget`: a source tree's signatures, fitted to a character budget,
+/// deepest-first so a caller that wants only the top of the tree gets the top.
+pub fn repo_map_budget(files: &[(String, String)], budget_chars: usize) -> Option<String> {
+    let mut out = String::new();
+    for (path, contents) in files {
+        let Some(skeleton) = source_skeleton(contents) else {
+            continue;
+        };
+        let entry = format!("{path}\n{skeleton}");
+        if out.len() + entry.len() > budget_chars {
+            if out.is_empty() {
+                return None;
+            }
+            break;
+        }
+        out.push_str(&entry);
+        out.push('\n');
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// `duplicate_handle_notice`: the line a repeated payload is replaced by.
 pub fn duplicate_notice(hash: &str, first_seen: &str, bytes: usize) -> String {
     format!("<unchanged: {bytes} bytes already stored at {first_seen}, sha {hash}>")
@@ -1337,6 +1429,62 @@ mod tests {
             assert_eq!(crusher.id(), id);
         }
         assert!(Crusher::from_id("not_a_crusher").is_none());
+    }
+
+    #[test]
+    fn the_store_primitives_measure_search_and_diff_without_payloads() {
+        let stats = store_stats(&[
+            ("f936424268ce4010.txt".to_owned(), 19_096),
+            ("aaaa111122223333.txt".to_owned(), 4_000),
+        ]);
+        assert!(stats.starts_with("store: 2 entries, 23096 B"));
+        assert!(stats.contains("txt: 2"));
+        assert_eq!(store_stats(&[]), "store: empty");
+
+        let handles = vec![
+            ("a.txt".to_owned(), "error: one\nwarn: two\n".to_owned()),
+            ("b.txt".to_owned(), "all good here\n".to_owned()),
+        ];
+        let found = search_store("error", &handles);
+        assert_eq!(found.len(), 1, "only the payload that contains it");
+        assert_eq!(found[0].0, "a.txt");
+        assert_eq!(found[0].1, vec![1], "the line number, not the line");
+        assert!(search_store("nothing", &handles).is_empty());
+
+        let baseline = "test a ... ok\ntest b ... FAILED\ntest c ... ok\n";
+        let current = "test a ... ok\ntest b ... ok\ntest d ... FAILED\n";
+        let (newly_failing, newly_fixed) = test_baseline_diff(baseline, current);
+        assert_eq!(newly_failing, vec!["d".to_owned()], "b stopped failing, d started");
+        assert_eq!(newly_fixed, vec!["b".to_owned()]);
+        assert_eq!(
+            test_baseline_diff(baseline, baseline),
+            (Vec::new(), Vec::new()),
+            "an unchanged run reports nothing"
+        );
+    }
+
+    #[test]
+    fn a_repo_map_is_fitted_to_its_budget_or_refused() {
+        let file = |path: &str, count: usize| {
+            let mut body = format!("// {path}\n");
+            for i in 0..count {
+                body.push_str(&format!("fn helper_{i}() {{\n    let x = {i};\n}}\n"));
+            }
+            (path.to_owned(), body)
+        };
+        let files = vec![file("src/a.rs", 40), file("src/b.rs", 40)];
+
+        let mapped = repo_map_budget(&files, 10_000).expect("fits");
+        assert!(mapped.contains("src/a.rs"));
+        assert!(mapped.contains("fn helper_39()"));
+        assert!(mapped.contains("src/b.rs"));
+
+        // A budget too small for even one skeleton yields nothing, rather than a
+        // truncated map that looks complete.
+        assert!(repo_map_budget(&files, 50).is_none());
+        // Files that do not look like source are skipped, not invented.
+        let prose = vec![("README.md".to_owned(), "just words\n".to_owned())];
+        assert!(repo_map_budget(&prose, 10_000).is_none());
     }
 
     #[test]

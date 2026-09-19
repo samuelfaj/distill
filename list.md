@@ -19,144 +19,143 @@ Motivos permitidos para `deferred`: `forbidden by the catalogue`,
 `35B-only`, `host-bound (macOS app)`, `needs a local model (embeddings/NLI)`,
 `host/paid authority`, `no harness seam`.
 
-Catálogo: **188** funções — 0 implemented, 130 planned,
-58 deferred. `parte-a.md`: **27** oportunidades —
-1 implemented, 20 planned, 4 mapped, 2 deferred.
+Catálogo: **188** funções — 129 implemented, 0 planned,
+59 deferred. `parte-a.md`: **27** oportunidades —
+14 implemented, 6 planned, 5 mapped, 2 deferred.
 
 ## 1. Catálogo — o que entra no harness
 
 | id | o que faz | seam no harness | flag | teste |
 | --- | --- | --- | --- | --- |
-| `retrieve` | Byte-exact original behind [[rc:handle]] | pós-processo de tool result | `E11_handles` | — |
-| `stats` | Ledger stats, no payloads | pós-processo de tool result | `E11_handles` | — |
-| `search_store` | CCR/reversible-store search by query | pós-processo de tool result | `E11_handles` | — |
-| `json_crusher` | Deterministic JSON/TOON crush | pós-processo de tool result | `E10_crushers` | — |
-| `log_crusher` | Collapse repeated log lines | pós-processo de tool result | `E10_crushers` | — |
-| `stack_crusher` | Keep frames, drop dumps | pós-processo de tool result | `E10_crushers` | — |
-| `test_crusher` | Keep fail names and assertion text | pós-processo de tool result | `E10_crushers` | — |
-| `diff_crusher` | Keep file headers and hunks, drop noise | pós-processo de tool result | `E10_crushers` | — |
-| `html_crusher` | Strip chrome, keep text | pós-processo de tool result | `E10_crushers` | — |
-| `source_skeleton` | Signatures/line map without bodies | pós-processo de tool result | `E10_crushers` | — |
-| `toon_codec` | Uniform JSON arrays as TOON | pós-processo de tool result | `E10_crushers` | — |
-| `notebook_crusher` | Strip .ipynb outputs/base64 images; keep code+markdown cells | pós-processo de tool result | `E10_crushers` | — |
-| `lockfile_crusher` | package-lock/yarn.lock/Cargo.lock/Package.resolved → top-level deps + counts, never full graph | pós-processo de tool result | `E10_crushers` | — |
-| `generated_asset_notice` | Binary/minified/generated mega-file → typed notice (size, kind, hash) + handle instead of bytes | pós-processo de tool result | `E10_crushers` | — |
-| `embedded_blob_crusher` | base64/data-URI/hexdump islands inside text → typed placeholder + sub-handle | pós-processo de tool result | `E10_crushers` | — |
-| `progress_bar_crusher` | Collapse carriage-return progress/spinner frames (npm, pip, docker pull) to final state per bar | pós-processo de tool result | `E10_crushers` | — |
-| `secret_redact_view` | Masked view of secret-bearing blob: keys kept, values masked; deterministic masker, fail-closed | pós-processo de tool result | `E10_crushers` | — |
-| `repo_map_budget` | Ranked repo map of signatures fitted to a token budget (aider-style) for session boot | pós-processo de tool result | `E10_crushers` | — |
-| `retrieve_range` | Byte-exact slice of a handle by line/byte range instead of the whole blob | pós-processo de tool result | `E11_handles` | — |
-| `handle_grep` | Exact grep inside handle(s): verbatim match lines + line numbers | pós-processo de tool result | `E11_handles` | — |
-| `handle_query_eval` | Run a paid-supplied deterministic query (regex/jq/xpath/line-range) against a handle → counts + sample spans; no LLM involved | pós-processo de tool result | `E11_handles` | — |
-| `handle_token_estimate` | Per-provider token estimate + head/tail preview of a handle, so paid can decide retrieve-or-not | pós-processo de tool result | `E11_handles` | — |
-| `identifier_alias_codec` | Reversible aliasing of long UUIDs/hashes/paths to short tokens; expansion table behind a handle | pós-processo de tool result | `E2_importance_extract` | — |
-| `ansi_escape_strip` | Strip ANSI color/cursor escape codes that inflate tokenization | pós-processo de tool result | `E10_crushers` | — |
-| `padded_table_compact` | Collapse alignment whitespace in columnar CLI output; CSV/TOON re-emit | pós-processo de tool result | `E10_crushers` | — |
-| `workspace_change_notice` | FSEvents-based list of files changed since a given turn + per-handle staleness check; paid re-reads only those | pós-processo de tool result | `E4_read_reuse` | — |
-| `write_ack_verify` | Successful write/edit tool results → terse ack {lines, hash, applied hunks} instead of full echo; kills the verify re-read | pós-processo de tool result | `E4_read_reuse` | — |
-| `stdout_budget_elide` | Generic byte budget on any stdout when no specific crusher matches: head+tail verbatim, middle elided to [[rc:handle]] | pós-processo de tool result | `E2_importance_extract` | — |
-| `svg_crusher` | Strip SVG path-coordinate blobs → structure, text, viewBox; full behind handle | pós-processo de tool result | `E10_crushers` | — |
-| `error_site_autoquote` | Parse file:line refs in failing output; host appends the referenced source lines (±N) verbatim so paid skips the follow-up read | pós-processo de tool result | `E2_importance_extract` | — |
-| `schema_validate_eval` | Validate handle content against a paid-supplied JSON Schema/grammar → error list with paths; no LLM involved | pós-processo de tool result | `E11_handles` | — |
-| `test_baseline_diff` | Compare current test failures against a stored baseline handle → only NEW and newly-fixed failures; pre-existing flakes stop burning paid attention | pós-processo de tool result | `E11_handles` | — |
-| `distill_command_output` | Extractive compress of noisy stdout with question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `distill_long_text` | Long prose/log extractive compress | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `watch_summary` | Existing watchSummary mode | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `ask_handle` | Extractive QA over a recovery-scope handle with obligatory spans | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `extract_schema` | Fill closed JSON schema from handle | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `pick_candidates` | Top-k ids from path/symbol list for a question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `classify_closed` | Closed enum: pass/fail, file role, error class | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `cluster_lines` | Group similar failures; 1 example per group | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `outline_structure` | Headings/functions with line ranges | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `delta_handles` | What changed between two handles | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `cite_spans` | Quotes that must be substrings of original | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `entity_list` | Files, tests, error tokens mentioned in blob | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `test_verdict` | PASS/FAIL + failing names from test stdout | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `command_intent` | Existing CommandOutputIntent classifier | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `filter_line_numbers` | Line numbers matching an NL predicate | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `map_error_to_files` | Stack/error → likely paths | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `json_shape` | Infer keys of a JSON blob without values if secret-like | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `log_records` | Log lines → {ts,level,msg,file} | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `git_theme_summary` | git log/status noisy summary | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `ci_job_failures` | CI log → failed job names | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `lint_group` | Group linter hits by rule | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `coverage_summary` | Coverage % and uncovered files | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `docker_error_tail` | Last error in long docker/build log | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `terraform_plan_digest` | Add/change/destroy counts + names | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `kubectl_digest` | Wide kubectl get output | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `gh_run_digest` | gh run view / api noise | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `linear_issue_digest` | Extract title/AC/labels from issue JSON, no invention | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `mcp_schema_trim` | Filter huge MCP tool catalogs to matching names | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `patch_explain` | Describe a unified diff; never apply | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `chunk_select` | Which line ranges of a file answer a question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `file_role_classify` | test/impl/config/generated/skill | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `json_path_select` | Which JSON paths match a question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `table_extract` | Markdown/HTML tables → JSON rows | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `metric_extract` | Numbers from bench output | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `playwright_trace_digest` | Playwright log → failed spec + error | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `xcodebuild_error_extract` | xcodebuild/swift test errors | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `subagent_brief_compact` | Compress explore subagent dump before parent context | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `multi_handle_ask` | One question over N handles | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `constraint_extract` | Acceptance criteria from a ticket blob | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `import_summary` | Import/include list from a file | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `log_timeline` | Timestamped event list | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `graphql_error_extract` | GraphQL errors array digest | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `har_summary` | HAR/network log: status and URLs only | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `sql_explain_digest` | EXPLAIN/analyze output | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `profiler_hotspots` | Top stacks from profiler text | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `flake_classify` | flake vs consistent fail (classify only) | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `boilerplate_strip` | Drop license headers/generated banners | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `graph_ask` | Prose wrapper over graphify query result | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `skill_name_pick` | Pick relevant skill NAMES only; never distill SKILL.md bodies | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `env_key_list` | Env key names, never values | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `duplicate_handle_notice` | This blob already stored as handle X | pós-processo de tool result | `E11_handles` | — |
-| `secret_presence_flag` | Regex/heuristic: blob looks secret-bearing; do not echo values | pós-processo de tool result | `E10_crushers` | — |
-| `wire_encode` | Existing DistillMode.wireEncode | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `compact_span` | Existing compact span codec | pós-processo de tool result | `E10_crushers` | — |
-| `tree_listing_digest` | Huge find/ls -R listing → subtree summary relevant to question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `mcp_result_digest` | Compress verbose MCP tool results (question-aware) where the provider hook supports rewrite | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `grep_hits_rank` | Rank/group hits of an already-stored grep dump handle; voluntary paid call only — never auto-distills rg/grep | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `context_pack` | Question → ranked reading list of handles, paths+ranges and skeletons; no prose claims | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `dependency_graph_digest` | npm ls / pip freeze / SwiftPM resolve output → direct deps, versions, conflicts | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `crash_report_digest` | macOS .ips/crash log → exception type, faulting thread, top frames, relevant binary images | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `blame_digest` | git blame output → per-range author/commit/date relevant to question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `merge_conflict_digest` | Conflicted files + per-conflict ours/theirs summary; conflict markers quoted verbatim | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `pr_thread_digest` | gh pr review/comment JSON → unresolved threads {file, line, ask} | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `chat_thread_digest` | Slack/comment thread JSON → participants, decisions, open questions with spans | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `help_flags_extract` | --help/man output → flags and subcommands relevant to question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `openapi_digest` | OpenAPI/GraphQL SDL spec → endpoints/types matching question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `db_schema_digest` | sqlite .schema / SHOW CREATE dump → relevant tables, columns, indexes | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `tabular_digest` | Big CSV/TSV → columns, row count, question-relevant sample rows | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `compiler_diagnostics_extract` | Any compiler/typechecker output (tsc, cargo, go, javac, swiftc) → {file, line, severity, message} | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `bundler_build_digest` | webpack/vite/next build output → errors, warnings, emitted sizes | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `snapshot_diff_digest` | Snapshot-test failure diffs → minimal changed-subtree summary | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `pkg_install_digest` | brew/apt/npm install and upgrade logs → installed versions + warnings/errors | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `http_response_digest` | curl/httpie output → status, key headers, body digest relevant to question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `process_snapshot_digest` | ps/lsof/netstat snapshots → entries matching question (orphans, sockets, ports) | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `sanitizer_report_digest` | ASan/TSan/UBSan report → leak/race class + key frames | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `syscall_trace_digest` | strace/dtruss/fs_usage trace → files/sockets touched + error syscalls relevant to question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `debugger_output_digest` | lldb/gdb session output → relevant frames, variables, breakpoint hits | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `memory_report_digest` | vmmap/leaks/footprint output → top regions and allocations relevant to question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `binary_inspect_digest` | nm/otool/objdump/strings output → symbols and sections matching question | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `lighthouse_digest` | Lighthouse/axe JSON → scores + top violations grouped | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `vuln_scan_digest` | npm audit/trivy/grype JSON → {package, severity, fixedIn} grouped | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `gitlab_api_digest` | glab/GitLab API JSON (MRs, pipelines, discussions) → unresolved threads + failed jobs | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `email_thread_digest` | Email chains (.eml/mbox/M365 JSON) → participants, latest ask, decisions; quote-chain deduped | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `meeting_transcript_digest` | Meeting transcript → decisions, action items, owners, with spans | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `changelog_range_extract` | CHANGELOG/release notes → entries between two versions | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `subagent_outcome_classify` | Subagent output → done/partial/failed/off-task with evidence spans | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `pii_presence_flag` | Heuristic PII detector (emails, names, document numbers) → flag + masked view; keeps customer data out of paid context | pós-processo de tool result | `E10_crushers` | — |
-| `multi_log_timeline_merge` | Merge timestamped events across N log handles into one ordered timeline with source tags | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `ui_tree_digest` | Accessibility/DOM tree dumps (browser or computer-use) → elements matching question {role, label, coords} | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `injection_pattern_flag` | Heuristic prompt-injection detector on fetched/untrusted content → flag + quarantine notice; content stays behind handle until paid opts in | pós-processo de tool result | `E10_crushers` | — |
-| `commit_message_draft` | Draft commit message from diff handle | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `pr_description_draft` | Draft PR body from diff+tests | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `i18n_key_diff` | Missing translation keys | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `search_query_suggest` | Suggest rg/graphify queries for a question; paid chooses and executes | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `release_notes_draft` | Draft release notes from diff/log handles | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `i18n_translation_draft` | Draft translations for missing resource keys | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `issue_triage_draft` | Suggest labels/duplicates/severity for a new issue from handles | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
-| `sql_query_draft` | NL → SQL draft against a schema digest (live-DB triage) | tarefa registrada (`jev/tasks.rs`) | `E5_cheap_task` | — |
+| `retrieve` | Byte-exact original behind [[rc:handle]] | pós-processo de tool result | `e_importance` | `jev_store::tests::a_stored_payload_reads_back_byte_identical` |
+| `stats` | Ledger stats, no payloads | pós-processo de tool result | `e_importance` | `crushers::tests::the_store_primitives_measure_search_and_diff_without_payloads`; função pura — ligação ao caminho vivo ainda pendente |
+| `search_store` | CCR/reversible-store search by query | pós-processo de tool result | `e_importance` | `crushers::tests::the_store_primitives_measure_search_and_diff_without_payloads`; função pura — ligação ao caminho vivo ainda pendente |
+| `json_crusher` | Deterministic JSON/TOON crush | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `log_crusher` | Collapse repeated log lines | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `stack_crusher` | Keep frames, drop dumps | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `test_crusher` | Keep fail names and assertion text | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `diff_crusher` | Keep file headers and hunks, drop noise | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `html_crusher` | Strip chrome, keep text | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `source_skeleton` | Signatures/line map without bodies | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `toon_codec` | Uniform JSON arrays as TOON | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers); função pura — ligação ao caminho vivo ainda pendente |
+| `notebook_crusher` | Strip .ipynb outputs/base64 images; keep code+markdown cells | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `lockfile_crusher` | package-lock/yarn.lock/Cargo.lock/Package.resolved → top-level deps + counts, never full graph | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `generated_asset_notice` | Binary/minified/generated mega-file → typed notice (size, kind, hash) + handle instead of bytes | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `embedded_blob_crusher` | base64/data-URI/hexdump islands inside text → typed placeholder + sub-handle | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `progress_bar_crusher` | Collapse carriage-return progress/spinner frames (npm, pip, docker pull) to final state per bar | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `secret_redact_view` | Masked view of secret-bearing blob: keys kept, values masked; deterministic masker, fail-closed | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `repo_map_budget` | Ranked repo map of signatures fitted to a token budget (aider-style) for session boot | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers); função pura — ligação ao caminho vivo ainda pendente |
+| `retrieve_range` | Byte-exact slice of a handle by line/byte range instead of the whole blob | pós-processo de tool result | `e_importance` | `crushers::tests::the_handle_primitives_read_a_stored_payload_back` |
+| `handle_grep` | Exact grep inside handle(s): verbatim match lines + line numbers | pós-processo de tool result | `e_importance` | `crushers::tests::the_handle_primitives_read_a_stored_payload_back` |
+| `handle_query_eval` | Run a paid-supplied deterministic query (regex/jq/xpath/line-range) against a handle → counts + sample spans; no LLM involved | pós-processo de tool result | `e_importance` | `crushers::tests::the_handle_primitives_read_a_stored_payload_back`; função pura — ligação ao caminho vivo ainda pendente |
+| `handle_token_estimate` | Per-provider token estimate + head/tail preview of a handle, so paid can decide retrieve-or-not | pós-processo de tool result | `e_importance` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `identifier_alias_codec` | Reversible aliasing of long UUIDs/hashes/paths to short tokens; expansion table behind a handle | pós-processo de tool result | `e_importance` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `ansi_escape_strip` | Strip ANSI color/cursor escape codes that inflate tokenization | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `padded_table_compact` | Collapse alignment whitespace in columnar CLI output; CSV/TOON re-emit | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `write_ack_verify` | Successful write/edit tool results → terse ack {lines, hash, applied hunks} instead of full echo; kills the verify re-read | pós-processo de tool result | `e_read_reuse` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers); função pura — ligação ao caminho vivo ainda pendente |
+| `stdout_budget_elide` | Generic byte budget on any stdout when no specific crusher matches: head+tail verbatim, middle elided to [[rc:handle]] | pós-processo de tool result | `e_importance` | `reduce::tests::importance_extraction_keeps_failures_head_and_tail_and_marks_the_rest` |
+| `svg_crusher` | Strip SVG path-coordinate blobs → structure, text, viewBox; full behind handle | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `error_site_autoquote` | Parse file:line refs in failing output; host appends the referenced source lines (±N) verbatim so paid skips the follow-up read | pós-processo de tool result | `e_importance` | `reduce::tests::importance_finds_the_lines_a_reader_acts_on`; função pura — ligação ao caminho vivo ainda pendente |
+| `schema_validate_eval` | Validate handle content against a paid-supplied JSON Schema/grammar → error list with paths; no LLM involved | pós-processo de tool result | `e_importance` | `crushers::tests::the_handle_primitives_read_a_stored_payload_back` |
+| `test_baseline_diff` | Compare current test failures against a stored baseline handle → only NEW and newly-fixed failures; pre-existing flakes stop burning paid attention | pós-processo de tool result | `e_importance` | `crushers::tests::the_store_primitives_measure_search_and_diff_without_payloads`; função pura — ligação ao caminho vivo ainda pendente |
+| `distill_command_output` | Extractive compress of noisy stdout with question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `distill_long_text` | Long prose/log extractive compress | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `watch_summary` | Existing watchSummary mode | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `ask_handle` | Extractive QA over a recovery-scope handle with obligatory spans | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `extract_schema` | Fill closed JSON schema from handle | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `pick_candidates` | Top-k ids from path/symbol list for a question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `classify_closed` | Closed enum: pass/fail, file role, error class | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `cluster_lines` | Group similar failures; 1 example per group | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `outline_structure` | Headings/functions with line ranges | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `delta_handles` | What changed between two handles | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `cite_spans` | Quotes that must be substrings of original | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `entity_list` | Files, tests, error tokens mentioned in blob | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `test_verdict` | PASS/FAIL + failing names from test stdout | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `command_intent` | Existing CommandOutputIntent classifier | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `filter_line_numbers` | Line numbers matching an NL predicate | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `map_error_to_files` | Stack/error → likely paths | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `json_shape` | Infer keys of a JSON blob without values if secret-like | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `log_records` | Log lines → {ts,level,msg,file} | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `git_theme_summary` | git log/status noisy summary | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `ci_job_failures` | CI log → failed job names | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `lint_group` | Group linter hits by rule | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `coverage_summary` | Coverage % and uncovered files | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `docker_error_tail` | Last error in long docker/build log | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `terraform_plan_digest` | Add/change/destroy counts + names | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `kubectl_digest` | Wide kubectl get output | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `gh_run_digest` | gh run view / api noise | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `linear_issue_digest` | Extract title/AC/labels from issue JSON, no invention | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `mcp_schema_trim` | Filter huge MCP tool catalogs to matching names | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `patch_explain` | Describe a unified diff; never apply | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `chunk_select` | Which line ranges of a file answer a question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `file_role_classify` | test/impl/config/generated/skill | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `json_path_select` | Which JSON paths match a question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `table_extract` | Markdown/HTML tables → JSON rows | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `metric_extract` | Numbers from bench output | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `playwright_trace_digest` | Playwright log → failed spec + error | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `xcodebuild_error_extract` | xcodebuild/swift test errors | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `subagent_brief_compact` | Compress explore subagent dump before parent context | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `multi_handle_ask` | One question over N handles | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `constraint_extract` | Acceptance criteria from a ticket blob | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `import_summary` | Import/include list from a file | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `log_timeline` | Timestamped event list | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `graphql_error_extract` | GraphQL errors array digest | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `har_summary` | HAR/network log: status and URLs only | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `sql_explain_digest` | EXPLAIN/analyze output | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `profiler_hotspots` | Top stacks from profiler text | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `flake_classify` | flake vs consistent fail (classify only) | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `boilerplate_strip` | Drop license headers/generated banners | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `graph_ask` | Prose wrapper over graphify query result | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `skill_name_pick` | Pick relevant skill NAMES only; never distill SKILL.md bodies | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `env_key_list` | Env key names, never values | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `duplicate_handle_notice` | This blob already stored as handle X | pós-processo de tool result | `e_importance` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `secret_presence_flag` | Regex/heuristic: blob looks secret-bearing; do not echo values | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `wire_encode` | Existing DistillMode.wireEncode | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `compact_span` | Existing compact span codec | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `tree_listing_digest` | Huge find/ls -R listing → subtree summary relevant to question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `mcp_result_digest` | Compress verbose MCP tool results (question-aware) where the provider hook supports rewrite | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `grep_hits_rank` | Rank/group hits of an already-stored grep dump handle; voluntary paid call only — never auto-distills rg/grep | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `context_pack` | Question → ranked reading list of handles, paths+ranges and skeletons; no prose claims | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `dependency_graph_digest` | npm ls / pip freeze / SwiftPM resolve output → direct deps, versions, conflicts | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `crash_report_digest` | macOS .ips/crash log → exception type, faulting thread, top frames, relevant binary images | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `blame_digest` | git blame output → per-range author/commit/date relevant to question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `merge_conflict_digest` | Conflicted files + per-conflict ours/theirs summary; conflict markers quoted verbatim | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `pr_thread_digest` | gh pr review/comment JSON → unresolved threads {file, line, ask} | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `chat_thread_digest` | Slack/comment thread JSON → participants, decisions, open questions with spans | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `help_flags_extract` | --help/man output → flags and subcommands relevant to question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `openapi_digest` | OpenAPI/GraphQL SDL spec → endpoints/types matching question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `db_schema_digest` | sqlite .schema / SHOW CREATE dump → relevant tables, columns, indexes | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `tabular_digest` | Big CSV/TSV → columns, row count, question-relevant sample rows | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `compiler_diagnostics_extract` | Any compiler/typechecker output (tsc, cargo, go, javac, swiftc) → {file, line, severity, message} | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `bundler_build_digest` | webpack/vite/next build output → errors, warnings, emitted sizes | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `snapshot_diff_digest` | Snapshot-test failure diffs → minimal changed-subtree summary | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `pkg_install_digest` | brew/apt/npm install and upgrade logs → installed versions + warnings/errors | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `http_response_digest` | curl/httpie output → status, key headers, body digest relevant to question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `process_snapshot_digest` | ps/lsof/netstat snapshots → entries matching question (orphans, sockets, ports) | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `sanitizer_report_digest` | ASan/TSan/UBSan report → leak/race class + key frames | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `syscall_trace_digest` | strace/dtruss/fs_usage trace → files/sockets touched + error syscalls relevant to question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `debugger_output_digest` | lldb/gdb session output → relevant frames, variables, breakpoint hits | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `memory_report_digest` | vmmap/leaks/footprint output → top regions and allocations relevant to question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `binary_inspect_digest` | nm/otool/objdump/strings output → symbols and sections matching question | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `lighthouse_digest` | Lighthouse/axe JSON → scores + top violations grouped | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `vuln_scan_digest` | npm audit/trivy/grype JSON → {package, severity, fixedIn} grouped | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `gitlab_api_digest` | glab/GitLab API JSON (MRs, pipelines, discussions) → unresolved threads + failed jobs | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `email_thread_digest` | Email chains (.eml/mbox/M365 JSON) → participants, latest ask, decisions; quote-chain deduped | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `meeting_transcript_digest` | Meeting transcript → decisions, action items, owners, with spans | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `changelog_range_extract` | CHANGELOG/release notes → entries between two versions | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `subagent_outcome_classify` | Subagent output → done/partial/failed/off-task with evidence spans | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `pii_presence_flag` | Heuristic PII detector (emails, names, document numbers) → flag + masked view; keeps customer data out of paid context | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `multi_log_timeline_merge` | Merge timestamped events across N log handles into one ordered timeline with source tags | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `ui_tree_digest` | Accessibility/DOM tree dumps (browser or computer-use) → elements matching question {role, label, coords} | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `injection_pattern_flag` | Heuristic prompt-injection detector on fetched/untrusted content → flag + quarantine notice; content stays behind handle until paid opts in | pós-processo de tool result | `e_crushers` | `crushers::tests` (cargo test -p xai-grok-workspace --lib jev::crushers) |
+| `commit_message_draft` | Draft commit message from diff handle | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `pr_description_draft` | Draft PR body from diff+tests | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `i18n_key_diff` | Missing translation keys | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `search_query_suggest` | Suggest rg/graphify queries for a question; paid chooses and executes | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `release_notes_draft` | Draft release notes from diff/log handles | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `i18n_translation_draft` | Draft translations for missing resource keys | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `issue_triage_draft` | Suggest labels/duplicates/severity for a new issue from handles | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
+| `sql_query_draft` | NL → SQL draft against a schema digest (live-DB triage) | tarefa registrada (`jev/tasks.rs`) | `e_cheap_task` | `tasks::tests::a_registry_task_runs_the_shipped_path_and_is_gated` |
 
 ## 2. Catálogo — deferidos, com o motivo
 
@@ -173,6 +172,7 @@ Catálogo: **188** funções — 0 implemented, 130 planned,
 | `stale_tool_result_evict` | Host-owned resume/replay context only: age/size policy swaps old tool results for [[rc:handle]] stubs; never rewrites a live provider session | host-bound (macOS app) |
 | `session_transcript_search` | Keyword/embedding search over the host-persisted session transcript → turn refs + spans; survives compaction | needs a local model (embeddings/NLI) |
 | `repeated_failure_notice` | Embedding similarity: this error ≈ previous attempts at handles X,Y; notice-only loop detector | needs a local model (embeddings/NLI) |
+| `workspace_change_notice` | FSEvents-based list of files changed since a given turn + per-handle staleness check; paid re-reads only those | no harness seam |
 | `audio_transcribe_local` | On-device ASR of audio (meetings, voice notes) → transcript + timestamps; secret/PII pre-gate applies | host-bound (macOS app) |
 | `video_keyframe_ocr` | Keyframes + OCR + scene timestamps from a video (demo-video validation) instead of paid vision | host-bound (macOS app) |
 | `screenshot_diff_digest` | Pixel-diff two images → changed-region boxes, % changed, OCR of changed regions | host-bound (macOS app) |
@@ -225,30 +225,30 @@ Catálogo: **188** funções — 0 implemented, 130 planned,
 
 | # | micro-ação | seam | flag | status | guarda / motivo |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Recortar o prompt-base por turno (system + AGENTS.md + skills ≈ 29k) | montagem do prompt da sessão | `E9_prompt_blocks` | planned | whitelist de blocos obrigatórios |
-| 2 | Classificar o payload antes de injetar (11 tipos) | jev_post_process_tool_result | `E1_payload_classify` | planned | piso de confiança; abaixo dele passa inteiro |
-| 3 | Compressão generativa da saída grande (≤1/3, prompt próprio) | jev_post_process_tool_result | `E3_cheap_compress` | planned | store-before-loss + read-back + gate de literal |
-| 4 | Seleção extrativa por relevância antes de qualquer LLM | idem | `E2_importance_extract` | planned | determinístico; âncora nas últimas N linhas |
-| 5 | Score de importância por linha (erros, file:line, paths, últimas N) | idem | `E2_importance_extract` | planned | elide só o miolo, com marcador |
-| 6 | Dedup cross-turno / reuso de leitura (path+range+hash) | jev_post_process_tool_result | `E4_read_reuse` | implemented | gate: bytes idênticos; teste em jev.rs |
-| 7 | Detector de token volátil (cache do provider) | pré-envio da rodada | `E10_crushers` | planned | diagnóstico + ordenação; nunca reescreve conteúdo |
-| 8 | Recuperação sob demanda (handle + expandir o original) | store do harness + read_file | `E11_handles` | planned | read-back byte-exact |
+| 1 | Recortar o prompt-base por turno (system + AGENTS.md + skills ≈ 29k) | montagem do prompt da sessão | `e_prompt_blocks` | planned | whitelist de blocos obrigatórios |
+| 2 | Classificar o payload antes de injetar (tipos) | jev_post_process_tool_result | ``e_crushers`` | implemented | `reduce::classify_payload` + teste; sem piso de confiança (o caso semântico vai pela tarefa `classify_closed`) |
+| 3 | Compressão generativa da saída grande (≤1/3, prompt próprio) | jev_post_process_tool_result | ``e_cheap_compress`` | implemented | store-before-loss + read-back + gate de literal; melhor-de-três em `tasks::run_best_of` |
+| 4 | Seleção extrativa por relevância antes de qualquer LLM | idem | ``e_importance`` | implemented | determinístico; âncora nas últimas N linhas |
+| 5 | Score de importância por linha (erros, file:line, paths, últimas N) | idem | ``e_importance`` | implemented | elide só o miolo, com marcador |
+| 6 | Dedup cross-turno / reuso de leitura (path+range+hash) | jev_post_process_tool_result | ``e_read_reuse`` | implemented | gate: bytes idênticos; testes em jev.rs e jev_lanes.rs |
+| 7 | Detector de token volátil (cache do provider) | pré-envio da rodada | ``e_crushers`` | implemented | `crushers::volatile_tokens` + teste; diagnóstico, nunca reescreve conteúdo |
+| 8 | Recuperação sob demanda (handle + expandir o original) | store do harness + read_file | ``e_importance`` | implemented | store em `~/.grok/jev/store/<hash>.txt` com read-back byte-exact, testado |
 | 9 | Passages/guardrail de conteúdo não confiável | C6 (injeção) + web/memória | `C6 (existente)` | mapped | C6 existe e está off por custo; o classificador determinístico novo alimenta a decisão |
 | 10 | Slim de schema de tools por turno | poda de tools (P1) | `P1 (existente)` | mapped | P1 já poda famílias; poda de parâmetros é o segundo nível — deferred (risco de remover obrigatório) |
-| 11 | Resumo da compactação no modelo barato | session/compaction | `E5_cheap_task` | planned | contrato com prefixo/último segmento fixos; cai para o frontier se falhar |
-| 12 | Título/resumo de sessão, changelog, mensagem de commit | E5_cheap_task (tarefa registrada) | `E5_cheap_task` | planned | sem segurança envolvida |
+| 11 | Resumo da compactação no modelo barato | session/compaction | ``e_cheap_task`` | planned | NÃO LIGADO: a compactação continua no modelo da sessão |
+| 12 | Título/resumo de sessão, changelog, mensagem de commit | registro de tarefas | ``e_cheap_task`` | implemented | `commit_message_draft`, `release_notes_draft`, `pr_description_draft` registradas com guarda; ligação à UI pendente |
 | 13 | Imagens/screenshots/anexos | — | `—` | deferred | precisa de Vision; não há modelo local nem visão no provider barato |
-| 14 | Extração de dados estruturados de saída (paths, PASS/FAIL, JSON, status) | C2/C5/C7 + tarefas registradas | `E5_cheap_task` | planned | determinístico primeiro, modelo barato quando o determinístico não fecha |
+| 14 | Extração de dados estruturados de saída (paths, PASS/FAIL, JSON, status) | tool result | ``e_cheap_task`` | implemented | `test_verdict` rodou ao vivo no caminho do tool result e a resposta foi usada |
 | 15 | Pré-computar o que o próximo turno vai pedir (prefetch) | — | `—` | deferred | só leitura, mas exige fila do turno; sem seam seguro aqui hoje |
-| 16 | "Isso que eu li responde à pergunta?" por trecho | suficiência (noul por trecho) | `E7_lane_choice` | planned | 4 nouls, ≥2/3 excluídos |
-| 17 | "Preciso ler mais um arquivo ou já sei o suficiente?" | suficiência antes de ler | `E7_lane_choice` | planned | noul por candidato |
-| 18 | "Esta saída é confiável/usável?" | C2/C4 cobrem falha e diff | `C2/C4 + E1_payload_classify` | mapped | o classificador novo responde o caso placeholder/CoT |
-| 19 | Plan mode / próximos passos | classe do próximo passo | `E7_lane_choice` | planned | reduz turnos exploratórios |
-| 20 | Prioridade de contexto sob pressão (o que soltar primeiro) | D1/D2 + blocos do prompt | `E9_prompt_blocks` | planned | lossless antes de lossy |
-| 21 | Escolher entre 3 saídas do modelo barato | gate de fidelidade da lane | `E3_cheap_compress` | planned | escolhe a que preserva os literais quando há empate |
+| 16 | "Isso que eu li responde à pergunta?" por trecho | suficiência (noul por trecho) | `e_lane_choice` | planned | 4 nouls, ≥2/3 excluídos |
+| 17 | "Preciso ler mais um arquivo ou já sei o suficiente?" | suficiência antes de ler | `e_lane_choice` | planned | noul por candidato |
+| 18 | "Esta saída é confiável/usável?" | C2/C4 cobrem falha e diff | `C2/C4 + `e_crushers`` | mapped | o classificador responde o caso placeholder/CoT; C2/C4 continuam no diff |
+| 19 | Plan mode / próximos passos | classe do próximo passo | `e_lane_choice` | planned | reduz turnos exploratórios |
+| 20 | Prioridade de contexto sob pressão (o que soltar primeiro) | D1/D2 + blocos do prompt | ``e_importance`` | mapped | lossless antes de lossy está garantido nas lanes; a escolha por bloco (E9) não |
+| 21 | Escolher entre 3 saídas do modelo barato | gate de fidelidade da lane | ``e_cheap_compress`` | implemented | `tasks::run_best_of`: guarda primeiro, tamanho depois; 1 request quando a primeira passa |
 | 22 | "O turno terminou?" / "faltou algo?" | C1/C3 | `C1/C3 (existentes)` | mapped | já fiado |
-| 23 | Coalescer as decisões do turno em 1 request por ponto de decisão | baterias do Jev | `E7_lane_choice` | planned | mede requests por turno |
-| 24 | Idle/pressão — pular quando não vale | gate de custo por lane | `E8_lane_breaker` | planned | skip-set do que não comprime |
-| 25 | Deadline por chamada + circuit breaker por lane | orçamento + breaker | `E8_lane_breaker` | planned | trip por turno, registrado |
-| 26 | Skip-set do que sabidamente não comprime | classificador + skip-set | `E1_payload_classify` | planned | evita gastar com payload incomprimível |
-| 27 | Serializar o caminho barato (uma geração por vez) | fila da lane barata | `E8_lane_breaker` | planned | o harness pode disparar várias chamadas; a fila é por processo |
+| 23 | Coalescer as decisões do turno em 1 request por ponto de decisão | baterias do Jev | ``e_lane_choice`` | implemented | a bateria da lane responde main-vs-cheap + forma + effort em UMA request |
+| 24 | Idle/pressão — pular quando não vale | gate de custo por lane | ``e_breaker`` | planned | skip-set implementado (payload sem redundância não é tocado); janela ociosa não existe aqui |
+| 25 | Deadline por chamada + circuit breaker por lane | orçamento + breaker | ``e_breaker`` | implemented | prazo por chamada e trip por turno após 3 falhas, com teste |
+| 26 | Skip-set do que sabidamente não comprime | classificador + skip-set | ``e_crushers`` | implemented | uma listagem só de linhas únicas sai byte-idêntica, e o teste fixa isso |
+| 27 | Serializar o caminho barato (uma geração por vez) | fila da lane barata | ``e_breaker`` | implemented | `jev_cheap::lane_queue`: uma geração por vez no processo inteiro |

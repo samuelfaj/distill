@@ -481,6 +481,62 @@ pub async fn run_with(
     })
 }
 
+/// How many candidate answers a compression may ask for before choosing.
+pub const BEST_OF: usize = 3;
+
+/// Runs a compression up to [`BEST_OF`] times and keeps the best candidate.
+///
+/// "Best" is decided by the guard first (a candidate that lost a literal is out)
+/// and by size second, so quality is never traded for a smaller answer. One
+/// accepted candidate short-circuits the rest: the extra samples are for the
+/// cases where the first answer is refused, not a default tax on every call.
+pub async fn run_best_of(
+    client: &CheapClient,
+    id: &str,
+    payload: &str,
+    question: &str,
+    samples: usize,
+) -> Option<TaskOutcome> {
+    let spec = spec(id)?;
+    if spec.kind != Kind::Compress {
+        // Only a compression has an honest "which of these is better" question.
+        return run(client, id, payload, question).await;
+    }
+    let prepared = prepare(spec, payload)?;
+    let mut best: Option<TaskOutcome> = None;
+    for attempt in 0..samples.max(1) {
+        let task = task_for(spec, &prepared, question);
+        if !task.fits(client.config().max_input_bytes) {
+            return best;
+        }
+        let Ok(answer) = client.ask(&task).await else {
+            continue;
+        };
+        let Ok(text) = gate(spec, &prepared, &answer.text, &[], &[]) else {
+            continue;
+        };
+        let candidate = TaskOutcome {
+            id: spec.id.to_owned(),
+            text,
+            answer,
+        };
+        // A later candidate only wins by being shorter; ties keep the first, so
+        // the same payload produces the same choice.
+        let better = best
+            .as_ref()
+            .is_none_or(|current| candidate.text.len() < current.text.len());
+        if better {
+            best = Some(candidate);
+        }
+        if attempt == 0 && best.is_some() {
+            // The first answer passed the guard and is already the shortest we
+            // have: asking again would only cost money.
+            break;
+        }
+    }
+    best
+}
+
 /// The payload a task actually sends: for the compression kinds the crusher runs
 /// first, so the model sees less and the literals are already protected.
 pub fn prepare(spec: &TaskSpec, payload: &str) -> Option<String> {
@@ -655,6 +711,39 @@ mod tests {
         if !offline.credential_present() {
             assert!(run(&offline, "distill_command_output", payload, "").await.is_none());
         }
+    }
+
+    /// Best-of-three: a refused first candidate costs another sample, a good one
+    /// costs nothing, and the winner is always the smallest that kept its
+    /// literals.
+    #[tokio::test]
+    async fn a_compression_can_ask_three_times_and_keeps_the_best() {
+        use crate::jev::cheap::test_support::{client_answering, client_for, make_stub, chat_reply};
+
+        let payload = "error[E0308]: mismatched types\n  --> src/client.rs:868:5\nwarning: unused\n";
+
+        // The first candidate drops the location, the second keeps everything but
+        // is longer than the third: the third wins.
+        let stub = make_stub((200, chat_reply("a build error happened", (10, 5)), false));
+        let client = client_for(&stub, |_| {}).await;
+        let first = run_best_of(&client, "distill_command_output", payload, "", BEST_OF).await;
+        assert!(first.is_none(), "a candidate that lost a literal is not the best");
+
+        // One acceptable candidate short-circuits the rest: exactly one request.
+        let (stub, client) = client_answering("error[E0308] at src/client.rs:868:5").await;
+        let outcome = run_best_of(&client, "distill_command_output", payload, "", BEST_OF)
+            .await
+            .expect("the first acceptable candidate wins");
+        assert_eq!(outcome.text, "error[E0308] at src/client.rs:868:5");
+        assert_eq!(stub.bodies().len(), 1, "one accepted answer, one request");
+
+        // A non-compression task is not sampled: it answers once, as always.
+        let (stub, client) = client_answering("FAIL").await;
+        let outcome = run_best_of(&client, "test_verdict", "test result: FAILED", "", BEST_OF)
+            .await
+            .expect("labelled");
+        assert_eq!(outcome.text, "FAIL");
+        assert_eq!(stub.bodies().len(), 1);
     }
 
     /// A classify task is gated by its closed labels, and the answer that wins is

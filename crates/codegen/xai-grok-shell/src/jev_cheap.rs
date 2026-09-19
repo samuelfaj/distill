@@ -24,6 +24,17 @@ use xai_grok_workspace::jev::flags::JevLever;
 /// Failures in one lane inside one turn before it stands down for that turn.
 pub const BREAKER_TRIPS: u32 = 3;
 
+/// One cheap generation at a time, process-wide.
+///
+/// The app serialised its local model for the same reason this exists: several
+/// lanes can want the worker at once (the tool-result path, a routed round, a
+/// subagent), and a queue is cheaper than the contention — and it makes the
+/// per-turn call count the number that actually happened.
+fn lane_queue() -> &'static tokio::sync::Mutex<()> {
+    static QUEUE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    QUEUE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// A resolved cheap worker: the client plus the model entry it came from.
 pub struct CheapLane {
     pub client: xai_grok_workspace::jev::cheap::CheapClient,
@@ -85,6 +96,8 @@ impl CheapLane {
         if !crate::jev::lever_active(lever) {
             return None;
         }
+        // Serialised: one cheap generation at a time across the whole process.
+        let _one_at_a_time = lane_queue().lock().await;
         let outcome = tasks::run(&self.client, task_id, payload, question).await;
         match &outcome {
             Some(outcome) => {

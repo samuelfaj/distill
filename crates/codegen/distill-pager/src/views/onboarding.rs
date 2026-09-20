@@ -644,10 +644,12 @@ pub fn render_onboarding(
     };
     let footer = if content.width < 48 {
         "↑↓ · PgUp/PgDn · Enter · ← · Esc"
+    } else if content.width < 68 {
+        "↑↓/mouse · PgUp/PgDn · Enter · ← back · Esc"
     } else if compact {
         "↑/↓ select · PgUp/PgDn scroll · Enter continue · ← back · Esc close"
     } else {
-        "↑/↓ or mouse select · PgUp/PgDn scroll · Enter continue · ←/Backspace back · Esc close · s skip"
+        "↑↓/mouse · PgUp/PgDn · Enter · ← back · Esc · s skip"
     };
 
     let mut status_lines = Vec::new();
@@ -902,6 +904,29 @@ mod tests {
         assert!(
             state.scroll < selected_scroll,
             "explicit page scrolling must not be forced back to the selected row"
+        );
+
+        let wide_area = Rect::new(0, 0, 80, 24);
+        let mut wide_buffer = Buffer::empty(wide_area);
+        state.set_step(OnboardingStep::Worker);
+        render_onboarding(
+            &mut wide_buffer,
+            wide_area,
+            &mut state,
+            false,
+            &[],
+            &[],
+            None,
+            None,
+        );
+        let wide_rendered = wide_buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            wide_rendered.contains("Esc"),
+            "80-column footer must keep Escape help visible"
         );
     }
 

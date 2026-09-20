@@ -22,6 +22,15 @@ async fn zero_turn_model_switch_no_modal() {
         .inject_keys(b"/model cursor-model\r")
         .expect("type model switch");
 
+    // Model completions intentionally append a space so Enter selects the model and opens the
+    // chained effort menu. Accept the default effort to submit the complete command.
+    harness
+        .wait_for_text("Auto Effort (default)", Duration::from_secs(15))
+        .expect("model selection opened effort completion");
+    harness
+        .inject_keys(keys::ENTER)
+        .expect("accept automatic effort and submit model switch");
+
     // When the switch lands before the session exists, deferred_model_switch applies it silently on SessionCreated and no "Switched to" line prints
     // Wait for what both paths show: the prompt is consumed and the status bar names the new model
     let deadline = std::time::Instant::now() + Duration::from_secs(15);

@@ -31,6 +31,27 @@ Esta fase usa o pipeline atual de `/sam-orchestrate`; referências históricas a
 - O catálogo Jev anteriormente existente em `todo.md` foi arquivado como histórico. Suas marcações não comprovam a conclusão destes novos requisitos.
 - As decisões de permissão H1/H2/P5 e os badges `jev·veto` do catálogo antigo foram removidos e não podem ser reativados nem usados como evidência atual.
 
+### Evidência de entrega atualmente disponível
+
+- `controller-pager-focused-retry.log`: 132 testes focados do pager passaram,
+  cobrindo fixtures de onboarding, autenticação, status e tutorial.
+- `controller-routing-idle-tests.log`: 13 testes de roteamento/idle passaram,
+  incluindo captura no wire, overrides explícitos, retries e menus de esforço
+  zero/único.
+- `tools-tests.log`: 9 testes de schema/taxonomia passaram.
+- `workspace-final-tests.log`: 139 testes de workspace/permissão passaram.
+- `controller-subagent-resolution-final-retry.log`: 94 testes de resolução
+  passaram; a cobertura fresca dos campos das correções E2 C1/C5 ainda falta.
+- `controller-shell-permissions-auth.log`: 121 testes de shell,
+  permissões, ambiente e autenticação passaram.
+- A inspeção PTY e os dois testes de onboarding/child-preflight usaram o
+  binário antigo SHA `2cde5fe...`; devem ser repetidos com o binário atual.
+  São prova de mock/PTY isolado, não de OAuth real. A política de URL do
+  navegador bloqueou a renderização HTML local; isso não foi contornado.
+- Não houve alteração de produto web; a prova interativa pendente é terminal/
+  PTY. OAuth real permanece não verificado, `test.txt` permanece excluído e
+  não há tag v2, release ou instalação publicada.
+
 ### Regras de execução
 
 - [ ] Ler as instruções atuais do repositório e verificar a árvore antes de editar.
@@ -62,16 +83,16 @@ Requisitos obrigatórios:
 ### 1.1. Entrada, navegação e persistência
 
 - [ ] Criar um fluxo próprio de onboarding.
-- [ ] Separar `/onboarding` do tutorial atual, pois hoje ele é um alias de `/tutorial`.
+- [x] Separar `/onboarding` do tutorial atual, pois hoje ele é um alias de `/tutorial`. Evidência direta: `controller-pager-focused-retry.log`, `dispatches_open_onboarding_without_aliasing_tutorial` passou.
 - [ ] Preservar `/tutorial` e `/tour`.
 - [ ] Persistir a conclusão para evitar repetição automática após finalizar.
 - [ ] Permitir reabrir o fluxo por `/onboarding` mesmo depois de concluído.
-- [ ] Mostrar progresso, por exemplo: `Step 1 of 4`.
+- [x] Mostrar progresso, por exemplo: `Step 1 of 4`. Evidência direta: `controller-pager-focused-retry.log`, `four_steps_have_stable_titles_and_progress` passou.
 - [ ] Oferecer navegação por teclado, retorno e saída claros.
-- [ ] Preservar as opções de mouse já suportadas pelos componentes existentes.
-- [ ] Adaptar texto e controles a terminais estreitos e baixos.
+- [x] Preservar as opções de mouse já suportadas pelos componentes existentes. Evidência direta: `controller-pager-focused-retry.log`, `large_catalog_scrolls_selected_row_and_derives_wrapped_mouse_hitbox` passou.
+- [x] Adaptar texto e controles a terminais estreitos e baixos. Evidência direta: `controller-pager-focused-retry.log`, `short_terminal_keeps_resize_instruction_visible` e o teste de hitbox quebrada passaram; visual PTY atual ainda requer rerun no binário novo.
 - [ ] Definir e testar o comportamento de fechar, reabrir e retomar.
-- [ ] Não marcar conclusão quando a gravação do estado falhar.
+- [x] Não marcar conclusão quando a gravação do estado falhar. Evidência direta: `controller-pager-focused-retry.log`, `completion_error_does_not_mark_the_flow_done` e `onboarding_completion_waits_for_persistence_and_keeps_failed_flow_open` passaram.
 - [ ] Preservar fluxos de prompt inicial, retomada/fork, login obrigatório, agentes externos e execução não interativa.
 - [ ] Documentar quando a abertura automática precisa ser adiada, sem marcar o onboarding como concluído.
 - [ ] Não abrir um modal invisível em modo mínimo: implementar suporte ou oferecer transição explícita para o modo compatível.
@@ -98,13 +119,13 @@ Sugestão de título: `Make your AI budget go further`.
   - Grok.
   - Codex (ChatGPT).
   - OpenRouter.
-- [ ] Reutilizar autenticação existente e contas já conectadas.
-- [ ] Permitir selecionar o modelo principal pela funcionalidade existente de `/model`.
+- [x] Reutilizar autenticação existente e contas já conectadas. Evidência direta: `controller-pager-focused-retry.log`, `onboarding_grok_login_uses_provider_connection_state` e os testes de cancelamento/retorno de autenticação passaram; OAuth real permanece não verificado.
+- [x] Permitir selecionar o modelo principal pela funcionalidade existente de `/model`. Evidência direta: `controller-pager-focused-retry.log`, os testes `onboarding_model_dispatch_*` passaram; persistência integrada no binário novo ainda requer PTY rerun.
 - [ ] Manter a seleção dentro da experiência guiada, sem exigir que o usuário descubra os comandos sozinho.
 - [ ] Mostrar carregamento, sucesso, erro e retry.
-- [ ] Voltar à etapa correta após cancelar login ou picker.
+- [x] Voltar à etapa correta após cancelar login ou picker. Evidência direta: `controller-pager-focused-retry.log`, `grok_onboarding_auth_returns_to_connect_after_success_error_or_cancel` passou.
 - [ ] Confirmar que o catálogo fica atualizado após autenticar.
-- [ ] Confirmar que a seleção foi efetivamente persistida.
+- [x] Confirmar que a seleção foi efetivamente persistida. Evidência direta: `controller-pager-focused-retry.log`, `onboarding_selection_status_tracks_persisted_results` passou; a confirmação PTY no binário atual ainda está pendente.
 - [ ] Não armazenar credenciais no estado do onboarding.
 - [ ] Não desconectar outros provedores.
 
@@ -167,13 +188,13 @@ Garantir que o Distill selecione corretamente entre reasoning e worker em cada c
   - A decisão é incerta ou incompleta.
   - Há timeout ou falha da camada de decisão.
   - O roteamento está desabilitado.
-- [ ] Testar esforço automático e manual.
-- [ ] Testar modelos com nenhuma ou apenas uma opção de esforço.
+- [x] Testar esforço automático e manual. Evidência direta: `controller-routing-idle-tests.log` cobre effort explícito e as guardas de auto-routing.
+- [x] Testar modelos com nenhuma ou apenas uma opção de esforço. Evidência direta: `controller-routing-idle-tests.log`, `zero_or_single_effort_menus_*` passou.
 - [ ] Corrigir bloqueios indevidos à seleção do worker sem ignorar escolhas explícitas do usuário.
 - [ ] Preservar as verificações de endpoint, backend e credenciais.
 - [ ] Preservar a conversa e as restrições do modelo selecionado.
 - [ ] Verificar interação com modelos locais/utility existentes.
-- [ ] Verificar retries e caminhos de recuperação sem persistir indevidamente a seleção anterior.
+- [x] Verificar retries e caminhos de recuperação sem persistir indevidamente a seleção anterior. Evidência direta: `controller-routing-idle-tests.log`, `retry_sends_updated_final_model_and_effort` e `rejected_local_route_resubmits_base_model_with_fresh_attribution` passaram; C1/C5 ainda exigem rerun fresco.
 
 ### Pontos já observados — revalidar na árvore atual
 
@@ -187,7 +208,7 @@ Arquivo:
 
 ### Aceite
 
-- [ ] Testes capturam os modelos realmente enviados em cada chamada.
+- [x] Testes capturam os modelos realmente enviados em cada chamada. Evidência direta: `controller-routing-idle-tests.log`, `controlled_routes_are_captured_on_the_wire` e `retry_sends_updated_final_model_and_effort` passaram; isso não fecha o gate integrado.
 - [ ] Casos elegíveis usam worker conforme a decisão.
 - [ ] Casos que exigem reasoning usam reasoning.
 - [ ] Casos inválidos/incertos mantêm o comportamento seguro.
@@ -353,9 +374,9 @@ Localizar referências ao nome antigo e substituir pelo nome correto: **Distill*
 ### Compatibilidade
 
 - [ ] Não quebrar configurações ou dados antigos com substituição textual cega.
-- [ ] Se um identificador antigo precisar permanecer como alias de migração, registrar a justificativa e o teste.
+- [x] Se um identificador antigo precisar permanecer como alias de migração, registrar a justificativa e o teste. Evidência direta: `controller-branding-final-audit.txt` registra os aliases/tests legados restantes como intencionais.
 - [ ] Não esconder exceções de compatibilidade.
-- [ ] Não manter o nome antigo nas superfícies atuais do produto.
+- [x] Não manter o nome antigo nas superfícies atuais do produto. Evidência direta: a auditoria final lista apenas aliases de compatibilidade/testes e referências externas deliberadas; correlação final independente ainda permanece no gate G7.
 
 ### Ocorrências iniciais encontradas
 
@@ -381,7 +402,7 @@ configurações/dados antigos; novas gravações e documentos usam Distill.
 - [ ] Nenhuma menção antiga permanece ativa sem justificativa.
 - [ ] URLs corrigidas apontam para destinos verificados.
 - [ ] Configurações e contratos continuam funcionando.
-- [ ] Aliases de compatibilidade, se necessários, estão documentados e testados.
+- [x] Aliases de compatibilidade, se necessários, estão documentados e testados. Evidência direta: `controller-branding-final-audit.txt` e os testes de ambiente/contratos dos logs de shell/tools.
 
 ---
 
@@ -449,9 +470,9 @@ Revalidar caminhos e símbolos na árvore atual. Não confiar em números de lin
 - [ ] Verificar modelos e indicadores durante as transições.
 - [ ] Verificar subagents e concorrência.
 - [ ] Testar abertura de URL e falha do navegador.
-- [ ] Diferenciar prova com mocks de prova OAuth real.
-- [ ] Se OAuth exigir interação humana, registrar o que foi e não foi verificado.
-- [ ] Não alterar credenciais reais nem seguir contas automaticamente.
+- [x] Diferenciar prova com mocks de prova OAuth real. Evidência direta: `controller-pty-inspection.md` identifica a PTY/mock isolada e declara OAuth real não verificado.
+- [x] Se OAuth exigir interação humana, registrar o que foi e não foi verificado. Evidência direta: OAuth real permanece explicitamente não verificado; a política de URL local não foi contornada.
+- [x] Não alterar credenciais reais nem seguir contas automaticamente. Evidência direta: a inspeção PTY registra ausência de credenciais reais, browser real e follow.
 
 ### Regressões
 
@@ -466,9 +487,9 @@ Revalidar caminhos e símbolos na árvore atual. Não confiar em números de lin
 
 ### Interface web, caso seja afetada
 
-- [ ] Se alguma aplicação web for alterada, verificar no navegador os fluxos completos.
-- [ ] Verificar páginas que compartilham estado ou componentes.
-- [ ] Testar desktop/mobile quando houver mudanças visuais.
+- [x] Se alguma aplicação web for alterada, verificar no navegador os fluxos completos. N/A: nenhum produto web foi alterado.
+- [x] Verificar páginas que compartilham estado ou componentes. N/A: nenhum produto web foi alterado.
+- [x] Testar desktop/mobile quando houver mudanças visuais. N/A: nenhum produto web foi alterado.
 - [ ] Para a interface de terminal, screenshots no navegador não substituem interação via terminal.
 
 ### Revisão final

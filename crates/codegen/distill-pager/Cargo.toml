@@ -1,7 +1,7 @@
 # Modified for Distill by Samuel Fajreldines, 2026.
 [package]
 name = "distill-pager"
-version = "2.0.2"
+version = "2.0.3"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["Samuel Fajreldines"]

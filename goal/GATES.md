@@ -1,11 +1,14 @@
 # Distill onboarding, routing and subagent parity gates
 
-Current reviewed snapshot: HEAD `c3d02c1646eaacbb71c5660041bba58583e0c15e`,
-verified on the remote. Source clearance is PASS in
+Released and installed source snapshot: tag `v2.0.0` at SHA
+`b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`, verified by the release readback.
+The installed product is `distill 2.0.0 (b9d8f23ea845) [alpha]`, with
+SHA-256 `eeb0950a07df737c36fcdac5cdc9183012c7adde3cb11df08921a2d6024d13fc`.
+The `[alpha]` suffix is the cached local update-channel pointer, not the
+artifact semver or a GitHub prerelease. The prior c3 debug/test checkpoint is
+historical only. Source clearance is PASS in
 `combined-implementation-clearance.md` (9b) and
-`terminal-delta-clearance.md` (c3). Current product binary:
-`distill 2.0.0 (c3d02c1646ea) [alpha]`, SHA-256
-`f73c33e30533f3202d1eecc52da7c6d2e88a61f218da3b63e820b8b49a9ad94b`.
+`terminal-delta-clearance.md` (c3).
 
 Historical safety boundary: the Jev catalog from commit `2d905417` is archived
 for reference only. H1, H2 and P5 permission decisions and all `jev·veto`
@@ -21,6 +24,8 @@ badges are retired and must never be reactivated or counted as evidence.
   The actual frames include normal, narrow, 8x80 resize guard, Step 3 `Esc`,
   `onboarding_completed=true` with `test-model`, restart/reopen/back, and the
   exact X URL with failure feedback and `Finish`.
+  The installed release artifact independently passed onboarding 2/0 in
+  `postinstall-onboarding.log` (35.95 s).
 - [x] **G1 supplementary — Positive worker overlay:** The current positive-worker fixture
   compiled in 1.13 s and passed 2/2 PTY cases in
   `controller-positive-worker-pty.log` (0 failures, 36.19 s). Its normal
@@ -68,33 +73,45 @@ badges are retired and must never be reactivated or counted as evidence.
   `https://github.com/samfaj/distill/blob/main/README.md`.
 
 All PTY/harness provider interactions use isolated mock endpoints and the real
-application/coordinator/tool runtime. They are not live OAuth proof. The live
+application/coordinator/tool runtime. They are not live OAuth proof. Earlier
 provider attempts recorded in `live-yolo-path.txt` and `live-yolo-qwen-path.txt`
-ended in upstream HTTP 429 before tool calls; this is an external limitation,
-not a native permission denial. No real credentials were changed and no
-external follow was performed. Local HTML inspection remained blocked by the
-browser URL policy; no workaround or color-screenshot claim is made.
+ended in upstream HTTP 429 before tool calls; the later installed-artifact
+smoke passed a real tool call, but does not prove login OAuth for all three
+providers. No real credentials were changed and no external follow was
+performed. Local HTML inspection remained blocked by the browser URL policy;
+no workaround or color-screenshot claim is made.
 
 ## G8 — Release preparation and publication
 
-- [x] Candidate identity recorded: `2.0.0 (c3d02c1646ea) [alpha]`, current
-  binary hash recorded above, and HEAD/remote SHA verified.
+- [x] Candidate identity recorded and released: tag `v2.0.0`, source SHA
+  `b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`, release URL
+  `https://github.com/samfaj/distill/releases/tag/v2.0.0`. The host `[alpha]`
+  suffix is a cached update-channel pointer, not the artifact semver.
 - [x] Final user-facing English release copy prepared at
   `/tmp/distill-todo-orchestration/release-notes-v2.md`.
 - [x] Unknown `test.txt` preserved and excluded; credentials, temporary
   harness state and unowned artifacts are excluded from publication.
-- [x] Controller-recorded checkpoint history reaches the reviewed HEAD
-  `c3d02c1646eaacbb71c5660041bba58583e0c15e`, and that SHA is verified on the
-  remote.
-- [ ] Controller must independently verify the release workflow, tag inventory
-  and `gh` state; this docs handback performs no release action and is not
-  evidence that those release-preparation checks are closed.
-- [ ] Controller publication gate approved.
-- [ ] Final commit/tag remote artifact checks completed.
-- [ ] GitHub Release created and independently read back.
-- [ ] Published installers installed and verified against the published
-  artifact, not merely the local binary.
+- [x] Controller-recorded checkpoint history reaches the released source SHA;
+  the final prepublication clearance and publication preflight record the
+  three execution-owner DAG/proofs and independent review evidence.
+- [x] Controller publication gate approved in
+  `controller-publication-preflight.json` after independent PASS and exact
+  fingerprint reconciliation.
+- [x] Release workflow `35492066534` completed all four native builds and the
+  publish job successfully (5/5 jobs).
+- [x] Final tag/source and remote artifact checks completed: release readback
+  verifies `v2.0.0`, source SHA above, 9/9 assets, four architecture/SHA
+  checks, and the published release URL.
+- [x] GitHub Release created and independently read back at
+  `https://github.com/samfaj/distill/releases/tag/v2.0.0`.
+- [x] Published installer completed successfully; installed macOS ARM asset
+  matches `distill-macos-aarch64` SHA-256
+  `eeb0950a07df737c36fcdac5cdc9183012c7adde3cb11df08921a2d6024d13fc`.
+  Post-install PTYs/tools passed 7 unique cases, and installed live tool
+  smoke passed with `DISTILL_YOLO_PUBLISHED_OK`.
+- [ ] Final documentation checkpoint (these current edits) committed, pushed,
+  and correlated to a remote SHA by the controller.
 
-The final distribution gate is intentionally open. Do not call the release,
-tag, install, remote artifact, real OAuth, or full provider verification
-complete until the controller independently performs those checks.
+The release, tag, assets and installation gates are complete. The final
+documentation checkpoint and live three-provider OAuth verification remain
+open; do not conflate installed live tool smoke with provider login proof.

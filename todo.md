@@ -18,11 +18,15 @@ Esta fase usa o pipeline atual de `/sam-orchestrate`; referências históricas a
 
 ### Estado conhecido
 
-O snapshot funcional atual é o commit `c3d02c1646eaacbb71c5660041bba58583e0c15e`,
-verificado no remoto. As revisões `combined-implementation-clearance.md` (9b)
-e `terminal-delta-clearance.md` (c3) não encontraram correções obrigatórias de
-fonte/teste. O binário atual é `distill 2.0.0 (c3d02c1646ea) [alpha]`,
-SHA-256 `f73c33e30533f3202d1eecc52da7c6d2e88a61f218da3b63e820b8b49a9ad94b`.
+O checkpoint de depuração/teste anterior foi o commit
+`c3d02c1646eaacbb71c5660041bba58583e0c15e`, com o binário local
+`distill 2.0.0 (c3d02c1646ea) [alpha]` e SHA-256
+`f73c33e30533f3202d1eecc52da7c6d2e88a61f218da3b63e820b8b49a9ad94b`.
+A versão publicada separadamente é a tag `v2.0.0`, source SHA
+`b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`, em
+`https://github.com/samfaj/distill/releases/tag/v2.0.0`. Estes documentos são
+o checkpoint pós-publicação ainda não commitado/pushado; não atribuir a eles
+um SHA remoto até o controlador concluir esse checkpoint.
 
 `test.txt` continua desconhecido, preservado e excluído. O catálogo Jev antigo
 continua arquivado apenas como histórico; as decisões H1/H2/P5 e os badges
@@ -39,6 +43,22 @@ continua arquivado apenas como histórico; as decisões H1/H2/P5 e os badges
 - `controller-footer-pager-tests.log`: 431 PASS, 0 FAIL, 0.79 s;
   `workspace-final-tests.log`: 139 PASS; `tools-tests.log`: 9 PASS;
   `controller-installer-final.log`: 1 PASS.
+- A publicação `v2.0.0` foi verificada no workflow `35492066534`: os quatro
+  builds nativos e o job `publish` passaram (5/5 jobs). A verificação da
+  release confirmou 9/9 assets, quatro binários com arquitetura/SHA-256 e os
+  metadados `install.sh`, `LICENSE`, `NOTICE`, `SHA256SUMS` e
+  `THIRD-PARTY-NOTICES`.
+- O instalador oficial terminou com exit 0. O binário macOS ARM instalado
+  corresponde a `distill-macos-aarch64`, SHA-256
+  `eeb0950a07df737c36fcdac5cdc9183012c7adde3cb11df08921a2d6024d13fc`.
+  Os testes pós-instalação passaram: onboarding 2/0 em 35.95 s, status 2/0
+  em 11.04 s, modelo 1/0 em 5.44 s e tools/yolo 2/0 em 10.34 s (7 casos
+  únicos).
+- O smoke live de ferramenta no artefato instalado passou em 17.67 s, exit 0,
+  com o marcador `DISTILL_YOLO_PUBLISHED_OK` e `run_terminal_command` real.
+  Isso não prova login OAuth dos três provedores. As tentativas anteriores
+  com HTTP 429 permanecem como histórico; não são o resultado atual do smoke
+  instalado.
 - PTY no binário atual: onboarding 2 PASS/0 FAIL em 36.04 s, status 2/0 em
   11.56 s, troca de modelo 1/0 em 5.54 s e child navigation 1/0 em 5.35 s.
   São seis casos reais do app/harness com endpoints mock isolados, não OAuth
@@ -59,7 +79,9 @@ continua arquivado apenas como histórico; as decisões H1/H2/P5 e os badges
   wake real; os testes de unidade não são reduzidos a valores de helper.
 - O navegador bloqueou a inspeção de HTML local pela política de URL. Não houve
   workaround, follow externo, alteração de credenciais ou reivindicação de
-  screenshot colorido. OAuth real não foi verificado.
+  screenshot colorido. Login OAuth real dos três provedores não foi verificado;
+  o smoke live instalado é uma prova separada de ferramenta/conta já
+  conectada.
 
 ### Histórico resolvido, não pendente
 
@@ -84,22 +106,27 @@ genérica de “token saver”.
 
 ### Limitações de publicação
 
-O intento de provider live registrado em `live-yolo-path.txt` e
+O intento de provider live anterior registrado em `live-yolo-path.txt` e
 `live-yolo-qwen-path.txt` terminou em HTTP 429 antes das chamadas de ferramenta;
-isso é uma limitação externa separada, não uma recusa nativa de permissão. O
-marcador antigo de smoke instalado em `/tmp/distill-jev-yolo-ax1dzxtx` não é
-prova do artefato atual. Smoke de instalação final, tag v2, GitHub Release e
-verificação dos artefatos remotos permanecem aguardando o gate explícito do
-controlador.
+isso é histórico e uma limitação externa separada, não uma recusa nativa de
+permissão. O smoke live atual do artefato instalado passou, mas não verifica
+login OAuth dos três provedores. Tag v2, GitHub Release, assets remotos,
+instalação e smoke pós-instalação já foram verificados; permanece pendente o
+checkpoint final de documentação (commit/push/revisão do controlador).
 
 ### Regras de execução
 
 - [x] Ler as instruções atuais do repositório e verificar os arquivos sob escopo
   antes de editar; esta atualização permaneceu limitada aos documentos
   autorizados e ao relatório temporário.
-- [ ] Seguir a skill `/sam-orchestrate`: registrar DAG, ownership, gates verificáveis e evidências.
-- [ ] Contar unidades independentes e aplicar a regra de delegação da skill.
-- [ ] Quando houver delegação, definir arquivos e responsabilidades sem escritores concorrentes.
+- [x] Seguir o registro de `/sam-orchestrate`: `orchestration.json` contém o
+  DAG, ownership, writable paths, gates e evidências V-E1/V-E2/V-E3/V-R1.
+- [x] Contar unidades independentes e aplicar a regra de delegação: o DAG
+  registra exatamente os três execution owners E1/E2/E3, além do controller e
+  do reviewer; não foi criado um quarto executor.
+- [x] Quando houve delegação, os owners, dependências, escopos e no-go paths
+  foram registrados sem escritores concorrentes; os três execution proofs e a
+  revisão independente têm evidência PASS nos relatórios controller.
 - [x] O coordenador reexecutou a prova do worker antes de aceitar o resultado:
   fixture compile 1.13 s e positive-worker PTY 2/0 em 36.19 s.
 - [x] Reutilizar mecanismos existentes, fazer alterações cirúrgicas e não
@@ -109,7 +136,7 @@ controlador.
 - [x] Não declarar sucesso sem evidência nem reduzir silenciosamente o escopo;
   o relatório separa mock/OAuth, gate funcional e publicação.
 - [x] Registrar bloqueios, testes não executados e limitações explicitamente;
-  ver `worker-3-doc-close-report.md` e os gates de publicação ainda abertos.
+  ver `worker-3-postrelease-report.md` e o checkpoint documental ainda aberto.
 
 ---
 
@@ -541,7 +568,10 @@ Revalidar caminhos e símbolos na árvore atual. Não confiar em números de lin
 ### Regressões
 
 - [x] `/tutorial` e `/tour`. Evidência: focused/footer pager tutorial suites.
-- [ ] Autenticação dos três provedores.
+- [x] Regressões de autenticação dos três provedores nos caminhos mock/estado:
+  `controller-pager-focused-retry.log`, `controller-shell-permissions-auth.log`
+  e os testes de retorno/cancelamento passaram. Isso não prova login OAuth
+  live; essa limitação permanece explícita acima.
 - [x] `/model`. Evidência: current model PTY 1/0 and focused model dispatch tests.
 - [x] `/worker-model`. Evidência distinta: `controller-worker-command-tests.log`
   (19 PASS/0 FAIL) inclui `worker_selection_resolves_display_names_and_validates_effort`,
@@ -575,18 +605,23 @@ Revalidar caminhos e símbolos na árvore atual. Não confiar em números de lin
 
 ## 8. Checkpoints, commit, push e GitHub Release
 
-A publicação final é um gate separado e não faz parte desta primeira fase.
-Cada checkpoint aprovado pelo controlador deve ser commitado e enviado ao
-remoto, registrando exatamente o conjunto revisado. Tag, release e instalação dos
-artefatos publicados continuam proibidos até a verificação funcional final, a
-revisão independente e a aprovação explícita do gate de publicação.
+A publicação final foi concluída pelo controlador após a verificação funcional,
+a revisão independente e o gate explícito. O source publicado é a tag
+`v2.0.0`/SHA `b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`; somente este handback
+documental ainda aguarda commit/push/revisão final, sem atribuir-lhe o SHA
+remoto antes disso.
 
 ### Preparação
 
-- [x] Verificar status, branch e remoto. Evidência: HEAD `c3d02c1646eaacbb71c5660041bba58583e0c15e` verificado no remoto.
-- [ ] Verificar tags/releases existentes e convenção de versionamento.
-- [ ] Verificar autenticação do `gh`.
-- [ ] Ler o processo de release e os workflows atuais.
+- [x] Verificar status, branch e remoto. Evidência: source SHA publicado
+  `b9d8f23ea845ef7fadc5f22a089e61f23d0a9175` e release readback.
+- [x] Verificar tags/releases existentes e convenção de versionamento.
+  Evidência: preflight registrou tag v2 ausente e latest release v1.5.2;
+  `v2.0.0` foi criada sem reutilização.
+- [x] Verificar autenticação do `gh`. Evidência: publication preflight com
+  permissões de admin/maintain/push e gate aprovado pelo controller.
+- [x] Ler o processo de release e os workflows atuais. Evidência:
+  `.github/workflows/release.yml` e workflow `35492066534`, 5/5 jobs PASS.
 - [x] Revisar todos os arquivos a incluir, inclusive não rastreados. Evidência: `test.txt` foi inspecionado quanto ao estado e permanece excluído/desconhecido.
 - [x] Não publicar segredos, credenciais ou temporários. Evidência: PTY/harness isolado; nenhuma credencial real foi alterada.
 - [x] Não incluir trabalho de origem desconhecida sem entender seu conteúdo. Evidência: `test.txt` excluído e preservado.
@@ -595,30 +630,53 @@ revisão independente e a aprovação explícita do gate de publicação.
 
 ### Publicação
 
-- [ ] Confirmar evidências funcionais finais de todos os requisitos e revisão independente antes de solicitar publicação.
-- [x] Definir a versão segundo a convenção existente. Evidência: produto atual `distill 2.0.0 (c3d02c1646ea) [alpha]`.
-- [x] Atualizar arquivos de versão e notas necessários. Evidência: release copy final preparada em `/tmp/distill-todo-orchestration/release-notes-v2.md`; publicação ainda depende do gate.
-- [ ] Não reutilizar uma tag publicada indevidamente.
+- [x] Confirmar evidências funcionais finais e revisão independente antes da
+  publicação. Evidência: `final-prepublication-clearance.md` PASS,
+  `controller-publication-preflight.json` aprovado e release readback.
+- [x] Definir a versão segundo a convenção existente. Evidência: tag
+  `v2.0.0` e source SHA `b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`.
+- [x] Atualizar arquivos de versão e notas necessários. Evidência: release
+  copy final em `/tmp/distill-todo-orchestration/release-notes-v2.md`, com o
+  cabeçalho sem `[alpha]`.
+- [x] Não reutilizar uma tag publicada indevidamente. Evidência:
+  preflight registrou v2 ausente antes da publicação; `v2.0.0` foi criada para
+  o source SHA acima.
 - [ ] Fazer `git add` do conjunto final revisado após a aprovação do controlador.
 - [ ] Criar o commit final, com descrição fiel, após a verificação final e a revisão independente.
 - [ ] Fazer push do commit final ao remoto e branch corretos após a verificação final e a revisão independente.
-- [ ] Criar a tag somente após a verificação funcional final, a revisão independente e o gate explícito de publicação.
-- [ ] Confirmar que o SHA remoto corresponde ao commit validado.
-- [ ] Criar a GitHub Release com `gh release`, usando a tag do commit validado.
-- [ ] Instalar/verificar os artefatos publicados somente após a tag e a release válidas.
-- [ ] Incluir notas e artefatos exigidos pelo projeto.
-- [ ] Acompanhar checks/builds necessários à release.
-- [ ] Verificar tag, release e artefatos remotos.
-- [ ] Não declarar distribuição concluída apenas porque o comando de criação da release retornou sucesso.
+- [x] Criar a tag somente após a verificação funcional final, a revisão
+  independente e o gate explícito de publicação. Evidência: `v2.0.0` e
+  `controller-publication-preflight.json`.
+- [x] Confirmar que o SHA remoto corresponde ao commit validado: release
+  source SHA `b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`.
+- [x] Criar a GitHub Release com `gh release`, usando a tag do commit validado.
+  Evidência: `release-verification.json` e URL oficial.
+- [x] Instalar/verificar os artefatos publicados somente após a tag e a
+  release válidas. Evidência: `installed-verification.json`, instalador exit
+  0 e asset macOS ARM com SHA verificado.
+- [x] Incluir notas e artefatos exigidos pelo projeto. Evidência: 9/9 assets
+  verificados e release body/copy preparada.
+- [x] Acompanhar checks/builds necessários à release. Evidência:
+  `release-run-final.json`, workflow 35492066534 com 5/5 jobs PASS.
+- [x] Verificar tag, release e artefatos remotos. Evidência:
+  `release-verification.json`, 4 checks de arquitetura/SHA-256 e release URL.
+- [x] Não declarar distribuição concluída apenas porque o comando de criação da
+  release retornou sucesso; a conclusão foi baseada também em asset readback,
+  instalação, 7 casos pós-instalação e smoke live de ferramenta.
 
 ### Relatório final
 
-- [ ] Informar quais requisitos foram atendidos.
-- [ ] Listar os testes realmente executados e seus resultados.
-- [ ] Declarar limitações ou bloqueios remanescentes.
-- [ ] Informar SHA do commit.
-- [ ] Informar tag/versão.
-- [ ] Informar URL da GitHub Release.
+- [x] Informar quais requisitos foram atendidos: release, assets, instalação e
+  pós-instalação estão registrados; OAuth live dos três provedores permanece
+  fora da prova.
+- [x] Listar os testes realmente executados e seus resultados nos logs de
+  release/pós-instalação e no handback E3.
+- [x] Declarar limitações ou bloqueios remanescentes: OAuth live e checkpoint
+  final destes documentos.
+- [x] Informar o SHA do commit publicado: `b9d8f23ea845ef7fadc5f22a089e61f23d0a9175`.
+- [x] Informar tag/versão: `v2.0.0` / `2.0.0`.
+- [x] Informar URL da GitHub Release:
+  `https://github.com/samfaj/distill/releases/tag/v2.0.0`.
 
 ---
 

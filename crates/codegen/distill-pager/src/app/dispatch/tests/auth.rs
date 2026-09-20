@@ -957,6 +957,106 @@ fn onboarding_grok_handoff_clears_prior_provider_viewer_for_manual_auth() {
 }
 
 #[test]
+fn pending_chatgpt_click_openrouter_escape_cancels_original_dispatch_token() {
+    use crate::app::actions::{Action, LoginProvider};
+    use crate::app::app_view::InputOutcome;
+    use crate::views::onboarding::{OnboardingStep, render_onboarding};
+    use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+    dispatch(Action::OpenOnboarding, &mut app);
+    let area = Rect::new(0, 0, 80, 24);
+    let render_connect = |app: &mut AppView| {
+        let mut buffer = Buffer::empty(area);
+        let state = app.onboarding.as_mut().expect("onboarding opened");
+        state.step = OnboardingStep::Connect;
+        render_onboarding(&mut buffer, area, state, false, &[], &[], None, None);
+        buffer
+    };
+    let rendered_label_point = |buffer: &Buffer, label: &str| {
+        for y in area.y..area.bottom() {
+            let mut row = String::new();
+            for x in area.x..area.right() {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    row.push_str(cell.symbol());
+                }
+            }
+            if row.contains(label) {
+                let first = &label[..1];
+                let x = (area.x..area.right())
+                    .find(|x| {
+                        buffer
+                            .cell((*x, y))
+                            .is_some_and(|cell| cell.symbol() == first)
+                    })
+                    .expect("rendered label start");
+                return (x, y);
+            }
+        }
+        panic!("rendered onboarding label not found: {label}");
+    };
+
+    let buffer = render_connect(&mut app);
+    let (chatgpt_x, chatgpt_y) = rendered_label_point(&buffer, "Codex (ChatGPT)");
+    let chatgpt_click = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: chatgpt_x,
+        row: chatgpt_y,
+        modifiers: KeyModifiers::NONE,
+    });
+    let InputOutcome::Action(login) = app.handle_input(&chatgpt_click) else {
+        panic!("ChatGPT row must dispatch a provider login");
+    };
+    assert!(matches!(
+        login,
+        Action::LoginProvider(LoginProvider::ChatGpt)
+    ));
+    let _ = dispatch(login, &mut app);
+    let cancellation = app
+        .provider_login_cancel
+        .as_ref()
+        .expect("original cancellation token")
+        .clone();
+
+    let buffer = render_connect(&mut app);
+    let (openrouter_x, openrouter_y) = rendered_label_point(&buffer, "OpenRouter");
+    let openrouter_click = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: openrouter_x,
+        row: openrouter_y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(matches!(
+        app.handle_input(&openrouter_click),
+        InputOutcome::Changed
+    ));
+    assert_eq!(app.provider_login_pending, Some(LoginProvider::ChatGpt));
+    assert!(!cancellation.is_cancelled());
+
+    let escape = Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    ));
+    let InputOutcome::Action(cancel) = app.handle_input(&escape) else {
+        panic!("Escape must cancel the original provider login");
+    };
+    assert!(matches!(
+        cancel,
+        Action::CancelOnboardingProviderLogin(LoginProvider::ChatGpt)
+    ));
+    let effects = dispatch(cancel, &mut app);
+    assert!(effects.is_empty());
+    assert!(cancellation.is_cancelled());
+    assert!(app.provider_login_pending.is_none());
+    assert!(matches!(
+        app.onboarding.as_ref().map(|state| state.step),
+        Some(OnboardingStep::Connect)
+    ));
+}
+
+#[test]
 fn cancelled_provider_attempt_cannot_clear_a_same_provider_retry() {
     use crate::app::actions::LoginProvider;
 

@@ -9,6 +9,13 @@ with far fewer tokens.**
 It works with Grok and Codex subscriptions, and with any model that speaks the
 OpenAI-compatible protocol.
 
+**Steps:**
+
+1 - Download distill.
+2 - Login with openrouter.
+3 - Login with your subscription.
+4 - Save money.
+
 ## Install
 
 ### Mac / Linux

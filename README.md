@@ -16,6 +16,8 @@ OpenAI-compatible protocol.
 3. Login with your subscription.
 4. Save money.
 
+----
+
 ## Install
 
 ### Mac / Linux

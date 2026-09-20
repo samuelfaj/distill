@@ -47,6 +47,15 @@ fn seed_onboarding_config(content: &ContentController, default_model: &str) {
         .expect("seed incomplete onboarding config in the isolated sandbox");
 }
 
+fn seed_compatible_onboarding_config(content: &ContentController, default_model: &str) {
+    let model_base_url = content.url();
+    let config = format!(
+        "[ui]\nonboarding_completed = false\n\n[models]\ndefault = \"{default_model}\"\n\n[model.default-model]\nmodel = \"default-model\"\nbase_url = \"{model_base_url}\"\napi_backend = \"chat_completions\"\ncontext_window = 131072\n\n[model.test-model]\nmodel = \"test-model\"\nbase_url = \"{model_base_url}\"\napi_backend = \"chat_completions\"\ncontext_window = 131072\n"
+    );
+    fs::write(content.sandbox().distill_home().join("config.toml"), config)
+        .expect("seed compatible onboarding model catalog in the isolated sandbox");
+}
+
 fn config_value(content: &ContentController) -> toml::Value {
     let path = content.sandbox().distill_home().join("config.toml");
     let body = fs::read_to_string(&path).expect("read isolated onboarding config");
@@ -86,6 +95,19 @@ fn assert_model_saved(content: &ContentController) {
             .and_then(toml::Value::as_str),
         Some("test-model"),
         "model selection must persist the selected catalog id"
+    );
+}
+
+fn assert_worker_saved(content: &ContentController, expected: &str) {
+    let config = config_value(content);
+    assert_eq!(
+        config
+            .get("jev")
+            .and_then(|jev| jev.get("tiers"))
+            .and_then(|tiers| tiers.get("light"))
+            .and_then(toml::Value::as_str),
+        Some(expected),
+        "worker selection must persist the selected compatible catalog id"
     );
 }
 
@@ -186,7 +208,7 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
     let content = ContentController::start_with_models(models.clone())
         .await
         .expect("start onboarding mock content");
-    seed_onboarding_config(&content, "default-model");
+    seed_compatible_onboarding_config(&content, "default-model");
     let opened_url = content.sandbox().temp_dir().join("opened-urls.txt");
     let opened_url_text = opened_url
         .to_str()
@@ -237,13 +259,22 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
     assert_model_saved(&content);
     save_artifacts(&content, &harness, "normal-step2-model-selected");
 
-    // Connect -> Worker -> Community; skip the worker, record the safe URL
-    // opener seam, then select Finish without following or sending anything.
+    // Connect -> Worker: select the real compatible worker and wait for the
+    // persistence acknowledgement before continuing to Community.
     press(&mut harness, END);
     press(&mut harness, keys::ENTER);
     wait_for_step(&mut harness, 3);
+    press(&mut harness, keys::ENTER);
+    harness
+        .wait_for_text("Worker model saved", WAIT)
+        .expect("worker model persistence acknowledgement");
+    assert_worker_saved(&content, "default-model");
     save_artifacts(&content, &harness, "normal-step3");
-    press(&mut harness, b"s");
+
+    // Continue from the worker picker, record the safe URL opener seam, then
+    // select Finish without following or sending anything.
+    press(&mut harness, END);
+    press(&mut harness, keys::ENTER);
     wait_for_step(&mut harness, 4);
     save_artifacts(&content, &harness, "normal-step4");
     press(&mut harness, keys::ENTER);
@@ -261,6 +292,7 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
         .wait_for_text_absent(STEP4, WAIT)
         .expect("Finish closes completed onboarding");
     assert_completion(&content);
+    assert_worker_saved(&content, "default-model");
     save_artifacts(&content, &harness, "normal-complete");
     harness
         .quit()
@@ -278,6 +310,7 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
         "persisted completion must prevent automatic onboarding after restart\nscreen:\n{}",
         restart.screen_contents()
     );
+    assert_worker_saved(&content, "default-model");
     save_artifacts(&content, &restart, "restart-completed");
     restart
         .quit()

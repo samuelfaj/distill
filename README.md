@@ -3,8 +3,8 @@
 
 ![distill in action](https://raw.githubusercontent.com/samuelfaj/distill/main/screenshot.png)
 
-Distill is a lightweight coding agent harness and TUI, built to *get more done
-with far fewer tokens.*
+Distill is a lightweight coding agent harness and TUI, built to **get more done
+with far fewer tokens.**
 
 It works with Grok and Codex subscriptions, and with any model that speaks the
 OpenAI-compatible protocol.

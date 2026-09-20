@@ -11,10 +11,10 @@ OpenAI-compatible protocol.
 
 **Steps:**
 
-1 - Download distill.
-2 - Login with openrouter.
-3 - Login with your subscription.
-4 - Save money.
+1. Download distill.
+2. Login with openrouter.
+3. Login with your subscription.
+4. Save money.
 
 ## Install
 

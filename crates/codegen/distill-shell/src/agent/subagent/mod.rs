@@ -405,16 +405,16 @@ pub(crate) fn resolve_child_jev_effort_auto(
         // fresh-child defaults and must not shadow a source policy.
         return raw.eq_ignore_ascii_case("auto");
     }
+    // A caller-supplied model without an effort choice is an explicit child
+    // policy, including on a fork; keep its conservative manual default.
+    if request.runtime_overrides.model.is_some() {
+        return false;
+    }
     if let Some(source) = resume_source {
         return source.effort_auto.unwrap_or(false);
     }
     if request.fork_context {
         return parent_auto;
-    }
-    // A fresh caller-supplied model without an effort choice remains manual;
-    // `model=<id>, effort=auto` took the explicit branch above.
-    if request.runtime_overrides.model.is_some() {
-        return false;
     }
     // A numeric role/definition value is a fresh-child manual default. With no
     // fresh effort default, retain the parent's ordinary auto policy.
@@ -1483,6 +1483,7 @@ fn durable_resume_source_from_meta(
     {
         return None;
     }
+    let reasoning_effort = durable_source_reasoning_effort(&meta);
     Some(ResumeSourceData {
         subagent_id: meta.subagent_id,
         child_session_id: meta.child_session_id,
@@ -1494,7 +1495,25 @@ fn durable_resume_source_from_meta(
         model_id: meta.effective_model_id,
         effort_auto: meta.effort_auto,
         model_routing_locked: meta.model_routing_locked,
+        reasoning_effort,
     })
+}
+
+fn durable_source_reasoning_effort(
+    meta: &SubagentMeta,
+) -> Option<distill_sampling_types::ReasoningEffort> {
+    let child_cwd = meta.child_cwd.as_deref()?;
+    let child_info = SessionInfo {
+        id: acp::SessionId::new(meta.child_session_id.clone()),
+        cwd: child_cwd.to_owned(),
+    };
+    let summary =
+        std::fs::read(session::persistence::session_dir(&child_info).join("summary.json"))
+            .ok()
+            .and_then(|bytes| {
+                serde_json::from_slice::<session::persistence::Summary>(&bytes).ok()
+            })?;
+    summary.reasoning_effort
 }
 /// Resolve the MCP pool a child subagent should import from its parent. Inheritance applies to **every** agent source (built-in, user, project, and plugin).
 /// Plugin agents are not excluded: the parent already connected these servers for the session. Agent-owned `mcpServers` (spawned by the child itself) are handled separately and remain blocked for plugins.

@@ -1015,6 +1015,7 @@ fn resume_source_worktree_reuse() {
         model_id: None,
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     let worktree = source_with_worktree.worktree_path.clone();
     assert_eq!(
@@ -1035,6 +1036,7 @@ fn resume_source_worktree_reuse() {
         model_id: None,
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     assert!(
             source_without_worktree.worktree_path.is_none(),
@@ -1081,6 +1083,7 @@ fn resume_inherited_cwd_requires_existing_non_worktree_dir() {
         model_id: None,
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     assert_eq!(
             resume_inherited_cwd(Some(&present)),
@@ -1114,6 +1117,7 @@ fn select_override_cwd_resume_never_falls_through_to_request_cwd() {
         model_id: None,
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     assert_eq!(select_override_cwd(Some(&source), Some("/x")), None);
 }
@@ -1915,6 +1919,7 @@ fn resume_rejects_conflicting_subagent_type() {
         model_id: None,
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     let request_type = "explore";
     assert_ne!(
@@ -1935,6 +1940,7 @@ fn resume_rejects_conflicting_persona() {
         model_id: None,
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     let request_persona = Some("reviewer".to_string());
     let conflict = request_persona.as_deref() != source.persona.as_deref();
@@ -1953,6 +1959,7 @@ fn resume_allows_matching_identity() {
         model_id: Some("grok-3".into()),
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     assert_eq!("general-purpose", source.subagent_type);
     assert_eq!(Some("implementer"), source.persona.as_deref());
@@ -1971,6 +1978,7 @@ fn resume_identity_does_not_gate_on_model() {
         model_id: Some("grok-3".into()),
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     assert!(
             distill_subagent_resolution::validate_resume_identity(

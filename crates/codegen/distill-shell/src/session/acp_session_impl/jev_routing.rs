@@ -51,10 +51,9 @@ impl SessionActor {
 
     fn child_jev_routing_locked(&self) -> bool {
         self.startup_hints.is_subagent
-            && (!self
+            && !self
                 .jev_effort_auto
                 .load(std::sync::atomic::Ordering::Relaxed)
-                || self.startup_hints.explicit_effort_override)
     }
 
     /// Records, for the turn report, that this round runs on `cfg`'s model at
@@ -334,7 +333,6 @@ impl SessionActor {
         if !self
             .jev_effort_auto
             .load(std::sync::atomic::Ordering::Relaxed)
-            || self.startup_hints.explicit_effort_override
         {
             return;
         }

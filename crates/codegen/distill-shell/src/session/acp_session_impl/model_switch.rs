@@ -10,6 +10,7 @@ impl SessionActor {
         let crate::session::SessionModelSwitch {
             mut sampling_config,
             canonical_model_id,
+            model_selection_intent,
             use_concise,
             is_family_switch,
             apply_prompt_override,
@@ -148,7 +149,7 @@ impl SessionActor {
                 reasoning_effort: Some(sampling_config.reasoning_effort),
             });
         self.canonical_model_id.replace(canonical_model_id);
-        if self.startup_hints.is_subagent {
+        if self.startup_hints.is_subagent && model_selection_intent {
             self.model_routing_locked.set(true);
         }
         self.emit_status_snapshot_detached();

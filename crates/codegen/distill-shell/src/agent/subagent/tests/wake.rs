@@ -366,6 +366,8 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                             ),
                         );
                         ordinary_ctx.model_id = acp::ModelId::new("ordinary-key");
+                        ordinary_ctx.sampling_config.reasoning_effort =
+                            Some(distill_sampling_types::ReasoningEffort::Low);
                         ordinary_ctx
                             .available_models
                             .insert("ordinary-key".to_owned(), ordinary_entry.clone());
@@ -390,6 +392,8 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                             ),
                         );
                         wake_ctx.model_id = acp::ModelId::new("ordinary-key");
+                        wake_ctx.sampling_config.reasoning_effort =
+                            Some(distill_sampling_types::ReasoningEffort::High);
                         wake_ctx
                             .available_models
                             .insert("ordinary-key".to_owned(), ordinary_entry.clone());
@@ -420,8 +424,11 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                         let backend =
                             ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
 
+                        let mut request = auto_wake_test_request(&id);
+                        request.fork_context = true;
+                        request.runtime_overrides.reasoning_effort = Some("auto".to_owned());
                         let ordinary = backend
-                            .spawn(auto_wake_test_request(&id), None)
+                            .spawn(request, None)
                             .await
                             .expect("ordinary spawn");
                         assert!(
@@ -487,6 +494,24 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                             Some(false),
                             "ordinary auto resume must remain eligible for worker routing"
                         );
+                        let requests: Vec<_> = server
+                            .request_bodies()
+                            .into_iter()
+                            .filter(|body| body.get("model").is_some())
+                            .collect();
+                        assert!(
+                            requests.len() >= 2,
+                            "fork creation and wake must both dispatch: {requests:?}"
+                        );
+                        for request in [requests.first().unwrap(), requests.last().unwrap()] {
+                            assert_eq!(
+                                request
+                                    .pointer("/reasoning/effort")
+                                    .and_then(|value| value.as_str()),
+                                Some("low"),
+                                "the parent's live numeric effort must survive definition/wake defaults"
+                            );
+                        }
 
                         drop(backend);
                         coordinator.await.expect("coordinator");
@@ -546,6 +571,10 @@ fn explicit_model_auto_resume_keeps_catalog_identity_and_wire_pin() {
                         );
                         ordinary_ctx.agent_config = Some(agent_config.clone());
                         ordinary_ctx.parent_effort_auto = false;
+                        // The catalog and definition both advertise High, but the
+                        // live session's numeric fallback is explicitly Low.
+                        ordinary_ctx.sampling_config.reasoning_effort =
+                            Some(distill_sampling_types::ReasoningEffort::Low);
                         ordinary_ctx
                             .available_models
                             .insert("pinned-key".to_owned(), entry.clone());
@@ -569,6 +598,10 @@ fn explicit_model_auto_resume_keeps_catalog_identity_and_wire_pin() {
                         );
                         wake_ctx.agent_config = Some(agent_config);
                         wake_ctx.parent_effort_auto = false;
+                        // A wake context with a different baseline must not
+                        // replace the durable Low fallback.
+                        wake_ctx.sampling_config.reasoning_effort =
+                            Some(distill_sampling_types::ReasoningEffort::High);
                         wake_ctx.parent_cmd_tx = Some(parent_cmd_tx);
                         wake_ctx
                             .available_models
@@ -657,12 +690,12 @@ fn explicit_model_auto_resume_keeps_catalog_identity_and_wire_pin() {
                             Some(&serde_json::json!("vendor/pinned-wire"))
                         );
                         for request in [requests.first().unwrap(), requests.last().unwrap()] {
-                            assert_ne!(
+                            assert_eq!(
                                 request
                                     .pointer("/reasoning/effort")
                                     .and_then(|value| value.as_str()),
-                                Some("high"),
-                                "numeric definition effort must not replace explicit/resumed auto"
+                                Some("low"),
+                                "auto fallback must retain the explicitly seeded base effort when no decision is available"
                             );
                         }
 

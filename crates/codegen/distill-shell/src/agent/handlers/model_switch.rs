@@ -259,11 +259,14 @@ pub(crate) async fn apply(
         false
     };
     let model_unchanged = previous_model_id == model_id.0;
+    let model_selection_intent =
+        !(model_unchanged && (wants_auto_effort || explicit_effort.is_some()));
     let (tx, rx) = oneshot::channel();
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
         switch: SessionModelSwitch {
             sampling_config: model_sampling,
             canonical_model_id: Some(model_id.clone()),
+            model_selection_intent,
             use_concise,
             is_family_switch,
             apply_prompt_override,

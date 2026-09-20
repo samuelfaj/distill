@@ -348,6 +348,13 @@ pub(crate) async fn run_shell_child(
         spawner_session_id: _,
     } = run;
     let is_wake = wake_origin.is_some();
+    if is_wake {
+        // The wake request carries the historical spawn overrides. Durable
+        // current-model state is authoritative for a reactivated child.
+        // Identity and capability overrides remain untouched.
+        request.runtime_overrides.model = None;
+        request.runtime_overrides.reasoning_effort = None;
+    }
     let (wake_message_source, wake_message_id) = match wake_origin {
         Some(origin) => (Some(origin.source), Some(origin.message_id)),
         None => (None, None),
@@ -529,6 +536,9 @@ pub(crate) async fn run_shell_child(
         if source.model_routing_locked.is_none() {
             source.model_routing_locked = durable.model_routing_locked;
         }
+        if source.reasoning_effort.is_none() {
+            source.reasoning_effort = durable.reasoning_effort;
+        }
         // The durable record is the completed source's effective model, so it
         // wins over a stale in-memory spawn snapshot. A caller-supplied model
         // is applied later and therefore still has precedence.
@@ -544,11 +554,6 @@ pub(crate) async fn run_shell_child(
         return child_run_output(failure_result(&request, &error), completion_data, None);
     }
     let explicit_model_override = request.runtime_overrides.model.is_some();
-    let explicit_effort_override = request
-        .runtime_overrides
-        .reasoning_effort
-        .as_deref()
-        .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
     let model_routing_locked = explicit_model_override
         || resume_source
             .as_ref()
@@ -871,6 +876,11 @@ pub(crate) async fn run_shell_child(
         .reasoning_effort
         .as_deref()
         .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
+    let inherited_parent_effort = if request.fork_context && !caller_manual_effort {
+        read_parent_sampling_config(&ctx).await.0.reasoning_effort
+    } else {
+        None
+    };
     // Resolve the Jev policy before applying a numeric sampler effort. A
     // durable/forked `auto` policy must not be replaced by a fresh role or
     // definition number; an explicit caller number still wins.
@@ -880,8 +890,25 @@ pub(crate) async fn run_shell_child(
         &effective_runtime,
         resume_source.as_ref(),
     );
-    let apply_numeric_effort =
-        caller_manual_effort || (!caller_effort_override && !child_jev_effort_auto);
+    let inherited_effort = resume_source
+        .as_ref()
+        .and_then(|source| source.reasoning_effort)
+        .or(inherited_parent_effort);
+    if !caller_manual_effort
+        && let Some(effort) = inherited_effort
+        && ctx
+            .models_manager
+            .model_supports_reasoning_effort(effective_model_id.0.as_ref())
+    {
+        ctx.models_manager.apply_supported_effort(
+            &mut effective_sampling_config,
+            Some(effort),
+            &acp::SessionId::new(request.id.clone()),
+            crate::sampling::EffortTarget::NewSession,
+        );
+    }
+    let apply_numeric_effort = caller_manual_effort
+        || (!caller_effort_override && inherited_effort.is_none() && !child_jev_effort_auto);
     if apply_numeric_effort
         && let Some(raw) = effective_runtime.reasoning_effort.as_deref()
         && ctx
@@ -903,9 +930,6 @@ pub(crate) async fn run_shell_child(
                 )
             }
         }
-    }
-    if child_jev_effort_auto && !caller_manual_effort {
-        effective_sampling_config.reasoning_effort = None;
     }
     if effective_sampling_config.conversation_group_id.is_none() {
         let inherited_group_id = if let Some(parent_chat_state) = ctx.parent_chat_state.as_ref() {
@@ -1591,7 +1615,6 @@ pub(crate) async fn run_shell_child(
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
             explicit_model_override: model_routing_locked,
-            explicit_effort_override,
             ..Default::default()
         },
         distill_workspace::permission::ClientType::Generic,

@@ -867,6 +867,7 @@ async fn family_switch_compacts_lossy_with_new_model() {
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: switch_target_config("new-model", server.url()),
                     canonical_model_id: None,
+                    model_selection_intent: true,
                     use_concise: false,
                     is_family_switch: true,
                     apply_prompt_override: false,

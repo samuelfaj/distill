@@ -1269,6 +1269,7 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
         model_id: Some("pinned-model".into()),
         effort_auto: Some(true),
         model_routing_locked: Some(true),
+        reasoning_effort: None,
     };
     let numeric_default = EffectiveRuntimeConfig {
         reasoning_effort: Some("high".into()),
@@ -1787,6 +1788,7 @@ async fn bootstrap_in_place_resume_reads_existing_transcript() {
         model_id: Some("test-model".to_owned()),
         effort_auto: None,
         model_routing_locked: None,
+        reasoning_effort: None,
     };
     let out = bootstrap_initial_context(
             &request,

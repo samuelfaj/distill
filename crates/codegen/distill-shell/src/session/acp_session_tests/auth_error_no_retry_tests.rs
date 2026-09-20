@@ -1493,6 +1493,7 @@ async fn model_switch_preserves_existing_conversation_group() {
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: incoming,
                     canonical_model_id: None,
+                    model_selection_intent: true,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: false,
@@ -1567,6 +1568,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: cfg,
                     canonical_model_id: None,
+                    model_selection_intent: true,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: false,
@@ -1657,6 +1659,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: cfg,
                     canonical_model_id: None,
+                    model_selection_intent: true,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: false,

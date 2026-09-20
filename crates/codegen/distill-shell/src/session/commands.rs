@@ -308,6 +308,9 @@ pub struct SessionModelSwitch {
     /// Canonical catalogue identity selected by the caller. This stays
     /// separate from `sampling_config.model`, which is the provider wire name.
     pub canonical_model_id: Option<acp::ModelId>,
+    /// Whether this request selected a model, as opposed to changing only
+    /// the effort policy for the already-selected model.
+    pub model_selection_intent: bool,
     pub use_concise: bool,
     /// The two models declare differing `model_family`s, so a lossy compaction runs at switch end.
     pub is_family_switch: bool,

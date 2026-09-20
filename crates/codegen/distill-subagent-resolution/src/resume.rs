@@ -80,6 +80,7 @@ mod tests {
             model_id: model_id.map(String::from),
             effort_auto: None,
             model_routing_locked: None,
+            reasoning_effort: None,
             child_cwd: "/workspace".into(),
             worktree_path: None,
             snapshot_ref: None,

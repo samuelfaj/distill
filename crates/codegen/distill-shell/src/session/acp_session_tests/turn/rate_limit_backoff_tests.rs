@@ -93,7 +93,6 @@ pub(super) async fn actor_under_test(
         retry_policy,
         transient_retry_enabled,
         false,
-        false,
     )
     .await
 }
@@ -104,7 +103,6 @@ async fn actor_under_test_with_startup_policy(
     retry_policy: distill_sampler::RetryPolicy,
     transient_retry_enabled: bool,
     explicit_model_override: bool,
-    explicit_effort_override: bool,
 ) -> (Arc<SessionActor>, CapturedRetries) {
     let sampler_max_retries = retry_policy.max_retries;
     let sampling_cfg = distill_sampler::SamplerConfig {
@@ -130,7 +128,6 @@ async fn actor_under_test_with_startup_policy(
     actor.sampler_handle = sampler_handle;
     actor.startup_hints.is_subagent = matches!(session, SessionKind::Subagent);
     actor.startup_hints.explicit_model_override = explicit_model_override;
-    actor.startup_hints.explicit_effort_override = explicit_effort_override;
     actor.transient_retry_enabled = transient_retry_enabled;
     // The per-turn config push carries the shell's max_retries; mirror the policy.
     actor.max_retries = sampler_max_retries;
@@ -570,9 +567,13 @@ async fn eligible_worker_with_zero_or_single_effort_menu_uses_real_chooser() {
                     "/v1/responses",
                     ScriptedResponse::sse(responses_api_script_exact("done", "worker-model")),
                 );
-                let (actor, _retries) =
-                    actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false)
-                        .await;
+                let (actor, _retries) = actor_under_test(
+                    &server,
+                    SessionKind::Subagent,
+                    sampler_surfaces_429(),
+                    false,
+                )
+                .await;
                 actor
                     .jev_effort_auto
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -608,6 +609,10 @@ async fn eligible_worker_with_zero_or_single_effort_menu_uses_real_chooser() {
                 assert_eq!(signals.active_model_id.as_deref(), Some("worker-model"));
                 assert_eq!(signals.active_reasoning_effort.as_deref(), expected_effort);
                 assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+                assert!(
+                    !actor.model_routing_locked.get(),
+                    "auto effort selection must not invent a model pin"
+                );
                 let request = conversation_request(&actor).await;
                 let mut budget = actor.rate_limit_wait_budget(None);
                 let outcome = actor
@@ -773,7 +778,6 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
                 sampler_surfaces_429(),
                 false,
                 true,
-                true,
             )
             .await;
             crate::jev::set_test_local_config(Default::default());
@@ -872,7 +876,6 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 sampler_surfaces_429(),
                 false,
                 true,
-                false,
             )
             .await;
             actor

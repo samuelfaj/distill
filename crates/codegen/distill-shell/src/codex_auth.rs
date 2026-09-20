@@ -1703,7 +1703,6 @@ mod tests {
         .await;
         assert!(rejected.0.contains("Distill login failed"));
         assert!(rejected.0.contains("Return to Distill for details"));
-        assert!(!rejected.0.contains("Distill"));
         assert!(
             state.result_tx.lock().await.is_some(),
             "wrong-state callback must leave the one-shot sender available"
@@ -1721,7 +1720,6 @@ mod tests {
         .await;
         assert!(accepted.0.contains("Distill connected"));
         assert!(accepted.0.contains("return to Distill"));
-        assert!(!accepted.0.contains("Distill"));
         assert_eq!(result_rx.await.unwrap().unwrap(), "valid-code");
     }
 

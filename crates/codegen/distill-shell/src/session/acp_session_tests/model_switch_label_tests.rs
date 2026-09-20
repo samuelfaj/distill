@@ -34,6 +34,7 @@ async fn model_switch_relabels_live_agent_and_system_head() {
                         ..distill_sampler::SamplerConfig::default()
                     },
                     canonical_model_id: None,
+                    model_selection_intent: true,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: true,
@@ -57,6 +58,45 @@ async fn model_switch_relabels_live_agent_and_system_head() {
             );
             assert_eq!(agent.system_prompt(), head);
             assert_eq!(2, conv.len(), "the switch swaps only the head");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn effort_only_model_switch_does_not_create_child_model_pin() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut actor, _gateway_rx) = build_actor().await;
+            let actor_mut = std::sync::Arc::get_mut(&mut actor).expect("unique test actor");
+            actor_mut.startup_hints.is_subagent = true;
+            actor_mut.startup_hints.explicit_model_override = false;
+            actor.model_routing_locked.set(false);
+
+            actor
+                .handle_set_session_model(crate::session::SessionModelSwitch {
+                    sampling_config: distill_sampler::SamplerConfig {
+                        model: "switch-target".to_owned(),
+                        context_window: 256_000,
+                        ..distill_sampler::SamplerConfig::default()
+                    },
+                    canonical_model_id: Some(agent_client_protocol::ModelId::new(
+                        "same-catalog-model",
+                    )),
+                    model_selection_intent: false,
+                    use_concise: false,
+                    is_family_switch: false,
+                    apply_prompt_override: false,
+                    skip_prompt_rewrite: true,
+                    auto_compact_threshold_percent: 85,
+                    system_prompt_label: distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+                })
+                .await
+                .expect("effort-only switch succeeds");
+
+            assert!(
+                !actor.model_routing_locked.get(),
+                "an effort-only same-model request must not create a child model pin"
+            );
         })
         .await;
 }

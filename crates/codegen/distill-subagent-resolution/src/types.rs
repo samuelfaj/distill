@@ -22,8 +22,6 @@ pub struct EffectiveRuntimeConfig {
     /// Resolved model ID override (if any).
     pub model: Option<String>,
     /// Resolved reasoning effort (e.g. "low", "medium", "high").
-    // TODO: consider a typed `ReasoningEffort` enum to prevent typos
-    // It stays a plain string for compatibility with the shell's existing API
     pub reasoning_effort: Option<String>,
     /// Resolved capability mode controlling tool access.
     pub capability_mode: Option<distill_tool_types::SubagentCapabilityMode>,
@@ -66,6 +64,9 @@ pub struct ResumeSourceData {
     /// keeps A fixed while still allowing per-round effort selection.
     /// Missing on legacy metadata, where the host uses its conservative policy.
     pub model_routing_locked: Option<bool>,
+    /// Last persisted numeric effort, kept separate from the auto/manual bit.
+    /// Missing on legacy sessions; a fresh definition default is used then.
+    pub reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
     /// Effective cwd the source child used.
     /// The shell uses it to reconstruct `SessionInfo` so the raw transcript continues and the worktree can be reused.
     pub child_cwd: String,
@@ -93,6 +94,7 @@ impl From<distill_tools::implementations::distill::task::types::SubagentResumeSo
             model_id: source.model_id,
             effort_auto: None,
             model_routing_locked: None,
+            reasoning_effort: None,
             child_cwd: source.child_cwd,
             worktree_path: source.worktree_path.map(PathBuf::from),
             snapshot_ref: source.snapshot_ref,

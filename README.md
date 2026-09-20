@@ -12,29 +12,46 @@ provider account.
 
 ## Install
 
-Download a prebuilt binary from [GitHub Releases](https://github.com/samuelfaj/distill/releases),
-or run the installer on macOS or Linux:
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh -o /tmp/distill-install.sh
-sh /tmp/distill-install.sh
-export PATH="$HOME/.local/share/distill/bin:$PATH"
-distill
+curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh | sh   # macOS / Linux / Git Bash
+irm https://raw.githubusercontent.com/samuelfaj/distill/main/install.ps1 | iex        # Windows PowerShell
 ```
 
-Add the `export PATH` line to your shell configuration, such as `~/.zshrc` or
-`~/.bashrc`, to use `distill` in new terminals. The installer selects the binary
-for your OS and CPU, checks its SHA-256 checksum, and runs `--version` before
-activating it. It does not require Rust, a GitHub account, or provider login.
+The installers download the matching binary from
+[github.com/samuelfaj/distill](https://github.com/samuelfaj/distill/releases),
+check its SHA-256 checksum, smoke-test it with `--version`, and only then
+activate it. They do not require Rust, a GitHub account, or provider login.
+Distill installs to `~/.local/share/distill` on macOS and Linux, and to
+`%LOCALAPPDATA%\distill` on Windows, including when the installer runs from Git
+Bash.
 
-Release binaries target Apple Silicon and Intel Macs, and Linux on x86_64 and
-ARM64. Linux builds use glibc; use a source build for other environments.
+Add the printed `bin` directory to your `PATH`, then open a new terminal:
+
+```sh
+export PATH="$HOME/.local/share/distill/bin:$PATH"   # macOS / Linux
+```
+
+```powershell
+$bin = "$env:LOCALAPPDATA\distill\bin"; [Environment]::SetEnvironmentVariable('Path', "$bin;" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')   # Windows PowerShell, also read by Git Bash
+```
+
+```sh
+distill --version
+```
 
 To install a specific release:
 
 ```sh
-DISTILL_VERSION=2.0.0 sh /tmp/distill-install.sh
+curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh | DISTILL_VERSION=2.0.0 sh
 ```
+
+```powershell
+$env:DISTILL_VERSION = '2.0.0'; irm https://raw.githubusercontent.com/samuelfaj/distill/main/install.ps1 | iex
+```
+
+Prebuilt binaries target Apple Silicon and Intel Macs, Linux on x86_64 and
+ARM64, and Windows on x86_64. Linux builds use glibc; use a source build for
+other environments.
 
 Set `DISTILL_INSTALL_DIR` to choose another installation directory. Its `bin`
 subdirectory must be on your `PATH`.
@@ -47,7 +64,7 @@ For an installation made with the release installer:
 distill update
 ```
 
-You can also download and run `install.sh` again to install the latest release.
+You can also run `install.sh` or `install.ps1` again to install the latest release.
 Both paths verify the downloaded binary before switching the executable. Your
 settings, credentials, and sessions stay in your profile. Restart open Distill
 sessions to use the new version.

@@ -7,7 +7,11 @@ version=${DISTILL_VERSION:-latest}
 case "$(uname -s)" in
   Darwin) os=macos ;;
   Linux) os=linux ;;
-  *) echo 'This installer supports macOS and Linux.' >&2; exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*)
+    # Git Bash reports a Windows kernel, not Linux. Hand off to install.ps1 so the Windows layout and .exe naming stay in one place.
+    exec powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/$repo/main/install.ps1 | iex"
+    ;;
+  *) echo 'This installer supports macOS, Linux, and Git Bash on Windows.' >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   arm64|aarch64) arch=aarch64 ;;

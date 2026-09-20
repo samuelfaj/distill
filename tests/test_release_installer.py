@@ -54,6 +54,26 @@ else:
             self.assertEqual(current.readlink(), previous_target)
             self.assertIn('2.0.1', subprocess.check_output([current], text=True))
 
+    def test_git_bash_hands_off_to_the_powershell_installer(self):
+        script = Path(__file__).resolve().parents[1] / 'install.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / 'fake-bin'
+            fake_bin.mkdir()
+            uname = fake_bin / 'uname'
+            uname.write_text('#!/bin/sh\ncase "$1" in -s) echo MINGW64_NT-10.0-26200 ;; *) echo x86_64 ;; esac\n')
+            uname.chmod(0o755)
+            record = root / 'powershell-args'
+            powershell = fake_bin / 'powershell.exe'
+            powershell.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {record}\n')
+            powershell.chmod(0o755)
+            env = dict(os.environ, PATH=f'{fake_bin}:{os.environ["PATH"]}')
+            run = subprocess.run(['sh', str(script)], env=env, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            launched = record.read_text()
+            self.assertIn('https://raw.githubusercontent.com/samuelfaj/distill/main/install.ps1', launched)
+            self.assertIn('iex', launched)
+
 
 if __name__ == '__main__':
     unittest.main()

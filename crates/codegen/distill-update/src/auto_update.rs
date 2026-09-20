@@ -2121,23 +2121,34 @@ async fn agent_exe_differs(
     }
 }
 
-/// Install a public release into the directory created by install.sh.
+/// Windows release assets and managed entry points carry `.exe`; install.ps1 installs `bin/distill.exe` there.
+fn platform_exe_suffix(os: &str) -> &'static str {
+    if os == "windows" { ".exe" } else { "" }
+}
+
+/// Release asset filename for a platform, matching what the release workflow publishes.
+fn release_asset_name(os: &str, arch: &str) -> String {
+    format!("distill-{os}-{arch}{}", platform_exe_suffix(os))
+}
+
+/// Install a public release into the directory created by install.sh or install.ps1.
 async fn install_gh_release(target: Option<&str>) -> Result<()> {
-    let root =
-        release_install_root().context("Use install.sh to install a managed Distill release")?;
+    let root = release_install_root()
+        .context("Use install.sh or install.ps1 to install a managed Distill release")?;
     let (os, arch) = detect_platform()?;
     let version = match target {
         Some(v) => semver::Version::parse(v)?.to_string(),
         None => crate::version::fetch_gh_release_version("stable").await?,
     };
-    let asset = format!("distill-{os}-{arch}");
+    let exe = platform_exe_suffix(os);
+    let asset = release_asset_name(os, arch);
     let base = format!(
         "https://github.com/{}/releases/download/v{version}",
         crate::version::GH_RELEASE_REPO
     );
     let downloads = root.join("downloads");
     tokio::fs::create_dir_all(&downloads).await?;
-    let binary = downloads.join(format!("distill-{version}-{os}-{arch}"));
+    let binary = downloads.join(format!("distill-{version}-{os}-{arch}{exe}"));
     let pending = tmp_download_path(&binary);
     let result = async {
         download_with_progress(&format!("{base}/{asset}"), &pending).await?;
@@ -2161,7 +2172,8 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
         } else {
             verify_release_checksum(&binary, &checksums, &asset).await?;
         }
-        replace_managed_bins(&[(binary.clone(), root.join("bin/distill"))]).await?;
+        replace_managed_bins(&[(binary.clone(), root.join(format!("bin/distill{exe}")))])
+            .await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -2226,6 +2238,26 @@ mod release_tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// install.ps1 downloads `distill-windows-x86_64.exe` and installs `bin/distill.exe`, so the updater has to ask for
+    /// the same names or a Windows `distill update` 404s and then replaces the wrong entry point.
+    #[test]
+    fn release_assets_carry_exe_only_for_windows() {
+        assert_eq!(
+            super::release_asset_name("windows", "x86_64"),
+            "distill-windows-x86_64.exe"
+        );
+        assert_eq!(
+            super::release_asset_name("macos", "aarch64"),
+            "distill-macos-aarch64"
+        );
+        assert_eq!(
+            super::release_asset_name("linux", "x86_64"),
+            "distill-linux-x86_64"
+        );
+        assert_eq!(super::platform_exe_suffix("windows"), ".exe");
+        assert_eq!(super::platform_exe_suffix("linux"), "");
     }
 }
 

@@ -481,6 +481,169 @@ fn resolve_aux_model_honors_distill_override() {
     assert_eq!(resolved.base_url, "https://vendor.example/v1");
     assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
 }
+#[test]
+#[serial]
+fn resolve_aux_codex_model_keeps_dynamic_authentication() {
+    const CHILD_ENV: &str = "DISTILL_CONFIG_CODEX_AUX_CHILD";
+    const PASS_MARK: &str = "codex-aux-child-passed";
+
+    if std::env::var_os(CHILD_ENV).is_none() {
+        let filter = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        let exe = std::env::current_exe().expect("current_exe");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--exact")
+            .arg(format!(
+                "{filter}::resolve_aux_codex_model_keeps_dynamic_authentication"
+            ))
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(CHILD_ENV, "1")
+            .stdin(std::process::Stdio::null());
+        distill_tty_utils::detach_std_command(&mut cmd);
+        let output = cmd.output().expect("spawn Codex auth child test");
+        assert!(
+            output.status.success(),
+            "isolated Codex auth child failed with status {:?}",
+            output.status
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(PASS_MARK),
+            "isolated Codex auth child did not run"
+        );
+        return;
+    }
+
+    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+    use base64::Engine as _;
+
+    let home = tempfile::tempdir().unwrap();
+    let _distill_home = EnvGuard::set("DISTILL_HOME", home.path());
+    let _grok_home = EnvGuard::set("GROK_HOME", home.path());
+    let _xai = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
+    let _legacy_xai = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    let _codex_store = crate::codex_auth::CodexAuthStore {
+        auth_mode: Some("chatgpt".to_owned()),
+        openai_api_key: None,
+        tokens: Some(crate::codex_auth::CodexTokenData {
+            id_token: format!(
+                "e30.{}.e30",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                    serde_json::to_vec(&serde_json::json!({
+                        "https://api.openai.com/auth": {
+                            "chatgpt_account_id": "fixture-account",
+                            "chatgpt_user_id": "fixture-user"
+                        }
+                    }))
+                    .unwrap()
+                )
+            ),
+            access_token: "fixture-codex-access".to_owned(),
+            refresh_token: "fixture-codex-refresh".to_owned(),
+            account_id: Some("fixture-account".to_owned()),
+        }),
+        last_refresh: None,
+    };
+    std::fs::write(
+        home.path().join(crate::codex_auth::CODEX_AUTH_FILE_NAME),
+        serde_json::to_vec(&_codex_store).unwrap(),
+    )
+    .unwrap();
+
+    let endpoints = EndpointsConfig {
+        deployment_key: None,
+        ..EndpointsConfig::default()
+    };
+    let mut catalog = IndexMap::new();
+    catalog.insert(
+        "chatgpt/gpt-5.6-luna".to_owned(),
+        test_model_entry(
+            "gpt-5.6-luna",
+            crate::codex_auth::CODEX_INFERENCE_BASE_URL,
+            None,
+            None,
+            None,
+        ),
+    );
+
+    let resolved = resolve_aux_model_sampling_config(
+        "chatgpt/gpt-5.6-luna",
+        &catalog,
+        &endpoints,
+        Some("grok-session"),
+        false,
+        None,
+        None,
+    )
+    .expect("a logged-in Codex model must resolve as its own auxiliary sampler");
+    assert_eq!(resolved.model, "gpt-5.6-luna");
+    assert_eq!(resolved.base_url, crate::codex_auth::CODEX_INFERENCE_BASE_URL);
+    assert!(resolved.api_key.is_none());
+    assert_eq!(
+        resolved
+            .bearer_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.current_bearer())
+            .as_deref(),
+        Some("fixture-codex-access")
+    );
+    println!("{PASS_MARK}");
+}
+#[test]
+#[serial]
+fn known_non_xai_aux_model_without_credentials_does_not_reroute_to_grok() {
+    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+
+    let _xai = EnvGuard::set(XAI_API_KEY_ENV_VAR, "synthetic-global-xai-key");
+    let _legacy_xai = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    let endpoints = EndpointsConfig {
+        deployment_key: None,
+        ..EndpointsConfig::default()
+    };
+    let mut catalog = IndexMap::new();
+    catalog.insert(
+        "third-party-aux".to_owned(),
+        test_model_entry(
+            "third-party-model",
+            "https://litellm.example/v1",
+            None,
+            None,
+            None,
+        ),
+    );
+
+    for session_key in [Some("grok-session"), None] {
+        assert!(
+            resolve_aux_model_sampling_config(
+                "third-party-aux",
+                &catalog,
+                &endpoints,
+                session_key,
+                false,
+                None,
+                None,
+            )
+            .is_none(),
+            "a known non-XAI model without credentials must not use the Grok session token"
+        );
+    }
+    let uncatalogued = resolve_aux_model_sampling_config(
+        "uncatalogued-grok-helper",
+        &IndexMap::new(),
+        &endpoints,
+        Some("grok-session"),
+        false,
+        None,
+        None,
+    )
+    .expect("uncatalogued Grok helpers retain the session fallback");
+    assert_eq!(
+        uncatalogued.base_url,
+        endpoints.resolve_inference_base_url()
+    );
+}
 /// Cold cache falls back to the session model, never the Distill proxy; warm cache serves the provider token at the provider endpoint.
 #[tokio::test]
 async fn aux_model_with_auth_provider_never_reroutes() {
@@ -537,6 +700,7 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
         }
     }
     let session_cfg = SamplerConfig {
+        base_url: EndpointsConfig::default().resolve_inference_base_url(),
         bearer_resolver: Some(std::sync::Arc::new(SessionResolver)),
         conversation_group_id: Some("root-group".into()),
         ..SamplerConfig::default()
@@ -572,6 +736,80 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
             .as_ref()
             .map(|id| id.as_ref()),
         Some("root-group")
+    );
+}
+#[test]
+fn session_resolver_does_not_cross_authorities_or_replace_destination_auth() {
+    #[derive(Debug)]
+    struct StaticResolver(&'static str);
+    impl distill_sampler::BearerResolver for StaticResolver {
+        fn current_bearer(&self) -> Option<String> {
+            Some(self.0.to_owned())
+        }
+    }
+
+    let session_cfg = SamplerConfig {
+        base_url: crate::codex_auth::CODEX_INFERENCE_BASE_URL.to_owned(),
+        bearer_resolver: Some(std::sync::Arc::new(StaticResolver("chatgpt-token"))),
+        ..SamplerConfig::default()
+    };
+    let mut grok_destination = SamplerConfig {
+        base_url: EndpointsConfig::default().resolve_inference_base_url(),
+        ..SamplerConfig::default()
+    };
+    stamp_session_local_sampler_fields(&mut grok_destination, &session_cfg, None, None);
+    assert!(
+        grok_destination.bearer_resolver.is_none(),
+        "a ChatGPT resolver must not be inherited by a Grok sampler"
+    );
+
+    let xai_session_cfg = SamplerConfig {
+        base_url: EndpointsConfig::default().resolve_inference_base_url(),
+        api_key: Some("source-session-key".into()),
+        bearer_resolver: Some(std::sync::Arc::new(StaticResolver("xai-token"))),
+        ..SamplerConfig::default()
+    };
+    let mut static_key_destination = SamplerConfig {
+        base_url: EndpointsConfig::default().resolve_inference_base_url(),
+        api_key: Some("destination-static-key".into()),
+        ..SamplerConfig::default()
+    };
+    stamp_session_local_sampler_fields(&mut static_key_destination, &xai_session_cfg, None, None);
+    assert!(
+        static_key_destination.bearer_resolver.is_none(),
+        "a destination-owned static key must not inherit the session resolver"
+    );
+
+    let mut owned_destination = SamplerConfig {
+        base_url: EndpointsConfig::default().resolve_inference_base_url(),
+        bearer_resolver: Some(std::sync::Arc::new(StaticResolver("grok-token"))),
+        ..SamplerConfig::default()
+    };
+    stamp_session_local_sampler_fields(&mut owned_destination, &xai_session_cfg, None, None);
+    assert_eq!(
+        owned_destination
+            .bearer_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.current_bearer())
+            .as_deref(),
+        Some("grok-token"),
+        "a destination-owned resolver must not be replaced"
+    );
+
+    let mut matching_destination = SamplerConfig {
+        base_url: EndpointsConfig::default().resolve_inference_base_url(),
+        api_key: Some("source-session-key".into()),
+        ..SamplerConfig::default()
+    };
+    stamp_session_local_sampler_fields(&mut matching_destination, &xai_session_cfg, None, None);
+    assert_eq!(
+        matching_destination
+            .bearer_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.current_bearer())
+            .as_deref(),
+        Some("xai-token"),
+        "a same-session key must inherit the resolver for refresh"
     );
 }
 /// A cold cache disables web search rather than sending an unauthenticated request.

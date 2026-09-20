@@ -5117,13 +5117,25 @@ pub(crate) fn resolve_aux_model_sampling_config(
             None,
             None,
         );
-        if sampler.api_key.is_some() {
+        let trusted_xai_destination = crate::util::is_xai_api_bearer_url(&entry.info.base_url)
+            && crate::util::is_xai_api_bearer_url(&sampler.base_url);
+        if sampler.bearer_resolver.is_some()
+            || (sampler.api_key.is_some()
+                && (entry.has_own_credentials() || trusted_xai_destination))
+        {
             return Some(sampler);
         }
         if entry.effective_auth_provider().is_some() {
             tracing::warn!(
                 model = %model_id,
                 "aux model uses an auth provider with no cached token; the caller falls back to its session default"
+            );
+            return None;
+        }
+        if !crate::util::is_xai_api_url(&entry.info.base_url) {
+            tracing::warn!(
+                model = %model_id,
+                "aux model has no usable credentials; refusing to reroute it through the Grok proxy"
             );
             return None;
         }
@@ -5200,7 +5212,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
     None
 }
 /// Stamp the session-local identity, attribution, bearer resolver, and retries from the active session onto a routed aux `SamplerConfig`. A helper model then keeps the session's auth/attribution.
-/// Shared by image-describe and the auto-mode classifier so the two can't drift. The resolver gate is host-based, stricter than `session_token_auth_gate`.
+/// Shared by image-describe and the auto-mode classifier so the two can't drift. Resolver inheritance stays within the XAI auth authority and never replaces a destination-owned resolver.
 /// A session-token deployment on a custom `models_base_url` loses aux-sampler refresh, rather than risk the session bearer on a third-party endpoint.
 pub(crate) fn stamp_session_local_sampler_fields(
     cfg: &mut SamplerConfig,
@@ -5214,7 +5226,11 @@ pub(crate) fn stamp_session_local_sampler_fields(
     // A call routed to another model is still part of this session's turn: it
     // keeps the trace parent, so the round does not vanish from the trace.
     cfg.header_injector = active_session_config.header_injector.clone();
-    if crate::util::is_xai_api_bearer_url(&cfg.base_url) {
+    if cfg.bearer_resolver.is_none()
+        && crate::util::is_xai_api_bearer_url(&active_session_config.base_url)
+        && crate::util::is_xai_api_bearer_url(&cfg.base_url)
+        && (cfg.api_key.is_none() || cfg.api_key == active_session_config.api_key)
+    {
         cfg.bearer_resolver = active_session_config.bearer_resolver.clone();
     }
     cfg.max_retries = max_retries;

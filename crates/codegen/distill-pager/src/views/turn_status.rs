@@ -1236,6 +1236,16 @@ mod tests {
             "the final model remains visible even when Jev made no decision: {routed_without_a_decision:?}"
         );
 
+        let routed_while_in_flight = render_running_with_jev(JevTurnActivity {
+            in_flight: 1,
+            route: Some("reasoning-model high".to_owned()),
+            ..Default::default()
+        });
+        assert!(
+            routed_while_in_flight.contains("reasoning-model high"),
+            "an in-flight consultation keeps the known route visible: {routed_while_in_flight:?}"
+        );
+
         let refused_with_fallback_route = render_running_with_jev(JevTurnActivity {
             refused: true,
             route: Some("reasoning-model high".to_owned()),

@@ -639,29 +639,37 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let server = MockInferenceServer::start_with_models(vec![
+            let base_server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
                 MockModelEntry::new("reasoning-model"),
-                MockModelEntry::new("local-model"),
             ])
             .await
-            .expect("mock inference server");
-            server.enqueue_response(
+            .expect("base mock inference server");
+            let local_server =
+                MockInferenceServer::start_with_models(vec![MockModelEntry::new("local-model")])
+                    .await
+                    .expect("local mock inference server");
+            local_server.enqueue_response(
                 "/v1/responses",
                 ScriptedResponse::text(400, "local endpoint rejected reasoning payload"),
             );
-            server.enqueue_response(
+            base_server.enqueue_response(
                 "/v1/responses",
                 ScriptedResponse::sse(responses_api_script_exact("done", "reasoning-model")),
             );
-            let (actor, _retries) =
-                actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+            let (actor, _retries) = actor_under_test(
+                &base_server,
+                SessionKind::Main,
+                sampler_surfaces_429(),
+                false,
+            )
+            .await;
             actor
                 .jev_effort_auto
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             actor.models_manager.insert_test_entry(
                 "local-model",
-                routing_entry("local-model", &server.url(), Vec::new()),
+                routing_entry("local-model", &local_server.url(), Vec::new()),
             );
             crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
                 model: Some("local-model".to_owned()),
@@ -701,17 +709,32 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
             if let Err(error) = outcome {
                 panic!("local rejection must fall back to the base model: {error}");
             }
-            let requests: Vec<_> = server
+            let local_requests: Vec<_> = local_server
                 .request_bodies()
                 .into_iter()
                 .filter(|body| body.get("model").is_some())
                 .collect();
-            assert_eq!(requests.len(), 2);
-            assert_eq!(requests[0]["model"], "local-model");
-            assert_eq!(requests[1]["model"], "reasoning-model");
+            let base_requests: Vec<_> = base_server
+                .request_bodies()
+                .into_iter()
+                .filter(|body| body.get("model").is_some())
+                .collect();
+            assert_eq!(local_requests.len(), 1);
+            assert_eq!(local_requests[0]["model"], "local-model");
+            assert_eq!(base_requests.len(), 1);
+            assert_eq!(base_requests[0]["model"], "reasoning-model");
+            let signals = actor
+                .signals_handle()
+                .snapshot()
+                .await
+                .expect("signals actor should be alive");
+            assert_eq!(signals.active_model_id.as_deref(), Some("reasoning-model"));
+            assert_eq!(signals.active_reasoning_effort.as_deref(), Some("high"));
             let rows = actor.jev_ledger.borrow_mut().take_rows();
             assert!(rows.iter().any(|row| row.model == "local-model"));
-            assert!(rows.iter().any(|row| row.model == "reasoning-model"));
+            assert!(rows.iter().any(|row| {
+                row.model == "reasoning-model" && row.effort.as_deref() == Some("high")
+            }));
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
             crate::jev::clear_test_tier_config();

@@ -407,8 +407,8 @@ impl JevTurnActivity {
             return Some(format!("jev·fallback{suffix}"));
         }
         match self.decisions {
-            0 if self.in_flight > 0 => Some("jev…".to_owned()),
             0 if self.route.is_some() => Some(format!("model{suffix}")),
+            0 if self.in_flight > 0 => Some("jev…".to_owned()),
             0 => None,
             1 => Some(format!(
                 "jev {:.1}s{suffix}",

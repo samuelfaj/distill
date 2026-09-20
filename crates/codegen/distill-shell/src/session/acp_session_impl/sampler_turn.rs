@@ -1759,6 +1759,42 @@ impl SessionActor {
         self.apply_pending_sampler_config(&mut request, &mut routed_local);
 
         if !budget.can_wait() {
+            if routed_local {
+                // Main sessions normally do not own a 429 wait budget, but a
+                // local optimization still has the same one-shot rejection
+                // fallback as a child. Retain the request until the local
+                // endpoint has accepted it or the base-model replacement has
+                // been attempted.
+                return match self.submit_turn_request(request.clone()).await {
+                    Ok(outcome) => Ok(outcome),
+                    Err(info) if is_client_rejection(&info) => {
+                        self.undo_local_route(&mut request, &info).await;
+                        match self.submit_turn_request(request).await {
+                            Ok(outcome) => Ok(outcome),
+                            Err(info) => {
+                                self.recover_from_sampling_failure(
+                                    info,
+                                    budget,
+                                    transient,
+                                    mid_salvage_continuation,
+                                    park,
+                                )
+                                .await
+                            }
+                        }
+                    }
+                    Err(info) => {
+                        self.recover_from_sampling_failure(
+                            info,
+                            budget,
+                            transient,
+                            mid_salvage_continuation,
+                            park,
+                        )
+                        .await
+                    }
+                };
+            }
             // Nothing will send this request a second time, so move it into the sampler instead of deep-cloning the whole message history on every main-session turn
             return match self.submit_turn_request(request).await {
                 Ok(outcome) => Ok(outcome),

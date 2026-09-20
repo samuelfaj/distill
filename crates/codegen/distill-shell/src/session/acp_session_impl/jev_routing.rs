@@ -1289,27 +1289,25 @@ impl SessionActor {
         error: &distill_sampler::SamplingErrorInfo,
     ) {
         self.signals_handle().clear_active_dispatch();
-        let session = self.chat_state_handle.get_sampling_config().await;
-        request.model = session.as_ref().map(|cfg| cfg.model.clone());
-        request.reasoning_effort = session.as_ref().and_then(|cfg| cfg.reasoning_effort);
+        let session = self.reconstruct_full_config().await;
+        request.model = Some(session.model.clone());
+        request.reasoning_effort = session.reasoning_effort;
         // The replacement request is a new round from the report's point of
         // view. Record it before the immediate resubmit so usage and the
         // visible route follow the request that can actually succeed, rather
         // than the rejected local utility call.
-        if let Some(session) = session.as_ref() {
-            // The local route may also have changed the sampler endpoint and
-            // backend, not only the request's model field. Refresh the live
-            // client config before the immediate resubmit so the fallback is
-            // actually sent through the session model's provider.
-            self.sampler_handle.update_config(session.clone());
-            self.note_round_for_turn_report(session);
-            self.signals_handle().set_active_dispatch(
-                session.model.clone(),
-                session
-                    .reasoning_effort
-                    .map(|effort| effort.as_ref().to_owned()),
-            );
-        }
+        // The local route may also have changed the sampler endpoint and
+        // backend, not only the request's model field. Refresh the live
+        // client config before the immediate resubmit so the fallback is
+        // actually sent through the session model's provider.
+        self.sampler_handle.update_config(session.clone());
+        self.note_round_for_turn_report(&session);
+        self.signals_handle().set_active_dispatch(
+            session.model.clone(),
+            session
+                .reasoning_effort
+                .map(|effort| effort.as_ref().to_owned()),
+        );
         let reason = format!(
             "{}: {}",
             error.status_code.map_or_else(

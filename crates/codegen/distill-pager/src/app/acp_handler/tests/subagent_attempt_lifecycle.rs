@@ -60,7 +60,12 @@
     fn progress_notification_updates_visible_active_route_and_finish_clears_it() {
         let mut app = make_app_with_agent("sess-parent");
         let child = "child-active-route";
-        assert!(spawn(&mut app, child, "at1.one", 1));
+        let mut spawn_update = test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.one"));
+        let XaiSessionUpdate::SubagentSpawned { model, .. } = &mut spawn_update else {
+            unreachable!()
+        };
+        *model = Some("grok-3".to_owned());
+        assert!(sequenced(&mut app, spawn_update, 1));
         let mut update = progress_update(child, 25, 100);
         let XaiSessionUpdate::SubagentProgress {
             active_model,

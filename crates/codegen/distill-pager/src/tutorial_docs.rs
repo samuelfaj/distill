@@ -96,9 +96,14 @@ mod tests {
             assert!(!t.title.is_empty(), "topic has empty title");
             assert!(!t.blurb.is_empty(), "topic {} has empty blurb", t.title);
             assert!(!t.content.is_empty(), "topic {} is empty", t.title);
+            let first_meaningful_line = t
+                .content
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with("<!--"));
             assert!(
-                t.content.starts_with('#'),
-                "topic {} should start with a markdown header",
+                first_meaningful_line.is_some_and(|line| line.starts_with('#')),
+                "topic {} should have a markdown header after leading comments",
                 t.title
             );
         }

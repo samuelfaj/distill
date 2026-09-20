@@ -3,13 +3,15 @@
 
 ## 0. Objetivo
 
-Implementar todos os requisitos deste documento, revisar o resultado, comprovar o funcionamento e, somente depois, executar:
+Implementar todos os requisitos deste documento, revisar o resultado e
+comprovar o funcionamento. Cada checkpoint aprovado pelo controlador deve ser
+commitado e enviado ao remoto durante a execução. Somente após a verificação
+funcional final, a revisão independente e um gate explícito de publicação,
+executar as ações irreversíveis de distribuição:
 
-1. `git add` das alterações revisadas.
-2. Commit.
-3. Push.
-4. Criação da GitHub Release com `gh release`.
-5. Verificação da publicação e dos artefatos exigidos pelo projeto.
+1. Preparar e confirmar o conjunto final revisado.
+2. Criar a tag/versão e a GitHub Release com `gh release`.
+3. Instalar/verificar os artefatos publicados e confirmar a publicação.
 
 Esta fase usa o pipeline atual de `/sam-orchestrate`; referências históricas a
 `/sam-goal` não substituem esse pipeline.
@@ -21,7 +23,7 @@ Esta fase usa o pipeline atual de `/sam-orchestrate`; referências históricas a
   prova independente do controlador.
 - Houve investigação do código e criação de `goal/GATES.md` com critérios e
   evidências pendentes.
-- Nenhum commit, push ou release foi executado nesta conversa.
+- O controlador já criou e enviou o checkpoint `321a6b3cbd790a1ab709f678dc89c3a035c0585e` para `main` e verificou o SHA remoto. Nenhuma tag, release ou instalação final foi executada; o `test.txt` desconhecido permanece excluído.
 - Algumas operações foram bloqueadas pela proteção local, mesmo após autorização. Reavaliar o ambiente sem contornar mecanismos de segurança.
 - A árvore compartilhada está deliberadamente suja com alterações dos workers;
   verificar o manifesto final por produtor antes de publicar.
@@ -481,11 +483,13 @@ Revalidar caminhos e símbolos na árvore atual. Não confiar em números de lin
 
 ---
 
-## 8. Commit, push e GitHub Release
+## 8. Checkpoints, commit, push e GitHub Release
 
-A publicação é um gate separado e não faz parte desta primeira fase. Não fazer
-commit, push, tag ou release antes da revisão do controlador e da aprovação
-explícita do gate de publicação.
+A publicação final é um gate separado e não faz parte desta primeira fase.
+Cada checkpoint aprovado pelo controlador deve ser commitado e enviado ao
+remoto, registrando exatamente o conjunto revisado. Tag, release e instalação dos
+artefatos publicados continuam proibidos até a verificação funcional final, a
+revisão independente e a aprovação explícita do gate de publicação.
 
 ### Preparação
 
@@ -501,15 +505,17 @@ explícita do gate de publicação.
 
 ### Publicação
 
-- [ ] Confirmar evidências de todos os requisitos antes de solicitar publicação.
+- [ ] Confirmar evidências funcionais finais de todos os requisitos e revisão independente antes de solicitar publicação.
 - [ ] Definir a versão segundo a convenção existente.
 - [ ] Atualizar arquivos de versão e notas necessários.
 - [ ] Não reutilizar uma tag publicada indevidamente.
-- [ ] Fazer `git add` do conjunto revisado após aprovação do controlador.
-- [ ] Criar commit(s) com descrição fiel após aprovação do controlador.
-- [ ] Fazer push ao remoto e branch corretos após aprovação do controlador.
+- [ ] Fazer `git add` do conjunto final revisado após a aprovação do controlador.
+- [ ] Criar o commit final, com descrição fiel, após a verificação final e a revisão independente.
+- [ ] Fazer push do commit final ao remoto e branch corretos após a verificação final e a revisão independente.
+- [ ] Criar a tag somente após a verificação funcional final, a revisão independente e o gate explícito de publicação.
 - [ ] Confirmar que o SHA remoto corresponde ao commit validado.
 - [ ] Criar a GitHub Release com `gh release`, usando a tag do commit validado.
+- [ ] Instalar/verificar os artefatos publicados somente após a tag e a release válidas.
 - [ ] Incluir notas e artefatos exigidos pelo projeto.
 - [ ] Acompanhar checks/builds necessários à release.
 - [ ] Verificar tag, release e artefatos remotos.
@@ -537,7 +543,7 @@ explícita do gate de publicação.
 7. Concluir migração de nome, documentação e testes.
 8. Executar revisão integrada e walkthrough do terminal.
 9. Corrigir problemas encontrados e repetir as verificações.
-10. Somente após a revisão do controlador e um gate explícito, fazer commit, push e release.
+10. Fazer commit/push de cada checkpoint aprovado; somente após a verificação funcional final, a revisão independente e um gate explícito, criar tag, release e instalar/verificar os artefatos.
 
 Trabalho independente pode ser delegado em paralelo com contratos e arquivos bem definidos. Dependências entre tarefas devem ser respeitadas.
 

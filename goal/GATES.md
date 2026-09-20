@@ -21,5 +21,5 @@ and must never be reactivated or counted as completion evidence.
   EVIDENCE: rustfmt and diff checks pass; Cargo and interactive terminal proof remain pending.
 - [ ] G7: Branding and contract migration uses the verified Distill README URL, canonical Distill env/schema names, and only tested compatibility aliases for legacy env/serialized values.
   EVIDENCE: source/docs/schema edits are present; controller must verify schema generation and env/pager/tool regressions.
-- [ ] G8: Release preparation is verified without publication: origin, version, existing tags/releases, workflow behavior, and candidate file set are recorded; commit/push/tag/release remain pending controller approval.
-  EVIDENCE: origin/tags/latest release/workflow/version and installer proof recorded; candidate set and controller review remain pending.
+- [ ] G8: Release preparation is verified without final publication: origin, version, existing tags/releases, workflow behavior, and candidate file set are recorded; each approved checkpoint must be committed and pushed, while final tag/release/install remain gated on final functional verification, independent review, and explicit controller publication approval.
+  EVIDENCE: checkpoint `321a6b3cbd790a1ab709f678dc89c3a035c0585e` was pushed to `main` and its remote SHA was verified; no final tag, release, or installation exists; candidate set and final review remain pending.

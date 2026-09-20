@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "distill-pager"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "agent-client-protocol",
  "ansi-to-tui",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "distill-pager-bin"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4239,7 +4239,7 @@ dependencies = [
 
 [[package]]
 name = "distill-shell"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -4832,7 +4832,7 @@ dependencies = [
 
 [[package]]
 name = "distill-version"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "semver",
 ]

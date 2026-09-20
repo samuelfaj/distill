@@ -190,8 +190,6 @@ mod jev_routing;
 mod jev_tool_result;
 #[path = "acp_session_impl/jev_tool_subset.rs"]
 mod jev_tool_subset;
-#[path = "acp_session_impl/jev_wiring.rs"]
-mod jev_wiring;
 #[path = "acp_session_impl/length_salvage.rs"]
 mod length_salvage;
 #[path = "acp_session_impl/sampler_turn.rs"]
@@ -770,6 +768,10 @@ pub(crate) struct SessionActor {
     pub(crate) model_auth_memo: std::cell::RefCell<Option<ModelAuthMemo>>,
     /// This turn's model/effort distribution, reported when the turn ends.
     pub(crate) jev_ledger: std::cell::RefCell<jev_ledger::JevTurnLedger>,
+    /// Per-session Jev routing choice. The models manager is shared across
+    /// sessions for catalog refreshes, so this must not be read from it while
+    /// routing a child.
+    pub(crate) jev_effort_auto: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The event fires at each of the six `OaiCompatClient` 401 arms in `distill-sampler`.
     /// Threaded into every `SamplerConfig` reconstructed by `reconstruct_full_config`.
     /// `None` when the session was spawned without an `AuthManager` (BYOK direct mode, test fixtures).

@@ -6,10 +6,10 @@
 use std::collections::HashSet;
 
 use agent_client_protocol as acp;
-use serde_json::Value;
 use distill_shell::session::resolve_local_session_ids_any_cwd;
 use distill_shell::session::unified_list::ListScope;
 use distill_tools::implementations::skills::skill::extract_skill_display_text;
+use serde_json::Value;
 
 use super::helpers::extract_first_user_prompt;
 use crate::app::app_view::SessionPickerEntry;

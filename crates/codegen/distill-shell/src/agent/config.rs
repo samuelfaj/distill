@@ -1280,8 +1280,6 @@ pub const DEFAULT_LOCAL_CONTEXT_RESERVE: u64 = 8_192;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct JevLadderConfig {
-    /// Install the Jev-backed permission classifier ahead of the LLM one.
-    pub permission_classifier: Option<bool>,
     /// e_crushers: the `e_crushers` lane (see `list.md`).
     pub e_crushers: Option<bool>,
     /// e_retention: keep only the payload chunks the task still needs.
@@ -1308,14 +1306,8 @@ pub struct JevLadderConfig {
     pub p2_read_shortlist: Option<bool>,
     /// P3: choose which compaction segments the summarizer must see.
     pub p3_compaction_recorte: Option<bool>,
-    /// P5: validate a tool call (block/ask only) before executing it.
-    pub p5_call_validation: Option<bool>,
     /// P6: pick which announced skill matters for this turn.
     pub p6_skill_suggestion: Option<bool>,
-    /// YOLO / always-approve brake: consult Jev before auto-approving so a
-    /// confident catastrophe is refused instead of run. Never prompts, and a
-    /// failure is fail-open (the mode keeps working with a dead service).
-    pub yolo_veto: Option<bool>,
     /// A1: rank candidate files before reading them.
     pub a1_file_to_edit: Option<bool>,
     /// A3: keep only the log/test lines that explain a failure.

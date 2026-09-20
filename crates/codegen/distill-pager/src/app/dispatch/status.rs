@@ -713,6 +713,46 @@ pub(super) fn dispatch_open_tutorial(app: &mut AppView) -> Vec<Effect> {
     vec![]
 }
 
+/// Open the four-step first-run onboarding flow. Explicit `/onboarding` remains available after
+/// completion; a partially completed flow is resumed when the overlay was previously closed.
+pub(super) fn dispatch_open_onboarding(app: &mut AppView) -> Vec<Effect> {
+    if app.screen_mode.is_minimal() {
+        app.show_toast("Onboarding is available in fullscreen. Run /fullscreen, then /onboarding.");
+        return vec![];
+    }
+    if app.onboarding.is_some() {
+        app.onboarding_resume = app.onboarding.take();
+        return vec![];
+    }
+    app.onboarding = Some(
+        app.onboarding_resume
+            .take()
+            .unwrap_or_else(crate::views::onboarding::OnboardingState::new),
+    );
+    vec![]
+}
+
+/// Mark onboarding complete only after the existing settings persistence path succeeds.
+pub(super) fn dispatch_complete_onboarding(app: &mut AppView) -> Vec<Effect> {
+    if app.screen_mode.is_minimal() {
+        app.show_toast("Onboarding is available in fullscreen. Run /fullscreen, then /onboarding.");
+        return vec![];
+    }
+    if app.current_ui.onboarding_completed {
+        app.onboarding = None;
+        app.onboarding_resume = None;
+        return vec![];
+    }
+    if app.onboarding.is_none() {
+        return vec![];
+    }
+    vec![Effect::PersistSetting {
+        key: "onboarding_completed",
+        value: crate::settings::SettingValue::Bool(true),
+        rollback_value: crate::settings::SettingValue::Bool(false),
+    }]
+}
+
 pub(super) fn dispatch_show_release_notes(
     app: &mut AppView,
     title: String,

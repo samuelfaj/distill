@@ -4908,7 +4908,7 @@
             shadow: false,
             credential_present: true,
         };
-        let badge = jev_flag(active, PermissionLabel::Auto, &theme).expect("badge in auto mode");
+        let badge = jev_flag(active, &theme).expect("badge in auto mode");
         assert_eq!(badge.text, "jev");
         assert!(badge.bold, "the badge stands out");
         assert!(badge.color.is_some());
@@ -4917,8 +4917,7 @@
             shadow: true,
             ..active
         };
-        let shadow_badge =
-            jev_flag(shadow, PermissionLabel::Auto, &theme).expect("shadow badge shows");
+        let shadow_badge = jev_flag(shadow, &theme).expect("shadow badge shows");
         assert_eq!(shadow_badge.text, "jev·shadow");
 
         // A missing credential still shows where the path stands: `jev:off`,
@@ -4927,7 +4926,7 @@
             credential_present: false,
             ..active
         };
-        let off = jev_flag(no_credential, PermissionLabel::Auto, &theme).expect("badge always shows");
+        let off = jev_flag(no_credential, &theme).expect("badge always shows");
         assert_eq!(off.text, "jev:off");
         assert!(!off.bold);
 
@@ -4936,37 +4935,28 @@
             ..active
         };
         assert_eq!(
-            jev_flag(disabled, PermissionLabel::Auto, &theme)
+            jev_flag(disabled, &theme)
                 .expect("badge always shows")
                 .text,
             "jev:off",
             "kill switch is visible as off"
         );
 
-        // Ask mode bypasses every check: idle, dim.
-        let idle = jev_flag(active, PermissionLabel::Ask, &theme).expect("badge always shows");
-        assert_eq!(idle.text, "jev:idle");
-        assert!(!idle.bold, "idle is dim, not highlighted");
-
-        // Always-approve runs everything, so the path is a live brake there.
-        let veto = jev_flag(active, PermissionLabel::AlwaysApprove, &theme).expect("badge shows");
-        assert_eq!(veto.text, "jev·veto");
-        assert!(veto.bold, "an active brake is highlighted");
         // Shadow applies to every mode, and always wins over the mode label.
-        let shadow_anywhere = jev_flag(shadow, PermissionLabel::AlwaysApprove, &theme)
+        let shadow_anywhere = jev_flag(shadow, &theme)
             .expect("shadow badge shows in any mode");
         assert_eq!(shadow_anywhere.text, "jev·shadow");
     }
 
     /// Render-level proof of the Jev badge: the flag must reach the buffer on the
-    /// info line, with the success accent, in auto mode only.
+    /// info line, with the success accent, in every permission mode.
     #[test]
     fn the_jev_badge_renders_on_the_info_line() {
         let area = Rect::new(0, 0, 60, 4);
         let render = |status: distill_shell::jev::JevStatus, mode: PermissionLabel| {
             let theme = Theme::current();
             let mut flags = mode_flags(Some("plan"), mode, &theme);
-            if let Some(badge) = jev_flag(status, mode, &theme) {
+            if let Some(badge) = jev_flag(status, &theme) {
                 flags.push(badge);
             }
             let info = PromptInfo {
@@ -5019,13 +5009,11 @@
         let (text, _) = render(shadow, PermissionLabel::Auto);
         assert!(text.contains("jev·shadow"), "shadow badge: {text}");
 
-        // Ask mode bypasses the seam: the badge stays, saying `idle`.
-        let (text, _) = render(active, PermissionLabel::Ask);
-        assert!(text.contains("jev:idle"), "idle badge in ask mode: {text}");
-
-        // Always-approve: the brake is live.
-        let (text, _) = render(active, PermissionLabel::AlwaysApprove);
-        assert!(text.contains("jev·veto"), "veto badge in always-approve: {text}");
+        for mode in [PermissionLabel::Ask, PermissionLabel::AlwaysApprove] {
+            let (text, _) = render(active, mode);
+            assert!(text.contains("jev"), "badge missing: {text}");
+            assert!(!text.contains("jev:idle") && !text.contains("jev·veto"));
+        }
 
         // Kill switch is visible as off, never hidden.
         let disabled = distill_shell::jev::JevStatus {

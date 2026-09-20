@@ -7,6 +7,7 @@
 //! path is on. Nothing here touches the network: it reads configuration, the
 //! environment tier, and whether a credential is *resolvable* — never its value.
 
+use std::future::Future;
 use std::sync::OnceLock;
 
 use distill_workspace::jev::client::{JevClientConfig, credential_in_env};
@@ -52,7 +53,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
         env_enabled,
         cfg.shadow,
         JevLadderOverlay {
-            permission_classifier: cfg.ladder.permission_classifier,
+            // Jev optimizes execution; only the harness decides permissions.
             e_crushers: cfg.ladder.e_crushers,
             e_retention: cfg.ladder.e_retention,
             e_importance: cfg.ladder.e_importance,
@@ -66,9 +67,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             p1_tool_family: cfg.ladder.p1_tool_family,
             p2_read_shortlist: cfg.ladder.p2_read_shortlist,
             p3_compaction_recorte: cfg.ladder.p3_compaction_recorte,
-            p5_call_validation: cfg.ladder.p5_call_validation,
             p6_skill_suggestion: cfg.ladder.p6_skill_suggestion,
-            yolo_veto: cfg.ladder.yolo_veto,
             a1_file_to_edit: cfg.ladder.a1_file_to_edit,
             a3_log_lines: cfg.ladder.a3_log_lines,
             a4_web_results: cfg.ladder.a4_web_results,
@@ -170,6 +169,21 @@ pub fn current_status_cached() -> JevStatus {
 mod tests {
     use super::*;
 
+    #[test]
+    fn jev_config_cannot_enable_permission_decisions() {
+        let config: JevConfig = toml::from_str(
+            r#"enabled = true
+[ladder]
+permission_classifier = true
+yolo_veto = true
+p5_call_validation = true"#,
+        )
+        .unwrap();
+        let flags = flags_from_tiers(&config, Some(true));
+        assert!(flags.enabled && flags.p1_tool_family && flags.b1_intent_routing);
+        assert_eq!(flags, flags_from_tiers(&JevConfig::default(), Some(true)));
+    }
+
     /// The badge must never claim Jev is active when the kill switch is on.
     #[test]
     fn status_reflects_the_kill_switch_and_the_credential() {
@@ -222,6 +236,15 @@ pub async fn ask_item(
         distill_workspace::jev::types::Question,
     >,
 ) -> Option<distill_workspace::jev::types::JevAnswerSet> {
+    #[cfg(test)]
+    if let Some(answer) = TEST_DECISION_ANSWERS.with(|queue| {
+        queue
+            .borrow_mut()
+            .as_mut()
+            .map(|answers| answers.pop_front().unwrap_or(None))
+    }) {
+        return answer;
+    }
     let flags = flags_cached();
     if !flags.lever_active(lever) {
         return None;
@@ -265,8 +288,42 @@ pub async fn ask_item(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Answers consumed by the real `ask_item` path in focused routing tests.
+    /// Keeping this test-only and task-local avoids changing production routing
+    /// or sharing decisions between concurrent test sessions.
+    static TEST_DECISION_ANSWERS: std::cell::RefCell<
+        Option<std::collections::VecDeque<Option<distill_workspace::jev::types::JevAnswerSet>>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_decision_answers(
+    answers: impl IntoIterator<Item = Option<distill_workspace::jev::types::JevAnswerSet>>,
+) {
+    TEST_DECISION_ANSWERS.with(|queue| {
+        *queue.borrow_mut() = Some(answers.into_iter().collect());
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_decision_answers() {
+    TEST_DECISION_ANSWERS.with(|queue| *queue.borrow_mut() = None);
+}
+
+#[cfg(test)]
+pub(crate) fn test_decision_answers_remaining() -> usize {
+    TEST_DECISION_ANSWERS.with(|queue| {
+        queue
+            .borrow()
+            .as_ref()
+            .map_or(0, std::collections::VecDeque::len)
+    })
+}
+
 /// Records one catalogue decision so it lands in `~/.grok/logs/jev.jsonl`
-/// (through the same sink and target as the permission seam).
+/// through the shared decision sink and log target.
 pub fn record_item(
     lever: distill_workspace::jev::flags::JevLever,
     decision: &str,
@@ -310,7 +367,7 @@ pub struct JevActivity {
 pub struct JevTurnActivity {
     /// Decisions recorded inside the window (the current turn, when known).
     pub decisions: u32,
-    /// True when one of them was a refusal: the brake stopping a call.
+    /// True when a Jev optimization was refused and the normal path is retained.
     pub refused: bool,
     /// Calls in flight **right now** — Jev is being consulted for this step.
     pub in_flight: u32,
@@ -329,16 +386,15 @@ impl JevTurnActivity {
         self.decisions == 0 && self.in_flight == 0
     }
 
-    /// The chip text, e.g. `jev…`, `jev·veto`, `jev ×3`. `None` when quiet.
+    /// The chip text, e.g. `jev…`, `jev·fallback`, `jev ×3`. A final route is
+    /// also rendered when Jev made no decision, so the row still names the
+    /// model/effort that actually ran.
     ///
     /// Kept short by construction: it shares one row with the running tool and
     /// the turn timer.
     pub fn label(&self) -> Option<String> {
-        if self.in_flight > 0 && self.decisions == 0 {
+        if self.in_flight > 0 && self.decisions == 0 && self.route.is_none() {
             return Some("jev…".to_owned());
-        }
-        if self.refused {
-            return Some("jev·veto".to_owned());
         }
         // The current micro-action's routing when the decision set one, else the
         // turn's own local marker.
@@ -347,8 +403,13 @@ impl JevTurnActivity {
             None if self.local_runs > 0 => " ·local".to_owned(),
             None => String::new(),
         };
+        if self.refused {
+            return Some(format!("jev·fallback{suffix}"));
+        }
         match self.decisions {
-            0 => (self.in_flight > 0).then(|| "jev…".to_owned()),
+            0 if self.in_flight > 0 => Some("jev…".to_owned()),
+            0 if self.route.is_some() => Some(format!("model{suffix}")),
+            0 => None,
             1 => Some(format!(
                 "jev {:.1}s{suffix}",
                 self.last_latency_ms as f64 / 1000.0
@@ -358,12 +419,12 @@ impl JevTurnActivity {
     }
 }
 
-/// The content the model has already been given verbatim this process, by hash.
-///
-/// One session per process, and the payloads are already in the conversation:
-/// this holds a hash and a one-line label, never the content itself.
-fn read_index() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
-    static INDEX: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+/// The content the model has already been given verbatim in one session, by
+/// hash. The index is process-global only for synchronization; its key is
+/// session-qualified so a child or sibling never receives a reuse pointer for
+/// bytes that are absent from its own conversation.
+fn read_index() -> &'static std::sync::Mutex<std::collections::HashMap<(String, String), String>> {
+    static INDEX: OnceLock<std::sync::Mutex<std::collections::HashMap<(String, String), String>>> =
         OnceLock::new();
     INDEX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -377,10 +438,11 @@ pub fn note_payload_read(hash: &str, label: &str) -> Option<String> {
     let Ok(mut index) = read_index().lock() else {
         return None;
     };
-    if let Some(first) = index.get(hash) {
+    let key = (active_session_id(), hash.to_owned());
+    if let Some(first) = index.get(&key) {
         return Some(first.clone());
     }
-    index.insert(hash.to_owned(), label.to_owned());
+    index.insert(key, label.to_owned());
     None
 }
 
@@ -399,15 +461,24 @@ pub fn reset_read_index_for_test() {
 /// Most recent decisions kept for the row; the row only ever looks back one turn.
 const ACTIVITY_RING: usize = 64;
 
-/// Decisions whose label means "the call was refused".
+/// Decisions whose label means a proposed optimization was refused.
 const REFUSALS: &[&str] = &["block", "veto", "deny", "refuse", "refused"];
 
 /// Lever and label of a call that ran on the local model (see `JevLever::B2LocalModel`).
 const LOCAL_LEVER: &str = "b2_local_model";
 const LOCAL_DECISION: &str = "local";
 
+tokio::task_local! {
+    static ACTIVE_SESSION_ID: String;
+}
+
 #[derive(Debug, Default)]
 struct ActivityState {
+    sessions: std::collections::HashMap<String, SessionActivityState>,
+}
+
+#[derive(Debug, Default)]
+struct SessionActivityState {
     ring: std::collections::VecDeque<JevActivity>,
     in_flight: u32,
     route: Option<String>,
@@ -418,15 +489,30 @@ fn activity_state() -> &'static std::sync::Mutex<ActivityState> {
     STATE.get_or_init(|| std::sync::Mutex::new(ActivityState::default()))
 }
 
+fn active_session_id() -> String {
+    ACTIVE_SESSION_ID
+        .try_with(|session_id| session_id.clone())
+        .unwrap_or_default()
+}
+
+/// Runs a session turn with activity isolated from every other session.
+pub async fn with_session_scope<F>(session_id: impl Into<String>, future: F) -> F::Output
+where
+    F: Future,
+{
+    ACTIVE_SESSION_ID.scope(session_id.into(), future).await
+}
+
 /// Remembers one decision for the turn-status row. Never fails the caller.
 pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
     let Ok(mut state) = activity_state().lock() else {
         return;
     };
-    if state.ring.len() >= ACTIVITY_RING {
-        state.ring.pop_front();
+    let session = state.sessions.entry(active_session_id()).or_default();
+    if session.ring.len() >= ACTIVITY_RING {
+        session.ring.pop_front();
     }
-    state.ring.push_back(JevActivity {
+    session.ring.push_back(JevActivity {
         lever: lever.to_owned(),
         decision: decision.to_owned(),
         latency_ms,
@@ -444,7 +530,8 @@ pub fn note_route(engine: Option<&str>, level: Option<&str>) {
     let Ok(mut state) = activity_state().lock() else {
         return;
     };
-    state.route = match (engine, level) {
+    let session = state.sessions.entry(active_session_id()).or_default();
+    session.route = match (engine, level) {
         (Some(engine), Some(level)) => Some(format!("{engine} {level}")),
         (Some(engine), None) => Some(engine.to_owned()),
         (None, Some(level)) => Some(level.to_owned()),
@@ -457,10 +544,11 @@ pub fn note_in_flight(started: bool) {
     let Ok(mut state) = activity_state().lock() else {
         return;
     };
-    state.in_flight = if started {
-        state.in_flight.saturating_add(1)
+    let session = state.sessions.entry(active_session_id()).or_default();
+    session.in_flight = if started {
+        session.in_flight.saturating_add(1)
     } else {
-        state.in_flight.saturating_sub(1)
+        session.in_flight.saturating_sub(1)
     };
 }
 
@@ -470,15 +558,27 @@ pub fn note_in_flight(started: bool) {
 /// counts whatever is still in the ring, which is at most the last
 /// [`ACTIVITY_RING`] decisions of this process.
 pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
+    turn_activity_for_session("", since)
+}
+
+/// Reads the status for one session without relying on whichever async task is
+/// currently rendering the UI.
+pub fn turn_activity_for_session(
+    session_id: &str,
+    since: Option<std::time::Instant>,
+) -> JevTurnActivity {
     let Ok(state) = activity_state().lock() else {
         return JevTurnActivity::default();
     };
+    let Some(session) = state.sessions.get(session_id) else {
+        return JevTurnActivity::default();
+    };
     let mut activity = JevTurnActivity {
-        in_flight: state.in_flight,
-        route: state.route.clone(),
+        in_flight: session.in_flight,
+        route: session.route.clone(),
         ..Default::default()
     };
-    for entry in state.ring.iter().rev() {
+    for entry in session.ring.iter().rev() {
         if let Some(since) = since
             && entry.at < since
         {
@@ -502,9 +602,7 @@ pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
 #[doc(hidden)]
 pub fn reset_activity_for_test() {
     if let Ok(mut state) = activity_state().lock() {
-        state.ring.clear();
-        state.in_flight = 0;
-        state.route = None;
+        state.sessions.clear();
     }
 }
 
@@ -542,50 +640,25 @@ impl distill_workspace::jev::policy::DecisionSink for ActivitySink {
     }
 }
 
-/// Wraps a Jev asker so a consultation shows as `jev…` while it runs.
-pub struct ObservedAsker {
-    inner: std::sync::Arc<dyn distill_workspace::jev::permission::JevAsker>,
-}
-
-impl ObservedAsker {
-    pub fn new(inner: std::sync::Arc<dyn distill_workspace::jev::permission::JevAsker>) -> Self {
-        Self { inner }
-    }
-}
-
-impl distill_workspace::jev::permission::JevAsker for ObservedAsker {
-    fn ask<'a>(
-        &'a self,
-        state: &'a serde_json::Value,
-        questions: &'a std::collections::BTreeMap<
-            distill_workspace::jev::types::QuestionId,
-            distill_workspace::jev::types::Question,
-        >,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<
-                        distill_workspace::jev::types::JevAnswerSet,
-                        distill_workspace::jev::error::JevError,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    > {
-        let in_flight = JevInFlight::begin();
-        Box::pin(async move {
-            let result = self.inner.ask(state, questions).await;
-            drop(in_flight);
-            result
-        })
-    }
-}
-
 static LOCAL_MODEL_CONFIG: OnceLock<parking_lot::RwLock<JevLocalConfig>> = OnceLock::new();
 static MODEL_TIERS: OnceLock<parking_lot::RwLock<JevTiersConfig>> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    /// Focused routing tests override only their own current-thread session;
+    /// production still reads the process cache below.
+    static TEST_LOCAL_MODEL_CONFIG: std::cell::RefCell<Option<JevLocalConfig>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_MODEL_TIERS: std::cell::RefCell<Option<JevTiersConfig>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Snapshot the configured utility model without reading disk on every call.
 pub fn local_config_cached() -> JevLocalConfig {
+    #[cfg(test)]
+    if let Some(config) = TEST_LOCAL_MODEL_CONFIG.with(|config| config.borrow().clone()) {
+        return config;
+    }
     LOCAL_MODEL_CONFIG
         .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().local))
         .read()
@@ -594,6 +667,10 @@ pub fn local_config_cached() -> JevLocalConfig {
 
 /// Snapshot the worker selection used by both the TUI and the next model call.
 pub fn tiers_cached() -> JevTiersConfig {
+    #[cfg(test)]
+    if let Some(config) = TEST_MODEL_TIERS.with(|config| config.borrow().clone()) {
+        return config;
+    }
     MODEL_TIERS
         .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().tiers))
         .read()
@@ -615,6 +692,26 @@ pub(crate) fn update_tier_model_cache(worker: bool, model: String, effort: Strin
         config.model = Some(model);
         config.effort = Some(effort);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_local_config(config: JevLocalConfig) {
+    TEST_LOCAL_MODEL_CONFIG.with(|current| *current.borrow_mut() = Some(config));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_local_config() {
+    TEST_LOCAL_MODEL_CONFIG.with(|current| *current.borrow_mut() = None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_tier_config(config: JevTiersConfig) {
+    TEST_MODEL_TIERS.with(|current| *current.borrow_mut() = Some(config));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_tier_config() {
+    TEST_MODEL_TIERS.with(|current| *current.borrow_mut() = None);
 }
 
 /// What the `[jev.tiers]` block resolves to, for the surfaces that report it.
@@ -876,6 +973,30 @@ mod catalogue_helper_tests {
         reset_read_index_for_test();
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn read_reuse_isolated_between_sessions_but_repeats_within_one() {
+        reset_read_index_for_test();
+        with_session_scope("parent-read", async {
+            assert_eq!(note_payload_read("same-bytes", "parent-read"), None);
+            assert_eq!(
+                note_payload_read("same-bytes", "parent-read").as_deref(),
+                Some("parent-read")
+            );
+        })
+        .await;
+        with_session_scope("child-read", async {
+            assert_eq!(
+                note_payload_read("same-bytes", "child-read"),
+                None,
+                "a child must receive its first full payload"
+            );
+        })
+        .await;
+        assert_eq!(remembered_reads(), 2);
+        reset_read_index_for_test();
+    }
+
     #[serial_test::serial]
     #[test]
     fn recording_an_item_decision_never_panics_without_answers() {
@@ -896,8 +1017,8 @@ mod catalogue_helper_tests {
     fn turn_activity_counts_the_turn_window_and_refusals() {
         reset_activity_for_test();
         let before = std::time::Instant::now();
-        note_decision("p5_call_validation", "ask", 410);
-        note_decision("yolo_veto", "block", 380);
+        note_decision("p1_tool_family", "defer", 410);
+        note_decision("b2_light_model", "refused", 380);
         note_decision(LOCAL_LEVER, LOCAL_DECISION, 1200);
         // A window that opens *after* the two decisions, offset past any clock
         // granularity, so "was it in this turn?" cannot depend on timer detail.
@@ -973,7 +1094,7 @@ mod catalogue_helper_tests {
             }
             .label()
             .as_deref(),
-            Some("jev·veto"),
+            Some("jev·fallback"),
             "a refusal outranks the local marker"
         );
         assert_eq!(
@@ -1037,79 +1158,30 @@ mod catalogue_helper_tests {
         reset_activity_for_test();
     }
 
-    /// The observer must keep the in-flight count honest across the future's
-    /// whole lifetime, not just the call that builds it.
-    #[serial_test::serial]
     #[tokio::test]
-    async fn the_observed_asker_marks_flight_for_the_whole_call() {
-        use distill_workspace::jev::permission::JevAsker;
-        use std::sync::Arc;
-
+    #[serial_test::serial]
+    async fn activity_isolated_by_session_scope() {
         reset_activity_for_test();
-        /// An asker that reports when it starts and waits to be released, so
-        /// the counter can be read mid-call without a race.
-        struct Gated {
-            entered: Arc<tokio::sync::Notify>,
-            release: Arc<tokio::sync::Notify>,
-        }
-        impl JevAsker for Gated {
-            fn ask<'a>(
-                &'a self,
-                _state: &'a serde_json::Value,
-                _questions: &'a std::collections::BTreeMap<
-                    distill_workspace::jev::types::QuestionId,
-                    distill_workspace::jev::types::Question,
-                >,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Result<
-                                distill_workspace::jev::types::JevAnswerSet,
-                                distill_workspace::jev::error::JevError,
-                            >,
-                        > + Send
-                        + 'a,
-                >,
-            > {
-                let entered = Arc::clone(&self.entered);
-                let release = Arc::clone(&self.release);
-                Box::pin(async move {
-                    entered.notify_one();
-                    release.notified().await;
-                    Err(distill_workspace::jev::error::JevError::invalid("gated"))
-                })
-            }
-        }
+        tokio::join!(
+            with_session_scope("parent", async {
+                note_decision("b2_micro_effort", "effort:low", 12);
+                tokio::task::yield_now().await;
+                note_route(Some("worker-model"), Some("low"));
+            }),
+            with_session_scope("child", async {
+                note_decision("b2_micro_effort", "keep", 8);
+                tokio::task::yield_now().await;
+                note_route(Some("child-model"), Some("medium"));
+            }),
+        );
 
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let observed = ObservedAsker::new(Arc::new(Gated {
-            entered: Arc::clone(&entered),
-            release: Arc::clone(&release),
-        }));
-        let state = serde_json::json!({});
-        let questions = std::collections::BTreeMap::new();
-        let ask = observed.ask(&state, &questions);
-        assert_eq!(
-            turn_activity(None).in_flight,
-            1,
-            "the counter opens with the call"
-        );
-        // Driver: waits until the inner future has actually started, reads the
-        // counter there, then releases it.
-        let driver = async {
-            entered.notified().await;
-            let mid = turn_activity(None).in_flight;
-            release.notify_one();
-            mid
-        };
-        let (mid, _) = tokio::join!(driver, ask);
-        assert_eq!(mid, 1, "in flight while the inner future runs");
-        assert_eq!(
-            turn_activity(None).in_flight,
-            0,
-            "the guard is dropped with the call"
-        );
+        let parent = turn_activity_for_session("parent", None);
+        assert_eq!(parent.decisions, 1);
+        assert_eq!(parent.route.as_deref(), Some("worker-model low"));
+        let child = turn_activity_for_session("child", None);
+        assert_eq!(child.decisions, 1);
+        assert_eq!(child.route.as_deref(), Some("child-model medium"));
+        assert!(turn_activity_for_session("other", None).is_quiet());
         reset_activity_for_test();
     }
 }

@@ -1665,6 +1665,14 @@ pub(in crate::app::dispatch) fn set_default_model(
             agent.session.models.effort_auto
         });
     if prev_id.as_ref() == Some(&new_id) && was_auto {
+        let cli_override = app.cli_model_override.is_some();
+        if let Some(state) = app.onboarding.as_mut() {
+            state.set_info(if cli_override {
+                "Runtime model is already selected by the CLI override; the saved default was not changed."
+            } else {
+                "Runtime model is already active; the saved default was not changed."
+            });
+        }
         return vec![];
     }
     if let Some(agent) = active_agent.and_then(|id| app.agents.get_mut(&id)) {
@@ -1693,7 +1701,10 @@ pub(in crate::app::dispatch) fn set_default_model(
     // would silently fail to resolve on the next startup.
     // slugs that must not become the global Build `default_model`.
     let mut effects: Vec<Effect> = Vec::new();
-    if !distill_shell::agent::chat_modes::process_chat_mode_enabled() {
+    let active_chat_session = active_agent
+        .and_then(|id| app.agents.get(&id))
+        .is_some_and(|agent| agent.chat_kind);
+    if !distill_shell::agent::chat_modes::process_chat_mode_enabled() && !active_chat_session {
         let new_id_str = new_id.0.to_string();
         let prev_id_str = prev_id
             .as_ref()
@@ -1730,6 +1741,21 @@ pub(in crate::app::dispatch) fn set_default_model(
             effort: None,
             prev_model_id: prev_id,
         });
+    }
+    if let Some(state) = app.onboarding.as_mut() {
+        if effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::PersistSetting {
+                    key: "default_model",
+                    ..
+                }
+            )
+        }) {
+            state.set_primary_model_pending();
+        } else {
+            state.set_info("Runtime model changed for this chat; no saved default was written.");
+        }
     }
     effects
 }
@@ -1850,11 +1876,15 @@ pub(in crate::app::dispatch) fn set_tier_light(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "auto".into())
     ));
-    vec![Effect::PersistTierModel {
+    let effects = vec![Effect::PersistTierModel {
         worker: true,
         model: id,
         effort,
-    }]
+    }];
+    if let Some(state) = app.onboarding.as_mut() {
+        state.set_worker_model_pending();
+    }
+    effects
 }
 
 /// State-only mutation for `fork_secondary_model`.

@@ -49,7 +49,6 @@ impl JevFlags {
 /// [`JevFlags::harness_default`]) rather than to off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JevLadderOverlay {
-    pub permission_classifier: Option<bool>,
     /// E10 — run the deterministic crushers on a large tool result.
     pub e_crushers: Option<bool>,
     /// E12 — keep only the payload chunks the task still needs.
@@ -73,10 +72,7 @@ pub struct JevLadderOverlay {
     pub p1_tool_family: Option<bool>,
     pub p2_read_shortlist: Option<bool>,
     pub p3_compaction_recorte: Option<bool>,
-    pub p5_call_validation: Option<bool>,
     pub p6_skill_suggestion: Option<bool>,
-    /// YOLO / always-approve brake.
-    pub yolo_veto: Option<bool>,
     /// A1: rank candidate files before reading them.
     pub a1_file_to_edit: Option<bool>,
     /// A3: keep only the log/test lines that explain a failure.
@@ -143,13 +139,10 @@ impl JevFlags {
         Self {
             enabled: true,
             shadow: false,
-            permission_classifier: true,
             p1_tool_family: true,
             p2_read_shortlist: true,
             p3_compaction_recorte: true,
-            p5_call_validation: true,
             p6_skill_suggestion: true,
-            yolo_veto: true,
             a1_file_to_edit: true,
             a3_log_lines: true,
             a4_web_results: true,
@@ -197,12 +190,6 @@ impl JevFlags {
     ) -> Self {
         self.enabled = resolve_switch(config_enabled, env_enabled, self.enabled);
         self.shadow = resolve_switch(shadow, None, self.shadow);
-        self.permission_classifier = self.enabled
-            && resolve_switch(
-                ladder.permission_classifier,
-                None,
-                self.permission_classifier,
-            );
         self.p1_tool_family =
             self.enabled && resolve_switch(ladder.p1_tool_family, None, self.p1_tool_family);
         self.p2_read_shortlist =
@@ -213,11 +200,8 @@ impl JevFlags {
                 None,
                 self.p3_compaction_recorte,
             );
-        self.p5_call_validation = self.enabled
-            && resolve_switch(ladder.p5_call_validation, None, self.p5_call_validation);
         self.p6_skill_suggestion = self.enabled
             && resolve_switch(ladder.p6_skill_suggestion, None, self.p6_skill_suggestion);
-        self.yolo_veto = self.enabled && resolve_switch(ladder.yolo_veto, None, self.yolo_veto);
         self.e_crushers = self.enabled && resolve_switch(ladder.e_crushers, None, self.e_crushers);
         self.e_retention =
             self.enabled && resolve_switch(ladder.e_retention, None, self.e_retention);
@@ -284,11 +268,8 @@ impl JevFlags {
 pub struct JevFlags {
     /// Master switch. Off ⇒ no client is constructed anywhere.
     pub enabled: bool,
-    /// Shadow phase for the permission classifier: compute and record, but never
-    /// change the decision (plan §4 S-005, phase 1).
+    /// Compute and record optimization decisions without applying them.
     pub shadow: bool,
-    /// Install the Jev-backed permission classifier ahead of the LLM one.
-    pub permission_classifier: bool,
     /// E10 — run the deterministic crushers on a large tool result.
     pub e_crushers: bool,
     /// E12 — keep only the payload chunks the task still needs, asked of the
@@ -316,13 +297,8 @@ pub struct JevFlags {
     pub p2_read_shortlist: bool,
     /// P3 — decide which segments the compactor must see.
     pub p3_compaction_recorte: bool,
-    /// P5 — validate a tool call (block/ask only) before executing it.
-    pub p5_call_validation: bool,
     /// P6 — pick which announced skill matters for this turn.
     pub p6_skill_suggestion: bool,
-    /// YOLO / always-approve brake: consult Jev before auto-approving so a
-    /// confident catastrophe is refused instead of run. Never prompts.
-    pub yolo_veto: bool,
     /// A1: rank candidate files before reading them.
     pub a1_file_to_edit: bool,
     /// A3: keep only the log/test lines that explain a failure.
@@ -374,13 +350,10 @@ impl JevFlags {
         Self {
             enabled: false,
             shadow: false,
-            permission_classifier: false,
             p1_tool_family: false,
             p2_read_shortlist: false,
             p3_compaction_recorte: false,
-            p5_call_validation: false,
             p6_skill_suggestion: false,
-            yolo_veto: false,
             a1_file_to_edit: false,
             a3_log_lines: false,
             a4_web_results: false,
@@ -425,26 +398,20 @@ impl JevFlags {
     pub const fn is_off(&self) -> bool {
         !self.enabled
             && !self.shadow
-            && !self.permission_classifier
             && !self.p1_tool_family
             && !self.p2_read_shortlist
             && !self.p3_compaction_recorte
-            && !self.p5_call_validation
             && !self.p6_skill_suggestion
-            && !self.yolo_veto
     }
 
     /// True when any lever is enabled (used to skip building a client at all).
     pub const fn any(&self) -> bool {
         self.enabled
             || self.shadow
-            || self.permission_classifier
             || self.p1_tool_family
             || self.p2_read_shortlist
             || self.p3_compaction_recorte
-            || self.p5_call_validation
             || self.p6_skill_suggestion
-            || self.yolo_veto
     }
 
     pub const fn with_enabled(mut self, enabled: bool) -> Self {
@@ -454,11 +421,6 @@ impl JevFlags {
 
     pub const fn with_shadow(mut self, shadow: bool) -> Self {
         self.shadow = shadow;
-        self
-    }
-
-    pub const fn with_permission_classifier(mut self, on: bool) -> Self {
-        self.permission_classifier = on;
         self
     }
 
@@ -477,11 +439,6 @@ impl JevFlags {
         self
     }
 
-    pub const fn with_p5_call_validation(mut self, on: bool) -> Self {
-        self.p5_call_validation = on;
-        self
-    }
-
     pub const fn with_p6_skill_suggestion(mut self, on: bool) -> Self {
         self.p6_skill_suggestion = on;
         self
@@ -493,7 +450,6 @@ impl JevFlags {
             return false;
         }
         match lever {
-            JevLever::PermissionClassifier => self.permission_classifier,
             JevLever::ECrushers => self.e_crushers,
             JevLever::ERetention => self.e_retention,
             JevLever::EImportance => self.e_importance,
@@ -507,9 +463,7 @@ impl JevFlags {
             JevLever::P1ToolFamily => self.p1_tool_family,
             JevLever::P2ReadShortlist => self.p2_read_shortlist,
             JevLever::P3CompactionRecorte => self.p3_compaction_recorte,
-            JevLever::P5CallValidation => self.p5_call_validation,
             JevLever::P6SkillSuggestion => self.p6_skill_suggestion,
-            JevLever::YoloVeto => self.yolo_veto,
             JevLever::A1FileToEdit => self.a1_file_to_edit,
             JevLever::A3LogLines => self.a3_log_lines,
             JevLever::A4WebResults => self.a4_web_results,
@@ -538,7 +492,6 @@ impl JevFlags {
 /// Addressable levers, so tests and telemetry can name one without a bool soup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JevLever {
-    PermissionClassifier,
     ECrushers,
     ERetention,
     EImportance,
@@ -552,9 +505,7 @@ pub enum JevLever {
     P1ToolFamily,
     P2ReadShortlist,
     P3CompactionRecorte,
-    P5CallValidation,
     P6SkillSuggestion,
-    YoloVeto,
     A1FileToEdit,
     A3LogLines,
     A4WebResults,
@@ -583,7 +534,6 @@ impl JevLever {
     /// Telemetry/log label for this lever.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::PermissionClassifier => "permission_classifier",
             Self::ECrushers => "e_crushers",
             Self::ERetention => "e_retention",
             Self::EImportance => "e_importance",
@@ -597,9 +547,7 @@ impl JevLever {
             Self::P1ToolFamily => "p1_tool_family",
             Self::P2ReadShortlist => "p2_read_shortlist",
             Self::P3CompactionRecorte => "p3_compaction_recorte",
-            Self::P5CallValidation => "p5_call_validation",
             Self::P6SkillSuggestion => "p6_skill_suggestion",
-            Self::YoloVeto => "yolo_veto",
             Self::A1FileToEdit => "a1_file_to_edit",
             Self::A3LogLines => "a3_log_lines",
             Self::A4WebResults => "a4_web_results",
@@ -635,13 +583,10 @@ mod tests {
         assert!(flags.is_off());
         assert!(!flags.any());
         for lever in [
-            JevLever::PermissionClassifier,
             JevLever::P1ToolFamily,
             JevLever::P2ReadShortlist,
             JevLever::P3CompactionRecorte,
-            JevLever::P5CallValidation,
             JevLever::P6SkillSuggestion,
-            JevLever::YoloVeto,
             JevLever::A1FileToEdit,
             JevLever::A3LogLines,
             JevLever::A4WebResults,
@@ -683,13 +628,10 @@ mod tests {
         assert!(flags.enabled, "master switch is on by policy");
         assert!(!flags.shadow, "active, not shadow, by policy");
         for lever in [
-            JevLever::PermissionClassifier,
             JevLever::P1ToolFamily,
             JevLever::P2ReadShortlist,
             JevLever::P3CompactionRecorte,
-            JevLever::P5CallValidation,
             JevLever::P6SkillSuggestion,
-            JevLever::YoloVeto,
             JevLever::A1FileToEdit,
             JevLever::A3LogLines,
             JevLever::A4WebResults,
@@ -716,7 +658,7 @@ mod tests {
     fn unset_switches_keep_the_default_and_explicit_ones_win() {
         let flags =
             JevFlags::harness_default().overlaid(None, None, None, JevLadderOverlay::default());
-        assert!(flags.enabled && flags.permission_classifier);
+        assert!(flags.enabled && flags.p1_tool_family);
 
         let off = JevFlags::harness_default().overlaid(
             Some(false),
@@ -726,7 +668,7 @@ mod tests {
         );
         assert!(!off.enabled);
         assert!(
-            !off.permission_classifier && !off.p1_tool_family && !off.p6_skill_suggestion,
+            !off.p1_tool_family && !off.p6_skill_suggestion,
             "the master switch gates every lever"
         );
     }
@@ -760,33 +702,15 @@ mod tests {
             None,
             Some(true),
             JevLadderOverlay {
-                permission_classifier: Some(false),
+                p2_read_shortlist: Some(false),
                 ..JevLadderOverlay::default()
             },
         );
         assert!(flags.enabled);
         assert!(flags.shadow, "shadow can be turned on explicitly");
-        assert!(!flags.permission_classifier);
+        assert!(!flags.p2_read_shortlist);
         assert!(flags.p1_tool_family, "other levers keep the default");
-        assert!(!flags.lever_active(JevLever::PermissionClassifier));
-    }
-
-    #[test]
-    fn the_yolo_brake_is_independent_and_on_by_default() {
-        assert!(JevFlags::harness_default().yolo_veto);
-        assert!(JevFlags::harness_default().lever_active(JevLever::YoloVeto));
-        let off = JevFlags::harness_default().overlaid(
-            None,
-            None,
-            None,
-            JevLadderOverlay {
-                yolo_veto: Some(false),
-                ..JevLadderOverlay::default()
-            },
-        );
-        assert!(off.enabled, "disabling the brake keeps the path on");
-        assert!(!off.yolo_veto, "the brake is switchable on its own key");
-        assert!(off.permission_classifier, "other levers are untouched");
+        assert!(!flags.lever_active(JevLever::P2ReadShortlist));
     }
 
     #[test]

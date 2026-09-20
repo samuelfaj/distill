@@ -373,6 +373,7 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
         XaiUpdate::SubagentProgress {
             subagent_id,
             attempt_id,
+            ..
         } => ExtEvent::SubagentProgress {
             subagent_id,
             attempt_id,

@@ -998,6 +998,11 @@ pub struct AppView {
     /// Monotonically increasing sequence number for auth requests.
     pub next_auth_request_seq: u64,
     pub provider_login_pending: Option<LoginProvider>,
+    /// Identity of the current independent-provider login attempt. Provider alone is not enough
+    /// because a cancelled attempt may finish after a same-provider retry starts.
+    pub provider_login_attempt_id: Option<u64>,
+    pub next_provider_login_attempt_id: u64,
+    pub provider_login_cancel: Option<tokio_util::sync::CancellationToken>,
     /// Present for our independent harness; external ACP agents keep their auth gates.
     pub provider_auth: Option<ProviderAuthState>,
     /// Abort handle for the in-flight `PollAuthUrl` task (with its request_seq).
@@ -1100,6 +1105,13 @@ pub struct AppView {
     /// Top-level (not per-agent) so it works over both the welcome screen and an agent session.
     /// Opened by `/tutorial` (also in the command palette).
     pub tutorial: Option<crate::views::tutorial::TutorialState>,
+    /// Four-step first-run onboarding overlay, independent from the tutorial/tour.
+    pub onboarding: Option<crate::views::onboarding::OnboardingState>,
+    /// Preserves a partially completed onboarding flow when the overlay is closed and reopened.
+    pub onboarding_resume: Option<crate::views::onboarding::OnboardingState>,
+    /// Startup gate: set from persisted UI config and consumed only after interactive startup is safe.
+    pub onboarding_auto_pending: bool,
+    pub onboarding_auto_opened: bool,
     /// Agent Dashboard state.
     /// `Some(_)` only when the dashboard view is active (`active_view == AgentDashboard`) or recently closed.
     /// Held outside the `ActiveView` discriminant because `DashboardState` is not `Copy` (owns its prompt widget, peek panel, etc.).
@@ -1534,6 +1546,9 @@ impl AppView {
             auth_code_input: LineEditor::default(),
             next_auth_request_seq: 1,
             provider_login_pending: None,
+            provider_login_attempt_id: None,
+            next_provider_login_attempt_id: 1,
+            provider_login_cancel: None,
             provider_auth: None,
             auth_url_poll_handle: None,
             deferred_startup: Default::default(),
@@ -1604,6 +1619,10 @@ impl AppView {
             shell_feedback_trace_offer: false,
             feedback_trace_choice_latched: false,
             tutorial: None,
+            onboarding: None,
+            onboarding_resume: None,
+            onboarding_auto_pending: false,
+            onboarding_auto_opened: false,
             dashboard: None,
             dashboard_return: None,
             dashboard_persisted: None,
@@ -2301,6 +2320,173 @@ impl AppView {
     }
 }
 impl AppView {
+    fn onboarding_model_options(&self) -> Vec<(String, String)> {
+        self.models
+            .available
+            .iter()
+            .map(|(id, info)| (id.0.to_string(), info.name.clone()))
+            .collect()
+    }
+
+    fn onboarding_worker_options(&self) -> Vec<(String, String)> {
+        let Some(reasoning) = self.models.current_model_id_str() else {
+            return Vec::new();
+        };
+        let current_worker = distill_shell::jev::tiers_cached().light;
+        self.models
+            .available
+            .iter()
+            .filter(|(id, _)| id.0.as_ref() != reasoning)
+            .filter(|(id, _)| current_worker.as_deref() != Some(id.0.as_ref()))
+            .filter(|(id, _)| {
+                distill_shell::jev::validate_light_tier_candidate(reasoning, id.0.as_ref()).is_ok()
+            })
+            .map(|(id, info)| (id.0.to_string(), info.name.clone()))
+            .collect()
+    }
+
+    fn onboarding_current_worker(&self) -> Option<String> {
+        distill_shell::jev::tiers_cached().light
+    }
+
+    /// Open onboarding only after the normal interactive startup gates are settled. Resume,
+    /// fork, prompt, dashboard, consent, trust, external-ACP, and minimal launches therefore
+    /// keep their existing first interaction and can open `/onboarding` explicitly later.
+    pub fn maybe_open_auto_onboarding(&mut self) {
+        if !self.onboarding_auto_pending
+            || self.onboarding_auto_opened
+            || self.current_ui.onboarding_completed
+            || self.screen_mode.is_minimal()
+            || !matches!(self.active_view, ActiveView::Welcome)
+            || self.provider_auth.is_none()
+            || self.has_external_auth_provider
+            || !self.session_startup_allowed()
+            || self.is_access_blocked()
+            || !self.deferred_startup.is_empty()
+            || self.tutorial.is_some()
+            || self.onboarding.is_some()
+            || self.import_claude_modal.is_some()
+            || self.welcome_doc_viewer.is_some()
+            || self.new_worktree_dialog.is_some()
+        {
+            return;
+        }
+        self.onboarding_auto_pending = false;
+        self.onboarding_auto_opened = true;
+        self.onboarding = Some(
+            self.onboarding_resume
+                .take()
+                .unwrap_or_else(crate::views::onboarding::OnboardingState::new),
+        );
+    }
+
+    fn handle_onboarding_input(&mut self, ev: &Event) -> InputOutcome {
+        let model_ids: Vec<acp::ModelId> = self.models.available.keys().cloned().collect();
+        let worker_options = self.onboarding_worker_options();
+        let command = self
+            .onboarding
+            .as_mut()
+            .and_then(|state| state.handle_input(ev, model_ids.len(), worker_options.len()));
+        let Some(command) = command else {
+            return InputOutcome::Changed;
+        };
+        match command {
+            crate::views::onboarding::OnboardingCommand::Close => {
+                self.onboarding_resume = self.onboarding.take();
+                InputOutcome::Changed
+            }
+            crate::views::onboarding::OnboardingCommand::Back
+            | crate::views::onboarding::OnboardingCommand::Continue => InputOutcome::Changed,
+            crate::views::onboarding::OnboardingCommand::LoginGrok => {
+                if self.provider_auth.is_some_and(|auth| auth.grok) {
+                    if let Some(state) = self.onboarding.as_mut() {
+                        state.set_auth_result(
+                            true,
+                            "Grok is already connected. Choose a primary model below.",
+                        );
+                    }
+                    InputOutcome::Changed
+                } else {
+                    InputOutcome::Action(Action::Login)
+                }
+            }
+            crate::views::onboarding::OnboardingCommand::LoginProvider(provider) => {
+                let connected = self.provider_auth.is_some_and(|auth| match provider {
+                    LoginProvider::ChatGpt => auth.chatgpt,
+                    LoginProvider::OpenRouter => auth.openrouter,
+                });
+                if connected {
+                    if let Some(state) = self.onboarding.as_mut() {
+                        state.set_auth_result(
+                            true,
+                            format!(
+                                "{} is already connected. Choose a primary model below.",
+                                provider.name()
+                            ),
+                        );
+                    }
+                    InputOutcome::Changed
+                } else {
+                    InputOutcome::Action(Action::LoginProvider(provider))
+                }
+            }
+            crate::views::onboarding::OnboardingCommand::CancelGrokLogin => {
+                InputOutcome::Action(Action::CancelOnboardingLogin)
+            }
+            crate::views::onboarding::OnboardingCommand::CancelProviderLogin(provider) => {
+                InputOutcome::Action(Action::CancelOnboardingProviderLogin(provider))
+            }
+            crate::views::onboarding::OnboardingCommand::SelectModel(index) => {
+                let Some(id) = model_ids.get(index).cloned() else {
+                    return InputOutcome::Changed;
+                };
+                InputOutcome::Action(Action::SetDefaultModel(id))
+            }
+            crate::views::onboarding::OnboardingCommand::SelectWorker(index) => {
+                let Some((id, _)) = worker_options.get(index) else {
+                    return InputOutcome::Changed;
+                };
+                InputOutcome::Action(Action::SetTierLight(id.clone(), None))
+            }
+            crate::views::onboarding::OnboardingCommand::OpenX => {
+                InputOutcome::Action(Action::OpenUrl(crate::views::onboarding::X_URL.to_owned()))
+            }
+            crate::views::onboarding::OnboardingCommand::Complete => {
+                if let Some(state) = self.onboarding.as_mut() {
+                    state.completion_pending = true;
+                }
+                InputOutcome::Action(Action::CompleteOnboarding)
+            }
+        }
+    }
+
+    fn render_onboarding_overlay(
+        buf: &mut ratatui::buffer::Buffer,
+        area: ratatui::layout::Rect,
+        onboarding: &mut Option<crate::views::onboarding::OnboardingState>,
+        compact: bool,
+        models: &[(String, String)],
+        workers: &[(String, String)],
+        current_worker: Option<&str>,
+        provider_auth: Option<ProviderAuthState>,
+    ) {
+        // Grok onboarding temporarily reuses Welcome's existing auth controls below.
+        if let Some(state) = onboarding.as_mut()
+            && !state.is_grok_auth_pending()
+        {
+            crate::views::onboarding::render_onboarding(
+                buf,
+                area,
+                state,
+                compact,
+                models,
+                workers,
+                current_worker,
+                provider_auth,
+            );
+        }
+    }
+
     /// Handle a terminal event. Routes through the input layer stack:
     /// Pending action check (double-press confirmation)
     /// Quit always goes through double-press confirmation, even when escalated from agent-level (e.g., Ctrl-C while cancelling).
@@ -2383,6 +2569,14 @@ impl AppView {
             );
             if is_mouse_action {}
         }
+        if self
+            .onboarding
+            .as_ref()
+            .is_some_and(|state| !state.is_grok_auth_pending())
+            && matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
+        {
+            return self.handle_onboarding_input(ev);
+        }
         if let Some(tutorial) = self.tutorial.as_mut()
             && matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_))
         {
@@ -2423,6 +2617,10 @@ impl AppView {
                     arrived_at,
                     cwd: &self.cwd,
                     mid_session_login: self.auth_return_view.is_some(),
+                    onboarding_grok_auth: self
+                        .onboarding
+                        .as_ref()
+                        .is_some_and(|state| state.is_grok_auth_pending()),
                     auth_code_input: &mut self.auth_code_input,
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
@@ -3078,6 +3276,8 @@ struct WelcomeInputCtx<'a> {
     /// `true` when the welcome screen is showing only to host a login flow that was started from inside a session.
     /// Esc / `q` then cancel the login and return to the session rather than quitting the app.
     mid_session_login: bool,
+    /// `true` while the existing welcome auth controls temporarily host Grok auth for onboarding.
+    onboarding_grok_auth: bool,
     auth_code_input: &'a mut LineEditor,
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
@@ -3831,6 +4031,9 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     || key!('q', CONTROL).matches(key)
                     || key!('c', CONTROL).matches(key)
                 {
+                    if ctx.onboarding_grok_auth {
+                        return InputOutcome::Action(Action::CancelOnboardingLogin);
+                    }
                     if ctx.mid_session_login {
                         return InputOutcome::Action(Action::CancelLogin);
                     }
@@ -3871,6 +4074,9 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     || key!('q', CONTROL).matches(key)
                     || key!('c', CONTROL).matches(key)
                 {
+                    if ctx.onboarding_grok_auth {
+                        return InputOutcome::Action(Action::CancelOnboardingLogin);
+                    }
                     if ctx.mid_session_login {
                         return InputOutcome::Action(Action::CancelLogin);
                     }
@@ -4449,6 +4655,10 @@ impl AppView {
             );
         let agent_mouse_pos = self.last_mouse_pos;
         let status_line_frame = self.status_line_frame();
+        let onboarding_models = self.onboarding_model_options();
+        let onboarding_workers = self.onboarding_worker_options();
+        let onboarding_current_worker = self.onboarding_current_worker();
+        let onboarding_provider_auth = self.provider_auth;
         let welcome_mode = self.home_session().map(|home| {
             (
                 home.plan_mode_pending.unwrap_or(home.plan_mode_active),
@@ -4768,6 +4978,18 @@ impl AppView {
                                     compact,
                                 );
                             }
+                            if self.onboarding.is_some() {
+                                Self::render_onboarding_overlay(
+                                    f.buffer_mut(),
+                                    view_area,
+                                    &mut self.onboarding,
+                                    compact,
+                                    &onboarding_models,
+                                    &onboarding_workers,
+                                    onboarding_current_worker.as_deref(),
+                                    onboarding_provider_auth,
+                                );
+                            }
                             if let Some(fps) = &fps_overlay {
                                 fps.render(full_area, f.buffer_mut());
                             }
@@ -4775,7 +4997,10 @@ impl AppView {
                                 panel.render(full_area, f.buffer_mut());
                             }
                             let has_cloud_modal = false;
-                            let cursor = if has_cloud_modal || self.tutorial.is_some() {
+                            let cursor = if has_cloud_modal
+                                || self.tutorial.is_some()
+                                || self.onboarding.is_some()
+                            {
                                 None
                             } else {
                                 result.cursor_pos
@@ -4919,6 +5144,18 @@ impl AppView {
                                         compact,
                                     );
                                 }
+                                if self.onboarding.is_some() {
+                                    Self::render_onboarding_overlay(
+                                        f.buffer_mut(),
+                                        view_area,
+                                        &mut self.onboarding,
+                                        compact,
+                                        &onboarding_models,
+                                        &onboarding_workers,
+                                        onboarding_current_worker.as_deref(),
+                                        onboarding_provider_auth,
+                                    );
+                                }
                                 if let Some(fps) = &fps_overlay {
                                     fps.render(full_area, f.buffer_mut());
                                 }
@@ -4930,10 +5167,14 @@ impl AppView {
                                 if has_cloud
                                     || self.import_claude_modal.is_some()
                                     || self.tutorial.is_some()
+                                    || self.onboarding.is_some()
                                 {
                                     link_spans.clear();
                                 }
-                                let cursor = if has_cloud || self.tutorial.is_some() {
+                                let cursor = if has_cloud
+                                    || self.tutorial.is_some()
+                                    || self.onboarding.is_some()
+                                {
                                     None
                                 } else {
                                     cursor_pos
@@ -5047,6 +5288,8 @@ impl AppView {
                                     Self::dashboard_stale_image_clears(agents, drawn_popup_agent);
                                 let popup_post_flush =
                                     Self::merge_post_flush(stale_clears, popup_post_flush);
+                                let dashboard_has_attached_agent =
+                                    dashboard.attached_agent.is_some();
                                 let tutorial_open = self.tutorial.is_some();
                                 if let Some(tutorial) = self.tutorial.as_mut() {
                                     crate::views::tutorial::render_tutorial(
@@ -5056,15 +5299,27 @@ impl AppView {
                                         compact,
                                     );
                                 }
+                                if self.onboarding.is_some() {
+                                    Self::render_onboarding_overlay(
+                                        f.buffer_mut(),
+                                        view_area,
+                                        &mut self.onboarding,
+                                        compact,
+                                        &onboarding_models,
+                                        &onboarding_workers,
+                                        onboarding_current_worker.as_deref(),
+                                        onboarding_provider_auth,
+                                    );
+                                }
                                 if let Some(fps) = &fps_overlay {
                                     fps.render(full_area, f.buffer_mut());
                                 }
                                 if let Some(panel) = &scroll_debug_panel {
                                     panel.render(full_area, f.buffer_mut());
                                 }
-                                let cursor = if tutorial_open {
+                                let cursor = if tutorial_open || self.onboarding.is_some() {
                                     None
-                                } else if dashboard.attached_agent.is_some() {
+                                } else if dashboard_has_attached_agent {
                                     popup_cursor
                                 } else {
                                     dash_cursor
@@ -5215,6 +5470,7 @@ impl AppView {
             || self.new_worktree_dialog.is_some()
             || self.welcome_doc_viewer.is_some()
             || self.tutorial.is_some()
+            || self.onboarding.is_some()
             || matches!(self.active_view, ActiveView::AgentDashboard
                 if self.dashboard.as_ref().is_some_and(|d| d.shortcuts_modal.is_some() || d.usage_modal.is_some()))
             || matches!(self.active_view, ActiveView::AgentDashboard
@@ -5375,6 +5631,10 @@ impl AppView {
     /// Produces redraws when there are running entries with animated accents.
     pub fn tick(&mut self) -> bool {
         let mut needs_redraw = false;
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.pulse = onboarding.pulse.wrapping_add(1);
+            needs_redraw = true;
+        }
         needs_redraw |= self.minimal_state.transcript.is_some();
         needs_redraw |= self.poll_clipboard_focus_tip();
         if matches!(self.active_view, ActiveView::Welcome) {
@@ -5729,6 +5989,9 @@ impl AppView {
         self.view_tick_demand().max(self.status_line_tick_demand())
     }
     fn view_tick_demand(&self) -> TickDemand {
+        if self.onboarding.is_some() {
+            return TickDemand::Fast;
+        }
         if self.pending_action.is_some() {
             return TickDemand::Fast;
         }

@@ -1759,6 +1759,96 @@ fn open_tutorial_toggles_overlay_without_effects() {
     assert!(effects.is_empty(), "close emits nothing, got: {effects:?}");
 }
 
+#[test]
+fn onboarding_completion_waits_for_persistence_and_keeps_failed_flow_open() {
+    let mut app = test_app();
+    dispatch(Action::OpenOnboarding, &mut app);
+    let effects = dispatch(Action::CompleteOnboarding, &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "onboarding_completed",
+            value: crate::settings::SettingValue::Bool(true),
+            ..
+        }]
+    ));
+    assert!(!app.current_ui.onboarding_completed);
+    assert!(app.onboarding.is_some());
+
+    dispatch(
+        Action::TaskComplete(TaskResult::SettingPersistFailed {
+            key: "onboarding_completed",
+            rollback_value: crate::settings::SettingValue::Bool(false),
+            error: "disk full".to_owned(),
+        }),
+        &mut app,
+    );
+    assert!(!app.current_ui.onboarding_completed);
+    assert!(app.onboarding.is_some());
+
+    dispatch(
+        Action::TaskComplete(TaskResult::SettingPersisted {
+            key: "onboarding_completed",
+            value: crate::settings::SettingValue::Bool(true),
+        }),
+        &mut app,
+    );
+    assert!(app.current_ui.onboarding_completed);
+    assert!(app.onboarding.is_none());
+}
+
+#[test]
+fn reopening_completed_onboarding_finishes_without_a_second_persist() {
+    let mut app = test_app();
+    app.current_ui.onboarding_completed = true;
+    dispatch(Action::OpenOnboarding, &mut app);
+    assert!(app.onboarding.is_some());
+
+    let effects = dispatch(Action::CompleteOnboarding, &mut app);
+
+    assert!(
+        effects.is_empty(),
+        "completed onboarding must not persist twice"
+    );
+    assert!(
+        app.onboarding.is_none(),
+        "reopened flow must close on Finish"
+    );
+    assert!(app.onboarding_resume.is_none());
+}
+
+#[test]
+fn onboarding_selection_status_tracks_persisted_results() {
+    let mut app = test_app();
+    dispatch(Action::OpenOnboarding, &mut app);
+    app.onboarding
+        .as_mut()
+        .expect("onboarding opened")
+        .set_primary_model_pending();
+    dispatch(
+        Action::TaskComplete(TaskResult::SettingPersisted {
+            key: "default_model",
+            value: crate::settings::SettingValue::String("model-a".to_owned()),
+        }),
+        &mut app,
+    );
+    let state = app.onboarding.as_ref().unwrap();
+    assert!(!state.status_is_error);
+    assert!(state.status.as_deref().unwrap().contains("saved"));
+
+    app.onboarding.as_mut().unwrap().set_worker_model_pending();
+    dispatch(
+        Action::TaskComplete(TaskResult::SettingPersistFailedBestEffort {
+            key: "tier_light",
+            error: "disk full".to_owned(),
+        }),
+        &mut app,
+    );
+    let state = app.onboarding.as_ref().unwrap();
+    assert!(state.status_is_error);
+    assert!(state.status.as_deref().unwrap().contains("not saved"));
+}
+
 fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModalState {
     match app
         .agents

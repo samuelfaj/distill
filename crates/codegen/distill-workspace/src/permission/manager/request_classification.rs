@@ -12,12 +12,6 @@ pub(super) const AUTO_DENY_GUIDANCE: &str = "Take a safer approach that stays wi
      for; do not retry this exact action or attempt to work around the denial. If no safer \
      alternative exists, ask the user how to proceed.";
 
-/// Refusal guidance for a YOLO/always-approve session: there is no prompt in
-/// that mode, so the model is told to route around the refusal itself.
-pub(super) const JEV_VETO_GUIDANCE: &str = "This session is in always-approve mode, so nothing will prompt the \
-     user about it: pick a different approach that does not destroy or leave the workspace. Do \
-     not retry this exact action.";
-
 /// Auto-denial counters snapshotted for one decision.
 /// They live in their own `Cell` so the finalizer reads the value meant for the event even after the running counters are reset later in the arm.
 #[derive(Clone, Copy)]

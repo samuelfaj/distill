@@ -139,8 +139,10 @@ full conversation.
 ```
 
 Jev chooses among candidates supplied by code. It does not invent candidates
-or expand permissions. If a decision fails, times out, or lacks enough
-confidence, the harness keeps its normal execution path.
+or decide permissions. Distill owns plan mode, auto approval, YOLO, and
+permission policies; Jev cannot approve, veto, or hold a tool call for
+confirmation. If a Jev decision fails, times out, or lacks enough confidence,
+the harness keeps its normal execution path.
 
 ### Reasoning and Worker
 
@@ -202,12 +204,10 @@ endpoint does not get retried at every step.
 
 | Area | What Jev decides |
 |---|---|
-| Permissions | Whether to allow, reject, or escalate a nonroutine tool call. In YOLO mode it can veto a call. |
 | Content | Which files, lines, logs, search results, and instructions merit another look. |
 | Planning | Intent, relevant tool families, and delegation hints. |
 | Quality | Whether an edit or failed check needs another attempt, and which errors to address first. |
 | Context | What to preserve during compression and compaction. |
-| Scope | Whether a tool's target fits the user's request. |
 
 Individual switches live under `[jev.ladder]`. For example:
 

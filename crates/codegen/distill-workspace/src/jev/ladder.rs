@@ -1,5 +1,5 @@
 //! The token-saving ladder (plan §1.3.1): P1 tool families, P2 read shortlist,
-//! P3 compaction recorte, P5 call validation, P6 skill suggestion — plus the
+//! P3 compaction recorte, P6 skill suggestion — plus the
 //! P4 note and the per-lever measurement ledger.
 //!
 //! Two rules hold everywhere in this module:
@@ -504,90 +504,6 @@ pub fn measure_recorte(
 }
 
 // ---------------------------------------------------------------------------
-// P5 — validate a tool call before executing it
-// ---------------------------------------------------------------------------
-
-/// The bounded call summary P5 reasons about (never file contents).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallSummary {
-    pub tool: String,
-    pub target: Option<String>,
-    pub intent: String,
-    /// Set by the harness when the target is protected by policy.
-    pub protected: bool,
-}
-
-/// Result of a P5 decision: **never** an expanded authority — only proceed or ask.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallVerdict {
-    /// No reason to intervene; the normal path decides.
-    Proceed,
-    /// Something looks off: ask the user before executing.
-    Ask { reason: String },
-}
-
-/// Probability at or above which a red flag turns into a question.
-pub const P5_ASK_AT_LEAST: f64 = 0.40;
-
-/// The two red-flag questions P5 asks about a call.
-pub fn call_validation_questions(
-    call: &CallSummary,
-) -> Result<BTreeMap<QuestionId, Question>, JevError> {
-    if call.tool.trim().is_empty() {
-        return Err(JevError::invalid("call must name a tool"));
-    }
-    let mut questions = BTreeMap::new();
-    questions.insert(
-        "target_mismatch".to_owned(),
-        Question::noul_with_criteria(
-            format!(
-                "Does the target of this call look inconsistent with the stated intent? Tool `{}`, target `{}`, intent: {}",
-                call.tool,
-                call.target.as_deref().unwrap_or("(none)"),
-                call.intent
-            ),
-            "The target does not match the intent",
-            "The target is consistent with the intent",
-        ),
-    );
-    questions.insert(
-        "scope_mismatch".to_owned(),
-        Question::noul_with_criteria(
-            format!(
-                "Would executing this call touch anything outside what the intent asks for? Tool `{}`, target `{}`",
-                call.tool,
-                call.target.as_deref().unwrap_or("(none)")
-            ),
-            "It reaches beyond the stated intent",
-            "It stays within the stated intent",
-        ),
-    );
-    Ok(questions)
-}
-
-/// Composes the validation: any red flag (or a protected target) asks first.
-pub fn compose_call_validation(answers: &JevAnswerSet, call: &CallSummary) -> CallVerdict {
-    if call.protected {
-        return CallVerdict::Ask {
-            reason: "target is protected by policy".to_owned(),
-        };
-    }
-    for (id, label) in [
-        ("target_mismatch", "target does not match the stated intent"),
-        ("scope_mismatch", "call reaches beyond the stated intent"),
-    ] {
-        if let Some(probability) = answers.noul(id) {
-            if probability >= P5_ASK_AT_LEAST {
-                return CallVerdict::Ask {
-                    reason: format!("{label} (p={probability:.2})"),
-                };
-            }
-        }
-    }
-    CallVerdict::Proceed
-}
-
-// ---------------------------------------------------------------------------
 // P6 — which announced skill matters
 // ---------------------------------------------------------------------------
 
@@ -987,42 +903,6 @@ mod tests {
         let no_prefix = segment_conversation(&[item("only request", true, false)]);
         assert_eq!(no_prefix.len(), 1);
         assert!(no_prefix[0].pinned);
-    }
-
-    #[test]
-    fn p5_asks_only_when_a_red_flag_fires() {
-        let call = CallSummary {
-            tool: "search_replace".to_owned(),
-            target: Some("src/main.rs".to_owned()),
-            intent: "fix the parser".to_owned(),
-            protected: false,
-        };
-        let questions = call_validation_questions(&call).expect("questions build");
-        assert_eq!(questions.len(), 2);
-
-        let clean = answer_set(vec![
-            ("target_mismatch", noul(0.02)),
-            ("scope_mismatch", noul(0.05)),
-        ]);
-        assert_eq!(compose_call_validation(&clean, &call), CallVerdict::Proceed);
-
-        let flagged = answer_set(vec![
-            ("target_mismatch", noul(0.8)),
-            ("scope_mismatch", noul(0.05)),
-        ]);
-        assert!(matches!(
-            compose_call_validation(&flagged, &call),
-            CallVerdict::Ask { .. }
-        ));
-
-        let protected = CallSummary {
-            protected: true,
-            ..call
-        };
-        assert!(matches!(
-            compose_call_validation(&clean, &protected),
-            CallVerdict::Ask { .. }
-        ));
     }
 
     #[test]

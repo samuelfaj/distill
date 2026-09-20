@@ -4935,6 +4935,7 @@ impl MvpAgent {
                     session_model_id,
                     session_yolo_mode,
                     session_auto_mode,
+                    self.models_manager.current_effort_auto(),
                     origin_client.as_ref().map(|o| o.product.clone()),
                     inference_idle_timeout_secs,
                     model_max_retries,

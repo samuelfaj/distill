@@ -1,12 +1,12 @@
 //! Jev (TypeSafe System One) decision layer for the harness.
 //!
-//! Scope and invariants come from `plan/plan.md`:
-//! - §12.5 is the wire contract implemented by [`client`] and [`types`];
-//! - §1.6/I-1 keeps every lever default OFF (see [`flags`]);
-//! - §1.6/I-3 bounds Jev's authority to "≤ incumbent": it may block, escalate or
-//!   allow only where the local heuristic would allow anyway;
-//! - §1.3.1 holds the token-saving ladder (P1…P6) in [`ladder`];
-//! - [`questions`] is the single reviewable catalog of questions and thresholds.
+//! Jev selects optimization candidates; tool authorization belongs exclusively
+//! to the harness's [`crate::permission`] module. Jev cannot approve, deny, or
+//! hold a tool call for confirmation.
+//!
+//! [`client`] and [`types`] implement the wire contract, [`flags`] controls
+//! optimization switches, and [`ladder`] holds context-reduction helpers.
+//! [`questions`] also retains catalogs used by offline evaluation experiments.
 //!
 //! Nothing here performs I/O at construction time, and the module never logs
 //! request/response bodies or the credential.
@@ -18,7 +18,6 @@ pub mod crushers;
 pub mod error;
 pub mod flags;
 pub mod ladder;
-pub mod permission;
 pub mod policy;
 pub mod provider;
 pub mod questions;

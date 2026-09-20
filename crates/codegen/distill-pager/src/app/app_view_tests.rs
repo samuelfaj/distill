@@ -168,6 +168,9 @@ pub(crate) fn test_app() -> AppView {
         auth_code_input: LineEditor::default(),
         next_auth_request_seq: 1,
         provider_login_pending: None,
+        provider_login_attempt_id: None,
+        next_provider_login_attempt_id: 1,
+        provider_login_cancel: None,
         provider_auth: None,
         auth_url_poll_handle: None,
         deferred_startup: Default::default(),
@@ -308,6 +311,10 @@ pub(crate) fn test_app() -> AppView {
         shell_feedback_trace_offer: false,
         feedback_trace_choice_latched: false,
         tutorial: None,
+        onboarding: None,
+        onboarding_resume: None,
+        onboarding_auto_pending: false,
+        onboarding_auto_opened: false,
         dashboard: None,
         dashboard_return: None,
         dashboard_persisted: None,
@@ -320,6 +327,132 @@ pub(crate) fn test_app() -> AppView {
         voice_state: VoiceState::Idle,
     }
 }
+
+#[test]
+fn onboarding_grok_login_uses_provider_connection_state() {
+    let mut app = test_app();
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+    let state = app.onboarding.as_mut().unwrap();
+    state.step = crate::views::onboarding::OnboardingStep::Connect;
+    state.selected = 0;
+    app.provider_auth = Some(crate::app::actions::ProviderAuthState {
+        grok: false,
+        chatgpt: true,
+        openrouter: false,
+    });
+
+    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Action(Action::Login)));
+
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+    let state = app.onboarding.as_mut().unwrap();
+    state.step = crate::views::onboarding::OnboardingStep::Connect;
+    state.selected = 0;
+    app.provider_auth.as_mut().unwrap().grok = true;
+    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(
+        app.onboarding
+            .as_ref()
+            .and_then(|state| state.status.as_deref())
+            .is_some_and(|status| status.contains("already connected"))
+    );
+}
+
+#[test]
+fn onboarding_grok_auth_reuses_welcome_url_and_code_controls() {
+    let mut app = test_app();
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+    app.onboarding.as_mut().unwrap().set_auth_started(None);
+    app.auth_state = AuthState::Authenticating {
+        request_seq: 1,
+        handle: None,
+        auth_url: Some("https://auth.example.test/login".to_owned()),
+        mode: AuthMode::Loopback,
+    };
+    app.welcome_auth_url_rect = Some(ratatui::layout::Rect::new(0, 0, 20, 1));
+    app.welcome_auth_fallback_rect = Some(ratatui::layout::Rect::new(0, 1, 20, 1));
+
+    let fallback = app.handle_input(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(matches!(
+        fallback,
+        InputOutcome::Action(Action::ShowRawAuthUrl)
+    ));
+
+    let copy = app.handle_input(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 1,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(matches!(copy, InputOutcome::Action(Action::CopyAuthUrl)));
+
+    assert!(matches!(
+        app.handle_input(&Event::Paste("manual-code".to_owned())),
+        InputOutcome::Changed
+    ));
+    assert_eq!(app.auth_code_input.text(), "manual-code");
+    assert!(matches!(
+        app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE)),
+        InputOutcome::Action(Action::SubmitAuthCode(code)) if code == "manual-code"
+    ));
+    assert!(matches!(
+        app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE)),
+        InputOutcome::Action(Action::CancelOnboardingLogin)
+    ));
+}
+
+#[test]
+fn auto_onboarding_waits_for_provider_catalog_and_excludes_external_startup() {
+    let mut app = test_app();
+    app.screen_mode = ScreenMode::Fullscreen;
+    app.onboarding_auto_pending = true;
+    app.maybe_open_auto_onboarding();
+    assert!(app.onboarding.is_none());
+    assert!(app.onboarding_auto_pending);
+
+    app.provider_auth = Some(crate::app::actions::ProviderAuthState::default());
+    app.maybe_open_auto_onboarding();
+    assert!(app.onboarding.is_some());
+    assert!(!app.onboarding_auto_pending);
+
+    let mut external = test_app();
+    external.screen_mode = ScreenMode::Fullscreen;
+    external.onboarding_auto_pending = true;
+    external.has_external_auth_provider = true;
+    external.provider_auth = Some(crate::app::actions::ProviderAuthState::default());
+    external.maybe_open_auto_onboarding();
+    assert!(
+        external.onboarding.is_none(),
+        "external ACP startup must remain deferred"
+    );
+    assert!(external.onboarding_auto_pending);
+}
+
+#[test]
+fn reopened_completed_onboarding_closes_at_app_dispatch_boundary() {
+    let mut app = test_app();
+    app.current_ui.onboarding_completed = true;
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+    let state = app.onboarding.as_mut().unwrap();
+    state.step = crate::views::onboarding::OnboardingStep::Community;
+    state.selected = 1;
+
+    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    let InputOutcome::Action(action @ Action::CompleteOnboarding) = outcome else {
+        panic!("Finish must dispatch CompleteOnboarding, got {outcome:?}");
+    };
+    let effects = crate::app::dispatch::dispatch(action, &mut app);
+    assert!(effects.is_empty());
+    assert!(app.onboarding.is_none());
+    assert!(app.onboarding_resume.is_none());
+}
+
 pub(crate) fn test_app_with_agent() -> AppView {
     let mut app = test_app();
     let id = super::super::agent::AgentId(0);

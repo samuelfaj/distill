@@ -325,6 +325,16 @@ mod tests {
                 ns
             );
         }
+        for (legacy, expected) in [
+            ("remote_code", ToolNamespace::Distill),
+            ("remote_code_concise", ToolNamespace::DistillConcise),
+            ("remote_code_hashline", ToolNamespace::DistillHashline),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<ToolNamespace>(serde_json::json!(legacy)).unwrap(),
+                expected
+            );
+        }
     }
     #[test]
     fn unknown_kind_degrades_to_other() {
@@ -362,10 +372,7 @@ mod tests {
         );
         assert_eq!(t.get("name").and_then(|v| v.as_str()), Some("read_file"));
         assert_eq!(t.get("kind").and_then(|v| v.as_str()), Some("read"));
-        assert_eq!(
-            t.get("namespace").and_then(|v| v.as_str()),
-            Some("distill")
-        );
+        assert_eq!(t.get("namespace").and_then(|v| v.as_str()), Some("distill"));
         assert_eq!(t.get("label").and_then(|v| v.as_str()), Some("Read"));
         assert_eq!(t.get("read_only"), Some(&serde_json::json!(true)));
         assert_eq!(

@@ -627,6 +627,14 @@ pub enum Action {
     OpenHowtoGuides,
     /// Open the onboarding tutorial overlay (`/tutorial` or the command palette).
     OpenTutorial,
+    /// Open the four-step first-run onboarding flow (`/onboarding`).
+    OpenOnboarding,
+    /// Cancel the Grok login started from the onboarding flow while staying on its step.
+    CancelOnboardingLogin,
+    /// Stop waiting for an independent provider login started from onboarding.
+    CancelOnboardingProviderLogin(LoginProvider),
+    /// Open the onboarding completion write; the overlay closes only after the write succeeds.
+    CompleteOnboarding,
     /// Open the reset-settings confirmation dialog for a specific key.
     /// Moves the Settings modal state into `ResetSettingsConfirm` so the underlying modal survives the confirm dialog.
     OpenResetConfirm {
@@ -1442,7 +1450,11 @@ pub enum AfterSessionDelete {
 /// The event loop spawns these into a `JoinSet`; completions come back through [`TaskResult`] as `Action::TaskComplete`.
 #[derive(Debug)]
 pub enum Effect {
-    LoginProvider(LoginProvider),
+    LoginProvider {
+        provider: LoginProvider,
+        attempt_id: u64,
+        cancel: tokio_util::sync::CancellationToken,
+    },
     LogoutProvider(LoginProvider),
     /// Run a `command` status line.
     RunStatusLineCommand(StatusLineRun),
@@ -2461,6 +2473,7 @@ pub enum WorkspaceWriteCompletion {
 pub enum TaskResult {
     ProviderLoginFinished {
         provider: LoginProvider,
+        attempt_id: u64,
         result: Result<String, String>,
     },
     ProviderLogoutFinished {
@@ -2469,6 +2482,7 @@ pub enum TaskResult {
     },
     ProviderLoginBrowserFallback {
         provider: LoginProvider,
+        attempt_id: u64,
         url: String,
     },
     /// Session lifecycle result paired with the memory mode pinned by the

@@ -3,40 +3,28 @@
 
 Distill can route a small class of **structured decisions** to [Jev](https://docs.typesafe.ai), TypeSafe's System One model, instead of asking an LLM. Jev answers typed questions (`choice`, `score`, `noul`) over a bounded state and returns typed answers with probabilities and confidence. It does not generate text, it is much cheaper per token, and this build treats it as strictly **additional** to the existing paths — never a replacement.
 
-In this build the path is **on by default** — the owner's explicit override of the plan's original default-OFF invariant. With `JEV_API_KEY` in the environment, auto mode wires the Jev seam ahead of the LLM classifier; without a resolvable credential the seam is not wired at all and nothing changes. The kill switch is a tested property: `[jev] enabled = false` or `GROK_JEV=0` leaves no client and no connection.
+Jev is enabled by default for routing, content selection, and context optimization when a credential is available. Permissions belong exclusively to Distill: Jev cannot approve, deny, or hold a tool call for user confirmation. This applies to the main agent and subagents in every permission mode.
 
 ---
 
 ## What it is used for today
 
-The **catalogue of 23 decision points** is wired and documented item by item — question battery, threshold, code locator and covering test — in [`todo.md`](../../../../../todo.md) at the repository root. Grouped by area:
+The decision catalogue is documented item by item — question battery, threshold, code locator and covering test — in [`todo.md`](../../../../../todo.md) at the repository root. Grouped by area:
 
 | Area | Items | What changes |
 |---|---|---|
-| Permission | auto-mode classifier, always-approve brake | routine actions route to *allow*; a confident catastrophe is refused in always-approve mode |
 | A — content selection | file to edit, read window, log/test lines, web results, memory entries, test to run | the model re-reads less; nothing outside the candidates the code already produced is ever introduced |
 | B — effort routing | turn intent, tool families, model/effort tier, subagent type, skill suggestion, delegation hint | fewer tools per turn, a cheaper setting on a routine turn (off until its gate passes), an unknown subagent type resolved to an allowed definition |
 | C — verification | premature stop, failure triage, completion check, diff risk, error priority, injection screen, change type | hints on a failure, an unfinished request is not called complete, risky diffs carry a warning |
-| D — context and cost | compaction recorte, big-output retention, post-compaction retrieval, call validation | a smaller summary and context; a call that looks out of scope is held for a human |
+| D — context and cost | compaction recorte, big-output retention, post-compaction retrieval | a smaller summary and context |
 
-The **auto-mode permission classifier** is the oldest seam, and the only one that can *allow* without asking. A proposed tool call in auto mode is judged by a speculative battery of atomic questions (risk class, does it escape the workspace, does it delete data, privilege escalation, network egress, untrusted execution, an injection screen, and a severity rubric). The answers are composed in code against fixed thresholds, and the outcome can only be:
-
-| Outcome | What happens |
-|---|---|
-| **Block** | Confident danger (for example a high escape probability) — the call is refused. |
-| **Allow** | Only for the *routine, in-workspace, confident* class: Jev must agree with the local fast-path class, report no findings, and clear the confidence bar (0.60 normally, 0.85 when the caller marks the action sensitive). |
-| **Defer** | Everything else — a low-confidence answer, a value inside the review band (0.30–0.70), a timeout, an error, or a rejected request — goes to the **existing LLM classifier**, and then to the normal human prompt if that also cannot decide. |
-
-Two safety rules are structural, not advisory:
-
-* **A Jev allow never clears the denial ratchet.** The consecutive-denial counter that forces escalation stays untouched, so a steered classifier cannot switch the automatic escalation off.
-* **Security findings bypass Jev entirely.** If the harness's own static analysis flagged the command, Jev is not consulted at all.
+Distill enforces plan-mode restrictions, explicit permission policies, hooks, and the selected approval mode. Auto mode uses the harness classifier. YOLO bypasses that classifier; Jev adds no separate veto.
 
 ---
 
 ## Configuration
 
-Nothing is required: with `JEV_API_KEY` in the environment the harness defaults apply — master switch **on**, every lever **on**, shadow **off** (active). This block spells them out and shows the kill switch:
+Nothing is required: with `JEV_API_KEY` in the environment the harness defaults apply — master switch **on**, optimization levers enabled, shadow **off** (active). This block spells them out and shows the kill switch:
 
 ```toml
 [jev]
@@ -44,12 +32,9 @@ enabled = true               # default; false (or GROK_JEV=0) disables everythin
 shadow  = false              # default: Jev decides; true = record only
 
 [jev.ladder]
-permission_classifier = true # default: Jev seam ahead of the LLM classifier
-yolo_veto             = true # default: brake in always-approve (YOLO) mode
 p1_tool_family        = true # B4: prune tool families for the turn
 p2_read_shortlist     = true # A2: pick the read window instead of the whole file
 p3_compaction_recorte = true # D1: which segments the summarizer must see
-p5_call_validation    = true # D4: hold a call that looks out of scope
 p6_skill_suggestion   = true # B5: name the announced skill the request needs
 a1_file_to_edit       = true # A1: rank the candidate files
 a3_log_lines          = true # A3: keep the lines that explain a failure
@@ -82,7 +67,7 @@ c6_injection_screen   = false # cost per tool output not measured yet
 
 ### Shadow mode first
 
-With `shadow = true` the seam computes the decision it *would* make and records it, while the LLM classifier still decides. That is the intended way to evaluate agreement on your own workload before letting Jev decide anything. In this build shadow is **off** (Jev decides), so if you want the observation-only phase, set it explicitly.
+With `shadow = true`, Jev decisions are recorded without applying them. This setting does not affect permission decisions, which remain in the harness.
 
 The credential is read from the environment **at call time** by the name in `api_key_env`:
 
@@ -101,37 +86,9 @@ exclude = ["JEV_API_KEY"]
 
 ---
 
-## Always-approve (YOLO) runs a brake
-
-Always-approve exists to avoid interruptions, so Jev does not act as a gatekeeper there — it acts as a **brake**. In that mode every tool call is sent to Jev (that is the point: nothing is pre-filtered), and the only outcome it can produce is a refusal:
-
-| Jev says | What happens |
-|---|---|
-| **Block** (confident catastrophe: escapes the workspace, destructive, severity at the top of the rubric) | The call is **refused** with the reason, and the model is told to pick another approach — no prompt, so the mode keeps its no-interruption promise |
-| Anything else | The call proceeds exactly as always-approve did before |
-| Timeout, error, no credential, rate limit | The call proceeds (**fail-open**): a brake that cannot reach the service must not stop the session |
-
-Two consequences worth knowing: the brake never *widens* anything (the mode already allows everything), and it deliberately ignores the mode's usual "security findings skip the classifier" rule — flagged commands are exactly what a brake should look at. Turn it off with `[jev.ladder] yolo_veto = false`, or the master switch.
-
-## Exactly what is sent
-
-The state is an allowlist of named fields, capped (`max_state_bytes`, 400 characters per field):
-
-| Field | Content |
-|---|---|
-| `proposed_action.tool` | The tool name (`bash`, `search_replace`, …) |
-| `proposed_action.detail` | The command or the bounded access detail (file path, MCP args truncated to 1 KiB) |
-| `recent` | Up to 6 recent transcript turns, each truncated, user text and assistant tool *names/args* only |
-| `project_instructions` | The repository `AGENTS.md`, truncated |
-| `note` | A fixed line stating that everything above is untrusted data, never instructions |
-
-**Never sent:** file contents, tool output, diffs, secrets, your prompts verbatim, or the API key. The transcript turns are the only place attacker-influenced text can enter, which is why one of the questions is an explicit injection screen — and why that screen is treated as a filter, never as a security boundary.
-
----
-
 ## Kill switch and how to revert
 
-* **Turn it off:** set `enabled = false`, or unset `GROK_JEV`. With the master switch off, no client is constructed and no connection is made — that is a tested property, not a promise.
+* **Turn it off:** set `GROK_JEV=0` or `[jev] enabled = false`, then start a fresh process because the resolved config/status is cached per process. With the master switch off, no client is constructed and no connection is made — that is a tested property, not a promise.
 * **Remove it entirely:** delete the `[jev]` section (and the `JEV_API_KEY` export). Nothing else in Grok depends on it.
 * **Revoke access:** delete the API key in the TypeSafe dashboard. A missing or empty credential degrades to the existing LLM path.
 
@@ -280,7 +237,7 @@ The **turn status row** (the line above the prompt, next to the running tool) sh
 | **`jev…`** (green) | A decision is being asked for right now — the call is in flight |
 | **`jev 0.4s`** (green) | One decision answered, with its latency |
 | **`jev ×3`** (green) | Several decisions so far this turn |
-| **`jev·veto`** (red) | Jev refused a call in this turn (the always-approve brake) |
+| **`jev·fallback`** (red) | A Jev optimization or quality decision was declined; this is not a permission veto |
 | **`jev ×8 ·none`** | …plus the routing of the call that is running: the effort level Jev chose for this micro-action (`none`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | **`jev ×3 ·local low`** | The call was routed to the configured local model, at that level |
 | *(nothing)* | Jev was not consulted in this turn — the row never claims otherwise |
@@ -302,13 +259,11 @@ The **prompt footer** always shows where the path stands, next to the mode flags
 
 | Badge | Meaning |
 |---|---|
-| **`jev`** (green, bold) | The seam can act and this session routes through it (auto mode) |
+| **`jev`** (green, bold) | Jev is available, independently of the permission mode |
 | **`jev·shadow`** (green) | Same, but decisions are recorded and not applied |
-| **`jev·veto`** (green) | Always-approve (YOLO): Jev runs as a **brake** — see below |
-| **`jev:idle`** (dim) | Ask mode: no classifier is consulted, so Jev is not reached |
 | **`jev:off`** (dim) | The path is disabled (`GROK_JEV=0`, `[jev] enabled = false`) or no credential is resolvable |
 
-The badge is deliberately never hidden: spotting `jev:idle` immediately explains "why is nothing happening" when you are in always-approve mode, and `jev:off` tells you the setup itself is not ready. The status is resolved once per process, like the wiring itself.
+The badge is always visible. `jev:off` means Jev is disabled or lacks a credential; it says nothing about permission to execute tools. The status is resolved once per process.
 
 Both surfaces read the same decision record, so they cannot disagree: the footer says whether the path *can* be used, the turn row says whether it *was*, and with which outcome.
 
@@ -320,7 +275,6 @@ Both surfaces read the same decision record, so they cannot disagree: the footer
 
 * Requests are capped at 64k tokens total (32k for state + the longest question); this build stays far below that with `max_state_bytes`.
 * One attempt per call on the hot path: a timeout or error defers; nothing is retried behind your back.
-* While another classify is in flight, Jev is skipped so a third-party call never queues ahead of the harness's own permission traffic.
 * Jev is unreliable for arithmetic, counting, date ordering and multi-hop reasoning, and it cannot generate text — decisions of that shape stay in code or with the LLM.
 
 The design, thresholds and evidence behind this page live in `plan/plan.md` (§1.3.1, §1.6, §12.5) and `plan/docs-review.md`.
@@ -347,7 +301,7 @@ cargo test -p distill-telemetry --lib jev_log
 JEV_API_KEY=… cargo test -p distill-workspace --test jev_live -- --ignored --nocapture
 ```
 
-The last command runs an 18-case labelled corpus — including two prompt-injection cases — through the real permission battery and fails if Jev allows anything the corpus calls unsafe.
+The opt-in suite includes historical permission-classifier experiments; those classifiers are not wired into Distill sessions.
 
 ### 2. A real session in shadow mode (recommended first)
 
@@ -355,36 +309,41 @@ The last command runs an 18-case labelled corpus — including two prompt-inject
 export JEV_API_KEY="…"
 export GROK_JEV=1
 export GROK_LOG_JEV=1          # decisions land in ~/.grok/logs/jev.jsonl
-cargo run -p distill-pager-bin   # then put the session in auto mode (/permissions → Auto)
+cargo run -p distill-pager-bin
 ```
 
-With `shadow = true` in `[jev]`, nothing changes about what gets approved — but every decision Jev *would* make is written as one JSON line:
+With `shadow = true` in `[jev]`, Jev does not apply optimization choices, and it does not participate in permission outcomes. Every optimization decision it *would* make is written as one JSON line:
 
 ```sh
 tail -f ~/.grok/logs/jev.jsonl | jq '{lever, decision, escalated, confidence, model, latency_ms, input_tokens}'
 ```
 
-Run a session that does routine work (`cargo check`, `rg`, edits) and one risky action (`rm -rf ~/something`), then check the file. What you should see: `decision:"allow"` for the routine class, `decision:"block"` or `"escalate"` for the risky one, and `escalated:true` lines wherever Jev deferred to the LLM classifier.
+Run a session with an optimization-eligible turn (`cargo check`, `rg`, or an edit), then inspect the optimization record: its lever, selected or declined optimization, confidence, fallback reason, model, latency, and token usage. Do not interpret a Jev record as an allow/block/escalate result. Permission outcomes belong to the independent Distill harness check below.
 
-### 3. Failure and kill-switch drills (a real session, five minutes)
+### 3. Optimization fallback and kill-switch drills (a real session, five minutes)
 
 | Drill | How | What must happen |
 |---|---|---|
-| Kill switch | unset `GROK_JEV` (or `enabled = false`) | identical behaviour to a build without Jev; `jev.jsonl` stops growing |
-| Dead endpoint | `base_url = "http://127.0.0.1:9"` | every decision is an `escalate` with a transport reason; approvals still work through the LLM classifier |
-| Missing credential | `unset JEV_API_KEY` | the seam is never wired (a warning says so); approvals unchanged |
-| Bad model | `model = "does-not-exist"` | `invalid`/`unavailable` reasons, then the normal path |
-| Jev-first | `shadow = false` | routine in-workspace calls are approved without the LLM classifier call; everything else still defers |
+| Kill switch | set `GROK_JEV=0` or `[jev] enabled = false`, then start a fresh process | the footer shows `jev:off`, no Jev client/request is made, and the normal optimization path continues; permission behavior is unchanged |
+| Dead endpoint or timeout | set `base_url = "http://127.0.0.1:9"` or use the existing timeout seam | the optimization attempt records a transport fallback and the existing model/effort/context path runs; no permission result is attributed to Jev |
+| Missing credential | `unset JEV_API_KEY` | the Jev seam is not wired, the normal optimization path runs, and harness permission behavior is unchanged |
+| Bad model | `model = "does-not-exist"` | `invalid`/`unavailable` is recorded, then the normal optimization path runs |
+| Lever disabled or shadow mode | disable the selected ladder lever, or set `shadow = true` | no optimization choice is applied; the session keeps its ordinary model/effort/context and permission paths |
 
-### 4. Deterministic end-to-end (the PTY harness)
+### 4. Independent harness permission check
 
-The repo ships a scripted PTY harness that drives the real TUI against a mock model server: `crates/codegen/distill-pager-pty-harness` with YAML scenarios under `tests/scenarios/` and a `ScriptedScenario` runner. Adding a scenario that puts the session in auto mode and asserts a `jev.decision` line is the deterministic version of layer 3; the scenario can also assert that no requests reach the mock model for a routine approval. (Layer 4 is not implemented yet — layer 3 plus the integration tests are what currently prove the seam.)
+Permission proof is separate from Jev proof. Use the existing Distill permission unit/PTY harness with Jev enabled and disabled, and assert the harness-owned result for an ordinary command and a risky command: the configured auto classifier/policy allows, blocks, or requests confirmation as appropriate, while YOLO follows its own harness policy. Repeat with `GROK_JEV=0` and confirm the permission result is identical and no Jev record is treated as an authorization decision. Do not use Jev logs, a Jev `allow`/`block`/`escalate` label, or absence of a model request as permission evidence.
+
+### 5. Deterministic optimization end-to-end (the PTY harness)
+
+The repo ships a scripted PTY harness that drives the real TUI against a mock model server: `crates/codegen/distill-pager-pty-harness` with YAML scenarios under `tests/scenarios/` and a `ScriptedScenario` runner. An optimization scenario may assert the recorded Jev decision, the applied model/effort or context choice, and the fallback path when Jev is unavailable. It must not assert that Jev approved a permission request or that a routine permission request disappeared. (The deterministic optimization layer is not implemented yet — the existing unit/integration tests prove the current seams.)
 
 ### What each layer proves
 
 | Layer | Proves |
 |---|---|
-| 1 | Contract, error taxonomy, thresholds, authority rules, flag-off inertness, the gate against the live API |
-| 2 | The wiring inside a real session: that the seam is reached, in auto mode, with your config |
-| 3 | That failure modes degrade to the existing path instead of failing open |
-| 4 | The same end-to-end behaviour, repeatably, in CI |
+| 1 | Contract, error taxonomy, thresholds, optimization fallback, flag-off inertness, and the gate against the live API |
+| 2 | The optimization wiring inside a real session, with your config |
+| 3 | That optimization failures degrade to the existing path instead of changing authorization |
+| 4 | That harness permission behavior is independent of Jev |
+| 5 | The same optimization behavior, repeatably, in CI |

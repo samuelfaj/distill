@@ -173,46 +173,75 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::LoginProvider(provider) => {
+        Effect::LoginProvider {
+            provider,
+            attempt_id,
+            cancel,
+        } => {
             let model_tx = acp_tx.clone();
             let (fallback_tx, fallback_rx) = tokio::sync::oneshot::channel::<String>();
             tasks.spawn(async move {
                 match fallback_rx.await {
-                    Ok(url) => TaskResult::ProviderLoginBrowserFallback { provider, url },
+                    Ok(url) => TaskResult::ProviderLoginBrowserFallback {
+                        provider,
+                        attempt_id,
+                        url,
+                    },
                     Err(_) => TaskResult::AuthCancelComplete,
                 }
             });
             tasks.spawn(async move {
-                let result = match provider {
-                    actions::LoginProvider::ChatGpt => {
-                        let (tx, mut rx) = tokio::sync::oneshot::channel();
-                        let login = distill_shell::codex_auth::run_tui_login(tx);
-                        tokio::pin!(login);
-                        let result = tokio::select! {
-                            result = &mut login => result,
-                            fallback = &mut rx => {
-                                if let Ok(fallback) = fallback {
-                                    let _ = fallback_tx.send(fallback.authorization_url);
-                                }
-                                login.await
+                let result = tokio::select! {
+                    result = async {
+                        match provider {
+                            actions::LoginProvider::ChatGpt => {
+                                let (tx, mut rx) = tokio::sync::oneshot::channel();
+                                let login = distill_shell::codex_auth::run_tui_login(tx);
+                                tokio::pin!(login);
+                                let result = tokio::select! {
+                                    result = &mut login => result,
+                                    fallback = &mut rx => {
+                                        if let Ok(fallback) = fallback {
+                                            let _ = fallback_tx.send(fallback.authorization_url);
+                                        }
+                                        login.await
+                                    }
+                                };
+                                result.map(|account| {
+                                    let label = account.email.as_deref().or(account.account_id.as_deref()).unwrap_or("your account");
+                                    format!("Connected ChatGPT as {label}. Use /model to select a ChatGPT model.")
+                                })
                             }
-                        };
-                        if result.is_ok() {
-                            if let Err(error) = distill_shell::cli_models::fetch_model_state(&model_tx).await {
-                                tracing::warn!(%error, "Could not refresh models after ChatGPT login");
+                            actions::LoginProvider::OpenRouter => {
+                                distill_shell::openrouter_auth::run_tui_login(fallback_tx)
+                                    .await
+                                    .map(|()| "Connected OpenRouter. Credentials are saved for future sessions. New sessions can use OpenRouter models and the utility model.".to_owned())
                             }
                         }
-                        result.map(|account| {
-                            let label = account.email.as_deref().or(account.account_id.as_deref()).unwrap_or("your account");
-                            format!("Connected ChatGPT as {label}. Use /model to select a ChatGPT model.")
-                        })
+                    } => {
+                        match result {
+                            Ok(message) if provider == actions::LoginProvider::ChatGpt => {
+                                if let Err(error) = distill_shell::cli_models::fetch_model_state(&model_tx).await {
+                                    tracing::warn!(%error, "Could not refresh models after ChatGPT login");
+                                }
+                                Ok(message)
+                            }
+                            Ok(message) => {
+                                if let Err(error) = distill_shell::cli_models::fetch_model_state(&model_tx).await {
+                                    tracing::warn!(%error, "Could not refresh models after OpenRouter login");
+                                }
+                                Ok(message)
+                            }
+                            Err(error) => Err(error),
+                        }
                     }
-                    actions::LoginProvider::OpenRouter => {
-                        distill_shell::openrouter_auth::run_tui_login(fallback_tx).await
-                            .map(|()| "Connected OpenRouter. Credentials are saved for future sessions. New sessions can use OpenRouter models and the utility model.".to_owned())
-                    }
-                }.map_err(|error| format!("{error:#}"));
-                TaskResult::ProviderLoginFinished { provider, result }
+                    _ = cancel.cancelled() => Err(anyhow::anyhow!("provider login cancelled")),
+                }.map_err(|error: anyhow::Error| format!("{error:#}"));
+                TaskResult::ProviderLoginFinished {
+                    provider,
+                    attempt_id,
+                    result,
+                }
             });
         }
         Effect::LogoutProvider(provider) => {

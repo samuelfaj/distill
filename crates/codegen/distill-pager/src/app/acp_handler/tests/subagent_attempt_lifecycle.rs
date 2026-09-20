@@ -56,6 +56,48 @@
         progress_update_for_attempt(child, "at1.one", duration_ms, tokens_used)
     }
 
+    #[test]
+    fn progress_notification_updates_visible_active_route_and_finish_clears_it() {
+        let mut app = make_app_with_agent("sess-parent");
+        let child = "child-active-route";
+        assert!(spawn(&mut app, child, "at1.one", 1));
+        let mut update = progress_update(child, 25, 100);
+        let XaiSessionUpdate::SubagentProgress {
+            active_model,
+            active_reasoning_effort,
+            ..
+        } = &mut update
+        else {
+            unreachable!()
+        };
+        *active_model = Some("lighter-model".to_owned());
+        *active_reasoning_effort = Some("low".to_owned());
+        assert!(sequenced(&mut app, update, 2));
+
+        let agent = test_agent(&app, AgentId(0));
+        let info = agent.subagent_sessions.get(child).unwrap();
+        assert_eq!(info.attempt.model.as_deref(), Some("grok-3"));
+        assert_eq!(info.attempt.active_model.as_deref(), Some("lighter-model"));
+        assert_eq!(
+            info.attempt.active_reasoning_effort.as_deref(),
+            Some("low")
+        );
+        let entry = agent.scrollback.get_by_id(info.attempt.scrollback_entry_id.unwrap()).unwrap();
+        let RenderBlock::Subagent(block) = &entry.block else { unreachable!() };
+        assert_eq!(block.active_model.as_deref(), Some("lighter-model"));
+        assert_eq!(block.active_reasoning_effort.as_deref(), Some("low"));
+
+        assert!(finish(&mut app, child, "at1.one", 3));
+        let agent = test_agent(&app, AgentId(0));
+        let info = agent.subagent_sessions.get(child).unwrap();
+        assert!(info.attempt.active_model.is_none());
+        assert!(info.attempt.active_reasoning_effort.is_none());
+        let entry = agent.scrollback.get_by_id(info.attempt.scrollback_entry_id.unwrap()).unwrap();
+        let RenderBlock::Subagent(block) = &entry.block else { unreachable!() };
+        assert!(block.active_model.is_none());
+        assert!(block.active_reasoning_effort.is_none());
+    }
+
     fn legacy_finish(app: &mut crate::app::app_view::AppView, child: &str, seq: u64) -> bool {
         sequenced(app, test_subagent_finished_for_attempt(child, None), seq)
     }

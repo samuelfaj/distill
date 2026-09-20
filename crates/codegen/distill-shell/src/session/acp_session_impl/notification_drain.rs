@@ -837,6 +837,8 @@ mod live_orphan_hook_tests {
             worktree_path: None,
             snapshot_ref: None,
             effective_model_id: None,
+            effort_auto: None,
+            model_routing_locked: None,
         }
     }
 

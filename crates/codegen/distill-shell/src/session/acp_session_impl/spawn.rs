@@ -249,6 +249,7 @@ pub(crate) async fn spawn_session_actor(
     session_model_id: acp::ModelId,
     session_yolo_mode: bool,
     session_auto_mode: bool,
+    session_jev_effort_auto: bool,
     session_client_identifier: Option<String>,
     inference_idle_timeout_secs: u64,
     max_retries: Option<u32>,
@@ -1741,6 +1742,8 @@ pub(crate) async fn spawn_session_actor(
     };
     drop(git_scan_span);
     let actor_build_span = tracing::info_span!("spawn.actor_build").entered();
+    let jev_effort_auto =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(session_jev_effort_auto));
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         status_wake: Default::default(),
         session_info: session_info.clone(),
@@ -1755,6 +1758,7 @@ pub(crate) async fn spawn_session_actor(
         auth_method_id,
         model_auth_memo: std::cell::RefCell::new(None),
         jev_ledger: std::cell::RefCell::new(Default::default()),
+        jev_effort_auto: jev_effort_auto.clone(),
         attribution_callback,
         auth_manager,
         is_chat_kind,
@@ -2117,8 +2121,6 @@ pub(crate) async fn spawn_session_actor(
         if session.permissions.is_auto_mode() {
             session.wire_permission_auto_llm_classifier().await;
         }
-        // A session that starts in always-approve gets the Jev brake right away.
-        session.wire_jev_veto_classifier(session.permissions.is_yolo_mode());
         session
             .agent
             .borrow()
@@ -2401,6 +2403,7 @@ pub(crate) async fn spawn_session_actor(
         tool_context: tool_context_for_handle,
         model_id: session_model_id,
         reasoning_effort: sampling_config.reasoning_effort,
+        jev_effort_auto,
         yolo_mode: session_yolo_mode,
         origin_client: origin_client.clone(),
         code_nav_enabled,
@@ -2549,6 +2552,7 @@ pub(crate) async fn spawn_session_on_thread(
     session_model_id: acp::ModelId,
     session_yolo_mode: bool,
     session_auto_mode: bool,
+    session_jev_effort_auto: bool,
     session_client_identifier: Option<String>,
     inference_idle_timeout_secs: u64,
     max_retries: Option<u32>,
@@ -2758,6 +2762,7 @@ pub(crate) async fn spawn_session_on_thread(
                     session_model_id,
                     session_yolo_mode,
                     session_auto_mode,
+                    session_jev_effort_auto,
                     session_client_identifier,
                     inference_idle_timeout_secs,
                     max_retries,

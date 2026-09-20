@@ -46,6 +46,11 @@ pub struct SubagentAttemptInfo {
     pub persona: Option<Arc<str>>,
     pub role: Option<Arc<str>>,
     pub model: Option<Arc<str>>,
+    /// Model selected for the latest dispatched round; `model` remains the
+    /// configured/spawn model.
+    pub active_model: Option<Arc<str>>,
+    /// Effort selected for the latest dispatched round.
+    pub active_reasoning_effort: Option<Arc<str>>,
     /// "new" or "resumed".
     pub context_source: Option<Arc<str>>,
     pub resumed_from: Option<Arc<str>>,
@@ -96,6 +101,9 @@ impl SubagentAttemptInfo {
     fn preserve_progress_from(&mut self, prior: &Self) {
         self.last_progress_at = prior.last_progress_at;
         self.duration_ms = prior.duration_ms;
+        self.active_model.clone_from(&prior.active_model);
+        self.active_reasoning_effort
+            .clone_from(&prior.active_reasoning_effort);
         self.turn_count = prior.turn_count;
         self.tool_call_count = prior.tool_call_count;
         self.tokens_used = prior.tokens_used;
@@ -516,6 +524,8 @@ pub(crate) mod test_support {
                 persona: None,
                 role: None,
                 model: None,
+                active_model: None,
+                active_reasoning_effort: None,
                 context_source: None,
                 resumed_from: None,
                 capability_mode: None,

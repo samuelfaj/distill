@@ -184,12 +184,29 @@ impl AgentView {
         } else {
             theme.accent_error
         };
-        let meta = info
+        let configured_meta = info
             .and_then(|s| s.attempt.model.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("")
             .to_string();
+        let active_meta = info.and_then(|s| {
+            match (
+                s.attempt.active_model.as_deref(),
+                s.attempt.active_reasoning_effort.as_deref(),
+            ) {
+                (Some(model), Some(effort)) => Some(format!("active {model} / {effort}")),
+                (Some(model), None) => Some(format!("active {model}")),
+                (None, Some(effort)) => Some(format!("active effort {effort}")),
+                (None, None) => None,
+            }
+        });
+        let meta = match (configured_meta.is_empty(), active_meta) {
+            (true, Some(active)) => active,
+            (false, Some(active)) => format!("configured {configured_meta} · {active}"),
+            (false, None) => format!("configured {configured_meta}"),
+            (true, None) => String::new(),
+        };
         let badge = info.map(format_context_badge).unwrap_or("");
         let activity_label: Option<String> = if is_running {
             self.subagent_views.get(child_sid).and_then(|cv| {

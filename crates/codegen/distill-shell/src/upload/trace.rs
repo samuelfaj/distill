@@ -2740,6 +2740,8 @@ pub(crate) mod tests {
             capability_mode: None,
             reasoning_effort: None,
             model_id: None,
+            effort_auto: None,
+            model_routing_locked: None,
             cwd: None,
             worktree_path: None,
             isolation_mode: None,

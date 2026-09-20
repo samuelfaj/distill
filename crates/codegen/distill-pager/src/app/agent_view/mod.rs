@@ -2295,6 +2295,8 @@ pub(crate) mod test_fixtures {
                 persona: None,
                 role: None,
                 model: None,
+                active_model: None,
+                active_reasoning_effort: None,
                 context_source: None,
                 resumed_from: None,
                 capability_mode: None,

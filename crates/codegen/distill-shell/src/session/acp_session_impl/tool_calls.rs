@@ -566,14 +566,6 @@ impl SessionActor {
                     .push_tool_result(ConversationItem::tool_result(call.id.clone(), message));
                 continue;
             }
-            // D4/P5 — validate the call before executing it. The gate can only
-            // hold a call back (never approve it): a flagged call does not run
-            // and the model is told to confirm with the user first.
-            if let Some(hold) = self.jev_validate_tool_call(&call).await {
-                self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(call.id.clone(), hold));
-                continue;
-            }
             self.emit_event(crate::session::events::Event::ToolStarted {
                 tool_name: call.function.name.clone(),
             });

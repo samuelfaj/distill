@@ -325,39 +325,21 @@ pub fn mode_flags<'a>(
     flags
 }
 
-/// The `jev` badge, always telling the user where the Jev decision path stands:
-///
-/// * `jev` (green, bold) — the seam can act and this session routes through it
-///   (auto mode).
-/// * `jev·shadow` (green) — same, but decisions are recorded and not applied.
-/// * `jev:idle` (dim) — the path is available, but the current permission mode
-///   bypasses the classifier (ask, always-approve), so Jev is not consulted.
-/// * `jev:off` (dim) — the path is off, or no credential is resolvable, so Jev
-///   cannot be used at all.
-///
-/// The badge is never hidden: a missing badge would leave the user guessing
-/// whether the path is working, which is exactly the confusion the states above
-/// exist to prevent.
+/// Jev availability is independent of the harness permission mode.
+/// The badge stays visible when disabled or missing a credential.
 pub fn jev_flag(
     status: distill_shell::jev::JevStatus,
-    permission: PermissionLabel,
     theme: &Theme,
 ) -> Option<PromptFlag<'static>> {
-    let routes_through_seam = permission == PermissionLabel::Auto;
-    let (text, color, bold) = if !status.active() {
-        (status.label(), Some(theme.gray), false)
-    } else if status.shadow {
-        (status.label(), Some(theme.accent_success), true)
-    } else if routes_through_seam {
-        // Green `accent_success` reads as "cheap decision path is live".
-        (status.label(), Some(theme.accent_success), true)
-    } else if permission == PermissionLabel::AlwaysApprove {
-        // Always-approve runs everything, so the path is a brake, not a gate.
-        ("jev·veto", Some(theme.accent_success), true)
-    } else {
-        ("jev:idle", Some(theme.gray), false)
-    };
-    Some(PromptFlag { text, color, bold })
+    Some(PromptFlag {
+        text: status.label(),
+        color: Some(if status.active() {
+            theme.accent_success
+        } else {
+            theme.gray
+        }),
+        bold: status.active(),
+    })
 }
 
 /// Optional info line rendered below the prompt text.

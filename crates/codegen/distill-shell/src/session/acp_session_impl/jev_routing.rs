@@ -42,29 +42,32 @@ const STEP_PLAN_CHARS: usize = 300;
 const STEP_EXCERPT_CHARS: usize = 120;
 
 impl SessionActor {
+    /// A child policy may opt out of Jev's model-changing lanes without
+    /// disabling an explicit `auto` effort choice on a pinned model.
+    fn child_model_routing_locked(&self) -> bool {
+        self.startup_hints.is_subagent && self.startup_hints.explicit_model_override
+    }
+
+    fn child_jev_routing_locked(&self) -> bool {
+        self.startup_hints.is_subagent
+            && (!self
+                .jev_effort_auto
+                .load(std::sync::atomic::Ordering::Relaxed)
+                || self.startup_hints.explicit_effort_override)
+    }
+
     /// Records, for the turn report, that this round runs on `cfg`'s model at
     /// `cfg`'s effort. Called once per model call, after the decision layer.
     pub(super) fn note_round_for_turn_report(&self, cfg: &SamplingConfig) {
-        let model = self.model_display_name(&cfg.model);
-        // A level the auto decision chose is reported as that level; otherwise
-        // the round's own effort value is what ran.
-        let effort = self
-            .jev_ledger
+        let effort = cfg
+            .reasoning_effort
+            .map(|effort| effort.as_ref().to_owned());
+        // The final sampler config is the source of truth. Do not consume a
+        // provisional effort label or a pre-floor route for status reporting.
+        crate::jev::note_route(Some(&cfg.model), effort.as_deref());
+        self.jev_ledger
             .borrow_mut()
-            .take_pending_effort_label()
-            .or_else(|| {
-                cfg.reasoning_effort
-                    .map(|effort| effort.as_ref().to_owned())
-            });
-        // The row shows what this micro-action runs with: the model the decision
-        // moved it to, plus the effort level in play. A round with nothing of its
-        // own to say (a side call) leaves the last routing up instead of
-        // blanking it.
-        let engine = self.jev_ledger.borrow().pending_route_model();
-        if engine.is_some() || effort.is_some() {
-            crate::jev::note_route(engine.as_deref(), effort.as_deref());
-        }
-        self.jev_ledger.borrow_mut().note_round(model, effort);
+            .note_round(self.model_display_name(&cfg.model), effort);
     }
 
     /// Attributes one delivered response's usage to the round noted last.
@@ -100,7 +103,11 @@ impl SessionActor {
             .collect();
         // The decisions taken inside this same turn window; the ledger's first
         // call is what anchors it, so the two halves describe one turn.
-        usage.jev_calls = crate::jev::turn_activity(window).decisions as u64;
+        usage.jev_calls = crate::jev::turn_activity_for_session(
+            self.session_info.id.0.as_ref(),
+            window,
+        )
+        .decisions as u64;
     }
 
     /// B2 (local): routes **this** model call to the configured local model when
@@ -111,6 +118,14 @@ impl SessionActor {
     /// cloud model: the entry must resolve to a usable endpoint, and the
     /// conversation must fit the local window with room for the answer.
     pub(super) async fn jev_route_micro_call(&self, cfg: &mut SamplingConfig) {
+        // A child with an explicit model or manual effort is deliberately
+        // outside Jev's utility-model lane. `jev_effort_auto` is seeded from
+        // that child policy, while forks/resumes that inherit auto remain
+        // eligible. This prevents a local utility from silently replacing an
+        // explicitly selected child dispatch.
+        if self.child_model_routing_locked() || self.child_jev_routing_locked() {
+            return;
+        }
         let local = crate::jev::local_config_cached();
         let Some(slug) = local
             .model
@@ -267,7 +282,7 @@ impl SessionActor {
         // round's model id travels with it too.
         self.jev_ledger
             .borrow_mut()
-            .set_pending_route(local_cfg.model.clone());
+            .set_pending_local_route(local_cfg.model.clone());
         *cfg = local_cfg;
     }
 
@@ -275,6 +290,9 @@ impl SessionActor {
     /// turn's effort floor: every later round runs at or above it, whatever the
     /// auto-effort decision would have chosen.
     pub(super) async fn jev_apply_effort_floor(&self, cfg: &mut SamplingConfig) {
+        if self.child_jev_routing_locked() {
+            return;
+        }
         let Some((level, value)) = self.jev_ledger.borrow().effort_floor().cloned() else {
             return;
         };
@@ -312,10 +330,18 @@ impl SessionActor {
     /// fits the session model's family; a provider with one model has nothing to
     /// choose, and the effort question is the whole decision it was before.
     pub(super) async fn jev_choose_model_and_effort(&self, cfg: &mut SamplingConfig) {
-        if !self.models_manager.current_effort_auto() {
+        if !self
+            .jev_effort_auto
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || self.startup_hints.explicit_effort_override
+        {
             return;
         }
-        let tier = self.light_tier(&cfg.model).await;
+        let tier = if self.child_model_routing_locked() {
+            LightTier::Unset
+        } else {
+            self.light_tier(&cfg.model).await
+        };
         if let LightTier::Refused(reason) = &tier {
             crate::jev::record_item(
                 JevLever::B2LightModel,
@@ -357,9 +383,7 @@ impl SessionActor {
             }
             _ => None,
         };
-        let Some(menu) = self.model_effort_menu(&cfg.model) else {
-            return;
-        };
+        let menu = self.model_effort_menu(&cfg.model).unwrap_or_default();
         // The effort menu both tiers are asked about: every id either model
         // offers. The application re-checks it against the model that won.
         let mut merged: Vec<(String, String)> = menu
@@ -376,8 +400,10 @@ impl SessionActor {
             }
         }
         let offered = routing::offered_effort_choices(&merged, |id| effort_rank_by_id(id));
-        if offered.len() < 2 {
-            // Nothing to choose between: one offered effort is not a decision.
+        if light.is_none() && offered.len() < 2 {
+            // Nothing to choose between, and no model tier to choose: this is
+            // not a decision. A light tier may still be selected even when its
+            // effort catalog has zero or one choice.
             return;
         }
         let model_name = self.model_display_name(&cfg.model);
@@ -404,9 +430,11 @@ impl SessionActor {
                 Err(error) => tracing::debug!(%error, "jev tiers: tier question not asked"),
             }
         }
-        match routing::micro_effort_questions(&question_model, &offered) {
-            Ok(effort_questions) => questions.extend(effort_questions),
-            Err(error) => tracing::debug!(%error, "jev tiers: effort question not asked"),
+        if offered.len() >= 2 {
+            match routing::micro_effort_questions(&question_model, &offered) {
+                Ok(effort_questions) => questions.extend(effort_questions),
+                Err(error) => tracing::debug!(%error, "jev tiers: effort question not asked"),
+            }
         }
         if questions.is_empty() {
             return;
@@ -419,15 +447,40 @@ impl SessionActor {
         self.apply_tier_pick(cfg, light.as_deref(), &answers).await;
         if light.is_some()
             && routing::compose_micro_tier(&answers).as_deref() == Some(routing::TIER_LIGHT_LABEL)
-            && let Some(effort) = crate::jev::tiers_cached()
-                .light_effort
-                .as_deref()
-                .and_then(|value| value.parse().ok())
         {
-            cfg.reasoning_effort = Some(effort);
-            self.jev_ledger
-                .borrow_mut()
-                .set_pending_effort_label(effort.to_string());
+            let configured = crate::jev::tiers_cached().light_effort;
+            match configured.as_deref().map(str::trim) {
+                None | Some("") | Some("auto") => {}
+                Some(raw) => match raw.parse::<ReasoningEffort>() {
+                    Ok(effort)
+                        if light.is_some_and(|light| {
+                            self.models_manager
+                                .model_supports_reasoning_effort_value(&light.id, effort)
+                        }) =>
+                    {
+                        cfg.reasoning_effort = Some(effort);
+                        self.jev_ledger
+                            .borrow_mut()
+                            .set_pending_effort_label(raw.to_owned());
+                    }
+                    Ok(_) | Err(_) => {
+                        crate::jev::record_item(
+                            JevLever::B2MicroEffort,
+                            "held",
+                            &format!(
+                                "light model does not offer configured effort `{raw}`; keeping its own default"
+                            ),
+                            None,
+                            None,
+                        );
+                    }
+                },
+            }
+            return;
+        }
+        if offered.len() < 2 {
+            // Tier selection was meaningful, but there was no effort choice to
+            // compose. Keep the selected model and its existing effort.
             return;
         }
         let picked = routing::compose_micro_effort(&answers, &offered);
@@ -482,9 +535,10 @@ impl SessionActor {
             return;
         };
         cfg.reasoning_effort = Some(level.value);
-        if let Some(model_id) = self
-            .models_manager
-            .model_for_effort(&cfg.model, level.value)
+        if !self.child_model_routing_locked()
+            && let Some(model_id) = self
+                .models_manager
+                .model_for_effort(&cfg.model, level.value)
         {
             cfg.model = model_id;
         }
@@ -539,9 +593,10 @@ impl SessionActor {
             self.client_identifier.clone(),
             cfg.max_retries,
         );
-        // The effort this round is running at travels with the call, and so does
-        // the model id the record must show.
-        light_cfg.reasoning_effort = cfg.reasoning_effort;
+        // The light model owns its own default effort. The selected light-tier
+        // setting, when configured, is validated against that model's menu by
+        // the caller after this replacement; never copy the hard model's
+        // effort blindly across models.
         self.jev_ledger
             .borrow_mut()
             .set_pending_route(light_cfg.model.clone());
@@ -740,6 +795,9 @@ impl SessionActor {
     /// Applied to the per-turn [`distill_sampling_types::SamplingConfig`] the
     /// sampler receives, so the downgrade never sticks to the session.
     pub(super) async fn jev_apply_model_tier(&self, cfg: &mut SamplingConfig) {
+        if self.child_model_routing_locked() || self.child_jev_routing_locked() {
+            return;
+        }
         let Some(request) = self.jev_last_human_request().await else {
             return;
         };
@@ -1230,9 +1288,28 @@ impl SessionActor {
         request: &mut ConversationRequest,
         error: &distill_sampler::SamplingErrorInfo,
     ) {
+        self.signals_handle().clear_active_dispatch();
         let session = self.chat_state_handle.get_sampling_config().await;
         request.model = session.as_ref().map(|cfg| cfg.model.clone());
         request.reasoning_effort = session.as_ref().and_then(|cfg| cfg.reasoning_effort);
+        // The replacement request is a new round from the report's point of
+        // view. Record it before the immediate resubmit so usage and the
+        // visible route follow the request that can actually succeed, rather
+        // than the rejected local utility call.
+        if let Some(session) = session.as_ref() {
+            // The local route may also have changed the sampler endpoint and
+            // backend, not only the request's model field. Refresh the live
+            // client config before the immediate resubmit so the fallback is
+            // actually sent through the session model's provider.
+            self.sampler_handle.update_config(session.clone());
+            self.note_round_for_turn_report(session);
+            self.signals_handle().set_active_dispatch(
+                session.model.clone(),
+                session
+                    .reasoning_effort
+                    .map(|effort| effort.as_ref().to_owned()),
+            );
+        }
         let reason = format!(
             "{}: {}",
             error.status_code.map_or_else(

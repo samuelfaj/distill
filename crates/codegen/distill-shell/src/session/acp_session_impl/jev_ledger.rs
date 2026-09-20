@@ -40,8 +40,14 @@ pub(crate) struct JevTurnLedger {
     /// round off the session model (the chat state still builds the request with
     /// the session id, and the request's own id wins on the wire).
     pending_route: Option<String>,
-    /// Calls this turn's validation gate held back, so it cannot wedge the turn.
-    holds: u32,
+    /// Whether the pending route is a utility/local request whose payload must
+    /// be rewritten for the routed endpoint. Model selection routes keep the
+    /// normal reasoning payload and only change the request model.
+    pending_route_local: bool,
+    /// Final effort to copy onto the request built before sampler preparation.
+    /// The outer option distinguishes "prepared and no effort" from "not
+    /// prepared".
+    pending_request_effort: Option<Option<distill_sampling_types::ReasoningEffort>>,
     /// Why the local model is off for the rest of this turn, after its endpoint
     /// refused a routed call (the routing is an optimization, never a single
     /// point of failure).
@@ -105,6 +111,24 @@ impl JevTurnLedger {
     /// Remembers the model id this round's request must name (a routed call).
     pub(crate) fn set_pending_route(&mut self, model: impl Into<String>) {
         self.pending_route = Some(model.into());
+        self.pending_route_local = false;
+    }
+
+    /// Records a local/utility route that needs the local payload rules.
+    pub(crate) fn set_pending_local_route(&mut self, model: impl Into<String>) {
+        self.pending_route = Some(model.into());
+        self.pending_route_local = true;
+    }
+
+    /// Replaces the final route while retaining whether it is a local utility
+    /// route. The final sampler config is the source of truth for the model.
+    pub(crate) fn set_pending_route_with_locality(
+        &mut self,
+        model: impl Into<String>,
+        local: bool,
+    ) {
+        self.pending_route = Some(model.into());
+        self.pending_route_local = local;
     }
 
     /// Remembers the palette level the decision chose for the next round.
@@ -153,16 +177,6 @@ impl JevTurnLedger {
         self.local_failed.clone()
     }
 
-    /// How many calls this turn's validation gate has held.
-    pub(crate) fn holds(&self) -> u32 {
-        self.holds
-    }
-
-    /// Counts one held call.
-    pub(crate) fn note_hold(&mut self) {
-        self.holds = self.holds.saturating_add(1);
-    }
-
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()
@@ -173,9 +187,30 @@ impl JevTurnLedger {
         self.pending_route.clone()
     }
 
+    pub(crate) fn pending_route_is_local(&self) -> bool {
+        self.pending_route_local
+    }
+
+    pub(crate) fn set_pending_request_effort(
+        &mut self,
+        effort: Option<distill_sampling_types::ReasoningEffort>,
+    ) {
+        self.pending_request_effort = Some(effort);
+    }
+
+    pub(crate) fn take_pending_request_effort(
+        &mut self,
+    ) -> Option<Option<distill_sampling_types::ReasoningEffort>> {
+        self.pending_request_effort.take()
+    }
+
     /// Takes the pending route, if any: the request carries it exactly once.
-    pub(crate) fn take_pending_route(&mut self) -> Option<String> {
-        self.pending_route.take()
+    pub(crate) fn take_pending_route(&mut self) -> Option<(String, bool)> {
+        self.pending_route.take().map(|model| {
+            let local = self.pending_route_local;
+            self.pending_route_local = false;
+            (model, local)
+        })
     }
 
     /// Drains the turn: rows biggest first, then the ledger is empty again.
@@ -184,7 +219,8 @@ impl JevTurnLedger {
         self.pending = None;
         self.started = None;
         self.pending_route = None;
-        self.holds = 0;
+        self.pending_route_local = false;
+        self.pending_request_effort = None;
         self.local_failed = None;
         self.pending_effort_label = None;
         self.effort_floor = None;
@@ -314,20 +350,6 @@ mod tests {
         );
     }
 
-    /// The hold budget resets with the turn, so one bad turn cannot silence a
-    /// later one — and it is what stops a systematic misfire from wedging work.
-    #[test]
-    fn holds_count_within_the_turn_and_reset_with_it() {
-        let mut ledger = JevTurnLedger::default();
-        assert_eq!(ledger.holds(), 0);
-        ledger.note_hold();
-        ledger.note_hold();
-        assert_eq!(ledger.holds(), 2);
-        ledger.note_round("m", None);
-        let _ = ledger.take_rows();
-        assert_eq!(ledger.holds(), 0, "a new turn starts with a full budget");
-    }
-
     /// A routed round hands its model id to the request exactly once.
     #[test]
     fn the_pending_route_is_consumed_once() {
@@ -335,13 +357,28 @@ mod tests {
         assert_eq!(ledger.take_pending_route(), None);
         ledger.set_pending_route("Qwen3.8-27B-4bit");
         assert_eq!(
-            ledger.take_pending_route().as_deref(),
-            Some("Qwen3.8-27B-4bit")
+            ledger.take_pending_route(),
+            Some(("Qwen3.8-27B-4bit".to_owned(), false))
         );
         assert_eq!(
             ledger.take_pending_route(),
             None,
             "the next round must not inherit the route"
+        );
+    }
+
+    #[test]
+    fn local_route_keeps_its_payload_kind_separate_from_model_selection() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.set_pending_local_route("local-model");
+        assert_eq!(
+            ledger.take_pending_route(),
+            Some(("local-model".to_owned(), true))
+        );
+        ledger.set_pending_route("worker-model");
+        assert_eq!(
+            ledger.take_pending_route(),
+            Some(("worker-model".to_owned(), false))
         );
     }
 

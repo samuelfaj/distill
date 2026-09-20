@@ -108,6 +108,8 @@ pub(super) fn make_subagent_info(child_sid: &str) -> SubagentInfo {
             persona: None,
             role: None,
             model: None,
+            active_model: None,
+            active_reasoning_effort: None,
             context_source: None,
             resumed_from: None,
             capability_mode: None,
@@ -1596,6 +1598,8 @@ pub(super) fn test_subagent_progress(
         context_usage_pct: 0,
         tools_used: vec![],
         error_count: 0,
+        active_model: None,
+        active_reasoning_effort: None,
     }
 }
 /// Snapshot of subagent state after SubagentSpawned for method-parity tests.

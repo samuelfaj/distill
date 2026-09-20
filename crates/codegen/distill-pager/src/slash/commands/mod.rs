@@ -85,6 +85,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
     vec![
         // The rows the dropdown shows before it scrolls.
         Arc::new(tutorial::TutorialCommand),
+        Arc::new(tutorial::OnboardingCommand),
         Arc::new(settings_cmd::SettingsCommand),
         Arc::new(dashboard::DashboardCommand),
         Arc::new(workflows::WorkflowsCommand),

@@ -40,7 +40,7 @@ mod request_classification;
 pub use request_classification::{AUTO_DENY_CONSECUTIVE_LIMIT, AUTO_DENY_TOTAL_LIMIT};
 use request_classification::{
     AUTO_DENY_GUIDANCE, ClassificationOutcome, ClassificationSource, DenialCounters,
-    JEV_VETO_GUIDANCE, RequestClassification, permission_mode_artifact_str,
+    RequestClassification, permission_mode_artifact_str,
 };
 
 /// Increments the in-flight permission-request counter on construction and decrements it on drop, so every `request()` return path stays balanced.
@@ -806,72 +806,8 @@ pub fn spawn_permission_manager_with_pin(
                     }
 
                     if yolo_mode && !shell_forced_prompt && !hook_forced_prompt {
-                        // Jev brake (`yolo_veto` lever): in this mode the installed
-                        // classifier is a veto check, not a gatekeeper. It may only
-                        // refuse a confident catastrophe — anything else, including an
-                        // unreachable service, proceeds exactly as YOLO did, so the
-                        // mode never starts prompting.
-                        if let Some(ref clf) = auto_classifier {
-                            use crate::permission::auto_mode::ClassifierContext;
-                            let classify = clf.classify(
-                                &tool_name,
-                                &access,
-                                access_detail.as_deref(),
-                                ClassifierContext {
-                                    turns: classifier_turns.clone(),
-                                    project_instructions: project_instructions.clone(),
-                                    security_findings: Default::default(),
-                                },
-                            );
-                            let brake = tokio::select! {
-                                outcome = classify => Some(outcome),
-                                _ = respond_to.closed() => None,
-                            };
-                            match brake {
-                                Some(outcome) if outcome.verdict() == ClassifierVerdict::Block => {
-                                    let detail = outcome
-                                        .reason()
-                                        .unwrap_or("the local safety check refused this action")
-                                        .trim_end_matches('.')
-                                        .to_owned();
-                                    tracing::info!(
-                                        tool = %tool_name,
-                                        detail,
-                                        "yolo: jev brake refused the call"
-                                    );
-                                    let decision = Decision::PolicyDeny(format!(
-                                        "Blocked by the local safety check: {detail}. {JEV_VETO_GUIDANCE}"
-                                    ));
-                                    let event = emit_event(
-                                        &decision,
-                                        false,
-                                        false,
-                                        None,
-                                        Some(reasons::JEV_VETO_DENY),
-                                    );
-                                    let _ = respond_to.send(PermissionResolution {
-                                        decision,
-                                        event: Some(event),
-                                    });
-                                    continue;
-                                }
-                                None => {
-                                    tracing::info!(
-                                        tool = %tool_name,
-                                        "permission requester gone; veto check abandoned"
-                                    );
-                                    emit_event(
-                                        &Decision::Cancelled,
-                                        false,
-                                        false,
-                                        None,
-                                        Some(reasons::REQUESTER_GONE),
-                                    );
-                                    continue;
-                                }
-                                Some(_) => {}
-                            }
-                        }
+                        // YOLO bypasses classifiers. Explicit harness policy and hooks
+                        // have already been evaluated above.
                         tracing::debug!("YOLO mode: auto-approving permission request");
                         let decision = Decision::Allow;
                         let event = emit_event(&decision, true, false, None, Some(reasons::YOLO));
@@ -1067,19 +1003,11 @@ pub fn spawn_permission_manager_with_pin(
                                             tool = %tool_name,
                                             "auto mode: classifier allow"
                                         );
-                                        // Plan §1.6/I-4: a Jev-provenance allow must never
-                                        // clear the consecutive-denial ratchet — only the
-                                        // incumbent paths may, so a steered classifier
-                                        // cannot disable the automatic escalation.
-                                        let jev_allow =
-                                            outcome.as_ref().is_some_and(|o| o.is_jev());
-                                        if !jev_allow {
-                                            auto_consecutive_denials = 0;
-                                            denials.set(DenialCounters {
-                                                consecutive: auto_consecutive_denials,
-                                                total: auto_total_denials,
-                                            });
-                                        }
+                                        auto_consecutive_denials = 0;
+                                        denials.set(DenialCounters {
+                                            consecutive: auto_consecutive_denials,
+                                            total: auto_total_denials,
+                                        });
                                         if !hook_forced_prompt {
                                             let decision = Decision::Allow;
                                             let event = emit_event(
@@ -6594,10 +6522,30 @@ mod tests {
                 mgr.set_yolo_mode(true);
                 assert!(mgr.is_yolo_mode());
                 assert!(!mgr.is_auto_mode(), "enabling yolo clears auto");
-                let d = decide(&mgr, AccessKind::Bash("rm -rf /".into()), dummy_update).await;
+                // A child shares the same mode and classifier as its parent.
+                let child = mgr.clone();
+                let d = decide(
+                    &child,
+                    AccessKind::Bash("rm -rf /".into()),
+                    dummy_update.clone(),
+                )
+                .await;
                 assert!(
                     matches!(d, Decision::Allow),
                     "yolo must allow without classifier, got {d:?}"
+                );
+
+                mgr.set_auto_mode(true);
+                assert!(child.is_auto_mode() && !child.is_yolo_mode());
+                let d = decide(
+                    &child,
+                    AccessKind::Bash("git push origin main".into()),
+                    dummy_update,
+                )
+                .await;
+                assert!(
+                    matches!(d, Decision::PolicyDeny(_)),
+                    "returning to auto must restore the harness classifier, got {d:?}"
                 );
             })
             .await;

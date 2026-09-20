@@ -125,6 +125,13 @@ impl ContentController {
         let mut sandbox = TestSandbox::builder().mock_url(server.url()).build();
         // Keep unrelated autocomplete work out of PTY timing assertions.
         sandbox.set_env("GROK_PROMPT_SUGGESTIONS", "false");
+        // Existing content-backed PTYs assert their pre-onboarding Welcome/session flow. The
+        // onboarding integration test explicitly overwrites this one fixture field to false.
+        std::fs::write(
+            sandbox.distill_home().join("config.toml"),
+            "[ui]\nonboarding_completed = true\n",
+        )
+        .context("seed completed onboarding for content-backed PTY fixtures")?;
 
         Ok(Self { server, sandbox })
     }

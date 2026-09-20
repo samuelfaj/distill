@@ -254,6 +254,15 @@ pub struct SessionSignals {
     /// Primary model ID (the most recently used or initially set model)
     #[serde(default)]
     pub primary_model_id: Option<String>,
+    /// Model selected for the currently dispatched round. This is a live UI
+    /// hint, not durable session metadata; it is intentionally omitted from
+    /// persisted signal snapshots.
+    #[serde(skip)]
+    pub active_model_id: Option<String>,
+    /// Effort selected for the currently dispatched round. See
+    /// `active_model_id` for the lifetime and persistence contract.
+    #[serde(skip)]
+    pub active_reasoning_effort: Option<String>,
 
     // === Edit & Retry ===
     /// Number of edit-and-retry actions (user rewinds and submits a different prompt)
@@ -503,6 +512,11 @@ pub enum SignalEvent {
     SetPrimaryModel(String),
     /// Served checkpoint of the current turn's latest model response.
     RecordModelFingerprint(String),
+    /// Set or clear the live dispatch attribution used by subagent progress.
+    SetActiveDispatch {
+        model_id: Option<String>,
+        reasoning_effort: Option<String>,
+    },
 
     // === Latency Events ===
     RecordLatency {
@@ -793,6 +807,28 @@ impl SessionSignalsHandle {
 
     pub fn set_primary_model(&self, model_id: impl Into<String>) {
         let _ = self.tx.send(SignalEvent::SetPrimaryModel(model_id.into()));
+    }
+
+    /// Publish the final per-round route after Jev chooser/tier/floor
+    /// adjustments. This travels through the existing progress snapshot path.
+    pub fn set_active_dispatch(
+        &self,
+        model_id: impl Into<String>,
+        reasoning_effort: Option<impl Into<String>>,
+    ) {
+        let _ = self.tx.send(SignalEvent::SetActiveDispatch {
+            model_id: Some(model_id.into()),
+            reasoning_effort: reasoning_effort.map(Into::into),
+        });
+    }
+
+    /// Clear live route attribution after fallback, cancellation, or
+    /// completion so a later progress tick cannot show a stale round.
+    pub fn clear_active_dispatch(&self) {
+        let _ = self.tx.send(SignalEvent::SetActiveDispatch {
+            model_id: None,
+            reasoning_effort: None,
+        });
     }
 
     // === Seeding Methods ===
@@ -1249,6 +1285,13 @@ impl SessionSignalsActor {
                     if self.models_set.insert(model_id.clone()) {
                         self.signals.models_used.push(model_id);
                     }
+                }
+                SignalEvent::SetActiveDispatch {
+                    model_id,
+                    reasoning_effort,
+                } => {
+                    self.signals.active_model_id = model_id;
+                    self.signals.active_reasoning_effort = reasoning_effort;
                 }
 
                 // === Latency Events ===

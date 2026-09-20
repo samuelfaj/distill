@@ -55,6 +55,10 @@ pub struct SubagentBlock {
     pub role: Option<String>,
     /// Effective model ID used by the subagent, if available.
     pub model: Option<String>,
+    /// Model actually used for the latest live round.
+    pub active_model: Option<String>,
+    /// Effort actually used for the latest live round.
+    pub active_reasoning_effort: Option<String>,
     /// Whether the subagent was launched in background mode.
     pub is_background: bool,
     /// Lifecycle kind.
@@ -82,6 +86,8 @@ impl SubagentBlock {
             persona,
             role,
             model,
+            active_model: None,
+            active_reasoning_effort: None,
             is_background,
             kind: SubagentBlockKind::Started,
             activity_label: None,
@@ -101,6 +107,8 @@ impl SubagentBlock {
             persona: None,
             role: None,
             model: None,
+            active_model: None,
+            active_reasoning_effort: None,
             is_background: true,
             kind: SubagentBlockKind::Completed { elapsed },
             activity_label: None,
@@ -121,6 +129,8 @@ impl SubagentBlock {
             persona: None,
             role: None,
             model: None,
+            active_model: None,
+            active_reasoning_effort: None,
             is_background: true,
             kind: SubagentBlockKind::Failed { elapsed, error },
             activity_label: None,
@@ -140,6 +150,8 @@ impl SubagentBlock {
             persona: None,
             role: None,
             model: None,
+            active_model: None,
+            active_reasoning_effort: None,
             is_background: true,
             kind: SubagentBlockKind::Cancelled { elapsed },
             activity_label: None,
@@ -189,8 +201,17 @@ impl BlockContent for SubagentBlock {
                     self.role.as_deref(),
                     self.model.as_deref(),
                 );
+                let active_suffix = match (
+                    self.active_model.as_deref(),
+                    self.active_reasoning_effort.as_deref(),
+                ) {
+                    (Some(model), Some(effort)) => format!(" · active {model} / {effort}"),
+                    (Some(model), None) => format!(" · active {model}"),
+                    (None, Some(effort)) => format!(" · active effort {effort}"),
+                    (None, None) => String::new(),
+                };
                 // "Subagent running: " / "Subagent started: " = 18 chars
-                let overhead = 18 + meta.width() + activity_suffix.width();
+                let overhead = 18 + meta.width() + activity_suffix.width() + active_suffix.width();
                 let desc = quoted_desc(&self.description, w.saturating_sub(overhead));
                 let mut spans = vec![
                     Span::styled("Subagent ", bold),
@@ -201,6 +222,9 @@ impl BlockContent for SubagentBlock {
                     spans.push(Span::styled(activity_suffix, muted));
                 }
                 spans.push(Span::styled(meta, muted));
+                if !active_suffix.is_empty() {
+                    spans.push(Span::styled(active_suffix, muted));
+                }
                 Line::from(spans)
             }
             // Completed: Subagent completed in Xs: "description"

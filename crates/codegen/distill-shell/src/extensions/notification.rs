@@ -830,6 +830,14 @@ pub enum SessionUpdate {
         tools_used: Vec<String>,
         /// Number of errors encountered so far.
         error_count: u32,
+        /// Model selected for the currently dispatched round after all Jev
+        /// routing adjustments. Optional for old clients and terminal races.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_model: Option<String>,
+        /// Effort selected for the currently dispatched round after all Jev
+        /// routing adjustments. Optional for old clients and terminal races.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_reasoning_effort: Option<String>,
     },
     /// A subagent session has finished (success, failure, or cancellation).
     ///
@@ -1678,6 +1686,8 @@ mod tests {
             context_usage_pct: 35,
             tools_used: vec!["bash".into(), "grep".into()],
             error_count: 1,
+            active_model: None,
+            active_reasoning_effort: None,
         };
         let json = serde_json::to_value(&update).unwrap();
         assert_eq!(
@@ -1725,6 +1735,8 @@ mod tests {
             context_usage_pct: 1,
             tools_used: vec![],
             error_count: 0,
+            active_model: None,
+            active_reasoning_effort: None,
         };
         let json_str = serde_json::to_string(&update).unwrap();
         let parsed: SessionUpdate = serde_json::from_str(&json_str).unwrap();
@@ -1767,6 +1779,8 @@ mod tests {
             context_usage_pct: 0,
             tools_used: vec![],
             error_count: 0,
+            active_model: None,
+            active_reasoning_effort: None,
         })
         .unwrap();
         let finished = serde_json::to_value(SessionUpdate::SubagentFinished {

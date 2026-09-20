@@ -453,6 +453,8 @@ fn base_meta() -> SubagentMeta {
         worktree_path: None,
         snapshot_ref: None,
         effective_model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     }
 }
 /// Minimal completed-status meta for the snapshot-ref persistence tests.
@@ -1011,6 +1013,8 @@ fn resume_source_worktree_reuse() {
         subagent_type: "general-purpose".into(),
         persona: None,
         model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     };
     let worktree = source_with_worktree.worktree_path.clone();
     assert_eq!(
@@ -1029,6 +1033,8 @@ fn resume_source_worktree_reuse() {
         subagent_type: "general-purpose".into(),
         persona: None,
         model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     };
     assert!(
             source_without_worktree.worktree_path.is_none(),
@@ -1073,6 +1079,8 @@ fn resume_inherited_cwd_requires_existing_non_worktree_dir() {
         subagent_type: "general-purpose".into(),
         persona: None,
         model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     };
     assert_eq!(
             resume_inherited_cwd(Some(&present)),
@@ -1104,6 +1112,8 @@ fn select_override_cwd_resume_never_falls_through_to_request_cwd() {
         subagent_type: "general-purpose".into(),
         persona: None,
         model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     };
     assert_eq!(select_override_cwd(Some(&source), Some("/x")), None);
 }
@@ -1903,6 +1913,8 @@ fn resume_rejects_conflicting_subagent_type() {
         subagent_type: "general-purpose".into(),
         persona: None,
         model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     };
     let request_type = "explore";
     assert_ne!(
@@ -1921,6 +1933,8 @@ fn resume_rejects_conflicting_persona() {
         subagent_type: "general-purpose".into(),
         persona: Some("implementer".into()),
         model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     };
     let request_persona = Some("reviewer".to_string());
     let conflict = request_persona.as_deref() != source.persona.as_deref();
@@ -1937,6 +1951,8 @@ fn resume_allows_matching_identity() {
         subagent_type: "general-purpose".into(),
         persona: Some("implementer".into()),
         model_id: Some("grok-3".into()),
+        effort_auto: None,
+        model_routing_locked: None,
     };
     assert_eq!("general-purpose", source.subagent_type);
     assert_eq!(Some("implementer"), source.persona.as_deref());
@@ -1953,6 +1969,8 @@ fn resume_identity_does_not_gate_on_model() {
         subagent_type: "general-purpose".into(),
         persona: None,
         model_id: Some("grok-3".into()),
+        effort_auto: None,
+        model_routing_locked: None,
     };
     assert!(
             distill_subagent_resolution::validate_resume_identity(
@@ -1985,6 +2003,8 @@ fn durable_meta_roundtrips_effective_model_id() {
         turns: Some(1),
         child_cwd: Some("/workspace".into()),
         effective_model_id: Some("grok-3".into()),
+        effort_auto: Some(true),
+        model_routing_locked: Some(true),
         ..base_meta()
     };
     write_subagent_meta(&dir, &meta);
@@ -1995,6 +2015,44 @@ fn durable_meta_roundtrips_effective_model_id() {
             Some("grok-3"),
             "model ID should round-trip through meta.json"
         );
+    assert_eq!(loaded.effort_auto, Some(true));
+    assert_eq!(loaded.model_routing_locked, Some(true));
+    let source = durable_resume_source_from_meta(&dir.join("meta.json"), "parent");
+    let source = source.expect("durable policy source");
+    assert_eq!(source.effort_auto, Some(true));
+    assert_eq!(source.model_routing_locked, Some(true));
+    assert_eq!(source.model_id.as_deref(), Some("grok-3"));
+    let request = auto_wake_test_request("resume-policy");
+    let runtime = EffectiveRuntimeConfig::default();
+    assert!(
+        crate::agent::subagent::resolve_child_jev_effort_auto(
+            true,
+            &request,
+            &runtime,
+            Some(&source),
+        ),
+        "a resumed child must preserve its persisted auto policy"
+    );
+    let mut caller_override = request.clone();
+    caller_override.runtime_overrides.model = Some("caller-model".into());
+    caller_override.runtime_overrides.reasoning_effort = Some("low".into());
+    assert!(!crate::agent::subagent::resolve_child_jev_effort_auto(
+        true,
+        &caller_override,
+        &runtime,
+        Some(&source),
+    ));
+    let mut fork = request.clone();
+    fork.fork_context = true;
+    assert!(
+        crate::agent::subagent::resolve_child_jev_effort_auto(
+            true,
+            &fork,
+            &runtime,
+            None,
+        ),
+        "a fork without an override must inherit the parent policy"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 #[test]
@@ -3273,6 +3331,10 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
             let signals = SessionSignalsHandle::new();
             signals.increment_turn();
             signals.record_tool_call("bash");
+            signals.set_active_dispatch(
+                "worker-model".to_owned(),
+                Some("low".to_owned()),
+            );
             tokio::task::yield_now().await;
             let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
             let cancel = tokio_util::sync::CancellationToken::new();
@@ -3303,6 +3365,8 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
                 parent_session_id,
                 turn_count,
                 tool_call_count,
+                active_model,
+                active_reasoning_effort,
                 ..
             } = notification.update else {
                 panic!("expected SubagentProgress, got {:?}", notification.update);
@@ -3311,6 +3375,8 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
             assert_eq!(parent_session_id, "parent-1");
             assert_eq!(turn_count, 1);
             assert_eq!(tool_call_count, 1);
+            assert_eq!(active_model.as_deref(), Some("worker-model"));
+            assert_eq!(active_reasoning_effort.as_deref(), Some("low"));
         })
         .await;
 }

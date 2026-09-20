@@ -32,7 +32,7 @@ use distill_agent::config::{McpInheritance, ModelOverride, PermissionMode};
 use distill_hunk_tracker::HunkTrackerHandle;
 use distill_sampling_types::conversation::ConversationItem;
 use distill_session_events::types::CancellationCategory;
-use distill_subagent_resolution::ResumeSourceData;
+use distill_subagent_resolution::{EffectiveRuntimeConfig, ResumeSourceData};
 use distill_tools::implementations::distill::monitor::types::MonitorEventBuffer;
 use distill_tools::implementations::distill::task::types::*;
 use distill_tools::types::tool::ToolKind;
@@ -204,6 +204,9 @@ pub(crate) struct SubagentSpawnContext {
     pub alpha_test_key: Option<String>,
     pub auth_method_id: acp::AuthMethodId,
     pub model_id: acp::ModelId,
+    /// Parent session's Jev auto-routing choice, captured per session rather
+    /// than rereading the process-wide models manager in the child.
+    pub parent_effort_auto: bool,
     pub auth: Option<distill_login::GrokAuth>,
     pub parent_cwd: PathBuf,
     pub parent_session_id: String,
@@ -385,6 +388,45 @@ pub(crate) struct SubagentSpawnContext {
     /// See [`crate::config::SubagentsConfig::resolve_sampling_limit`].
     pub subagent_sampling_semaphore: Arc<tokio::sync::Semaphore>,
 }
+
+/// Resolve the child's Jev effort policy without dropping durable parent/source
+/// policy on fork or resume. A missing legacy resume field deliberately falls
+/// back to manual routing. The request/source types carry the policy inputs so
+/// this cannot grow a boolean-argument matrix as spawn modes evolve.
+pub(crate) fn resolve_child_jev_effort_auto(
+    parent_auto: bool,
+    request: &SubagentRequest,
+    effective_runtime: &EffectiveRuntimeConfig,
+    resume_source: Option<&ResumeSourceData>,
+) -> bool {
+    let requested_effort = request.runtime_overrides.reasoning_effort.as_deref();
+    let explicit_effort = requested_effort
+        .or(effective_runtime.reasoning_effort.as_deref())
+        .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
+    let explicit_auto = requested_effort.is_some_and(|raw| raw.eq_ignore_ascii_case("auto"));
+    let explicit_model = request.runtime_overrides.model.is_some()
+        || (!request.fork_context && resume_source.is_none() && effective_runtime.model.is_some());
+    if explicit_effort {
+        return false;
+    }
+    // `model=<id>, reasoning_effort=auto` pins the model but explicitly opts
+    // back into Jev's per-round effort choice. A model-only override, without
+    // that explicit auto choice, remains manual below.
+    if explicit_auto {
+        return true;
+    }
+    if explicit_model {
+        return false;
+    }
+    if let Some(source) = resume_source {
+        return source.effort_auto.unwrap_or(false);
+    }
+    if request.fork_context {
+        return parent_auto;
+    }
+    parent_auto
+}
+
 const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<SubagentSpawnContext>()
@@ -1453,6 +1495,8 @@ fn durable_resume_source_from_meta(
         subagent_type: meta.subagent_type,
         persona: meta.persona,
         model_id: meta.effective_model_id,
+        effort_auto: meta.effort_auto,
+        model_routing_locked: meta.model_routing_locked,
     })
 }
 /// Resolve the MCP pool a child subagent should import from its parent. Inheritance applies to **every** agent source (built-in, user, project, and plugin).
@@ -1876,7 +1920,7 @@ fn fail_subagent(
         duration_ms,
         ..SubagentResult::failed(subagent_id, &*child_session_id.0, error)
     };
-    persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx);
+    persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx, None, None);
     result
 }
 /// Why an unpromoted child is being torn down.
@@ -1929,7 +1973,7 @@ async fn cancel_pending_shell_child(
     let fate = UnpromotedResourceFate::from_thread_exit(thread_exited);
     let result = disposition.result(subagent_id, child_session_id.0.as_ref(), duration_ms);
     if may_persist_terminal {
-        persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx);
+        persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx, None, None);
     }
     if !fate.should_release() {
         tracing::warn!(
@@ -1954,13 +1998,17 @@ async fn cancel_pending_shell_child(
     result
 }
 const PROGRESS_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-/// Change signature for the progress-publisher dedupe: `(turn_count, tool_call_count, context_usage_pct, error_count, tokens_used)`.
-/// `tokens_used` is part of the signature so rising child token spend always publishes a tick. Goal token accounting (subagent records, live totals, and the turn-end budget check) keys off prompt token movement.
-/// That movement can climb while turn/tool counts and the coarse context-usage *percent* bucket stay flat.
-type ProgressSignature = (u32, u32, u8, u32, u64);
+/// Change signature for the progress-publisher dedupe:
+/// `(turn_count, tool_call_count, context_usage_pct, error_count, tokens_used,
+/// active_model, active_reasoning_effort)`.
+/// `tokens_used` is part of the signature so rising child token spend always
+/// publishes a tick. The active route is part of it too: a round can switch
+/// model/effort without changing counters, and that change must reach the
+/// parent's list and detail views immediately.
+type ProgressSignature = (u32, u32, u8, u32, u64, Option<String>, Option<String>);
 fn progress_tick_should_emit(
-    prev: ProgressSignature,
-    cur: ProgressSignature,
+    prev: &ProgressSignature,
+    cur: &ProgressSignature,
     heartbeat_due: bool,
 ) -> bool {
     cur != prev || heartbeat_due
@@ -1995,7 +2043,7 @@ pub(crate) fn spawn_progress_publisher(
     tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let mut interval = tokio::time::interval(PROGRESS_PUBLISH_INTERVAL);
         interval.tick().await;
-        let mut last_signature: ProgressSignature = (0, 0, 0, 0, 0);
+        let mut last_signature: ProgressSignature = (0, 0, 0, 0, 0, None, None);
         let mut last_emit_at = tokio::time::Instant::now();
         let heartbeat_max = tokio::time::Duration::from_secs(8);
         loop {
@@ -2013,9 +2061,11 @@ pub(crate) fn spawn_progress_publisher(
                 signals.context_window_usage,
                 signals.error_count,
                 signals.context_tokens_used,
+                signals.active_model_id.clone(),
+                signals.active_reasoning_effort.clone(),
             );
             let heartbeat_due = last_emit_at.elapsed() >= heartbeat_max;
-            if !progress_tick_should_emit(last_signature, sig, heartbeat_due) {
+            if !progress_tick_should_emit(&last_signature, &sig, heartbeat_due) {
                 continue;
             }
             last_signature = sig;
@@ -2034,6 +2084,8 @@ pub(crate) fn spawn_progress_publisher(
                 context_usage_pct: signals.context_window_usage,
                 tools_used: signals.tools_used,
                 error_count: signals.error_count,
+                active_model: signals.active_model_id,
+                active_reasoning_effort: signals.active_reasoning_effort,
             };
             let notification = SessionNotification {
                 session_id: acp::SessionId::new(parent_session_id.clone()),
@@ -2057,19 +2109,35 @@ pub(crate) fn spawn_progress_publisher(
 #[cfg(test)]
 mod progress_publisher_tests {
     use super::{ProgressSignature, progress_tick_should_emit};
-    const BASE: ProgressSignature = (3, 7, 12, 0, 30_000);
     #[test]
     fn token_only_change_emits() {
-        let cur: ProgressSignature = (3, 7, 12, 0, 45_000);
-        assert!(progress_tick_should_emit(BASE, cur, false));
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        let cur: ProgressSignature = (3, 7, 12, 0, 45_000, None, None);
+        assert!(progress_tick_should_emit(&base, &cur, false));
     }
     #[test]
     fn unchanged_without_heartbeat_skips() {
-        assert!(!progress_tick_should_emit(BASE, BASE, false));
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        assert!(!progress_tick_should_emit(&base, &base, false));
     }
     #[test]
     fn heartbeat_forces_emit_when_unchanged() {
-        assert!(progress_tick_should_emit(BASE, BASE, true));
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        assert!(progress_tick_should_emit(&base, &base, true));
+    }
+    #[test]
+    fn dispatch_only_change_emits() {
+        let previous: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        let current = (
+            3,
+            7,
+            12,
+            0,
+            30_000,
+            Some("worker-model".to_owned()),
+            Some("low".to_owned()),
+        );
+        assert!(progress_tick_should_emit(&previous, &current, false));
     }
 }
 /// Metadata stored as `meta.json` in the child session directory.
@@ -2129,6 +2197,15 @@ pub(crate) struct SubagentMeta {
     /// Persisted for durable `resume_from` identity validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_model_id: Option<String>,
+    /// Jev effort-routing policy used by this child. Optional for legacy
+    /// metadata; absent means the conservative manual policy on resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_auto: Option<bool>,
+    /// True when this child/source explicitly pinned its model for Jev
+    /// routing. Optional for legacy metadata; absence is the conservative
+    /// unlocked policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_routing_locked: Option<bool>,
 }
 /// Canonical subagent metadata for GCS persistence (`subagent.json`).
 /// Uploaded to `{session_id}/subagent.json` in GCS and optionally mirrored locally.
@@ -2161,6 +2238,10 @@ pub(crate) struct SubagentSessionMetadata {
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_auto: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_routing_locked: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2223,6 +2304,8 @@ impl SubagentSessionMetadata {
             capability_mode: capability_mode.map(str::to_string),
             reasoning_effort: reasoning_effort.map(str::to_string),
             model_id: model_id.map(str::to_string),
+            effort_auto: meta.effort_auto,
+            model_routing_locked: meta.model_routing_locked,
             cwd: cwd.map(str::to_string),
             worktree_path: worktree_path.map(str::to_string),
             isolation_mode: isolation_mode.map(str::to_string),
@@ -2344,7 +2427,13 @@ fn persist_subagent_output(dir: &Path, result: &SubagentResult) -> Option<PathBu
     (result.success && !result.output.is_empty() && write_subagent_output(dir, &result.output))
         .then(|| dir.to_path_buf())
 }
-fn persist_subagent_completion(dir: &Path, result: &SubagentResult, gcs_ctx: &GcsUploadContext) {
+fn persist_subagent_completion(
+    dir: &Path,
+    result: &SubagentResult,
+    gcs_ctx: &GcsUploadContext,
+    effective_model_id: Option<&str>,
+    effort_auto: Option<bool>,
+) {
     let meta_path = dir.join("meta.json");
     if let Ok(data) = std::fs::read_to_string(&meta_path)
         && let Ok(mut meta) = serde_json::from_str::<SubagentMeta>(&data)
@@ -2355,6 +2444,18 @@ fn persist_subagent_completion(dir: &Path, result: &SubagentResult, gcs_ctx: &Gc
         meta.tool_calls = Some(result.tool_calls);
         meta.turns = Some(result.turns);
         meta.error = result.error.clone();
+        if let Some(model_id) = effective_model_id {
+            if meta.effective_model_id.as_deref() != Some(model_id) {
+                // A live model switch is an explicit child policy even when
+                // the source was initially auto-routed. Preserve that intent
+                // for a later resume/fork.
+                meta.model_routing_locked = Some(true);
+            }
+            meta.effective_model_id = Some(model_id.to_owned());
+        }
+        if let Some(auto) = effort_auto {
+            meta.effort_auto = Some(auto);
+        }
         write_subagent_meta(dir, &meta);
         if let (Some(bucket), Some(method)) = (&gcs_ctx.bucket_url, &gcs_ctx.upload_method) {
             let gcs_meta = SubagentSessionMetadata::from_meta(

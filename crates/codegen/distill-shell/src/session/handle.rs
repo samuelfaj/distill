@@ -104,6 +104,9 @@ pub struct SessionHandle {
     /// Per-session tracking prevents cross-client contamination in leader mode where `MvpAgent.current_model_id` is shared mutable state.
     pub model_id: acp::ModelId,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Whether Jev may choose effort/model routing for this session. This is
+    /// session-local even though the remote model catalog is shared.
+    pub jev_effort_auto: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// YOLO (auto-approve) mode for this session.
     /// Per-session tracking prevents cross-client contamination in leader mode where one client enabling YOLO could affect another client's sessions.
     pub yolo_mode: bool,

@@ -56,8 +56,16 @@ pub struct ResumeSourceData {
     /// Used by `validate_resume_identity` to check persona match.
     pub persona: Option<String>,
     /// Effective model ID used by the source child session.
-    /// The shell pins this model on resume; a model override on resume is silently ignored rather than rejected.
+    /// The shell uses this model when no explicit model override wins on resume.
     pub model_id: Option<String>,
+    /// Parent Jev effort-routing policy captured with the source session.
+    /// Missing on legacy metadata, where callers use the conservative manual default.
+    pub effort_auto: Option<bool>,
+    /// Whether the source's model was explicitly pinned for Jev routing.
+    /// This is separate from `effort_auto`: `model=A, reasoning_effort=auto`
+    /// keeps A fixed while still allowing per-round effort selection.
+    /// Missing on legacy metadata, where the host uses its conservative policy.
+    pub model_routing_locked: Option<bool>,
     /// Effective cwd the source child used.
     /// The shell uses it to reconstruct `SessionInfo` so the raw transcript continues and the worktree can be reused.
     pub child_cwd: String,
@@ -83,6 +91,8 @@ impl From<distill_tools::implementations::distill::task::types::SubagentResumeSo
             subagent_type: source.subagent_type,
             persona: source.persona,
             model_id: source.model_id,
+            effort_auto: None,
+            model_routing_locked: None,
             child_cwd: source.child_cwd,
             worktree_path: source.worktree_path.map(PathBuf::from),
             snapshot_ref: source.snapshot_ref,

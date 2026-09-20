@@ -6,7 +6,7 @@
 //! - Spinner (left, slowed to ~7.5fps)
 //! - Activity label (colored per activity type, truncates if needed)
 //! - Phase timer `Xs` (gray, never truncates)
-//! - Jev chip `jev…` / `jev 0.4s` / `jev·veto` (green, error-red for a refusal):
+//! - Jev chip `jev…` / `jev 0.4s` / `jev·fallback` (green, error-red for a refusal):
 //!   shown while Jev is consulted for this turn, from the shell's decision record
 //! - Queued-send hint `· N queued, Enter to send now` (gray, sendable waits only)
 //! - Fill space
@@ -401,9 +401,9 @@ pub fn render_turn_status(
     let phase_timer_width = phase_timer_str.width();
 
     // Jev chip: shows that the local decision layer was consulted for this
-    // turn — `jev…` while a call is in flight, `jev·veto` after a refusal,
-    // `jev 0.4s` / `jev ×3` once it has answered. Never rendered when the
-    // layer did nothing, so the row stays honest about when it is used.
+    // turn — `jev…` while a call is in flight, `jev·fallback` after a refusal,
+    // `jev 0.4s` / `jev ×3` once it has answered. If the layer did nothing and
+    // no final route is known, the chip stays absent.
     let jev_str = match jev.label() {
         Some(label) => format!(" \u{00b7} {label}"),
         None => String::new(),
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     /// The chip must appear exactly when Jev was used, and say what it did:
-    /// a refusal reads as `jev·veto`, a consultation in flight as `jev…`,
+    /// a refusal reads as `jev·fallback`, a consultation in flight as `jev…`,
     /// answers as `jev <latency>` / `jev ×N`, and nothing at all when quiet.
     #[test]
     fn jev_chip_reports_use_refusal_and_flight() {
@@ -1225,6 +1225,26 @@ mod tests {
         assert!(
             !quiet.contains("jev"),
             "a turn Jev never touched must not claim it: {quiet:?}"
+        );
+
+        let routed_without_a_decision = render_running_with_jev(JevTurnActivity {
+            route: Some("reasoning-model high".to_owned()),
+            ..Default::default()
+        });
+        assert!(
+            routed_without_a_decision.contains("reasoning-model high"),
+            "the final model remains visible even when Jev made no decision: {routed_without_a_decision:?}"
+        );
+
+        let refused_with_fallback_route = render_running_with_jev(JevTurnActivity {
+            refused: true,
+            route: Some("reasoning-model high".to_owned()),
+            ..Default::default()
+        });
+        assert!(
+            refused_with_fallback_route.contains("jev·fallback")
+                && refused_with_fallback_route.contains("reasoning-model high"),
+            "a refusal keeps the final route visible: {refused_with_fallback_route:?}"
         );
 
         let one = render_running_with_jev(JevTurnActivity {
@@ -1253,7 +1273,10 @@ mod tests {
             last_latency_ms: 380,
             ..Default::default()
         });
-        assert!(veto.contains("jev·veto"), "a refusal is named: {veto:?}");
+        assert!(
+            veto.contains("jev·fallback"),
+            "a refusal is named: {veto:?}"
+        );
 
         let in_flight = render_running_with_jev(JevTurnActivity {
             in_flight: 1,

@@ -1,14 +1,9 @@
-//! Decide-or-escalate: compose a Jev answer set into a decision, or send it back
-//! to the existing path.
+//! Shared decision records and offline permission-battery evaluation helpers.
 //!
-//! Rules that matter (plan §1.3.1, §1.6/I-3):
-//! * Jev may **block**, **escalate**, or **allow only** where the action is the
-//!   routine class, stays inside the workspace and the answers are confident;
-//! * any uncertainty — review band, low confidence, low top-label probability,
-//!   a flagged injection screen, missing answers — escalates to the incumbent
-//!   path (LLM classifier, then the human prompt);
-//! * every decision is recorded through a [`DecisionSink`] with the questions,
-//!   verdict, confidence, latency and tokens, so the seam is observable.
+//! The permission scores retained here support evaluation experiments only;
+//! they do not authorize tool execution. Production permission decisions belong
+//! exclusively to [`crate::permission`]. Optimization call sites use the shared
+//! [`DecisionSink`] to record their decisions and usage.
 
 use std::sync::{Arc, Mutex};
 
@@ -182,45 +177,6 @@ pub fn record_escalation(lever: &str, reason: &str) -> DecisionRecord {
         output_tokens: 0,
         request_id: None,
         escalated: true,
-    }
-}
-
-/// The catastrophe signal: the only thing that makes the YOLO/always-approve
-/// brake refuse. Returns the reason when any confident-catastrophe threshold is
-/// crossed, `None` otherwise. Deliberately narrower than the auto-mode block
-/// rules: the brake exists for "this command destroys something", not for
-/// "this command is not routine".
-pub fn catastrophe_reason(
-    answers: &JevAnswerSet,
-    thresholds: &PermissionThresholds,
-) -> Option<String> {
-    let escapes = answers.noul(Q_ESCAPES_WORKSPACE);
-    let destructive = answers.probability(Q_RISK_CLASS, "destructive");
-    let severity = answers.score_normalized(Q_SEVERITY);
-    if let Some(p) = escapes.filter(|p| *p >= thresholds.noul_deny_min) {
-        return Some(format!("the action escapes the workspace (p={p:.2})"));
-    }
-    if let Some(p) = destructive.filter(|p| *p >= thresholds.destructive_probability_block) {
-        return Some(format!("the risk class leans destructive (p={p:.2})"));
-    }
-    if let Some(s) = severity.filter(|s| *s >= thresholds.severity_block) {
-        return Some(format!("severity {s:.2} is at or above the block line"));
-    }
-    None
-}
-
-/// Composes the veto battery for YOLO / always-approve sessions.
-///
-/// The mode already allows everything, so this can only ever take something
-/// away: `Block` for a confident catastrophe, `Allow` ("no objection")
-/// otherwise. It never escalates — that mode has no prompt flow — which is why
-/// uncertainty here resolves to letting the call through.
-pub fn compose_veto(answers: &JevAnswerSet, thresholds: &PermissionThresholds) -> JevDecision {
-    match catastrophe_reason(answers, thresholds) {
-        Some(reason) => JevDecision::Block { reason },
-        None => JevDecision::Allow {
-            reason: "veto check: no objection".to_owned(),
-        },
     }
 }
 
@@ -639,72 +595,6 @@ mod tests {
         let outcome = compose_permission(&answers, &PermissionThresholds::default(), false);
         assert!(matches!(outcome.decision, JevDecision::Escalate { .. }));
         assert!(outcome.decision.reason().contains(Q_ESCAPES_WORKSPACE));
-    }
-
-    #[test]
-    fn the_veto_only_blocks_a_confident_catastrophe() {
-        let thresholds = PermissionThresholds::default();
-        let escapes = routine_answers(0.95, 0.95);
-        assert!(matches!(
-            compose_veto(&escapes, &thresholds),
-            JevDecision::Block { .. }
-        ));
-        let destructive = answers_with(
-            "destructive",
-            0.9,
-            &[("destructive", 0.9), ("mutating_local", 0.1)],
-            &[
-                (Q_ESCAPES_WORKSPACE, 0.1),
-                (Q_DELETES_DATA, 0.9),
-                (Q_PRIVILEGE_ESCALATION, 0.1),
-                (Q_NETWORK_EGRESS, 0.1),
-                (Q_UNTRUSTED_EXECUTION, 0.1),
-                (Q_STATE_INJECTION, 0.1),
-            ],
-            0.9,
-            3,
-        );
-        assert!(matches!(
-            compose_veto(&destructive, &thresholds),
-            JevDecision::Block { .. }
-        ));
-    }
-
-    #[test]
-    fn the_veto_never_escalates_and_never_minds_the_uncertain_middle() {
-        let thresholds = PermissionThresholds::default();
-        // Escape right in the auto-mode review band: the veto must still let it
-        // through (that mode has no prompt flow), unlike compose_permission.
-        let ambiguous = routine_answers(0.9, 0.5);
-        assert!(matches!(
-            compose_permission(&ambiguous, &thresholds, false).decision,
-            JevDecision::Escalate { .. }
-        ));
-        let veto = compose_veto(&ambiguous, &thresholds);
-        assert!(
-            matches!(veto, JevDecision::Allow { .. }),
-            "the brake must not escalate: {veto:?}"
-        );
-        // Non-routine but harmless work (network read, mutating local) passes.
-        let network = answers_with(
-            "network",
-            0.9,
-            &[("network", 0.9)],
-            &[
-                (Q_ESCAPES_WORKSPACE, 0.05),
-                (Q_DELETES_DATA, 0.05),
-                (Q_PRIVILEGE_ESCALATION, 0.05),
-                (Q_NETWORK_EGRESS, 0.9),
-                (Q_UNTRUSTED_EXECUTION, 0.05),
-                (Q_STATE_INJECTION, 0.05),
-            ],
-            0.2,
-            3,
-        );
-        assert!(matches!(
-            compose_veto(&network, &thresholds),
-            JevDecision::Allow { .. }
-        ));
     }
 
     #[test]

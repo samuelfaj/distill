@@ -89,6 +89,7 @@ async fn create_test_actor(
         auth_method_id: test_auth_method_id("test-auth"),
         model_auth_memo: std::cell::RefCell::new(None),
         jev_ledger: std::cell::RefCell::new(Default::default()),
+        jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         attribution_callback: None,
         auth_manager: None,
         is_chat_kind: false,

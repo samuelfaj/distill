@@ -29,6 +29,13 @@ enum StructuredOutputStep {
     Proceed,
 }
 const TASK_ABORTED_CANCELLATION_CATEGORY: &str = "task_aborted";
+struct ClearActiveDispatchOnDrop(crate::session::signals::SessionSignalsHandle);
+
+impl Drop for ClearActiveDispatchOnDrop {
+    fn drop(&mut self) {
+        self.0.clear_active_dispatch();
+    }
+}
 /// Outcome-specific fields of a `grok_code.turn_completed` row.
 struct TurnTelemetryOutcome {
     outcome: distill_telemetry::events::Outcome,
@@ -2530,16 +2537,18 @@ impl SessionActor {
         salvage: &mut super::length_salvage::LengthSalvage,
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
-        let result = self
-            .process_conversation_turn_inner(
+        let result = crate::jev::with_session_scope(
+            self.session_info.id.0.to_string(),
+            self.process_conversation_turn_inner(
                 req_id,
                 trace_gcs_config,
                 artifact_tracker,
                 json_schema,
                 salvage,
                 turn_sampling,
-            )
-            .await;
+            ),
+        )
+        .await;
         self.turn_phases.emit_pending_latency();
         result
     }
@@ -2582,6 +2591,7 @@ impl SessionActor {
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
         *self.current_turn_span_id.lock() = tracing::Span::current().id();
+        let _clear_active_dispatch = ClearActiveDispatchOnDrop(self.signals_handle());
         struct ClearTurnSpanId<'a>(&'a parking_lot::Mutex<Option<tracing::Id>>);
         impl Drop for ClearTurnSpanId<'_> {
             fn drop(&mut self) {

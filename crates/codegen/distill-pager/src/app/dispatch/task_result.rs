@@ -1183,11 +1183,32 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::ProviderLoginFinished { provider, result } => {
+        TaskResult::ProviderLoginFinished {
+            provider,
+            attempt_id,
+            result,
+        } => {
+            if app.provider_login_pending != Some(provider)
+                || app.provider_login_attempt_id != Some(attempt_id)
+            {
+                return vec![];
+            }
             app.provider_login_pending = None;
+            app.provider_login_attempt_id = None;
+            app.provider_login_cancel = None;
             if let Some(state) = app.provider_auth.as_mut() {
                 state.chatgpt = distill_shell::codex_auth::is_logged_in();
                 state.openrouter = distill_shell::openrouter_auth::is_logged_in();
+            }
+            let succeeded = result.is_ok();
+            if let Some(state) = app.onboarding.as_mut() {
+                state.set_auth_result(
+                    succeeded,
+                    match &result {
+                        Ok(message) => message.clone(),
+                        Err(error) => format!("{} login failed: {error}", provider.name()),
+                    },
+                );
             }
             let content = match result {
                 Ok(message) => message,
@@ -1206,6 +1227,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::ProviderLogoutFinished { provider, result } => {
             app.provider_login_pending = None;
+            app.provider_login_attempt_id = None;
+            app.provider_login_cancel = None;
             if let Some(state) = app.provider_auth.as_mut() {
                 state.chatgpt = distill_shell::codex_auth::is_logged_in();
                 state.openrouter = distill_shell::openrouter_auth::is_logged_in();
@@ -1216,9 +1239,21 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             });
             vec![]
         }
-        TaskResult::ProviderLoginBrowserFallback { provider, url } => {
-            if app.provider_login_pending != Some(provider) {
+        TaskResult::ProviderLoginBrowserFallback {
+            provider,
+            attempt_id,
+            url,
+        } => {
+            if app.provider_login_pending != Some(provider)
+                || app.provider_login_attempt_id != Some(attempt_id)
+            {
                 return vec![];
+            }
+            if let Some(state) = app.onboarding.as_mut()
+                && state.auth_pending
+                && state.auth_provider == Some(provider)
+            {
+                state.set_auth_browser_fallback(&url);
             }
             super::status::dispatch_show_release_notes(
                 app,
@@ -1229,7 +1264,18 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             )
         }
         TaskResult::AuthComplete { request_seq, meta } => {
-            handle_auth_complete(app, request_seq, meta)
+            let onboarding_login_pending = app
+                .onboarding
+                .as_ref()
+                .is_some_and(|state| state.auth_pending && state.auth_provider.is_none());
+            let effects = handle_auth_complete(app, request_seq, meta);
+            if onboarding_login_pending
+                && matches!(app.auth_state, AuthState::Done)
+                && let Some(state) = app.onboarding.as_mut()
+            {
+                state.set_auth_result(true, "Grok connected. Choose a primary model below.");
+            }
+            effects
         }
         TaskResult::AuthFailed { request_seq, error } => {
             if let AuthState::Authenticating {
@@ -1240,6 +1286,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             {
                 app.auth_state = AuthState::Pending { error: Some(error) };
                 app.auth_code_input.reset();
+                if let Some(state) = app.onboarding.as_mut()
+                    && state.auth_pending
+                    && state.auth_provider.is_none()
+                {
+                    state.set_auth_result(
+                        false,
+                        "Grok login failed. Retry or choose another provider.",
+                    );
+                }
             }
             vec![]
         }
@@ -2329,6 +2384,25 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::SettingPersisted { key, value } => {
             tracing::trace!(target: "settings", ?key, ?value, "setting persisted");
+            if key == "onboarding_completed" {
+                app.current_ui.onboarding_completed = true;
+                app.onboarding = None;
+                app.onboarding_resume = None;
+            } else if let Some(state) = app.onboarding.as_mut() {
+                match key {
+                    "default_model" => state.finish_setting_persistence(
+                        key,
+                        true,
+                        "Primary model saved. Runtime switching follows the existing /model path.",
+                    ),
+                    "tier_light" => state.finish_setting_persistence(
+                        key,
+                        true,
+                        "Worker model saved. Continue when ready.",
+                    ),
+                    _ => {}
+                }
+            }
             vec![]
         }
         TaskResult::SettingPersistFailed {
@@ -2336,9 +2410,34 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             rollback_value,
             error,
         } => {
+            if key == "onboarding_completed" {
+                if let Some(state) = app.onboarding.as_mut() {
+                    state.set_persistence_error(&error);
+                }
+                let scrubbed = scrub_error_for_toast(&error);
+                app.show_toast(&format!(
+                    "✗ Could not save onboarding completion: {scrubbed}"
+                ));
+                return vec![];
+            }
             let rollback_effects = apply_setting_rollback(app, key, &rollback_value);
             tracing::warn!(target: "settings", ?key, ?rollback_value, %error, "setting persist failed; rolled back");
             let scrubbed = scrub_error_for_toast(&error);
+            if let Some(state) = app.onboarding.as_mut() {
+                match key {
+                    "default_model" => state.finish_setting_persistence(
+                        key,
+                        false,
+                        format!("Primary model was not saved: {scrubbed}. Try again."),
+                    ),
+                    "tier_light" => state.finish_setting_persistence(
+                        key,
+                        false,
+                        format!("Worker model was not saved: {scrubbed}. Try again."),
+                    ),
+                    _ => {}
+                }
+            }
             app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
             rollback_effects
         }
@@ -2349,6 +2448,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 "setting persist failed (best-effort); in-memory state stays at optimistic value",
             );
             let scrubbed = scrub_error_for_toast(&error);
+            if key == "tier_light"
+                && let Some(state) = app.onboarding.as_mut()
+            {
+                state.finish_setting_persistence(
+                    key,
+                    false,
+                    format!("Worker model was not saved: {scrubbed}. Try again."),
+                );
+            }
             app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
             vec![]
         }

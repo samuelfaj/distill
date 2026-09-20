@@ -263,6 +263,7 @@ fn wedged_child_handle() -> (
         ),
         model_id: acp::ModelId::new("test-model"),
         reasoning_effort: None,
+        jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         yolo_mode: false,
         origin_client: None,
         code_nav_enabled: false,
@@ -1227,6 +1228,72 @@ fn reasoning_effort_precedence_explicit_over_role_over_persona() {
     let r = resolve_effective_overrides(&overrides, None, &HashMap::new(), None, None);
     assert!(r.reasoning_effort.is_none());
 }
+
+#[test]
+fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
+    use crate::agent::subagent::resolve_child_jev_effort_auto;
+
+    let mut request = auto_wake_test_request("policy");
+    let runtime = EffectiveRuntimeConfig::default();
+    assert!(resolve_child_jev_effort_auto(
+        true, &request, &runtime, None
+    ));
+    assert!(!resolve_child_jev_effort_auto(
+        false, &request, &runtime, None
+    ));
+
+    request.runtime_overrides.model = Some("pinned-model".into());
+    assert!(!resolve_child_jev_effort_auto(
+        true, &request, &runtime, None
+    ));
+
+    request.runtime_overrides.model = None;
+    request.runtime_overrides.reasoning_effort = Some("low".into());
+    assert!(!resolve_child_jev_effort_auto(
+        true, &request, &runtime, None
+    ));
+    request.runtime_overrides.reasoning_effort = Some("auto".into());
+    assert!(resolve_child_jev_effort_auto(
+        false, &request, &runtime, None
+    ));
+
+    request.runtime_overrides.reasoning_effort = None;
+    let source = ResumeSourceData {
+        subagent_id: "source".into(),
+        child_session_id: "child".into(),
+        child_cwd: "/workspace".into(),
+        worktree_path: None,
+        snapshot_ref: None,
+        subagent_type: "general-purpose".into(),
+        persona: None,
+        model_id: Some("pinned-model".into()),
+        effort_auto: Some(true),
+        model_routing_locked: Some(true),
+    };
+    assert!(resolve_child_jev_effort_auto(
+        false,
+        &request,
+        &runtime,
+        Some(&source),
+    ));
+    let mut legacy_source = source.clone();
+    legacy_source.effort_auto = None;
+    assert!(!resolve_child_jev_effort_auto(
+        true,
+        &request,
+        &runtime,
+        Some(&legacy_source),
+    ));
+
+    request.fork_context = true;
+    assert!(resolve_child_jev_effort_auto(
+        true, &request, &runtime, None
+    ));
+    request.runtime_overrides.model = Some("fork-model".into());
+    assert!(!resolve_child_jev_effort_auto(
+        true, &request, &runtime, None
+    ));
+}
 #[test]
 fn persona_not_found_produces_error() {
     let overrides = SubagentRuntimeOverrides {
@@ -1682,6 +1749,8 @@ async fn bootstrap_in_place_resume_reads_existing_transcript() {
         subagent_type: "general-purpose".to_owned(),
         persona: None,
         model_id: Some("test-model".to_owned()),
+        effort_auto: None,
+        model_routing_locked: None,
     };
     let out = bootstrap_initial_context(
             &request,

@@ -5,7 +5,8 @@
 //! - Effective runtime config (model, persona, capability mode, isolation) via precedence: explicit override > role > persona > parent.
 //! - Persona instruction loading (inline `instructions` and `instructions_file`).
 //! - Role prompt file loading.
-//! - Resume identity validation (type/persona match checks; a model override is silently ignored).
+//! - Resume identity validation (type/persona match checks; model selection is
+//!   left to the host's source-pin/explicit-override policy).
 //!
 //! This crate has no dependency on session, coordinator, or transport types.
 //! It serves local hosts (e.g. `distill-shell`) and any future remote spawn path that needs only pure resolution logic.
@@ -28,7 +29,8 @@ pub use definition::{
     apply_child_tool_policy, apply_definition_runtime_defaults, apply_harness_toolset,
     available_agent_names, discover_agent_definition, gate_agent_definition,
     render_subagent_initial_user_message, render_subagent_system_prompt, resolve_agent_definition,
-    resolve_runtime_config, select_role, subagent_harness_flavor_is_representable,
+    resolve_child_depth, resolve_runtime_config, select_role,
+    subagent_harness_flavor_is_representable,
     validate_agent_name,
 };
 pub use overrides::{intersect_capability_modes, resolve_effective_overrides};

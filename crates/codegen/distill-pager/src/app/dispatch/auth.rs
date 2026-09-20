@@ -23,7 +23,12 @@ pub(super) fn dispatch_provider_login(
         ));
         return vec![];
     }
+    let attempt_id = app.next_provider_login_attempt_id;
+    app.next_provider_login_attempt_id = app.next_provider_login_attempt_id.wrapping_add(1);
     app.provider_login_pending = Some(provider);
+    app.provider_login_attempt_id = Some(attempt_id);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    app.provider_login_cancel = Some(cancel.clone());
     super::status::dispatch_show_release_notes(
         app,
         format!("{} login", provider.name()),
@@ -32,7 +37,11 @@ pub(super) fn dispatch_provider_login(
             provider.name()
         ),
     );
-    vec![Effect::LoginProvider(provider)]
+    vec![Effect::LoginProvider {
+        provider,
+        attempt_id,
+        cancel,
+    }]
 }
 
 /// Disconnect only the selected provider.
@@ -45,6 +54,8 @@ pub(super) fn dispatch_provider_logout(
         return vec![];
     }
     app.provider_login_pending = Some(provider);
+    app.provider_login_attempt_id = None;
+    app.provider_login_cancel = None;
     vec![Effect::LogoutProvider(provider)]
 }
 
@@ -244,6 +255,17 @@ pub(super) fn strip_trailing_auth_error_blocks(agent: &mut AgentView) {
 /// Only the welcome view renders the auth UI (the external auth provider's sign-in URL and status).
 /// A mid-session invocation therefore stashes the caller's view in `auth_return_view` and switches to `Welcome` so the flow is visible.
 pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
+    // During onboarding, Grok auth reuses Welcome's URL/code controls. A previous
+    // provider attempt may have left its result viewer open; it must not intercept
+    // the manual auth input or Escape for this new onboarding attempt.
+    let onboarding_grok_auth = app
+        .onboarding
+        .as_ref()
+        .is_some_and(|state| state.is_grok_auth_pending());
+    if onboarding_grok_auth {
+        app.welcome_doc_viewer = None;
+    }
+
     ensure_login_method(app);
     let Some(method_id) = app.login_method_id.clone() else {
         app.auth_state = AuthState::Pending {
@@ -314,6 +336,48 @@ pub(super) fn dispatch_cancel_login(app: &mut AppView) -> Vec<Effect> {
         Some(request_seq) => vec![Effect::CancelAuth { request_seq }],
         None => vec![],
     }
+}
+
+/// Cancel a Grok login launched from the onboarding overlay. The normal `CancelLogin` action is
+/// intentionally reserved for mid-session re-auth, so startup login needs its own explicit path.
+pub(super) fn dispatch_cancel_onboarding_login(app: &mut AppView) -> Vec<Effect> {
+    let cancel_seq = match &app.auth_state {
+        AuthState::Authenticating { request_seq, .. } => Some(*request_seq),
+        _ => None,
+    };
+    abort_prior_auth(app);
+    app.next_auth_request_seq += 1;
+    app.auth_state = AuthState::Pending { error: None };
+    app.auth_show_raw_url = false;
+    app.auth_code_input.reset();
+    if let Some(state) = app.onboarding.as_mut() {
+        state.set_auth_result(
+            false,
+            "Grok login cancelled. Choose another account or continue.",
+        );
+    }
+    cancel_seq
+        .map(|request_seq| vec![Effect::CancelAuth { request_seq }])
+        .unwrap_or_default()
+}
+
+/// Stop waiting for an independent provider login in onboarding. The provider task has no UI
+/// dependency; its late completion is ignored by the result guard below.
+pub(super) fn dispatch_cancel_onboarding_provider(
+    app: &mut AppView,
+    provider: crate::app::actions::LoginProvider,
+) -> Vec<Effect> {
+    if app.provider_login_pending == Some(provider) && app.provider_login_attempt_id.is_some() {
+        if let Some(cancel) = app.provider_login_cancel.take() {
+            cancel.cancel();
+        }
+        app.provider_login_pending = None;
+        app.provider_login_attempt_id = None;
+        if let Some(state) = app.onboarding.as_mut() {
+            state.set_auth_result(false, format!("{} login cancelled.", provider.name()));
+        }
+    }
+    vec![]
 }
 
 /// User submitted a manually-pasted auth token in loopback mode.

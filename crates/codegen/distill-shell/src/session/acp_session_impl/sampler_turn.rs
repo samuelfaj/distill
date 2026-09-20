@@ -954,45 +954,13 @@ impl SessionActor {
             llm_classifier.has_side_query(),
             "channel-wired classifier must report has_side_query"
         );
-        // Plan §1.2 item D1: when the Jev flags are on, the Jev seam wraps the
-        // incumbent so it can only tighten (block) or allow the routine class;
-        // everything else defers to this same LLM classifier. `classify_timeout`
-        // is the caller-owned end-to-end budget (invariant I-5).
-        let incumbent: distill_workspace::permission::SharedClassifier = llm_classifier;
-        let jev_config = crate::jev::resolve_config_from_disk();
-        let clf = super::jev_wiring::maybe_wrap_with_jev(&jev_config, incumbent, classify_timeout);
-        self.permissions.set_classifier_with_side_query(clf, true);
+        // Permission decisions belong to the harness, independently of Jev.
+        self.permissions
+            .set_classifier_with_side_query(llm_classifier, true);
         tracing::info!(
             session_id = %self.session_info.id,
             "Wired live LLM permission auto-mode classifier (session sampling channel)"
         );
-    }
-
-    /// Install the Jev brake for an always-approve (YOLO) session.
-    ///
-    /// Synchronous by design: the brake holds no LLM side-query worker, makes a
-    /// single attempt per call, and is fail-open — so a missing credential or an
-    /// unreachable service simply leaves the mode exactly as it was.
-    pub(crate) fn wire_jev_veto_classifier(self: &Arc<Self>, enabled: bool) {
-        if !enabled {
-            return;
-        }
-        let cfg = crate::jev::resolve_config_from_disk();
-        let budget = crate::util::config::auto_mode_classify_timeout(
-            &crate::util::config::resolve_auto_mode_config_from_disk(),
-        );
-        match super::jev_wiring::maybe_wrap_with_jev_veto(&cfg, budget) {
-            Some(brake) => {
-                // `false`: the brake has no side query, so the auto-mode wiring
-                // stays free to install the LLM classifier when the mode changes.
-                self.permissions
-                    .set_classifier_with_side_query(brake, false);
-                tracing::info!("Wired the Jev brake for always-approve (YOLO) mode");
-            }
-            None => {
-                tracing::debug!("Jev brake not wired (disabled, or no credential)");
-            }
-        }
     }
 
     /// Resolve a standalone aux-model `SamplerConfig` for `slug` via the shared catalog routing, gathering the session-local auth context once.
@@ -1078,6 +1046,10 @@ impl SessionActor {
 
     /// Refresh auth and push a fresh `SamplerConfig` before each turn.
     pub(crate) async fn prepare_sampler_for_turn(&self) {
+        // A retry/fallback can arrive after a prior round has already
+        // published its route. Clear that attribution before selecting the
+        // next final route so the parent never sees a stale active model.
+        self.signals_handle().clear_active_dispatch();
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
         // B2 (auto): when the user picked `/effort auto`, the decision layer
@@ -1088,8 +1060,6 @@ impl SessionActor {
         // B2 (local): with a local model configured, the free model takes the
         // call whenever it can fully do it.
         self.jev_route_micro_call(&mut sampler_config).await;
-        // The turn report: this call runs on this model, at this effort.
-        self.note_round_for_turn_report(&sampler_config);
         // B2 (money lever): a routine turn may run at a cheaper setting; the
         // pass can only lower effort, and it is off until its gate passes.
         self.jev_apply_model_tier(&mut sampler_config).await;
@@ -1101,6 +1071,26 @@ impl SessionActor {
         {
             sampler_config.doom_loop_recovery = None;
         }
+        // Route consumption happens when the request is sent, so publish the
+        // final model after every tier/floor/override has run. A model route
+        // retains the normal payload; only a local utility route is rewritten
+        // by `run_turn_via_sampler`.
+        let local_route = self.jev_ledger.borrow().pending_route_is_local();
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_route_with_locality(sampler_config.model.clone(), local_route);
+        // The turn report: this call runs on this final model, at this final
+        // effort.
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_request_effort(sampler_config.reasoning_effort);
+        self.note_round_for_turn_report(&sampler_config);
+        self.signals_handle().set_active_dispatch(
+            sampler_config.model.clone(),
+            sampler_config
+                .reasoning_effort
+                .map(|effort| effort.as_ref().to_string()),
+        );
         // Carry over the session's per-chunk idle timeout via `SamplerConfig.idle_timeout_secs`
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.sampler_handle.update_config(sampler_config);
@@ -1723,6 +1713,30 @@ impl SessionActor {
         outcome
     }
 
+    fn apply_pending_sampler_config(
+        &self,
+        request: &mut ConversationRequest,
+        routed_local: &mut bool,
+    ) {
+        if let Some(effort) = self.jev_ledger.borrow_mut().take_pending_request_effort() {
+            request.reasoning_effort = effort;
+        }
+        if let Some((routed_model, is_local_route)) =
+            self.jev_ledger.borrow_mut().take_pending_route()
+        {
+            request.model = Some(routed_model);
+            *routed_local = is_local_route;
+            if is_local_route {
+                // Utility/local models have their own payload rules; model
+                // selection routes retain the final session reasoning config.
+                request.reasoning_effort = None;
+                request
+                    .items
+                    .retain(|item| !matches!(item, ConversationItem::Reasoning(_)));
+            }
+        }
+    }
+
     /// Drive one turn through the sampler, pacing a subagent's 429s via `budget`.
     /// `Parked` resubmits skip every refresh-driving prepare (see the re-park arm);
     /// the wire bearer comes from the live resolver at send time.
@@ -1742,19 +1756,7 @@ impl SessionActor {
         // A round the decision layer moved (e.g. to the local model) must name
         // that model in the request: the chat state built it with the session's.
         let mut routed_local = false;
-        if let Some(routed_model) = self.jev_ledger.borrow_mut().take_pending_route() {
-            request.model = Some(routed_model);
-            // The routed model has its own settings; the session's effort is not
-            // one of them.
-            request.reasoning_effort = None;
-            // Reasoning traces belong to the model that produced them, and the
-            // routed model speaks a different format: a local server refused a
-            // request that carried the session model's reasoning items.
-            request
-                .items
-                .retain(|item| !matches!(item, ConversationItem::Reasoning(_)));
-            routed_local = true;
-        }
+        self.apply_pending_sampler_config(&mut request, &mut routed_local);
 
         if !budget.can_wait() {
             // Nothing will send this request a second time, so move it into the sampler instead of deep-cloning the whole message history on every main-session turn
@@ -1810,6 +1812,7 @@ impl SessionActor {
                     // (parked turns skip it — see `run_turn_via_sampler`).
                     if !park.is_parked() {
                         self.prepare_sampler_for_turn().await;
+                        self.apply_pending_sampler_config(&mut request, &mut routed_local);
                     }
                     self.turn_phases.record_sampling_retries(1);
                 }

@@ -81,6 +81,8 @@ fn progress(subagent_id: &str, attempt_id: Option<&str>, tokens_used: u64) -> Xa
         context_usage_pct: 1,
         tools_used: vec!["read_file".to_owned()],
         error_count: 0,
+        active_model: None,
+        active_reasoning_effort: None,
     }
 }
 

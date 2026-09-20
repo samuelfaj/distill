@@ -949,6 +949,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "onboarding_completed" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("onboarding_completed", "Bool", &value));
+            };
+            distill_shell::util::config::set_onboarding_completed(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "trace_upload" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("trace_upload", "Bool", &value));

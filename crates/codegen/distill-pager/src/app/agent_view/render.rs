@@ -2118,7 +2118,15 @@ impl AgentView {
                         is_pending_user_input,
                         goal_verifying,
                         watchers: turn_status_watchers,
-                        jev: distill_shell::jev::turn_activity(self.turn_started_at),
+                        jev: self.session.session_id.as_ref().map_or_else(
+                            || distill_shell::jev::turn_activity(self.turn_started_at),
+                            |session_id| {
+                                distill_shell::jev::turn_activity_for_session(
+                                    session_id.0.as_ref(),
+                                    self.turn_started_at,
+                                )
+                            },
+                        ),
                         parked: turn_status_parked,
                         flat_background: false,
                         held_queue,
@@ -2330,11 +2338,9 @@ impl AgentView {
         };
         let mut flags: Vec<PromptFlag> =
             mode_flags(plan_label, self.session.permission_label(), &theme);
-        // Tells the user the Jev decision path is live for this session's
-        // auto-mode permission checks (hidden otherwise).
+        // Jev availability does not depend on the permission mode.
         if let Some(jev) = crate::views::prompt_widget::jev_flag(
             distill_shell::jev::current_status_cached(),
-            self.session.permission_label(),
             &theme,
         ) {
             flags.push(jev);

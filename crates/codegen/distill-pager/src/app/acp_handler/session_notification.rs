@@ -1,4 +1,5 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
+use super::subagent_activity::sync_subagent_dispatch;
 use super::*;
 use distill_shell::extensions::notification::HookAnnotationKind;
 use distill_shell::sampling::error::format_rate_limited_user_message;
@@ -554,6 +555,8 @@ pub(super) fn handle_session_notification_with_origin(
                 persona: persona.map(Arc::from),
                 role: role.map(Arc::from),
                 model: model.map(Arc::from),
+                active_model: None,
+                active_reasoning_effort: None,
                 context_source: effective_context_source.map(Arc::from),
                 resumed_from: resumed_from.map(Arc::from),
                 capability_mode: capability_mode.map(Arc::from),
@@ -729,6 +732,8 @@ pub(super) fn handle_session_notification_with_origin(
             true
         }
         XaiSessionUpdate::SubagentProgress {
+            subagent_id: _,
+            parent_session_id: _,
             attempt_id: _,
             child_session_id,
             duration_ms,
@@ -739,7 +744,8 @@ pub(super) fn handle_session_notification_with_origin(
             context_usage_pct,
             tools_used,
             error_count,
-            ..
+            active_model,
+            active_reasoning_effort,
         } => {
             if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
                 info.attempt.duration_ms = Some(duration_ms);
@@ -750,8 +756,17 @@ pub(super) fn handle_session_notification_with_origin(
                 info.attempt.context_usage_pct = Some(context_usage_pct);
                 info.attempt.tools_used = tools_used.into_iter().map(Arc::from).collect();
                 info.attempt.error_count = Some(error_count);
+                info.attempt.active_model = active_model.as_deref().map(Arc::from);
+                info.attempt.active_reasoning_effort =
+                    active_reasoning_effort.as_deref().map(Arc::from);
                 info.attempt.last_progress_at = std::time::Instant::now();
             }
+            sync_subagent_dispatch(
+                agent,
+                &child_session_id,
+                active_model.as_deref(),
+                active_reasoning_effort.as_deref(),
+            );
             if let Some(child_view) = agent.subagent_views.get_mut(&child_session_id)
                 && context_window_tokens > 0
             {
@@ -796,6 +811,7 @@ pub(super) fn handle_session_notification_with_origin(
                 agent.scrollback.finish_running(eid);
             }
             sync_subagent_activity(agent, &child_session_id, None);
+            sync_subagent_dispatch(agent, &child_session_id, None, None);
             if is_background {
                 let terminal_entry_id = if let Some(eid) = existing_terminal
                     && let Some(entry) = agent.scrollback.get_by_id_mut(eid)

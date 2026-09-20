@@ -1531,6 +1531,7 @@ pub(crate) async fn run(
     crate::appearance::set_tab_width(initial_config.scrollback.display.tab_width);
     app.set_appearance(initial_config);
     app.current_ui = load_initial_ui_config();
+    app.onboarding_auto_pending = !app.current_ui.onboarding_completed;
     crate::app::status_line::metrics::global().report_config(&app.current_ui.status_line);
     let show_timeline = crate::appearance::cache::load_show_timeline();
     app.current_ui.show_timeline = Some(show_timeline);
@@ -1863,6 +1864,11 @@ pub(crate) async fn run(
         super::event_loop_stall::StallRollup::new(super::event_loop_stall::STALL_REPORT_WINDOW);
     let loop_entry = std::time::Instant::now();
     loop {
+        let onboarding_was_open = app.onboarding.is_some();
+        app.maybe_open_auto_onboarding();
+        if !onboarding_was_open && app.onboarding.is_some() {
+            presenter.request(false);
+        }
         if !session_load_barrier.is_empty() && acp_peek.is_none() {
             acp_peek = acp_rx.try_recv().ok();
         }

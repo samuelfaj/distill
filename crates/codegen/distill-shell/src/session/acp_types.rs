@@ -631,6 +631,16 @@ pub struct StartupHints {
     /// Unlike `yoloMode` / `autoMode`, a warm re-attach to an already-resident actor does NOT re-apply it.
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// A subagent model supplied by the caller is authoritative for the
+    /// lifetime of the child. This is transient spawn policy, not client
+    /// input, so it is never read from an attach payload or persisted here.
+    #[serde(skip)]
+    pub explicit_model_override: bool,
+    /// A subagent effort supplied by the caller is authoritative for the
+    /// lifetime of the child. `auto` deliberately leaves this false so the
+    /// child may still use the per-round effort chooser on its pinned model.
+    #[serde(skip)]
+    pub explicit_effort_override: bool,
     #[serde(skip)]
     pub startup_traceparent: std::cell::RefCell<Option<String>>,
 }

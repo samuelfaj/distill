@@ -714,6 +714,26 @@ async fn bind_callback_listener() -> io::Result<TcpListener> {
     }
 }
 
+/// Own the callback listener and server future in one awaitable. Dropping this
+/// future (for example when the pager cancels an OAuth attempt) drops the
+/// listener too, so a retry can bind the callback port immediately.
+async fn serve_callback_until_result(
+    listener: TcpListener,
+    app: Router,
+    result_rx: tokio::sync::oneshot::Receiver<Result<String, String>>,
+) -> Result<String> {
+    tokio::select! {
+        callback = result_rx => {
+            let callback = callback.context("Codex OAuth callback server stopped")?;
+            callback.map_err(|error| anyhow!(error))
+        }
+        server_result = axum::serve(listener, app) => {
+            server_result.context("Codex OAuth callback server stopped")?;
+            bail!("Codex OAuth callback server stopped")
+        }
+    }
+}
+
 async fn exchange_code(
     endpoints: &CodexEndpoints,
     code: &str,
@@ -836,12 +856,6 @@ async fn run_browser_login_at(
     let app = Router::new()
         .route("/auth/callback", get(callback_handler))
         .with_state(state);
-    let server = tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, app).await {
-            tracing::debug!(%error, "Codex OAuth callback server stopped");
-        }
-    });
-
     if announce {
         eprintln!();
         eprintln!("Signing in to OpenAI Codex with ChatGPT...");
@@ -857,12 +871,12 @@ async fn run_browser_login_at(
         report_browser_launch_failure(browser_fallback, &auth_url, error);
     }
 
-    let callback_result = tokio::time::timeout(CALLBACK_TIMEOUT, result_rx).await;
-    server.abort();
-    let callback = callback_result
-        .context("timed out waiting for the Codex OAuth callback")?
-        .context("Codex OAuth callback server stopped")?;
-    let code = callback.map_err(|error| anyhow!(error))?;
+    let code = tokio::time::timeout(
+        CALLBACK_TIMEOUT,
+        serve_callback_until_result(listener, app, result_rx),
+    )
+    .await
+    .context("timed out waiting for the Codex OAuth callback")??;
     let response = exchange_code(endpoints, &code, &redirect_uri, &pkce.code_verifier).await?;
     let _lock = acquire_auth_lock(path)?;
     persist_token_response(path, response)
@@ -1431,13 +1445,18 @@ pub(crate) fn image_api_key_provider(
 ///
 /// Pinned to the release the OAuth contract was taken from; a proxy or a test
 /// can override it.
-pub const CODEX_CLIENT_VERSION_ENV: &str = "REMOTE_CODE_CODEX_CLIENT_VERSION";
+pub const CODEX_CLIENT_VERSION_ENV: &str = "DISTILL_CODEX_CLIENT_VERSION";
+pub const LEGACY_CODEX_CLIENT_VERSION_ENV: &str = "REMOTE_CODE_CODEX_CLIENT_VERSION";
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.153.1";
 
 pub fn codex_client_version() -> String {
-    std::env::var(CODEX_CLIENT_VERSION_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+    [CODEX_CLIENT_VERSION_ENV, LEGACY_CODEX_CLIENT_VERSION_ENV]
+        .into_iter()
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_owned())
 }
 
@@ -1494,6 +1513,20 @@ pub fn apply_codex_backend(cfg: &mut distill_sampler::SamplerConfig) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    #[serial_test::serial]
+    fn codex_client_version_prefers_distill_env_and_reads_legacy_fallback() {
+        let _canonical = distill_test_support::env::EnvGuard::unset(CODEX_CLIENT_VERSION_ENV);
+        let _legacy =
+            distill_test_support::env::EnvGuard::set(LEGACY_CODEX_CLIENT_VERSION_ENV, "legacy");
+        assert_eq!(codex_client_version(), "legacy");
+        let _canonical_override =
+            distill_test_support::env::EnvGuard::set(CODEX_CLIENT_VERSION_ENV, "canonical");
+        assert_eq!(codex_client_version(), "canonical");
+        drop(_canonical_override);
+        assert_eq!(codex_client_version(), "legacy");
+    }
 
     fn jwt(payload: serde_json::Value) -> String {
         let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{}");
@@ -1619,6 +1652,35 @@ mod tests {
         let fallback = fallback_rx.await.unwrap();
         assert_eq!(fallback.authorization_url, authorization_url);
         assert_eq!(fallback.error, "browser unavailable");
+    }
+
+    #[tokio::test]
+    async fn dropping_callback_server_future_releases_its_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+        {
+            let server = serve_callback_until_result(listener, Router::new(), result_rx);
+            tokio::pin!(server);
+            let connected = tokio::time::timeout(
+                Duration::from_secs(1),
+                async {
+                    tokio::select! {
+                        result = tokio::net::TcpStream::connect(("127.0.0.1", port)) => result,
+                        result = &mut server => panic!("callback server ended before cancellation: {result:?}"),
+                    }
+                },
+            )
+            .await
+            .expect("callback server should accept a local probe")
+            .expect("local callback probe should connect");
+            drop(connected);
+        }
+
+        TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("dropping the callback future must release its listener");
     }
 
     #[tokio::test]

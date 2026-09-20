@@ -266,6 +266,103 @@ fn set_default_model_allowed_when_agent_chat_kind() {
     );
     assert!(expect_agent(&app, id).session.model_switch_pending);
 }
+
+#[test]
+fn onboarding_model_dispatch_marks_saving_only_when_default_write_is_emitted() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-onboarding"));
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .models
+        .available
+        .insert(
+            model_id.clone(),
+            acp::ModelInfo::new(model_id.clone(), "Onboarding model".to_owned()),
+        );
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .models
+        .set_current(model_id.clone(), None);
+    app.agents.get_mut(&id).unwrap().session.models.effort_auto = false;
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+
+    let effects = dispatch(Action::SetDefaultModel(model_id), &mut app);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::PersistSetting {
+            key: "default_model",
+            ..
+        }
+    )));
+    assert!(
+        app.onboarding
+            .as_ref()
+            .and_then(|state| state.status.as_deref())
+            .is_some_and(|status| status.contains("saving"))
+    );
+}
+
+#[test]
+fn onboarding_chat_session_reports_runtime_model_without_waiting_for_save() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-chat"));
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .session
+        .models
+        .available
+        .insert(
+            model_id.clone(),
+            acp::ModelInfo::new(model_id.clone(), "Chat model".to_owned()),
+        );
+    app.agents.get_mut(&id).unwrap().chat_kind = true;
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+
+    let effects = dispatch(Action::SetDefaultModel(model_id), &mut app);
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::PersistSetting {
+            key: "default_model",
+            ..
+        }
+    )));
+    assert!(
+        app.onboarding
+            .as_ref()
+            .and_then(|state| state.status.as_deref())
+            .is_some_and(|status| status.contains("no saved default"))
+    );
+}
+
+#[test]
+fn onboarding_cli_override_does_not_claim_runtime_model_is_saved() {
+    let mut app = test_app();
+    let model_id = acp::ModelId::new(std::sync::Arc::from("grok-cli"));
+    app.models.available.insert(
+        model_id.clone(),
+        acp::ModelInfo::new(model_id.clone(), "CLI model".to_owned()),
+    );
+    app.models.set_current(model_id.clone(), None);
+    app.models.effort_auto = true;
+    app.cli_model_override = Some(model_id.clone());
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+
+    let effects = dispatch(Action::SetDefaultModel(model_id), &mut app);
+    assert!(effects.is_empty());
+    assert!(app
+        .onboarding
+        .as_ref()
+        .and_then(|state| state.status.as_deref())
+        .is_some_and(|status| status.contains("CLI override") && status.contains("not changed")));
+}
+
 /// `/model <name>` dispatches `SetDefaultModel` which routes through both `PersistSetting` and `SwitchModel`.
 #[test]
 fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {

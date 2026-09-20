@@ -169,6 +169,9 @@ pub(crate) async fn apply(
     // level the session already had as the fallback.
     if wants_auto_effort && explicit_effort.is_none() {
         agent.models_manager.set_current_effort_auto(true);
+        handle
+            .jev_effort_auto
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
             session_id = %session_id.0,
             model_id = %model_id.0,
@@ -177,6 +180,9 @@ pub(crate) async fn apply(
         );
     } else if explicit_effort.is_some() {
         agent.models_manager.set_current_effort_auto(false);
+        handle
+            .jev_effort_auto
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     let mut model_sampling =
         agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone());

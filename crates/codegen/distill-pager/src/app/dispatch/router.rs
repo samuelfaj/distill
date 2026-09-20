@@ -1,8 +1,8 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Top-level action router: maps actions and action results to handlers.
 use super::auth::{
-    dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
-    dispatch_switch_account,
+    dispatch_cancel_login, dispatch_cancel_onboarding_login, dispatch_cancel_onboarding_provider,
+    dispatch_login, dispatch_logout, dispatch_submit_auth_code, dispatch_switch_account,
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
@@ -99,7 +99,8 @@ use super::settings::ui::{
     dispatch_toggle_vim_mode,
 };
 use super::status::{
-    dispatch_copy_session_id, dispatch_manage_billing, dispatch_open_gboom, dispatch_open_tutorial,
+    dispatch_complete_onboarding, dispatch_copy_session_id, dispatch_manage_billing,
+    dispatch_open_gboom, dispatch_open_onboarding, dispatch_open_tutorial,
     dispatch_privacy_banner_opt_in, dispatch_privacy_banner_opt_out, dispatch_share_session,
     dispatch_show_context_info, dispatch_show_queue, dispatch_show_release_notes,
     dispatch_show_session_info, dispatch_show_tasks, dispatch_show_tier_editor,
@@ -1210,6 +1211,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PrivacyBannerOptOut => dispatch_privacy_banner_opt_out(app),
         Action::OpenCommandPalette => dispatch_open_command_palette(app),
         Action::OpenHowtoGuides => dispatch_open_howto_guides(app),
+        Action::OpenOnboarding => dispatch_open_onboarding(app),
+        Action::CompleteOnboarding => dispatch_complete_onboarding(app),
         Action::OpenResetConfirm { key } => dispatch_open_reset_confirm(app, key),
         Action::ConfirmResetSetting { choice } => dispatch_confirm_reset_setting(app, choice),
         Action::DumpInputLog => dispatch_dump_input_log(app),
@@ -1278,6 +1281,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::LoginProvider(provider) => super::auth::dispatch_provider_login(app, provider),
         Action::LogoutProvider(provider) => super::auth::dispatch_provider_logout(app, provider),
         Action::CancelLogin => dispatch_cancel_login(app),
+        Action::CancelOnboardingLogin => dispatch_cancel_onboarding_login(app),
+        Action::CancelOnboardingProviderLogin(provider) => {
+            dispatch_cancel_onboarding_provider(app, provider)
+        }
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
         Action::CopyAuthUrl => {
             dispatch_copy_auth_url(app, crate::clipboard::SystemClipboard::try_set)

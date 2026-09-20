@@ -1269,9 +1269,6 @@ pub(super) async fn run_session(
                             // Under the always-approve pin the manager clamps a requested ON to OFF
                             // Emitting `enabled` would then announce a turn-on that never happened
                             let actual = session.permissions.is_yolo_mode();
-                            // Always-approve runs everything: install the Jev brake so
-                            // a confident catastrophe can still be refused.
-                            session.wire_jev_veto_classifier(actual);
                             if let Some(enabled) = yolo_toggle_report(was, actual) {
                                 session.emit_event(crate::session::events::Event::YoloToggled { enabled });
                             }

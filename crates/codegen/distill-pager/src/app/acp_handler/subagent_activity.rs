@@ -40,6 +40,34 @@ pub(super) fn sync_subagent_activity(
     info.attempt.activity_label = activity_label;
 }
 
+/// Fan the final per-round route from the existing progress notification into
+/// the collapsed block and the state used by the list/detail views.
+pub(super) fn sync_subagent_dispatch(
+    parent: &mut AgentView,
+    child_key: &str,
+    active_model: Option<&str>,
+    active_reasoning_effort: Option<&str>,
+) {
+    let Some(info) = parent.subagent_sessions.get_mut(child_key) else {
+        return;
+    };
+    if info.is_finished() && (active_model.is_some() || active_reasoning_effort.is_some()) {
+        return;
+    }
+    if let Some(eid) = info.attempt.scrollback_entry_id
+        && let Some(entry) = parent.scrollback.get_by_id_mut(eid)
+        && let RenderBlock::Subagent(ref mut sb) = entry.block
+        && (sb.active_model.as_deref() != active_model
+            || sb.active_reasoning_effort.as_deref() != active_reasoning_effort)
+    {
+        sb.active_model = active_model.map(str::to_owned);
+        sb.active_reasoning_effort = active_reasoning_effort.map(str::to_owned);
+        entry.invalidate_cache();
+    }
+    info.attempt.active_model = active_model.map(Arc::from);
+    info.attempt.active_reasoning_effort = active_reasoning_effort.map(Arc::from);
+}
+
 /// Resolve a subagent child view's live activity into the display label [`sync_subagent_activity`] stamps.
 /// A child that is busy between activities shows "Waiting".
 pub(super) fn subagent_activity_label(child_view: &AgentView) -> Option<String> {

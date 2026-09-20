@@ -26,8 +26,7 @@ impl distill_tools::implementations::distill::task::coordinator::ChildRunner
     for RunShellChildTestRunner
 {
     type Control = ShellChildRuntime;
-    type RootControl =
-        distill_tools::implementations::distill::task::root_control::NoRootControl;
+    type RootControl = distill_tools::implementations::distill::task::root_control::NoRootControl;
     type CompletionData = ShellCompletionData;
     type RunFuture = distill_tools::implementations::distill::task::coordinator::LocalBoxFuture<
         ChildRunOutput<ShellCompletionData>,
@@ -128,6 +127,8 @@ fn prior_wake_meta(id: &str, model_id: &str) -> SubagentMeta {
         worktree_path: None,
         snapshot_ref: Some("refs/grok/subagents/prior".to_owned()),
         effective_model_id: Some(model_id.to_owned()),
+        effort_auto: None,
+        model_routing_locked: None,
     }
 }
 
@@ -136,9 +137,7 @@ async fn assert_wake_setup_failure_preserves_prior_durable_state(
 ) {
     use crate::session::storage::StorageAdapter;
     use distill_sampling_types::conversation::ConversationItem;
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
@@ -297,6 +296,144 @@ fn configure_completion_harness(
     ctx.model_id = acp::ModelId::new("test-model");
 }
 
+#[test]
+fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
+    std::thread::Builder::new()
+        .name("subagent-policy-resume-test".to_owned())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                use distill_tools::implementations::distill::task::backend::{
+                    ChannelBackend, SubagentBackend,
+                };
+                use distill_tools::implementations::distill::task::coordinator::{
+                    CoordinatorConfig, SubagentCoordinator,
+                };
+
+                let local = tokio::task::LocalSet::new();
+                local
+                    .run_until(async {
+                        let meta_dir = tempfile::tempdir().expect("meta dir");
+                        let server = distill_test_support::MockInferenceServer::start()
+                            .await
+                            .expect("mock server");
+                        server.set_response("completed output");
+                        let id = uuid::Uuid::now_v7().to_string();
+
+                        let mut ordinary_ctx = ctx_with_toggle(HashMap::new());
+                        configure_completion_harness(
+                            &mut ordinary_ctx,
+                            &server,
+                            RunShellChildHarnessConfig::new(
+                                meta_dir.path().to_path_buf(),
+                                InitialAttemptBehavior::Normal,
+                            ),
+                        );
+                        ordinary_ctx.parent_effort_auto = true;
+                        ordinary_ctx.auto_wake_enabled = false;
+
+                        let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+                        ordinary_ctx.parent_cmd_tx = Some(parent_cmd_tx.clone());
+                        let usage_ack =
+                            tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+
+                        let mut wake_ctx = ctx_with_toggle(HashMap::new());
+                        configure_completion_harness(
+                            &mut wake_ctx,
+                            &server,
+                            RunShellChildHarnessConfig::new(
+                                meta_dir.path().to_path_buf(),
+                                InitialAttemptBehavior::Normal,
+                            ),
+                        );
+                        // Make the durable source, rather than the new parent snapshot,
+                        // observable on resume.
+                        wake_ctx.parent_effort_auto = false;
+                        wake_ctx.auto_wake_enabled = false;
+                        wake_ctx.parent_cmd_tx = Some(parent_cmd_tx);
+
+                        let (gateway, _gateway_rx) = test_gateway_with_receiver();
+                        let (command_tx, command_rx) =
+                            SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                        let coordinator = tokio::task::spawn_local(
+                            SubagentCoordinator::from_channel(
+                                command_rx,
+                                RunShellChildTestRunner::new(
+                                    [ordinary_ctx, wake_ctx],
+                                    false,
+                                    gateway,
+                                ),
+                                CoordinatorConfig::default(),
+                            )
+                            .run(),
+                        );
+                        let backend =
+                            ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+
+                        let ordinary = backend
+                            .spawn(auto_wake_test_request(&id), None)
+                            .await
+                            .expect("ordinary spawn");
+                        assert!(
+                            ordinary.success,
+                            "ordinary spawn failed: {:?}",
+                            ordinary.error
+                        );
+                        let created: SubagentMeta = serde_json::from_str(
+                            &std::fs::read_to_string(meta_dir.path().join("meta.json"))
+                                .expect("created metadata"),
+                        )
+                        .expect("parse created metadata");
+                        assert_eq!(
+                            created.effort_auto,
+                            Some(true),
+                            "child creation must persist the parent's auto policy"
+                        );
+
+                        assert!(matches!(
+                            backend
+                                .send_active_message(
+                                    ActiveAgentMessageRequest::try_new(&id, "continue")
+                                        .expect("wake request")
+                                )
+                                .await,
+                            ActiveAgentMessageOutcome::Accepted { .. }
+                        ));
+                        let resumed = backend
+                            .query(&id, true, Some(5_000))
+                            .await
+                            .expect("resumed completion");
+                        assert!(matches!(
+                            resumed.status,
+                            SubagentSnapshotStatus::Completed { .. }
+                        ));
+                        let resumed_meta: SubagentMeta = serde_json::from_str(
+                            &std::fs::read_to_string(meta_dir.path().join("meta.json"))
+                                .expect("resumed metadata"),
+                        )
+                        .expect("parse resumed metadata");
+                        assert_eq!(
+                resumed_meta.effort_auto,
+                Some(true),
+                "resume must retain the source policy even when the new context is manual"
+            );
+
+                        drop(backend);
+                        coordinator.await.expect("coordinator");
+                        usage_ack.abort();
+                    })
+                    .await;
+            });
+        })
+        .expect("spawn policy test thread")
+        .join()
+        .expect("policy test thread");
+}
+
 async fn acknowledge_parent_usage(mut parent_cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
     while let Some(command) = parent_cmd_rx.recv().await {
         if let SessionCommand::RecordSubagentUsage { respond_to, .. } = command {
@@ -309,13 +446,11 @@ async fn acknowledge_parent_usage(mut parent_cmd_rx: mpsc::UnboundedReceiver<Ses
 async fn unpublished_wake_completion_preserves_prior_durable_state_and_worktree() {
     distill_test_utils::require_git!();
     use crate::session::storage::StorageAdapter;
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_test_utils::git::{run_git, seed_repo_with_remote};
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
-    use distill_test_utils::git::{run_git, seed_repo_with_remote};
 
     let local = tokio::task::LocalSet::new();
     local
@@ -352,9 +487,7 @@ async fn unpublished_wake_completion_preserves_prior_durable_state_and_worktree(
             storage
                 .append_chat_message(
                     &child_info,
-                    &distill_sampling_types::conversation::ConversationItem::system(
-                        "prior system",
-                    ),
+                    &distill_sampling_types::conversation::ConversationItem::system("prior system"),
                 )
                 .await
                 .expect("system message");
@@ -460,13 +593,11 @@ async fn unpublished_wake_completion_preserves_prior_durable_state_and_worktree(
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_spawn_with_failed_metadata_write_persists_output_and_disposes_worktree() {
     distill_test_utils::require_git!();
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_test_utils::git::seed_repo_with_remote;
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
-    use distill_test_utils::git::seed_repo_with_remote;
 
     let local = tokio::task::LocalSet::new();
     local
@@ -537,13 +668,11 @@ async fn ordinary_spawn_with_failed_metadata_write_persists_output_and_disposes_
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_spawn_disposes_worktree_when_only_remote_settings_enable_snapshot() {
     distill_test_utils::require_git!();
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_test_utils::git::seed_repo_with_remote;
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
-    use distill_test_utils::git::seed_repo_with_remote;
 
     let local = tokio::task::LocalSet::new();
     local
@@ -610,9 +739,7 @@ async fn ordinary_spawn_disposes_worktree_when_only_remote_settings_enable_snaps
 /// ahead of the first turn, and teardown releases it.
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn() {
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
@@ -686,9 +813,7 @@ async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn(
 
 #[tokio::test(flavor = "current_thread")]
 async fn unacked_wake_start_and_abort_fail_closed_without_parking_runner() {
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
@@ -816,9 +941,7 @@ async fn unacked_wake_start_and_abort_fail_closed_without_parking_runner() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_deferred_start_restores_prior_without_publication() {
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };
@@ -940,9 +1063,7 @@ async fn rejected_deferred_start_restores_prior_without_publication() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifacts() {
-    use distill_tools::implementations::distill::task::backend::{
-        ChannelBackend, SubagentBackend,
-    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
     };

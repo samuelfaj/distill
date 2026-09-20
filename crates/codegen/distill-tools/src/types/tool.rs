@@ -28,18 +28,25 @@ use crate::types::resources::SharedResources;
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ToolNamespace {
-    #[serde(alias = "Distill", alias = "GrokBuild", alias = "grok_build")]
+    #[serde(
+        alias = "Distill",
+        alias = "GrokBuild",
+        alias = "grok_build",
+        alias = "remote_code"
+    )]
     Distill,
     #[serde(
         alias = "DistillConcise",
         alias = "GrokBuildConcise",
-        alias = "grok_build_concise"
+        alias = "grok_build_concise",
+        alias = "remote_code_concise"
     )]
     DistillConcise,
     #[serde(
         alias = "DistillHashline",
         alias = "GrokBuildHashline",
-        alias = "grok_build_hashline"
+        alias = "grok_build_hashline",
+        alias = "remote_code_hashline"
     )]
     DistillHashline,
     #[serde(alias = "Codex")]

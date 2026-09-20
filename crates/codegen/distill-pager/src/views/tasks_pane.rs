@@ -362,6 +362,15 @@ impl TaskEntry {
             .flatten()
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        let active_route = match (
+            info.attempt.active_model.as_deref(),
+            info.attempt.active_reasoning_effort.as_deref(),
+        ) {
+            (Some(model), Some(effort)) => Some(format!("active {model} / {effort}")),
+            (Some(model), None) => Some(format!("active {model}")),
+            (None, Some(effort)) => Some(format!("active effort {effort}")),
+            (None, None) => None,
+        };
         let shown_desc = match activity {
             Some(_) => {
                 crate::render::line_utils::truncate_str(&description, ACTIVITY_DESC_MAX_WIDTH)
@@ -378,6 +387,12 @@ impl TaskEntry {
         if let Some(activity) = activity {
             spans.push(Span::styled(
                 format!(" \u{00b7} {activity}"),
+                Style::default().fg(theme.gray),
+            ));
+        }
+        if let Some(active_route) = active_route {
+            spans.push(Span::styled(
+                format!(" \u{00b7} {active_route}"),
                 Style::default().fg(theme.gray),
             ));
         }
@@ -1818,6 +1833,8 @@ mod tests {
                 persona: None,
                 role: None,
                 model: None,
+                active_model: None,
+                active_reasoning_effort: None,
                 context_source: None,
                 resumed_from: None,
                 capability_mode: None,
@@ -2858,6 +2875,27 @@ mod tests {
                 .all(|s| !s.content.contains("cargo build")),
             "no activity suffix on finished rows: {styled:?}"
         );
+    }
+
+    #[test]
+    fn subagent_visible_row_distinguishes_configured_and_active_route() {
+        let mut info = make_info();
+        info.attempt.model = Some("configured-model".into());
+        info.attempt.active_model = Some("lighter-model".into());
+        info.attempt.active_reasoning_effort = Some("low".into());
+        let entry = TaskEntry::from_subagent(&info);
+        let (label, styled) = match &entry {
+            TaskEntry::Agent { label, styled, .. } => (label, styled),
+            _ => panic!("expected Agent variant"),
+        };
+        let rendered: String = styled
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(label.contains("configured-model"));
+        assert!(rendered.contains("active lighter-model / low"));
+        assert!(!rendered.contains("configured-model"));
     }
 
     #[test]

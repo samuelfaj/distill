@@ -2,6 +2,9 @@
 use super::*;
 use serde::Deserialize;
 
+const ANNOUNCEMENTS_ENV: &str = "DISTILL_ANNOUNCEMENTS";
+const LEGACY_ANNOUNCEMENTS_ENV: &str = "REMOTE_CODE_ANNOUNCEMENTS";
+
 /// The announcements this harness shows, filtered: none unless the owner asked.
 ///
 /// Every producer goes through here — the settings push and the event loop's
@@ -22,8 +25,10 @@ pub(crate) fn visible_announcements(
 /// Off unless the owner asks for them: the banner is provider marketing, and a
 /// harness that routes to several providers should not advertise one of them.
 fn announcements_enabled() -> bool {
-    if let Ok(value) = std::env::var("REMOTE_CODE_ANNOUNCEMENTS") {
-        return !value.trim().is_empty() && value.trim() != "0";
+    for name in [ANNOUNCEMENTS_ENV, LEGACY_ANNOUNCEMENTS_ENV] {
+        if let Ok(value) = std::env::var(name) {
+            return !value.trim().is_empty() && value.trim() != "0";
+        }
     }
     distill_shell::config::ConfigLayers::load()
         .map(|layers| layers.effective_config_base_without_overlay())
@@ -501,7 +506,8 @@ pub(super) fn apply_announcements_update(
     // Distill ships with the provider's promotional banners off: they are
     // marketing served by the backend, not part of the harness.
     // `[announcements] enabled = true` in the user config, or
-    // `REMOTE_CODE_ANNOUNCEMENTS=1`, brings them back.
+    // `DISTILL_ANNOUNCEMENTS=1`, brings them back. The old env name remains a
+    // read-only compatibility fallback for existing installations.
     let announcements = visible_announcements(merged);
 
     app.announcement = match app.announcement.as_ref() {

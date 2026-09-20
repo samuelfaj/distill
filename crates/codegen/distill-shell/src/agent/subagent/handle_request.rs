@@ -514,6 +514,28 @@ pub(crate) async fn run_shell_child(
     } else {
         None
     };
+    // The in-memory coordinator source predates durable Jev policy metadata.
+    // Merge the on-disk terminal record before resolving the child: it carries
+    // live `/model` and `/effort` changes made after the child was created.
+    // Legacy records stay `None` and use the conservative policy below.
+    let mut resume_source = resume_source;
+    if let Some(source) = resume_source.as_mut()
+        && let Some(durable) =
+            durable_resume_source_for(&source.subagent_id, &ctx.parent_session_id, &ctx.parent_cwd)
+    {
+        if source.effort_auto.is_none() {
+            source.effort_auto = durable.effort_auto;
+        }
+        if source.model_routing_locked.is_none() {
+            source.model_routing_locked = durable.model_routing_locked;
+        }
+        // The durable record is the completed source's effective model, so it
+        // wins over a stale in-memory spawn snapshot. A caller-supplied model
+        // is applied later and therefore still has precedence.
+        if durable.model_id.is_some() {
+            source.model_id = durable.model_id;
+        }
+    }
     if is_wake && resume_source.is_none() {
         let error = format!(
             "Cannot reactivate subagent '{}': persisted session state is unavailable.",
@@ -521,14 +543,29 @@ pub(crate) async fn run_shell_child(
         );
         return child_run_output(failure_result(&request, &error), completion_data, None);
     }
+    let explicit_model_override = request.runtime_overrides.model.is_some();
+    let explicit_effort_override = request
+        .runtime_overrides
+        .reasoning_effort
+        .as_deref()
+        .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
+    let fresh_runtime_model_override =
+        !request.fork_context && resume_source.is_none() && effective_runtime.model.is_some();
+    let model_routing_locked = explicit_model_override
+        || fresh_runtime_model_override
+        || resume_source
+            .as_ref()
+            .and_then(|source| source.model_routing_locked)
+            .unwrap_or(false);
     if let Some(ref source) = resume_source {
-        if request.runtime_overrides.model.is_some() {
+        if explicit_model_override {
             tracing::debug!(
                 subagent_id = %request.id,
-                "Ignoring caller model override on resume; source model will be pinned"
+                "Keeping explicit caller model override on resume"
             );
+        } else {
+            effective_runtime.model = None;
         }
-        effective_runtime.model = None;
         if let Err(e) = distill_subagent_resolution::validate_resume_identity(
             &request.subagent_type,
             request.runtime_overrides.persona.as_deref(),
@@ -741,10 +778,10 @@ pub(crate) async fn run_shell_child(
         definition.capability_mode,
     );
     definition.capability_mode = effective_runtime.capability_mode;
-    let child_depth = request
-        .runtime_overrides
-        .spawn_depth
-        .unwrap_or(ctx.parent_depth + 1);
+    let child_depth = distill_subagent_resolution::resolve_child_depth(
+        ctx.parent_depth,
+        request.runtime_overrides.spawn_depth,
+    );
     let tools_before_policy = definition.tool_config.tools.len();
     let allow_nested_subagents = child_depth < ctx.subagents_max_depth;
     distill_subagent_resolution::apply_child_tool_policy(
@@ -775,7 +812,7 @@ pub(crate) async fn run_shell_child(
             )
         });
     }
-    if request.fork_context {
+    if request.fork_context && !explicit_model_override {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
     }
     let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
@@ -809,6 +846,7 @@ pub(crate) async fn run_shell_child(
         }
     }
     if let Some(ref source) = resume_source
+        && !explicit_model_override
         && let Some(ref source_model) = source.model_id
         && effective_model_id.0.as_ref() != source_model.as_str()
     {
@@ -865,6 +903,15 @@ pub(crate) async fn run_shell_child(
                 crate::sampling::derive_conversation_group_id(&ctx.parent_session_id)
             }));
     }
+    // Explicit model/effort choices win. A resumed source restores its durable
+    // auto/manual policy, while a missing legacy field conservatively stays
+    // manual; ordinary forked children inherit the parent's policy.
+    let child_jev_effort_auto = crate::agent::subagent::resolve_child_jev_effort_auto(
+        ctx.parent_effort_auto,
+        &request,
+        &effective_runtime,
+        resume_source.as_ref(),
+    );
     let subagent_model_id = effective_sampling_config.model.clone();
     let auto_compact_threshold_percent =
         ctx.resolve_auto_compact_threshold_percent(&subagent_model_id);
@@ -982,8 +1029,10 @@ pub(crate) async fn run_shell_child(
             .map(|p| p.to_string_lossy().to_string()),
         snapshot_ref: None,
         effective_model_id: Some(effective_model_id.0.to_string()),
+        effort_auto: Some(child_jev_effort_auto),
+        model_routing_locked: Some(model_routing_locked),
     };
-    let gcs_upload_ctx = GcsUploadContext {
+    let mut gcs_upload_ctx = GcsUploadContext {
         bucket_url: ctx.gcs_bucket_url.clone(),
         upload_method: ctx.gcs_upload_method.clone(),
         model_id: Some(effective_model_id.0.to_string()),
@@ -1529,6 +1578,8 @@ pub(crate) async fn run_shell_child(
             parent_session_id: Some(ctx.parent_session_id.clone()),
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
+            explicit_model_override: model_routing_locked,
+            explicit_effort_override,
             ..Default::default()
         },
         distill_workspace::permission::ClientType::Generic,
@@ -1598,6 +1649,7 @@ pub(crate) async fn run_shell_child(
                 distill_agent::config::PermissionMode::BypassPermissions
             ),
         false,
+        child_jev_effort_auto,
         None,
         ctx.inference_idle_timeout_secs,
         None,
@@ -2053,6 +2105,21 @@ pub(crate) async fn run_shell_child(
     result.tool_calls = tool_calls;
     result.turns = turns;
     result.duration_ms = start.elapsed().as_millis() as u64;
+    let final_sampling_config = child_actor_query(
+        "final_sampling_config",
+        child_handle.chat_state_handle.get_sampling_config(),
+        None,
+    )
+    .await;
+    let final_model_id = final_sampling_config
+        .as_ref()
+        .map(|config| config.model.clone());
+    if final_model_id.is_some() {
+        gcs_upload_ctx.model_id = final_model_id.clone();
+    }
+    let final_effort_auto = child_handle
+        .jev_effort_auto
+        .load(std::sync::atomic::Ordering::Relaxed);
     if let Some(trace_gcs_config) = gcs_upload_ctx.upload_method.as_ref().map(|method| {
         crate::session::repo_changes::TraceExportConfig {
             bucket_url: gcs_upload_ctx.bucket_url.clone(),
@@ -2224,7 +2291,13 @@ pub(crate) async fn run_shell_child(
     if terminal_persistence_allowed {
         completion_data
             .set_persisted_output_dir(persist_subagent_output(&subagent_meta_dir, &result));
-        persist_subagent_completion(&subagent_meta_dir, &result, &gcs_upload_ctx);
+        persist_subagent_completion(
+            &subagent_meta_dir,
+            &result,
+            &gcs_upload_ctx,
+            final_model_id.as_deref(),
+            Some(final_effort_auto),
+        );
     }
     let final_status = result.status().to_string();
     let snapshot_dispose_enabled =

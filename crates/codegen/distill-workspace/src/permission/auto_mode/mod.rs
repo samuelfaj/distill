@@ -43,7 +43,6 @@ wire_enum! {
     /// This is the single owner projection that the manager emits and the shell drift test iterates; there are no loose string constants.
     pub enum ClassifierSourceKind {
         Llm => "llm",
-        Jev => "jev",
         Heuristic => "heuristic",
         Timeout => "timeout",
         TransportError => "transport_error",
@@ -58,8 +57,6 @@ wire_enum! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassifierSource {
     Llm,
-    /// The Jev (TypeSafe System One) decision path (plan §1.2 item D1).
-    Jev,
     Heuristic,
     Timeout,
     TransportError,
@@ -70,7 +67,6 @@ impl ClassifierSource {
     pub const fn kind(self) -> ClassifierSourceKind {
         match self {
             Self::Llm => ClassifierSourceKind::Llm,
-            Self::Jev => ClassifierSourceKind::Jev,
             Self::Heuristic => ClassifierSourceKind::Heuristic,
             Self::Timeout => ClassifierSourceKind::Timeout,
             Self::TransportError => ClassifierSourceKind::TransportError,
@@ -111,9 +107,6 @@ impl std::fmt::Display for ClassifierFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClassifierProvenance {
     Llm,
-    /// The Jev decision path; kept distinct so the manager can refuse to let a
-    /// Jev allow clear the denial ratchet (plan §1.6/I-4).
-    Jev,
     Heuristic,
     Failure(ClassifierFailure),
 }
@@ -122,7 +115,6 @@ impl ClassifierProvenance {
     const fn source(&self) -> ClassifierSource {
         match self {
             Self::Llm => ClassifierSource::Llm,
-            Self::Jev => ClassifierSource::Jev,
             Self::Heuristic => ClassifierSource::Heuristic,
             Self::Failure(failure) => failure.source(),
         }
@@ -158,21 +150,6 @@ impl ClassifierOutcome {
             reason,
             provenance: ClassifierProvenance::Llm,
         }
-    }
-
-    /// A verdict produced by the Jev decision path. Its authority is capped by
-    /// the caller (routine class only) and it never clears the denial ratchet.
-    pub fn jev(verdict: ClassifierVerdict, reason: Option<String>) -> Self {
-        Self {
-            verdict,
-            reason,
-            provenance: ClassifierProvenance::Jev,
-        }
-    }
-
-    /// True when this outcome came from the Jev path.
-    pub const fn is_jev(&self) -> bool {
-        matches!(self.provenance, ClassifierProvenance::Jev)
     }
 
     pub fn failure(failure: ClassifierFailure) -> Self {

@@ -1378,7 +1378,7 @@ mod tests {
                     "cargo".to_owned(),
                     "run".to_owned(),
                     "--bin".to_owned(),
-                    "distill-pager".to_owned()
+                    "distill".to_owned()
                 ],
                 suffix: vec![],
             })
@@ -1416,7 +1416,7 @@ mod tests {
                     "cargo".to_owned(),
                     "build".to_owned(),
                     "--bin".to_owned(),
-                    "distill-pager".to_owned(),
+                    "distill".to_owned(),
                 ],
                 suffix: vec!["2>&1".to_owned(),],
             })

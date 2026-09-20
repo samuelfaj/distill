@@ -1,5 +1,5 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
-//! `/tutorial` -- open the onboarding tutorial overlay.
+//! `/tutorial` and `/onboarding` -- open the tutorial or first-run flow.
 //!
 //! Purely opt-in: this command (also listed in the command palette) is the
 //! only way the tutorial opens — it never auto-shows.
@@ -8,13 +8,13 @@ use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 use crate::slash::{ModeSupport, Remedy};
 
-/// Open the onboarding tutorial.
+/// Open the durable onboarding tutorial.
 pub struct TutorialCommand;
 
 impl SlashCommand for TutorialCommand {
     slash_meta! {
         name: "tutorial",
-        aliases: ["tour", "onboarding"],
+        aliases: ["tour"],
         description: "Quick tips to get the most out of Distill",
         usage: "/tutorial",
         // Gated off rather than merely hidden: minimal has no modal host, so the overlay's input intercept would freeze the session invisibly.
@@ -25,6 +25,22 @@ impl SlashCommand for TutorialCommand {
 
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
         CommandResult::Action(Action::OpenTutorial)
+    }
+}
+
+/// Open the four-step first-run onboarding flow. It is intentionally a separate command from
+/// `/tutorial` so the educational tour remains opt-in and stable.
+pub struct OnboardingCommand;
+
+impl SlashCommand for OnboardingCommand {
+    slash_meta! {
+        name: "onboarding",
+        description: "Set up models, worker routing, and the Distill community link",
+        usage: "/onboarding",
+    }
+
+    fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
+        CommandResult::Action(Action::OpenOnboarding)
     }
 }
 
@@ -61,6 +77,24 @@ mod tests {
         assert!(matches!(
             TutorialCommand.run(&mut ctx, ""),
             CommandResult::Action(Action::OpenTutorial)
+        ));
+    }
+
+    #[test]
+    fn dispatches_open_onboarding_without_aliasing_tutorial() {
+        let models = ModelState::default();
+        let mut ctx = CommandExecCtx {
+            models: &models,
+            session_id: None,
+            bundle_state: &DEFAULT_BUNDLE_STATE,
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+            billing_surface_visible: true,
+            usage_command_visible: true,
+            pager_state: PagerLocalSnapshot::default(),
+        };
+        assert!(matches!(
+            OnboardingCommand.run(&mut ctx, ""),
+            CommandResult::Action(Action::OpenOnboarding)
         ));
     }
 }

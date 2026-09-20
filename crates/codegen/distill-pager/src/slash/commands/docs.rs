@@ -2,7 +2,7 @@
 //! `/docs` opens How-to Guides (in-TUI) or the online Build docs.
 //!
 //! Bare `/docs` opens the same DocPicker as command-palette "How-to Guides".
-//! `/docs web` opens https://github.com/samuelfaj/remote-code-code#readme in the browser.
+//! `/docs web` opens https://github.com/samuelfaj/distill/blob/main/README.md in the browser.
 //! `/docs <title>` opens a single guide by title (case-insensitive).
 
 use crate::app::actions::Action;
@@ -12,7 +12,7 @@ use crate::slash::command::{
 };
 
 /// The online Build docs landing page, hardcoded like other TUI deep-links; docs.x.ai can redirect if the path moves.
-pub const BUILD_DOCS_URL: &str = "https://github.com/samuelfaj/remote-code-code#readme";
+pub const BUILD_DOCS_URL: &str = "https://github.com/samuelfaj/distill/blob/main/README.md";
 
 pub struct DocsCommand;
 

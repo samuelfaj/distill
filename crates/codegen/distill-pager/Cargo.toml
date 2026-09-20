@@ -25,7 +25,7 @@ distill-gboom = { path = "../distill-gboom" }
 distill-pager-diff = { path = "../distill-pager-diff" }
 
 # Rendering
-ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
+ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref", "unstable-rendered-line-info"] }
 distill-announcements = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream", "bracketed-paste"] }
 textwrap = { workspace = true }

@@ -157,7 +157,7 @@ Open an external editor for the prompt, in either render mode. Grok resolves `$V
 
 Switch the current session to the other render mode, in place. `/minimal` (offered while you're in fullscreen) switches to the experimental scrollback-native mode; `/fullscreen` (offered while you're in minimal; alias `/full`) switches back to standard fullscreen mode. The switch happens inside the running process — nothing restarts, so a running turn keeps streaming and your composer draft, queued prompts, and permission mode all carry over; a marker (committed line in minimal, toast in fullscreen) reminds you how to switch back. Both are session-scoped — they don't touch `config.toml` — and the `--minimal` / `--fullscreen` CLI flags are session-scoped the same way. To make plain `grok` open in a given mode by default, use `/settings` → **Default screen mode** or set `[ui] screen_mode`. (If the in-place transition misbehaves in an exotic terminal, `GROK_SCREEN_MODE_SWITCH=exec` restores the old behavior of relaunching the pager onto the same session.)
 
-A handful of commands only work in one of the two modes, because the surface they drive doesn't exist in the other: `/find`, `/jump`, `/timeline`, `/theme`, `/tutorial`, and `/dashboard` are fullscreen-only, while `/expand` is minimal-only. (`/workflow runs` is different: it opens the run pane in fullscreen and degrades to a text overview in minimal rather than refusing.) Those are hidden from the command menu and the palette in the mode they can't run in. If you type one out anyway, Grok says why — and points you at whichever is actually useful. When the other mode is the only way to get it, that's the mode switch: `/theme isn't available in minimal mode (minimal renders with your terminal's own palette). Run /fullscreen to switch this session.` When this mode already does the job another way, it names that instead: `/expand isn't available in fullscreen mode: press Tab to focus the scrollback, then → on the block.` Everything else works in both. Note that `--no-alt-screen` still counts as fullscreen here, so it keeps the fullscreen-only commands.
+A handful of commands only work in one of the two modes, because the surface they drive doesn't exist in the other: `/find`, `/jump`, `/timeline`, `/theme`, `/tutorial`, and `/dashboard` are fullscreen-only, while `/expand` is minimal-only. `/onboarding` is available in both modes, but minimal mode shows a visible instruction to switch to fullscreen before opening its modal. (`/workflow runs` is different: it opens the run pane in fullscreen and degrades to a text overview in minimal rather than refusing.) Those are hidden from the command menu and the palette in the mode they can't run in. If you type one out anyway, Grok says why — and points you at whichever is actually useful. When the other mode is the only way to get it, that's the mode switch: `/theme isn't available in minimal mode (minimal renders with your terminal's own palette). Run /fullscreen to switch this session.` When this mode already does the job another way, it names that instead: `/expand isn't available in fullscreen mode: press Tab to focus the scrollback, then → on the block.` Everything else works in both. Note that `--no-alt-screen` still counts as fullscreen here, so it keeps the fullscreen-only commands.
 
 ### `/plan`
 
@@ -374,7 +374,7 @@ Browse the built-in How-to Guides, open the online Build docs, or jump straight 
 ```
 
 - Bare `/docs` (or `/docs how-to`) opens the How-to Guides picker.
-- `/docs web` opens https://github.com/samuelfaj/remote-code-code#readme in your browser.
+- `/docs web` opens https://github.com/samuelfaj/distill/blob/main/README.md in your browser.
 - `/docs <title>` opens a specific guide by case-insensitive title match.
 
 ### `/tutorial`
@@ -385,7 +385,22 @@ Open the onboarding tutorial: a short list of topics (your first prompt, attachi
 /tutorial
 ```
 
-Aliases: `/tour`, `/onboarding`
+Alias: `/tour`
+
+### `/onboarding`
+
+Open the durable four-step first-run setup. It is separate from `/tutorial`, and a closed flow resumes at the same step when reopened:
+
+1. **Make your AI budget go further** — how model choice and routing can change cost without claiming that OpenRouter reduces tokens by itself.
+2. **Connect your AI** — reuse Grok, Codex (ChatGPT), and OpenRouter login flows, then choose the primary model through the existing model selector.
+3. **Choose a worker model** — choose an eligible worker with the existing compatibility and effort checks, or skip while preserving the current worker.
+4. **Stay in the loop** — optionally open `https://x.com/samfajreldines/`, then finish without automatically following or claiming that you followed.
+
+Completion is written to `[ui].onboarding_completed` only after the config write succeeds. Startup auto-opening waits until ordinary interactive startup gates are settled and is deferred for resume, fork, prompt, dashboard, trust, consent, mandatory login, external-agent, noninteractive, and minimal launches; those paths keep their existing first interaction. Press `Esc` to close, `←`/`Backspace` to go back, and use `/onboarding` again to resume. In a narrow terminal the content wraps; if there is too little space, the overlay gives a visible resize instruction.
+
+```
+/onboarding
+```
 
 ### `/import-claude`
 

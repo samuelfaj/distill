@@ -137,6 +137,12 @@ impl MvpAgent {
             .map(|h| std::path::PathBuf::from(&h.info.cwd))
             .unwrap_or_default();
         let yolo_mode = ps.map(|h| h.yolo_mode).unwrap_or(self.default_yolo_mode);
+        let parent_effort_auto = ps
+            .map(|h| {
+                h.jev_effort_auto
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .unwrap_or_else(|| self.models_manager.current_effort_auto());
         let parent_depth = ps.map(|h| h.tool_context.subagent_depth).unwrap_or(0);
         let hunk_tracker_handle = ps
             .map(|h| h.tool_context.hunk_tracker_handle.clone())
@@ -269,6 +275,7 @@ impl MvpAgent {
                 .cloned()
                 .unwrap_or_else(|| acp::AuthMethodId::new("default")),
             model_id: parent_model_id,
+            parent_effort_auto,
             auth: self.current_or_buffered_auth(),
             parent_cwd: parent_cwd.clone(),
             parent_session_id: parent_session_id.to_string(),

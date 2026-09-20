@@ -38,6 +38,15 @@ pub struct HarnessToolsetContext<'a> {
     pub parent_model_agent_type: Option<&'a str>,
     pub file_tool_overrides: Option<&'a [ToolConfig]>,
 }
+
+/// Resolve a child depth without allowing a request override to erase the
+/// actual ancestry. A caller may report a deeper depth, but never a shallower
+/// one that would re-enable nested tools.
+pub fn resolve_child_depth(parent_depth: u32, requested_depth: Option<u32>) -> u32 {
+    requested_depth
+        .unwrap_or(parent_depth.saturating_add(1))
+        .max(parent_depth.saturating_add(1))
+}
 /// Without the `cursor` feature no flavor is representable: the alternate flavors re-select toolset presets and templates that are compiled out.
 /// This stub keeps ungated call sites compiling.
 pub fn subagent_harness_flavor_is_representable(_agent_type: &str) -> bool {
@@ -397,6 +406,13 @@ mod tests {
             .filter(|id| !id.ends_with(":workflow") && id != "workflow")
             .collect();
         assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn child_depth_cannot_be_lowered_by_a_spawn_override() {
+        assert_eq!(resolve_child_depth(0, None), 1);
+        assert_eq!(resolve_child_depth(2, Some(0)), 3);
+        assert_eq!(resolve_child_depth(2, Some(7)), 7);
     }
     #[test]
     fn custom_definition_cannot_keep_workflow_after_child_policy() {

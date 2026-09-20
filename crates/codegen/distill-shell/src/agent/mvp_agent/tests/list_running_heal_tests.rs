@@ -36,6 +36,8 @@ fn running_meta(id: &str, parent: &str) -> SubagentMeta {
         worktree_path: None,
         snapshot_ref: None,
         effective_model_id: None,
+        effort_auto: None,
+        model_routing_locked: None,
     }
 }
 

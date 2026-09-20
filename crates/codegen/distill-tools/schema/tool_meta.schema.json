@@ -40,12 +40,12 @@
       "type": "string"
     },
     "ToolNamespace": {
-      "description": "The toolset a tool belongs to. Serializes to snake_case (`remote_code`, `mcp`, …) for the canonical tool `_meta` wire contract. PascalCase\naliases are accepted on deserialize so legacy persisted/manifest values still parse. The `Display` impl remains PascalCase for existing\nqualified id strings (e.g. `\"Distill:read_file\"`); only the serde form goes on the wire.",
+      "description": "The toolset a tool belongs to. Serializes to snake_case (`distill`, `mcp`, …) for the canonical tool `_meta` wire contract. PascalCase\naliases are accepted on deserialize so legacy persisted/manifest values still parse. The `Display` impl remains PascalCase for existing\nqualified id strings (e.g. `\"Distill:read_file\"`); only the serde form goes on the wire.",
       "type": "string",
       "enum": [
-        "remote_code",
-        "remote_code_concise",
-        "remote_code_hashline",
+        "distill",
+        "distill_concise",
+        "distill_hashline",
         "codex",
         "opencode",
         "mcp"

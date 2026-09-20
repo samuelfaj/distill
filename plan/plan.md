@@ -409,7 +409,10 @@ verificação semântica pendente.
 ### Lacunas de conformidade do conselho (registradas, não escondidas)
 
 - Sem `council-report.json` validado, sem scratch e sem prova de validação: `plan mode` proíbe escrita. Executa em `S-000`.
-- Bridge de telemetria de subagente (`REMOTE_CODE_SUBAGENT_TELEMETRY_COMMAND`) não disponível/verificada nesta sessão → execução crua, gap registrado (previsto no contrato).
+- Bridge de telemetria de subagente (contrato externo do `/sam-orchestrate`,
+  `REMOTE_CODE_SUBAGENT_TELEMETRY_COMMAND`) não disponível/verificada nesta
+  sessão → execução crua, gap registrado (previsto no contrato). O nome não é
+  uma superfície do produto Distill e permanece sem renomear.
 - O perfil `fast` **não** aprova; a aprovação, se vier, virá do conselho `full` em `S-000`.
 
 ---

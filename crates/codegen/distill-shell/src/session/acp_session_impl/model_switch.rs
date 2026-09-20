@@ -233,6 +233,8 @@ impl SessionActor {
             cfg.model = routed;
         }
         cfg.reasoning_effort = Some(effort);
+        self.jev_effort_auto
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         let model_id = acp::ModelId::new(cfg.model.clone());
         self.chat_state_handle.update_sampling_config(cfg);
         let agent_name = self.agent.borrow().definition().name.clone();

@@ -821,20 +821,76 @@ fn auth_complete_preserves_show_resolved_model_when_absent() {
 }
 
 #[test]
+fn grok_onboarding_auth_returns_to_connect_after_success_error_or_cancel() {
+    fn pending_app() -> AppView {
+        let mut app = test_app();
+        let state = app
+            .onboarding
+            .get_or_insert_with(crate::views::onboarding::OnboardingState::new);
+        state.step = crate::views::onboarding::OnboardingStep::Worker;
+        state.set_auth_started(None);
+        app.auth_state = AuthState::Authenticating {
+            request_seq: 1,
+            handle: None,
+            auth_url: None,
+            mode: AuthMode::Loopback,
+        };
+        app
+    }
+
+    let mut success = pending_app();
+    dispatch(
+        Action::TaskComplete(TaskResult::AuthComplete {
+            request_seq: 1,
+            meta: None,
+        }),
+        &mut success,
+    );
+    assert_eq!(
+        success.onboarding.as_ref().unwrap().step,
+        crate::views::onboarding::OnboardingStep::Connect
+    );
+
+    let mut error = pending_app();
+    dispatch(
+        Action::TaskComplete(TaskResult::AuthFailed {
+            request_seq: 1,
+            error: "manual auth failed".to_owned(),
+        }),
+        &mut error,
+    );
+    assert_eq!(
+        error.onboarding.as_ref().unwrap().step,
+        crate::views::onboarding::OnboardingStep::Connect
+    );
+
+    let mut cancelled = pending_app();
+    dispatch(Action::CancelOnboardingLogin, &mut cancelled);
+    assert_eq!(
+        cancelled.onboarding.as_ref().unwrap().step,
+        crate::views::onboarding::OnboardingStep::Connect
+    );
+    assert!(!cancelled.onboarding.as_ref().unwrap().auth_pending);
+}
+
+#[test]
 fn provider_login_starts_once_and_leaves_grok_auth_unchanged() {
     use crate::app::actions::LoginProvider;
     let mut app = test_app();
     app.auth_state = AuthState::Pending { error: None };
     for provider in [LoginProvider::ChatGpt, LoginProvider::OpenRouter] {
         let effects = dispatch(Action::LoginProvider(provider), &mut app);
-        assert!(
-            matches!(effects.as_slice(), [Effect::LoginProvider(actual)] if *actual == provider)
-        );
+        let attempt_id = app.provider_login_attempt_id.expect("provider attempt id");
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::LoginProvider { provider: actual, .. }] if *actual == provider
+        ));
         assert!(matches!(app.auth_state, AuthState::Pending { error: None }));
         assert!(dispatch(Action::LoginProvider(provider), &mut app).is_empty());
         dispatch(
             Action::TaskComplete(TaskResult::ProviderLoginFinished {
                 provider,
+                attempt_id,
                 result: Err("authorization declined".to_owned()),
             }),
             &mut app,
@@ -845,4 +901,117 @@ fn provider_login_starts_once_and_leaves_grok_auth_unchanged() {
             matches!(app.welcome_doc_viewer.as_ref(), Some(crate::views::modal::ActiveModal::DocViewer { content, .. }) if content.contains("authorization declined"))
         );
     }
+}
+
+#[test]
+fn onboarding_grok_handoff_clears_prior_provider_viewer_for_manual_auth() {
+    use crate::app::actions::LoginProvider;
+    use crate::app::app_view::InputOutcome;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = test_app();
+    dispatch(Action::OpenOnboarding, &mut app);
+    let onboarding = app.onboarding.as_mut().expect("onboarding opened");
+    onboarding.step = crate::views::onboarding::OnboardingStep::Connect;
+    onboarding.set_auth_started(Some(LoginProvider::ChatGpt));
+
+    dispatch(Action::LoginProvider(LoginProvider::ChatGpt), &mut app);
+    let attempt_id = app.provider_login_attempt_id.expect("provider attempt id");
+    dispatch(
+        Action::TaskComplete(TaskResult::ProviderLoginFinished {
+            provider: LoginProvider::ChatGpt,
+            attempt_id,
+            result: Err("authorization declined".to_owned()),
+        }),
+        &mut app,
+    );
+    assert!(app.welcome_doc_viewer.is_some());
+
+    // This is the same handoff performed by the onboarding Connect action.
+    app.onboarding
+        .as_mut()
+        .expect("onboarding retained after provider failure")
+        .set_auth_started(None);
+    app.login_method_id = Some(acp::AuthMethodId::new("grok.com"));
+    app.auth_start_mode = AuthMode::Loopback;
+    dispatch(Action::Login, &mut app);
+
+    assert!(app.welcome_doc_viewer.is_none());
+    assert!(matches!(
+        app.handle_input(&Event::Paste("manual-code".to_owned())),
+        InputOutcome::Changed
+    ));
+    assert!(matches!(
+        app.handle_input(&Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))),
+        InputOutcome::Action(Action::SubmitAuthCode(code)) if code == "manual-code"
+    ));
+    assert!(matches!(
+        app.handle_input(&Event::Key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)
+        )),
+        InputOutcome::Action(Action::CancelOnboardingLogin)
+    ));
+}
+
+#[test]
+fn cancelled_provider_attempt_cannot_clear_a_same_provider_retry() {
+    use crate::app::actions::LoginProvider;
+
+    let mut app = test_app();
+    dispatch(Action::OpenOnboarding, &mut app);
+    app.onboarding
+        .as_mut()
+        .expect("onboarding opened")
+        .set_auth_started(Some(LoginProvider::ChatGpt));
+
+    dispatch(Action::LoginProvider(LoginProvider::ChatGpt), &mut app);
+    let first_attempt = app.provider_login_attempt_id.expect("first attempt id");
+    let first_cancel = app
+        .provider_login_cancel
+        .as_ref()
+        .expect("first cancellation token")
+        .clone();
+
+    dispatch(
+        Action::CancelOnboardingProviderLogin(LoginProvider::ChatGpt),
+        &mut app,
+    );
+    assert!(first_cancel.is_cancelled());
+    assert!(app.provider_login_pending.is_none());
+
+    dispatch(Action::LoginProvider(LoginProvider::ChatGpt), &mut app);
+    let second_attempt = app.provider_login_attempt_id.expect("retry attempt id");
+    assert_ne!(first_attempt, second_attempt);
+
+    dispatch(
+        Action::TaskComplete(TaskResult::ProviderLoginFinished {
+            provider: LoginProvider::ChatGpt,
+            attempt_id: first_attempt,
+            result: Ok("stale success".to_owned()),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        app.provider_login_attempt_id,
+        Some(second_attempt),
+        "late completion from the cancelled attempt must be ignored"
+    );
+    assert_eq!(
+        app.provider_login_pending,
+        Some(LoginProvider::ChatGpt),
+        "retry must remain active after stale completion"
+    );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::ProviderLoginFinished {
+            provider: LoginProvider::ChatGpt,
+            attempt_id: second_attempt,
+            result: Err("retry cancelled in test".to_owned()),
+        }),
+        &mut app,
+    );
+    assert!(app.provider_login_pending.is_none());
 }

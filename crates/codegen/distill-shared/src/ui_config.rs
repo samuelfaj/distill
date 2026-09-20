@@ -1,6 +1,6 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
-use serde::{Deserialize, Serialize};
 use distill_config::DisplayRefreshSettings;
+use serde::{Deserialize, Serialize};
 
 use distill_status_line::StatusLineConfig;
 
@@ -22,6 +22,9 @@ pub struct UiConfig {
     /// Read by pager, declared here for `serde_ignored`.
     #[serde(default)]
     pub compact_mode: bool,
+    /// Set only after the four-step onboarding flow is durably completed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub onboarding_completed: bool,
     /// Read by pager, declared here for `serde_ignored`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simple_mode: Option<bool>,
@@ -176,6 +179,10 @@ fn status_line_should_not_be_saved(status_line: &StatusLineConfig) -> bool {
     status_line.is_default() || status_line.problem().is_some()
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// User-config opt-outs for the per-tip contextual hints, serialized as `[ui.contextual_hints]`.
 /// Per-field `None` means "inherit remote/default"; `Some(bool)` is a user-explicit choice (needed so the resolver can let it beat the remote tier).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +259,7 @@ impl Default for UiConfig {
             yolo: false,
             ui_theme: None,
             compact_mode: false,
+            onboarding_completed: false,
             simple_mode: None,
             permission_mode: None,
             approval_mode: None,

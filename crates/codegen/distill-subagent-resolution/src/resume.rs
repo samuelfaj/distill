@@ -2,7 +2,9 @@
 //! Resume identity validation: ensures that a resumed subagent matches the source's identity fields (type, persona).
 //!
 //! Model is not an identity gate on resume.
-//! The shell always inherits and pins the source model, and any caller-provided model override is silently ignored.
+//! The shell inherits and pins the source model unless the caller supplies an
+//! explicit model override; that override is authoritative for the resumed
+//! child while type/persona identity remains source-bound.
 //!
 //! Extracted from `distill-shell/src/agent/subagent/` resume validation block.
 
@@ -31,9 +33,11 @@ pub enum ResumeValidationError {
     },
 }
 
-/// Resume contract: the resumed child inherits the source's raw transcript, tool state, and model. Model overrides are
-/// not validated here; callers silently ignore them and pin the source model. Returns `Ok(())` if identity fields match,
-/// or `Err(ResumeValidationError)` describing the first mismatch found.
+/// Resume contract: the resumed child inherits the source's raw transcript and
+/// tool state. The source model is the default, while an explicit caller model
+/// may win at the shell layer. Model overrides are not an identity gate here.
+/// Returns `Ok(())` if identity fields match, or `Err(ResumeValidationError)`
+/// describing the first mismatch found.
 pub fn validate_resume_identity(
     requested_type: &str,
     requested_persona: Option<&str>,
@@ -74,6 +78,8 @@ mod tests {
             subagent_type: subagent_type.into(),
             persona: persona.map(String::from),
             model_id: model_id.map(String::from),
+            effort_auto: None,
+            model_routing_locked: None,
             child_cwd: "/workspace".into(),
             worktree_path: None,
             snapshot_ref: None,

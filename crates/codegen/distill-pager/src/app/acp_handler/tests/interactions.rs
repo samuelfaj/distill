@@ -876,6 +876,77 @@
         assert!(app.status_line.display().is_none(), "and nothing is drawn");
     }
 
+    #[test]
+    fn status_snapshot_applies_effective_context_window_to_main_context_bar() {
+        let mut app = make_app_with_agent("sess-1");
+        let mut status = crate::app::status_line::test_context("/tmp");
+        status.context_window = distill_status_line::StatusLineContextWindow {
+            context_window_size: Some(272_000),
+            context_tokens: Some(2_100),
+            ..Default::default()
+        };
+        let notif = SessionNotification {
+            session_id: acp::SessionId::new("sess-1"),
+            update: XaiSessionUpdate::SessionStatus(Box::new(status)),
+            meta: None,
+        };
+        let raw = serde_json::value::to_raw_value(&notif).unwrap();
+        let ext = acp::ExtNotification::new("x.ai/session_notification", std::sync::Arc::from(raw));
+
+        handle_session_notification(&ext, &mut app);
+
+        let context = test_agent(&app, AgentId(0)).context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_100, 272_000));
+
+        let _ = handle(make_token_notification_message("sess-1", 2_200), &mut app);
+        let context = test_agent(&app, AgentId(0)).context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_200, 272_000));
+    }
+
+    #[test]
+    fn usage_update_retains_effective_window_through_tokens_then_fallback() {
+        let mut app = make_app_with_agent("sess-1");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.models.override_context_window(128_000);
+
+        let usage = acp::SessionNotification::new(
+            acp::SessionId::new("sess-1"),
+            acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(2_100, 272_000)),
+        );
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(handle(
+            AcpClientMessage::SessionNotification(distill_acp_lib::AcpArgs {
+                request: usage,
+                response_tx: tx,
+            }),
+            &mut app,
+        ));
+        let agent = test_agent(&app, AgentId(0));
+        assert_eq!(agent.session.models.get_context_window(), Some(272_000));
+        assert_eq!(agent.context_state.as_ref().map(|c| (c.used, c.total)), Some((2_100, 272_000)));
+
+        let _ = handle(make_token_notification_message("sess-1", 2_200), &mut app);
+        let agent = test_agent(&app, AgentId(0));
+        assert_eq!(agent.session.models.get_context_window(), Some(272_000));
+        assert_eq!(agent.context_state.as_ref().map(|c| (c.used, c.total)), Some((2_200, 272_000)));
+
+        let fallback = acp::SessionNotification::new(
+            acp::SessionId::new("sess-1"),
+            acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(2_300, 128_000)),
+        );
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(handle(
+            AcpClientMessage::SessionNotification(distill_acp_lib::AcpArgs {
+                request: fallback,
+                response_tx: tx,
+            }),
+            &mut app,
+        ));
+        let agent = test_agent(&app, AgentId(0));
+        assert_eq!(agent.session.models.get_context_window(), Some(128_000));
+        assert_eq!(agent.context_state.as_ref().map(|c| (c.used, c.total)), Some((2_300, 128_000)));
+    }
+
     /// The other half: an enabled row settles once it has drawn, and an idle session asks for no ticks.
     /// The snapshot's own repaint is thus the only thing that moves the row until the next turn.
     #[test]
@@ -1063,4 +1134,3 @@
             "session draft must retain its own image payload"
         );
     }
-

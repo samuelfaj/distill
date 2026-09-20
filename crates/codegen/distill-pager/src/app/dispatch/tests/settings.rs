@@ -422,7 +422,7 @@ fn model_switch_pending_resets_correctly_across_success_and_failure() {
             agent_id: id,
             model_id: model_a,
             effort: None,
-            result: Ok(()),
+            result: Ok(None),
             prev_model_id: None,
         }),
         &mut app,

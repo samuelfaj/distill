@@ -263,6 +263,11 @@ pub struct SessionSignals {
     /// `active_model_id` for the lifetime and persistence contract.
     #[serde(skip)]
     pub active_reasoning_effort: Option<String>,
+    /// Context window selected for the currently dispatched round. This is
+    /// separate from the persistent compaction window above so a routed
+    /// worker cannot be overwritten by a later base-session read.
+    #[serde(skip)]
+    pub active_context_window_tokens: Option<u64>,
 
     // === Edit & Retry ===
     /// Number of edit-and-retry actions (user rewinds and submits a different prompt)
@@ -516,6 +521,7 @@ pub enum SignalEvent {
     SetActiveDispatch {
         model_id: Option<String>,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u64>,
     },
 
     // === Latency Events ===
@@ -815,10 +821,12 @@ impl SessionSignalsHandle {
         &self,
         model_id: impl Into<String>,
         reasoning_effort: Option<impl Into<String>>,
+        context_window_tokens: Option<u64>,
     ) {
         let _ = self.tx.send(SignalEvent::SetActiveDispatch {
             model_id: Some(model_id.into()),
             reasoning_effort: reasoning_effort.map(Into::into),
+            context_window_tokens,
         });
     }
 
@@ -828,6 +836,7 @@ impl SessionSignalsHandle {
         let _ = self.tx.send(SignalEvent::SetActiveDispatch {
             model_id: None,
             reasoning_effort: None,
+            context_window_tokens: None,
         });
     }
 
@@ -1289,9 +1298,11 @@ impl SessionSignalsActor {
                 SignalEvent::SetActiveDispatch {
                     model_id,
                     reasoning_effort,
+                    context_window_tokens,
                 } => {
                     self.signals.active_model_id = model_id;
                     self.signals.active_reasoning_effort = reasoning_effort;
+                    self.signals.active_context_window_tokens = context_window_tokens;
                 }
 
                 // === Latency Events ===

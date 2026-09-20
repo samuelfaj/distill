@@ -2016,12 +2016,12 @@ async fn cancel_pending_shell_child(
 const PROGRESS_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// Change signature for the progress-publisher dedupe:
 /// `(turn_count, tool_call_count, context_usage_pct, error_count, tokens_used,
-/// active_model, active_reasoning_effort)`.
+/// context_window_tokens, active_model, active_reasoning_effort)`.
 /// `tokens_used` is part of the signature so rising child token spend always
 /// publishes a tick. The active route is part of it too: a round can switch
-/// model/effort without changing counters, and that change must reach the
-/// parent's list and detail views immediately.
-type ProgressSignature = (u32, u32, u8, u32, u64, Option<String>, Option<String>);
+/// model/effort/window without changing counters, and that change must reach
+/// the parent's list and detail views immediately.
+type ProgressSignature = (u32, u32, u8, u32, u64, u64, Option<String>, Option<String>);
 fn progress_tick_should_emit(
     prev: &ProgressSignature,
     cur: &ProgressSignature,
@@ -2059,7 +2059,7 @@ pub(crate) fn spawn_progress_publisher(
     tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let mut interval = tokio::time::interval(PROGRESS_PUBLISH_INTERVAL);
         interval.tick().await;
-        let mut last_signature: ProgressSignature = (0, 0, 0, 0, 0, None, None);
+        let mut last_signature: ProgressSignature = (0, 0, 0, 0, 0, 0, None, None);
         let mut last_emit_at = tokio::time::Instant::now();
         let heartbeat_max = tokio::time::Duration::from_secs(8);
         loop {
@@ -2074,9 +2074,20 @@ pub(crate) fn spawn_progress_publisher(
             let sig: ProgressSignature = (
                 signals.turn_count,
                 signals.tool_call_count,
-                signals.context_window_usage,
+                signals
+                    .active_context_window_tokens
+                    .map(|window| {
+                        distill_token_estimation::usage_percentage_u8(
+                            signals.context_tokens_used,
+                            window,
+                        )
+                    })
+                    .unwrap_or(signals.context_window_usage),
                 signals.error_count,
                 signals.context_tokens_used,
+                signals
+                    .active_context_window_tokens
+                    .unwrap_or(signals.context_window_tokens),
                 signals.active_model_id.clone(),
                 signals.active_reasoning_effort.clone(),
             );
@@ -2096,8 +2107,18 @@ pub(crate) fn spawn_progress_publisher(
                 turn_count: signals.turn_count,
                 tool_call_count: signals.tool_call_count,
                 tokens_used: signals.context_tokens_used,
-                context_window_tokens: signals.context_window_tokens,
-                context_usage_pct: signals.context_window_usage,
+                context_window_tokens: signals
+                    .active_context_window_tokens
+                    .unwrap_or(signals.context_window_tokens),
+                context_usage_pct: signals
+                    .active_context_window_tokens
+                    .map(|window| {
+                        distill_token_estimation::usage_percentage_u8(
+                            signals.context_tokens_used,
+                            window,
+                        )
+                    })
+                    .unwrap_or(signals.context_window_usage),
                 tools_used: signals.tools_used,
                 error_count: signals.error_count,
                 active_model: signals.active_model_id,
@@ -2127,29 +2148,30 @@ mod progress_publisher_tests {
     use super::{ProgressSignature, progress_tick_should_emit};
     #[test]
     fn token_only_change_emits() {
-        let base: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
-        let cur: ProgressSignature = (3, 7, 12, 0, 45_000, None, None);
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
+        let cur: ProgressSignature = (3, 7, 12, 0, 45_000, 128_000, None, None);
         assert!(progress_tick_should_emit(&base, &cur, false));
     }
     #[test]
     fn unchanged_without_heartbeat_skips() {
-        let base: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
         assert!(!progress_tick_should_emit(&base, &base, false));
     }
     #[test]
     fn heartbeat_forces_emit_when_unchanged() {
-        let base: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
         assert!(progress_tick_should_emit(&base, &base, true));
     }
     #[test]
     fn dispatch_only_change_emits() {
-        let previous: ProgressSignature = (3, 7, 12, 0, 30_000, None, None);
+        let previous: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
         let current = (
             3,
             7,
             12,
             0,
             30_000,
+            128_000,
             Some("worker-model".to_owned()),
             Some("low".to_owned()),
         );

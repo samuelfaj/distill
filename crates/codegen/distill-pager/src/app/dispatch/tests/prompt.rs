@@ -3486,7 +3486,7 @@ fn switch_model_holds_prompt_until_complete() {
             agent_id: id,
             model_id,
             effort: None,
-            result: Ok(()),
+            result: Ok(None),
             prev_model_id: None,
         }),
         &mut app,

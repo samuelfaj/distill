@@ -1090,10 +1090,16 @@ impl SessionActor {
             sampler_config
                 .reasoning_effort
                 .map(|effort| effort.as_ref().to_string()),
+            Some(sampler_config.context_window),
         );
         // Carry over the session's per-chunk idle timeout via `SamplerConfig.idle_timeout_secs`
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
+        self.emit_usage_update().await;
         self.sampler_handle.update_config(sampler_config);
+        // Ensure the transient status snapshot observes the final route's
+        // signal before the detached emitter reads it.
+        let _ = self.signals_handle().snapshot().await;
+        self.emit_status_snapshot_detached();
     }
 
     /// Fold an auth remedy into a turn failure: its advice becomes the tail of the message.

@@ -41,8 +41,18 @@ impl ChildControl for ShellChildRuntime {
                     turn_count: snapshot.turn_count,
                     tool_call_count: snapshot.tool_call_count,
                     tokens_used: snapshot.context_tokens_used,
-                    context_window_tokens: snapshot.context_window_tokens,
-                    context_usage_pct: snapshot.context_window_usage,
+                    context_window_tokens: snapshot
+                        .active_context_window_tokens
+                        .unwrap_or(snapshot.context_window_tokens),
+                    context_usage_pct: snapshot
+                        .active_context_window_tokens
+                        .map(|window| {
+                            distill_token_estimation::usage_percentage_u8(
+                                snapshot.context_tokens_used,
+                                window,
+                            )
+                        })
+                        .unwrap_or(snapshot.context_window_usage),
                     tools_used: snapshot.tools_used,
                     error_count: snapshot.error_count,
                 })

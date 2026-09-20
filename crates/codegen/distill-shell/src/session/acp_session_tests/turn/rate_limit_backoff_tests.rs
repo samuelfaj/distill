@@ -22,19 +22,28 @@ fn rate_limited_reply(retry_after_secs: u64) -> ScriptedResponse {
     reply
 }
 
-pub(super) type CapturedRetries =
-    Arc<std::sync::Mutex<Vec<crate::extensions::notification::RetryState>>>;
+pub(super) struct CapturedGateway {
+    pub retries: Vec<crate::extensions::notification::RetryState>,
+    pub usage: Vec<(u64, u64)>,
+}
+pub(super) type CapturedRetries = Arc<std::sync::Mutex<CapturedGateway>>;
 
 pub(super) fn drain_gateway(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<distill_acp_lib::AcpClientMessage>,
 ) -> CapturedRetries {
     use crate::extensions::notification::{SessionNotification, SessionUpdate};
-    let captured: CapturedRetries = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured: CapturedRetries = Arc::new(std::sync::Mutex::new(CapturedGateway {
+        retries: Vec::new(),
+        usage: Vec::new(),
+    }));
     let sink = captured.clone();
     tokio::task::spawn_local(async move {
         while let Some(msg) = rx.recv().await {
             match msg {
                 distill_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                    if let acp::SessionUpdate::UsageUpdate(usage) = &args.request.update {
+                        sink.lock().unwrap().usage.push((usage.used, usage.size));
+                    }
                     let _ = args.response_tx.send(Ok(()));
                 }
                 distill_acp_lib::AcpClientMessage::ExtNotification(args)
@@ -45,7 +54,7 @@ pub(super) fn drain_gateway(
                         ..
                     }) = serde_json::from_str::<SessionNotification>(args.request.params.get())
                     {
-                        sink.lock().unwrap().push(rs);
+                        sink.lock().unwrap().retries.push(rs);
                     }
                 }
                 _ => {}
@@ -250,11 +259,22 @@ fn routing_entry(
     base_url: &str,
     efforts: Vec<distill_sampling_types::ReasoningEffortOption>,
 ) -> crate::agent::config::ModelEntry {
+    routing_entry_with_window(model, base_url, efforts, 128_000)
+}
+
+fn routing_entry_with_window(
+    model: &str,
+    base_url: &str,
+    efforts: Vec<distill_sampling_types::ReasoningEffortOption>,
+    context_window: u64,
+) -> crate::agent::config::ModelEntry {
     let mut entry = crate::agent::config::ModelEntry::fallback(
         model,
         &crate::agent::config::EndpointsConfig::default(),
     );
     entry.info.base_url = base_url.to_owned();
+    entry.info.context_window = std::num::NonZeroU64::new(context_window)
+        .expect("routing test context window must be non-zero");
     entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
     entry.info.reasoning_effort = efforts
         .iter()
@@ -286,7 +306,17 @@ fn install_wire_routing_catalog_with_worker_efforts(
     base_url: &str,
     worker_efforts: Vec<distill_sampling_types::ReasoningEffortOption>,
 ) {
-    let hard = routing_entry(
+    install_wire_routing_catalog_with_windows(actor, base_url, worker_efforts, 128_000, 128_000);
+}
+
+fn install_wire_routing_catalog_with_windows(
+    actor: &SessionActor,
+    base_url: &str,
+    worker_efforts: Vec<distill_sampling_types::ReasoningEffortOption>,
+    hard_context_window: u64,
+    worker_context_window: u64,
+) {
+    let hard = routing_entry_with_window(
         "reasoning-model",
         base_url,
         vec![
@@ -305,8 +335,14 @@ fn install_wire_routing_catalog_with_worker_efforts(
                 default: true,
             },
         ],
+        hard_context_window,
     );
-    let light = routing_entry("worker-model", base_url, worker_efforts);
+    let light = routing_entry_with_window(
+        "worker-model",
+        base_url,
+        worker_efforts,
+        worker_context_window,
+    );
     actor
         .models_manager
         .insert_test_entry("reasoning-model", hard);
@@ -363,13 +399,26 @@ async fn controlled_routes_are_captured_on_the_wire() {
                 light: Some("worker-model".to_owned()),
                 light_effort: Some("low".to_owned()),
             });
-            install_wire_routing_catalog(&actor, &server.url());
+            install_wire_routing_catalog_with_windows(
+                &actor,
+                &server.url(),
+                vec![distill_sampling_types::ReasoningEffortOption {
+                    id: "low".to_owned(),
+                    value: distill_sampling_types::ReasoningEffort::Low,
+                    label: "Low".to_owned(),
+                    description: Some("short routine call".to_owned()),
+                    default: true,
+                }],
+                128_000,
+                272_000,
+            );
             let mut initial = actor
                 .chat_state_handle
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
             initial.model = "reasoning-model".to_owned();
+            initial.context_window = std::num::NonZeroU64::new(128_000).unwrap();
             initial.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             actor.chat_state_handle.update_sampling_config(initial);
             crate::jev::set_test_decision_answers([
@@ -403,6 +452,21 @@ async fn controlled_routes_are_captured_on_the_wire() {
                     .expect("signals actor should be alive");
                 assert_eq!(signals.active_model_id.as_deref(), Some(expected_model));
                 assert_eq!(signals.active_reasoning_effort.as_deref(), expected_effort);
+                let expected_window = match expected_model {
+                    "worker-model" => 272_000,
+                    _ => 128_000,
+                };
+                assert_eq!(
+                    signals.active_context_window_tokens,
+                    Some(expected_window),
+                    "progress source must publish the final routed model window"
+                );
+                let status = actor.build_status_context().await;
+                assert_eq!(
+                    status.context_window.context_window_size,
+                    Some(expected_window),
+                    "main status context must consume the final routed window"
+                );
                 assert_eq!(
                     actor.jev_ledger.borrow().pending_route_model().as_deref(),
                     Some(expected_model),
@@ -424,6 +488,12 @@ async fn controlled_routes_are_captured_on_the_wire() {
                 }
                 actor.signals_handle().clear_active_dispatch();
             }
+            tokio::task::yield_now().await;
+            let usage = _retries.lock().unwrap().usage.clone();
+            assert!(
+                usage.iter().any(|&(_, size)| size == 272_000),
+                "effective routed context must arrive as ACP UsageUpdate without status-line capability"
+            );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
             crate::jev::clear_test_tier_config();
@@ -683,7 +753,7 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             actor.models_manager.insert_test_entry(
                 "local-model",
-                routing_entry("local-model", &local_server.url(), Vec::new()),
+                routing_entry_with_window("local-model", &local_server.url(), Vec::new(), 64_000),
             );
             crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
                 model: Some("local-model".to_owned()),
@@ -699,6 +769,7 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 .expect("test actor has sampling config");
             config.model = "reasoning-model".to_owned();
             config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+            config.context_window = std::num::NonZeroU64::new(128_000).unwrap();
             actor.chat_state_handle.update_sampling_config(config);
 
             actor.prepare_sampler_for_turn().await;
@@ -708,6 +779,7 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 .await
                 .expect("signals actor should be alive");
             assert_eq!(signals.active_model_id.as_deref(), Some("local-model"));
+            assert_eq!(signals.active_context_window_tokens, Some(64_000));
             assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
             let request = conversation_request(&actor).await;
             let mut budget = actor.rate_limit_wait_budget(None);
@@ -744,6 +816,13 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 .expect("signals actor should be alive");
             assert_eq!(signals.active_model_id.as_deref(), Some("reasoning-model"));
             assert_eq!(signals.active_reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(signals.active_context_window_tokens, Some(128_000));
+            let status = actor.build_status_context().await;
+            assert_eq!(
+                status.context_window.context_window_size,
+                Some(128_000),
+                "fallback status must restore the base model window"
+            );
             let rows = actor.jev_ledger.borrow_mut().take_rows();
             assert!(rows.iter().any(|row| row.model == "local-model"));
             assert!(rows.iter().any(|row| {
@@ -1164,6 +1243,7 @@ async fn paced_wait_notifies_the_client_with_a_retrying_state() {
             let retrying: Vec<_> = retries
                 .lock()
                 .unwrap()
+                .retries
                 .iter()
                 .filter_map(|rs| match rs {
                     RetryState::Retrying {
@@ -1236,6 +1316,7 @@ async fn exhausted_subagent_budget_notifies_exhausted_with_the_attempts_taken() 
             let exhausted: Vec<_> = retries
                 .lock()
                 .unwrap()
+                .retries
                 .iter()
                 .filter_map(|rs| match rs {
                     RetryState::Exhausted {

@@ -137,6 +137,13 @@ impl ModelState {
         self.context_window_override = Some(tokens);
     }
 
+    /// Drop an authoritative context-window value so callers can deliberately
+    /// fall back to the current catalog metadata when the server did not send
+    /// an effective window.
+    pub fn clear_context_window_override(&mut self) {
+        self.context_window_override = None;
+    }
+
     /// Replace the available-model list.
     /// Leaves `current` and `reasoning_effort` alone; those change only via `/model`, create, or load.
     pub fn update_catalog(&mut self, new_available: IndexMap<acp::ModelId, acp::ModelInfo>) {
@@ -149,6 +156,11 @@ impl ModelState {
         model_id: acp::ModelId,
         effort_override: Option<ReasoningEffort>,
     ) {
+        if self.current.as_ref() != Some(&model_id) {
+            // A per-round child progress window belongs to the previous model.
+            // Do not let it mask the newly selected model's catalog metadata.
+            self.context_window_override = None;
+        }
         self.current = Some(model_id.clone());
         self.reasoning_effort = effort_override.or_else(|| {
             self.available

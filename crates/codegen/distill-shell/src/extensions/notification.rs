@@ -956,6 +956,10 @@ pub enum SessionUpdate {
         /// `None` when the model does not support reasoning effort or no effort override was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
+        /// Effective session context window after compaction/debug overrides.
+        /// Older senders omit this and consumers use catalog metadata as a fallback.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
     },
     /// Streaming chunk of a tool call's arguments. Behaves like `acp::SessionUpdate::AgentMessageChunk` / `AgentThoughtChunk`. It flows through the replay buffer and merges with adjacent chunks for the same `tool_call_id`.
     /// It is debounced at the session's buffering interval. Only persisted as a full `acp::SessionUpdate::ToolCall`.
@@ -2629,6 +2633,7 @@ mod tests {
         let with_effort = SessionUpdate::ModelChanged {
             model_id: "grok-4".into(),
             reasoning_effort: Some("high".into()),
+            context_window: Some(100_000),
         };
         let json = serde_json::to_value(&with_effort).unwrap();
         assert_eq!(
@@ -2640,10 +2645,15 @@ mod tests {
             json.get("reasoning_effort"),
             Some(&serde_json::json!("high"))
         );
+        assert_eq!(
+            json.get("context_window"),
+            Some(&serde_json::json!(100_000))
+        );
 
         let without_effort = SessionUpdate::ModelChanged {
             model_id: "grok-3".into(),
             reasoning_effort: None,
+            context_window: None,
         };
         let json = serde_json::to_value(&without_effort).unwrap();
         assert_eq!(
@@ -2666,6 +2676,7 @@ mod tests {
         let original = SessionUpdate::ModelChanged {
             model_id: "grok-4".into(),
             reasoning_effort: Some("medium".into()),
+            context_window: Some(272_000),
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let parsed: SessionUpdate = serde_json::from_str(&json_str).unwrap();
@@ -2682,6 +2693,7 @@ mod tests {
             update: SessionUpdate::ModelChanged {
                 model_id: "grok-4".into(),
                 reasoning_effort: None,
+                context_window: None,
             },
             meta: None,
         };

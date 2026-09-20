@@ -774,6 +774,12 @@ pub(super) fn handle_session_notification_with_origin(
                     .session
                     .models
                     .override_context_window(context_window_tokens);
+                if let Some(used) = child_view.context_state.as_ref().map(|state| state.used) {
+                    // Progress carries the effective worker window. Keep an
+                    // already-created usage snapshot from displaying the
+                    // inherited/configured model's older denominator.
+                    child_view.apply_context_used(used, context_window_tokens);
+                }
             }
             let activity_label = agent
                 .subagent_views
@@ -1136,6 +1142,7 @@ pub(super) fn handle_session_notification_with_origin(
         XaiSessionUpdate::ModelChanged {
             model_id,
             reasoning_effort,
+            context_window,
         } => {
             if agent.session.model_switch_pending {
                 tracing::debug!(
@@ -1172,6 +1179,23 @@ pub(super) fn handle_session_notification_with_origin(
                 .models
                 .set_current(new_model_id.clone(), effort);
             agent.session.user_model_preference = Some(new_model_id.clone());
+            if let Some(window) = context_window {
+                // Keep the producer's effective session window as the source
+                // for later token-only updates; catalog metadata is only a
+                // fallback when the sender omitted this field.
+                agent.session.models.override_context_window(window);
+            } else {
+                agent.session.models.clear_context_window_override();
+            }
+            if let Some(used) = agent.context_state.as_ref().map(|state| state.used) {
+                if let Some(window) = context_window {
+                    agent.apply_context_used(used, window);
+                } else {
+                    // Older senders do not carry the authoritative session
+                    // override; retain the catalog fallback for those wires.
+                    refresh_context_used(agent, used);
+                }
+            }
             let resolved_effort = agent.session.models.reasoning_effort;
             let actually_changed =
                 prev_model.as_ref() != Some(&new_model_id) || prev_effort != resolved_effort;
@@ -1354,7 +1378,18 @@ pub(super) fn handle_session_notification_with_origin(
             }
         }
         XaiSessionUpdate::SessionStatus(status) => {
+            let context_snapshot = status
+                .context_window
+                .context_tokens
+                .zip(status.context_window.context_window_size);
             agent.status_context = Some(*status);
+            if let Some((used, window)) = context_snapshot {
+                // SessionStatus is the existing transient status/context rail
+                // for the main session. Keep the context bar paired with the
+                // effective per-round window published by the shell.
+                agent.session.models.override_context_window(window);
+                agent.apply_context_used(used, window);
+            }
             status_snapshot_applied = true;
             false
         }

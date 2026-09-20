@@ -118,7 +118,14 @@ impl SessionActor {
     pub(super) async fn build_status_context(&self) -> StatusLineContext {
         let config = self.chat_state_handle.get_sampling_config().await;
         let model_id = config.as_ref().map(|c| c.model.clone());
-        let context_window_size = config.as_ref().map_or(0, |c| c.context_window.get());
+        let signals = self.signals_handle().snapshot().await.unwrap_or_default();
+        let context_window_size = signals
+            .active_context_window_tokens
+            .or_else(|| {
+                (signals.context_window_tokens > 0).then_some(signals.context_window_tokens)
+            })
+            .or_else(|| config.as_ref().map(|c| c.context_window.get()))
+            .unwrap_or(0);
         let effort = config
             .as_ref()
             .and_then(|c| c.reasoning_effort)
@@ -258,6 +265,32 @@ impl SessionActor {
     /// The payload takes a git discovery and three chat-state round trips, and nothing waits on it.
     pub(crate) fn emit_status_snapshot_detached(&self) {
         self.status_wake.notify_one();
+    }
+
+    pub(super) async fn emit_usage_update(&self) {
+        if !self.notifications.gateway_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let used = self.chat_state_handle.get_estimated_total_tokens().await;
+        let configured_size = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.context_window.get());
+        let signals = self.signals_handle().snapshot().await.unwrap_or_default();
+        let size = signals
+            .active_context_window_tokens
+            .or_else(|| (signals.context_window_tokens > 0).then_some(signals.context_window_tokens))
+            .or(configured_size)
+            .unwrap_or(0);
+        if size == 0 {
+            return;
+        }
+        let notification = acp::SessionNotification::new(
+            self.session_info.id.clone(),
+            acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(used, size)),
+        );
+        self.emit_transient_notification(notification);
     }
 
     async fn emit_status_snapshot(&self) {

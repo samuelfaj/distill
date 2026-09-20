@@ -290,6 +290,11 @@ pub(crate) async fn apply(
         &session_id,
         model_id.0.as_ref(),
         applied_effort.map(|eff| eff.to_string()),
+        handle
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|cfg| cfg.context_window.get()),
     );
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
@@ -313,6 +318,11 @@ pub(crate) async fn apply(
     Ok(acp::SetSessionModelResponse::new().meta(
         serde_json::json!({
             "model": updated_model,
+            "contextWindow": handle
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .map(|cfg| cfg.context_window.get()),
         })
         .as_object()
         .cloned(),
@@ -351,6 +361,11 @@ pub(crate) async fn apply_reasoning_effort(
         &session_id,
         model_id.0.as_ref(),
         Some(effort.to_string()),
+        handle
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|cfg| cfg.context_window.get()),
     );
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
@@ -361,7 +376,14 @@ pub(crate) async fn apply_reasoning_effort(
             .set_current_reasoning_effort(Some(effort));
     }
     Ok(acp::SetSessionModelResponse::new().meta(
-        serde_json::json!({ "model" : model_id.0.as_ref() })
+        serde_json::json!({
+            "model": model_id.0.as_ref(),
+            "contextWindow": handle
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .map(|cfg| cfg.context_window.get()),
+        })
             .as_object()
             .cloned(),
     ))
@@ -371,12 +393,14 @@ fn notify_model_changed(
     session_id: &acp::SessionId,
     model_id: &str,
     reasoning_effort: Option<String>,
+    context_window: Option<u64>,
 ) {
     let notification = crate::extensions::notification::SessionNotification {
         session_id: session_id.clone(),
         update: crate::extensions::notification::SessionUpdate::ModelChanged {
             model_id: model_id.to_owned(),
             reasoning_effort,
+            context_window,
         },
         meta: None,
     };

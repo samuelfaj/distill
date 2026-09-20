@@ -48,6 +48,7 @@ fn retrying_events(retries: &CapturedRetries) -> Vec<(u32, u32, String)> {
     retries
         .lock()
         .unwrap()
+        .retries
         .iter()
         .filter_map(|rs| match rs {
             RetryState::Retrying {

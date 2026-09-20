@@ -66,8 +66,16 @@
         };
         *model = Some("grok-3".to_owned());
         assert!(sequenced(&mut app, spawn_update, 1));
+        app.agents
+            .get_mut(&AgentId(0))
+            .unwrap()
+            .subagent_views
+            .get_mut(child)
+            .unwrap()
+            .apply_context_used(2_100, 128_000);
         let mut update = progress_update(child, 25, 100);
         let XaiSessionUpdate::SubagentProgress {
+            context_window_tokens,
             active_model,
             active_reasoning_effort,
             ..
@@ -75,6 +83,7 @@
         else {
             unreachable!()
         };
+        *context_window_tokens = 272_000;
         *active_model = Some("lighter-model".to_owned());
         *active_reasoning_effort = Some("low".to_owned());
         assert!(sequenced(&mut app, update, 2));
@@ -86,6 +95,13 @@
         assert_eq!(
             info.attempt.active_reasoning_effort.as_deref(),
             Some("low")
+        );
+        let child_view = agent.subagent_views.get(child).unwrap();
+        let context = child_view.context_state.as_ref().unwrap();
+        assert_eq!(
+            (context.used, context.total),
+            (2_100, 272_000),
+            "child detail must use the effective worker window from progress",
         );
         let entry = agent.scrollback.get_by_id(info.attempt.scrollback_entry_id.unwrap()).unwrap();
         let RenderBlock::Subagent(block) = &entry.block else { unreachable!() };

@@ -3342,6 +3342,7 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
             signals.set_active_dispatch(
                 "worker-model".to_owned(),
                 Some("low".to_owned()),
+                Some(272_000),
             );
             tokio::task::yield_now().await;
             let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
@@ -3375,6 +3376,8 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
                 tool_call_count,
                 active_model,
                 active_reasoning_effort,
+                context_window_tokens,
+                context_usage_pct,
                 ..
             } = notification.update else {
                 panic!("expected SubagentProgress, got {:?}", notification.update);
@@ -3385,6 +3388,8 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
             assert_eq!(tool_call_count, 1);
             assert_eq!(active_model.as_deref(), Some("worker-model"));
             assert_eq!(active_reasoning_effort.as_deref(), Some("low"));
+            assert_eq!(context_window_tokens, 272_000);
+            assert_eq!(context_usage_pct, 0);
         })
         .await;
 }

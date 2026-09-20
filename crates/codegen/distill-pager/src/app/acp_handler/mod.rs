@@ -247,6 +247,7 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                     } else if let acp::SessionUpdate::UsageUpdate(ref usage) = notif.request.update
                     {
                         // The context bar reads this; a replayed one is as current as the history it closes
+                        agent.session.models.override_context_window(usage.size);
                         agent.apply_context_used(usage.used, usage.size);
                         advance_reconnect_cursor(agent, &mut meta);
                         is_active
@@ -458,6 +459,7 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                             confirm_context_used(child_view, tokens);
                         }
                         if let acp::SessionUpdate::UsageUpdate(ref usage) = notif.request.update {
+                            child_view.session.models.override_context_window(usage.size);
                             child_view.apply_context_used(usage.used, usage.size);
                         }
                         if let Some(ts) = meta.turn_start_ms {

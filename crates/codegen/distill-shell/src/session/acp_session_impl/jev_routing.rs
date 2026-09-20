@@ -1306,7 +1306,11 @@ impl SessionActor {
             session
                 .reasoning_effort
                 .map(|effort| effort.as_ref().to_owned()),
+            Some(session.context_window),
         );
+        self.emit_usage_update().await;
+        let _ = self.signals_handle().snapshot().await;
+        self.emit_status_snapshot_detached();
         let reason = format!(
             "{}: {}",
             error.status_code.map_or_else(

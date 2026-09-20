@@ -20,20 +20,26 @@ fn head_text(conv: &[ConversationItem]) -> String {
 async fn model_switch_relabels_live_agent_and_system_head() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let (actor, _gateway_rx) = build_actor().await;
+            let (mut actor, _gateway_rx) = build_actor().await;
             actor.chat_state_handle.replace_conversation(vec![
                 ConversationItem::system("spawn-time prompt"),
                 ConversationItem::user("hi"),
             ]);
+            std::sync::Arc::get_mut(&mut actor)
+                .expect("unique test actor")
+                .compaction
+                .context_window_override = Some(std::num::NonZeroU64::new(100_000).unwrap());
 
             actor
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: distill_sampler::SamplerConfig {
-                        model: "switch-target".to_owned(),
-                        context_window: 256_000,
+                        model: "gpt-6-astra".to_owned(),
+                        context_window: 272_000,
                         ..distill_sampler::SamplerConfig::default()
                     },
-                    canonical_model_id: None,
+                    canonical_model_id: Some(agent_client_protocol::ModelId::new(
+                        "chatgpt/gpt-6-astra",
+                    )),
                     model_selection_intent: true,
                     use_concise: false,
                     is_family_switch: false,
@@ -58,6 +64,16 @@ async fn model_switch_relabels_live_agent_and_system_head() {
             );
             assert_eq!(agent.system_prompt(), head);
             assert_eq!(2, conv.len(), "the switch swaps only the head");
+            let signals = actor
+                .signals_handle()
+                .snapshot()
+                .await
+                .expect("signals actor should be alive");
+            assert_eq!(signals.context_window_tokens, 100_000);
+            assert_eq!(
+                actor.build_status_context().await.context_window.context_window_size,
+                Some(100_000)
+            );
         })
         .await;
 }

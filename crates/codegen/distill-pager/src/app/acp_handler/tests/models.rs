@@ -208,6 +208,165 @@
         );
     }
 
+    #[test]
+    fn model_changed_restamps_context_total_from_new_catalog_model() {
+        let mut app = make_app_with_agent("sess-1");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        let old_id = acp::ModelId::new(std::sync::Arc::from("reasoning-old"));
+        let new_id = acp::ModelId::new(std::sync::Arc::from("reasoning-new"));
+        let mut old_info = make_model_info("reasoning-old");
+        old_info.meta = Some(
+            serde_json::json!({"totalContextTokens": 128_000})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        let mut new_info = make_model_info("reasoning-new");
+        new_info.meta = Some(
+            serde_json::json!({"totalContextTokens": 272_000})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        agent.session.models.available.insert(old_id.clone(), old_info);
+        agent.session.models.available.insert(new_id.clone(), new_info);
+        agent.session.models.current = Some(old_id);
+        agent.session.models.override_context_window(300_000);
+        agent.apply_context_used(2_100, 128_000);
+
+        assert!(handle_ext_notification(
+            &model_changed_ext("sess-1", "reasoning-new", None),
+            &mut app,
+        ));
+
+        let context = app.agents.get(&AgentId(0)).unwrap().context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_100, 272_000));
+        assert_eq!(
+            app.agents
+                .get(&AgentId(0))
+                .unwrap()
+                .session
+                .models
+                .get_context_window(),
+            Some(272_000),
+        );
+    }
+
+    #[test]
+    fn model_changed_uses_authoritative_session_window_even_when_it_matches_old_catalog() {
+        let mut app = make_app_with_agent("sess-1");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        let old_id = acp::ModelId::new(std::sync::Arc::from("reasoning-old"));
+        let new_id = acp::ModelId::new(std::sync::Arc::from("reasoning-new"));
+        let mut old_info = make_model_info("reasoning-old");
+        old_info.meta = Some(
+            serde_json::json!({"totalContextTokens": 100_000})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        let mut new_info = make_model_info("reasoning-new");
+        new_info.meta = Some(
+            serde_json::json!({"totalContextTokens": 272_000})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        agent.session.models.available.insert(old_id.clone(), old_info);
+        agent.session.models.available.insert(new_id, new_info);
+        agent.session.models.current = Some(old_id);
+        agent.apply_context_used(2_100, 100_000);
+
+        assert!(handle_ext_notification(
+            &model_changed_ext_with_context("sess-1", "reasoning-new", None, Some(100_000)),
+            &mut app,
+        ));
+
+        let context = app.agents.get(&AgentId(0)).unwrap().context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_100, 100_000));
+
+        // A normal token-only update must keep the producer's authoritative
+        // denominator; it must not fall back to the new model's catalog size.
+        let _ = handle(make_token_notification_message("sess-1", 2_200), &mut app);
+        let context = app.agents.get(&AgentId(0)).unwrap().context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_200, 100_000));
+    }
+
+    #[test]
+    fn local_model_completion_preserves_status_window_through_token_updates() {
+        let mut app = make_app_with_agent("sess-1");
+        let id = AgentId(0);
+        let old_id = acp::ModelId::new(std::sync::Arc::from("chatgpt/gpt-5.6-luna"));
+        let new_id = acp::ModelId::new(std::sync::Arc::from("chatgpt/gpt-6-astra"));
+        let agent = app.agents.get_mut(&id).unwrap();
+        let mut old_info = make_model_info("chatgpt/gpt-5.6-luna");
+        old_info.meta = Some(
+            serde_json::json!({"totalContextTokens": 100_000})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        let mut new_info = make_model_info("chatgpt/gpt-6-astra");
+        new_info.meta = Some(
+            serde_json::json!({"totalContextTokens": 272_000})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        agent.session.models.available.insert(old_id.clone(), old_info);
+        agent.session.models.available.insert(new_id.clone(), new_info);
+        agent.session.models.current = Some(old_id);
+        agent.session.model_switch_pending = true;
+        agent.apply_context_used(2_100, 100_000);
+
+        crate::app::dispatch::dispatch(
+            crate::app::actions::Action::TaskComplete(
+                crate::app::actions::TaskResult::SwitchModelComplete {
+                    agent_id: id,
+                    model_id: new_id.clone(),
+                    effort: None,
+                    result: Ok(Some(100_000)),
+                    prev_model_id: None,
+                },
+            ),
+            &mut app,
+        );
+
+        let agent = app.agents.get(&id).unwrap();
+        assert_eq!(agent.session.models.current, Some(new_id.clone()));
+        assert_eq!(agent.session.models.get_context_window(), Some(100_000));
+
+        // Completion must establish the authoritative denominator before any
+        // ordinary token update, even when no status row is available.
+        let _ = handle(make_token_notification_message("sess-1", 2_200), &mut app);
+        let context = app.agents.get(&id).unwrap().context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_200, 100_000));
+
+        // A later status is also authoritative, and a following ordinary
+        // token-only update must retain it rather than rereading the catalog.
+        let mut status = crate::app::status_line::test_context("/tmp");
+        status.model.id = Some("chatgpt/gpt-6-astra".to_string());
+        status.context_window.context_tokens = Some(2_200);
+        status.context_window.context_window_size = Some(100_000);
+        let payload = SessionNotification {
+            session_id: acp::SessionId::new("sess-1"),
+            update: XaiSessionUpdate::SessionStatus(Box::new(status)),
+            meta: None,
+        };
+        let raw = serde_json::value::to_raw_value(&payload).unwrap();
+        handle_ext_notification(
+            &acp::ExtNotification::new(
+                "x.ai/session_notification",
+                std::sync::Arc::from(raw),
+            ),
+            &mut app,
+        );
+        let _ = handle(make_token_notification_message("sess-1", 2_300), &mut app);
+
+        let context = app.agents.get(&id).unwrap().context_state.as_ref().unwrap();
+        assert_eq!((context.used, context.total), (2_300, 100_000));
+    }
+
     /// A live remote `ModelChanged` (the leader fanning out another client's switch) must apply even when a local `user_model_preference` is set.
     /// Otherwise the status bar desyncs from the gateway session; the preference is updated to track the new live model.
     /// Replayed history would silently revert the model; the shell suppresses that via `ReconnectState::user_selected_model`, not this handler.
@@ -364,4 +523,3 @@
             "unrelated-session broadcast must not touch this agent's model"
         );
     }
-

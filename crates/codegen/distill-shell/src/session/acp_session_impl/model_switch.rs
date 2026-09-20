@@ -82,6 +82,10 @@ impl SessionActor {
                 reasoning_summary: sampling_config.reasoning_summary,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
             });
+        let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
+        self.signals_handle()
+            .update_context_usage(estimated_total, new_context_window.get());
+        let _ = self.signals_handle().snapshot().await;
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self
             .auth_manager

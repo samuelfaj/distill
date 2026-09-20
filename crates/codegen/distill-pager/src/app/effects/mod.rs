@@ -2102,7 +2102,11 @@ pub(crate) fn execute(
                         .meta(meta);
                     let result = acp_send(req, &tx)
                         .await
-                        .map(|_| ())
+                        .map(|response| {
+                            response
+                                .meta
+                                .and_then(|meta| meta.get("contextWindow").and_then(|value| value.as_u64()))
+                        })
                         .map_err(|e| {
                             use distill_shell::agent::config::ModelSwitchIncompatibleAgentError;
                             if let Some(typed) = ModelSwitchIncompatibleAgentError::from_acp_error(

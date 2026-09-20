@@ -48,10 +48,6 @@ pub(crate) struct JevTurnLedger {
     /// The outer option distinguishes "prepared and no effort" from "not
     /// prepared".
     pending_request_effort: Option<Option<distill_sampling_types::ReasoningEffort>>,
-    /// Why the local model is off for the rest of this turn, after its endpoint
-    /// refused a routed call (the routing is an optimization, never a single
-    /// point of failure).
-    local_failed: Option<String>,
     /// Palette level the auto decision chose for the next round, when it chose
     /// one (the value that level maps onto travels in the sampler config).
     pending_effort_label: Option<String>,
@@ -167,16 +163,6 @@ impl JevTurnLedger {
         self.effort_floor.as_ref()
     }
 
-    /// Records that the local endpoint refused a routed call.
-    pub(crate) fn note_local_failure(&mut self, reason: impl Into<String>) {
-        self.local_failed = Some(reason.into());
-    }
-
-    /// Why the local model is off for this turn, if it is.
-    pub(crate) fn local_failed_reason(&self) -> Option<String> {
-        self.local_failed.clone()
-    }
-
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()
@@ -221,7 +207,6 @@ impl JevTurnLedger {
         self.pending_route = None;
         self.pending_route_local = false;
         self.pending_request_effort = None;
-        self.local_failed = None;
         self.pending_effort_label = None;
         self.effort_floor = None;
         rows.sort_by(|a, b| {
@@ -328,25 +313,6 @@ mod tests {
         assert!(
             ledger.effort_floor().is_none(),
             "the next turn starts clean"
-        );
-    }
-
-    /// A refused local call only ends local routing for that turn.
-    #[test]
-    fn a_local_failure_latches_until_the_turn_ends() {
-        let mut ledger = JevTurnLedger::default();
-        assert!(ledger.local_failed_reason().is_none());
-        ledger.note_local_failure("400: reasoning_content must be passed back");
-        assert!(
-            ledger
-                .local_failed_reason()
-                .is_some_and(|reason| reason.contains("reasoning_content"))
-        );
-        ledger.note_round("m", None);
-        let _ = ledger.take_rows();
-        assert!(
-            ledger.local_failed_reason().is_none(),
-            "the next turn may try the local model again"
         );
     }
 

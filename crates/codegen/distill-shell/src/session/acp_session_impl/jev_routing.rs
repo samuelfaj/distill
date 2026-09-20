@@ -135,18 +135,8 @@ impl SessionActor {
         else {
             return;
         };
-        // A refusal earlier in this turn is remembered: one bad call does not
-        // get to fail twice.
-        if let Some(reason) = self.jev_ledger.borrow().local_failed_reason() {
-            crate::jev::record_item(
-                JevLever::B2LocalModel,
-                "cloud",
-                &format!("local routing off for this turn: {reason}"),
-                None,
-                None,
-            );
-            return;
-        }
+        // Every micro-action gets a fresh verdict: a refused call falls back for
+        // that round only, and the next micro-action may route locally again.
         // The spec is either a catalog entry — whose endpoint, key, backend and
         // window are the owner's — or a raw OpenRouter chain, which has no entry
         // to describe it. The aux resolver answers with the SESSION's own
@@ -663,19 +653,6 @@ impl SessionActor {
     /// same settings, and so a lane cannot quietly use a different one.
     pub(super) async fn cheap_lane(&self, lever: JevLever) -> Option<crate::jev_cheap::CheapLane> {
         if !crate::jev::lever_active(lever) {
-            return None;
-        }
-        if crate::jev_cheap::lane_tripped(lever) {
-            crate::jev::record_item(
-                lever,
-                "tripped",
-                &format!(
-                    "lane stood down for this turn after {} failures",
-                    crate::jev_cheap::BREAKER_TRIPS
-                ),
-                None,
-                None,
-            );
             return None;
         }
         let spec = crate::jev::local_config_cached()
@@ -1278,7 +1255,8 @@ mod tests {
 
 impl SessionActor {
     /// Puts a routed round back on the session model after its endpoint refused
-    /// the request, and stops routing locally for the rest of the turn.
+    /// the request. Only that round falls back: the next micro-action asks Jev
+    /// again and may route locally once more.
     ///
     /// The refusal is recorded with the endpoint's own words, so the turn report
     /// and `jev.jsonl` explain why the local model disappeared mid-turn.
@@ -1324,9 +1302,6 @@ impl SessionActor {
             %reason,
             "jev local route refused by its endpoint; the round continues on the session model"
         );
-        self.jev_ledger
-            .borrow_mut()
-            .note_local_failure(reason.clone());
         crate::jev::record_item(
             JevLever::B2LocalModel,
             "fallback",

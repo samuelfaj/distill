@@ -10,9 +10,10 @@
 //!   credential, read from one place.
 //! * **How is the cheap model reached?** from a resolved model entry (base URL,
 //!   slug, key), never from a second copy of the config.
-//! * **How many times?** a per-lane counter plus a breaker: after
-//!   [`BREAKER_TRIPS`] failures a lane stops being called for the rest of the
-//!   turn, which is what keeps a flaky endpoint from costing time on every step.
+//! * **How many times?** no cap: a lane keeps being called for every
+//!   micro-action that wants it. A per-lane counter records how often it ran and
+//!   how often it failed, so a flaky endpoint is visible without ever silencing
+//!   the lane.
 //! * **What gets recorded?** one content-free line per call — lane, task id,
 //!   decision, model, tokens, latency — through the same recorder as every other
 //!   decision, so the TUI, the turn report and the log cannot disagree.
@@ -22,9 +23,6 @@ use std::sync::{Mutex, OnceLock};
 use distill_workspace::jev::cheap::{DEFAULT_BASE_URL, DEFAULT_MODELS};
 use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::tasks;
-
-/// Failures in one lane inside one turn before it stands down for that turn.
-pub const BREAKER_TRIPS: u32 = 3;
 
 /// The cheap-model spec the harness ships with, in priority order.
 ///
@@ -143,16 +141,6 @@ impl CheapLane {
         payload: &str,
         question: &str,
     ) -> Option<tasks::TaskOutcome> {
-        if lane_tripped(lever) {
-            crate::jev::record_item(
-                lever,
-                "tripped",
-                &format!("lane stood down for this turn after {BREAKER_TRIPS} failures"),
-                None,
-                None,
-            );
-            return None;
-        }
         if !crate::jev::lever_active(lever) {
             return None;
         }
@@ -210,15 +198,6 @@ fn health() -> &'static Mutex<std::collections::HashMap<&'static str, LaneHealth
     HEALTH.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Whether a lane has failed enough to stand down for the rest of the turn.
-pub fn lane_tripped(lever: JevLever) -> bool {
-    health()
-        .lock()
-        .ok()
-        .and_then(|map| map.get(lever.as_str()).copied())
-        .is_some_and(|entry| entry.failures >= BREAKER_TRIPS)
-}
-
 /// Counts one failure for a lane (and one call).
 pub fn note_failure(lever: JevLever) {
     if let Ok(mut map) = health().lock() {
@@ -271,29 +250,24 @@ mod tests {
     use super::*;
     use distill_workspace::jev::flags::JevLever;
 
+    /// Counting is per lane; a lane that failed all turn is still called on the
+    /// next micro-action, so failures never silence a lane.
     #[test]
     #[serial_test::serial]
-    fn the_breaker_stands_a_lane_down_after_repeated_failures_and_resets() {
+    fn failures_are_counted_per_lane_and_never_silence_one() {
         reset_turn();
-        assert!(!lane_tripped(JevLever::ECheapTask));
-        for _ in 0..BREAKER_TRIPS {
-            assert!(!lane_tripped(JevLever::ECheapTask), "before the trip");
+        for _ in 0..10 {
             note_failure(JevLever::ECheapTask);
         }
-        assert!(
-            lane_tripped(JevLever::ECheapTask),
-            "after {BREAKER_TRIPS} failures"
-        );
-        // Another lane is untouched: the breaker is per lane, not global.
-        assert!(!lane_tripped(JevLever::ECheapCompress));
         let (calls, failures) = lane_calls(JevLever::ECheapTask);
-        assert_eq!((calls, failures), (BREAKER_TRIPS, BREAKER_TRIPS));
+        assert_eq!((calls, failures), (10, 10));
+        // Another lane is untouched: counting is per lane, not global.
+        assert_eq!(lane_calls(JevLever::ECheapCompress), (0, 0));
 
         note_success(JevLever::ECheapCompress);
         assert_eq!(lane_calls(JevLever::ECheapCompress), (1, 0));
 
         reset_turn();
-        assert!(!lane_tripped(JevLever::ECheapTask));
         assert_eq!(lane_calls(JevLever::ECheapTask), (0, 0));
         assert!(lane_summary().is_empty());
     }

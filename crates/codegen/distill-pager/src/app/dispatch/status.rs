@@ -56,6 +56,8 @@ pub(super) fn open_usage_info_modal(
     let usage_visible = app.usage_visible;
     let redirect_url = app.usage_billing_redirect_url.clone();
     let tier = app.subscription_tier.clone();
+    let grok_connected = app.provider_auth.map_or(true, |auth| auth.grok);
+    let grok_billing_surface_visible = app.grok_billing_surface_visible();
     let show_resolved_model = app.show_resolved_model;
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
@@ -67,7 +69,8 @@ pub(super) fn open_usage_info_modal(
         return vec![];
     }
 
-    let billing_reachable = usage_visible && !agent.chat_kind && redirect_url.is_none();
+    let billing_reachable =
+        grok_billing_surface_visible && !agent.chat_kind && redirect_url.is_none();
     let nonce = next_usage_fetch_nonce();
     let mut state = UsageInfoModalState::new(
         tab,
@@ -77,6 +80,7 @@ pub(super) fn open_usage_info_modal(
             chat_kind: agent.chat_kind,
             billing_redirect_url: redirect_url,
             subscription_tier: tier,
+            grok_connected,
         },
     );
     state.fetch_nonce = nonce;
@@ -109,6 +113,14 @@ pub(super) fn open_usage_info_modal(
             nonce,
         });
     }
+    effects.push(Effect::FetchChatGptUsage {
+        agent_id: Some(id),
+        nonce,
+    });
+    effects.push(Effect::FetchOpenRouterUsage {
+        agent_id: Some(id),
+        nonce,
+    });
     agent.active_modal = Some(ActiveModal::UsageInfo {
         state: Box::new(state),
     });
@@ -124,14 +136,16 @@ fn open_dashboard_usage_modal(
     use crate::views::usage_modal::{UsageInfoContext, UsageInfoModalState};
 
     let chat_kind = app.chat_mode;
-    let billing_reachable =
-        app.usage_visible && !chat_kind && app.usage_billing_redirect_url.is_none();
+    let billing_reachable = app.grok_billing_surface_visible()
+        && !chat_kind
+        && app.usage_billing_redirect_url.is_none();
     let ctx = UsageInfoContext {
         session_id: None,
         usage_visible: app.usage_visible,
         chat_kind,
         billing_redirect_url: app.usage_billing_redirect_url.clone(),
         subscription_tier: app.subscription_tier.clone(),
+        grok_connected: app.provider_auth.map_or(true, |auth| auth.grok),
     };
     let Some(dashboard) = app.dashboard.as_mut() else {
         return vec![];
@@ -141,13 +155,21 @@ fn open_dashboard_usage_modal(
         return vec![];
     }
     let mut state = UsageInfoModalState::new(tab, ctx);
+    let nonce = next_usage_fetch_nonce();
+    state.fetch_nonce = nonce;
     let mut effects = Vec::new();
     if billing_reachable {
-        let nonce = next_usage_fetch_nonce();
-        state.fetch_nonce = nonce;
         state.billing_loading = true;
         effects.push(Effect::FetchAppBilling { nonce });
     }
+    effects.push(Effect::FetchChatGptUsage {
+        agent_id: None,
+        nonce,
+    });
+    effects.push(Effect::FetchOpenRouterUsage {
+        agent_id: None,
+        nonce,
+    });
     dashboard.usage_modal = Some(Box::new(state));
     effects
 }
@@ -346,11 +368,16 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
         agent.session.session_id.clone()
     };
     match session_id {
-        Some(session_id) => vec![Effect::FetchSessionUsage {
-            agent_id: id,
-            session_id,
-            nonce: Default::default(),
-        }],
+        Some(session_id) => {
+            let mut effects = vec![Effect::FetchSessionUsage {
+                agent_id: id,
+                session_id,
+                nonce: Default::default(),
+            }];
+            effects.extend(provider_usage_effects(Some(id), Default::default()));
+            effects.extend(append_grok_billing_surface(app, id));
+            effects
+        }
         None => {
             if let Some(agent) = app.agents.get_mut(&id) {
                 push_and_page_flip(
@@ -390,6 +417,70 @@ pub(super) fn handle_session_usage_result(
     commit_session_usage_block(app, agent_id, session_id, text)
 }
 
+fn usage_modal_state_for_target(
+    app: &mut AppView,
+    agent_id: Option<AgentId>,
+) -> Option<&mut crate::views::usage_modal::UsageInfoModalState> {
+    match agent_id {
+        Some(agent_id) => app
+            .agents
+            .get_mut(&agent_id)
+            .and_then(usage_modal_state_mut),
+        None => app
+            .dashboard
+            .as_mut()
+            .and_then(|dashboard| dashboard.usage_modal.as_deref_mut()),
+    }
+}
+
+pub(super) fn handle_chatgpt_usage_result(
+    app: &mut AppView,
+    usage: Result<Box<distill_shell::codex_auth::CodexUsageSnapshot>, String>,
+    agent_id: Option<AgentId>,
+    nonce: u64,
+) -> Vec<Effect> {
+    if app.screen_mode.is_minimal() {
+        if let Some(agent_id) = agent_id {
+            let text = crate::views::usage_modal::chatgpt_usage_text(Some(&usage));
+            commit_provider_usage_block(app, agent_id, text);
+        }
+        return vec![];
+    }
+    if let Some(state) = usage_modal_state_for_target(app, agent_id)
+        && state.fetch_nonce == nonce
+    {
+        state.chatgpt_usage = Some(usage);
+    }
+    vec![]
+}
+
+pub(super) fn handle_openrouter_usage_result(
+    app: &mut AppView,
+    usage: Result<distill_shell::openrouter_auth::OpenRouterUsage, String>,
+    agent_id: Option<AgentId>,
+    nonce: u64,
+) -> Vec<Effect> {
+    if app.screen_mode.is_minimal() {
+        if let Some(agent_id) = agent_id {
+            let text = crate::views::usage_modal::openrouter_usage_text(Some(&usage));
+            commit_provider_usage_block(app, agent_id, text);
+        }
+        return vec![];
+    }
+    if let Some(state) = usage_modal_state_for_target(app, agent_id)
+        && state.fetch_nonce == nonce
+    {
+        state.openrouter_usage = Some(usage);
+    }
+    vec![]
+}
+
+fn commit_provider_usage_block(app: &mut AppView, agent_id: AgentId, text: String) {
+    if let Some(agent) = app.agents.get_mut(&agent_id) {
+        push_and_page_flip(&mut agent.scrollback, RenderBlock::system(text));
+    }
+}
+
 /// Commit a session-usage block if still on `session_id`, then consumer credits.
 pub(super) fn commit_session_usage_block(
     app: &mut AppView,
@@ -404,26 +495,56 @@ pub(super) fn commit_session_usage_block(
         return vec![];
     }
     push_and_page_flip(&mut agent.scrollback, RenderBlock::system(text));
-    append_consumer_billing_surface(app, agent_id)
+    vec![]
+}
+
+fn provider_usage_effects(agent_id: Option<AgentId>, nonce: u64) -> Vec<Effect> {
+    vec![
+        Effect::FetchChatGptUsage { agent_id, nonce },
+        Effect::FetchOpenRouterUsage { agent_id, nonce },
+    ]
 }
 
 /// Consumer credit follow-up for `/usage` (redirect or non-silent billing fetch).
 pub(super) fn append_consumer_billing_surface(app: &mut AppView, agent_id: AgentId) -> Vec<Effect> {
-    if !app.usage_visible {
+    if !app.agents.contains_key(&agent_id) {
+        return vec![];
+    }
+    let mut effects = provider_usage_effects(Some(agent_id), Default::default());
+    effects.extend(append_grok_billing_surface(app, agent_id));
+    effects
+}
+
+fn append_grok_billing_surface(app: &mut AppView, agent_id: AgentId) -> Vec<Effect> {
+    if !app.agents.contains_key(&agent_id) {
+        return vec![];
+    }
+    if !app.grok_billing_surface_visible() {
+        let reason = if app.has_external_auth_provider {
+            "Unavailable: external auth provider does not expose Grok billing."
+        } else if app.provider_auth.is_some_and(|auth| !auth.grok) {
+            "Not connected; log in with Grok to load limits."
+        } else if !app.usage_visible {
+            "Unavailable; usage limits are managed by your team."
+        } else {
+            "Unavailable; Grok billing data is not available."
+        };
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
+            push_and_page_flip(
+                &mut agent.scrollback,
+                RenderBlock::system(format!("Grok\n{reason}")),
+            );
+        }
         return vec![];
     }
     // Remote-settings kill switch (`distill_usage_redirect_url`): link out instead of fetching billing from the backend
     if let Some(url) = app.usage_billing_redirect_url.clone() {
         if let Some(agent) = app.agents.get_mut(&agent_id) {
-            agent.scrollback.push_block(RenderBlock::System(
-                crate::scrollback::blocks::SystemMessageBlock::new(format!(
-                    "Please check your usage on {url}"
-                )),
-            ));
+            push_and_page_flip(
+                &mut agent.scrollback,
+                RenderBlock::system(format!("Grok\nPlease check your usage on {url}")),
+            );
         }
-        return vec![];
-    }
-    if !app.agents.contains_key(&agent_id) {
         return vec![];
     }
     // Non-silent: the effect also pulls the auto top-up rule so the summary renders usage, prepaid credits, and auto top-up together
@@ -436,7 +557,7 @@ pub(super) fn append_consumer_billing_surface(app: &mut AppView, agent_id: Agent
 
 /// `/usage manage`: open consumer billing. No-op when the surface is hidden.
 pub(super) fn dispatch_manage_billing(app: &mut AppView) -> Vec<Effect> {
-    if !app.usage_visible {
+    if !app.grok_billing_surface_visible() {
         return vec![];
     }
     super::router::dispatch(

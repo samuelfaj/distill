@@ -2223,7 +2223,25 @@ fn external_auth_provider_keeps_billing_off_after_auth_meta() {
             .registry()
             .is_restricted("usage")
     );
-    assert!(!app.welcome_prompt.slash_controller.usage_command_visible());
+    assert!(app.welcome_prompt.slash_controller.usage_command_visible());
+}
+
+#[test]
+fn independent_provider_keeps_usage_discoverable_without_grok_manage() {
+    let mut app = test_app();
+    app.has_external_auth_provider = true;
+    app.provider_auth = Some(ProviderAuthState {
+        grok: false,
+        chatgpt: true,
+        openrouter: false,
+    });
+    app.sync_billing_surface_to_agents();
+    assert!(app.welcome_prompt.slash_controller.usage_command_visible());
+    assert!(
+        !app.welcome_prompt
+            .slash_controller
+            .billing_surface_visible()
+    );
 }
 #[test]
 fn apply_auth_meta_disables_billing_surface_for_team_users() {
@@ -6003,6 +6021,7 @@ fn dashboard_usage_modal_is_scroll_blocking() {
             chat_kind: false,
             billing_redirect_url: None,
             subscription_tier: None,
+            grok_connected: true,
         },
     )));
     app.dashboard = Some(d);

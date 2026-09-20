@@ -80,10 +80,12 @@ fn dispatch_billing(
     subscription_tier: Option<String>,
 ) {
     let nonce = open_usage_modal_nonce(app);
+    let usage_available = balance.is_some();
     dispatch(
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance,
+            usage_available,
             silent,
             subscription_tier,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
@@ -723,17 +725,21 @@ fn upsell_max_tier_idempotent_when_question_view_already_open() {
 }
 
 fn is_session_usage_fetch(effects: &[Effect]) -> bool {
-    matches!(
-        effects,
-        [Effect::FetchSessionUsage { agent_id, .. }] if *agent_id == AgentId(0)
-    )
+    effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::FetchSessionUsage { agent_id, .. } if *agent_id == AgentId(0)
+        )
+    })
 }
 
 fn is_nonsilent_billing(effects: &[Effect]) -> bool {
-    matches!(
-        effects,
-        [Effect::FetchBilling { agent_id, silent, .. }] if *agent_id == AgentId(0) && !*silent
-    )
+    effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::FetchBilling { agent_id, silent, .. } if *agent_id == AgentId(0) && !*silent
+        )
+    })
 }
 
 fn complete_session_usage(
@@ -831,7 +837,7 @@ fn manage_billing_gates_on_consumer_billing_surface() {
 }
 
 #[test]
-fn session_usage_complete_pushes_block_and_chains_billing() {
+fn session_usage_complete_pushes_block_without_chaining_billing() {
     let mut app = test_app_with_agent();
     app.screen_mode = crate::app::ScreenMode::Minimal;
     let before = agent_scrollback_len(&app);
@@ -853,7 +859,7 @@ fn session_usage_complete_pushes_block_and_chains_billing() {
         text.contains("Session usage") && text.contains("$0.5000"),
         "{text}"
     );
-    assert!(is_nonsilent_billing(&effects));
+    assert!(effects.is_empty());
 }
 
 #[test]
@@ -869,22 +875,22 @@ fn session_usage_complete_no_billing_when_surface_hidden() {
 }
 
 #[test]
-fn session_usage_complete_redirect_after_session_block() {
+fn session_usage_complete_redirect_is_emitted_before_session_block() {
     let mut app = test_app_with_agent();
     app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".into());
-    // Dispatch defers the redirect until after the session block.
+    // Minimal-mode dispatch emits the Grok redirect block immediately.
     let before = agent_scrollback_len(&app);
     assert!(is_session_usage_fetch(&dispatch(
         Action::ShowUsage,
         &mut app
     )));
-    assert_eq!(agent_scrollback_len(&app), before);
+    assert_eq!(agent_scrollback_len(&app), before + 1);
 
     let effects = complete_session_usage(&mut app, "test-session", Default::default());
     assert!(effects.is_empty());
     assert_eq!(agent_scrollback_len(&app), before + 2);
-    assert!(last_system_text(&app, AgentId(0)).contains("https://billing.example.com/me"));
+    assert!(system_text_from_end(&app, AgentId(0), 1).contains("https://billing.example.com/me"));
 }
 
 #[test]
@@ -908,14 +914,14 @@ fn session_usage_complete_drops_stale_session() {
 }
 
 #[test]
-fn session_usage_failed_pushes_error_and_chains_billing() {
+fn session_usage_failed_pushes_error_without_chaining_billing() {
     let mut app = test_app_with_agent();
     app.screen_mode = crate::app::ScreenMode::Minimal;
     let before = agent_scrollback_len(&app);
     let effects = fail_session_usage(&mut app, "test-session", "boom");
     assert_eq!(agent_scrollback_len(&app), before + 1);
     assert!(last_system_text(&app, AgentId(0)).contains("Couldn't load session usage: boom"));
-    assert!(is_nonsilent_billing(&effects));
+    assert!(effects.is_empty());
 }
 
 #[test]
@@ -978,6 +984,26 @@ fn billing_fetched_none_balance_shows_no_data_message() {
     let before = agent_scrollback_len(&app);
     dispatch_billing(&mut app, None, false, None);
     assert_eq!(agent_scrollback_len(&app), before + 1);
+}
+
+#[test]
+fn billing_fetched_missing_usage_does_not_report_zero_percent() {
+    let mut app = test_app_with_agent();
+    dispatch(
+        Action::TaskComplete(TaskResult::BillingFetched {
+            agent_id: AgentId(0),
+            balance: Some(test_bal(0.0)),
+            usage_available: false,
+            silent: false,
+            subscription_tier: None,
+            autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
+            nonce: 0,
+        }),
+        &mut app,
+    );
+    let text = last_system_text(&app, AgentId(0));
+    assert!(text.contains("Unavailable; no usage data was reported."));
+    assert!(!text.contains("0%"));
 }
 
 #[test]
@@ -1063,6 +1089,7 @@ fn billing_fetched_stores_autotopup_on_app_and_agent() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(bal),
+            usage_available: true,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Resolved(autotopup),
@@ -1093,6 +1120,7 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(bal()),
+            usage_available: true,
             silent: true,
             subscription_tier: None,
             autotopup: resolved,
@@ -1105,6 +1133,7 @@ fn billing_fetched_unchanged_autotopup_keeps_cached_rule() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(bal()),
+            usage_available: true,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
@@ -1128,6 +1157,7 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
                 prepaid_balance_cents: Some(1500),
                 ..test_bal(100.0)
             }),
+            usage_available: true,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Resolved(
@@ -1146,6 +1176,7 @@ fn billing_fetched_cleared_autotopup_resets_cache() {
         Action::TaskComplete(TaskResult::BillingFetched {
             agent_id: AgentId(0),
             balance: Some(test_bal(50.0)),
+            usage_available: true,
             silent: true,
             subscription_tier: None,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Cleared,
@@ -1167,6 +1198,7 @@ fn app_billing_fetched_stores_autotopup() {
     dispatch(
         Action::TaskComplete(TaskResult::AppBillingFetched {
             balance: Some(bal),
+            usage_available: true,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Resolved(
                 crate::views::credit_bar::AutoTopupInfo::disabled(),
             ),

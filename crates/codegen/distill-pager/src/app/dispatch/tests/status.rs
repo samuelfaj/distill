@@ -1710,21 +1710,30 @@ fn show_usage_on_welcome_screen_is_noop() {
 }
 
 #[test]
-fn show_usage_with_redirect_url_fetches_session_only() {
-    // Redirect link is deferred until SessionUsageComplete (see billing tests).
+fn show_usage_with_redirect_url_fetches_session_and_independent_providers() {
+    // The Grok redirect is surfaced immediately; session usage still fetches independently.
     let mut app = test_app_with_agent();
     app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
     let before = agent_scrollback_len(&app);
     let effects = dispatch(Action::ShowUsage, &mut app);
     assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::FetchSessionUsage { agent_id, .. }] if *agent_id == AgentId(0)
-        ),
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::FetchSessionUsage { agent_id, .. } if *agent_id == AgentId(0)
+        )),
         "got: {effects:?}"
     );
-    assert_eq!(agent_scrollback_len(&app), before);
+    assert_eq!(agent_scrollback_len(&app), before + 1);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::FetchChatGptUsage { agent_id: Some(AgentId(0)), .. }
+    )));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::FetchOpenRouterUsage { agent_id: Some(AgentId(0)), .. }
+    )));
+    assert!(last_system_text(&app, AgentId(0)).contains("https://billing.example.com/me"));
 }
 
 #[test]
@@ -1871,17 +1880,32 @@ fn show_usage_opens_modal_on_usage_limit_tab_with_fetches() {
     );
     assert_eq!(state.ctx.session_id.as_deref(), Some("test-session"));
     assert!(state.billing_loading);
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::ShowContextInfo { .. })
+    ));
+    assert!(matches!(
+        effects.get(1),
+        Some(Effect::ShowSessionInfo { .. })
+    ));
+    assert!(matches!(
+        effects.get(2),
+        Some(Effect::FetchSessionUsage { .. })
+    ));
     assert!(
-        matches!(
-            effects.as_slice(),
-            [
-                Effect::ShowContextInfo { .. },
-                Effect::ShowSessionInfo { .. },
-                Effect::FetchSessionUsage { .. },
-                Effect::FetchBilling { silent: true, .. },
-            ]
-        ),
-        "got: {effects:?}"
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::FetchBilling { silent: true, .. }))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::FetchChatGptUsage { .. }))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::FetchOpenRouterUsage { .. }))
     );
 }
 
@@ -2058,4 +2082,118 @@ fn fetch_failures_surface_in_open_modal() {
     let state = usage_modal_state(&app);
     assert_eq!(state.session_error.as_deref(), Some("info boom"));
     assert_eq!(state.context_error.as_deref(), Some("ctx boom"));
+}
+
+#[test]
+fn provider_usage_result_targets_origin_modal_after_focus_switch_and_rejects_stale_nonce() {
+    let mut app = test_app_with_agent();
+    dispatch(Action::ShowUsage, &mut app);
+    let old_nonce = current_usage_nonce(&app);
+    app.active_view = ActiveView::Welcome;
+
+    let chatgpt: distill_shell::codex_auth::CodexUsageSnapshot =
+        serde_json::from_value(serde_json::json!({
+            "plan_type": "pro",
+            "rate_limit": {"primary_window": {
+                "used_percent": 25.0,
+                "limit_window_seconds": 18000,
+                "reset_after_seconds": 60,
+                "reset_at": 0
+            }}
+        }))
+        .unwrap();
+    dispatch(
+        Action::TaskComplete(TaskResult::ChatGptUsageResult {
+            usage: Ok(Box::new(chatgpt)),
+            agent_id: Some(AgentId(0)),
+            nonce: old_nonce,
+        }),
+        &mut app,
+    );
+    assert!(
+        usage_modal_state(&app).chatgpt_usage.is_some(),
+        "result must settle the originating modal even after focus changes"
+    );
+
+    app.active_view = ActiveView::Agent(AgentId(0));
+    app.agents.get_mut(&AgentId(0)).unwrap().active_modal = None;
+    dispatch(Action::ShowUsage, &mut app);
+    assert_ne!(current_usage_nonce(&app), old_nonce);
+    dispatch(
+        Action::TaskComplete(TaskResult::OpenRouterUsageResult {
+            usage: Err("old provider failure".to_string()),
+            agent_id: Some(AgentId(0)),
+            nonce: old_nonce,
+        }),
+        &mut app,
+    );
+    assert!(
+        usage_modal_state(&app).openrouter_usage.is_none(),
+        "a result from the previous modal open must be dropped"
+    );
+}
+
+#[test]
+fn minimal_usage_fetches_each_provider_once_and_keeps_grok_explicit() {
+    let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    let effects = dispatch(Action::ShowUsage, &mut app);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::FetchChatGptUsage { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::FetchOpenRouterUsage { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::FetchBilling { silent: false, .. }))
+            .count(),
+        1
+    );
+
+    let follow_up = dispatch(
+        Action::TaskComplete(TaskResult::SessionUsageComplete {
+            agent_id: AgentId(0),
+            session_id: "test-session".into(),
+            usage: Box::default(),
+            nonce: 0,
+        }),
+        &mut app,
+    );
+    assert!(
+        follow_up.is_empty(),
+        "provider and Grok effects are independent of session completion"
+    );
+    assert!(last_system_text(&app, AgentId(0)).contains("Session usage"));
+}
+
+#[test]
+fn minimal_usage_reports_external_grok_unavailable_without_billing_fetch() {
+    let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    app.has_external_auth_provider = true;
+    app.provider_auth = Some(crate::app::actions::ProviderAuthState {
+        grok: false,
+        chatgpt: true,
+        openrouter: false,
+    });
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
+
+    let effects = dispatch(Action::ShowUsage, &mut app);
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::FetchBilling { .. }))
+    );
+    assert!(last_system_text(&app, AgentId(0)).contains("Grok"));
+    assert!(last_system_text(&app, AgentId(0)).contains("external auth provider"));
 }

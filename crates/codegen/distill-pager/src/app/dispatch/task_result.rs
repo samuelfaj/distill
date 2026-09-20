@@ -44,8 +44,9 @@ use super::session::modal::remove_agent_and_cleanup;
 use super::session::picker_routing::PickerRequest;
 use super::settings::ui::apply_setting_rollback;
 use super::status::{
-    handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
-    handle_context_info_complete, handle_session_usage_result, scrub_error_for_toast,
+    handle_chatgpt_usage_result, handle_coding_data_sharing_failed,
+    handle_coding_data_sharing_updated, handle_context_info_complete,
+    handle_openrouter_usage_result, handle_session_usage_result, scrub_error_for_toast,
     usage_modal_state_mut,
 };
 use super::transcript::{
@@ -555,6 +556,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::BillingFetched {
             agent_id,
             balance,
+            usage_available,
             silent,
             subscription_tier,
             autotopup,
@@ -563,6 +565,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app,
             agent_id,
             balance,
+            usage_available,
             silent,
             subscription_tier,
             autotopup,
@@ -584,7 +587,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 if !silent {
                     agent.scrollback.push_block(RenderBlock::System(
                         crate::scrollback::blocks::SystemMessageBlock::new(format!(
-                            "Billing error: {error}"
+                            "Grok\nBilling error: {error}"
                         )),
                     ));
                 }
@@ -593,6 +596,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::AppBillingFetched {
             balance,
+            usage_available,
             autotopup,
             nonce,
         } => {
@@ -603,6 +607,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             {
                 state.billing_loading = false;
                 state.billing_error = None;
+                state.grok_usage_available = usage_available;
             }
             vec![]
         }
@@ -615,6 +620,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::ChatGptUsageResult {
+            usage,
+            agent_id,
+            nonce,
+        } => handle_chatgpt_usage_result(app, usage, agent_id, nonce),
+        TaskResult::OpenRouterUsageResult {
+            usage,
+            agent_id,
+            nonce,
+        } => handle_openrouter_usage_result(app, usage, agent_id, nonce),
         TaskResult::GateRefreshed { settings } => handle_gate_refreshed(app, settings),
         TaskResult::SessionLoaded {
             agent_id,

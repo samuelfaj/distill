@@ -1603,6 +1603,14 @@ pub(super) fn credit_balance_from_config(
         is_unified_billing_user: c.is_unified_billing_user,
     }
 }
+
+/// Whether the billing payload actually reported a usage source. A present
+/// zero is meaningful; only absent new and legacy usage fields are unknown.
+pub(super) fn billing_config_has_usage_data(
+    c: &distill_shell::extensions::billing::BillingConfig,
+) -> bool {
+    c.credit_usage_percent.is_some() || c.monthly_limit.is_some() || c.used.is_some()
+}
 /// Whether the balance carries a non-zero prepaid credit balance (signed cents).
 pub(super) fn has_prepaid_credits(
     balance: Option<&crate::views::credit_bar::CreditBalance>,

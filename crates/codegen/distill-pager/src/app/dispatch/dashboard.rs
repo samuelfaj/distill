@@ -99,8 +99,8 @@ pub(super) fn ensure_dashboard_state(app: &mut AppView) {
     state.set_recap_visible(app.session_recap_available);
     state.set_voice_visible(app.voice_mode_enabled);
     state.set_restricted_commands(&app.tier_restricted_commands);
-    let billing = app.usage_visible;
-    let usage_cmd = !app.has_external_auth_provider;
+    let billing = app.grok_billing_surface_visible();
+    let usage_cmd = app.usage_command_visible();
     state
         .dispatch
         .slash_controller
@@ -1459,8 +1459,8 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             session_id: None,
             bundle_state: &app.bundle_state,
             screen_mode: app.screen_mode,
-            billing_surface_visible: app.usage_visible,
-            usage_command_visible: !app.has_external_auth_provider,
+            billing_surface_visible: app.grok_billing_surface_visible(),
+            usage_command_visible: app.usage_command_visible(),
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: dashboard_multiline,
                 yolo_mode: app.default_yolo,

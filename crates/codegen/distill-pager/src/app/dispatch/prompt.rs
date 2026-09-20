@@ -700,6 +700,8 @@ pub(super) fn dispatch_send_prompt_submission(
     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
     let screen_mode_is_minimal = app.screen_mode.is_minimal();
+    let billing_surface_visible = app.grok_billing_surface_visible();
+    let usage_command_visible = app.usage_command_visible();
     let Some(agent) = app.agents.get_mut(&id) else {
         return prelude;
     };
@@ -803,8 +805,8 @@ pub(super) fn dispatch_send_prompt_submission(
                 session_id: agent.session.session_id.as_ref(),
                 bundle_state: &app.bundle_state,
                 screen_mode: app.screen_mode,
-                billing_surface_visible: app.usage_visible,
-                usage_command_visible: !app.has_external_auth_provider,
+                billing_surface_visible,
+                usage_command_visible,
                 // PAGER-owned snapshot for slash commands.
                 pager_state: crate::settings::PagerLocalSnapshot {
                     multiline_mode: agent.multiline_mode,

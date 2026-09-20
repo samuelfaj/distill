@@ -5180,6 +5180,10 @@ pub(crate) fn execute(
                             };
                         }
                     };
+                    let usage_available = billing
+                        .config
+                        .as_ref()
+                        .is_some_and(billing_config_has_usage_data);
                     let subscription_tier = billing.subscription_tier;
                     let balance = billing.config.map(credit_balance_from_config);
                     let autotopup = if has_prepaid_credits(balance.as_ref()) {
@@ -5190,6 +5194,7 @@ pub(crate) fn execute(
                     TaskResult::BillingFetched {
                         agent_id,
                         balance,
+                        usage_available,
                         silent,
                         subscription_tier,
                         autotopup,
@@ -5268,6 +5273,10 @@ pub(crate) fn execute(
                             };
                         }
                     };
+                    let usage_available = billing
+                        .config
+                        .as_ref()
+                        .is_some_and(billing_config_has_usage_data);
                     let balance = billing.config.map(credit_balance_from_config);
                     let autotopup = if has_prepaid_credits(balance.as_ref()) {
                         fetch_auto_topup_info(&tx).await
@@ -5276,10 +5285,49 @@ pub(crate) fn execute(
                     };
                     TaskResult::AppBillingFetched {
                         balance,
+                        usage_available,
                         autotopup,
                         nonce,
                     }
                 });
+        }
+        Effect::FetchChatGptUsage { agent_id, nonce } => {
+            tasks.spawn(async move {
+                let usage = match tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    distill_shell::codex_auth::fetch_usage(),
+                )
+                .await
+                {
+                    Ok(Ok(usage)) => Ok(Box::new(usage)),
+                    Ok(Err(error)) => Err(sanitize_user_error(&error.to_string())),
+                    Err(_) => Err("ChatGPT usage request timed out".to_string()),
+                };
+                TaskResult::ChatGptUsageResult {
+                    usage,
+                    agent_id,
+                    nonce,
+                }
+            });
+        }
+        Effect::FetchOpenRouterUsage { agent_id, nonce } => {
+            tasks.spawn(async move {
+                let usage = match tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    distill_shell::openrouter_auth::fetch_usage(),
+                )
+                .await
+                {
+                    Ok(Ok(usage)) => Ok(usage),
+                    Ok(Err(error)) => Err(sanitize_user_error(&error.to_string())),
+                    Err(_) => Err("OpenRouter usage request timed out".to_string()),
+                };
+                TaskResult::OpenRouterUsageResult {
+                    usage,
+                    agent_id,
+                    nonce,
+                }
+            });
         }
         Effect::DebounceSuggestions { agent_id, generation } => {
             tasks

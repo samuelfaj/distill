@@ -20,6 +20,8 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex, oneshot};
 
 pub const API_KEY_ENV: &str = "OPENROUTER_API_KEY";
+const USAGE_ENDPOINT: &str = "https://openrouter.ai/api/v1/key";
+const USAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn auth_file_path() -> PathBuf {
     crate::util::distill_home::distill_home().join("openrouter-auth.json")
@@ -28,6 +30,36 @@ pub fn auth_file_path() -> PathBuf {
 #[derive(Deserialize, Serialize)]
 struct Credentials {
     key: String,
+}
+
+/// Per-key usage returned by OpenRouter's `/api/v1/key` endpoint.
+///
+/// `limit` and `limit_remaining` are nullable for keys without a configured
+/// spend cap. A null cap is intentionally kept as `None`; it does not mean
+/// that the account has an unlimited balance.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct OpenRouterUsage {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub usage: Option<f64>,
+    #[serde(default)]
+    pub usage_daily: Option<f64>,
+    #[serde(default)]
+    pub usage_weekly: Option<f64>,
+    #[serde(default)]
+    pub usage_monthly: Option<f64>,
+    #[serde(default)]
+    pub limit: Option<f64>,
+    #[serde(default)]
+    pub limit_remaining: Option<f64>,
+    #[serde(default)]
+    pub limit_reset: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageResponse {
+    data: OpenRouterUsage,
 }
 
 /// Explicit environment credentials take precedence over the browser sign-in.
@@ -42,6 +74,34 @@ pub fn api_key() -> io::Result<Option<String>> {
 
 pub fn is_logged_in() -> bool {
     load_key_at(&auth_file_path()).ok().flatten().is_some()
+}
+
+/// Fetch usage for the resolved OpenRouter API key. This is deliberately a
+/// per-key endpoint: a null key limit remains unknown rather than becoming an
+/// invented account-wide balance.
+pub async fn fetch_usage() -> Result<OpenRouterUsage> {
+    let Some(key) = api_key()? else {
+        bail!("Not connected; set OPENROUTER_API_KEY or run `distill login --openrouter`");
+    };
+    let response = crate::http::shared_client()
+        .get(USAGE_ENDPOINT)
+        .bearer_auth(key)
+        .timeout(USAGE_REQUEST_TIMEOUT)
+        .send()
+        .await
+        .context("OpenRouter usage request failed")?;
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        bail!("OpenRouter rejected the API key");
+    }
+    if !status.is_success() {
+        bail!("OpenRouter usage request returned HTTP {status}");
+    }
+    response
+        .json::<UsageResponse>()
+        .await
+        .context("OpenRouter usage response was invalid")
+        .map(|response| response.data)
 }
 
 /// Disconnect the browser account; explicit environment keys remain configured.
@@ -204,6 +264,39 @@ pub async fn run_tui_login(browser_fallback: oneshot::Sender<String>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_schema_preserves_key_label_and_nullable_limit() {
+        let response: UsageResponse = serde_json::from_value(serde_json::json!({
+            "data": {
+                "label": "team-key",
+                "usage": 12.34,
+                "usage_daily": 1.2,
+                "usage_weekly": 5.6,
+                "usage_monthly": 12.34,
+                "limit": null,
+                "limit_remaining": null,
+                "limit_reset": null
+            }
+        }))
+        .unwrap();
+        assert_eq!(response.data.label.as_deref(), Some("team-key"));
+        assert_eq!(response.data.usage, Some(12.34));
+        assert_eq!(response.data.limit, None);
+        assert_eq!(response.data.limit_remaining, None);
+        assert_eq!(response.data.limit_reset, None);
+    }
+
+    #[test]
+    fn usage_schema_rejects_missing_data_and_does_not_default_usage_to_zero() {
+        assert!(serde_json::from_value::<UsageResponse>(serde_json::json!({})).is_err());
+        let response: UsageResponse = serde_json::from_value(serde_json::json!({
+            "data": {"label": "key", "limit": 5.0}
+        }))
+        .unwrap();
+        assert_eq!(response.data.usage, None);
+        assert_eq!(response.data.usage_daily, None);
+    }
 
     #[tokio::test]
     async fn pkce_exchange_saves_a_private_key_without_touching_other_accounts() {

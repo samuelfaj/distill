@@ -19,6 +19,7 @@ fn session_less_modal(tab: UsageInfoTab) -> Box<UsageInfoModalState> {
             chat_kind: false,
             billing_redirect_url: None,
             subscription_tier: Some("SuperGrok".to_string()),
+            grok_connected: true,
         },
     ))
 }
@@ -153,6 +154,7 @@ fn usage_modal_renders_allowance_from_app_balance() {
     let area = Rect::new(0, 0, 100, 30);
     let mut state = DashboardState::new();
     state.usage_modal = Some(session_less_modal(UsageInfoTab::UsageLimit));
+    state.usage_modal.as_mut().unwrap().grok_usage_available = true;
     let balance = CreditBalance {
         usage_pct: 42.0,
         effective_usage_pct: 42.0,
@@ -167,6 +169,9 @@ fn usage_modal_renders_allowance_from_app_balance() {
 
     let content = render_with_modal(&mut state, area, Some(&balance));
     assert!(content.contains("Usage limit"), "{content}");
+    assert!(content.contains("ChatGPT"), "{content}");
+    assert!(content.contains("Grok"), "{content}");
+    assert!(content.contains("OpenRouter"), "{content}");
     assert!(content.contains("(SuperGrok)"), "{content}");
     assert!(content.contains("42%"), "{content}");
     assert!(content.contains("Resets: May 29, 00:00"), "{content}");
@@ -206,7 +211,7 @@ fn usage_modal_renders_billing_error() {
 
     let content = render_with_modal(&mut state, area, None);
     assert!(
-        content.contains("Couldn't load usage: proxy unreachable"),
+        content.contains("Unavailable: proxy unreachable"),
         "{content}"
     );
 }

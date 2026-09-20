@@ -3181,40 +3181,30 @@ fn dashboard_does_not_advertise_or_dispatch_doctor() {
         assert_eq!(dashboard.error_toast.as_deref(), Some(expected.as_str()));
     }
 }
-/// External-auth hides `/usage` via `visible()`, not session-scope. Typed
-/// `/usage` on the dashboard must refuse with the command's message, not
-/// claim it only works in a session.
+/// External auth hides only Grok billing; independent provider usage remains
+/// available from the dashboard.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
-fn dashboard_slash_usage_hidden_for_external_auth() {
+fn dashboard_slash_usage_remains_visible_for_external_auth() {
     let mut app = three_agent_app();
     app.has_external_auth_provider = true;
     app.apply_auth_meta(&distill_login::AuthMeta::default());
     open_dashboard(&mut app);
     let before = app.agents.len();
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage".into());
-    assert!(effects.is_empty(), "must not enqueue spawn effects");
+    assert_eq!(effects.len(), 2, "independent providers remain fetchable: {effects:?}");
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::FetchChatGptUsage { agent_id: None, .. }
+    )));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::FetchOpenRouterUsage { agent_id: None, .. }
+    )));
     assert_eq!(app.agents.len(), before, "must not add an agent");
     assert_eq!(app.dashboard.as_ref().unwrap().dispatch.text(), "");
-    let toast = app
-        .dashboard
-        .as_ref()
-        .unwrap()
-        .error_toast
-        .as_deref()
-        .expect("error toast for gated /usage");
-    assert!(
-        toast.contains("/usage is not available"),
-        "unexpected toast: {toast}"
-    );
-    assert!(
-        !toast.contains("only works in a session"),
-        "must not mis-label /usage as session-scoped: {toast}"
-    );
-    assert!(
-        !toast.contains("SuperGrok"),
-        "must not upsell billing on external auth: {toast}"
-    );
+    assert!(app.dashboard.as_ref().unwrap().error_toast.is_none());
+    assert_ne!(dashboard_usage_modal(&app).fetch_nonce, 0);
 }
 /// The dashboard modal's own fetch generation and its open state.
 fn dashboard_usage_modal(app: &AppView) -> &crate::views::usage_modal::UsageInfoModalState {
@@ -3234,8 +3224,8 @@ fn dashboard_slash_usage_opens_dashboard_modal() {
     open_dashboard(&mut app);
     let before = app.agents.len();
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage".into());
-    let [Effect::FetchAppBilling { nonce }] = effects.as_slice() else {
-        panic!("session-less open refreshes only the account allowance, got: {effects:?}");
+    let [Effect::FetchAppBilling { nonce }, Effect::FetchChatGptUsage { .. }, Effect::FetchOpenRouterUsage { .. }] = effects.as_slice() else {
+        panic!("session-less open refreshes Grok and independent providers, got: {effects:?}");
     };
     assert_ne!(
         *nonce, 0,
@@ -3323,6 +3313,7 @@ fn dashboard_usage_modal_settles_only_on_its_own_app_billing_generation() {
     let _ = dispatch(
         Action::TaskComplete(TaskResult::AppBillingFetched {
             balance: Some(test_bal(10.0)),
+            usage_available: true,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
             nonce: 0,
         }),
@@ -3336,6 +3327,7 @@ fn dashboard_usage_modal_settles_only_on_its_own_app_billing_generation() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AppBillingFetched {
             balance: Some(test_bal(42.0)),
+            usage_available: true,
             autotopup: crate::views::credit_bar::AutoTopupFetch::Unchanged,
             nonce,
         }),
@@ -3375,15 +3367,15 @@ fn dashboard_usage_modal_billing_error_keeps_cached_balance() {
 }
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
-fn dashboard_slash_usage_redirect_url_skips_billing_fetch() {
+fn dashboard_slash_usage_redirect_url_fetches_independent_providers_without_billing() {
     let mut app = three_agent_app();
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage".into());
-    assert!(effects.is_empty(), "got: {effects:?}");
+    assert_eq!(effects.len(), 2, "Grok redirect skips only billing fetch: {effects:?}");
     let modal = dashboard_usage_modal(&app);
     assert!(!modal.billing_loading);
-    assert_eq!(modal.fetch_nonce, 0);
+    assert_ne!(modal.fetch_nonce, 0);
     assert_eq!(
         modal.ctx.billing_redirect_url.as_deref(),
         Some("https://billing.example.com/me")
@@ -3398,11 +3390,11 @@ fn dashboard_slash_usage_team_account_skips_billing_fetch() {
     app.sync_billing_surface_to_agents();
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage".into());
-    assert!(effects.is_empty(), "got: {effects:?}");
+    assert_eq!(effects.len(), 2, "independent providers remain fetchable: {effects:?}");
     let modal = dashboard_usage_modal(&app);
     assert!(!modal.ctx.usage_visible);
     assert!(!modal.billing_loading);
-    assert_eq!(modal.fetch_nonce, 0);
+    assert_ne!(modal.fetch_nonce, 0);
 }
 /// `--chat` processes carry `chat_kind` on every session; the dashboard modal follows so it hides Build coding credits the same way.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
@@ -3412,10 +3404,7 @@ fn dashboard_slash_usage_in_chat_mode_marks_modal_chat_kind() {
     app.chat_mode = true;
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage".into());
-    assert!(
-        effects.is_empty(),
-        "chat kind never fetches Build billing, got: {effects:?}"
-    );
+    assert_eq!(effects.len(), 2, "chat kind skips Grok billing only: {effects:?}");
     let modal = dashboard_usage_modal(&app);
     assert!(modal.ctx.chat_kind);
     assert!(!modal.billing_loading);

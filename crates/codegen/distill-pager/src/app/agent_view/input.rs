@@ -1694,6 +1694,7 @@ mod btw_focus_tests {
                     chat_kind: false,
                     billing_redirect_url: None,
                     subscription_tier: None,
+                    grok_connected: true,
                 },
             )),
         }

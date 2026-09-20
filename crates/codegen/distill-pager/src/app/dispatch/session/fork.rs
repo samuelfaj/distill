@@ -164,6 +164,8 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
     };
     let parent_chat_kind = parent.chat_kind || app.chat_mode;
     let parent_conversation_entry = parent.conversation_entry;
+    let billing_surface_visible = app.grok_billing_surface_visible();
+    let usage_command_visible = app.usage_command_visible();
     app.agents.insert(new_id, new_agent);
     {
         let agent = app
@@ -180,8 +182,8 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
-            app.usage_visible,
-            !app.has_external_auth_provider,
+            billing_surface_visible,
+            usage_command_visible,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,

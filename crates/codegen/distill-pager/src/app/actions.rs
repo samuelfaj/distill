@@ -2286,6 +2286,20 @@ pub enum Effect {
         /// Usage-modal fetch generation (`0` means a background refresh that settles no modal).
         nonce: u64,
     },
+    /// Fetch ChatGPT account usage through the isolated Codex auth store.
+    /// `agent_id` is used by minimal mode to route the rendered result into
+    /// the originating scrollback; dashboard modal fetches use `None`.
+    FetchChatGptUsage {
+        agent_id: Option<AgentId>,
+        nonce: u64,
+    },
+    /// Fetch OpenRouter per-key usage through its isolated credential store.
+    /// `agent_id` is used by minimal mode to route the rendered result into
+    /// the originating scrollback; dashboard modal fetches use `None`.
+    FetchOpenRouterUsage {
+        agent_id: Option<AgentId>,
+        nonce: u64,
+    },
     /// Fetch per-session token/cost via `x.ai/session/usage` (auth-agnostic).
     FetchSessionUsage {
         agent_id: AgentId,
@@ -3258,6 +3272,7 @@ pub enum TaskResult {
     BillingFetched {
         agent_id: AgentId,
         balance: Option<crate::views::credit_bar::CreditBalance>,
+        usage_available: bool,
         /// When true, update `credit_balance` silently (no scrollback message).
         silent: bool,
         /// Subscription tier piggybacked from remote settings.
@@ -3270,6 +3285,7 @@ pub enum TaskResult {
     /// App-level billing data (welcome screen, dashboard usage modal).
     AppBillingFetched {
         balance: Option<crate::views::credit_bar::CreditBalance>,
+        usage_available: bool,
         autotopup: crate::views::credit_bar::AutoTopupFetch,
         /// Usage-modal fetch generation (`0` means a background refresh).
         nonce: u64,
@@ -3278,6 +3294,18 @@ pub enum TaskResult {
     AppBillingError {
         error: String,
         /// Usage-modal fetch generation (`0` means a background refresh).
+        nonce: u64,
+    },
+    /// ChatGPT account usage fetched from the isolated Codex provider.
+    ChatGptUsageResult {
+        usage: Result<Box<distill_shell::codex_auth::CodexUsageSnapshot>, String>,
+        agent_id: Option<AgentId>,
+        nonce: u64,
+    },
+    /// OpenRouter per-key usage fetched from its isolated provider client.
+    OpenRouterUsageResult {
+        usage: Result<distill_shell::openrouter_auth::OpenRouterUsage, String>,
+        agent_id: Option<AgentId>,
         nonce: u64,
     },
     GateRefreshed {

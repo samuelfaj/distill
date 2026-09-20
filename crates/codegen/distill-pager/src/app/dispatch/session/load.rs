@@ -226,6 +226,8 @@ fn dispatch_load_session_ungated(
     app.agents.insert(agent_id, agent);
     identity_rebind.apply(app);
     let conversation_entry = session_opens_as_chat(app, chat_kind);
+    let billing_surface_visible = app.grok_billing_surface_visible();
+    let usage_command_visible = app.usage_command_visible();
     let agent_mut = app.agents.get_mut(&agent_id).unwrap();
     agent_mut.attached_as_viewer = true;
     agent_mut.begin_replay_window();
@@ -247,8 +249,8 @@ fn dispatch_load_session_ungated(
     }
     agent_mut.apply_app_scoped_gates(
         app.sharing_enabled,
-        app.usage_visible,
-        !app.has_external_auth_provider,
+        billing_surface_visible,
+        usage_command_visible,
         app.chat_mode,
         app.screen_mode,
         &app.active_announcements,
@@ -1134,6 +1136,8 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
     );
     app.agents.insert(agent_id, agent);
     let conversation_entry = session_opens_as_chat(app, false);
+    let billing_surface_visible = app.grok_billing_surface_visible();
+    let usage_command_visible = app.usage_command_visible();
     {
         let agent = app.agents.get_mut(&agent_id).unwrap();
         agent.attached_as_viewer = true;
@@ -1148,8 +1152,8 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
-            app.usage_visible,
-            !app.has_external_auth_provider,
+            billing_surface_visible,
+            usage_command_visible,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,

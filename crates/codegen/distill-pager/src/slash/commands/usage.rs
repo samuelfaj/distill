@@ -2,7 +2,8 @@
 //! `/usage` shows session token and cost totals; consumer accounts can also manage billing.
 //!
 //! External-auth deployments (`auth_provider_command`) never reach grok.com billing.
-//! [`AppCtx::usage_command_visible`] hides and refuses the command there.
+//! The command stays discoverable even when an individual provider is
+//! disconnected; only Grok's manage/billing surface is separately guarded.
 
 use crate::app::actions::Action;
 use crate::slash::command::{
@@ -61,28 +62,28 @@ impl SlashCommand for UsageCommand {
     }
 
     fn takes_args_now(&self, ctx: &AppCtx) -> bool {
-        // Non-consumer accounts get bare `/usage` only; Enter should send, not chain for args
-        ctx.usage_command_visible && ctx.billing_surface_visible
+        ctx.usage_command_visible
     }
 
     fn suggest_args(&self, ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
-        if !ctx.usage_command_visible || !ctx.billing_surface_visible {
+        if !ctx.usage_command_visible {
             return None;
         }
-        Some(vec![
-            ArgItem {
-                display: "show".into(),
-                match_text: "show".into(),
-                insert_text: "show".into(),
-                description: "View usage".into(),
-            },
-            ArgItem {
+        let mut args = vec![ArgItem {
+            display: "show".into(),
+            match_text: "show".into(),
+            insert_text: "show".into(),
+            description: "View usage".into(),
+        }];
+        if ctx.billing_surface_visible {
+            args.push(ArgItem {
                 display: "manage".into(),
                 match_text: "manage".into(),
                 insert_text: "manage".into(),
                 description: "Manage billing".into(),
-            },
-        ])
+            });
+        }
+        Some(args)
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -90,15 +91,12 @@ impl SlashCommand for UsageCommand {
             return CommandResult::Error("/usage is not available.".into());
         }
         let arg = args.trim();
-        if !ctx.billing_surface_visible {
-            return match arg {
-                "" => CommandResult::Action(Action::ShowUsage),
-                _ => CommandResult::Error(format!("Unknown argument: {arg}. Use /usage")),
-            };
-        }
         match arg {
             "" | "show" => CommandResult::Action(Action::ShowUsage),
-            "manage" => CommandResult::Action(Action::ManageBilling),
+            "manage" if ctx.billing_surface_visible => CommandResult::Action(Action::ManageBilling),
+            "manage" => {
+                CommandResult::Error("/usage manage is only available for Grok billing.".into())
+            }
             _ => CommandResult::Error(format!(
                 "Unknown argument: {arg}. Use /usage show or /usage manage"
             )),

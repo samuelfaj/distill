@@ -367,6 +367,19 @@ fn credit_balance_prefers_credit_usage_percent_over_limit_used() {
     };
     assert_eq!(credit_balance_from_config(c).usage_pct, 42.0);
 }
+
+#[test]
+fn billing_usage_provenance_requires_a_reported_usage_field() {
+    assert!(!billing_config_has_usage_data(&empty_billing_config()));
+    assert!(billing_config_has_usage_data(&BillingConfig {
+        credit_usage_percent: Some(0.0),
+        ..empty_billing_config()
+    }));
+    assert!(billing_config_has_usage_data(&BillingConfig {
+        monthly_limit: Some(Cent { val: 0 }),
+        ..empty_billing_config()
+    }));
+}
 #[test]
 fn credit_balance_forwards_is_unified_billing_user() {
     let c = BillingConfig {

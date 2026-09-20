@@ -301,6 +301,7 @@ pub(super) fn handle_billing_fetched(
     app: &mut AppView,
     agent_id: AgentId,
     balance: Option<crate::views::credit_bar::CreditBalance>,
+    usage_available: bool,
     silent: bool,
     subscription_tier: Option<String>,
     autotopup: crate::views::credit_bar::AutoTopupFetch,
@@ -332,14 +333,19 @@ pub(super) fn handle_billing_fetched(
         {
             state.billing_loading = false;
             state.billing_error = None;
+            state.grok_usage_available = usage_available;
             state.ctx.subscription_tier = tier_now;
         }
         if !silent && !agent.chat_kind {
-            let msg = match &balance {
-                Some(bal) => {
-                    crate::views::credit_bar::format_usage_summary(bal, summary_topup.as_ref())
+            let msg = match (&balance, usage_available) {
+                (Some(bal), true) => {
+                    format!(
+                        "Grok\n{}",
+                        crate::views::credit_bar::format_usage_summary(bal, summary_topup.as_ref())
+                    )
                 }
-                None => "No billing data available.".to_string(),
+                (Some(_), false) => "Grok\nUnavailable; no usage data was reported.".to_string(),
+                (None, _) => "Grok\nNo billing data available.".to_string(),
             };
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(msg),

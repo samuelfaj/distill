@@ -779,8 +779,8 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     let recap = app.session_recap_available;
     let voice = app.voice_mode_enabled;
     let sharing_enabled = app.sharing_enabled;
-    let usage_visible = app.usage_visible;
-    let usage_command_visible = !app.has_external_auth_provider;
+    let usage_visible = app.grok_billing_surface_visible();
+    let usage_command_visible = app.usage_command_visible();
     let chat_mode = app.chat_mode;
     let screen_mode = app.screen_mode;
     let announcements = app.active_announcements.clone();
@@ -1247,6 +1247,8 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
     } else {
         app.deferred_startup.pending_chat
     };
+    let billing_surface_visible = app.grok_billing_surface_visible();
+    let usage_command_visible = app.usage_command_visible();
     {
         let agent = app.agents.get_mut(&agent_id).unwrap();
         agent.prompt.set_compact(app.appearance.prompt.compact);
@@ -1259,8 +1261,8 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
-            app.usage_visible,
-            !app.has_external_auth_provider,
+            billing_surface_visible,
+            usage_command_visible,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,

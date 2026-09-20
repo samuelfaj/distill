@@ -1332,9 +1332,24 @@ impl AppView {
         }
     }
     /// Mirror the billing and `/usage` gates onto every slash surface (agents, welcome, dashboard dispatch / peek-reply).
+    /// Whether Grok's consumer billing endpoint may be queried or managed.
+    /// Independent provider usage remains available when this is false.
+    pub(crate) fn grok_billing_surface_visible(&self) -> bool {
+        self.usage_visible
+            && !self.has_external_auth_provider
+            && self.provider_auth.map_or(true, |auth| auth.grok)
+    }
+
+    /// Whether `/usage` should remain discoverable. External-auth Grok billing
+    /// stays isolated, and the command itself remains available so each
+    /// provider can report its own connected/unavailable state.
+    pub(crate) fn usage_command_visible(&self) -> bool {
+        true
+    }
+
     pub(crate) fn sync_billing_surface_to_agents(&mut self) {
-        let billing = self.usage_visible;
-        let usage_cmd = !self.has_external_auth_provider;
+        let billing = self.grok_billing_surface_visible();
+        let usage_cmd = self.usage_command_visible();
         for agent in self.agents.values_mut() {
             agent.set_billing_surface_visible(billing);
             agent.set_usage_command_visible(usage_cmd);

@@ -449,7 +449,7 @@ pub(super) fn handle_auth_complete(
                 note_peek_page_flip(app, id, page_flip_entry);
             }
             let mut effects = dispatch(Action::RequestBundleStatus, app);
-            if app.usage_visible {
+            if app.grok_billing_surface_visible() {
                 effects.push(Effect::FetchAppBilling { nonce: 0 });
             }
             effects.extend(retry_effects);
@@ -467,7 +467,7 @@ pub(super) fn handle_auth_complete(
             effects.push(Effect::SchedulePaywallCheck);
         }
         // Fetch billing so the welcome screen can show a credit warning.
-        if app.usage_visible {
+        if app.grok_billing_surface_visible() {
             effects.push(Effect::FetchAppBilling { nonce: 0 });
         }
         // Fetch changelog (mirrors startup path for interactive login).

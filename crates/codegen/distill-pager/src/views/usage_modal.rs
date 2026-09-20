@@ -76,6 +76,9 @@ pub struct UsageInfoContext {
     pub billing_redirect_url: Option<String>,
     /// Plan name for the allowance header (e.g. "SuperGrok").
     pub subscription_tier: Option<String>,
+    /// Whether the independent Grok account is connected. This is separate
+    /// from `usage_visible`, which also covers team-managed accounts.
+    pub grok_connected: bool,
 }
 
 /// Modal state. Billing figures are NOT stored here.
@@ -94,6 +97,13 @@ pub struct UsageInfoModalState {
     pub session_usage_text: Option<String>,
     pub billing_loading: bool,
     pub billing_error: Option<String>,
+    /// Whether the latest Grok billing response contained an actual usage
+    /// field, as opposed to a valid response with all usage fields omitted.
+    pub grok_usage_available: bool,
+    /// ChatGPT account usage; `None` means the independent request is still in flight.
+    pub chatgpt_usage: Option<Result<Box<distill_shell::codex_auth::CodexUsageSnapshot>, String>>,
+    /// OpenRouter per-key usage; `None` means the independent request is still in flight.
+    pub openrouter_usage: Option<Result<distill_shell::openrouter_auth::OpenRouterUsage, String>>,
     /// Fetch generation stamped at open; results from an earlier open (same session, modal reopened) are dropped instead of overwriting.
     pub fetch_nonce: u64,
     /// Hit rects for copyable value rows, refreshed every render.
@@ -148,6 +158,9 @@ impl UsageInfoModalState {
             session_usage_text: None,
             billing_loading: false,
             billing_error: None,
+            grok_usage_available: false,
+            chatgpt_usage: None,
+            openrouter_usage: None,
             fetch_nonce: Default::default(),
             session_fields: None,
             copy_hits: Vec::new(),
@@ -758,21 +771,17 @@ fn usage_limit_lines(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    if state.ctx.chat_kind {
-        // Gateway chat sessions have no Build coding credits to show.
-    } else if !state.ctx.usage_visible {
-        lines.push(muted_line(theme, "Usage limits are managed by your team."));
-    } else if let Some(url) = &state.ctx.billing_redirect_url {
-        lines.push(plain(theme, format!("Please check your usage on {url}")));
-    } else if let Some(bal) = balance {
-        lines.extend(allowance_lines(state, bal, theme));
-    } else if let Some(error) = &state.billing_error {
-        lines.push(muted_line(theme, format!("Couldn't load usage: {error}")));
-    } else if state.billing_loading {
-        lines.push(muted_line(theme, "Loading usage\u{2026}"));
-    } else {
-        lines.push(muted_line(theme, "No billing data available."));
-    }
+    lines.extend(provider_block_lines(
+        theme,
+        &chatgpt_usage_text(state.chatgpt_usage.as_ref()),
+    ));
+    lines.push(Line::default());
+    lines.extend(grok_usage_lines(state, balance, theme));
+    lines.push(Line::default());
+    lines.extend(provider_block_lines(
+        theme,
+        &openrouter_usage_text(state.openrouter_usage.as_ref()),
+    ));
 
     if let Some(usage_text) = &state.session_usage_text {
         if !lines.is_empty() {
@@ -792,6 +801,205 @@ fn usage_limit_lines(
         lines.push(muted_line(theme, "Loading session usage\u{2026}"));
     }
     lines
+}
+
+fn provider_block_lines(theme: &Theme, text: &str) -> Vec<Line<'static>> {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                Line::styled(line.to_string(), header_style(theme))
+            } else {
+                plain(theme, line)
+            }
+        })
+        .collect()
+}
+
+fn grok_usage_lines(
+    state: &UsageInfoModalState,
+    balance: Option<&CreditBalance>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled("Grok", header_style(theme))];
+    if state.ctx.chat_kind {
+        lines.push(muted_line(theme, "Unavailable for gateway chat sessions."));
+    } else if !state.ctx.usage_visible {
+        lines.push(muted_line(theme, "Usage limits are managed by your team."));
+    } else if !state.ctx.grok_connected {
+        lines.push(muted_line(
+            theme,
+            "Not connected; log in with Grok to load limits.",
+        ));
+    } else if let Some(url) = &state.ctx.billing_redirect_url {
+        lines.push(plain(theme, format!("Please check your usage on {url}")));
+    } else if let Some(error) = &state.billing_error {
+        lines.push(muted_line(theme, format!("Unavailable: {error}")));
+    } else if state.billing_loading {
+        lines.push(muted_line(theme, "Loading usage\u{2026}"));
+    } else if !state.grok_usage_available {
+        lines.push(muted_line(
+            theme,
+            "Unavailable; no usage data was reported.",
+        ));
+    } else if let Some(bal) = balance {
+        lines.extend(allowance_lines(state, bal, theme));
+    } else {
+        lines.push(muted_line(theme, "Unavailable; no billing data available."));
+    }
+    lines
+}
+
+pub(crate) fn chatgpt_usage_text(
+    usage: Option<&Result<Box<distill_shell::codex_auth::CodexUsageSnapshot>, String>>,
+) -> String {
+    let mut lines = vec!["ChatGPT".to_string()];
+    match usage {
+        None => lines.push("Loading usage\u{2026}".to_string()),
+        Some(Err(error)) => lines.push(provider_error_text(error)),
+        Some(Ok(snapshot)) => {
+            if let Some(plan) = snapshot.plan_type.as_deref() {
+                lines.push(format!("Plan: {plan}"));
+            }
+            if let Some(rate_limit) = snapshot.rate_limit.as_ref() {
+                if let Some(window) = rate_limit.primary_window.as_ref() {
+                    append_chatgpt_window(&mut lines, "Primary", window);
+                }
+                if let Some(window) = rate_limit.secondary_window.as_ref() {
+                    append_chatgpt_window(&mut lines, "Secondary", window);
+                }
+                if rate_limit.limit_reached {
+                    lines.push("Status: limit reached".to_string());
+                }
+            }
+            for additional in &snapshot.additional_rate_limits {
+                let label = additional
+                    .limit_name
+                    .as_deref()
+                    .or(additional.metered_feature.as_deref())
+                    .unwrap_or("Additional");
+                if let Some(rate_limit) = additional.rate_limit.as_ref() {
+                    if let Some(window) = rate_limit.primary_window.as_ref() {
+                        append_chatgpt_window(&mut lines, &format!("{label} primary"), window);
+                    }
+                    if let Some(window) = rate_limit.secondary_window.as_ref() {
+                        append_chatgpt_window(&mut lines, &format!("{label} secondary"), window);
+                    }
+                } else {
+                    lines.push(format!("{label}: unavailable"));
+                }
+            }
+            if let Some(credits) = snapshot.credits.as_ref() {
+                if credits.unlimited {
+                    lines.push("Credits: unlimited".to_string());
+                } else if let Some(balance) = credits.balance.as_ref().and_then(scalar_text) {
+                    lines.push(format!("Credits: {balance}"));
+                }
+            }
+            if lines.len() == 1 {
+                lines.push("No usage windows returned.".to_string());
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn append_chatgpt_window(
+    lines: &mut Vec<String>,
+    label: &str,
+    window: &distill_shell::codex_auth::CodexRateLimitWindow,
+) {
+    lines.push(format!(
+        "{label} window: {:.1}% used",
+        window.used_percent.clamp(0.0, 100.0)
+    ));
+    lines.push(format!("Resets: {}", format_reset(window)));
+}
+
+fn format_reset(window: &distill_shell::codex_auth::CodexRateLimitWindow) -> String {
+    if window.reset_after_seconds > 0 {
+        return format_duration(window.reset_after_seconds);
+    }
+    use chrono::TimeZone as _;
+    chrono::Local
+        .timestamp_opt(window.reset_at, 0)
+        .single()
+        .map(|time| time.format("%b %-d, %H:%M").to_string())
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn format_duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds >= 86_400 {
+        format!("in {}d {}h", seconds / 86_400, (seconds % 86_400) / 3_600)
+    } else if seconds >= 3_600 {
+        format!("in {}h {}m", seconds / 3_600, (seconds % 3_600) / 60)
+    } else if seconds >= 60 {
+        format!("in {}m", seconds / 60)
+    } else {
+        format!("in {seconds}s")
+    }
+}
+
+pub(crate) fn openrouter_usage_text(
+    usage: Option<&Result<distill_shell::openrouter_auth::OpenRouterUsage, String>>,
+) -> String {
+    let mut lines = vec!["OpenRouter".to_string()];
+    match usage {
+        None => lines.push("Loading usage\u{2026}".to_string()),
+        Some(Err(error)) => lines.push(provider_error_text(error)),
+        Some(Ok(usage)) => {
+            lines.push(format!(
+                "Key: {}",
+                usage.label.as_deref().unwrap_or("label unavailable")
+            ));
+            lines.push(format!("Usage: {}", format_money(usage.usage)));
+            lines.push(format!("Today: {}", format_money(usage.usage_daily)));
+            lines.push(format!("This week: {}", format_money(usage.usage_weekly)));
+            lines.push(format!("This month: {}", format_money(usage.usage_monthly)));
+            lines.push(format!(
+                "Limit: {}",
+                usage
+                    .limit
+                    .map(|value| format!("${value:.2}"))
+                    .unwrap_or_else(|| "not set".to_string())
+            ));
+            lines.push(format!(
+                "Remaining: {}",
+                usage
+                    .limit_remaining
+                    .map(|value| format!("${value:.2}"))
+                    .unwrap_or_else(|| "unavailable".to_string())
+            ));
+            lines.push(format!(
+                "Limit resets: {}",
+                usage.limit_reset.as_deref().unwrap_or("unavailable")
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_money(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("${value:.2}"))
+        .unwrap_or_else(|| "not reported".to_string())
+}
+
+fn provider_error_text(error: &str) -> String {
+    if error.starts_with("Not connected") {
+        error.to_string()
+    } else {
+        format!("Unavailable: {error}")
+    }
+}
+
+fn scalar_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    }
 }
 
 fn allowance_lines(
@@ -962,6 +1170,7 @@ mod tests {
                 chat_kind: false,
                 billing_redirect_url: None,
                 subscription_tier: Some("SuperGrok".to_string()),
+                grok_connected: true,
             },
         )
     }
@@ -998,7 +1207,8 @@ mod tests {
 
     #[test]
     fn usage_limit_tab_shows_allowance_and_payg() {
-        let state = state_with_session();
+        let mut state = state_with_session();
+        state.grok_usage_available = true;
         let bal = CreditBalance {
             usage_pct: 50.67,
             effective_usage_pct: 50.67,
@@ -1013,14 +1223,11 @@ mod tests {
         let theme = Theme::current();
         let lines = usage_limit_lines(&state, Some(&bal), &theme);
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        assert_eq!(
-            text.first().map(String::as_str),
-            Some("Weekly limit (SuperGrok)")
-        );
+        assert_eq!(text.first().map(String::as_str), Some("ChatGPT"));
+        assert!(text.iter().any(|line| line == "Weekly limit (SuperGrok)"));
         assert!(
-            text.get(2).is_some_and(|l| l.ends_with("50%")),
-            "bar row: {:?}",
-            text.get(2)
+            text.iter().any(|l| l.ends_with("50%")),
+            "bar row: {text:?}"
         );
         assert!(text.iter().any(|l| l.contains("Resets: May 29, 00:00")));
         assert!(text.iter().any(|l| l == "Pay as you go: Enabled"));
@@ -1040,35 +1247,182 @@ mod tests {
         let mut state = state_with_session();
         state.billing_loading = true;
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(
-            lines
-                .first()
-                .is_some_and(|l| l.to_string().contains("Loading usage"))
-        );
+        assert!(lines.iter().any(|l| l.to_string().contains("Loading usage")));
 
         state.ctx.billing_redirect_url = Some("https://x.example/usage".to_string());
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(
-            lines
-                .first()
-                .is_some_and(|l| l.to_string().contains("https://x.example/usage"))
-        );
+        assert!(lines.iter().any(|l| l.to_string().contains("https://x.example/usage")));
 
         state.ctx.usage_visible = false;
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(
-            lines
-                .first()
-                .is_some_and(|l| l.to_string().contains("managed by your team"))
-        );
+        assert!(lines.iter().any(|l| l.to_string().contains("managed by your team")));
 
-        // Gateway chat sessions show no billing at all
+        // Gateway chat sessions suppress Grok billing while independent providers remain visible.
         state.ctx.chat_kind = true;
         let lines = usage_limit_lines(&state, None, &theme);
+        assert!(lines.iter().any(|l| l.to_string().contains("Unavailable for gateway chat sessions")));
+        assert!(lines.iter().any(|l| l.to_string().contains("Loading session usage")));
+    }
+
+    #[test]
+    fn usage_limit_prefers_refresh_failure_over_cached_grok_balance() {
+        let mut state = state_with_session();
+        state.grok_usage_available = true;
+        state.billing_error = Some("proxy unreachable".to_string());
+        let balance = CreditBalance {
+            usage_pct: 12.0,
+            effective_usage_pct: 12.0,
+            period_end_display: None,
+            pay_as_you_go: false,
+            on_demand_cap_cents: None,
+            on_demand_used_cents: None,
+            prepaid_balance_cents: None,
+            period_type: None,
+            is_unified_billing_user: None,
+        };
+        let text = usage_limit_lines(&state, Some(&balance), &Theme::current())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Unavailable: proxy unreachable"));
         assert!(
-            lines
-                .first()
-                .is_some_and(|l| l.to_string().contains("Loading session usage"))
+            !text.contains("12%"),
+            "stale cached allowance was rendered: {text}"
+        );
+    }
+
+    #[test]
+    fn usage_limit_renders_all_provider_sections_and_additional_windows() {
+        let mut state = state_with_session();
+        state.grok_usage_available = true;
+        state.chatgpt_usage = Some(Ok(Box::new(
+            serde_json::from_value(serde_json::json!({
+                "plan_type": "pro",
+                "rate_limit": {"primary_window": {
+                    "used_percent": 25.0,
+                    "limit_window_seconds": 18000,
+                    "reset_after_seconds": 60,
+                    "reset_at": 0
+                }},
+                "additional_rate_limits": [{
+                    "limit_name": "images",
+                    "metered_feature": "image_generation",
+                    "rate_limit": {"primary_window": {
+                        "used_percent": 10.0,
+                        "limit_window_seconds": 3600,
+                        "reset_after_seconds": 30,
+                        "reset_at": 0
+                    }}
+                }]
+            }))
+            .unwrap(),
+        )));
+        state.openrouter_usage = Some(Ok(distill_shell::openrouter_auth::OpenRouterUsage {
+            label: Some("build-key".to_string()),
+            usage: None,
+            usage_daily: Some(1.25),
+            usage_weekly: None,
+            usage_monthly: None,
+            limit: None,
+            limit_remaining: None,
+            limit_reset: None,
+        }));
+        let balance = CreditBalance {
+            usage_pct: 50.0,
+            effective_usage_pct: 50.0,
+            period_end_display: Some("May 29, 00:00".to_string()),
+            pay_as_you_go: false,
+            on_demand_cap_cents: None,
+            on_demand_used_cents: None,
+            prepaid_balance_cents: None,
+            period_type: Some("USAGE_PERIOD_TYPE_WEEKLY".to_string()),
+            is_unified_billing_user: None,
+        };
+        let text: Vec<String> = usage_limit_lines(&state, Some(&balance), &Theme::current())
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let text = text.join("\n");
+        for heading in ["ChatGPT", "Grok", "OpenRouter"] {
+            assert!(text.contains(heading), "missing {heading}: {text}");
+        }
+        assert!(text.contains("Primary window: 25.0% used"));
+        assert!(text.contains("images primary window: 10.0% used"));
+        assert!(text.contains("Key: build-key"));
+        assert!(text.contains("Usage: not reported"));
+        assert!(text.contains("Limit: not set"));
+        assert!(text.contains("Remaining: unavailable"));
+        assert!(!text.contains("Usage: $0.00"));
+    }
+
+    #[tokio::test]
+    async fn provider_usage_effects_return_independent_results_for_the_usage_view() {
+        use crate::app::actions::{Effect, TaskResult};
+        use crate::app::effects::{SessionFlags, execute};
+        use std::path::Path;
+        use tokio::task::JoinSet;
+
+        unsafe {
+            std::env::remove_var("OPENROUTER_API_KEY");
+        }
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tasks = JoinSet::new();
+        for effect in [
+            Effect::FetchChatGptUsage {
+                agent_id: None,
+                nonce: 9,
+            },
+            Effect::FetchOpenRouterUsage {
+                agent_id: None,
+                nonce: 9,
+            },
+        ] {
+            execute(
+                effect,
+                &mut tasks,
+                &tx,
+                Path::new("/tmp/distill-provider-usage/missing-auth"),
+                &SessionFlags::default(),
+                &progress_tx,
+            );
+        }
+        let mut chatgpt = None;
+        let mut openrouter = None;
+        while let Some(result) = tasks.join_next().await {
+            match result.expect("provider task must not panic") {
+                TaskResult::ChatGptUsageResult { usage, .. } => chatgpt = Some(usage),
+                TaskResult::OpenRouterUsageResult { usage, .. } => openrouter = Some(usage),
+                other => panic!("unexpected provider result: {other:?}"),
+            }
+        }
+
+        let mut state = UsageInfoModalState::new(
+            UsageInfoTab::UsageLimit,
+            UsageInfoContext {
+                session_id: None,
+                usage_visible: true,
+                chat_kind: false,
+                billing_redirect_url: None,
+                subscription_tier: None,
+                grok_connected: false,
+            },
+        );
+        state.chatgpt_usage = Some(chatgpt.expect("ChatGPT result"));
+        state.openrouter_usage = Some(openrouter.expect("OpenRouter result"));
+        let text = usage_limit_lines(&state, None, &Theme::current())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for heading in ["ChatGPT", "Grok", "OpenRouter"] {
+            assert!(text.contains(heading), "missing {heading}: {text}");
+        }
+        assert!(text.contains("Not connected"), "missing Grok state: {text}");
+        assert!(
+            text.matches("Not connected").count() >= 3,
+            "missing independent provider errors: {text}"
         );
     }
 

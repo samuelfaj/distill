@@ -436,12 +436,15 @@ pub fn micro_tier_questions(
     let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
     criteria.insert(
         TIER_HARD_LABEL.to_owned(),
-        Json::String(describe("The session's model", hard)),
+        Json::String(describe(
+            "The reasoning model: reserve for planning, architecture, ambiguous decisions, review, verification, and recovery from failures",
+            hard,
+        )),
     );
     criteria.insert(
         TIER_LIGHT_LABEL.to_owned(),
         Json::String(describe(
-            "Its lighter sibling, same provider and same conversation",
+            "The worker model: prefer for implementation, tool calls, routine edits, searches, tests, commands, and ordinary continuation",
             light,
         )),
     );
@@ -454,10 +457,13 @@ pub fn micro_tier_questions(
         MICRO_TIER_QUESTION.to_owned(),
         Question::choice(
             format!(
-                "The next single model call is described in `micro_action`. It runs on the session's \
-                 model `{}` unless something cheaper can do it as well. Which of the two models should \
-                 make THIS one call? Pick the lighter one only when it fully handles the step; keep the \
-                 session's model when the step needs its judgement.",
+                "The next single model call is described in `micro_action`. Choose the role for THIS \
+                 call, without considering the whole task. Prefer the worker for ordinary execution, \
+                 tool use, implementation, searches, tests, commands, and continuation. Use the \
+                 reasoning model for planning, architecture, ambiguous decisions, review, verification, \
+                 or recovery from a failure. When the role is unclear, keep the reasoning model. The \
+                 harness already provides both models; choose only between these offered roles. The \
+                 session's reasoning model is `{}`.",
                 hard.name
             ),
             criteria,
@@ -1077,7 +1083,32 @@ mod tests {
             Question::Choice { criteria, .. } => criteria.keys().map(String::as_str).collect(),
             other => panic!("expected a choice, got {other:?}"),
         };
-        assert_eq!(criteria, [TIER_HARD_LABEL, MICRO_TIER_KEEP_LABEL, TIER_LIGHT_LABEL]);
+        assert_eq!(
+            criteria,
+            [TIER_HARD_LABEL, MICRO_TIER_KEEP_LABEL, TIER_LIGHT_LABEL]
+        );
+        let Question::Choice {
+            instructions,
+            criteria,
+        } = question
+        else {
+            unreachable!();
+        };
+        let instructions = instructions.as_str().expect("text instructions");
+        assert!(instructions.contains("Prefer the worker"));
+        assert!(instructions.contains("planning"));
+        assert!(
+            criteria[TIER_HARD_LABEL]
+                .as_str()
+                .expect("reasoning description")
+                .contains("reasoning model")
+        );
+        assert!(
+            criteria[TIER_LIGHT_LABEL]
+                .as_str()
+                .expect("worker description")
+                .contains("worker model")
+        );
     }
 
     /// The same model twice is not a choice: asking would cost a decision and

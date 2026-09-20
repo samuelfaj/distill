@@ -431,7 +431,7 @@ pub(crate) const MOUSE_OFF_HINT_PROMPT: &str =
 pub(crate) fn seed_ui_config(content: &ContentController, ui_body: &str) {
     let distill_home = content.home().join(".grok");
     std::fs::create_dir_all(&distill_home).expect("create .grok");
-    let config = format!("[ui]\n{ui_body}\n");
+    let config = format!("[ui]\nonboarding_completed = true\n{ui_body}\n");
     std::fs::write(distill_home.join("config.toml"), config).expect("write config.toml");
 }
 

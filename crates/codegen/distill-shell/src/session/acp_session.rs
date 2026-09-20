@@ -772,6 +772,12 @@ pub(crate) struct SessionActor {
     /// sessions for catalog refreshes, so this must not be read from it while
     /// routing a child.
     pub(crate) jev_effort_auto: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Canonical catalogue identity for this session. The chat/sampler model
+    /// may be a provider wire slug or an effort variant, so it cannot be used
+    /// to infer the selected catalogue entry or an explicit model pin.
+    pub(crate) canonical_model_id: std::cell::RefCell<acp::ModelId>,
+    /// Mutable explicit model-policy intent, separate from per-round routing.
+    pub(crate) model_routing_locked: std::cell::Cell<bool>,
     /// The event fires at each of the six `OaiCompatClient` 401 arms in `distill-sampler`.
     /// Threaded into every `SamplerConfig` reconstructed by `reconstruct_full_config`.
     /// `None` when the session was spawned without an `AuthManager` (BYOK direct mode, test fixtures).

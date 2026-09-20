@@ -292,13 +292,22 @@ fn install_wire_routing_catalog_with_worker_efforts(
     let hard = routing_entry(
         "reasoning-model",
         base_url,
-        vec![distill_sampling_types::ReasoningEffortOption {
-            id: "high".to_owned(),
-            value: distill_sampling_types::ReasoningEffort::High,
-            label: "High".to_owned(),
-            description: Some("deep reasoning call".to_owned()),
-            default: true,
-        }],
+        vec![
+            distill_sampling_types::ReasoningEffortOption {
+                id: "low".to_owned(),
+                value: distill_sampling_types::ReasoningEffort::Low,
+                label: "Low".to_owned(),
+                description: Some("short routine call".to_owned()),
+                default: false,
+            },
+            distill_sampling_types::ReasoningEffortOption {
+                id: "high".to_owned(),
+                value: distill_sampling_types::ReasoningEffort::High,
+                label: "High".to_owned(),
+                description: Some("deep reasoning call".to_owned()),
+                default: true,
+            },
+        ],
     );
     let light = routing_entry("worker-model", base_url, worker_efforts);
     actor

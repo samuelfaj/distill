@@ -1270,6 +1270,42 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
         effort_auto: Some(true),
         model_routing_locked: Some(true),
     };
+    let numeric_default = EffectiveRuntimeConfig {
+        reasoning_effort: Some("high".into()),
+        ..Default::default()
+    };
+    assert!(
+        resolve_child_jev_effort_auto(true, &request, &numeric_default, Some(&source)),
+        "a persisted auto policy outranks a numeric role/definition default"
+    );
+    assert!(!resolve_child_jev_effort_auto(
+        true,
+        &request,
+        &numeric_default,
+        None
+    ));
+    request.fork_context = true;
+    assert!(resolve_child_jev_effort_auto(
+        true,
+        &request,
+        &numeric_default,
+        None
+    ));
+    request.runtime_overrides.reasoning_effort = Some("low".into());
+    assert!(!resolve_child_jev_effort_auto(
+        true,
+        &request,
+        &numeric_default,
+        Some(&source)
+    ));
+    request.runtime_overrides.reasoning_effort = Some("auto".into());
+    assert!(resolve_child_jev_effort_auto(
+        false,
+        &request,
+        &numeric_default,
+        Some(&source)
+    ));
+    request.runtime_overrides.reasoning_effort = None;
     assert!(resolve_child_jev_effort_auto(
         false,
         &request,

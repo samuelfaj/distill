@@ -45,7 +45,8 @@ impl SessionActor {
     /// A child policy may opt out of Jev's model-changing lanes without
     /// disabling an explicit `auto` effort choice on a pinned model.
     fn child_model_routing_locked(&self) -> bool {
-        self.startup_hints.is_subagent && self.startup_hints.explicit_model_override
+        self.startup_hints.is_subagent
+            && (self.startup_hints.explicit_model_override || self.model_routing_locked.get())
     }
 
     fn child_jev_routing_locked(&self) -> bool {

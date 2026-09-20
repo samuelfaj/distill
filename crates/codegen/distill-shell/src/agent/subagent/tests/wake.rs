@@ -296,6 +296,36 @@ fn configure_completion_harness(
     ctx.model_id = acp::ModelId::new("test-model");
 }
 
+fn resume_policy_model_entry(base_url: &str) -> crate::agent::config::ModelEntry {
+    let mut entry = crate::agent::config::ModelEntry::fallback(
+        "vendor/pinned-wire",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    entry.info.base_url = base_url.to_owned();
+    entry.info.api_backend = crate::sampling::ApiBackend::Responses;
+    entry.info.model = "vendor/pinned-wire".to_owned();
+    entry.info.supports_reasoning_effort = true;
+    entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+    entry.info.reasoning_efforts = vec![
+        distill_sampling_types::ReasoningEffortOption {
+            id: "low".to_owned(),
+            value: distill_sampling_types::ReasoningEffort::Low,
+            label: "Low".to_owned(),
+            description: Some("short routine call".to_owned()),
+            default: false,
+        },
+        distill_sampling_types::ReasoningEffortOption {
+            id: "high".to_owned(),
+            value: distill_sampling_types::ReasoningEffort::High,
+            label: "High".to_owned(),
+            description: Some("deep reasoning call".to_owned()),
+            default: true,
+        },
+    ];
+    entry.api_key = Some("test-resume-policy-key".to_owned());
+    entry
+}
+
 #[test]
 fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
     std::thread::Builder::new()
@@ -323,6 +353,8 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                             .expect("mock server");
                         server.set_response("completed output");
                         let id = uuid::Uuid::now_v7().to_string();
+                        let mut ordinary_entry = resume_policy_model_entry(&server.url());
+                        ordinary_entry.info.model = "test-model".to_owned();
 
                         let mut ordinary_ctx = ctx_with_toggle(HashMap::new());
                         configure_completion_harness(
@@ -333,6 +365,13 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                                 InitialAttemptBehavior::Normal,
                             ),
                         );
+                        ordinary_ctx.model_id = acp::ModelId::new("ordinary-key");
+                        ordinary_ctx
+                            .available_models
+                            .insert("ordinary-key".to_owned(), ordinary_entry.clone());
+                        ordinary_ctx
+                            .models_manager
+                            .insert_test_entry("ordinary-key", ordinary_entry.clone());
                         ordinary_ctx.parent_effort_auto = true;
                         ordinary_ctx.auto_wake_enabled = false;
 
@@ -350,6 +389,13 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                                 InitialAttemptBehavior::Normal,
                             ),
                         );
+                        wake_ctx.model_id = acp::ModelId::new("ordinary-key");
+                        wake_ctx
+                            .available_models
+                            .insert("ordinary-key".to_owned(), ordinary_entry.clone());
+                        wake_ctx
+                            .models_manager
+                            .insert_test_entry("ordinary-key", ordinary_entry);
                         // Make the durable source, rather than the new parent snapshot,
                         // observable on resume.
                         wake_ctx.parent_effort_auto = false;
@@ -393,6 +439,16 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                             Some(true),
                             "child creation must persist the parent's auto policy"
                         );
+                        assert_eq!(
+                            created.effective_model_id.as_deref(),
+                            Some("ordinary-key"),
+                            "ordinary child must persist the catalog key, not the wire model"
+                        );
+                        assert_eq!(
+                            created.model_routing_locked,
+                            Some(false),
+                            "an ordinary auto child must not invent a model pin"
+                        );
 
                         assert!(matches!(
                             backend
@@ -417,10 +473,20 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
                         )
                         .expect("parse resumed metadata");
                         assert_eq!(
-                resumed_meta.effort_auto,
-                Some(true),
-                "resume must retain the source policy even when the new context is manual"
-            );
+                            resumed_meta.effort_auto,
+                            Some(true),
+                            "resume must retain the source policy even when the new context is manual"
+                        );
+                        assert_eq!(
+                            resumed_meta.effective_model_id.as_deref(),
+                            Some("ordinary-key"),
+                            "resume must retain the canonical catalog key"
+                        );
+                        assert_eq!(
+                            resumed_meta.model_routing_locked,
+                            Some(false),
+                            "ordinary auto resume must remain eligible for worker routing"
+                        );
 
                         drop(backend);
                         coordinator.await.expect("coordinator");
@@ -432,6 +498,184 @@ fn resumed_child_uses_persisted_jev_policy_over_parent_context() {
         .expect("spawn policy test thread")
         .join()
         .expect("policy test thread");
+}
+
+#[test]
+fn explicit_model_auto_resume_keeps_catalog_identity_and_wire_pin() {
+    std::thread::Builder::new()
+        .name("subagent-canonical-model-resume-test".to_owned())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                use distill_tools::implementations::distill::task::backend::{
+                    ChannelBackend, SubagentBackend,
+                };
+                use distill_tools::implementations::distill::task::coordinator::{
+                    CoordinatorConfig, SubagentCoordinator,
+                };
+
+                let local = tokio::task::LocalSet::new();
+                local
+                    .run_until(async {
+                        let meta_dir = tempfile::tempdir().expect("meta dir");
+                        let server = distill_test_support::MockInferenceServer::start()
+                            .await
+                            .expect("mock server");
+                        server.set_response("completed output");
+                        let id = uuid::Uuid::now_v7().to_string();
+                        let entry = resume_policy_model_entry(&server.url());
+                        let mut agent_definition =
+                            distill_agent::config::AgentDefinition::general_purpose();
+                        agent_definition.name = "resume-policy".to_owned();
+                        agent_definition.effort = Some(distill_agent::config::Effort::High);
+                        let mut agent_config = crate::agent::config::Config::default();
+                        agent_config.cli_agents = vec![agent_definition];
+
+                        let mut ordinary_ctx = ctx_with_toggle(HashMap::new());
+                        configure_completion_harness(
+                            &mut ordinary_ctx,
+                            &server,
+                            RunShellChildHarnessConfig::new(
+                                meta_dir.path().to_path_buf(),
+                                InitialAttemptBehavior::Normal,
+                            ),
+                        );
+                        ordinary_ctx.agent_config = Some(agent_config.clone());
+                        ordinary_ctx.parent_effort_auto = false;
+                        ordinary_ctx
+                            .available_models
+                            .insert("pinned-key".to_owned(), entry.clone());
+                        ordinary_ctx
+                            .models_manager
+                            .insert_test_entry("pinned-key", entry.clone());
+
+                        let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+                        ordinary_ctx.parent_cmd_tx = Some(parent_cmd_tx.clone());
+                        let usage_ack =
+                            tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+
+                        let mut wake_ctx = ctx_with_toggle(HashMap::new());
+                        configure_completion_harness(
+                            &mut wake_ctx,
+                            &server,
+                            RunShellChildHarnessConfig::new(
+                                meta_dir.path().to_path_buf(),
+                                InitialAttemptBehavior::Normal,
+                            ),
+                        );
+                        wake_ctx.agent_config = Some(agent_config);
+                        wake_ctx.parent_effort_auto = false;
+                        wake_ctx.parent_cmd_tx = Some(parent_cmd_tx);
+                        wake_ctx
+                            .available_models
+                            .insert("pinned-key".to_owned(), entry.clone());
+                        wake_ctx
+                            .models_manager
+                            .insert_test_entry("pinned-key", entry);
+
+                        let (gateway, _gateway_rx) = test_gateway_with_receiver();
+                        let (command_tx, command_rx) =
+                            SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                        let coordinator = tokio::task::spawn_local(
+                            SubagentCoordinator::from_channel(
+                                command_rx,
+                                RunShellChildTestRunner::new(
+                                    [ordinary_ctx, wake_ctx],
+                                    false,
+                                    gateway,
+                                ),
+                                CoordinatorConfig::default(),
+                            )
+                            .run(),
+                        );
+                        let backend =
+                            ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+                        let mut request = auto_wake_test_request(&id);
+                        request.subagent_type = "resume-policy".to_owned();
+                        request.runtime_overrides.model = Some("pinned-key".to_owned());
+                        request.runtime_overrides.reasoning_effort = Some("auto".to_owned());
+                        let ordinary = backend.spawn(request, None).await.expect("ordinary spawn");
+                        assert!(
+                            ordinary.success,
+                            "explicit model/auto spawn failed: {:?}",
+                            ordinary.error
+                        );
+                        let created: SubagentMeta = serde_json::from_str(
+                            &std::fs::read_to_string(meta_dir.path().join("meta.json"))
+                                .expect("created metadata"),
+                        )
+                        .expect("parse created metadata");
+                        assert_eq!(created.effective_model_id.as_deref(), Some("pinned-key"));
+                        assert_eq!(created.effort_auto, Some(true));
+                        assert_eq!(created.model_routing_locked, Some(true));
+
+                        assert!(matches!(
+                            backend
+                                .send_active_message(
+                                    ActiveAgentMessageRequest::try_new(&id, "continue")
+                                        .expect("wake request")
+                                )
+                                .await,
+                            ActiveAgentMessageOutcome::Accepted { .. }
+                        ));
+                        let resumed = backend
+                            .query(&id, true, Some(5_000))
+                            .await
+                            .expect("resumed completion");
+                        assert!(matches!(
+                            resumed.status,
+                            SubagentSnapshotStatus::Completed { .. }
+                        ));
+                        let resumed_meta: SubagentMeta = serde_json::from_str(
+                            &std::fs::read_to_string(meta_dir.path().join("meta.json"))
+                                .expect("resumed metadata"),
+                        )
+                        .expect("parse resumed metadata");
+                        assert_eq!(
+                            resumed_meta.effective_model_id.as_deref(),
+                            Some("pinned-key")
+                        );
+                        assert_eq!(resumed_meta.effort_auto, Some(true));
+                        assert_eq!(resumed_meta.model_routing_locked, Some(true));
+
+                        let requests: Vec<_> = server
+                            .request_bodies()
+                            .into_iter()
+                            .filter(|body| body.get("model").is_some())
+                            .collect();
+                        assert!(
+                            requests.len() >= 2,
+                            "create and resume must both dispatch: {requests:?}"
+                        );
+                        assert_eq!(requests[0]["model"], "vendor/pinned-wire");
+                        assert_eq!(
+                            requests.last().and_then(|body| body.get("model")),
+                            Some(&serde_json::json!("vendor/pinned-wire"))
+                        );
+                        for request in [requests.first().unwrap(), requests.last().unwrap()] {
+                            assert_ne!(
+                                request
+                                    .pointer("/reasoning/effort")
+                                    .and_then(|value| value.as_str()),
+                                Some("high"),
+                                "numeric definition effort must not replace explicit/resumed auto"
+                            );
+                        }
+
+                        drop(backend);
+                        coordinator.await.expect("coordinator");
+                        usage_ack.abort();
+                    })
+                    .await;
+            });
+        })
+        .expect("spawn canonical model resume test thread")
+        .join()
+        .expect("canonical model resume test thread");
 }
 
 async fn acknowledge_parent_usage(mut parent_cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {

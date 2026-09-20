@@ -1759,6 +1759,10 @@ pub(crate) async fn spawn_session_actor(
         model_auth_memo: std::cell::RefCell::new(None),
         jev_ledger: std::cell::RefCell::new(Default::default()),
         jev_effort_auto: jev_effort_auto.clone(),
+        canonical_model_id: std::cell::RefCell::new(session_model_id.clone()),
+        model_routing_locked: std::cell::Cell::new(
+            startup_hints.is_subagent && startup_hints.explicit_model_override,
+        ),
         attribution_callback,
         auth_manager,
         is_chat_kind,

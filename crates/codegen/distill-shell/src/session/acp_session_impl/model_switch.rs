@@ -9,6 +9,7 @@ impl SessionActor {
     ) -> Result<acp::ModelId, acp::Error> {
         let crate::session::SessionModelSwitch {
             mut sampling_config,
+            canonical_model_id,
             use_concise,
             is_family_switch,
             apply_prompt_override,
@@ -22,6 +23,7 @@ impl SessionActor {
             sampling_config.conversation_group_id = Some(id);
         }
         let model_id = acp::ModelId::new(sampling_config.model.clone());
+        let canonical_model_id = canonical_model_id.unwrap_or_else(|| model_id.clone());
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -145,6 +147,10 @@ impl SessionActor {
                 agent_name: Some(agent_name),
                 reasoning_effort: Some(sampling_config.reasoning_effort),
             });
+        self.canonical_model_id.replace(canonical_model_id);
+        if self.startup_hints.is_subagent {
+            self.model_routing_locked.set(true);
+        }
         self.emit_status_snapshot_detached();
         let turn_in_flight = self.state.lock().await.running_task.is_some();
         if turn_in_flight && is_family_switch {

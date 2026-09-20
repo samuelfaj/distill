@@ -892,6 +892,11 @@ pub(super) async fn run_session(
                                 .map(|c| crate::session::CurrentModel {
                                     id: c.model,
                                     reasoning_effort: c.reasoning_effort,
+                                    canonical_id: Some(
+                                        session.canonical_model_id.borrow().0.to_string(),
+                                    ),
+                                    model_routing_locked: session.model_routing_locked.get()
+                                        || session.startup_hints.explicit_model_override,
                                 })
                                 .unwrap_or_default();
                             let _ = responds_to.send(current);

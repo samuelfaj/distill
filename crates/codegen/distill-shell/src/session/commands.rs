@@ -305,6 +305,9 @@ impl From<SkillUpdateKind> for AdvertiseTrigger {
 }
 pub struct SessionModelSwitch {
     pub sampling_config: distill_sampler::SamplerConfig,
+    /// Canonical catalogue identity selected by the caller. This stays
+    /// separate from `sampling_config.model`, which is the provider wire name.
+    pub canonical_model_id: Option<acp::ModelId>,
     pub use_concise: bool,
     /// The two models declare differing `model_family`s, so a lossy compaction runs at switch end.
     pub is_family_switch: bool,
@@ -325,6 +328,10 @@ pub struct SessionModelSwitch {
 pub struct CurrentModel {
     pub id: String,
     pub reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
+    /// Stable catalogue identity, distinct from the provider wire model in `id`.
+    pub canonical_id: Option<String>,
+    /// Whether this child explicitly pins its model for Jev routing.
+    pub model_routing_locked: bool,
 }
 pub enum SessionCommand {
     Initialize {

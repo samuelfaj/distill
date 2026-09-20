@@ -90,6 +90,8 @@ async fn create_test_actor(
         model_auth_memo: std::cell::RefCell::new(None),
         jev_ledger: std::cell::RefCell::new(Default::default()),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        canonical_model_id: std::cell::RefCell::new(acp::ModelId::new("test")),
+        model_routing_locked: std::cell::Cell::new(false),
         attribution_callback: None,
         auth_manager: None,
         is_chat_kind: false,
@@ -864,6 +866,7 @@ async fn family_switch_compacts_lossy_with_new_model() {
             actor
                 .handle_set_session_model(crate::session::SessionModelSwitch {
                     sampling_config: switch_target_config("new-model", server.url()),
+                    canonical_model_id: None,
                     use_concise: false,
                     is_family_switch: true,
                     apply_prompt_override: false,

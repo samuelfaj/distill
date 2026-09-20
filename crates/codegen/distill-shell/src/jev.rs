@@ -1094,8 +1094,8 @@ mod catalogue_helper_tests {
             }
             .label()
             .as_deref(),
-            Some("jev·fallback"),
-            "a refusal outranks the local marker"
+            Some("jev·fallback ·local"),
+            "a refusal keeps the local activity marker visible"
         );
         assert_eq!(
             JevTurnActivity {

@@ -5955,6 +5955,8 @@ fn prompt_routes_only_non_send_now_through_human_delivery_handle() {
                             let _ = responds_to.send(crate::session::CurrentModel {
                                 id: "test-model".to_owned(),
                                 reasoning_effort: None,
+                                canonical_id: Some("test-model".to_owned()),
+                                model_routing_locked: false,
                             });
                         }
                         SessionCommand::Prompt {

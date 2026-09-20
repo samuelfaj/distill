@@ -399,24 +399,11 @@ pub(crate) fn resolve_child_jev_effort_auto(
     effective_runtime: &EffectiveRuntimeConfig,
     resume_source: Option<&ResumeSourceData>,
 ) -> bool {
-    let requested_effort = request.runtime_overrides.reasoning_effort.as_deref();
-    let explicit_effort = requested_effort
-        .or(effective_runtime.reasoning_effort.as_deref())
-        .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
-    let explicit_auto = requested_effort.is_some_and(|raw| raw.eq_ignore_ascii_case("auto"));
-    let explicit_model = request.runtime_overrides.model.is_some()
-        || (!request.fork_context && resume_source.is_none() && effective_runtime.model.is_some());
-    if explicit_effort {
-        return false;
-    }
-    // `model=<id>, reasoning_effort=auto` pins the model but explicitly opts
-    // back into Jev's per-round effort choice. A model-only override, without
-    // that explicit auto choice, remains manual below.
-    if explicit_auto {
-        return true;
-    }
-    if explicit_model {
-        return false;
+    if let Some(raw) = request.runtime_overrides.reasoning_effort.as_deref() {
+        // A caller choice is authoritative, including `auto` on an explicitly
+        // pinned model. Role/persona/definition values are handled below as
+        // fresh-child defaults and must not shadow a source policy.
+        return raw.eq_ignore_ascii_case("auto");
     }
     if let Some(source) = resume_source {
         return source.effort_auto.unwrap_or(false);
@@ -424,7 +411,17 @@ pub(crate) fn resolve_child_jev_effort_auto(
     if request.fork_context {
         return parent_auto;
     }
-    parent_auto
+    // A fresh caller-supplied model without an effort choice remains manual;
+    // `model=<id>, effort=auto` took the explicit branch above.
+    if request.runtime_overrides.model.is_some() {
+        return false;
+    }
+    // A numeric role/definition value is a fresh-child manual default. With no
+    // fresh effort default, retain the parent's ordinary auto policy.
+    effective_runtime
+        .reasoning_effort
+        .as_deref()
+        .map_or(parent_auto, |raw| raw.eq_ignore_ascii_case("auto"))
 }
 
 const _: () = {
@@ -1920,7 +1917,7 @@ fn fail_subagent(
         duration_ms,
         ..SubagentResult::failed(subagent_id, &*child_session_id.0, error)
     };
-    persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx, None, None);
+    persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx, None, None, None);
     result
 }
 /// Why an unpromoted child is being torn down.
@@ -1973,7 +1970,7 @@ async fn cancel_pending_shell_child(
     let fate = UnpromotedResourceFate::from_thread_exit(thread_exited);
     let result = disposition.result(subagent_id, child_session_id.0.as_ref(), duration_ms);
     if may_persist_terminal {
-        persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx, None, None);
+        persist_subagent_completion(subagent_meta_dir, &result, gcs_ctx, None, None, None);
     }
     if !fate.should_release() {
         tracing::warn!(
@@ -2433,6 +2430,7 @@ fn persist_subagent_completion(
     gcs_ctx: &GcsUploadContext,
     effective_model_id: Option<&str>,
     effort_auto: Option<bool>,
+    model_routing_locked: Option<bool>,
 ) {
     let meta_path = dir.join("meta.json");
     if let Ok(data) = std::fs::read_to_string(&meta_path)
@@ -2445,16 +2443,13 @@ fn persist_subagent_completion(
         meta.turns = Some(result.turns);
         meta.error = result.error.clone();
         if let Some(model_id) = effective_model_id {
-            if meta.effective_model_id.as_deref() != Some(model_id) {
-                // A live model switch is an explicit child policy even when
-                // the source was initially auto-routed. Preserve that intent
-                // for a later resume/fork.
-                meta.model_routing_locked = Some(true);
-            }
             meta.effective_model_id = Some(model_id.to_owned());
         }
         if let Some(auto) = effort_auto {
             meta.effort_auto = Some(auto);
+        }
+        if let Some(locked) = model_routing_locked {
+            meta.model_routing_locked = Some(locked);
         }
         write_subagent_meta(dir, &meta);
         if let (Some(bucket), Some(method)) = (&gcs_ctx.bucket_url, &gcs_ctx.upload_method) {

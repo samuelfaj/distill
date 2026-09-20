@@ -263,6 +263,7 @@ pub(crate) async fn apply(
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
         switch: SessionModelSwitch {
             sampling_config: model_sampling,
+            canonical_model_id: Some(model_id.clone()),
             use_concise,
             is_family_switch,
             apply_prompt_override,

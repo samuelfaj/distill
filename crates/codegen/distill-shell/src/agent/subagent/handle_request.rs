@@ -549,10 +549,7 @@ pub(crate) async fn run_shell_child(
         .reasoning_effort
         .as_deref()
         .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
-    let fresh_runtime_model_override =
-        !request.fork_context && resume_source.is_none() && effective_runtime.model.is_some();
     let model_routing_locked = explicit_model_override
-        || fresh_runtime_model_override
         || resume_source
             .as_ref()
             .and_then(|source| source.model_routing_locked)
@@ -868,7 +865,25 @@ pub(crate) async fn run_shell_child(
             return child_run_output(failure_result(&request, &msg), completion_data, None);
         }
     }
-    if let Some(raw) = effective_runtime.reasoning_effort.as_deref()
+    let caller_effort_override = request.runtime_overrides.reasoning_effort.is_some();
+    let caller_manual_effort = request
+        .runtime_overrides
+        .reasoning_effort
+        .as_deref()
+        .is_some_and(|raw| !raw.eq_ignore_ascii_case("auto"));
+    // Resolve the Jev policy before applying a numeric sampler effort. A
+    // durable/forked `auto` policy must not be replaced by a fresh role or
+    // definition number; an explicit caller number still wins.
+    let child_jev_effort_auto = crate::agent::subagent::resolve_child_jev_effort_auto(
+        ctx.parent_effort_auto,
+        &request,
+        &effective_runtime,
+        resume_source.as_ref(),
+    );
+    let apply_numeric_effort =
+        caller_manual_effort || (!caller_effort_override && !child_jev_effort_auto);
+    if apply_numeric_effort
+        && let Some(raw) = effective_runtime.reasoning_effort.as_deref()
         && ctx
             .models_manager
             .model_supports_reasoning_effort(effective_model_id.0.as_ref())
@@ -889,6 +904,9 @@ pub(crate) async fn run_shell_child(
             }
         }
     }
+    if child_jev_effort_auto && !caller_manual_effort {
+        effective_sampling_config.reasoning_effort = None;
+    }
     if effective_sampling_config.conversation_group_id.is_none() {
         let inherited_group_id = if let Some(parent_chat_state) = ctx.parent_chat_state.as_ref() {
             parent_chat_state
@@ -906,12 +924,6 @@ pub(crate) async fn run_shell_child(
     // Explicit model/effort choices win. A resumed source restores its durable
     // auto/manual policy, while a missing legacy field conservatively stays
     // manual; ordinary forked children inherit the parent's policy.
-    let child_jev_effort_auto = crate::agent::subagent::resolve_child_jev_effort_auto(
-        ctx.parent_effort_auto,
-        &request,
-        &effective_runtime,
-        resume_source.as_ref(),
-    );
     let subagent_model_id = effective_sampling_config.model.clone();
     let auto_compact_threshold_percent =
         ctx.resolve_auto_compact_threshold_percent(&subagent_model_id);
@@ -1642,7 +1654,7 @@ pub(crate) async fn run_shell_child(
         Default::default(),
         ctx.managed_mcp_state.clone(),
         ctx.managed_mcp_proxy_base_url.clone(),
-        effective_model_id,
+        effective_model_id.clone(),
         ctx.yolo_mode
             || matches!(
                 agent_permission_mode,
@@ -2105,18 +2117,27 @@ pub(crate) async fn run_shell_child(
     result.tool_calls = tool_calls;
     result.turns = turns;
     result.duration_ms = start.elapsed().as_millis() as u64;
-    let final_sampling_config = child_actor_query(
-        "final_sampling_config",
-        child_handle.chat_state_handle.get_sampling_config(),
-        None,
-    )
-    .await;
-    let final_model_id = final_sampling_config
+    let (model_tx, model_rx) = oneshot::channel();
+    let final_model = if child_handle
+        .cmd_tx
+        .send(SessionCommand::GetCurrentModel {
+            responds_to: model_tx,
+        })
+        .is_ok()
+    {
+        child_actor_query("final_model_policy", async { model_rx.await.ok() }, None).await
+    } else {
+        None
+    };
+    let final_model_id = final_model
         .as_ref()
-        .map(|config| config.model.clone());
-    if final_model_id.is_some() {
-        gcs_upload_ctx.model_id = final_model_id.clone();
-    }
+        .and_then(|model| model.canonical_id.clone())
+        .or_else(|| Some(effective_model_id.0.to_string()));
+    gcs_upload_ctx.model_id = final_model_id.clone();
+    let final_model_routing_locked = final_model
+        .as_ref()
+        .map(|model| model.model_routing_locked)
+        .unwrap_or(model_routing_locked);
     let final_effort_auto = child_handle
         .jev_effort_auto
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -2297,6 +2318,7 @@ pub(crate) async fn run_shell_child(
             &gcs_upload_ctx,
             final_model_id.as_deref(),
             Some(final_effort_auto),
+            Some(final_model_routing_locked),
         );
     }
     let final_status = result.status().to_string();

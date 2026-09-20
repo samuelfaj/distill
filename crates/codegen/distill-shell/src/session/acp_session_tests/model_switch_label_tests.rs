@@ -33,6 +33,7 @@ async fn model_switch_relabels_live_agent_and_system_head() {
                         context_window: 256_000,
                         ..distill_sampler::SamplerConfig::default()
                     },
+                    canonical_model_id: None,
                     use_concise: false,
                     is_family_switch: false,
                     apply_prompt_override: true,

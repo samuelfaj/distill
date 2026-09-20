@@ -47,6 +47,87 @@ const HINT_OPEN: &str = "\n\n<jev-hints>\n";
 const HINT_BULLET: &str = "- ";
 /// Marker that closes the advisory block.
 const HINT_CLOSE: &str = "\n</jev-hints>";
+/// Tools whose result is a change to review rather than a payload to narrow.
+const EDIT_TOOLS: &[&str] = &["search_replace", "write", "edit", "apply_patch"];
+/// A tool name carrying one of these verbs changes what is on disk — MCP servers
+/// name their tools after the verb they perform.
+const WRITE_VERBS: &[&str] = &[
+    "write", "edit", "patch", "replace", "create", "insert", "append", "update", "delete",
+    "remove", "move", "rename", "mkdir", "chmod",
+];
+/// Shell commands that change the workspace. The command line is the only
+/// evidence the harness has: a script that writes on its own is not detected and
+/// keeps today's path.
+const MUTATING_COMMANDS: &[&str] = &[
+    "sed -i",
+    "tee ",
+    "truncate",
+    "rm ",
+    "mv ",
+    "cp ",
+    "ln -s",
+    "chmod ",
+    "chown ",
+    "patch ",
+    "git apply",
+    "git commit",
+    "git checkout",
+    "git restore",
+    "git reset",
+    "git clean",
+    "git stash",
+    "cargo fmt",
+    "cargo fix",
+    "npm install",
+    "npm i ",
+    "pnpm ",
+    "yarn add",
+    "pip install",
+    "dd ",
+    "mkdir ",
+    "touch ",
+    ">",
+    ">>",
+];
+
+/// Whether the call that just finished changed the workspace, which is what the
+/// change review judges. An edit tool always did; any other tool when its name
+/// carries a write verb; a shell call when its command line carries a mutating
+/// marker.
+fn changes_workspace(tool: &str, tool_command: &str) -> bool {
+    if EDIT_TOOLS.contains(&tool) {
+        return true;
+    }
+    let name = tool.to_ascii_lowercase();
+    if WRITE_VERBS.iter().any(|verb| name.contains(verb)) {
+        return true;
+    }
+    !tool_command.is_empty()
+        && MUTATING_COMMANDS
+            .iter()
+            .any(|marker| tool_command.contains(marker))
+}
+
+/// The advisory block, built so the one note that asks for action survives the
+/// cap: the review's note takes the first slot and whatever is left goes to the
+/// other hints. `None` when nothing has anything to say.
+fn hint_block(review_note: Option<String>, hints: Vec<String>) -> Option<String> {
+    let mut notes: Vec<String> = Vec::with_capacity(hints.len() + 1);
+    notes.extend(review_note);
+    notes.extend(hints);
+    if notes.is_empty() {
+        return None;
+    }
+    notes.truncate(MAX_HINTS);
+    let mut block = String::from(HINT_OPEN);
+    for note in notes {
+        block.push_str(HINT_BULLET);
+        block.push_str(&note);
+        block.push('\n');
+    }
+    block.push_str(HINT_CLOSE.trim_start_matches('\n'));
+    Some(block)
+}
 
 impl SessionActor {
     /// Runs the Jev pass over a finished tool result and returns the text the
@@ -59,13 +140,16 @@ impl SessionActor {
     ) -> String {
         // A change review is about the *edit*, not about a long output, and an
         // edit's result is a one-line summary: the size guard must not swallow
-        // it.
-        let changes_files = matches!(tool, "search_replace" | "write" | "edit" | "apply_patch");
+        // it. The same holds for every other call that changed the workspace.
+        let changes_files = changes_workspace(tool, tool_command);
         if text.len() < MIN_BYTES && !changes_files {
             return text;
         }
         let mut body = text;
         let mut hints: Vec<String> = Vec::new();
+        // The review's note is kept apart from the other hints: it is the one
+        // that asks for action, so the cap at the end never drops it.
+        let mut review_note: Option<String> = None;
 
         // ---- read reuse: do not send the same bytes twice ----
         //
@@ -683,12 +767,24 @@ impl SessionActor {
                     (Some(_), verify::DiffReviewVerdict::Breaks) => "review:breaks",
                     (Some(_), verify::DiffReviewVerdict::Incomplete) => "review:incomplete",
                 };
+                // The record says when the review asked for another model, so the
+                // log and the turn report show it next to the verdict it came with.
+                let label = if review.needs_other_model {
+                    format!("{label}+other-model")
+                } else {
+                    label.to_owned()
+                };
                 crate::jev::record_item(
                     JevLever::C4DiffRisk,
-                    label,
+                    &label,
                     &format!(
-                        "reviewed {tool} against the step · step: {}",
-                        intent.chars().take(80).collect::<String>()
+                        "reviewed {tool} against the step · step: {}{}",
+                        intent.chars().take(80).collect::<String>(),
+                        if review.needs_other_model {
+                            " · needs a review by another model"
+                        } else {
+                            ""
+                        }
                     ),
                     review.confidence,
                     Some(&answers),
@@ -711,7 +807,7 @@ impl SessionActor {
                         .raise_effort_floor(level.to_owned(), value);
                 }
                 if let Some(note) = verify::diff_review_note_with(&review, next_level.as_deref()) {
-                    hints.push(note);
+                    review_note = Some(note);
                 }
             }
         }
@@ -749,15 +845,7 @@ impl SessionActor {
             }
         }
 
-        if !hints.is_empty() {
-            hints.truncate(MAX_HINTS);
-            let mut block = String::from(HINT_OPEN);
-            for hint in hints {
-                block.push_str(HINT_BULLET);
-                block.push_str(&hint);
-                block.push('\n');
-            }
-            block.push_str(HINT_CLOSE.trim_start_matches('\n'));
+        if let Some(block) = hint_block(review_note, hints) {
             body.push_str(&block);
         }
         body
@@ -1092,4 +1180,52 @@ fn failing_tests(body: &str) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A change is reviewed after the call, so the trigger has to catch every
+    /// call that could have changed the workspace, not only the edit tools.
+    #[test]
+    fn every_changing_call_is_flagged_for_review() {
+        for tool in ["search_replace", "write", "edit", "apply_patch"] {
+            assert!(changes_workspace(tool, ""), "{tool} edits files");
+        }
+        assert!(changes_workspace("mcp_write_file", ""), "an MCP write names its verb");
+        assert!(changes_workspace("bash", "sed -i s/a/b/ src/main.rs"));
+        assert!(changes_workspace("bash", "git commit -m x"));
+        assert!(changes_workspace("run_terminal_command", "cargo fmt"));
+        assert!(!changes_workspace("bash", "cargo test --lib"));
+        assert!(!changes_workspace("read_file", ""));
+        assert!(!changes_workspace("grep", ""));
+    }
+
+    /// The review note asks for action, so the cap must never be what drops it:
+    /// it takes the first slot and the other hints queue behind it.
+    #[test]
+    fn the_review_note_survives_the_hint_cap() {
+        let block = hint_block(
+            Some("review says redo".to_owned()),
+            vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+        )
+        .expect("a block");
+        let lines: Vec<&str> = block
+            .lines()
+            .filter(|line| line.starts_with(HINT_BULLET))
+            .collect();
+        assert_eq!(lines.len(), MAX_HINTS, "the block stays capped: {block}");
+        assert_eq!(
+            lines[0], "- review says redo",
+            "the review keeps the first slot: {block}"
+        );
+        assert!(block.starts_with(HINT_OPEN), "{block}");
+        assert!(block.trim_end().ends_with(HINT_CLOSE.trim_start_matches(char::is_whitespace)));
+
+        // Hints alone still make a block; nothing at all makes none.
+        let block = hint_block(None, vec!["a".to_owned()]).expect("a block");
+        assert!(block.contains("- a"), "{block}");
+        assert!(hint_block(None, Vec::new()).is_none());
+    }
 }

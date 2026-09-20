@@ -263,12 +263,19 @@ pub const DIFF_INCOMPLETE_QUESTION: &str = "looks_incomplete";
 pub const STEP_COMPLETE_QUESTION: &str = "step_complete";
 /// C4 (review) — would a redo need more thinking than this call had?
 pub const REDO_THINKING_QUESTION: &str = "needs_more_thinking";
+/// C4 (review) — is judging this change beyond the model that made it?
+pub const SECOND_OPINION_QUESTION: &str = "needs_other_model";
+
+/// C4 — probability above which the review asks for another model's eyes.
+pub const SECOND_OPINION_FLOOR: f64 = 0.50;
 
 /// C4 (review): one battery per change, asked *after* the edit lands.
 ///
 /// The step's intent and the change travel in the question text, so the answer
-/// is a judgement about this change, not about diffs in general. Three nouls:
-/// the verdict, plus the two red flags worth another pass.
+/// is a judgement about this change, not about diffs in general: the verdict
+/// (match), the two red flags worth another pass (break, unfinished), whether
+/// the step still has to be redone and whether that redo needs more thinking,
+/// and whether judging this change is beyond the model that made it.
 pub fn diff_review_questions(
     intent: &str,
     change: &str,
@@ -342,6 +349,19 @@ pub fn diff_review_questions(
             "The change is complete in itself",
         ),
     );
+    questions.insert(
+        SECOND_OPINION_QUESTION.to_owned(),
+        Question::noul_with_criteria(
+            format!(
+                "The step was: {intent}\nThe change just applied: {change}\n\
+                 Is judging this change well beyond this review — does it need a different model \
+                 than the one answering here, one that is stronger or that knows another part of \
+                 the stack? Answer no when reviewing it here is enough.",
+            ),
+            "This change needs a review by another model",
+            "Reviewing it here is enough",
+        ),
+    );
     Ok(questions)
 }
 
@@ -377,6 +397,9 @@ pub struct DiffReview {
     pub confidence: Option<f64>,
     /// Whether the step has to be redone, and whether it needs more thinking.
     pub redo: RedoAction,
+    /// Whether judging this change needs a different model than the one that
+    /// made it: the review said the change is past what it can judge alone.
+    pub needs_other_model: bool,
 }
 
 /// C4 (review): the verdict for one change.
@@ -390,6 +413,11 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
     let incomplete = noul_of(answers, DIFF_INCOMPLETE_QUESTION);
     let complete = noul_of(answers, STEP_COMPLETE_QUESTION);
     let more_thinking = noul_of(answers, REDO_THINKING_QUESTION);
+    // The second-opinion axis is read on its own: an answer set that predates it
+    // (or a battery that dropped it) means "no second opinion", never a defer of
+    // the verdict the other five axes already carry.
+    let other_model =
+        noul_of(answers, SECOND_OPINION_QUESTION).unwrap_or(0.0) >= SECOND_OPINION_FLOOR;
     let (Some(matches), Some(breaks), Some(incomplete), Some(complete), Some(more_thinking)) =
         (matches, breaks, incomplete, complete, more_thinking)
     else {
@@ -397,6 +425,7 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
             verdict: DiffReviewVerdict::Ok,
             confidence: None,
             redo: RedoAction::None,
+            needs_other_model: other_model,
         };
     };
     // The redo decision is its own axis: a change can read fine and still leave
@@ -422,6 +451,7 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
         verdict,
         confidence,
         redo,
+        needs_other_model: other_model,
     }
 }
 
@@ -430,7 +460,9 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
 /// nothing) or when the review deferred.
 ///
 /// Composed here rather than by the model: Jev answers questions, the harness
-/// writes the sentence.
+/// writes the sentence. When the review says the change is past what it can
+/// judge alone, the note asks for that second opinion as well, whatever the
+/// verdict was.
 pub fn diff_review_note(review: &DiffReview) -> Option<String> {
     diff_review_note_with(review, None)
 }
@@ -442,8 +474,15 @@ pub fn diff_review_note(review: &DiffReview) -> Option<String> {
 /// thinking" and "no higher setting exists, so find the error yourself".
 pub fn diff_review_note_with(review: &DiffReview, next_level: Option<&str>) -> Option<String> {
     let confidence = review.confidence?;
-    if let RedoAction::Redo { higher_effort } = review.redo {
-        return Some(match (higher_effort, next_level) {
+    let second_opinion = review.needs_other_model.then(|| {
+        format!(
+            "Jev reviewed this change and cannot settle it on its own: get it reviewed by a \
+             different model — a review subagent pinned to another model — before moving on \
+             (p={confidence:.2})."
+        )
+    });
+    let verdict = if let RedoAction::Redo { higher_effort } = review.redo {
+        Some(match (higher_effort, next_level) {
             (true, Some(level)) => format!(
                 "Jev reviewed this change: the step has to be redone with more thinking than this \
                  call had (p={confidence:.2}) — redo it now; the next call of this turn runs at \
@@ -458,22 +497,29 @@ pub fn diff_review_note_with(review: &DiffReview, next_level: Option<&str>) -> O
                 "Jev reviewed this change: redo this step (p={confidence:.2}) — the change does not \
                  hold up as it stands."
             ),
-        });
-    }
-    match review.verdict {
-        DiffReviewVerdict::Ok => None,
-        DiffReviewVerdict::Mismatch => Some(format!(
-            "Jev reviewed this change against the step: it does not look like what the step asked \
-             for (p={confidence:.2} that it is off) — re-read the request, then fix or revert it."
-        )),
-        DiffReviewVerdict::Breaks => Some(format!(
-            "Jev reviewed this change: it may break behaviour that relies on the old one \
-             (p={confidence:.2}) — check the callers before moving on."
-        )),
-        DiffReviewVerdict::Incomplete => Some(format!(
-            "Jev reviewed this change: it looks unfinished in itself (p={confidence:.2}) — a stub, \
-             truncated code or a caller left behind; finish it before moving on."
-        )),
+        })
+    } else {
+        match review.verdict {
+            DiffReviewVerdict::Ok => None,
+            DiffReviewVerdict::Mismatch => Some(format!(
+                "Jev reviewed this change against the step: it does not look like what the step \
+                 asked for (p={confidence:.2} that it is off) — re-read the request, then fix or \
+                 revert it."
+            )),
+            DiffReviewVerdict::Breaks => Some(format!(
+                "Jev reviewed this change: it may break behaviour that relies on the old one \
+                 (p={confidence:.2}) — check the callers before moving on."
+            )),
+            DiffReviewVerdict::Incomplete => Some(format!(
+                "Jev reviewed this change: it looks unfinished in itself (p={confidence:.2}) — a \
+                 stub, truncated code or a caller left behind; finish it before moving on."
+            )),
+        }
+    };
+    match (verdict, second_opinion) {
+        (Some(verdict), Some(second)) => Some(format!("{verdict} {second}")),
+        (Some(verdict), None) => Some(verdict),
+        (None, second) => second,
     }
 }
 
@@ -772,8 +818,12 @@ mod tests {
             diff_review_questions("add a counter", "+ let n = 0;").expect("battery builds");
         assert_eq!(
             questions.len(),
-            5,
-            "the review asks the verdict, the two red flags and the redo"
+            6,
+            "the review asks the verdict, the two red flags, the redo and the second opinion"
+        );
+        assert!(
+            questions.contains_key(SECOND_OPINION_QUESTION),
+            "the second-opinion axis is part of the battery"
         );
         let Some(Question::Noul { instructions, .. }) = questions.get(DIFF_MATCH_QUESTION) else {
             panic!("the verdict is a noul");
@@ -820,6 +870,60 @@ mod tests {
             (STEP_COMPLETE_QUESTION, noul(0.9)),
             (REDO_THINKING_QUESTION, noul(0.1)),
         ])
+    }
+
+    /// The second-opinion axis is its own answer: a review that reads the change
+    /// as fine can still say that judging it is past what it can do alone, and
+    /// the note then asks for another model instead of staying silent.
+    #[test]
+    fn c4_asks_for_another_model_when_the_review_says_so() {
+        let with_second = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.9)),
+            (DIFF_BREAK_QUESTION, noul(0.05)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.1)),
+            (SECOND_OPINION_QUESTION, noul(0.8)),
+        ]);
+        let review = compose_diff_review(&with_second);
+        assert_eq!(review.verdict, DiffReviewVerdict::Ok);
+        assert!(review.needs_other_model, "the axis fired");
+        let note = diff_review_note(&review).expect("a second opinion is asked for");
+        assert!(note.contains("different model"), "{note}");
+
+        // The same answers without that axis: silence, as before.
+        let review = compose_diff_review(&matching());
+        assert!(!review.needs_other_model);
+        assert_eq!(diff_review_note(&review), None);
+
+        // A review that wants a redo *and* another model says both.
+        let redo_and_second = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.7)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.2)),
+            (STEP_COMPLETE_QUESTION, noul(0.2)),
+            (REDO_THINKING_QUESTION, noul(0.8)),
+            (SECOND_OPINION_QUESTION, noul(0.9)),
+        ]);
+        let review = compose_diff_review(&redo_and_second);
+        assert!(review.needs_other_model);
+        let note = diff_review_note_with(&review, Some("xhigh")).expect("a note");
+        assert!(note.contains("more thinking than this call had"), "{note}");
+        assert!(note.contains("different model"), "{note}");
+
+        // Below the axis floor the review stays silent about it.
+        let below = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.7)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.2)),
+            (STEP_COMPLETE_QUESTION, noul(0.2)),
+            (REDO_THINKING_QUESTION, noul(0.8)),
+            (SECOND_OPINION_QUESTION, noul(0.2)),
+        ]);
+        let review = compose_diff_review(&below);
+        assert!(!review.needs_other_model);
+        let note = diff_review_note_with(&review, Some("xhigh")).expect("a note");
+        assert!(!note.contains("different model"), "{note}");
     }
 
     /// The redo decision is its own axis: a step is redone when it is not done,

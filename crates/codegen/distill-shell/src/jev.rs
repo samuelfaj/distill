@@ -458,9 +458,6 @@ pub fn reset_read_index_for_test() {
     }
 }
 
-/// Most recent decisions kept for the row; the row only ever looks back one turn.
-const ACTIVITY_RING: usize = 64;
-
 /// Decisions whose label means a proposed optimization was refused.
 const REFUSALS: &[&str] = &["block", "veto", "deny", "refuse", "refused"];
 
@@ -509,9 +506,6 @@ pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
         return;
     };
     let session = state.sessions.entry(active_session_id()).or_default();
-    if session.ring.len() >= ACTIVITY_RING {
-        session.ring.pop_front();
-    }
     session.ring.push_back(JevActivity {
         lever: lever.to_owned(),
         decision: decision.to_owned(),
@@ -555,8 +549,8 @@ pub fn note_in_flight(started: bool) {
 /// The row's view of Jev: decisions recorded at or after `since`.
 ///
 /// `None` (no turn anchor — a wake turn, or a row rendered outside a turn)
-/// counts whatever is still in the ring, which is at most the last
-/// [`ACTIVITY_RING`] decisions of this process.
+/// counts every decision still recorded for this session. There is no
+/// ceiling: a long turn can consult Jev on every micro-action.
 pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
     turn_activity_for_session("", since)
 }
@@ -1037,7 +1031,7 @@ mod catalogue_helper_tests {
         // A window that opens after the decisions saw none of them.
         assert!(turn_activity(Some(after)).is_quiet());
 
-        // An unknown window (no turn anchor) still reports the ring.
+        // An unknown window (no turn anchor) still reports every recorded decision.
         assert_eq!(turn_activity(None).decisions, 3);
 
         let guard = JevInFlight::begin();
@@ -1046,6 +1040,30 @@ mod catalogue_helper_tests {
         assert_eq!(in_flight.label().as_deref(), Some("jev…"));
         drop(guard);
         assert_eq!(turn_activity(Some(after)).in_flight, 0);
+        reset_activity_for_test();
+    }
+
+    /// A long turn consults Jev on every micro-action. The chip and the turn
+    /// report must keep counting; a 64-slot ring used to freeze the label at
+    /// `jev ×64` and under-count `Jev - Nx`.
+    #[serial_test::serial]
+    #[test]
+    fn turn_activity_counts_every_decision_without_a_ceiling() {
+        reset_activity_for_test();
+        let start = std::time::Instant::now();
+        for i in 0_u64..80 {
+            note_decision("b2_micro_effort", "keep", i);
+        }
+        let turn = turn_activity(Some(start));
+        assert_eq!(
+            turn.decisions, 80,
+            "every decision in the turn window is counted"
+        );
+        assert_eq!(
+            turn.label().as_deref(),
+            Some("jev ×80"),
+            "the chip names the real count, not a ring size"
+        );
         reset_activity_for_test();
     }
 

@@ -31,8 +31,8 @@ use distill_sampling_types::error::{
 use distill_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
-    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper,
-    ReasoningEffort, ReasoningShape, ResponseModelMetadata, Result, SamplingError, SentCredential,
+    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper, ReasoningEffort,
+    ReasoningShape, ResponseModelMetadata, Result, SamplingError, SentCredential,
     build_messages_request, is_check_event, messages, rs,
 };
 
@@ -76,7 +76,10 @@ fn patch_codex_response_request(base_url: &str, body: &mut serde_json::Value) {
             object.remove(field);
         }
     }
-    if let Some(input) = body.get_mut("input").and_then(serde_json::Value::as_array_mut) {
+    if let Some(input) = body
+        .get_mut("input")
+        .and_then(serde_json::Value::as_array_mut)
+    {
         for item in input {
             if item.get("role").and_then(serde_json::Value::as_str) == Some("system") {
                 item["role"] = serde_json::json!("developer");
@@ -801,7 +804,10 @@ impl SamplingClient {
                     }
                 }
                 for (name, value) in fresh.extra_headers {
-                    match (HeaderName::try_from(name.as_str()), HeaderValue::from_str(&value)) {
+                    match (
+                        HeaderName::try_from(name.as_str()),
+                        HeaderValue::from_str(&value),
+                    ) {
                         (Ok(name), Ok(value)) => {
                             headers.insert(name, value);
                         }
@@ -966,8 +972,10 @@ impl SamplingClient {
         // A model that takes a token budget instead of an effort name gets the
         // same chosen effort expressed in its own dialect.
         request.apply_reasoning_shape(self.defaults.reasoning_shape);
+        request.apply_deepseek_thinking_toggle();
 
-        Ok(request)    }
+        Ok(request)
+    }
 
     /// `sent_bearer` is the fragment [`Self::post`] captured for the request that produced `response` (401 attribution).
     async fn handle_response(
@@ -2394,7 +2402,10 @@ mod tests {
             panic!("expected response.created, got something else");
         };
         assert_eq!(
-            created.response.reasoning.and_then(|reasoning| reasoning.effort),
+            created
+                .response
+                .reasoning
+                .and_then(|reasoning| reasoning.effort),
             Some(rs::ReasoningEffort::None),
             "the effort the API reported as `disabled` reads as `none`"
         );
@@ -2409,11 +2420,11 @@ mod tests {
         x
     }
     use axum::{Router, body::Bytes, routing::post};
+    use distill_sampling_types::ApiErrorCode;
+    use distill_sampling_types::types::ChatRequestMessage;
     use indexmap::IndexMap;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
-    use distill_sampling_types::ApiErrorCode;
-    use distill_sampling_types::types::ChatRequestMessage;
 
     #[test]
     fn splice_extra_tool_entries_extends_existing_tools_array() {
@@ -2554,6 +2565,7 @@ mod tests {
             search_parameters: None,
             response_format: None,
             reasoning: None,
+            thinking: None,
             reasoning_effort: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,

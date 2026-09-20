@@ -1733,12 +1733,10 @@ impl SessionActor {
             request.model = Some(routed_model);
             *routed_local = is_local_route;
             if is_local_route {
-                // Utility/local models have their own payload rules; model
-                // selection routes retain the final session reasoning config.
+                // Keep Reasoning on the request: a rejected local round
+                // resubmits this same history, and thinking-mode models 400
+                // unless `reasoning_content` is passed back.
                 request.reasoning_effort = None;
-                request
-                    .items
-                    .retain(|item| !matches!(item, ConversationItem::Reasoning(_)));
             }
         }
     }

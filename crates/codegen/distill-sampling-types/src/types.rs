@@ -82,6 +82,11 @@ pub struct ChatCompletionRequest {
     /// caller chose, so one decision reaches either dialect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<serde_json::Value>,
+    /// DeepSeek Chat Completions thinking toggle: `{"type": "enabled"|"disabled"}`.
+    /// Thinking is on by default there; `reasoning_effort: "none"` is not a
+    /// recognized off switch and leaves the model thinking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<serde_json::Value>,
 
     /// custom headers
     #[serde(skip)]
@@ -127,6 +132,7 @@ impl ChatCompletionRequest {
             response_format: None,
             reasoning_effort: None,
             reasoning: None,
+            thinking: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -156,6 +162,7 @@ impl ChatCompletionRequest {
             response_format: None,
             reasoning_effort: None,
             reasoning: None,
+            thinking: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -201,6 +208,33 @@ impl ChatCompletionRequest {
                 }
             }
         }
+    }
+
+    /// DeepSeek Chat Completions: thinking is on unless `thinking.type` says
+    /// otherwise. `reasoning_effort: "none"` is not in their mapping table.
+    pub fn apply_deepseek_thinking_toggle(&mut self) {
+        let Some(model) = self.model.as_deref() else {
+            return;
+        };
+        if !model.to_ascii_lowercase().contains("deepseek") {
+            return;
+        }
+        if self
+            .reasoning
+            .as_ref()
+            .and_then(|value| value.get("enabled"))
+            .and_then(|value| value.as_bool())
+            == Some(false)
+        {
+            self.thinking = Some(serde_json::json!({ "type": "disabled" }));
+            return;
+        }
+        let thinking_type = match self.reasoning_effort {
+            Some(ReasoningEffort::None) => "disabled",
+            Some(_) => "enabled",
+            None => return,
+        };
+        self.thinking = Some(serde_json::json!({ "type": thinking_type }));
     }
 
     pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
@@ -280,7 +314,12 @@ pub struct ChatRequestMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     /// The reasoning/thinking content from the model (for models that support extended thinking)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "reasoning",
+        alias = "reasoning_text"
+    )]
     pub reasoning_content: Option<String>,
 }
 
@@ -525,7 +564,12 @@ pub struct ChatResponseMessage {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "reasoning",
+        alias = "reasoning_text"
+    )]
     pub reasoning_content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallResponse>,
@@ -662,6 +706,12 @@ pub struct ChatChunkDelta {
     pub role: Option<Role>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "reasoning",
+        alias = "reasoning_text"
+    )]
     pub reasoning_content: Option<String>,
     /// A JSON `null` deserializes as an empty vec.
     #[serde(
@@ -1466,7 +1516,11 @@ mod tests {
         assert_eq!(body["reasoning"]["effort"], "max");
         assert_eq!(body["input"][0]["role"], "developer");
         assert_eq!(body["input"][1]["content"], "hello");
-        assert_eq!(request.body().unwrap(), body, "policy is not accumulated between requests");
+        assert_eq!(
+            request.body().unwrap(),
+            body,
+            "policy is not accumulated between requests"
+        );
         request.reasoning_effort = Some(ReasoningEffort::High);
         let body = request.body().unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
@@ -1692,7 +1746,10 @@ mod tests {
         let bad_type = as_map(serde_json::json!({"reasoningEffort": 3}));
         assert_eq!(parse_reasoning_effort_meta(Some(&bad_type)), None);
         let ultra = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
-        assert_eq!(parse_reasoning_effort_meta(Some(&ultra)), Some(ReasoningEffort::Ultra));
+        assert_eq!(
+            parse_reasoning_effort_meta(Some(&ultra)),
+            Some(ReasoningEffort::Ultra)
+        );
         let unknown = as_map(serde_json::json!({"reasoningEffort": "unknown"}));
         assert_eq!(parse_reasoning_effort_meta(Some(&unknown)), None);
     }
@@ -1791,11 +1848,52 @@ mod tests {
         assert_eq!(original.0, cloned_inner.0);
     }
 
-    fn chat_request_at(effort: Option<ReasoningEffort>, max_tokens: Option<u32>) -> ChatCompletionRequest {
+    fn chat_request_at(
+        effort: Option<ReasoningEffort>,
+        max_tokens: Option<u32>,
+    ) -> ChatCompletionRequest {
         let mut request = ChatCompletionRequest::new("qwen/qwen3.7-flash", vec![]);
         request.reasoning_effort = effort;
         request.max_tokens = max_tokens;
         request
+    }
+
+    /// DeepSeek Chat Completions turns thinking off with `thinking.type`, not
+    /// `reasoning_effort: "none"` (that spelling is not in their mapping table).
+    #[test]
+    fn deepseek_none_effort_disables_thinking_on_the_wire() {
+        let mut request = ChatCompletionRequest::new("deepseek-v4.1-flash", vec![]);
+        request.reasoning_effort = Some(ReasoningEffort::None);
+        request.apply_deepseek_thinking_toggle();
+        assert_eq!(
+            request.thinking,
+            Some(serde_json::json!({ "type": "disabled" }))
+        );
+
+        let mut request = ChatCompletionRequest::new("deepseek-v4.1-flash", vec![]);
+        request.reasoning_effort = Some(ReasoningEffort::Low);
+        request.apply_deepseek_thinking_toggle();
+        assert_eq!(
+            request.thinking,
+            Some(serde_json::json!({ "type": "enabled" }))
+        );
+
+        let mut request = ChatCompletionRequest::new("grok-4.5", vec![]);
+        request.reasoning_effort = Some(ReasoningEffort::None);
+        request.apply_deepseek_thinking_toggle();
+        assert!(
+            request.thinking.is_none(),
+            "non-DeepSeek models do not get a thinking object"
+        );
+    }
+
+    #[test]
+    fn chat_chunk_delta_reads_reasoning_aliases() {
+        let delta: ChatChunkDelta = serde_json::from_value(serde_json::json!({
+            "reasoning": "step by step"
+        }))
+        .expect("alias deserializes");
+        assert_eq!(delta.reasoning_content.as_deref(), Some("step by step"));
     }
 
     /// The default shape is what every existing model already does: nothing moves.

@@ -244,9 +244,18 @@ impl From<ChatResponseMessage> for ConversationItem {
 
 impl From<ConversationRequest> for ChatCompletionRequest {
     fn from(req: ConversationRequest) -> Self {
-        let messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(req.items);
-
         let tools_is_empty = req.tools.is_empty();
+        let mut messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(req.items);
+        // DeepSeek thinking mode with `tools`: every assistant message must
+        // carry `reasoning_content` (empty if that turn had none). Omitting
+        // the field is a 400.
+        if !tools_is_empty {
+            for msg in &mut messages {
+                if msg.role == Role::Assistant && msg.reasoning_content.is_none() {
+                    msg.reasoning_content = Some(String::new());
+                }
+            }
+        }
         let tools: Option<Vec<ToolDefinition>> = if tools_is_empty {
             None
         } else {
@@ -295,6 +304,7 @@ impl From<ConversationRequest> for ChatCompletionRequest {
             response_format,
             reasoning_effort: req.reasoning_effort,
             reasoning: None,
+            thinking: None,
             x_grok_conv_id: req.x_grok_conv_id,
             x_grok_req_id: req.x_grok_req_id,
             x_grok_session_id: req.x_grok_session_id,

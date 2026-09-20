@@ -11,7 +11,8 @@ mod responses;
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
 pub use messages::build_messages_request;
 pub use responses::{
-    extra_tool_entries, patch_input_item_ids, patch_reasoning_text_types, response_to_conversation_items,
+    extra_tool_entries, patch_input_item_ids, patch_reasoning_text_types,
+    response_to_conversation_items,
 };
 
 use std::sync::Arc;
@@ -4606,6 +4607,89 @@ mod tests {
             Some("thinking before search"),
             "reasoning preceding a BackendToolCall folds onto the following \
              assistant rather than being dropped"
+        );
+    }
+
+    #[test]
+    fn conversation_to_chat_messages_passes_reasoning_content_on_tool_call_turns() {
+        // DeepSeek thinking mode with `tools`: the assistant that issued
+        // tool_calls must carry `reasoning_content` on the next request, or
+        // the API returns 400 "must be passed back".
+        let items = vec![
+            ConversationItem::user("continue"),
+            ConversationItem::Reasoning(crate::synthesized_reasoning_item(
+                "plan the windows check",
+            )),
+            ConversationItem::assistant_tool_calls(vec![ToolCall {
+                id: "call_1".into(),
+                name: "bash".to_string(),
+                arguments: r#"{"command":"rustc -vV"}"#.into(),
+            }]),
+            ConversationItem::tool_result("call_1", "rustc 1.80"),
+        ];
+        let msgs = conversation_to_chat_messages(items);
+        let assistant = msgs
+            .iter()
+            .find(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+            .expect("tool-call assistant");
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("plan the windows check")
+        );
+        let json = serde_json::to_value(assistant).expect("assistant serializes");
+        assert_eq!(
+            json.get("reasoning_content").and_then(|v| v.as_str()),
+            Some("plan the windows check"),
+            "the Chat Completions wire body must include reasoning_content"
+        );
+    }
+
+    #[test]
+    fn tools_request_sends_reasoning_content_on_every_assistant() {
+        // DeepSeek: a tools request must echo reasoning_content on *all*
+        // previous assistant turns, even those that never thought and never
+        // called a tool. A missing field is a 400.
+        let req = ConversationRequest::from_items(vec![
+            ConversationItem::user("hi"),
+            ConversationItem::assistant("plain answer"),
+            ConversationItem::user("now use a tool"),
+            ConversationItem::Reasoning(crate::synthesized_reasoning_item("plan the call")),
+            ConversationItem::assistant_tool_calls(vec![ToolCall {
+                id: "call_1".into(),
+                name: "bash".to_string(),
+                arguments: r#"{"command":"true"}"#.into(),
+            }]),
+            ConversationItem::tool_result("call_1", "ok"),
+        ])
+        .with_model("deepseek-v4.1-flash")
+        .with_tools(vec![ToolSpec {
+            name: "bash".to_string(),
+            description: Some("run".to_string()),
+            parameters: serde_json::json!({}),
+        }]);
+        let chat: ChatCompletionRequest = req.into();
+        let json = serde_json::to_value(&chat).expect("request serializes");
+        let messages = json
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages");
+        let assistants: Vec<&serde_json::Value> = messages
+            .iter()
+            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+            .collect();
+        assert_eq!(assistants.len(), 2);
+        assert_eq!(
+            assistants[0]
+                .get("reasoning_content")
+                .and_then(|v| v.as_str()),
+            Some(""),
+            "an earlier assistant with no thinking still sends the field"
+        );
+        assert_eq!(
+            assistants[1]
+                .get("reasoning_content")
+                .and_then(|v| v.as_str()),
+            Some("plan the call")
         );
     }
 

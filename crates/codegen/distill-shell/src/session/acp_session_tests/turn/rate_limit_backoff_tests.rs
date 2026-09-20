@@ -835,6 +835,138 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
         .await;
 }
 
+/// A rejected local round must resubmit the session model's thinking payload.
+/// DeepSeek 400s with "reasoning_content must be passed back" if fallback
+/// drops the Reasoning sibling that folds onto the tool-call assistant.
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            const REASONING_TEXT: &str = "thinking-must-be-passed-back";
+            let base_server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("test"),
+                MockModelEntry::new("reasoning-model"),
+            ])
+            .await
+            .expect("base mock inference server");
+            let local_server =
+                MockInferenceServer::start_with_models(vec![MockModelEntry::new("local-model")])
+                    .await
+                    .expect("local mock inference server");
+            local_server.enqueue_response(
+                "/v1/responses",
+                ScriptedResponse::text(
+                    400,
+                    "The `reasoning_content` in the thinking mode must be passed back to the API.",
+                ),
+            );
+            base_server.enqueue_response(
+                "/v1/responses",
+                ScriptedResponse::sse(responses_api_script_exact("done", "reasoning-model")),
+            );
+            let (actor, _retries) = actor_under_test(
+                &base_server,
+                SessionKind::Main,
+                sampler_surfaces_429(),
+                false,
+            )
+            .await;
+            actor
+                .jev_effort_auto
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            actor.models_manager.insert_test_entry(
+                "local-model",
+                routing_entry_with_window("local-model", &local_server.url(), Vec::new(), 64_000),
+            );
+            crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                model: Some("local-model".to_owned()),
+                max_context_tokens: Some(256_000),
+                ..Default::default()
+            });
+            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
+            let mut config = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            config.model = "reasoning-model".to_owned();
+            config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+            config.context_window = std::num::NonZeroU64::new(128_000).unwrap();
+            actor.chat_state_handle.update_sampling_config(config);
+
+            actor
+                .chat_state_handle
+                .push_user_message(ConversationItem::user("continue"));
+            actor
+                .chat_state_handle
+                .push_model_output(ConversationItem::Reasoning(
+                    distill_sampling_types::synthesized_reasoning_item(REASONING_TEXT),
+                ));
+            actor
+                .chat_state_handle
+                .push_model_output(ConversationItem::assistant_tool_calls(vec![
+                    distill_sampling_types::ToolCall {
+                        id: "call_run".into(),
+                        name: "bash".to_string(),
+                        arguments: r#"{"command":"rustc -vV"}"#.into(),
+                    },
+                ]));
+            actor
+                .chat_state_handle
+                .push_tool_result(ConversationItem::tool_result("call_run", "rustc 1.80.0"));
+
+            actor.prepare_sampler_for_turn().await;
+            let request = conversation_request(&actor).await;
+            assert!(
+                request
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, ConversationItem::Reasoning(_))),
+                "the turn request must still carry the thinking sibling"
+            );
+            let mut budget = actor.rate_limit_wait_budget(None);
+            let outcome = actor
+                .run_turn_via_sampler(
+                    request,
+                    &mut budget,
+                    transient_state(0, false),
+                    false,
+                    TurnParkState::Parked,
+                )
+                .await;
+            if let Err(error) = outcome {
+                panic!("local rejection must fall back to the session model: {error}");
+            }
+            let local_requests: Vec<_> = local_server
+                .request_bodies()
+                .into_iter()
+                .filter(|body| body.get("model").is_some())
+                .collect();
+            let base_requests: Vec<_> = base_server
+                .request_bodies()
+                .into_iter()
+                .filter(|body| body.get("model").is_some())
+                .collect();
+            assert_eq!(local_requests.len(), 1);
+            assert_eq!(base_requests.len(), 1);
+            assert!(
+                request_body_carries_text(&base_requests[0], REASONING_TEXT),
+                "fallback to the session model must pass reasoning_content back: {}",
+                base_requests[0]
+            );
+            crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_local_config();
+            crate::jev::clear_test_tier_config();
+        })
+        .await;
+}
+
+fn request_body_carries_text(body: &serde_json::Value, text: &str) -> bool {
+    body.to_string().contains(text)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn explicit_child_model_and_effort_survive_all_routing_passes() {
     let local = tokio::task::LocalSet::new();

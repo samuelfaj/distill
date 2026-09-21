@@ -303,17 +303,18 @@ pub fn diff_review_request(
         DIFF_BREAK_QUESTION.to_owned(),
         Question::noul_with_criteria(
                 "The step asked for is `intent`; the change just applied is `change`. \
-                 Could this change break behaviour that other code relies on — signatures, callers, \
-                 data shapes, error handling?",
-            "It could break something that relies on the old behaviour",
-            "It stays compatible with its callers",
+                 Does the supplied evidence demonstrate a concrete break in a signature, caller, \
+                 data shape or error handling? Missing caller context or a merely possible risk is not evidence.",
+            "The evidence demonstrates a concrete compatibility defect",
+            "No concrete compatibility defect is demonstrated",
         ),
     );
     questions.insert(
         STEP_COMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
             "The step is `intent`; the change just applied is `change`. \
-                 As it stands, is the step done — nothing in it left to fix or redo?",
+                 Does this edit satisfy its local step? Later planned edits or tests are not omissions \
+                 in this edit. Do not judge completion of the entire user request.",
             "The step is done as it stands",
             "Something in the step still has to be redone",
         ),
@@ -480,9 +481,8 @@ pub fn diff_review_note_with(review: &DiffReview, next_level: Option<&str>) -> O
                  `{level}`."
             ),
             (true, None) => format!(
-                "Jev reviewed this change: the step has to be redone, and this model is already at \
-                 its highest setting (p={confidence:.2}) — more thinking is not available, so find \
-                 the actual error and redo the step; something in it is wrong."
+                "Jev flagged this step for verification (p={confidence:.2}); no automatic effort \
+                 increase is scheduled. Confirm the defect before redoing the edit."
             ),
             (false, _) => format!(
                 "Jev reviewed this change: redo this step (p={confidence:.2}) — the change does not \
@@ -970,11 +970,10 @@ mod tests {
         assert!(note.contains("more thinking than this call had"), "{note}");
         assert!(note.contains("`xhigh`"), "the level is named: {note}");
 
-        // At the top setting there is nothing to raise: the model has to find
-        // the error itself.
+        // No reservation does not imply that the model was already at maximum.
         let note = diff_review_note_with(&review, None).expect("a note");
-        assert!(note.contains("highest setting"), "{note}");
-        assert!(note.contains("find the actual error and redo"), "{note}");
+        assert!(note.contains("no automatic effort"), "{note}");
+        assert!(note.contains("Confirm the defect"), "{note}");
 
         // A missing answer decides nothing at all.
         let partial = answers(vec![(DIFF_MATCH_QUESTION, noul(0.9))]);

@@ -130,7 +130,7 @@ pub const fn resolve_switch(config: Option<bool>, env: Option<bool>, default: bo
 }
 
 impl JevFlags {
-    /// The harness policy default: every lever **on**, not in shadow.
+    /// The harness policy default: saving paths on, redundant hints off.
     ///
     /// This is the owner's explicit override of the plan's invariant I-1 (which
     /// required default OFF). The kill switch stays intact: `[jev] enabled = false`
@@ -145,7 +145,7 @@ impl JevFlags {
             p3_compaction_recorte: true,
             p6_skill_suggestion: true,
             a1_file_to_edit: true,
-            a3_log_lines: true,
+            a3_log_lines: false,
             a4_web_results: true,
             a5_memory_rank: true,
             a6_test_to_run: true,
@@ -155,21 +155,21 @@ impl JevFlags {
             b2_local_model: true,
             b2_light_model: true,
             b3_subagent_type: true,
-            b6_delegation_hint: true,
-            c1_premature_stop: true,
-            c2_failure_triage: true,
-            c3_completion_check: true,
+            b6_delegation_hint: false,
+            c1_premature_stop: false,
+            c2_failure_triage: false,
+            c3_completion_check: false,
             c4_diff_risk: true,
             c5_error_priority: true,
             c6_injection_screen: false,
-            c7_change_type: true,
+            c7_change_type: false,
             e_crushers: true,
             e_retention: false,
             e_importance: true,
             e_cheap_compress: true,
-            e_cheap_task: true,
+            e_cheap_task: false,
             e_read_reuse: true,
-            e_lane_choice: true,
+            e_lane_choice: false,
             e_cheap_agent: false,
             e_prompt_blocks: false,
             e_breaker: true,
@@ -206,13 +206,20 @@ impl JevFlags {
         self.e_crushers = self.enabled && resolve_switch(ladder.e_crushers, None, self.e_crushers);
         self.e_retention =
             self.enabled && resolve_switch(ladder.e_retention, None, self.e_retention);
-        self.e_importance = self.enabled && resolve_switch(ladder.e_importance, None, self.e_importance);
-        self.e_cheap_compress = self.enabled && resolve_switch(ladder.e_cheap_compress, None, self.e_cheap_compress);
-        self.e_cheap_task = self.enabled && resolve_switch(ladder.e_cheap_task, None, self.e_cheap_task);
-        self.e_read_reuse = self.enabled && resolve_switch(ladder.e_read_reuse, None, self.e_read_reuse);
-        self.e_lane_choice = self.enabled && resolve_switch(ladder.e_lane_choice, None, self.e_lane_choice);
-        self.e_cheap_agent = self.enabled && resolve_switch(ladder.e_cheap_agent, None, self.e_cheap_agent);
-        self.e_prompt_blocks = self.enabled && resolve_switch(ladder.e_prompt_blocks, None, self.e_prompt_blocks);
+        self.e_importance =
+            self.enabled && resolve_switch(ladder.e_importance, None, self.e_importance);
+        self.e_cheap_compress =
+            self.enabled && resolve_switch(ladder.e_cheap_compress, None, self.e_cheap_compress);
+        self.e_cheap_task =
+            self.enabled && resolve_switch(ladder.e_cheap_task, None, self.e_cheap_task);
+        self.e_read_reuse =
+            self.enabled && resolve_switch(ladder.e_read_reuse, None, self.e_read_reuse);
+        self.e_lane_choice =
+            self.enabled && resolve_switch(ladder.e_lane_choice, None, self.e_lane_choice);
+        self.e_cheap_agent =
+            self.enabled && resolve_switch(ladder.e_cheap_agent, None, self.e_cheap_agent);
+        self.e_prompt_blocks =
+            self.enabled && resolve_switch(ladder.e_prompt_blocks, None, self.e_prompt_blocks);
         self.e_breaker = self.enabled && resolve_switch(ladder.e_breaker, None, self.e_breaker);
         self.a1_file_to_edit =
             self.enabled && resolve_switch(ladder.a1_file_to_edit, None, self.a1_file_to_edit);
@@ -624,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn the_harness_default_turns_every_lever_on() {
+    fn the_harness_default_enables_saving_paths_not_redundant_hints() {
         let flags = JevFlags::harness_default();
         assert!(flags.enabled, "master switch is on by policy");
         assert!(!flags.shadow, "active, not shadow, by policy");
@@ -634,19 +641,13 @@ mod tests {
             JevLever::P3CompactionRecorte,
             JevLever::P6SkillSuggestion,
             JevLever::A1FileToEdit,
-            JevLever::A3LogLines,
             JevLever::A4WebResults,
             JevLever::A5MemoryRank,
             JevLever::A6TestToRun,
             JevLever::B1IntentRouting,
             JevLever::B3SubagentType,
-            JevLever::B6DelegationHint,
-            JevLever::C1PrematureStop,
-            JevLever::C2FailureTriage,
-            JevLever::C3CompletionCheck,
             JevLever::C4DiffRisk,
             JevLever::C5ErrorPriority,
-            JevLever::C7ChangeType,
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
             // The token-saving lanes, including the three that spend a utility
@@ -657,8 +658,6 @@ mod tests {
             JevLever::EImportance,
             JevLever::EReadReuse,
             JevLever::ECheapCompress,
-            JevLever::ECheapTask,
-            JevLever::ELaneChoice,
         ] {
             assert!(flags.lever_active(lever), "{} must be on", lever.as_str());
         }
@@ -666,6 +665,22 @@ mod tests {
             !flags.e_retention,
             "the retention lane asks one question per chunk; its cost is unmeasured, so it waits"
         );
+        for lever in [
+            JevLever::A3LogLines,
+            JevLever::B6DelegationHint,
+            JevLever::C1PrematureStop,
+            JevLever::C2FailureTriage,
+            JevLever::C3CompletionCheck,
+            JevLever::C7ChangeType,
+            JevLever::ECheapTask,
+            JevLever::ELaneChoice,
+        ] {
+            assert!(
+                !flags.lever_active(lever),
+                "{} must stay off",
+                lever.as_str()
+            );
+        }
         assert!(!flags.is_off());
     }
 

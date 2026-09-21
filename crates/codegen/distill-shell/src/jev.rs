@@ -174,6 +174,8 @@ mod tests {
         use distill_workspace::jev::flags::JevLever;
         use distill_workspace::jev::types::{Answer, JevAnswerSet, Question, Usage};
         let mut flags = JevFlags::harness_default();
+        flags.c2_failure_triage = true;
+        flags.a3_log_lines = true;
         flags.c5_error_priority = false;
         let pack = || {
             Some(

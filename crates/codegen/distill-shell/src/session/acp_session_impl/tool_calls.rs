@@ -2903,14 +2903,12 @@ impl SessionActor {
             .or_else(|| tool_parsed_args.get("script"))
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let complete_success = matches!(&result.output,
-            distill_tools::types::output::ToolOutput::Bash(b)
-                if b.exit_code == 0 && !b.timed_out && !b.truncated && b.signal.is_none());
         let prompt_text = self
             .jev_post_process_tool_result(
                 requested_tool_name,
                 tool_command,
-                complete_success,
+                &call_id.to_string(),
+                &result.output,
                 prompt_text,
             )
             .await;

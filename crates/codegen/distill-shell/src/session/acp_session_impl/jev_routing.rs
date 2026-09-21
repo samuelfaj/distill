@@ -65,6 +65,8 @@ impl SessionActor {
         // The final sampler config is the source of truth. Do not consume a
         // provisional effort label or a pre-floor route for status reporting.
         crate::jev::note_route(Some(&cfg.model), effort.as_deref());
+        self.jev_ledger.borrow_mut().last_execution =
+            Some((cfg.model.clone(), cfg.reasoning_effort));
         self.jev_ledger
             .borrow_mut()
             .note_round(self.model_display_name(&cfg.model), effort);
@@ -118,6 +120,9 @@ impl SessionActor {
     /// cloud model: the entry must resolve to a usable endpoint, and the
     /// conversation must fit the local window with room for the answer.
     pub(super) async fn jev_route_micro_call(&self, cfg: &mut SamplingConfig) {
+        if self.jev_ledger.borrow().effort_floor().is_some() {
+            return;
+        }
         // A child with an explicit model or manual effort is deliberately
         // outside Jev's utility-model lane. `jev_effort_auto` is seeded from
         // that child policy, while forks/resumes that inherit auto remain
@@ -278,16 +283,20 @@ impl SessionActor {
         *cfg = local_cfg;
     }
 
-    /// A change review that asked for a redo "with more thinking" raises the
-    /// turn's effort floor: every later round runs at or above it, whatever the
-    /// auto-effort decision would have chosen.
+    /// Consume a review-driven increase once. Later rounds choose their own effort.
     pub(super) async fn jev_apply_effort_floor(&self, cfg: &mut SamplingConfig) {
         if self.child_jev_routing_locked() {
             return;
         }
-        let Some((level, value)) = self.jev_ledger.borrow().effort_floor().cloned() else {
+        let Some((level, value)) = self.jev_ledger.borrow_mut().take_effort_floor() else {
             return;
         };
+        if !self
+            .models_manager
+            .model_supports_reasoning_effort_value(&cfg.model, value)
+        {
+            return;
+        }
         let current = cfg
             .reasoning_effort
             .or_else(|| self.models_manager.current_reasoning_effort());
@@ -322,6 +331,9 @@ impl SessionActor {
     /// fits the session model's family; a provider with one model has nothing to
     /// choose, and the effort question is the whole decision it was before.
     pub(super) async fn jev_choose_model_and_effort(&self, cfg: &mut SamplingConfig) {
+        if self.jev_ledger.borrow().effort_floor().is_some() {
+            return;
+        }
         if !self
             .jev_effort_auto
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -682,15 +694,6 @@ impl SessionActor {
     ) -> Option<distill_workspace::jev::tasks::TaskOutcome> {
         let lane = self.cheap_lane(lever).await?;
         lane.run_task(lever, task_id, payload, question).await
-    }
-
-    /// The effort a palette level maps onto for the session's model.
-    pub(super) async fn effort_value_for_level(&self, level: &str) -> Option<ReasoningEffort> {
-        let model = self.current_model_id().await;
-        self.model_effort_menu(&model)?
-            .into_iter()
-            .find(|candidate| candidate.id == level)
-            .map(|candidate| candidate.value)
     }
 
     /// The level above `current` in this model's own menu, if there is one.

@@ -178,8 +178,6 @@ mod session_mode;
 use session_mode::*;
 #[path = "acp_session_impl/child_tool_projection.rs"]
 mod child_tool_projection;
-#[path = "acp_session_impl/jev_laziness.rs"]
-mod jev_laziness;
 #[path = "acp_session_impl/jev_ledger.rs"]
 pub(crate) mod jev_ledger;
 #[path = "acp_session_impl/jev_memory.rs"]

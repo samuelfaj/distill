@@ -6,7 +6,7 @@
 //! * every item is gated by its own flag inside [`crate::jev::ask_item`], and a
 //!   missing/errored answer leaves the result **exactly** as it was;
 //! * the pass may only *narrow* what the model will re-read (A1…A4, D2) or
-//!   *annotate* it with an advisory hint (C2, C4, C5, C6, C7). It never approves
+//!   *annotate* it with an advisory hint (C4, C5, C6). It never approves
 //!   anything, never hides an error, and never rewrites the harness's own
 //!   notices;
 //! * annotations are capped and clearly marked, so a steered model cannot turn
@@ -36,76 +36,53 @@ const MAX_HINTS: usize = 3;
 const MAX_LINE_CANDIDATES: usize = 200;
 /// How many lines a narrowed read keeps, at most.
 const READ_KEEP_LINES: usize = 120;
-/// Characters of the change handed to the diff review: enough to see the
-/// asked-for work inside a whole-file write.
-const REVIEW_CHANGE_CHARS: usize = 1_500;
-/// Conversation items scanned when building the review material.
-const REVIEW_TAIL_ITEMS: usize = 12;
+/// Maximum executed-change payload. Larger changes are not partially reviewed.
+const REVIEW_CHANGE_BYTES: usize = 16 * 1024;
 /// Marker that opens the advisory block.
 const HINT_OPEN: &str = "\n\n<jev-hints>\n";
-/// Line prefix used for each hint.
 const HINT_BULLET: &str = "- ";
-/// Marker that closes the advisory block.
 const HINT_CLOSE: &str = "\n</jev-hints>";
-/// Tools whose result is a change to review rather than a payload to narrow.
-const EDIT_TOOLS: &[&str] = &["search_replace", "write", "edit", "apply_patch"];
-/// A tool name carrying one of these verbs changes what is on disk — MCP servers
-/// name their tools after the verb they perform.
-const WRITE_VERBS: &[&str] = &[
-    "write", "edit", "patch", "replace", "create", "insert", "append", "update", "delete",
-    "remove", "move", "rename", "mkdir", "chmod",
-];
-/// Shell commands that change the workspace. The command line is the only
-/// evidence the harness has: a script that writes on its own is not detected and
-/// keeps today's path.
-const MUTATING_COMMANDS: &[&str] = &[
-    "sed -i",
-    "tee ",
-    "truncate",
-    "rm ",
-    "mv ",
-    "cp ",
-    "ln -s",
-    "chmod ",
-    "chown ",
-    "patch ",
-    "git apply",
-    "git commit",
-    "git checkout",
-    "git restore",
-    "git reset",
-    "git clean",
-    "git stash",
-    "cargo fmt",
-    "cargo fix",
-    "npm install",
-    "npm i ",
-    "pnpm ",
-    "yarn add",
-    "pip install",
-    "dd ",
-    "mkdir ",
-    "touch ",
-    ">",
-    ">>",
-];
 
-/// Whether the call that just finished changed the workspace, which is what the
-/// change review judges. An edit tool always did; any other tool when its name
-/// carries a write verb; a shell call when its command line carries a mutating
-/// marker.
-fn changes_workspace(tool: &str, tool_command: &str) -> bool {
-    if EDIT_TOOLS.contains(&tool) {
-        return true;
+/// Use executed edits, never a guessed call from the conversation tail.
+/// Missing or oversized evidence defers to the main model without truncation.
+fn review_change(output: &distill_tools::types::output::ToolOutput) -> Option<(Json, bool)> {
+    use distill_tools::types::output::{ApplyPatchOutput, SearchReplaceOutput, ToolOutput};
+    let (change, paths) = match output {
+        ToolOutput::SearchReplace(SearchReplaceOutput::EditsApplied(edit)) => {
+            let change = if let Some(patch) = &edit.patch {
+                serde_json::json!({ "path": edit.absolute_path, "patch": patch })
+            } else if !edit.edits.details.is_empty() {
+                serde_json::json!({ "path": edit.absolute_path, "edits": edit.edits.details })
+            } else {
+                serde_json::json!({ "path": edit.absolute_path, "old": edit.old_string, "new": edit.new_string })
+            };
+            (change, vec![edit.absolute_path.as_path()])
+        }
+        ToolOutput::ApplyPatch(ApplyPatchOutput::Success { files, .. }) if !files.is_empty() => (
+            serde_json::json!(files),
+            files
+                .iter()
+                .flat_map(|file| {
+                    std::iter::once(file.path.as_path()).chain(file.move_to.as_deref())
+                })
+                .collect(),
+        ),
+        _ => return None,
+    };
+    if change.to_string().len() > REVIEW_CHANGE_BYTES {
+        return None;
     }
-    let name = tool.to_ascii_lowercase();
-    if WRITE_VERBS.iter().any(|verb| name.contains(verb)) {
-        return true;
-    }
-    !tool_command.is_empty()
-        && MUTATING_COMMANDS
-            .iter()
-            .any(|marker| tool_command.contains(marker))
+    // Prose is informational; instruction files retain the normal review.
+    let prose_only = paths.iter().all(|path| {
+        matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("md" | "txt")
+        ) && !matches!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some("AGENTS.md" | "SKILL.md" | "CLAUDE.md")
+        )
+    });
+    Some((change, prose_only))
 }
 
 /// The advisory block, built so the one note that asks for action survives the
@@ -136,18 +113,18 @@ impl SessionActor {
         &self,
         tool: &str,
         tool_command: &str,
-        complete_success: bool,
+        call_id: &str,
+        output: &distill_tools::types::output::ToolOutput,
         text: String,
     ) -> String {
         // A change review is about the *edit*, not about a long output, and an
         // edit's result is a one-line summary: the size guard must not swallow
         // it. The same holds for every other call that changed the workspace.
-        let changes_files = changes_workspace(tool, tool_command);
+        let review_evidence = review_change(output).filter(|(_, prose_only)| !prose_only);
+        let changes_files = review_evidence.is_some();
         if text.len() < MIN_BYTES && !changes_files {
             return text;
         }
-        // Check the original output before any narrowing can remove diagnostics.
-        let triage_needed = needs_failure_triage(complete_success, &text);
         let mut body = text;
         let mut hints: Vec<String> = Vec::new();
         // The review's note is kept apart from the other hints: it is the one
@@ -189,72 +166,6 @@ impl SessionActor {
         }
         let is_document = outcome.is_document;
         body = outcome.body;
-
-        // ---- one decision point: who does this, how, and at which effort ----
-        //
-        // The three answers travel in ONE request (the app's invariant), and the
-        // decision gates every cheap lane below. With the key off, the lanes fall
-        // back to their own switches.
-        let mut lane_cheap = true;
-        if body.len() >= COMPRESS_BYTES
-            && crate::jev::lever_active(JevLever::ELaneChoice)
-            && let Ok(questions) = distill_workspace::jev::catalog::lanes::lane_questions()
-        {
-            let cheap_slug = crate::jev::local_config_cached()
-                .model
-                .clone()
-                .unwrap_or_default();
-            // The micro-action is described from the tool that produced this
-            // payload: the battery is told what the step is, not what it read.
-            let action = format!("{tool} produced {} bytes", body.len());
-            let context = distill_workspace::jev::catalog::lanes::LaneContext {
-                action,
-                payload_bytes: body.len(),
-                payload_class: format!(
-                    "{:?}",
-                    distill_workspace::jev::reduce::classify_payload(&body)
-                )
-                .to_ascii_lowercase(),
-                request: String::new(),
-                main_model: self.current_model_id().await,
-                cheap_model: cheap_slug,
-            };
-            let state = distill_workspace::jev::catalog::lanes::lane_state(&context);
-            if let Some(answers) =
-                crate::jev::ask_item(JevLever::ELaneChoice, state, questions).await
-            {
-                let choice = distill_workspace::jev::catalog::lanes::compose_lane(
-                    &answers,
-                    !context.cheap_model.trim().is_empty(),
-                    distill_workspace::jev::catalog::lanes::CHEAP_CONFIDENCE_FLOOR,
-                );
-                lane_cheap = choice.is_some();
-                crate::jev::record_item(
-                    JevLever::ELaneChoice,
-                    &choice
-                        .as_ref()
-                        .map_or_else(|| "main".to_owned(), |choice| choice.label()),
-                    &format!("{} bytes of {}", body.len(), context.payload_class),
-                    choice.as_ref().and_then(|choice| choice.confidence),
-                    Some(&answers),
-                );
-                // A subagent form is a recommendation the harness records and does
-                // not take: the cheap-agent lane is not wired yet, so the work
-                // stays with the session model rather than silently running direct.
-                if let Some(choice) = &choice
-                    && !choice.direct
-                {
-                    lane_cheap = false;
-                    crate::jev::record_item(
-                        JevLever::ECheapAgent,
-                        "defer",
-                        "the decision asked for a cheap subagent; that lane is not wired, so the session model keeps it",
-                        None,
-                        None,
-                    );
-                }
-            }
-        }
 
         // ---- retention: which chunks does the task still need? ----
         //
@@ -374,7 +285,6 @@ impl SessionActor {
         // decision allows it, and only through the shipped task (which stores the
         // original, sends one request and refuses an answer that lost a literal).
         if body.len() >= COMPRESS_BYTES
-            && lane_cheap
             && crate::jev::lever_active(JevLever::ECheapCompress)
             && let Some(outcome) = self
                 .cheap_task_for(Lever::ECheapCompress, "distill_command_output", &body, "")
@@ -397,29 +307,6 @@ impl SessionActor {
                 "{}\n[compressed by the cheap worker; full output stored at {handle}]",
                 outcome.text.trim_end()
             );
-        }
-
-        // ---- the utility model reads the payload its own way ----
-        //
-        // Which registered task runs is a property of the command and of the
-        // payload's shape, not a constant: a test report, a lockfile and a stack
-        // trace each have their own reader. Every gate still applies — the lane
-        // decision above, the lever, and the task's own guard — so the hint below
-        // appears only when the cheap model's answer survived its check.
-        let payload_class = distill_workspace::jev::reduce::classify_payload(&body);
-        if body.len() >= READ_REUSE_BYTES
-            && lane_cheap
-            && crate::jev::lever_active(JevLever::ECheapTask)
-            && let Some(task_id) =
-                distill_workspace::jev::tasks::task_for_payload(tool_command, payload_class)
-            && let Some(outcome) = self
-                .cheap_task_for(Lever::ECheapTask, task_id, &body, "")
-                .await
-        {
-            hints.push(format!(
-                "cheap read of the tool output ({task_id}): {}",
-                outcome.text.trim()
-            ));
         }
 
         // ---- A1: rank the files a grep hit, before the model reads them ----
@@ -496,93 +383,43 @@ impl SessionActor {
             }
         }
 
-        // ---- A3 + C2 + C5: failure triage, error order, lines that matter ----
+        // C5 prioritizes real failures without deleting diagnostic context.
         if matches!(tool, "bash" | "shell" | "run_terminal_command" | "task") {
-            let errors = error_lines(&body);
-            let [triage_answers, priority_answers, line_answers] = crate::jev::ask_items(
-                state_for(tool, &body),
-                [
-                    (
-                        JevLever::C2FailureTriage,
-                        triage_needed
-                            .then(|| verify::failure_triage_questions().ok())
-                            .flatten(),
-                    ),
-                    (
-                        JevLever::C5ErrorPriority,
-                        (errors.len() > 1)
-                            .then(|| verify::error_priority_questions(&errors).ok())
-                            .flatten(),
-                    ),
-                    (
-                        JevLever::A3LogLines,
-                        (errors.len() > 1)
-                            .then(|| selection::log_line_questions(&errors).ok())
-                            .flatten(),
-                    ),
-                ],
-            )
-            .await;
-            if let Some(answers) = triage_answers {
-                let triage = verify::compose_failure_triage(&answers);
-                if let Some(category) = triage.category.as_deref() {
-                    let cause = match triage.in_user_code {
-                        Some(true) => "fix is in the project's code",
-                        Some(false) => "cause looks environmental",
-                        None => "cause unknown",
-                    };
-                    hints.push(format!("failure classified as `{category}` ({cause})"));
+            let errors = if output.is_error() {
+                error_lines(&body)
+            } else {
+                Vec::new()
+            };
+            if errors.len() > 1
+                && let Ok(questions) = verify::error_priority_questions(&errors)
+                && let Some(answers) = crate::jev::ask_item(
+                    JevLever::C5ErrorPriority,
+                    state_for(tool, &body),
+                    questions,
+                )
+                .await
+            {
+                let ranked = verify::compose_error_order(&answers, &errors);
+                if !ranked.is_deferred()
+                    && let Some(first) = ranked.keep.first()
+                {
+                    hints.push(format!("fix this first: {first}"));
                 }
                 crate::jev::record_item(
-                    JevLever::C2FailureTriage,
-                    triage.category.as_deref().unwrap_or("defer"),
-                    "failure triage",
+                    JevLever::C5ErrorPriority,
+                    "rank",
+                    "failure priority",
                     None,
                     Some(&answers),
                 );
             }
 
-            if errors.len() > 1 {
-                if let Some(answers) = priority_answers {
-                    let ranked = verify::compose_error_order(&answers, &errors);
-                    if let Some(first) = ranked.keep.first()
-                        && !ranked.is_deferred()
-                    {
-                        hints.push(format!("fix this first: {first}"));
-                    }
-                    crate::jev::record_item(
-                        JevLever::C5ErrorPriority,
-                        if ranked.is_deferred() {
-                            "defer"
-                        } else {
-                            "rank"
-                        },
-                        &format!("{} errors ordered", errors.len()),
-                        None,
-                        Some(&answers),
-                    );
-                }
-                if let Some(answers) = line_answers {
-                    let ranked = selection::compose_log_lines(&answers, &errors);
-                    if !ranked.is_deferred() && !ranked.keep.is_empty() {
-                        body = keep_only_lines(&body, &ranked.keep);
-                    }
-                    crate::jev::record_item(
-                        JevLever::A3LogLines,
-                        if ranked.is_deferred() {
-                            "defer"
-                        } else {
-                            "narrow"
-                        },
-                        &format!("{} kept lines", ranked.keep.len()),
-                        ranked.confidence,
-                        Some(&answers),
-                    );
-                }
-            }
-
             // ---- A6: which failing test to look at first ----
-            let tests = failing_tests(&body);
+            let tests = if output.is_error() {
+                failing_tests(&body)
+            } else {
+                Vec::new()
+            };
             if !tests.is_empty()
                 && let Ok(questions) = selection::test_to_run_questions(&tests)
                 && let Some(answers) =
@@ -667,109 +504,79 @@ impl SessionActor {
             }
         }
 
-        // ---- C7 + C4: label the change, then review it against the step ----
-        if changes_files {
-            let (intent, change) = self.diff_review_material(tool, &body).await;
-            let mut state = state_for(tool, &body);
-            let review_questions = if crate::jev::lever_active(JevLever::C4DiffRisk) {
-                verify::diff_review_request(&intent, &change).ok().map(
-                    |(review_state, questions)| {
-                        state["intent"] = review_state["intent"].clone();
-                        state["change"] = review_state["change"].clone();
-                        questions
-                    },
-                )
+        // C4 reviews only complete, executed edit evidence associated with this result.
+        if let Some((change, prose_only)) = review_evidence {
+            let request = self.jev_last_human_request().await.unwrap_or_default();
+            let conversation = self.chat_state_handle.get_conversation().await;
+            let action = crate::session::acp_session::describe_micro_action(&conversation);
+            let intent = if action.plan.is_empty() {
+                request.clone()
             } else {
-                None
+                action.plan
             };
-            let [review_answers, change_answers] = crate::jev::ask_items(
-                state,
-                [
-                    (JevLever::C4DiffRisk, review_questions),
-                    (JevLever::C7ChangeType, verify::change_type_questions().ok()),
-                ],
-            )
-            .await;
-            if let Some(answers) = change_answers {
-                let change = verify::compose_change_type(&answers);
-                if let Some(label) = change.label.as_deref() {
-                    let breaking = change.breaking.is_some_and(|p| p >= 0.5);
-                    hints.push(format!(
-                        "change labelled `{label}`{}",
-                        if breaking { " (breaking)" } else { "" }
-                    ));
-                }
-                crate::jev::record_item(
-                    JevLever::C7ChangeType,
-                    change.label.as_deref().unwrap_or("defer"),
-                    "change type",
-                    None,
-                    Some(&answers),
+            if let Ok((mut state, questions)) =
+                verify::diff_review_request(&intent, &change.to_string())
+            {
+                state["request"] = serde_json::json!(request);
+                state["tool_call_id"] = serde_json::json!(call_id);
+                state["scope"] = serde_json::json!(
+                    "Judge this executed edit only. Later planned steps are not omissions. Missing caller evidence is not proof of breakage."
                 );
-            }
-            // ---- C4 (review): did this change do what the step asked for? ----
-            //
-            // One review per change, with the step's own intent in shared state.
-            // An edit's result is a summary ("Replaced 1 occurrence"), so the
-            // change the reviewer reads is the call itself plus that summary.
-            if let Some(answers) = review_answers {
-                let review = verify::compose_diff_review(&answers);
-                // What the reviewed call actually ran with: the level the round
-                // noted, or the session's effort.
-                let current_effort = self.models_manager.current_reasoning_effort().or_else(|| {
-                    self.jev_ledger
-                        .borrow()
-                        .effort_floor()
-                        .map(|(_, value)| *value)
-                });
-                let label = match (review.confidence, review.verdict) {
-                    (None, _) => "review:defer",
-                    (Some(_), verify::DiffReviewVerdict::Ok) => "review:ok",
-                    (Some(_), verify::DiffReviewVerdict::Mismatch) => "review:mismatch",
-                    (Some(_), verify::DiffReviewVerdict::Breaks) => "review:breaks",
-                    (Some(_), verify::DiffReviewVerdict::Incomplete) => "review:incomplete",
-                };
-                // The record says when the review asked for another model, so the
-                // log and the turn report show it next to the verdict it came with.
-                let label = if review.needs_other_model {
-                    format!("{label}+other-model")
-                } else {
-                    label.to_owned()
-                };
-                crate::jev::record_item(
-                    JevLever::C4DiffRisk,
-                    &label,
-                    &format!(
-                        "reviewed {tool} against the step · step: {}{}",
-                        intent.chars().take(80).collect::<String>(),
-                        if review.needs_other_model {
-                            " · needs a review by another model"
-                        } else {
-                            ""
-                        }
-                    ),
-                    review.confidence,
-                    Some(&answers),
-                );
-                // A redo with more thinking raises the turn's floor, so the
-                // retry actually runs at the setting the review asked for. With
-                // nothing above the current setting, the note says so and the
-                // model has to find the error itself.
-                let session_model = self.current_model_id().await;
-                let next_level: Option<String> =
-                    self.next_effort_level_above(&session_model, current_effort);
-                if let verify::RedoAction::Redo {
-                    higher_effort: true,
-                } = review.redo
-                    && let Some(level) = next_level.as_deref()
-                    && let Some(value) = self.effort_value_for_level(&level).await
+                let execution = self.jev_ledger.borrow().last_execution.clone();
+                state["execution"] = serde_json::json!(execution);
+                if let Some(answers) =
+                    crate::jev::ask_item(JevLever::C4DiffRisk, state, questions).await
                 {
-                    self.jev_ledger
-                        .borrow_mut()
-                        .raise_effort_floor(level.to_owned(), value);
-                }
-                if let Some(note) = verify::diff_review_note_with(&review, next_level.as_deref()) {
-                    review_note = Some(note);
+                    let mut review = verify::compose_diff_review(&answers);
+                    // Documentation feedback cannot trigger redo, escalation or another model.
+                    if prose_only {
+                        review.redo = verify::RedoAction::None;
+                        review.needs_other_model = false;
+                    }
+                    let label = match review.verdict {
+                        verify::DiffReviewVerdict::Ok => "review:ok",
+                        verify::DiffReviewVerdict::Mismatch => "review:mismatch",
+                        verify::DiffReviewVerdict::Breaks => "review:breaks",
+                        verify::DiffReviewVerdict::Incomplete => "review:incomplete",
+                    };
+                    crate::jev::record_item(
+                        JevLever::C4DiffRisk,
+                        if review.confidence.is_none() {
+                            "review:defer"
+                        } else {
+                            label
+                        },
+                        &format!("tool_call_id={call_id}; prose_only={prose_only}"),
+                        review.confidence,
+                        Some(&answers),
+                    );
+                    let mut raised_level = None;
+                    if !prose_only
+                        && matches!(
+                            review.redo,
+                            verify::RedoAction::Redo {
+                                higher_effort: true
+                            }
+                        )
+                        && let Some((model, effort)) = execution
+                        && let Some(level) = self.next_effort_level_above(&model, effort)
+                        && let Some(value) = self
+                            .models_manager
+                            .model_reasoning_efforts(&model)
+                            .into_iter()
+                            .find(|entry| entry.id == level)
+                            .map(|entry| entry.value)
+                        && self
+                            .jev_ledger
+                            .borrow_mut()
+                            .raise_effort_floor(level.clone(), value)
+                    {
+                        raised_level = Some(level);
+                    }
+                    if !prose_only {
+                        review_note =
+                            verify::diff_review_note_with(&review, raised_level.as_deref());
+                    }
                 }
             }
         }
@@ -812,46 +619,6 @@ impl SessionActor {
         }
         body
     }
-}
-
-/// The newest call of `tool` in the tail, as `name arguments`, bounded for a
-/// review (wider than the row's excerpt, still bounded).
-fn current_call_arguments(
-    conversation: &[distill_sampling_types::conversation::ConversationItem],
-    tool: &str,
-) -> Option<String> {
-    for item in conversation.iter().rev().take(REVIEW_TAIL_ITEMS) {
-        match item {
-            distill_sampling_types::conversation::ConversationItem::Assistant(assistant) => {
-                if let Some(call) = assistant
-                    .tool_calls
-                    .iter()
-                    .rev()
-                    .find(|call| call.name == tool)
-                {
-                    let arguments: String = call
-                        .arguments
-                        .lines()
-                        .map(str::trim)
-                        .find(|line: &&str| !line.is_empty())
-                        .unwrap_or("")
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .chars()
-                        .take(REVIEW_CHANGE_CHARS)
-                        .collect();
-                    return Some(match arguments.is_empty() {
-                        true => tool.to_owned(),
-                        false => format!("{tool} {arguments}"),
-                    });
-                }
-            }
-            distill_sampling_types::conversation::ConversationItem::User(_) => break,
-            _ => {}
-        }
-    }
-    None
 }
 
 /// The allowlisted `state` for a result pass: the tool name, the result size and
@@ -955,11 +722,6 @@ fn keep_line_numbers(body: &str, lines: &[usize]) -> String {
     out
 }
 
-/// Only a complete successful result without diagnostics can skip triage.
-fn needs_failure_triage(complete_success: bool, text: &str) -> bool {
-    !complete_success || !error_lines(&text.to_ascii_lowercase()).is_empty()
-}
-
 /// Lines that look like errors or failures, as stable ids (`line-<n>: <text>`).
 fn error_lines(body: &str) -> Vec<String> {
     const MARKERS: &[&str] = &[
@@ -982,30 +744,6 @@ fn error_lines(body: &str) -> Vec<String> {
         .take(60)
         .map(|(index, line)| format!("line-{}: {}", index + 1, line.trim()))
         .collect()
-}
-
-/// Keeps only the original lines whose `line-<n>` id was kept.
-fn keep_only_lines(body: &str, keep: &[String]) -> String {
-    let wanted: std::collections::BTreeSet<usize> = keep
-        .iter()
-        .filter_map(|id| id.trim_start_matches("line-").split(':').next())
-        .filter_map(|n| n.trim().parse::<usize>().ok())
-        .collect();
-    if wanted.is_empty() {
-        return body.to_owned();
-    }
-    let mut out = String::new();
-    for (index, text) in body.lines().enumerate() {
-        if wanted.contains(&(index + 1)) {
-            out.push_str(text);
-            out.push('\n');
-        }
-    }
-    if out.is_empty() {
-        return body.to_owned();
-    }
-    out.push_str("[jev] kept the lines that explain the failure; re-run for the full output\n");
-    out
 }
 
 /// Result blocks of a search-style output, as stable ids (`block-<n>`).
@@ -1089,46 +827,16 @@ fn _ranked_type_witness(value: Ranked) -> Vec<String> {
     value.keep
 }
 
-impl SessionActor {
-    /// C4 (review): what the change was supposed to do, and what changed.
-    ///
-    /// The intent is the user's request for this turn plus the step the model
-    /// said it was on; the change is the call that just ran (its target and its
-    /// arguments, from the conversation tail) followed by the result's own
-    /// summary. Both are bounded.
-    async fn diff_review_material(&self, tool: &str, body: &str) -> (String, String) {
-        let request = self.jev_last_human_request().await.unwrap_or_default();
-        let conversation = self.chat_state_handle.get_conversation().await;
-        let action = crate::session::acp_session::describe_micro_action(&conversation);
-        // The intent is the **step** the model was on, not the whole request: a
-        // correct edit of a two-part request ("add it, then run it") reads as
-        // incomplete against the request and fine against the step.
-        let intent = match (action.plan.is_empty(), request.is_empty()) {
-            (false, false) => format!("{} (the wider request: {request})", action.plan),
-            (false, true) => action.plan.clone(),
-            (true, false) => request,
-            (true, true) => "the work in progress".to_owned(),
-        };
-        let call = current_call_arguments(&conversation, tool)
-            .or_else(|| action.last_calls.last().cloned())
-            .unwrap_or_default();
-        let change = match (call.is_empty(), body.is_empty()) {
-            (false, false) => format!("{tool}: {call}\nresult: {body}"),
-            (false, true) => format!("{tool}: {call}"),
-            (true, false) => format!("{tool}: {body}"),
-            (true, true) => format!("{tool} was called"),
-        };
-        (intent, change)
-    }
-}
-
 /// Failing test names mentioned by a test-runner output, in order.
 fn failing_tests(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in body.lines() {
         // `test foo::bar ... FAILED` and `---- foo::bar stdout ----` shapes.
         let trimmed = line.trim();
-        let candidate = if let Some(rest) = trimmed.strip_prefix("test ") {
+        let candidate = if let Some(rest) = trimmed
+            .strip_prefix("test ")
+            .filter(|_| trimmed.ends_with("FAILED"))
+        {
             rest.split(" ...").next()
         } else if let Some(rest) = trimmed.strip_prefix("---- ") {
             rest.split_whitespace().next()
@@ -1153,37 +861,42 @@ fn failing_tests(body: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// A change is reviewed after the call, so the trigger has to catch every
-    /// call that could have changed the workspace, not only the edit tools.
     #[test]
-    fn every_changing_call_is_flagged_for_review() {
-        for tool in ["search_replace", "write", "edit", "apply_patch"] {
-            assert!(changes_workspace(tool, ""), "{tool} edits files");
-        }
+    fn review_uses_executed_evidence_and_never_a_truncated_change() {
+        use distill_tools::types::output::{ApplyPatchFileResult, ApplyPatchOutput, ToolOutput};
+        let output = |path: &str, text: String| {
+            ToolOutput::ApplyPatch(ApplyPatchOutput::Success {
+                files: vec![ApplyPatchFileResult {
+                    path: path.into(),
+                    action: "modified".into(),
+                    old_text: Some("old".into()),
+                    new_text: text,
+                    move_to: None,
+                }],
+                tool_output_for_prompt: "success".into(),
+            })
+        };
+        let (change, prose) =
+            review_change(&output("docs/guide.md", "exact new text".into())).unwrap();
+        assert!(prose);
+        assert_eq!(change[0]["new_text"], "exact new text");
         assert!(
-            changes_workspace("mcp_write_file", ""),
-            "an MCP write names its verb"
+            !review_change(&output("AGENTS.md", "instructions".into()))
+                .unwrap()
+                .1
         );
-        assert!(changes_workspace("bash", "sed -i s/a/b/ src/main.rs"));
-        assert!(changes_workspace("bash", "git commit -m x"));
-        assert!(changes_workspace("run_terminal_command", "cargo fmt"));
-        assert!(!changes_workspace("bash", "cargo test --lib"));
-        assert!(!changes_workspace("read_file", ""));
-        assert!(!changes_workspace("grep", ""));
-    }
-
-    #[test]
-    fn triage_skips_only_complete_success_without_diagnostics() {
-        assert!(!needs_failure_triage(true, "src/main.rs\nsrc/lib.rs\n"));
-        assert!(needs_failure_triage(false, "src/main.rs\nsrc/lib.rs\n"));
-        assert!(needs_failure_triage(
-            true,
-            "Completed\nWARNING: a test was skipped"
-        ));
-        assert!(needs_failure_triage(
-            true,
-            "Build finished\nERROR: link failed"
-        ));
+        assert!(
+            !review_change(&output("src/lib.rs", "code".into()))
+                .unwrap()
+                .1
+        );
+        assert!(review_change(&output("src/lib.rs", "x".repeat(REVIEW_CHANGE_BYTES))).is_none());
+        assert!(
+            review_change(&ToolOutput::ApplyPatch(ApplyPatchOutput::EmptyPatch(
+                "no change".into()
+            )))
+            .is_none()
+        );
     }
 
     /// The review note asks for action, so the cap must never be what drops it:

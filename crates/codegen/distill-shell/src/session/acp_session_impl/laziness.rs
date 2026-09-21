@@ -365,68 +365,6 @@ impl SessionActor {
         // System(classifier prompt: "you are a strict JSON classifier, you are NOT the agent in the transcript") [1].
         // The request body never contains a `ConversationItem::Assistant`, so the model has no assistant turn to continue.
         // `items_sent` (surfaced to telemetry and the debug log) counts the source chat items the classifier saw, not the 2 wire items.
-        // C1/C3 — the local decision layer goes first: a confident "work remains"
-        // verdict raises the nudge now and skips the classifier call. It can only
-        // tighten; anything else falls through to the classifier below unchanged.
-        if let Some(precheck) = self.jev_laziness_precheck().await {
-            let category = precheck.category;
-            let confidence = precheck.confidence;
-            let decision = evaluate_laziness(
-                &precheck,
-                &cfg,
-                nudges_used,
-                LAZINESS_DEFAULT_MIN_CONFIDENCE,
-            );
-            if let LazinessDecision::Nudge { evidence, .. } = decision {
-                self.events
-                    .emit(crate::session::events::Event::LazinessClassifierFired {
-                        model_id: model_id.clone(),
-                        category: category.as_const_str(),
-                        confidence,
-                    });
-                let goal_active = laziness_injection_active(
-                    self.goal_harness_enabled(),
-                    self.goal_tracker.lock().status(),
-                );
-                if goal_active {
-                    let names = self.resolve_goal_tool_names().await;
-                    let nudge_text = build_laziness_nudge(category, &evidence, Some(&names.todo));
-                    if !nudge_text.is_empty() {
-                        // Mirrors the classifier path's injection step (same abort
-                        // and idle re-checks, same cap accounting).
-                        let mut state = self.state.lock().await;
-                        if self.laziness_abort_check(abort_snapshot).is_none()
-                            && (debug_mode || is_session_idle_for_injection(&state))
-                        {
-                            self.push_system_reminder(&nudge_text);
-                            state.nudges_used_this_session =
-                                state.nudges_used_this_session.saturating_add(1);
-                            let nudges_remaining = cfg
-                                .max_nudges_per_session
-                                .saturating_sub(state.nudges_used_this_session);
-                            self.events
-                                .emit(crate::session::events::Event::LazinessNudgeFired {
-                                    model_id: model_id.clone(),
-                                    category: category.as_const_str(),
-                                    nudges_remaining,
-                                });
-                        }
-                    }
-                }
-                self.maybe_write_laziness_debug_log(
-                    meta.take(),
-                    &model_id,
-                    0,
-                    started.elapsed().as_millis() as u64,
-                    LazinessFireOutcome::Verdict {
-                        parsed: precheck,
-                        raw_text: "jev-precheck".to_owned(),
-                    },
-                )
-                .await;
-                return;
-            }
-        }
         let mut source_items = self.chat_state_handle.get_conversation().await;
         let window_start = laziness_window_start(
             &source_items,

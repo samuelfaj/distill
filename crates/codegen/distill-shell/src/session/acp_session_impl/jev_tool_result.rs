@@ -151,114 +151,41 @@ impl SessionActor {
         // that asks for action, so the cap at the end never drops it.
         let mut review_note: Option<String> = None;
 
-        // ---- read reuse: do not send the same bytes twice ----
+        // ---- the reduction pipeline: reuse, crushers, importance ----
         //
-        // A file that has not changed since the model read it is already in the
-        // conversation verbatim. Re-sending it costs the whole file and buys
-        // nothing; the note says where the earlier copy is, and the model can
-        // read it again if it wants. Only a payload large enough to matter, and
-        // only when the bytes are *identical* — a changed file is never reused.
-        if body.len() >= READ_REUSE_BYTES && crate::jev::lever_active(JevLever::EReadReuse) {
-            let hash = distill_workspace::jev::reduce::content_hash(&body);
-            if let Some(first_at) = crate::jev::note_payload_read(&hash, tool) {
-                crate::jev::record_item(
-                    JevLever::EReadReuse,
-                    "reuse",
-                    &format!(
-                        "{} bytes already in this conversation from {first_at} (sha {hash})",
-                        body.len()
-                    ),
-                    None,
-                    None,
-                );
-                body = distill_workspace::jev::reduce::reuse_note(&hash, &first_at, body.len());
-            }
+        // One call, so what the tests drive is what the session runs. The
+        // pipeline owns both pass-through guards (an exact-output call and a
+        // document), applies the literal gate before any lossy stage, and hands
+        // back one record per decision for the ledger below.
+        let mut reused = |hash: &str| match crate::jev::note_payload_read(hash, tool) {
+            Some(first_at) => crate::jev_lanes::ReuseAnswer::Seen(first_at),
+            None => crate::jev_lanes::ReuseAnswer::First,
+        };
+        let store = |payload: &str| {
+            crate::jev_store::store_payload(payload).map(|path| path.display().to_string())
+        };
+        let outcome = crate::jev_lanes::reduce_payload(
+            tool,
+            tool_command,
+            &body,
+            crate::jev_lanes::LaneFlags {
+                crushers: crate::jev::lever_active(JevLever::ECrushers),
+                importance: crate::jev::lever_active(JevLever::EImportance),
+                read_reuse: crate::jev::lever_active(JevLever::EReadReuse),
+            },
+            crate::jev_lanes::LaneLimits {
+                crushers_bytes: READ_REUSE_BYTES,
+                reuse_bytes: READ_REUSE_BYTES,
+                importance_bytes: context::BIG_OUTPUT_BYTES,
+            },
+            &mut reused,
+            &store,
+        );
+        for record in &outcome.records {
+            crate::jev::record_item(record.lever, record.decision, &record.detail, None, None);
         }
-
-        // ---- deterministic crushers: the lane that costs nothing ----
-        //
-        // ANSI/progress noise and whatever the payload's own class repeats go
-        // before anything is sent anywhere. Nothing unique is lost (the crushers
-        // are content-preserving by construction), so this runs before the
-        // flags that spend money and regardless of what they decide.
-        // A document is never crushed: the command's output *is* the answer, and
-        // cutting a hole in it leaves something that still looks complete. The
-        // check is the same one the retention lane uses, so the two cannot drift.
-        let is_document = distill_workspace::jev::retention::looks_structured(tool_command, &body);
-
-        if !is_document
-            && crate::jev::lever_active(JevLever::ECrushers)
-            && body.len() >= READ_REUSE_BYTES
-        {
-            let (cleaned, applied) = distill_workspace::jev::crushers::preclean(&body);
-            if !applied.is_empty() && cleaned.len() < body.len() {
-                crate::jev::record_item(
-                    JevLever::ECrushers,
-                    "crush",
-                    &format!(
-                        "{} bytes -> {} bytes via {}",
-                        body.len(),
-                        cleaned.len(),
-                        applied.join("+")
-                    ),
-                    None,
-                    None,
-                );
-                body = cleaned;
-            }
-        }
-
-        // ---- importance extraction: keep what a reader acts on ----
-        //
-        // Lossy, so the original is stored first and the marker names the file.
-        // The literal gate runs before the body is replaced: a reduction that
-        // would drop a path, a `file:line`, a number or an error word is refused.
-        if !is_document
-            && crate::jev::lever_active(JevLever::EImportance)
-            && body.len() >= context::BIG_OUTPUT_BYTES
-        {
-            let options = distill_workspace::jev::reduce::ExtractOptions::default();
-            let extracted = distill_workspace::jev::reduce::extract_important(&body, &options);
-            if let Some(extracted) = extracted
-                && !distill_workspace::jev::reduce::preserves_literals(&body, &extracted.text)
-            {
-                // A refusal is a decision too: it says the payload is not
-                // reducible without losing something a reader may need.
-                crate::jev::record_item(
-                    JevLever::EImportance,
-                    "keep",
-                    &format!(
-                        "a reduction would have dropped {} literal(s); keeping today's bytes",
-                        distill_workspace::jev::reduce::lost_literals(&body, &extracted.text).len()
-                    ),
-                    None,
-                    None,
-                );
-            }
-            let extracted = distill_workspace::jev::reduce::extract_important(&body, &options);
-            if let Some(extracted) = extracted
-                && distill_workspace::jev::reduce::preserves_literals(&body, &extracted.text)
-                && let Some(store) = crate::jev_store::store_payload(&body)
-            {
-                let handle = store.display().to_string();
-                crate::jev::record_item(
-                    JevLever::EImportance,
-                    "extract",
-                    &format!(
-                        "{} bytes -> {} bytes, {} lines elided, stored at {handle}",
-                        body.len(),
-                        extracted.text.len(),
-                        extracted.removed_lines
-                    ),
-                    None,
-                    None,
-                );
-                body = format!(
-                    "{}\n[full output stored at {handle} — read that file for the elided lines]",
-                    extracted.text.trim_end()
-                );
-            }
-        }
+        let is_document = outcome.is_document;
+        body = outcome.body;
 
         // ---- one decision point: who does this, how, and at which effort ----
         //
@@ -469,16 +396,25 @@ impl SessionActor {
             );
         }
 
-        // ---- a closed verdict a reader can branch on ----
+        // ---- the utility model reads the payload its own way ----
+        //
+        // Which registered task runs is a property of the command and of the
+        // payload's shape, not a constant: a test report, a lockfile and a stack
+        // trace each have their own reader. Every gate still applies — the lane
+        // decision above, the lever, and the task's own guard — so the hint below
+        // appears only when the cheap model's answer survived its check.
+        let payload_class = distill_workspace::jev::reduce::classify_payload(&body);
         if body.len() >= READ_REUSE_BYTES
             && lane_cheap
             && crate::jev::lever_active(JevLever::ECheapTask)
+            && let Some(task_id) =
+                distill_workspace::jev::tasks::task_for_payload(tool_command, payload_class)
             && let Some(outcome) = self
-                .cheap_task_for(Lever::ECheapTask, "test_verdict", &body, "")
+                .cheap_task_for(Lever::ECheapTask, task_id, &body, "")
                 .await
         {
             hints.push(format!(
-                "cheap verdict from the tool output: {}",
+                "cheap read of the tool output ({task_id}): {}",
                 outcome.text.trim()
             ));
         }

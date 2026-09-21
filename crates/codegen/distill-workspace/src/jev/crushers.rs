@@ -97,19 +97,90 @@ impl Crusher {
     }
 }
 
-/// The crusher a classified payload should go through first, if any.
-pub fn crusher_for_class(class: super::reduce::PayloadClass) -> Option<Crusher> {
-    use super::reduce::PayloadClass as P;
+/// The crushers a classified payload goes through, in order, chosen by class
+/// alone.
+///
+/// This is the one table: adding a class here is the whole change needed to make
+/// its transform reachable, and the match is exhaustive so a new class cannot be
+/// forgotten.
+///
+/// Only transforms that keep every literal in place belong here, because the
+/// chain applies each candidate under [`crate::jev::reduce::preserves_literals`] and
+/// moves on when one would drop something. The transforms that drop content a
+/// reader may need without a stored original — `source_skeleton`, `svg_crusher`,
+/// `generated_asset_notice`, `embedded_blob_crusher` — are deliberately absent
+/// and recorded as such in `TODO.md`.
+///
+/// A class may name more than one: the lockfile reduction collapses the whole
+/// resolution graph, so a payload where that would lose a version or a checksum
+/// falls through to the conservative repeat collapse instead of staying whole.
+pub fn crusher_chain_for_class(class: crate::jev::reduce::PayloadClass) -> &'static [Crusher] {
+    use crate::jev::reduce::PayloadClass as P;
     match class {
-        P::BuildLog => Some(Crusher::Log),
-        P::Listing => Some(Crusher::Log),
-        P::Diff => Some(Crusher::Diff),
-        P::CommandOutput => Some(Crusher::Log),
-        P::Prose => None,
+        P::BuildLog => &[Crusher::Log],
+        P::Listing | P::CommandOutput => &[Crusher::Log, Crusher::PaddedTable],
+        P::Diff => &[Crusher::Diff],
+        P::Stack => &[Crusher::Stack],
+        P::TestReport => &[Crusher::Test],
+        P::Html => &[Crusher::Html],
+        P::Json => &[Crusher::Json],
+        P::Notebook => &[Crusher::Notebook],
+        P::Lockfile => &[Crusher::Lockfile, Crusher::Log],
+        P::Prose => &[],
         // Unclassified: strip the noise every terminal payload can carry, then
         // let the caller re-classify what is left.
-        P::Unknown => Some(Crusher::Ansi),
+        P::Unknown => &[Crusher::Ansi],
     }
+}
+
+/// The commands whose output is line-addressed: the reader asked for the bytes
+/// and will slice, count or match against them.
+///
+/// Compressing one of these costs the reader exactly what it asked for, so the
+/// chain stays out of them. The list is the catalogue's own `distill_exact_rg`
+/// rule, and the app this harness descends from enforces the same set.
+const EXACT_OUTPUT_COMMANDS: [&str; 27] = [
+    "rg", "grep", "egrep", "fgrep", "ag", "ugrep", "sed", "awk", "gawk", "nawk", "cut", "tr",
+    "paste", "cat", "bat", "head", "tail", "nl", "tac", "diff", "cmp", "od", "hexdump", "xxd",
+    "base64", "jq", "yq",
+];
+
+/// The tools whose result is line-addressed for the same reason.
+const EXACT_OUTPUT_TOOLS: [&str; 3] = ["grep", "read_file", "read"];
+
+/// Whether this call's output must be passed through untouched.
+///
+/// Three cases, all of them "the bytes are the answer": an exact-output tool, a
+/// pipeline that runs one, and text that belongs to a skill (skill bodies stay
+/// verbatim, whichever tool produced them).
+pub fn is_exact_output(tool: &str, command: &str) -> bool {
+    let tool = tool.rsplit('/').next().unwrap_or(tool).trim().to_ascii_lowercase();
+    if EXACT_OUTPUT_TOOLS.contains(&tool.as_str()) {
+        return true;
+    }
+    if command.contains("/skills/") || command.contains("SKILL.md") {
+        return true;
+    }
+    let mut tokens = command
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')'))
+        .filter(|token| !token.is_empty());
+    if tokens.any(|token| {
+        let program = token.rsplit('/').next().unwrap_or(token).trim_end_matches('"');
+        EXACT_OUTPUT_COMMANDS.contains(&program)
+    }) {
+        return true;
+    }
+    // Git's own dumpers: `git show`, `git cat-file` and `git blame` print the
+    // payload the reader is addressing. `git diff` is covered as a document.
+    let mut words = command.split_whitespace();
+    let mut previous = "";
+    for word in &mut words {
+        if previous == "git" && matches!(word, "grep" | "show" | "cat-file" | "blame") {
+            return true;
+        }
+        previous = word;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,9 +1204,16 @@ pub fn preclean(text: &str) -> (String, Vec<&'static str>) {
             current = next;
         }
     }
-    let class = super::reduce::classify_payload(&current);
-    if let Some(crusher) = crusher_for_class(class) {
-        if let Some(next) = crusher.crush(&current) {
+    // The class chain. Each candidate is checked against the bytes it would
+    // replace before it is accepted, so an aggressive reduction that would take a
+    // version, a path or a number with it falls through to the next candidate
+    // instead of forcing the caller to keep the whole payload.
+    let class = crate::jev::reduce::classify_payload(&current);
+    for crusher in crusher_chain_for_class(class) {
+        let Some(next) = crusher.crush(&current) else {
+            continue;
+        };
+        if next.len() < current.len() && crate::jev::reduce::preserves_literals(&current, &next) {
             applied.push(crusher.id());
             current = next;
         }
@@ -1148,7 +1226,7 @@ pub fn measure(original: &str, reduced: &str) -> Reduction {
     let original_bytes = original.len();
     Reduction {
         text: reduced.to_owned(),
-        class: super::reduce::classify_payload(original),
+        class: crate::jev::reduce::classify_payload(original),
         removed_lines: original.lines().count().saturating_sub(reduced.lines().count()),
         original_bytes,
     }
@@ -1156,6 +1234,43 @@ pub fn measure(original: &str, reduced: &str) -> Reduction {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The chain has to fire the transform the class names, and the payload the
+    /// lane tests use is the one to prove it on.
+    #[test]
+    fn the_report_chain_applies_the_test_pass() {
+        let mut report = String::from(
+            "============================= test session starts ==============================\n",
+        );
+        report.push_str("platform here, runner present\n");
+        report.push_str("plugins: anyio, xdist, cov, mock\n");
+        report.push_str("collected files, running them now\n");
+        for i in 0..60 {
+            report.push_str("plugin line with short words only here\n");
+            if i % 10 == 0 {
+                report.push_str(&format!(
+                    "FAILED tests/test_module_{i}.py::case_{i} - AssertionError: assert expected == actual\n"
+                ));
+            }
+        }
+        report.push_str("=== FAILURES ===\n");
+        report.push_str("short test summary follows\n");
+        println!("class = {:?}", crate::jev::reduce::classify_payload(&report));
+        let (cleaned, applied) = preclean(&report);
+        println!("applied = {applied:?}");
+        println!(
+            "preserves = {} lost = {:?}",
+            crate::jev::reduce::preserves_literals(&report, &cleaned),
+            crate::jev::reduce::lost_literals(&report, &cleaned)
+        );
+        assert_eq!(
+            crate::jev::reduce::classify_payload(&report),
+            crate::jev::reduce::PayloadClass::TestReport
+        );
+        assert!(applied.contains(&"test_crusher"), "applied: {applied:?}");
+    }
+
     use super::*;
 
     #[test]

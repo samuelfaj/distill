@@ -32,6 +32,18 @@ pub enum PayloadClass {
     Diff,
     /// Command output that is mostly a table of the same shape per row.
     CommandOutput,
+    /// A stack trace or crash report: frames, addresses, a panic header.
+    Stack,
+    /// A test report: per-case lines and the runner's summary banners.
+    TestReport,
+    /// Marked-up document text: tags and attributes around the readable text.
+    Html,
+    /// A whole payload that parses as JSON.
+    Json,
+    /// A Jupyter notebook document.
+    Notebook,
+    /// A dependency lockfile: the resolution graph, never read line by line.
+    Lockfile,
     /// Prose: paragraphs, little structure.
     Prose,
     /// Nothing recognizable: the lanes stay out of the way.
@@ -47,6 +59,12 @@ pub fn classify_payload(text: &str) -> PayloadClass {
     let mut listing_markers = 0;
     let mut log_markers = 0;
     let mut rows = 0;
+    let mut stack_markers = 0;
+    let mut test_markers = 0;
+    let mut html_markers = 0;
+    let mut lockfile_markers = 0;
+    let mut notebook_markers = 0;
+    let lowered_all = text.to_ascii_lowercase();
     for line in text.lines().take(400) {
         let trimmed = line.trim_start();
         if trimmed.starts_with("@@")
@@ -88,9 +106,83 @@ pub fn classify_payload(text: &str) -> PayloadClass {
         if trimmed.len() > 40 && trimmed.split_whitespace().count() > 6 {
             rows += 1;
         }
+        // A frame line: what a runtime prints when something threw. Two of them
+        // are enough, and a lone "at ..." in prose is not one.
+        if trimmed.starts_with("at ")
+            || trimmed.starts_with("frame #")
+            || (trimmed.starts_with('#') && trimmed.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
+            || trimmed.contains("panicked at")
+            || (trimmed.starts_with("thread '") && trimmed.contains("panicked"))
+            || trimmed.starts_with("Exception Type:")
+            || trimmed.starts_with("Termination Reason:")
+        {
+            stack_markers += 1;
+        }
+        // A test runner's own vocabulary: the banners it prints around failures.
+        if trimmed.starts_with("FAILED ")
+            || trimmed.starts_with("PASSED ")
+            || trimmed.contains("=== FAILURES ===")
+            || trimmed.contains("=== short test summary")
+            || trimmed.starts_with("Test Case '-[")
+            || trimmed.starts_with("Test Suite '")
+            || trimmed.contains("XCTAssert")
+            || (trimmed.starts_with("ok ") && trimmed.contains(" ... "))
+        {
+            test_markers += 1;
+        }
+        let lowered_line = trimmed.to_ascii_lowercase();
+        if lowered_line.starts_with("<!doctype html")
+            || lowered_line.starts_with("<html")
+            || lowered_line.starts_with("</html>")
+            || lowered_line.starts_with("<body")
+            || lowered_line.starts_with("<div ")
+            || lowered_line.starts_with("<div>")
+            || lowered_line.starts_with("<p ")
+            || lowered_line.starts_with("<script")
+        {
+            html_markers += 1;
+        }
+        if trimmed.contains("\"nbformat\"") {
+            notebook_markers += 1;
+        }
+        if trimmed.contains("\"cells\"") {
+            notebook_markers += 1;
+        }
+        if trimmed.starts_with("lockfileVersion")
+            || trimmed.starts_with("# yarn lockfile")
+            || trimmed == "[[package]]"
+            || trimmed.starts_with("\"resolved\":")
+            || (trimmed.starts_with("name = ") && !trimmed.contains("package"))
+        {
+            lockfile_markers += 1;
+        }
     }
     if diff_markers >= 3 {
         return PayloadClass::Diff;
+    }
+    if notebook_markers >= 2 {
+        return PayloadClass::Notebook;
+    }
+    if lockfile_markers >= 3 || lowered_all.contains("# yarn lockfile") {
+        return PayloadClass::Lockfile;
+    }
+    // A whole payload that parses is a strong signal, but the two JSON dialects
+    // with their own reduction are named first: a notebook and a lockfile are
+    // JSON documents, and the generic parse would claim them both.
+    let trimmed_all = text.trim();
+    if (trimmed_all.starts_with('{') || trimmed_all.starts_with('['))
+        && serde_json::from_str::<serde_json::Value>(trimmed_all).is_ok()
+    {
+        return PayloadClass::Json;
+    }
+    if html_markers >= 2 {
+        return PayloadClass::Html;
+    }
+    if stack_markers >= 2 {
+        return PayloadClass::Stack;
+    }
+    if test_markers >= 2 {
+        return PayloadClass::TestReport;
     }
     if log_markers >= 2 {
         return PayloadClass::BuildLog;
@@ -480,9 +572,17 @@ pub fn literals(text: &str) -> BTreeSet<String> {
             found.insert(token.to_owned());
         }
     }
+    // The error vocabulary, taken as the payload spells it. Harvesting the word
+    // in lowercase while the check below is a case-sensitive `contains` would
+    // read `FAILED` as a lost literal in any payload that also carries the
+    // lowercase word, which is every test report. One entry per word, the first
+    // spelling the payload uses.
+    let lowered = text.to_ascii_lowercase();
     for word in ["error", "panic", "failed", "failure", "traceback", "not found"] {
-        if text.to_ascii_lowercase().contains(word) {
-            found.insert(word.to_owned());
+        if let Some(index) = lowered.find(word)
+            && let Some(span) = text.get(index..index + word.len())
+        {
+            found.insert(span.to_owned());
         }
     }
     found
@@ -744,6 +844,56 @@ mod tests {
         assert!(note.contains("already sent this session"));
         assert!(note.contains("read_file(src/main.rs)"));
         assert!(note.contains(&hash));
+    }
+
+    #[test]
+    fn the_classifier_names_each_new_shape() {
+        let report = {
+            let mut out = String::from(
+                "============================= test session starts ==============================\n",
+            );
+            out.push_str("plugins: anyio, xdist, cov, mock\n");
+            for i in 0..20 {
+                out.push_str("plugin line with short words only here\n");
+                if i % 5 == 0 {
+                    out.push_str(&format!(
+                        "FAILED tests/test_module_{i}.py::case_{i} - AssertionError: assert expected == actual\n"
+                    ));
+                }
+            }
+            out.push_str("=== FAILURES ===\n");
+            out
+        };
+        assert_eq!(classify_payload(&report), PayloadClass::TestReport, "a test report");
+
+        let mut stack = String::from("thread 'main' panicked at src/lib.rs:412:9:\n");
+        for i in 0..5 {
+            stack.push_str(&format!("             at crates/module_{i}/src/lib.rs:10{i}:9\n"));
+        }
+        assert_eq!(classify_payload(&stack), PayloadClass::Stack, "a stack trace");
+
+        assert_eq!(
+            classify_payload("{\"cells\": [], \"nbformat\": 4}"),
+            PayloadClass::Notebook,
+            "a notebook"
+        );
+        assert_eq!(
+            classify_payload("{\"a\": 1, \"b\": [1, 2, 3]}"),
+            PayloadClass::Json,
+            "a json document"
+        );
+        assert_eq!(
+            classify_payload("<!DOCTYPE html>\n<html>\n<body>\n<p>hi</p>\n</body>\n</html>\n"),
+            PayloadClass::Html,
+            "a marked-up document"
+        );
+        let mut lock = String::from("# This file is automatically @generated by Cargo.\n");
+        for i in 0..20 {
+            lock.push_str(&format!(
+                "[[package]]\nname = \"crate-{i}\"\nversion = \"1.{i}.0\"\n"
+            ));
+        }
+        assert_eq!(classify_payload(&lock), PayloadClass::Lockfile, "a lockfile");
     }
 
     #[test]

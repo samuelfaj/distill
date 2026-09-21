@@ -67,6 +67,9 @@ pub struct DecisionRecord {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub request_id: Option<String>,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub round_id: Option<u64>,
     /// Convenience copy of [`JevDecision::is_escalation`].
     pub escalated: bool,
 }
@@ -85,6 +88,10 @@ impl DecisionSink for TracingSink {
     fn record(&self, record: &DecisionRecord) {
         tracing::info!(
             target: "jev.decision",
+            event_kind = "decision",
+            session_id = record.session_id.as_deref().unwrap_or(""),
+            turn_id = record.turn_id.as_deref().unwrap_or(""),
+            round_id = record.round_id.unwrap_or(0),
             lever = record.lever.as_str(),
             decision = record.decision.as_str(),
             escalated = record.escalated,
@@ -155,6 +162,9 @@ pub fn record_for(
         input_tokens: answers.usage.input(),
         output_tokens: answers.usage.output(),
         request_id: answers.request_id.clone(),
+        session_id: None,
+        turn_id: None,
+        round_id: None,
         escalated: decision.is_escalation(),
     }
 }
@@ -177,6 +187,9 @@ pub fn record_escalation(lever: &str, reason: &str) -> DecisionRecord {
         input_tokens: 0,
         output_tokens: 0,
         request_id: None,
+        session_id: None,
+        turn_id: None,
+        round_id: None,
         escalated: true,
     }
 }

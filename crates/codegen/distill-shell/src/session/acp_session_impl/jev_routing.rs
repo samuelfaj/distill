@@ -65,6 +65,10 @@ impl SessionActor {
         // The final sampler config is the source of truth. Do not consume a
         // provisional effort label or a pre-floor route for status reporting.
         crate::jev::note_route(Some(&cfg.model), effort.as_deref());
+        let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
+        tracing::info!(target: "jev.decision", event_kind = "llm_dispatch",
+            session_id, turn_id, round_id, model = cfg.model,
+            effort = effort.as_deref().unwrap_or("provider_default"), "effective model dispatch");
         self.jev_ledger.borrow_mut().last_execution =
             Some((cfg.model.clone(), cfg.reasoning_effort));
         self.jev_ledger

@@ -590,7 +590,11 @@ pub async fn run_with(
         return None;
     }
     let answer = client.ask(&task).await.ok()?;
-    let text = gate(spec, &prepared, &answer.text, candidates, labels).ok()?;
+    let accepted = gate(spec, &prepared, &answer.text, candidates, labels);
+    tracing::info!(target: "jev.decision", event_kind = "utility_acceptance",
+        task_id = id, request_id = answer.request_id.as_deref().unwrap_or(""),
+        accepted = accepted.is_ok(), "utility validation outcome");
+    let text = accepted.ok()?;
     Some(TaskOutcome {
         id: spec.id.to_owned(),
         text,

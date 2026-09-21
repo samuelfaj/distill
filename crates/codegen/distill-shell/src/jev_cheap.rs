@@ -146,7 +146,14 @@ impl CheapLane {
         }
         // Serialised: one cheap generation at a time across the whole process.
         let _one_at_a_time = lane_queue().lock().await;
-        let outcome = tasks::run(&self.client, task_id, payload, question).await;
+        let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
+        let span = tracing::info_span!(target: "jev.decision", "utility_context",
+            session_id, turn_id, round_id, utility_call_id = %uuid::Uuid::new_v4());
+        let outcome = tracing::Instrument::instrument(
+            tasks::run(&self.client, task_id, payload, question),
+            span,
+        )
+        .await;
         match &outcome {
             Some(outcome) => {
                 note_success(lever);

@@ -1052,6 +1052,12 @@ impl SessionActor {
         self.signals_handle().clear_active_dispatch();
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
+        crate::jev::begin_model_round();
+        let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
+        tracing::info!(target: "jev.decision", event_kind = "llm_round_start",
+            session_id, turn_id, round_id, requested_model = sampler_config.model,
+            requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
+            "model round before Jev routing");
         // B2 (auto): when the user picked `/effort auto`, the decision layer
         // chooses which model makes THIS call — the session's, or its lighter
         // sibling when one is configured — and its effort; otherwise the round

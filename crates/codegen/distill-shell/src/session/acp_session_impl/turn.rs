@@ -3261,6 +3261,17 @@ impl SessionActor {
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);
+            let (jev_session_id, jev_turn_id, jev_round_id) = crate::jev::telemetry_context();
+            let execution = self.jev_ledger.borrow().last_execution.clone();
+            tracing::info!(target: "jev.decision", event_kind = "llm_usage",
+                session_id = jev_session_id, turn_id = jev_turn_id, round_id = jev_round_id,
+                model = execution.as_ref().map(|(model, _)| model.as_str()).unwrap_or("unknown"),
+                effort = execution.as_ref().and_then(|(_, effort)| *effort).map(|effort| effort.as_ref().to_owned()),
+                loop_index, model_elapsed_ms, attempts = latency.attempts,
+                prompt_tokens, cached_prompt_tokens,
+                completion_tokens, reasoning_tokens,
+                cost_usd_ticks = response.cost_usd_ticks, usage_reported = usage.is_some(),
+                "main model usage; absent usage is unknown, not zero");
             let ttft_ms = latency.time_to_first_token_ms;
             let tokens_per_sec = match completion_tokens {
                 Some(ct) if ct > 0 => {

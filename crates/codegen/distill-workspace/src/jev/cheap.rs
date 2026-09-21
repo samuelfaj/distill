@@ -239,6 +239,8 @@ impl CheapClient {
         let deadline = self.config.timeout;
         let http = self.http.clone();
         let started = Instant::now();
+        tracing::info!(target: "jev.decision", event_kind = "utility_request",
+            task_id = task.id, requested_model = self.config.model, "bounded utility request");
 
         let attempt = async {
             let response = http
@@ -294,6 +296,12 @@ impl CheapClient {
         }
 
         let reply = parse_chat_reply(&bytes).map_err(|error| error.redact(&secret))?;
+        // Count a paid response even if truncation or the downstream task guard rejects it.
+        tracing::info!(target: "jev.decision", event_kind = "utility_usage",
+            task_id = task.id, model = reply.model.as_deref().unwrap_or("unknown"),
+            request_id = reply.id.as_deref().or(request_id.as_deref()).unwrap_or(""),
+            prompt_tokens = reply.usage.input_tokens, completion_tokens = reply.usage.output_tokens,
+            latency_ms, truncated = reply.truncated, "utility response before acceptance checks");
         if reply.truncated {
             return Err(JevError::invalid(
                 "the answer was cut at the completion ceiling, so it cannot be used",
@@ -304,7 +312,11 @@ impl CheapClient {
         if text.is_empty() {
             return Err(JevError::invalid("the worker answered with nothing").redact(&secret));
         }
-        let text: String = text.chars().take(task.max_answer_chars).collect();
+        if text.chars().count() > task.max_answer_chars {
+            return Err(JevError::invalid(
+                "the answer exceeds the task ceiling; refusing instead of truncating it",
+            ));
+        }
         Ok(CheapAnswer {
             text,
             // The record names one model, and the reply may not say which one
@@ -563,6 +575,16 @@ mod tests {
             .expect_err("a cut answer is an error");
         assert_eq!(error.kind(), JevErrorKind::Invalid);
 
+        let stub = make_stub((200, chat_reply("answer too long", (10, 4)), false));
+        let client = client_for(&stub, |_| {}).await;
+        assert!(
+            client
+                .ask(&CheapTask::new("id", "do it", "payload").with_max_answer_chars(3))
+                .await
+                .is_err(),
+            "never truncate an accepted answer locally"
+        );
+
         // A slow body is a timeout, not a transport error: the deadline covers
         // the body read, and the stub holds the response past it.
         let stub = make_stub((200, chat_reply("late", (1, 1)), false));
@@ -578,6 +600,33 @@ mod tests {
             "got {:?}",
             error.kind()
         );
+    }
+
+    #[tokio::test]
+    async fn rejected_utility_output_still_records_numeric_usage() {
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let writer = log.reopen().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || writer.try_clone().unwrap())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let stub = make_stub((200, chat_reply("too long", (120, 8)), false));
+        let client = client_for(&stub, |_| {}).await;
+        assert!(
+            client
+                .ask(&CheapTask::new("id", "do it", "payload").with_max_answer_chars(1))
+                .await
+                .is_err()
+        );
+        let text = std::fs::read_to_string(log.path()).unwrap();
+        let usage = text
+            .lines()
+            .map(|line| serde_json::from_str::<Json>(line).unwrap())
+            .find(|row| row["fields"]["event_kind"] == "utility_usage")
+            .unwrap();
+        assert_eq!(usage["fields"]["prompt_tokens"], 120);
+        assert_eq!(usage["fields"]["completion_tokens"], 8);
     }
 
     #[tokio::test]

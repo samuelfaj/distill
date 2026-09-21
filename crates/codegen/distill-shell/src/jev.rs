@@ -170,6 +170,57 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn telemetry_scope_isolates_turns_and_numbers_rounds() {
+        let first = with_session_scope("one", async {
+            begin_model_round();
+            let first = telemetry_context();
+            begin_model_round();
+            assert_eq!(telemetry_context().2, 2);
+            assert_eq!(telemetry_context().1, first.1);
+            first
+        })
+        .await;
+        let second = with_session_scope("one", async {
+            begin_model_round();
+            telemetry_context()
+        })
+        .await;
+        assert_eq!(first.0, "one");
+        assert_eq!(first.2, 1);
+        assert_eq!(second.2, 1);
+        assert_ne!(first.1, second.1);
+        assert_eq!(telemetry_context(), (String::new(), String::new(), 0));
+    }
+
+    #[tokio::test]
+    async fn decision_log_contains_numeric_round_and_session_correlation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let writer = file.reopen().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || writer.try_clone().unwrap())
+            .finish();
+        with_session_scope("correlation-test", async {
+            begin_model_round();
+            tracing::subscriber::with_default(subscriber, || {
+                record_item(
+                    distill_workspace::jev::flags::JevLever::C4DiffRisk,
+                    "review:ok",
+                    "test",
+                    None,
+                    None,
+                );
+            });
+        })
+        .await;
+        let text = std::fs::read_to_string(file.path()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(value["fields"]["session_id"], "correlation-test");
+        assert_eq!(value["fields"]["round_id"], 1);
+        assert!(!value["fields"]["turn_id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn batched_items_keep_flags_ids_and_count_usage_once() {
         use distill_workspace::jev::flags::JevLever;
         use distill_workspace::jev::types::{Answer, JevAnswerSet, Question, Usage};
@@ -475,6 +526,9 @@ pub fn record_item(
         input_tokens: answers.map_or(0, |a| a.usage.input()),
         output_tokens: answers.map_or(0, |a| a.usage.output()),
         request_id: answers.and_then(|a| a.request_id.clone()),
+        session_id: None,
+        turn_id: None,
+        round_id: None,
         escalated: false,
     };
     ActivitySink.record(&record);
@@ -599,6 +653,22 @@ const LOCAL_DECISION: &str = "local";
 
 tokio::task_local! {
     static ACTIVE_SESSION_ID: String;
+    static ACTIVE_TURN_ID: String;
+    static ACTIVE_ROUND_ID: std::cell::Cell<u64>;
+}
+
+pub(crate) fn telemetry_context() -> (String, String, u64) {
+    (
+        active_session_id(),
+        ACTIVE_TURN_ID.try_with(Clone::clone).unwrap_or_default(),
+        ACTIVE_ROUND_ID
+            .try_with(std::cell::Cell::get)
+            .unwrap_or_default(),
+    )
+}
+
+pub(crate) fn begin_model_round() {
+    let _ = ACTIVE_ROUND_ID.try_with(|round| round.set(round.get().saturating_add(1)));
 }
 
 #[derive(Debug, Default)]
@@ -629,7 +699,15 @@ pub async fn with_session_scope<F>(session_id: impl Into<String>, future: F) -> 
 where
     F: Future,
 {
-    ACTIVE_SESSION_ID.scope(session_id.into(), future).await
+    ACTIVE_SESSION_ID
+        .scope(
+            session_id.into(),
+            ACTIVE_TURN_ID.scope(
+                uuid::Uuid::new_v4().to_string(),
+                ACTIVE_ROUND_ID.scope(std::cell::Cell::new(0), future),
+            ),
+        )
+        .await
 }
 
 /// Remembers one decision for the turn-status row. Never fails the caller.
@@ -761,7 +839,12 @@ pub struct ActivitySink;
 
 impl distill_workspace::jev::policy::DecisionSink for ActivitySink {
     fn record(&self, record: &distill_workspace::jev::policy::DecisionRecord) {
-        distill_workspace::jev::policy::TracingSink.record(record);
+        let (session, turn, round) = telemetry_context();
+        let mut record = record.clone();
+        record.session_id = (!session.is_empty()).then_some(session);
+        record.turn_id = (!turn.is_empty()).then_some(turn);
+        record.round_id = (round > 0).then_some(round);
+        distill_workspace::jev::policy::TracingSink.record(&record);
         note_decision(&record.lever, &record.decision, record.latency_ms);
     }
 }

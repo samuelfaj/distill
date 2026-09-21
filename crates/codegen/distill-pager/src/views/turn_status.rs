@@ -6,7 +6,7 @@
 //! - Spinner (left, slowed to ~7.5fps)
 //! - Activity label (colored per activity type, truncates if needed)
 //! - Phase timer `Xs` (gray, never truncates)
-//! - Jev chip `jev…` / `jev 0.4s` / `jev·fallback` (green, error-red for a refusal):
+//! - Jev chip `jev…` / `jev 0.4s` / `jev ×3 ·1 error` (red only for failed calls):
 //!   shown while Jev is consulted for this turn, from the shell's decision record
 //! - Queued-send hint `· N queued, Enter to send now` (gray, sendable waits only)
 //! - Fill space
@@ -401,15 +401,15 @@ pub fn render_turn_status(
     let phase_timer_width = phase_timer_str.width();
 
     // Jev chip: shows that the local decision layer was consulted for this
-    // turn — `jev…` while a call is in flight, `jev·fallback` after a refusal,
-    // `jev 0.4s` / `jev ×3` once it has answered. If the layer did nothing and
+    // turn — `jev…` while a call is in flight, `jev 0.4s` / `jev ×3` after
+    // decisions. A refused optimization is not an outage. If the layer did nothing and
     // no final route is known, the chip stays absent.
     let jev_str = match jev.label() {
         Some(label) => format!(" \u{00b7} {label}"),
         None => String::new(),
     };
     let jev_width = jev_str.width();
-    let jev_fg = if jev.refused {
+    let jev_fg = if jev.errors > 0 {
         theme.accent_error
     } else {
         theme.accent_success
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     /// The chip must appear exactly when Jev was used, and say what it did:
-    /// a refusal reads as `jev·fallback`, a consultation in flight as `jev…`,
+    /// a refusal remains normal activity, a consultation in flight reads `jev…`,
     /// answers as `jev <latency>` / `jev ×N`, and nothing at all when quiet.
     #[test]
     fn jev_chip_reports_use_refusal_and_flight() {
@@ -1247,12 +1247,14 @@ mod tests {
         );
 
         let refused_with_fallback_route = render_running_with_jev(JevTurnActivity {
+            decisions: 2,
             refused: true,
             route: Some("reasoning-model high".to_owned()),
             ..Default::default()
         });
         assert!(
-            refused_with_fallback_route.contains("jev·fallback")
+            refused_with_fallback_route.contains("jev ×2")
+                && !refused_with_fallback_route.contains("fallback")
                 && refused_with_fallback_route.contains("reasoning-model high"),
             "a refusal keeps the final route visible: {refused_with_fallback_route:?}"
         );
@@ -1284,8 +1286,8 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            veto.contains("jev·fallback"),
-            "a refusal is named: {veto:?}"
+            veto.contains("jev 0.4s") && !veto.contains("fallback"),
+            "a preventive refusal is not a service failure: {veto:?}"
         );
 
         let in_flight = render_running_with_jev(JevTurnActivity {
@@ -1312,6 +1314,42 @@ mod tests {
         // The chip shares the row: the running tool and the timer survive it.
         assert!(one.contains("read_file"), "the tool label stays: {one:?}");
         assert!(one.contains("19s"), "the turn timer stays: {one:?}");
+    }
+
+    #[test]
+    fn jev_chip_marks_failed_calls_not_preventive_refusals_as_errors() {
+        let theme = Theme::current();
+        let activity = Some(TurnActivity::Waiting(WaitingReason::Model));
+        for errors in [0, 1] {
+            let mut args = idle_args(Watchers::default());
+            args.state = &AgentState::TurnRunning;
+            args.activity = &activity;
+            args.jev = distill_shell::jev::JevTurnActivity {
+                decisions: 3,
+                refused: true,
+                errors,
+                route: Some("grok-4.7 xhigh".to_owned()),
+                ..Default::default()
+            };
+            let (_, buf) = render_row(args, 100);
+            let text = buffer_text(&buf, buf.area);
+            assert!(text.contains("Waiting for response"), "{text:?}");
+            assert!(
+                text.contains("jev ×3") && text.contains("grok-4.7 xhigh"),
+                "{text:?}"
+            );
+            assert!(!text.contains("fallback"), "{text:?}");
+            assert_eq!(text.contains("1 error"), errors == 1, "{text:?}");
+            let chip_x = text[..text.find("jev").unwrap()].width() as u16;
+            assert_eq!(
+                buf[(chip_x, 0)].fg,
+                if errors > 0 {
+                    theme.accent_error
+                } else {
+                    theme.accent_success
+                }
+            );
+        }
     }
 
     /// Invoke `render_turn_status` for an idle agent with the given watcher counts at the first animation tick.

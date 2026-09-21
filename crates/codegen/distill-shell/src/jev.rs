@@ -555,6 +555,9 @@ pub struct JevTurnActivity {
     pub decisions: u32,
     /// True when a Jev optimization was refused and the normal path is retained.
     pub refused: bool,
+    /// Failed decision calls or local-model endpoint attempts in this turn.
+    /// A preventive refusal is not a failed call.
+    pub errors: u32,
     /// Calls in flight **right now** — Jev is being consulted for this step.
     pub in_flight: u32,
     /// Latency of the most recent decision in the window (0 without one).
@@ -572,7 +575,7 @@ impl JevTurnActivity {
         self.decisions == 0 && self.in_flight == 0
     }
 
-    /// The chip text, e.g. `jev…`, `jev·fallback`, `jev ×3`. A final route is
+    /// The chip text, e.g. `jev…`, `jev ×3`, `jev ×3 ·1 error`. A final route is
     /// also rendered when Jev made no decision, so the row still names the
     /// model/effort that actually ran.
     ///
@@ -589,8 +592,12 @@ impl JevTurnActivity {
             None if self.local_runs > 0 => " ·local".to_owned(),
             None => String::new(),
         };
-        if self.refused {
-            return Some(format!("jev·fallback{suffix}"));
+        if self.errors > 0 {
+            let plural = if self.errors == 1 { "" } else { "s" };
+            return Some(format!(
+                "jev ×{} ·{} error{plural}{suffix}",
+                self.decisions, self.errors
+            ));
         }
         match self.decisions {
             0 if self.route.is_some() => Some(format!("model{suffix}")),
@@ -791,6 +798,11 @@ pub fn turn_activity_for_session(
         activity.decisions = activity.decisions.saturating_add(1);
         if REFUSALS.contains(&entry.decision.as_str()) {
             activity.refused = true;
+        }
+        if matches!(entry.decision.as_str(), "error" | "timeout")
+            || (entry.lever == LOCAL_LEVER && entry.decision == "fallback")
+        {
+            activity.errors = activity.errors.saturating_add(1);
         }
         if entry.lever == LOCAL_LEVER && entry.decision == LOCAL_DECISION {
             activity.local_runs = activity.local_runs.saturating_add(1);
@@ -1239,6 +1251,7 @@ mod catalogue_helper_tests {
         assert_eq!(turn.decisions, 3);
         assert_eq!(turn.local_runs, 1, "a local route shows on the row");
         assert!(turn.refused, "a refusal must be visible on the row");
+        assert_eq!(turn.errors, 0, "preventive refusals are not failed calls");
         assert_eq!(
             turn.last_latency_ms, 1200,
             "the newest latency is the one shown"
@@ -1257,6 +1270,12 @@ mod catalogue_helper_tests {
         assert_eq!(in_flight.label().as_deref(), Some("jev…"));
         drop(guard);
         assert_eq!(turn_activity(Some(after)).in_flight, 0);
+        note_decision("b2_micro_effort", "error", 10);
+        note_decision("b2_micro_effort", "timeout", 20);
+        note_decision(LOCAL_LEVER, "fallback", 30);
+        let failed = turn_activity(Some(before));
+        assert_eq!(failed.errors, 3, "actual failed calls stay visible");
+        assert_eq!(failed.label().as_deref(), Some("jev ×6 ·3 errors ·local"));
         reset_activity_for_test();
     }
 
@@ -1285,7 +1304,7 @@ mod catalogue_helper_tests {
     }
 
     /// The chip text itself: quiet renders nothing, one answer shows its
-    /// latency, repeats show a count, and a refusal outranks both.
+    /// latency, repeats show a count, and preventive refusals are normal activity.
     #[test]
     fn the_chip_label_is_short_and_honest() {
         assert_eq!(JevTurnActivity::default().label(), None);
@@ -1329,8 +1348,8 @@ mod catalogue_helper_tests {
             }
             .label()
             .as_deref(),
-            Some("jev·fallback ·local"),
-            "a refusal keeps the local activity marker visible"
+            Some("jev ×2 ·local"),
+            "a refused optimization is normal activity, not a Jev outage"
         );
         assert_eq!(
             JevTurnActivity {

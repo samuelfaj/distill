@@ -6,7 +6,7 @@
 //! - Spinner (left, slowed to ~7.5fps)
 //! - Activity label (colored per activity type, truncates if needed)
 //! - Phase timer `Xs` (gray, never truncates)
-//! - Jev chip `jev…` / `jev 0.4s` / `jev ×3 ·1 error` (red only for failed calls):
+//! - Jev chip `jev…` / `jev 0.4s` / `jev ×3` (activity only; errors stay in logs):
 //!   shown while Jev is consulted for this turn, from the shell's decision record
 //! - Queued-send hint `· N queued, Enter to send now` (gray, sendable waits only)
 //! - Fill space
@@ -409,11 +409,7 @@ pub fn render_turn_status(
         None => String::new(),
     };
     let jev_width = jev_str.width();
-    let jev_fg = if jev.errors > 0 {
-        theme.accent_error
-    } else {
-        theme.accent_success
-    };
+    let jev_fg = theme.accent_success;
 
     // Timer style (gray for both phase and turn timers). A Style with bg:None (the default) cannot
     // restore bg after a reset, and a Style without remove_modifier cannot clear leaked modifiers.
@@ -1316,40 +1312,33 @@ mod tests {
         assert!(one.contains("19s"), "the turn timer stays: {one:?}");
     }
 
-    #[test]
-    fn jev_chip_marks_failed_calls_not_preventive_refusals_as_errors() {
-        let theme = Theme::current();
-        let activity = Some(TurnActivity::Waiting(WaitingReason::Model));
-        for errors in [0, 1] {
-            let mut args = idle_args(Watchers::default());
-            args.state = &AgentState::TurnRunning;
-            args.activity = &activity;
-            args.jev = distill_shell::jev::JevTurnActivity {
-                decisions: 3,
-                refused: true,
-                errors,
-                route: Some("grok-4.7 xhigh".to_owned()),
-                ..Default::default()
-            };
-            let (_, buf) = render_row(args, 100);
-            let text = buffer_text(&buf, buf.area);
-            assert!(text.contains("Waiting for response"), "{text:?}");
-            assert!(
-                text.contains("jev ×3") && text.contains("grok-4.7 xhigh"),
-                "{text:?}"
-            );
-            assert!(!text.contains("fallback"), "{text:?}");
-            assert_eq!(text.contains("1 error"), errors == 1, "{text:?}");
-            let chip_x = text[..text.find("jev").unwrap()].width() as u16;
-            assert_eq!(
-                buf[(chip_x, 0)].fg,
-                if errors > 0 {
-                    theme.accent_error
-                } else {
-                    theme.accent_success
-                }
-            );
-        }
+    #[tokio::test]
+    async fn jev_chip_stays_normal_after_errors_and_later_decisions() {
+        distill_shell::jev::with_session_scope("jev-quiet-chip-test", async {
+            let theme = Theme::current();
+            let activity = Some(TurnActivity::Waiting(WaitingReason::Model));
+            distill_shell::jev::note_route(Some("grok-4.7"), Some("xhigh"));
+            for (index, decision) in ["error", "timeout", "keep"].into_iter().enumerate() {
+                distill_shell::jev::note_decision("b2_micro_effort", decision, 100);
+                let mut args = idle_args(Watchers::default());
+                args.state = &AgentState::TurnRunning;
+                args.activity = &activity;
+                args.jev = distill_shell::jev::turn_activity_for_session("jev-quiet-chip-test", None);
+                assert_eq!(args.jev.decisions as usize, index + 1);
+                let (_, buf) = render_row(args, 100);
+                let text = buffer_text(&buf, buf.area);
+                assert!(text.contains("Waiting for response"), "{text:?}");
+                assert!(
+                    text.contains("jev") && text.contains("grok-4.7 xhigh"),
+                    "{text:?}"
+                );
+                assert!(!text.contains("fallback"), "{text:?}");
+                assert!(!text.contains("error"), "{text:?}");
+                let chip_x = text[..text.find("jev").unwrap()].width() as u16;
+                assert_eq!(buf[(chip_x, 0)].fg, theme.accent_success);
+            }
+        })
+        .await;
     }
 
     /// Invoke `render_turn_status` for an idle agent with the given watcher counts at the first animation tick.

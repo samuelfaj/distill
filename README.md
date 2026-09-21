@@ -23,16 +23,16 @@ OpenAI-compatible protocol.
 ### Mac / Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh | sh   # macOS / Linux / Git Bash
-export PATH="$HOME/.local/share/distill/bin:$PATH"                                    # macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh | sh  
+export PATH="$HOME/.local/share/distill/bin:$PATH"                                  
 distill --version
 ```
 
 ### Windows
 
 ```sh
-irm https://raw.githubusercontent.com/samuelfaj/distill/main/install.ps1 | iex        # Windows PowerShell
-$bin = "$env:LOCALAPPDATA\distill\bin"; [Environment]::SetEnvironmentVariable('Path', "$bin;" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')   # Windows PowerShell, also read by Git Bash
+irm https://raw.githubusercontent.com/samuelfaj/distill/main/install.ps1 | iex        
+$bin = "$env:LOCALAPPDATA\distill\bin"; [Environment]::SetEnvironmentVariable('Path', "$bin;" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User') 
 distill --version
 ```
 

@@ -110,4 +110,9 @@ jobs:
           cp install.sh install.ps1 LICENSE NOTICE THIRD-PARTY-NOTICES artifacts/
           cd artifacts
           sha256sum distill-* > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" ./* --verify-tag --title "Distill $GITHUB_REF_NAME" --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" ./* --clobber
+            gh release edit "$GITHUB_REF_NAME" --latest
+          else
+            gh release create "$GITHUB_REF_NAME" ./* --verify-tag --title "Distill $GITHUB_REF_NAME" --generate-notes
+          fi

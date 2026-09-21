@@ -779,7 +779,9 @@ pub fn compatible_worker_models(reasoning: &str) -> Vec<String> {
 
 /// Validate a worker candidate against the currently selected reasoning model.
 /// Both entries must exist in the resolved model catalog because the worker
-/// needs the same endpoint, backend, credential scheme, and conversation window.
+/// needs the same endpoint, backend and credential scheme: the rule
+/// [`same_family`] states. The conversation window is not part of it; a worker
+/// too small for one round is handled where the round is routed.
 pub fn validate_light_tier_candidate(hard_model: &str, light_model: &str) -> Result<(), String> {
     let raw = crate::config::load_effective_config()
         .map_err(|_| "the model catalog could not be read".to_owned())?;

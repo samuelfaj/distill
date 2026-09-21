@@ -1543,6 +1543,30 @@ fn finish_trust_resolves_and_replays_startup() {
         "deferred load must replay once trust resolves",
     );
 }
+/// A worker from another family is dropped when the reasoning model changes to
+/// one it cannot share a conversation with; a sibling is kept, and a catalog that
+/// cannot name the reasoning model deletes nothing.
+///
+/// The rule is what turning the row red means: a worker left configured across
+/// families is refused on every round, which is the `jev·fallback` chip.
+#[test]
+fn worker_is_dropped_only_when_the_reasoning_model_leaves_its_family() {
+    use crate::app::dispatch::session::lifecycle::worker_out_of_family;
+    let chatgpt = vec!["chatgpt-5.6-sol".to_owned(), "chatgpt-5.6-luna".to_owned()];
+    assert!(
+        !worker_out_of_family("chatgpt-5.6-luna", &chatgpt),
+        "another model of the same family stays"
+    );
+    assert!(
+        worker_out_of_family("deepseek-flash", &chatgpt),
+        "a worker from another provider is cleared"
+    );
+    assert!(worker_out_of_family("grok-4.6", &chatgpt));
+    assert!(
+        !worker_out_of_family("deepseek-flash", &[]),
+        "a catalog that cannot answer for the reasoning model keeps the pick"
+    );
+}
 /// Accepting the trust question persists the grant to the store and resolves trust.
 /// The test is GROK_HOME-isolated so the write hits a temp store, not the real one.
 #[serial_test::serial(GROK_HOME)]

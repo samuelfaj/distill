@@ -268,8 +268,9 @@ pub async fn set_jev_local_model(value: String) -> Result<()> {
 ///
 /// A `[model.<id>]` entry id, or empty to remove the tier. The shell refuses a
 /// sibling that is not the same provider, wire backend and credential scheme as
-/// the session model, and one whose window cannot hold the conversation; the
-/// refusal is reported where the tier is read, never silently ignored.
+/// the session model; the refusal is reported where the tier is read, never
+/// silently ignored. A sibling too small to hold the conversation is reported
+/// the same way, but it is not what the write refuses.
 pub async fn set_jev_tier_light(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {
         anyhow::bail!(

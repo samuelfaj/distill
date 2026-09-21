@@ -246,7 +246,7 @@ pub fn local_model_request(
             "name": profile.name,
             "context_window_tokens": profile.context_window,
             "notes": profile.notes,
-            "execution": "Runs on this machine (free, no API cost)",
+            "execution": "Configured utility model; may be local or remote. Do not assume it is free.",
         }),
         questions,
     ))
@@ -571,7 +571,7 @@ pub fn compose_delegation(answers: &JevAnswerSet) -> DelegationHint {
 // ---------------------------------------------------------------------------
 
 /// Families whose tools are always offered: the agent cannot work without them.
-pub const CORE_FAMILIES: &[&str] = &["read", "edit", "execute", "interact"];
+pub const CORE_FAMILIES: &[&str] = &["read", "edit", "execute", "interact", "web", "delegate"];
 
 /// Every family the pruner knows about, in a stable order.
 pub const TOOL_FAMILIES: &[&str] = &[
@@ -800,8 +800,8 @@ mod tests {
         ];
         let questions = tool_family_questions(&names).expect("families detected");
         // web, delegate and mcp are prunable; the core four are not asked about.
-        assert!(questions.contains_key("family_web"));
-        assert!(questions.contains_key("family_delegate"));
+        assert!(!questions.contains_key("family_web"));
+        assert!(!questions.contains_key("family_delegate"));
         assert!(questions.contains_key("family_mcp"));
         assert!(!questions.contains_key("family_read"));
 
@@ -819,8 +819,8 @@ mod tests {
             kept.contains(&"brand_new_tool".to_owned()),
             "an unknown tool is never pruned"
         );
-        assert!(!kept.contains(&"web_search".to_owned()));
-        assert!(!kept.contains(&"task".to_owned()));
+        assert!(kept.contains(&"web_search".to_owned()));
+        assert!(kept.contains(&"task".to_owned()));
     }
 
     #[test]
@@ -829,6 +829,7 @@ mod tests {
             "read_file".to_owned(),
             "web_search".to_owned(),
             "task".to_owned(),
+            "mcp__acme__deploy".to_owned(),
         ];
         let partial = answers(vec![("family_web", noul(0.0))]);
         assert!(
@@ -838,9 +839,17 @@ mod tests {
         let all_off = answers(vec![
             ("family_web", noul(0.0)),
             ("family_delegate", noul(0.0)),
+            ("family_mcp", noul(0.0)),
         ]);
         let kept = keep_tools(&names, &all_off).expect("pruning applies");
-        assert_eq!(kept, vec!["read_file".to_owned()]);
+        assert_eq!(
+            kept,
+            vec![
+                "read_file".to_owned(),
+                "web_search".to_owned(),
+                "task".to_owned()
+            ]
+        );
         // A tool set with nothing to prune reports no questions.
         assert!(tool_family_questions(&["read_file".to_owned()]).is_err());
     }

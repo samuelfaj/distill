@@ -202,7 +202,7 @@ impl SessionActor {
                 local_cfg.max_completion_tokens.unwrap_or_default(),
             ));
         let conversation = self.chat_state_handle.get_conversation().await;
-        let estimate = distill_chat_state::estimate_conversation_tokens(&conversation);
+        let estimate = self.jev_prompt_token_estimate(&conversation).await;
         let profile = routing::LocalModelProfile {
             name: self.model_display_name(&local_cfg.model),
             context_window: ceiling,
@@ -360,7 +360,7 @@ impl SessionActor {
                 // round it cannot hold would be trimmed or compacted mid-way,
                 // which is not a swap. Reserve room for its own answer.
                 let conversation = self.chat_state_handle.get_conversation().await;
-                let estimate = distill_chat_state::estimate_conversation_tokens(&conversation);
+                let estimate = self.jev_prompt_token_estimate(&conversation).await;
                 let reserve = u64::from(
                     light
                         .cfg
@@ -745,6 +745,15 @@ impl SessionActor {
             .find(|entry| entry.info.has_model_id(model))
             .and_then(|entry| entry.info.name.clone())
             .unwrap_or_else(|| model.to_owned())
+    }
+
+    /// A conservative window guard includes schemas and the last observed prompt.
+    async fn jev_prompt_token_estimate(&self, conversation: &[ConversationItem]) -> u64 {
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let tools = bridge.tool_definitions_builtins_only().await;
+        let estimate = distill_chat_state::estimate_conversation_tokens(conversation)
+            .saturating_add(distill_chat_state::estimate_tool_definitions_tokens(&tools));
+        estimate.max(self.chat_state_handle.get_estimated_total_tokens().await)
     }
 
     /// What this one model call is about: the request it serves and how far the

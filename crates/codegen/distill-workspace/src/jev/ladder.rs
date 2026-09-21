@@ -242,81 +242,110 @@ pub struct ShortlistOutcome {
 /// Existence probability below which the caller widens the search (item 98).
 pub const P2_EXISTS_FLOOR: f64 = 0.35;
 
-/// Builds one `Choice` over the candidate line ids plus an existence `noul`.
-/// Candidate text and the reading objective are shared by both questions.
+/// Whole paragraphs, including fenced code, with their original starting line.
+/// No prefix window: either the full supplied document fits or P2 abstains.
+pub fn paragraph_candidates(text: &str) -> Vec<LineCandidate> {
+    let mut blocks = Vec::new();
+    let mut block = String::new();
+    let mut start = 1;
+    let mut fence: Option<(char, usize)> = None;
+    for (index, line) in text.lines().enumerate() {
+        if block.is_empty() {
+            start = index + 1;
+        }
+        let trimmed = line.trim_start();
+        if let Some(marker @ ('`' | '~')) = trimmed.chars().next() {
+            let width = trimmed.chars().take_while(|c| *c == marker).count();
+            if width >= 3 {
+                if fence.is_some_and(|(opened, size)| opened == marker && width >= size)
+                    && trimmed[width..].trim().is_empty()
+                {
+                    fence = None;
+                } else if fence.is_none() {
+                    fence = Some((marker, width));
+                }
+            }
+        }
+        block.push_str(line);
+        block.push('\n');
+        if line.trim().is_empty() && fence.is_none() && !block.trim().is_empty() {
+            blocks.push(LineCandidate {
+                line: start,
+                text: std::mem::take(&mut block),
+            });
+        }
+    }
+    if !block.is_empty() {
+        blocks.push(LineCandidate {
+            line: start,
+            text: block,
+        });
+    }
+    blocks
+}
+
+/// Independent relevance questions, not probabilities of being the single best line.
 pub fn shortlist_request(
     candidates: &[LineCandidate],
     request: &str,
 ) -> Result<(Json, BTreeMap<QuestionId, Question>), JevError> {
-    if request.trim().is_empty() {
-        return Err(JevError::invalid("a shortlist needs a reading objective"));
+    if request.trim().is_empty() || candidates.len() < 3 || candidates.len() > 64 {
+        return Err(JevError::invalid(
+            "a shortlist needs a query and 3..64 complete blocks",
+        ));
     }
-    if candidates.is_empty() {
-        return Err(JevError::invalid("no candidates to rank"));
-    }
-    if candidates.len() > MAX_CHOICE_OPTIONS {
-        return Err(JevError::invalid(format!(
-            "{} candidates over the {MAX_CHOICE_OPTIONS} option ceiling: window first, then rank",
-            candidates.len()
-        )));
-    }
-    let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
-    for candidate in candidates {
-        criteria.insert(candidate.line.to_string(), Json::Null);
+    let state = serde_json::json!({
+        "request": request,
+        "candidates": candidates.iter().map(|c| (c.line.to_string(), c.text.clone())).collect::<BTreeMap<_, _>>(),
+    });
+    if state.to_string().len() > 16 * 1024 {
+        return Err(JevError::invalid(
+            "full candidate evidence exceeds the shortlist budget",
+        ));
     }
     let mut questions = BTreeMap::new();
     questions.insert(
-        "best_line".to_owned(),
-        Question::choice(
-            "Which line in `candidates` best answers `request`? Each option is a line number in `candidates`. Prefer a line that answers it directly.",
-            criteria,
-        )?,
+        "answer_exists".into(),
+        Question::noul("Does the supplied document contain the answer to request?"),
     );
-    questions.insert(
-        "answer_exists".to_owned(),
-        Question::noul_with_criteria(
-            "Do any of the lines in `candidates` contain an answer to `request`?",
-            "At least one candidate answers it",
-            "None of the candidates answer it",
-        ),
-    );
-    let lines: BTreeMap<String, String> = candidates
-        .iter()
-        .map(|candidate| (candidate.line.to_string(), candidate.text.clone()))
-        .collect();
-    Ok((
-        serde_json::json!({ "request": request, "candidates": lines }),
-        questions,
-    ))
+    questions.insert("narrow_safe".into(), Question::noul_with_criteria(
+        "Is request a selective lookup where unrelated paragraphs may be omitted?",
+        "Only specific information is requested",
+        "A complete read, review, transformation, exact output or broad understanding is required"));
+    for candidate in candidates {
+        questions.insert(format!("keep_{}", candidate.line), Question::noul_with_criteria(
+            format!("Is candidates[{}] relevant to request, or needed to interpret the answer or preserve a constraint?", candidate.line),
+            "Relevant evidence, context, definition or constraint",
+            "Unrelated to the requested lookup"));
+    }
+    Ok((state, questions))
 }
 
-/// Composes the ranking into the lines worth reading.
-pub fn compose_shortlist(
-    answers: &JevAnswerSet,
-    candidates: &[LineCandidate],
-    top_k: usize,
-) -> ShortlistOutcome {
+/// Keep every uncertain block. Missing answers and non-selective requests do not narrow.
+pub fn compose_shortlist(answers: &JevAnswerSet, candidates: &[LineCandidate]) -> ShortlistOutcome {
     let exists = answers.noul("answer_exists");
-    if exists.is_some_and(|p| p < P2_EXISTS_FLOOR) {
-        return ShortlistOutcome {
-            selected: Vec::new(),
-            exists,
-            no_answer: true,
+    let unchanged = || ShortlistOutcome {
+        selected: Vec::new(),
+        exists,
+        no_answer: true,
+    };
+    if !exists.is_some_and(|p| p >= P2_EXISTS_FLOOR)
+        || !answers.noul("narrow_safe").is_some_and(|p| p >= 0.95)
+    {
+        return unchanged();
+    }
+    let mut selected = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let Some(p) = answers.noul(&format!("keep_{}", candidate.line)) else {
+            return unchanged();
         };
+        if !(0.0..=1.0).contains(&p) {
+            return unchanged();
+        }
+        if p > 0.05 || index == 0 || index + 1 == candidates.len() {
+            selected.push(candidate.line);
+        }
     }
-    let mut scored: Vec<(f64, usize)> = Vec::new();
-    for candidate in candidates {
-        let probability = answers
-            .probability("best_line", &candidate.line.to_string())
-            .unwrap_or(0.0);
-        scored.push((probability, candidate.line));
-    }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    let selected = scored
-        .into_iter()
-        .take(top_k.max(1))
-        .map(|(_, line)| line)
-        .collect();
     ShortlistOutcome {
         selected,
         exists,
@@ -389,11 +418,11 @@ pub fn compaction_questions(
             format!("segment_{}", segment.id),
             Question::noul_with_criteria(
                 format!(
-                    "Must this conversation segment be preserved verbatim in the summary? Segment: {}",
-                    segment.summary
+                    "Must segments[{}] reach the summarizer to preserve the active request, user constraints, unresolved failures or work state?",
+                    segment.id
                 ),
                 "Losing its details would lose required context or state",
-                "Its gist is enough, or it can be dropped",
+                "It is redundant or irrelevant; dropping it entirely loses no required information",
             ),
         );
     }
@@ -768,49 +797,33 @@ mod tests {
         assert_eq!(state["request"], "find the timeout");
         assert_eq!(state["candidates"]["42"], "let timeout = 30;");
         assert!(shortlist_request(&candidates, "").is_err());
-        assert!(questions.contains_key("best_line"));
-        assert!(questions.contains_key("answer_exists"));
-
+        assert!(questions.contains_key("keep_42"));
         let ranked = answer_set(vec![
-            (
-                "best_line",
-                Answer::Choice {
-                    choice: "42".to_owned(),
-                    probabilities: [
-                        ("10".to_owned(), 0.2),
-                        ("42".to_owned(), 0.7),
-                        ("77".to_owned(), 0.1),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    confidence: Some(0.8),
-                },
-            ),
+            ("keep_10", noul(0.01)),
+            ("keep_42", noul(0.9)),
+            ("keep_77", noul(0.01)),
             ("answer_exists", noul(0.9)),
+            ("narrow_safe", noul(0.99)),
         ]);
-        let outcome = compose_shortlist(&ranked, &candidates, 2);
+        let outcome = compose_shortlist(&ranked, &candidates);
         assert!(!outcome.no_answer);
-        assert_eq!(outcome.selected, vec![42, 10]);
-
+        assert_eq!(outcome.selected, vec![10, 42, 77], "document edges survive");
         let missing = answer_set(vec![
-            (
-                "best_line",
-                Answer::Choice {
-                    choice: "10".to_owned(),
-                    probabilities: BTreeMap::new(),
-                    confidence: Some(0.1),
-                },
-            ),
-            ("answer_exists", noul(0.05)),
+            ("answer_exists", noul(0.9)),
+            ("narrow_safe", noul(0.99)),
         ]);
-        let outcome = compose_shortlist(&missing, &candidates, 2);
-        assert!(outcome.no_answer && outcome.selected.is_empty());
+        assert!(compose_shortlist(&missing, &candidates).no_answer);
+        let broad = answer_set(vec![
+            ("answer_exists", noul(0.9)),
+            ("narrow_safe", noul(0.1)),
+        ]);
+        assert!(compose_shortlist(&broad, &candidates).no_answer);
 
         let whole = "a\n".repeat(2_000);
         let measurement = measure_shortlist(
             &whole,
             &candidates,
-            &compose_shortlist(&ranked, &candidates, 2),
+            &compose_shortlist(&ranked, &candidates),
         );
         println!(
             "MEASURE p2: document tokens {} -> selected {} lines {} (saved {})",
@@ -820,6 +833,35 @@ mod tests {
             measurement.saved()
         );
         assert!(measurement.saved() > 0);
+    }
+
+    #[test]
+    fn p2_preserves_fences_and_finds_blocks_after_line_200() {
+        let text = format!(
+            "{}\n\n```rust\na\n\nb\n```\n\nanswer at end",
+            "intro\n".repeat(220)
+        );
+        let blocks = paragraph_candidates(&text);
+        assert_eq!(blocks.len(), 3);
+        assert!(blocks[1].text.contains("a\n\nb"));
+        assert!(blocks[2].line > 200);
+        assert_eq!(
+            paragraph_candidates("````md\n```\n\ninside\n```\n````\n\nafter").len(),
+            2
+        );
+        let candidates = paragraph_candidates("intro\n\nnoise\n\nanswer\n\nend");
+        let answers = answer_set(vec![
+            ("answer_exists", noul(0.99)),
+            ("narrow_safe", noul(0.99)),
+            ("keep_1", noul(0.01)),
+            ("keep_3", noul(0.01)),
+            ("keep_5", noul(0.99)),
+            ("keep_7", noul(0.01)),
+        ]);
+        assert_eq!(
+            compose_shortlist(&answers, &candidates).selected,
+            vec![1, 5, 7]
+        );
     }
 
     #[test]

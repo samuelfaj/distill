@@ -166,7 +166,11 @@ pub struct CheapClient {
 }
 
 pub fn env_key_resolver() -> ApiKeyResolver {
-    Arc::new(|name: &str| std::env::var(name).ok().filter(|value| !value.trim().is_empty()))
+    Arc::new(|name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    })
 }
 
 impl CheapClient {
@@ -319,14 +323,9 @@ impl CheapClient {
 
 /// Whether the cheap lane can act at all right now: master switch, the lane's
 /// own flag, and a resolvable credential. Kept here so no call site forgets one.
-pub fn lane_enabled(
-    master: bool,
-    lane_flag: bool,
-    client: Option<&CheapClient>,
-) -> bool {
+pub fn lane_enabled(master: bool, lane_flag: bool, client: Option<&CheapClient>) -> bool {
     master && lane_flag && client.is_some_and(CheapClient::credential_present)
 }
-
 
 /// Test support shared by the modules that drive a cheap call: a stub endpoint
 /// and a client pointed at it, so a test can run the **shipped** callers.
@@ -458,7 +457,9 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{Stub, TEST_KEY, chat_reply, client_for, client_without_credential, make_stub};
+    use super::test_support::{
+        Stub, TEST_KEY, chat_reply, client_for, client_without_credential, make_stub,
+    };
     use super::*;
     use axum::Router;
     use axum::extract::State;
@@ -486,7 +487,7 @@ mod tests {
     #[tokio::test]
     async fn one_task_is_one_request_naming_the_cheap_model() {
         let stub = make_stub((200, chat_reply("3 matches", (120, 8)), true));
-        let client = client_for(&stub, |_| {}).await;
+        let client = client_for(&stub, |cfg| cfg.model = "qwen/qwen3.7-flash".to_owned()).await;
         let task = CheapTask::new(
             "summarize_tool_result",
             "Summarise the payload in one line.",
@@ -526,7 +527,11 @@ mod tests {
     #[tokio::test]
     async fn failures_are_errors_the_caller_keeps_todays_bytes_on() {
         // An HTTP error.
-        let stub = make_stub((429, serde_json::json!({"error": {"message": "slow down"}}).to_string(), false));
+        let stub = make_stub((
+            429,
+            serde_json::json!({"error": {"message": "slow down"}}).to_string(),
+            false,
+        ));
         let client = client_for(&stub, |_| {}).await;
         let error = client
             .ask(&CheapTask::new("id", "do it", "payload"))
@@ -567,7 +572,12 @@ mod tests {
             .ask(&CheapTask::new("id", "do it", "payload"))
             .await
             .expect_err("the deadline must fire");
-        assert_eq!(error.kind(), JevErrorKind::Timeout, "got {:?}", error.kind());
+        assert_eq!(
+            error.kind(),
+            JevErrorKind::Timeout,
+            "got {:?}",
+            error.kind()
+        );
     }
 
     #[tokio::test]
@@ -604,7 +614,10 @@ mod tests {
             .await
             .expect_err("401 fails");
         let rendered = format!("{error} {error:?}");
-        assert!(!rendered.contains(TEST_KEY), "credential leaked: {rendered}");
+        assert!(
+            !rendered.contains(TEST_KEY),
+            "credential leaked: {rendered}"
+        );
     }
 
     #[test]

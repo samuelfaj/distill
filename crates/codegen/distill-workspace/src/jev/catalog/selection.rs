@@ -40,14 +40,14 @@ pub fn file_to_edit_questions(
         candidates,
         |id| {
             format!(
-                "Does the request most likely need to EDIT the file `{id}`? Context from the search: {}",
+                "Does request need this file `{id}` for reading, editing, caller context or verification? Context from the search: {}",
                 reasons
                     .get(id)
                     .map(String::as_str)
                     .unwrap_or("(no snippet)")
             )
         },
-        "This file is the edit target or a necessary part of it",
+        "This file is needed to understand, change or verify the requested work",
         "This file is unrelated to the request",
     )
 }

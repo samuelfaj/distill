@@ -56,6 +56,8 @@ pub(crate) struct JevTurnLedger {
     /// A review may reserve one higher-effort call per turn, not a sticky floor.
     review_escalated: bool,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
+    /// Stable schemas within a turn; invalidate when the request or available names change.
+    pub(crate) tool_selection: Option<(String, Vec<String>)>,
 }
 
 impl JevTurnLedger {
@@ -214,6 +216,7 @@ impl JevTurnLedger {
         self.effort_floor = None;
         self.review_escalated = false;
         self.last_execution = None;
+        self.tool_selection = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

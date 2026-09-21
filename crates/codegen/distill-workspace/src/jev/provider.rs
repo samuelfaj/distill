@@ -264,8 +264,12 @@ pub fn render_decision_prompt(
                     "- {id} (choice): {}\n    options: {}\n",
                     instruction_text(instructions),
                     criteria
-                        .keys()
-                        .cloned()
+                        .iter()
+                        .map(|(option, description)| if description.is_null() {
+                            option.clone()
+                        } else {
+                            format!("{option}={}", instruction_text(description))
+                        })
                         .collect::<Vec<_>>()
                         .join(" | ")
                 ));
@@ -889,6 +893,26 @@ mod tests {
         assert!(rendered.contains("- severity (score): How severe would a wrong answer be?"));
         assert!(rendered.contains("0=No damage | 1=Minor, recoverable | 2=Data loss"));
         assert!(rendered.contains("\"command\":\"cargo check\""));
+        let described = [(
+            "effort".to_owned(),
+            Question::choice(
+                "Which effort?",
+                [(
+                    "low".to_owned(),
+                    Json::from("A single straightforward step"),
+                )]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        assert!(
+            render_decision_prompt(&state, &described)
+                .unwrap()
+                .contains("low=A single straightforward step")
+        );
 
         let reply = r#"{"answers": {
             "risk": {"choice": "mutating_local", "probabilities":

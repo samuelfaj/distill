@@ -192,7 +192,10 @@ impl SessionActor {
             .map_or(window, |cap| window.min(cap));
         let reserve = local
             .context_reserve_tokens
-            .unwrap_or(crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE);
+            .unwrap_or(crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE)
+            .max(u64::from(
+                local_cfg.max_completion_tokens.unwrap_or_default(),
+            ));
         let conversation = self.chat_state_handle.get_conversation().await;
         let estimate = distill_chat_state::estimate_conversation_tokens(&conversation);
         let profile = routing::LocalModelProfile {
@@ -219,12 +222,11 @@ impl SessionActor {
             );
             return;
         }
-        let Ok(questions) = routing::local_model_questions(&profile) else {
+        let Ok((model_state, questions)) = routing::local_model_request(&profile) else {
             return;
         };
-        let state = self
-            .micro_effort_state(cfg, &profile.name, &[], estimate)
-            .await;
+        let mut state = self.micro_effort_state(cfg, &profile.name, estimate).await;
+        state["local_model"] = model_state;
         let Some(answers) = crate::jev::ask_item(JevLever::B2LocalModel, state, questions).await
         else {
             return;
@@ -428,7 +430,7 @@ impl SessionActor {
         if questions.is_empty() {
             return;
         }
-        let state = self.micro_effort_state(cfg, &model_name, &offered, 0).await;
+        let state = self.micro_effort_state(cfg, &model_name, 0).await;
         let Some(answers) = crate::jev::ask_item(JevLever::B2MicroEffort, state, questions).await
         else {
             return;
@@ -749,7 +751,6 @@ impl SessionActor {
         &self,
         cfg: &SamplingConfig,
         model_name: &str,
-        offered: &[routing::EffortChoice],
         context_estimate: u64,
     ) -> serde_json::Value {
         let conversation = self.chat_state_handle.get_conversation().await;
@@ -758,7 +759,6 @@ impl SessionActor {
         micro_action_state_json(
             model_name,
             &cfg.model,
-            offered,
             action,
             conversation.len(),
             &request,
@@ -1094,7 +1094,6 @@ struct EffortLevel {
 fn micro_action_state_json(
     model_name: &str,
     model_id: &str,
-    offered: &[routing::EffortChoice],
     action: MicroAction,
     turn_items: usize,
     request: &str,
@@ -1103,10 +1102,6 @@ fn micro_action_state_json(
     serde_json::json!({
         "model": model_name,
         "model_id": model_id,
-        "offered_efforts": offered
-            .iter()
-            .map(|choice| (choice.id.clone(), choice.description.clone()))
-            .collect::<BTreeMap<String, String>>(),
         // The decision is about THIS step, so the step is what it gets.
         "micro_action": action.as_json(),
         "turn_items": turn_items,
@@ -1135,19 +1130,9 @@ mod tests {
     }
 
     /// The model's power is context the decision cannot do without: the state
-    /// must name the model, its wire id and the menu it offers.
+    /// must name the model and its wire id; the effort menu lives in criteria.
     #[test]
     fn the_micro_effort_state_names_the_model() {
-        let offered = vec![
-            routing::EffortChoice {
-                id: "low".to_owned(),
-                description: "Light".to_owned(),
-            },
-            routing::EffortChoice {
-                id: "max".to_owned(),
-                description: "Deep reasoning".to_owned(),
-            },
-        ];
         let action = MicroAction {
             step: "after_tool_results",
             plan: "fix the type error in the parser".to_owned(),
@@ -1157,7 +1142,6 @@ mod tests {
         let state = micro_action_state_json(
             "DeepSeek V4.1 Flash",
             "deepseek-v4.1-flash-max",
-            &offered,
             action,
             12,
             "fix the failing test",
@@ -1165,7 +1149,6 @@ mod tests {
         );
         assert_eq!(state["model"], "DeepSeek V4.1 Flash");
         assert_eq!(state["model_id"], "deepseek-v4.1-flash-max");
-        assert_eq!(state["offered_efforts"]["max"], "Deep reasoning");
         assert_eq!(state["micro_action"]["step"], "after_tool_results");
         assert_eq!(
             state["micro_action"]["what_it_must_do"], "fix the type error in the parser",

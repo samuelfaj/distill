@@ -271,15 +271,15 @@ pub const SECOND_OPINION_FLOOR: f64 = 0.50;
 
 /// C4 (review): one battery per change, asked *after* the edit lands.
 ///
-/// The step's intent and the change travel in the question text, so the answer
+/// The step's intent and the change travel once in shared state, so the answer
 /// is a judgement about this change, not about diffs in general: the verdict
 /// (match), the two red flags worth another pass (break, unfinished), whether
 /// the step still has to be redone and whether that redo needs more thinking,
 /// and whether judging this change is beyond the model that made it.
-pub fn diff_review_questions(
+pub fn diff_review_request(
     intent: &str,
     change: &str,
-) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+) -> Result<(Json, BTreeMap<QuestionId, Question>), JevError> {
     let intent = intent.trim();
     let change = change.trim();
     if intent.is_empty() || change.is_empty() {
@@ -291,12 +291,10 @@ pub fn diff_review_questions(
     questions.insert(
         DIFF_MATCH_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            format!(
-                "The step asked for: {intent}\nThe change just applied: {change}\n\
+                "The step asked for is `intent`; the change just applied is `change`. \
                  Does the change include what the step asked for? A change that is broader than the \
                  step (rewriting the whole file, touching nearby lines) still counts as long as it \
                  contains the asked-for work and contradicts nothing.",
-            ),
             "It includes what the step asked for",
             "It does not include it, or it contradicts the step",
         ),
@@ -304,11 +302,9 @@ pub fn diff_review_questions(
     questions.insert(
         DIFF_BREAK_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            format!(
-                "The step asked for: {intent}\nThe change just applied: {change}\n\
+                "The step asked for is `intent`; the change just applied is `change`. \
                  Could this change break behaviour that other code relies on — signatures, callers, \
                  data shapes, error handling?",
-            ),
             "It could break something that relies on the old behaviour",
             "It stays compatible with its callers",
         ),
@@ -316,10 +312,8 @@ pub fn diff_review_questions(
     questions.insert(
         STEP_COMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            format!(
-                "The step was: {intent}\nThe change just applied: {change}\n\
+            "The step is `intent`; the change just applied is `change`. \
                  As it stands, is the step done — nothing in it left to fix or redo?",
-            ),
             "The step is done as it stands",
             "Something in the step still has to be redone",
         ),
@@ -327,11 +321,9 @@ pub fn diff_review_questions(
     questions.insert(
         REDO_THINKING_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            format!(
-                "The step was: {intent}\nThe change just applied: {change}\n\
+                "The step is `intent`; the change just applied is `change`. \
                  If this step has to be redone, does the redo need more thinking than this call had — \
                  a higher reasoning effort, not just another try at the same setting?",
-            ),
             "The redo needs more thinking than this call had",
             "Another try at the same setting is enough",
         ),
@@ -339,12 +331,10 @@ pub fn diff_review_questions(
     questions.insert(
         DIFF_INCOMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            format!(
-                "The step was: {intent}\nThe change just applied: {change}\n\
+                "The step is `intent`; the change just applied is `change`. \
                  Is the change itself unfinished — a body left as a stub or TODO, truncated code, a \
                  helper it calls but never defines, a caller it renames and forgets to update? Judge \
                  the change in front of you: work the step still expects afterwards is not part of it.",
-            ),
             "The change itself is unfinished",
             "The change is complete in itself",
         ),
@@ -352,17 +342,18 @@ pub fn diff_review_questions(
     questions.insert(
         SECOND_OPINION_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            format!(
-                "The step was: {intent}\nThe change just applied: {change}\n\
+            "The step is `intent`; the change just applied is `change`. \
                  Is judging this change well beyond this review — does it need a different model \
                  than the one answering here, one that is stronger or that knows another part of \
                  the stack? Answer no when reviewing it here is enough.",
-            ),
             "This change needs a review by another model",
             "Reviewing it here is enough",
         ),
     );
-    Ok(questions)
+    Ok((
+        serde_json::json!({ "intent": intent, "change": change }),
+        questions,
+    ))
 }
 
 /// C4 (review): what the review found.
@@ -812,10 +803,15 @@ mod tests {
         assert_eq!(review.confidence, None, "deferred, so nothing is claimed");
 
         // The battery needs both halves of the review.
-        assert!(diff_review_questions("", "diff").is_err());
-        assert!(diff_review_questions("do x", "  ").is_err());
-        let questions =
-            diff_review_questions("add a counter", "+ let n = 0;").expect("battery builds");
+        assert!(diff_review_request("", "diff").is_err());
+        assert!(diff_review_request("do x", "  ").is_err());
+        let (state, questions) =
+            diff_review_request("add a counter", "+ let n = 0;").expect("battery builds");
+        assert_eq!(state["intent"], "add a counter");
+        assert_eq!(state["change"], "+ let n = 0;");
+        let wire = serde_json::json!({"state": state, "questions": questions}).to_string();
+        assert_eq!(wire.matches("add a counter").count(), 1);
+        assert_eq!(wire.matches("+ let n = 0;").count(), 1);
         assert_eq!(
             questions.len(),
             6,
@@ -830,16 +826,16 @@ mod tests {
         };
         let text = instructions.as_str().unwrap_or_default();
         assert!(
-            text.contains("add a counter"),
-            "the step is in the question: {text}"
+            text.contains("`intent`"),
+            "the question references the shared step: {text}"
         );
         assert!(
             text.contains("broader than the step"),
             "a wider change that includes the work is not a mismatch: {text}"
         );
         assert!(
-            text.contains("+ let n = 0;"),
-            "the change is in the question: {text}"
+            text.contains("`change`"),
+            "the question references the shared change: {text}"
         );
 
         // Only a real finding travels back: silence when it reads fine, and

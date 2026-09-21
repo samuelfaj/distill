@@ -243,10 +243,14 @@ pub struct ShortlistOutcome {
 pub const P2_EXISTS_FLOOR: f64 = 0.35;
 
 /// Builds one `Choice` over the candidate line ids plus an existence `noul`.
-/// The candidate text travels in `criteria` (cheap) — never the whole file.
-pub fn shortlist_questions(
+/// Candidate text and the reading objective are shared by both questions.
+pub fn shortlist_request(
     candidates: &[LineCandidate],
-) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    request: &str,
+) -> Result<(Json, BTreeMap<QuestionId, Question>), JevError> {
+    if request.trim().is_empty() {
+        return Err(JevError::invalid("a shortlist needs a reading objective"));
+    }
     if candidates.is_empty() {
         return Err(JevError::invalid("no candidates to rank"));
     }
@@ -258,28 +262,32 @@ pub fn shortlist_questions(
     }
     let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
     for candidate in candidates {
-        criteria.insert(
-            candidate.line.to_string(),
-            Json::String(candidate.text.clone()),
-        );
+        criteria.insert(candidate.line.to_string(), Json::Null);
     }
     let mut questions = BTreeMap::new();
     questions.insert(
         "best_line".to_owned(),
         Question::choice(
-            "Which candidate line best answers the question? Prefer a line that answers it directly.",
+            "Which line in `candidates` best answers `request`? Each option is a line number in `candidates`. Prefer a line that answers it directly.",
             criteria,
         )?,
     );
     questions.insert(
         "answer_exists".to_owned(),
         Question::noul_with_criteria(
-            "Do any of the candidate lines contain an answer to the question?",
+            "Do any of the lines in `candidates` contain an answer to `request`?",
             "At least one candidate answers it",
             "None of the candidates answer it",
         ),
     );
-    Ok(questions)
+    let lines: BTreeMap<String, String> = candidates
+        .iter()
+        .map(|candidate| (candidate.line.to_string(), candidate.text.clone()))
+        .collect();
+    Ok((
+        serde_json::json!({ "request": request, "candidates": lines }),
+        questions,
+    ))
 }
 
 /// Composes the ranking into the lines worth reading.
@@ -755,7 +763,11 @@ mod tests {
                 text: "unrelated".to_owned(),
             },
         ];
-        let questions = shortlist_questions(&candidates).expect("questions build");
+        let (state, questions) =
+            shortlist_request(&candidates, "find the timeout").expect("questions build");
+        assert_eq!(state["request"], "find the timeout");
+        assert_eq!(state["candidates"]["42"], "let timeout = 30;");
+        assert!(shortlist_request(&candidates, "").is_err());
         assert!(questions.contains_key("best_line"));
         assert!(questions.contains_key("answer_exists"));
 
@@ -818,7 +830,7 @@ mod tests {
                 text: format!("line {i}"),
             })
             .collect();
-        assert!(shortlist_questions(&many).is_err());
+        assert!(shortlist_request(&many, "find the timeout").is_err());
     }
 
     #[test]

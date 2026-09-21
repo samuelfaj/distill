@@ -169,6 +169,72 @@ pub fn current_status_cached() -> JevStatus {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn batched_items_keep_flags_ids_and_count_usage_once() {
+        use distill_workspace::jev::flags::JevLever;
+        use distill_workspace::jev::types::{Answer, JevAnswerSet, Question, Usage};
+        let mut flags = JevFlags::harness_default();
+        flags.c5_error_priority = false;
+        let pack = || {
+            Some(
+                [("same_id".to_owned(), Question::noul("Is this actionable?"))]
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        set_test_decision_answers([Some(JevAnswerSet {
+            model: "test".to_owned(),
+            answers: [
+                ("0:same_id".to_owned(), Answer::Noul { noul: 0.9 }),
+                ("2:same_id".to_owned(), Answer::Noul { noul: 0.7 }),
+            ]
+            .into_iter()
+            .collect(),
+            usage: Usage {
+                input_tokens: Some(500),
+                output_tokens: Some(30),
+            },
+            latency_ms: 100,
+            request_id: Some("shared-request".to_owned()),
+        })]);
+        let [first, disabled, last] = ask_items_with_flags(
+            serde_json::json!({}),
+            [
+                (JevLever::C2FailureTriage, pack()),
+                (JevLever::C5ErrorPriority, pack()),
+                (JevLever::A3LogLines, pack()),
+            ],
+            &flags,
+        )
+        .await;
+        let first = first.expect("first pack answered");
+        let last = last.expect("last pack answered");
+        assert!(disabled.is_none());
+        assert_eq!(first.noul("same_id"), Some(0.9));
+        assert_eq!(last.noul("same_id"), Some(0.7));
+        assert_eq!(first.usage.input() + last.usage.input(), 500);
+        assert_eq!(first.usage.output() + last.usage.output(), 30);
+        assert_eq!(first.request_id, last.request_id);
+        assert_eq!(test_decision_answers_remaining(), 0);
+        flags.enabled = false;
+        set_test_decision_answers([None]);
+        assert!(
+            ask_items_with_flags(
+                serde_json::json!({}),
+                [(JevLever::C2FailureTriage, pack()),],
+                &flags
+            )
+            .await[0]
+                .is_none()
+        );
+        assert_eq!(
+            test_decision_answers_remaining(),
+            1,
+            "disabled packs never ask"
+        );
+        clear_test_decision_answers();
+    }
+
     #[test]
     fn jev_config_cannot_enable_permission_decisions() {
         let config: JevConfig = toml::from_str(
@@ -221,6 +287,70 @@ p5_call_validation = true"#,
 // ---------------------------------------------------------------------------
 // Runtime helper for catalogue call sites (todo.md areas A–D)
 // ---------------------------------------------------------------------------
+
+/// Ask independent packs about the same state once. Each pack keeps its flag
+/// and answer ids. The first active pack owns the request's usage and latency;
+/// subsequent decision records carry zero usage so the total is counted once.
+pub async fn ask_items<const N: usize>(
+    state: serde_json::Value,
+    items: [(
+        distill_workspace::jev::flags::JevLever,
+        Option<std::collections::BTreeMap<String, distill_workspace::jev::types::Question>>,
+    ); N],
+) -> [Option<distill_workspace::jev::types::JevAnswerSet>; N] {
+    ask_items_with_flags(state, items, &flags_cached()).await
+}
+
+async fn ask_items_with_flags<const N: usize>(
+    state: serde_json::Value,
+    items: [(
+        distill_workspace::jev::flags::JevLever,
+        Option<std::collections::BTreeMap<String, distill_workspace::jev::types::Question>>,
+    ); N],
+    flags: &JevFlags,
+) -> [Option<distill_workspace::jev::types::JevAnswerSet>; N] {
+    use distill_workspace::jev::types::Usage;
+    use std::collections::BTreeMap;
+
+    let mut questions = BTreeMap::new();
+    let mut first = None;
+    let mut ids: [Vec<String>; N] = std::array::from_fn(|_| Vec::new());
+    for (index, (lever, pack)) in items.into_iter().enumerate() {
+        if !flags.lever_active(lever) {
+            continue;
+        }
+        for (id, question) in pack.into_iter().flatten() {
+            first.get_or_insert(lever);
+            questions.insert(format!("{index}:{id}"), question);
+            ids[index].push(id);
+        }
+    }
+    let mut result = std::array::from_fn(|_| None);
+    let Some(lever) = first else { return result };
+    let Some(mut answers) = ask_item(lever, state, questions).await else {
+        return result;
+    };
+    for (index, ids) in ids.into_iter().enumerate() {
+        if ids.is_empty() {
+            continue;
+        }
+        let mut pack = answers.clone();
+        pack.answers = ids
+            .into_iter()
+            .filter_map(|id| {
+                answers
+                    .answers
+                    .get(&format!("{index}:{id}"))
+                    .cloned()
+                    .map(|answer| (id, answer))
+            })
+            .collect();
+        result[index] = Some(pack);
+        answers.usage = Usage::default();
+        answers.latency_ms = 0;
+    }
+    result
+}
 
 /// Runs **one** catalogue decision.
 ///

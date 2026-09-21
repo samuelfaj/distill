@@ -94,6 +94,7 @@ impl DecisionSink for TracingSink {
             input_tokens = record.input_tokens,
             output_tokens = record.output_tokens,
             questions = record.questions.len(),
+            request_id = record.request_id.as_deref().unwrap_or(""),
             reason = record.reason.as_str(),
             "jev decision"
         );

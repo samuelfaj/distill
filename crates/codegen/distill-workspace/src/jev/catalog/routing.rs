@@ -191,23 +191,13 @@ pub const LOCAL_FRONTIER_QUESTION: &str = "needs_frontier_reasoning";
 /// The priority rule is asymmetric on purpose: the local model is free, so it
 /// wins whenever it is **fully** capable; the moment a red flag fires — or the
 /// verdict is anything but confident — the call goes to the session's model.
-pub fn local_model_questions(
+pub fn local_model_request(
     profile: &LocalModelProfile,
-) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+) -> Result<(Json, BTreeMap<QuestionId, Question>), JevError> {
     if profile.name.trim().is_empty() {
         return Err(JevError::invalid("the local model has no name"));
     }
-    let size = format!(
-        "The local model `{}` has a context window of {} tokens and runs on this machine (free, no API cost). \
-         Notes from its owner: {}",
-        profile.name,
-        profile.context_window,
-        if profile.notes.trim().is_empty() {
-            "(none)"
-        } else {
-            profile.notes.as_str()
-        }
-    );
+    let size = "The local model is described in `local_model` (name, context_window_tokens and owner notes).";
     // The unit of judgement is the next single model call (`micro_action` in the
     // state): one step of the work, never the whole task. Without this the model
     // answers "can the small model build this project?" and every step of a big
@@ -251,7 +241,15 @@ pub fn local_model_questions(
             "Ordinary capability is enough",
         ),
     );
-    Ok(questions)
+    Ok((
+        serde_json::json!({
+            "name": profile.name,
+            "context_window_tokens": profile.context_window,
+            "notes": profile.notes,
+            "execution": "Runs on this machine (free, no API cost)",
+        }),
+        questions,
+    ))
 }
 
 /// B2 (local): the route for this call, at the pack's default floor.
@@ -478,9 +476,13 @@ pub fn micro_tier_questions(
 /// the safe answer, and a wrong downgrade costs quality on the step.
 pub fn compose_micro_tier(answers: &JevAnswerSet) -> Option<String> {
     let allowed = [TIER_HARD_LABEL, TIER_LIGHT_LABEL, MICRO_TIER_KEEP_LABEL];
-    let pick = pick_one(answers, MICRO_TIER_QUESTION, &allowed, MICRO_TIER_MIN_CONFIDENCE);
-    pick.choice
-        .filter(|choice| choice != MICRO_TIER_KEEP_LABEL)
+    let pick = pick_one(
+        answers,
+        MICRO_TIER_QUESTION,
+        &allowed,
+        MICRO_TIER_MIN_CONFIDENCE,
+    );
+    pick.choice.filter(|choice| choice != MICRO_TIER_KEEP_LABEL)
 }
 
 /// B2: the effort to use for this call, or `None` to keep the session's.
@@ -983,7 +985,12 @@ mod tests {
             context_window: 32_768,
             notes: "tool calling OK, no reasoning effort".to_owned(),
         };
-        let questions = local_model_questions(&profile).expect("battery builds");
+        let (state, questions) = local_model_request(&profile).expect("battery builds");
+        assert_eq!(state["name"], profile.name);
+        assert_eq!(state["context_window_tokens"], profile.context_window);
+        assert_eq!(state["notes"], profile.notes);
+        let wire = serde_json::json!({"state": state, "questions": questions}).to_string();
+        assert_eq!(wire.matches(&profile.notes).count(), 1);
         assert_eq!(questions.len(), 3);
         let Some(Question::Noul { instructions, .. }) = questions.get(LOCAL_CAPABLE_QUESTION)
         else {
@@ -991,10 +998,9 @@ mod tests {
         };
         let text = instructions.as_str().unwrap_or_default();
         assert!(
-            text.contains("Qwen3.8-27B-4bit"),
-            "the model is named: {text}"
+            text.contains("`local_model`"),
+            "the shared model profile is referenced: {text}"
         );
-        assert!(text.contains("32768"), "the window is stated: {text}");
         assert!(
             text.contains("Judge ONLY the next single model call"),
             "the unit of judgement is the step, not the task: {text}"
@@ -1051,7 +1057,7 @@ mod tests {
         assert_eq!(compose_local_model(&partial), CallRoute::Cloud);
         assert_eq!(compose_local_model(&answers(vec![])), CallRoute::Cloud);
         assert!(
-            local_model_questions(&LocalModelProfile {
+            local_model_request(&LocalModelProfile {
                 name: "  ".to_owned(),
                 context_window: 1,
                 notes: String::new(),

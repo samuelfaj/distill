@@ -55,9 +55,10 @@ pub struct JevLadderOverlay {
     pub e_retention: Option<bool>,
     /// E2 — extract by importance (errors, file:line, paths, last lines) with an elided middle.
     pub e_importance: Option<bool>,
-    /// E3 — compress a large tool result with the cheap model, storing the original first.
+    /// E3 — compress a large tool result with the utility model, storing the original first.
     pub e_cheap_compress: Option<bool>,
-    /// E5 — run a registered cheap task (classify/extract/digest) on a tool result and use its answer.
+    /// E5 — run the registered utility task the payload's command and shape call
+    /// for, and use its answer only if the task's own guard accepts it.
     pub e_cheap_task: Option<bool>,
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: Option<bool>,
@@ -165,10 +166,10 @@ impl JevFlags {
             e_crushers: true,
             e_retention: false,
             e_importance: true,
-            e_cheap_compress: false,
-            e_cheap_task: false,
+            e_cheap_compress: true,
+            e_cheap_task: true,
             e_read_reuse: true,
-            e_lane_choice: false,
+            e_lane_choice: true,
             e_cheap_agent: false,
             e_prompt_blocks: false,
             e_breaker: true,
@@ -648,9 +649,23 @@ mod tests {
             JevLever::C7ChangeType,
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
+            // The token-saving lanes, including the three that spend a utility
+            // call: the crushers and the importance pass are free, and the
+            // utility lanes are bounded (24 KiB floor), guarded per task, and
+            // vetoable by the lane decision.
+            JevLever::ECrushers,
+            JevLever::EImportance,
+            JevLever::EReadReuse,
+            JevLever::ECheapCompress,
+            JevLever::ECheapTask,
+            JevLever::ELaneChoice,
         ] {
             assert!(flags.lever_active(lever), "{} must be on", lever.as_str());
         }
+        assert!(
+            !flags.e_retention,
+            "the retention lane asks one question per chunk; its cost is unmeasured, so it waits"
+        );
         assert!(!flags.is_off());
     }
 

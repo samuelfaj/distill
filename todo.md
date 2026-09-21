@@ -290,7 +290,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
 ### P3 — Calibrar, comparar e promover somente o que funciona
 
 - [ ] **T20 — Calibrar decisões com resultados reais, sem criar um sistema de ML desnecessário.**
-  - **Dependências:** T01, T02, T09, T10; incorporar as demais rotas conforme forem validadas.
+  - **Dependências:** T01, T02 e a ação sob avaliação. Calibrar roteamento/effort após T09/T10; os ganhos de prompt e contexto podem ser avaliados e promovidos antes disso.
   - Começar com agregados de logs: tipo de tarefa, modelo/endpoint/versão, effort, tamanho de contexto, cache, custo, aceite, rejeição, escalada e recuperação. Separar custo/sucesso de classe prevista pelo Jev e resultado medido; incluir tarefas em português e inglês.
   - Ajustar tabelas de rota e limiares por pergunta com amostra de calibração. Preservar conjunto final sem ajuste. Mudanças de versão/preço/endpoint invalidam conclusões pertinentes; não treinar roteador novo ou bandit online antes de demonstrar necessidade.
   - Considerar viés de seleção: não concluir que modelo só recebeu tarefas fáceis e por isso serve para todas. Usar execuções pareadas/controladas para comparar candidatos; não experimentar rotas novas ocultamente em tarefas reais para coletar dados.

@@ -55,6 +55,20 @@ pub(crate) fn wire_error_kind(raw: Option<&str>) -> Option<WireErrorType> {
     raw.map(|s| WireErrorType::parse(Some(s)))
 }
 
+/// The endpoint's own token limit, when its error states one.
+///
+/// Providers that report an overflow this way say "maximum context length is
+/// `<n>` tokens", and that number is the endpoint's, not the model entry's. The
+/// two disagreeing is what makes a request that nothing in the conversation
+/// explains look like a conversation problem.
+pub(crate) fn stated_context_limit(message: &str) -> Option<u64> {
+    const NEEDLE: &str = "maximum context length is ";
+    let lower = message.to_ascii_lowercase();
+    let rest = &lower[lower.find(NEEDLE)? + NEEDLE.len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// The shared vocabulary maps 1:1 onto the pager's wire types; kinds without their own copy render as [`Self::Other`].
 impl From<distill_shell::sampling::error::SamplingErrorKind> for WireErrorType {
     fn from(kind: distill_shell::sampling::error::SamplingErrorKind) -> Self {

@@ -1826,7 +1826,10 @@ fn prompt_response_context_overflow_suppresses_turn_failed_and_toast() {
                 // Mirror the RetryState handler pushing the actionable block.
                 agent
                     .scrollback
-                    .push_block(RenderBlock::session_event(SessionEvent::ContextTooLarge));
+                    .push_block(RenderBlock::session_event(SessionEvent::ContextTooLarge {
+                        model: None,
+                        stated_limit: None,
+                    }));
             }
         }
         dispatch(

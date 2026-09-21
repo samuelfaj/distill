@@ -1842,8 +1842,16 @@ pub(super) fn apply_retry_state(
                 }
             } else if wire == crate::app::error_display::WireErrorType::ContextLength {
                 if !scrollback_has_recent_compaction_failed(scrollback) {
-                    scrollback
-                        .push_block(RenderBlock::session_event(SessionEvent::ContextTooLarge));
+                    scrollback.push_block(RenderBlock::session_event(
+                        SessionEvent::ContextTooLarge {
+                            model: session
+                                .models
+                                .current
+                                .as_ref()
+                                .map(|id| id.0.to_string()),
+                            stated_limit: crate::app::error_display::stated_context_limit(message),
+                        },
+                    ));
                 }
             } else if wire == crate::app::error_display::WireErrorType::EncryptedContentMismatch
                 || wire == crate::app::error_display::WireErrorType::LegacyAuth

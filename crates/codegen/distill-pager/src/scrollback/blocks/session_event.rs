@@ -129,7 +129,17 @@ pub enum SessionEvent {
     /// Terminal context overflow, ideally unreachable since auto-compaction should shrink the conversation first.
     /// A safeguard for when it didn't (estimate drift vs the server's max_prompt_length, or compaction suppressed/failed).
     /// One actionable prompt, replacing the stacked CompactionFailed, RetryFailed, and TurnFailed banners.
-    ContextTooLarge,
+    ///
+    /// Carries what the wire said, because the conversation is only one of the
+    /// ways to land here: an endpoint whose limit is smaller than the model entry
+    /// claims refuses a request the conversation does not explain, and a generic
+    /// "start a new session" would send the reader after the wrong cause.
+    ContextTooLarge {
+        /// The model the refused request ran on, when the session knows it.
+        model: Option<String>,
+        /// The endpoint's own limit in tokens, when its error stated one.
+        stated_limit: Option<u64>,
+    },
     /// Session disk is full.
     DiskFull,
     /// Manual `/compact` command started. The invocation marker that pairs each `/compact` with its own outcome line.
@@ -465,11 +475,25 @@ impl SessionEvent {
                  your message."
                     .to_string()
             }
-            SessionEvent::ContextTooLarge => {
-                "This conversation is too large for the model's context window. \
-                 Use /new to start a new session."
-                    .to_string()
-            }
+            SessionEvent::ContextTooLarge {
+                model,
+                stated_limit,
+            } => match (model.as_deref(), stated_limit) {
+                (Some(model), Some(limit)) => format!(
+                    "The endpoint for {model} refused the request: its maximum context \
+                     length is {limit} tokens. If {model}'s context_window or \
+                     max_completion_tokens says more than that, the model entry is what is \
+                     wrong — use /new only when the conversation itself is the cause."
+                ),
+                (Some(model), None) => format!(
+                    "The endpoint for {model} refused the request as too large. Check that \
+                     model's context_window and max_completion_tokens; use /new only when \
+                     the conversation itself is the cause."
+                ),
+                _ => "This conversation is too large for the model's context window. \
+                      Use /new to start a new session."
+                    .to_string(),
+            },
             SessionEvent::DiskFull => {
                 distill_shell::extensions::notification::DISK_FULL_USER_MESSAGE.to_string()
             }
@@ -551,7 +575,7 @@ impl SessionEvent {
         matches!(
             self,
             SessionEvent::ReAuthRequired
-                | SessionEvent::ContextTooLarge
+                | SessionEvent::ContextTooLarge { .. }
                 | SessionEvent::DiskFull
                 | SessionEvent::CompactionFailed { .. }
                 | SessionEvent::RequestFailed { .. }
@@ -972,7 +996,11 @@ mod tests {
 
     #[test]
     fn context_too_large_message_is_actionable() {
-        let msg = SessionEvent::ContextTooLarge.message();
+        let msg = SessionEvent::ContextTooLarge {
+            model: None,
+            stated_limit: None,
+        }
+        .message();
         assert!(
             msg.to_lowercase().contains("too large"),
             "must explain the conversation is too large: {msg}"
@@ -985,7 +1013,10 @@ mod tests {
 
     #[test]
     fn context_too_large_has_warning_accent() {
-        let block = SessionEventBlock::new(SessionEvent::ContextTooLarge);
+        let block = SessionEventBlock::new(SessionEvent::ContextTooLarge {
+            model: None,
+            stated_limit: None,
+        });
         let theme = Theme::current();
         let accent = block.accent(&ctx());
         assert_eq!(

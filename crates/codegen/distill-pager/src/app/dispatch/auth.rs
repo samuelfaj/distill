@@ -170,7 +170,7 @@ pub(super) fn scrollback_has_recent_context_too_large(
     trailing_session_events(scrollback).any(|(_, ev)| {
         matches!(
             ev,
-            SessionEvent::ContextTooLarge | SessionEvent::CompactionFailed { .. }
+            SessionEvent::ContextTooLarge { .. } | SessionEvent::CompactionFailed { .. }
         )
     })
 }
@@ -191,7 +191,7 @@ pub(in crate::app) fn scrollback_has_recent_error_banner(
         matches!(
             ev,
             SessionEvent::ReAuthRequired
-                | SessionEvent::ContextTooLarge
+                | SessionEvent::ContextTooLarge { .. }
                 | SessionEvent::DiskFull
                 | SessionEvent::RequestFailed { .. }
         )

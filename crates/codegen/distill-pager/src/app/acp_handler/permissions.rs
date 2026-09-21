@@ -432,7 +432,7 @@ fn session_event_settles_turn(event: &crate::scrollback::blocks::SessionEvent) -
         || matches!(
             event,
             SessionEvent::ReAuthRequired
-                | SessionEvent::ContextTooLarge
+                | SessionEvent::ContextTooLarge { .. }
                 | SessionEvent::DiskFull
                 | SessionEvent::CompactionFailed { .. }
                 | SessionEvent::RetryFailed { .. }

@@ -816,9 +816,51 @@
         assert!(
             matches!(
                 last_session_event(&scrollback),
-                Some(SessionEvent::ContextTooLarge)
+                Some(SessionEvent::ContextTooLarge { .. })
             ),
             "context overflow must surface the actionable ContextTooLarge prompt"
+        );
+    }
+
+    /// An endpoint that states a smaller limit than the model entry claims must
+    /// say so: the reader was sent to `/new` for a request the conversation does
+    /// not explain.
+    #[test]
+    fn context_too_large_names_the_model_and_the_endpoints_limit() {
+        use distill_shell::extensions::notification::CONTEXT_LENGTH_ERROR_TYPE;
+        let mut session = make_session(Some("s1"));
+        session
+            .models
+            .set_current(agent_client_protocol::ModelId::new("deepseek-v4.1-flash"), None);
+        let mut scrollback = ScrollbackState::new();
+        apply_retry_state(
+            &RetryState::Failed {
+                error_type: CONTEXT_LENGTH_ERROR_TYPE.into(),
+                message: "API error (status 400 Bad Request): This endpoint's maximum context \
+                          length is 131072 tokens. However, you requested about 177043 tokens"
+                    .into(),
+            },
+            &mut session,
+            &mut scrollback,
+            false,
+        );
+        let Some(SessionEvent::ContextTooLarge {
+            model,
+            stated_limit,
+        }) = last_session_event(&scrollback)
+        else {
+            panic!("expected ContextTooLarge, got {:?}", last_session_event(&scrollback));
+        };
+        assert_eq!(model.as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(stated_limit, Some(131_072));
+        let msg = SessionEvent::ContextTooLarge {
+            model,
+            stated_limit,
+        }
+        .message();
+        assert!(
+            msg.contains("deepseek-v4.1-flash") && msg.contains("131072"),
+            "the banner must name the model and the endpoint's own limit, got: {msg}"
         );
     }
 

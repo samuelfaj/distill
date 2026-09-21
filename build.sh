@@ -13,8 +13,8 @@ if [[ -z "$version" ]]; then
   exit 1
 fi
 
-#CARGO_PROFILE_RELEASE_DEBUG=0 GROK_VERSION="$version" \
-#  cargo build --locked --release -p distill-pager-bin --bin distill
+CARGO_PROFILE_RELEASE_DEBUG=0 GROK_VERSION="$version" \
+  cargo build --locked --release -p distill-pager-bin --bin distill
 
 binary="${CARGO_TARGET_DIR:-target}/release/distill"
 case "$binary" in

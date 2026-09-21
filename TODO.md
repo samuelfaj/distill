@@ -18,6 +18,15 @@ Status possíveis:
 
 ---
 
+## 0. O que a medição deste trabalho encontrou
+
+| achado | evidência |
+| --- | --- |
+| O gate de literais colhia `error`/`failed`/`failure` da lista de palavras em minúsculas e cobrava a palavra em maiúsculas, então **qualquer** relatório com `FAILED` era recusado | `reduce::literals` passou a colher a palavra como o payload a escreve; teste `the_report_chain_applies_the_test_pass` |
+| Um diff unificado é documento, então `diff_crusher` nunca rodou no caminho vivo, nem antes desta mudança | `retention::looks_structured` barra qualquer linha `diff --git`/`@@ `; teste `the_fixture_set_shrinks_and_every_literal_survives` |
+| A pipeline que os testes dirigiam era uma **cópia** da do caminho vivo, não o mesmo código | as duas divergiram: a cópia não aplicava o portão de documento. Agora o caminho vivo chama `jev_lanes::reduce_payload` |
+| Três lanes do modelo de utilidade estavam implementadas e desligadas por default | `e_cheap_task`, `e_cheap_compress` e `e_lane_choice` agora ligadas em `JevFlags::harness_default` |
+
 ## 1. No caminho vivo hoje
 
 Tudo abaixo entra pelo mesmo ponto, `jev_post_process_tool_result`
@@ -32,14 +41,14 @@ então é ela que o teste dirige e é ela que a sessão roda.
 | Strip de ANSI | `ansi_escape_strip` | `live` | primeiro passo fixo da cadeia |
 | Colapso de frames de progresso | `progress_bar_crusher` | `live` | segundo passo fixo |
 | Colapso de repetição (log/listagem/comando) | `log_crusher` | `live` | `reduce_redundancy`, preserva todo literal por construção |
-| Crush de diff | `diff_crusher` | `live` | mantém cabeçalhos, hunks e linhas mudadas |
+| Crush de diff | `diff_crusher` | `unwired` | **medido neste trabalho**: um diff unificado é documento para o `looks_structured` (qualquer linha `diff --git`/`@@ `), então o portão barra antes da cadeia; o teste `the_fixture_set_shrinks_and_every_literal_survives` fixa que os bytes ficam idênticos |
 | Colapso de padding de colunas | `padded_table_compact` | `live` | **ligado neste trabalho**; é o ganho novo mais claro |
-| Compressão de relatório de teste | `test_crusher` | `live·gated` | **ligado neste trabalho**; recusa quando a linha descartada carrega literal |
+| Compressão de relatório de teste | `test_crusher` | `live` | **ligado neste trabalho**; exigiu corrigir o gate de literais, que colhia `error`/`failed`/`failure` em minúsculas e cobrava a palavra em maiúsculas, recusando qualquer relatório com `FAILED` |
 | Compressão de stack trace | `stack_crusher` | `live·gated` | **ligado neste trabalho**; recusa um dump com endereços, porque endereço é literal |
 | Redução de lockfile | `lockfile_crusher` | `live·gated` | **ligado neste trabalho**; na prática recusa (versões e checksums são literais) e cai para o colapso de repetição |
-| Crush de JSON | `json_crusher` | `live·gated` | **ligado neste trabalho**; o portão de documento barra, porque JSON é o próprio documento |
-| Crush de HTML | `html_crusher` | `live·gated` | **ligado neste trabalho**; mesmo caso do JSON |
-| Strip de output de notebook | `notebook_crusher` | `live·gated` | **ligado neste trabalho**; notebook é JSON, então cai no mesmo portão |
+| Crush de JSON | `json_crusher` | `unwired` | **medido neste trabalho**: o portão de documento barra, porque JSON é o próprio documento |
+| Crush de HTML | `html_crusher` | `unwired` | **medido neste trabalho**: mesmo caso do JSON |
+| Strip de output de notebook | `notebook_crusher` | `unwired` | **medido neste trabalho**: notebook é JSON, então cai no mesmo portão |
 | Elisão por importância (cabeça, cauda, meio) | `stdout_budget_elide` | `live` | lossy: grava o original antes e nomeia o arquivo no corpo |
 | Store byte-exato do original | `retrieve` | `live` | `jev_store::store_payload`, lido de volta byte a byte |
 | Poda de família de ferramentas por turno | `p1_tool_family` | `live` | não é crusher: muda o que é anunciado, não o payload |
@@ -72,7 +81,8 @@ então é ela que o teste dirige e é ela que a sessão roda.
 | Aviso de payload duplicado | `duplicate_notice` | `unwired` | o reuso de leitura cobre o mesmo caso para bytes idênticos |
 | Detector de token volátil | `volatile_tokens` | `unwired` | é diagnóstico de cache do provedor, não muda bytes |
 | Auto-citação de `file:line` | `error_site_autoquote` | `unwired` | `error_site_refs` existe e é puro; falta o passo que anexa as linhas |
-| 91 das 93 tarefas registradas | família `e_cheap_task` | `unwired` | a registry em `jev/tasks.rs` tem 93 tarefas; o caminho vivo chamava só `test_verdict` e `distill_command_output`, e ambos atrás de lane desligada por default |
+| Família de digest por comando e forma | família `e_cheap_task` | `live` | **ligado neste trabalho**: `tasks::task_for_payload` mapeia comando e classe para o id registrado, a lane `e_cheap_task` está ligada por default, e cada resposta passa pelo guard da própria tarefa |
+| Famílias de draft, i18n, triagem e commit | `commit_message_draft`, `pr_description_draft`, `release_notes_draft`, `i18n_key_diff`, `i18n_translation_draft`, `issue_triage_draft`, `sql_query_draft`, `search_query_suggest`, `plan_candidate` e afins | `unwired` | nada as seleciona: são trabalho que o modelo de sessão pede, não digest de payload; o mapa cobre o que a forma do payload decide |
 
 ## 3. Portável do app macOS
 
@@ -121,7 +131,7 @@ trabalho:
 `JevFlags::harness_default()` em `crates/codegen/distill-workspace/src/jev/flags.rs`
 é a lista autoritativa.
 
-Ligadas: `e_crushers`, `e_importance`, `e_read_reuse`, `e_breaker`,
+Ligadas (incluindo as três lanes do modelo de utilidade, ligadas neste trabalho): `e_crushers`, `e_importance`, `e_read_reuse`, `e_cheap_task`, `e_cheap_compress`, `e_lane_choice`, `e_breaker`,
 `d2_big_output_retention`, `d3_post_compaction`, `p1_tool_family`,
 `p2_read_shortlist`, `p3_compaction_recorte`, `p6_skill_suggestion`, `b2_light_model`,
 `b2_local_model`, `b2_micro_effort` e as demais `a*`, `b1`, `b3`, `b6`, `c1`–`c5`, `c7`.
@@ -131,10 +141,10 @@ Desligadas, com o motivo:
 | chave | motivo para continuar desligada |
 | --- | --- |
 | `e_retention` | lane que pergunta chunk a chunk; sem medição de custo por chamada, o gasto pode passar o ganho |
-| `e_cheap_compress` | idem: uma chamada paga por payload |
-| `e_cheap_task` | é a lane das 93 tarefas; ligar exige o mapa comando+classe → tarefa (seção 3, primeiro item) |
+
+
 | `e_cheap_agent` | a lane de subagente barato não está ligada; a decisão registra `defer` em vez de fingir |
-| `e_lane_choice` | a bateria que decide main-vs-cheap por micro-ação ainda não tem portão de custo |
+
 | `e_prompt_blocks` | recorte do prompt-base; precisa de whitelist de blocos obrigatórios |
 | `b2_model_tier` | alavanca de dinheiro; espera o portão dela |
 | `c6_injection_screen` | espera medição do próprio custo |

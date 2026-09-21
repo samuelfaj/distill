@@ -30,10 +30,19 @@ the harness keeps its normal execution path.
 
 ## Reasoning and Worker
 
-With `/effort auto`, Jev can choose a model and effort for each call within a
-turn. It receives the model's supported effort choices, the current phase of
-the turn, recent steps, and the user's request. It can keep the session's model
-or effort instead of changing them.
+Jev chooses between the configured Reasoning and Worker models for each call.
+`/effort auto` lets it choose the Reasoning model's effort; a fixed effort pins
+that model's intensity without disabling Worker routing. `/worker-model <model>
+[effort]` independently sets the Worker's effort, defaulting to `auto`. Explicit
+subagent model and effort policies remain pinned.
+
+Model selection and the candidates' separate effort questions share one request.
+Each effort is validated against the selected model's own menu, including model-ID
+variants. The Utility model also keeps its explicit effort, or uses its own auto
+selection. An uncertain answer preserves the selected model's configured default.
+The decision considers the next action, recent results, and the previous dispatch:
+Worker execution should be bounded and already decided; investigative tool use
+can still need the Reasoning model.
 
 Worker routing requires a confidence of at least 0.55. Effort selection uses a
 floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
@@ -55,6 +64,35 @@ b2_light_model = true
 
 `light` names a configured model entry. Leave it unset to run without a Worker,
 or set `b2_light_model = false` to turn off Worker routing.
+
+## Optional model facts and cache
+
+Jev enriches configured candidates with OpenRouter's public model catalog:
+context, tool/reasoning support, pricing (including cache reads), and available
+Artificial Analysis coding, agentic, and intelligence scores. The public catalog
+works without OpenRouter login. With an existing OpenRouter key, the benchmarks
+API supplies additional scores. No login is required or prompted for this feature.
+
+OpenRouter candidates also receive provider endpoint facts: recent uptime,
+latency, throughput, and implicit-cache support when published. These are hints
+about available endpoints, not a guarantee of which provider will serve a request.
+Prices and endpoint capabilities apply only to OpenRouter routes, never to
+ChatGPT/Grok subscriptions or direct-provider billing. Exact model IDs (and the
+catalog's canonical mapping) are used; missing matches remain unknown. Benchmark
+scores do not imply a measured benefit from a particular reasoning effort.
+
+`jev/model-facts-v1.json` under the active profile stores the cache. Catalog and
+benchmark entries refresh after 24 hours; endpoint entries after 15 minutes.
+Refreshes run in the background, with atomic writes and a nonblocking process lock.
+Failures retain the previous data and back off for an hour (15 minutes for
+endpoints). Catalog/benchmark facts expire after seven days; endpoint facts after
+one hour. Routing reads the in-memory snapshot and never waits for these HTTP
+requests. Offline, missing-key, and invalid-response cases keep normal routing.
+
+Only public model IDs are queried; task content is not sent to metadata endpoints.
+Jev considers total task cost, retries, and possible loss of prompt-cache reuse
+when switching models. Benchmark and price hints do not override the configured
+candidate set, context guard, explicit effort, or permission policy.
 
 ## Utility work
 

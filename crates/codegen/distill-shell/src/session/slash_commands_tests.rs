@@ -238,6 +238,23 @@ fn yolo_alias_resolves_to_always_approve() {
 // ── resolve ─────────────────────────────────────────────────────
 
 #[test]
+fn openrouter_import_resolves_without_a_model_round_trip() {
+    let outcome = resolve(
+        vec![text_block("/openrouter z-ai/glm-5.3-flash")],
+        &[],
+        all_gated(),
+        SkillSlashRewrite::default(),
+        &[],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        outcome,
+        SlashCommandOutcome::Builtin(BuiltinAction::ImportOpenRouterModel { model })
+            if model == "z-ai/glm-5.3-flash"
+    ));
+}
+
+#[test]
 fn resolve_routes_builtin() {
     let outcome = resolve(
         vec![text_block("/compact preserve auth")],

@@ -317,6 +317,16 @@ impl ModelsManager {
         *self.inner.gateway.write() = Some(gateway);
     }
 
+    /// Publish imported model entries immediately, preserving runtime settings and selection.
+    pub(crate) fn reload_configured_models(&self) -> anyhow::Result<()> {
+        let disk = crate::config::load_effective_config()?;
+        let parsed = config::Config::new_from_toml_cfg(&disk).map_err(anyhow::Error::msg)?;
+        let mut config = self.inner.cfg.read().clone();
+        config.config_models = parsed.config_models;
+        self.apply_config(config);
+        Ok(())
+    }
+
     /// Swap config, rebuild catalog, and reselect the model.
     pub(crate) fn apply_config(&self, new_config: config::Config) {
         if let Err(e) = new_config.validate_model_filters() {

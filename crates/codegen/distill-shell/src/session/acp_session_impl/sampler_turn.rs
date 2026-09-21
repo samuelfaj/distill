@@ -1058,10 +1058,8 @@ impl SessionActor {
             session_id, turn_id, round_id, requested_model = sampler_config.model,
             requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
             "model round before Jev routing");
-        // B2 (auto): when the user picked `/effort auto`, the decision layer
-        // chooses which model makes THIS call — the session's, or its lighter
-        // sibling when one is configured — and its effort; otherwise the round
-        // keeps the session's own model and effort.
+        // Choose this call's executor independently of each model's effort policy.
+        // Explicit efforts stay fixed; auto efforts use that candidate's own menu.
         self.jev_choose_model_and_effort(&mut sampler_config).await;
         // B2 (local): with a local model configured, the free model takes the
         // call whenever it can fully do it.

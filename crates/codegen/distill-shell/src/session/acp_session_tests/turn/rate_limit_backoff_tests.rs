@@ -397,17 +397,21 @@ async fn controlled_routes_are_captured_on_the_wire() {
             crate::jev::set_test_local_config(Default::default());
             crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
                 light: Some("worker-model".to_owned()),
-                light_effort: Some("low".to_owned()),
+                light_effort: Some("auto".to_owned()),
             });
             install_wire_routing_catalog_with_windows(
                 &actor,
                 &server.url(),
                 vec![distill_sampling_types::ReasoningEffortOption {
+                    id: "high".to_owned(),
+                    value: distill_sampling_types::ReasoningEffort::High,
+                    label: "High".to_owned(), description: None, default: true,
+                }, distill_sampling_types::ReasoningEffortOption {
                     id: "low".to_owned(),
                     value: distill_sampling_types::ReasoningEffort::Low,
                     label: "Low".to_owned(),
                     description: Some("short routine call".to_owned()),
-                    default: true,
+                    default: false,
                 }],
                 128_000,
                 272_000,
@@ -426,21 +430,34 @@ async fn controlled_routes_are_captured_on_the_wire() {
                     Some(distill_workspace::jev::catalog::routing::TIER_HARD_LABEL),
                     "high",
                 )),
-                Some(controlled_route_answer(
-                    Some(distill_workspace::jev::catalog::routing::TIER_LIGHT_LABEL),
-                    "low",
-                )),
+                Some({
+                    let mut answer = controlled_route_answer(
+                        Some(distill_workspace::jev::catalog::routing::TIER_LIGHT_LABEL), "high",
+                    );
+                    answer.answers.insert(
+                        distill_workspace::jev::catalog::routing::WORKER_EFFORT_QUESTION.to_owned(),
+                        distill_workspace::jev::Answer::Choice {
+                            choice: "low".to_owned(), probabilities: Default::default(), confidence: Some(1.0),
+                        },
+                    );
+                    answer
+                }),
                 Some(controlled_route_answer(
                     Some(distill_workspace::jev::catalog::routing::TIER_HARD_LABEL),
                     "high",
                 )),
             ]);
 
-            for (expected_model, expected_effort) in [
-                ("reasoning-model", Some("high")),
-                ("worker-model", Some("low")),
-                ("reasoning-model", Some("high")),
+            for (expected_model, expected_effort, auto) in [
+                ("reasoning-model", Some("high"), true),
+                ("worker-model", Some("low"), false),
+                ("reasoning-model", Some("high"), false),
             ] {
+                // A pinned reasoning effort still permits the worker's own auto effort.
+                actor.jev_effort_auto.store(auto, std::sync::atomic::Ordering::Relaxed);
+                if expected_model == "worker-model" {
+                    actor.jev_ledger.borrow_mut().raise_effort_floor("high", distill_sampling_types::ReasoningEffort::High);
+                }
                 // This is the production per-round preparation path. The
                 // request is parked only after preparation so no ledger state
                 // can substitute for the chooser's final sampler config.
@@ -1613,6 +1630,84 @@ async fn subagents_over_cap_all_complete_under_paced_time() {
                 metrics.failed, 0,
                 "no turn may fail terminally under the cap"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn utility_effort_uses_its_own_policy_and_rejects_unsupported_picks() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .unwrap();
+            let (actor, _) =
+                actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+            install_wire_routing_catalog(&actor, &server.url());
+            // Utility supports low only; neither the session's high nor an invalid
+            // automatic answer may be copied to it.
+            crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                model: Some("worker-model".into()),
+                effort: Some("low".into()),
+                ..Default::default()
+            });
+            crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
+            let mut cfg = distill_sampler::SamplerConfig {
+                model: "reasoning-model".into(),
+                base_url: server.url(),
+                reasoning_effort: Some(distill_sampling_types::ReasoningEffort::High),
+                ..Default::default()
+            };
+            actor.jev_route_micro_call(&mut cfg).await;
+            assert_eq!(cfg.model, "worker-model");
+            assert_eq!(
+                cfg.reasoning_effort,
+                Some(distill_sampling_types::ReasoningEffort::Low)
+            );
+            install_wire_routing_catalog_with_worker_efforts(
+                &actor,
+                &server.url(),
+                vec![
+                    distill_sampling_types::ReasoningEffortOption {
+                        id: "low".into(),
+                        value: distill_sampling_types::ReasoningEffort::Low,
+                        label: "Low".into(),
+                        description: None,
+                        default: true,
+                    },
+                    distill_sampling_types::ReasoningEffortOption {
+                        id: "medium".into(),
+                        value: distill_sampling_types::ReasoningEffort::Medium,
+                        label: "Medium".into(),
+                        description: None,
+                        default: false,
+                    },
+                ],
+            );
+            crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                model: Some("worker-model".into()),
+                effort: Some("auto".into()),
+                ..Default::default()
+            });
+            let mut answer = controlled_local_capable_answer();
+            answer.answers.insert(
+                distill_workspace::jev::catalog::routing::UTILITY_EFFORT_QUESTION.into(),
+                distill_workspace::jev::Answer::Choice {
+                    choice: "high".into(),
+                    probabilities: Default::default(),
+                    confidence: Some(1.0),
+                },
+            );
+            crate::jev::set_test_decision_answers([Some(answer)]);
+            cfg.model = "reasoning-model".into();
+            cfg.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+            actor.jev_route_micro_call(&mut cfg).await;
+            assert_eq!(
+                cfg.reasoning_effort,
+                Some(distill_sampling_types::ReasoningEffort::Low)
+            );
+            crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_local_config();
         })
         .await;
 }

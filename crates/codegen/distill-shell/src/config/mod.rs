@@ -1620,7 +1620,7 @@ pub(crate) fn resolve_effective_plugins_config(
 pub use distill_config::{deep_merge_toml, expand_env_vars_in_string, expand_env_vars_in_toml};
 /// Locked read-modify-write of `~/.grok/config.toml`: the whole window runs under the config-init
 /// flock and lands via atomic replace; unchanged configs skip the write.
-fn update_config_toml_locked(
+pub(crate) fn update_config_toml_locked(
     distill_home: &std::path::Path,
     mutate: impl FnOnce(&mut toml::value::Table) -> Result<bool, Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {

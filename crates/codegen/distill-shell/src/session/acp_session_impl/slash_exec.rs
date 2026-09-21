@@ -14,6 +14,21 @@ impl SessionActor {
             args_provided: action.args_provided(),
         });
         match action {
+            BuiltinAction::ImportOpenRouterModel { model } => {
+                let text = match crate::openrouter_models::import(&model).await {
+                    Ok(key) => match self.models_manager.reload_configured_models() {
+                        Ok(_) => {
+                            format!("OpenRouter model saved: {key}\nSelect it with /model {key}")
+                        }
+                        Err(error) => format!(
+                            "OpenRouter model saved: {key}, but the catalog could not reload: {error}. Restart Distill to load it."
+                        ),
+                    },
+                    Err(error) => format!("OpenRouter model not saved: {error:#}"),
+                };
+                self.send_host_turn_slash_command_output(&text).await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::Compact { user_context } => {
                 self.run_compact(user_context).await?;
                 ok_end_turn(0, None)

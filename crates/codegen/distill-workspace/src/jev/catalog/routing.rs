@@ -345,6 +345,15 @@ pub fn micro_effort_questions(
     model_name: &str,
     offered: &[EffortChoice],
 ) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    micro_effort_questions_for(model_name, offered, MICRO_EFFORT_QUESTION)
+}
+
+/// Each candidate gets its own effort question in the same decision request.
+pub fn micro_effort_questions_for(
+    model_name: &str,
+    offered: &[EffortChoice],
+    question_id: &str,
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
     if offered.is_empty() {
         return Err(JevError::invalid("the model offers no reasoning efforts"));
     }
@@ -360,17 +369,19 @@ pub fn micro_effort_questions(
     }
     criteria.insert(
         MICRO_EFFORT_FALLBACK_LABEL.to_owned(),
-        Json::String("Keep the session's own effort for this call".to_owned()),
+        Json::String("Keep this candidate model's configured effort for this call".to_owned()),
     );
     let mut questions = BTreeMap::new();
     questions.insert(
-        MICRO_EFFORT_QUESTION.to_owned(),
+        question_id.to_owned(),
         Question::choice(
             format!(
                 "Model `{model_name}` is about to make one more model call — the single step described \
                  in `micro_action`. Judge that step only, not the whole task. Which reasoning effort \
                  should THIS one call use? Pick the cheapest effort that still handles the step; do not \
-                 pick a stronger setting than the step needs."
+                 pick a stronger setting than the step needs. Minimize total task cost including retries \
+                 and recovery, not only this call. Benchmarks are capability evidence, not measured gains \
+                 from increasing effort; honor this model's own offered menu."
             ),
             criteria,
         )?,
@@ -382,6 +393,8 @@ pub fn micro_effort_questions(
 pub const MICRO_EFFORT_FALLBACK_LABEL: &str = "keep_session_effort";
 /// Question id of the auto-effort choice.
 pub const MICRO_EFFORT_QUESTION: &str = "micro_effort";
+pub const WORKER_EFFORT_QUESTION: &str = "worker_effort";
+pub const UTILITY_EFFORT_QUESTION: &str = "utility_effort";
 
 /// What the decision is told about one tier's model. Facts only: what it is
 /// called, its id, the window it really has, and the owner's note about it.
@@ -442,7 +455,7 @@ pub fn micro_tier_questions(
     criteria.insert(
         TIER_LIGHT_LABEL.to_owned(),
         Json::String(describe(
-            "The worker model: prefer for implementation, tool calls, routine edits, searches, tests, commands, and ordinary continuation",
+            "The worker model: execute an already-decided action, mechanical edits, a specified search or test, and bounded implementation with clear acceptance criteria",
             light,
         )),
     );
@@ -456,11 +469,16 @@ pub fn micro_tier_questions(
         Question::choice(
             format!(
                 "The next single model call is described in `micro_action`. Choose the role for THIS \
-                 call, without considering the whole task. Prefer the worker for ordinary execution, \
-                 tool use, implementation, searches, tests, commands, and continuation. Use the \
+                 call, without considering the whole task. Prefer the worker when the next action is already decided and bounded. \
+                 A tool call, search, or implementation can still require deep reasoning; classify the \
+                 decision needed, not the tool name. Use the \
                  reasoning model for planning, architecture, ambiguous decisions, review, verification, \
                  or recovery from a failure. When the role is unclear, keep the reasoning model. The \
-                 harness already provides both models; choose only between these offered roles. The \
+                 harness already provides both models; choose only between these offered roles. \
+                 Minimize total task cost including retries and recovery. Compare benchmarks only within \
+                 the same source and metric; missing scores are unknown, never zero. Pricing and endpoint \
+                 metrics describe OpenRouter only, not subscriptions or other providers. Prefer continuity \
+                 when both choices are adequate and savings are marginal: switching can lose prompt cache. The \
                  session's reasoning model is `{}`.",
                 hard.name
             ),
@@ -487,14 +505,17 @@ pub fn compose_micro_tier(answers: &JevAnswerSet) -> Option<String> {
 
 /// B2: the effort to use for this call, or `None` to keep the session's.
 pub fn compose_micro_effort(answers: &JevAnswerSet, offered: &[EffortChoice]) -> Option<String> {
+    compose_micro_effort_for(answers, offered, MICRO_EFFORT_QUESTION)
+}
+
+pub fn compose_micro_effort_for(
+    answers: &JevAnswerSet,
+    offered: &[EffortChoice],
+    question_id: &str,
+) -> Option<String> {
     let mut allowed: Vec<&str> = offered.iter().map(|c| c.id.as_str()).collect();
     allowed.push(MICRO_EFFORT_FALLBACK_LABEL);
-    let pick = pick_one(
-        answers,
-        MICRO_EFFORT_QUESTION,
-        &allowed,
-        MICRO_EFFORT_MIN_CONFIDENCE,
-    );
+    let pick = pick_one(answers, question_id, &allowed, MICRO_EFFORT_MIN_CONFIDENCE);
     pick.choice
         .filter(|choice| choice != MICRO_EFFORT_FALLBACK_LABEL)
 }
@@ -961,6 +982,47 @@ mod tests {
         );
 
         assert!(micro_effort_questions("m", &[]).is_err());
+    }
+
+    #[test]
+    fn candidate_efforts_are_independent_in_one_battery() {
+        let reasoning = vec![
+            EffortChoice {
+                id: "low".into(),
+                description: String::new(),
+            },
+            EffortChoice {
+                id: "high".into(),
+                description: String::new(),
+            },
+        ];
+        let worker = vec![
+            EffortChoice {
+                id: "medium".into(),
+                description: String::new(),
+            },
+            EffortChoice {
+                id: "max".into(),
+                description: String::new(),
+            },
+        ];
+        let mut battery = micro_effort_questions("Reasoning", &reasoning).unwrap();
+        battery
+            .extend(micro_effort_questions_for("Worker", &worker, WORKER_EFFORT_QUESTION).unwrap());
+        assert_eq!(battery.len(), 2);
+        let answers = answers(vec![
+            (MICRO_EFFORT_QUESTION, choice("low", 0.9, &[("low", 0.9)])),
+            (WORKER_EFFORT_QUESTION, choice("max", 0.9, &[("max", 0.9)])),
+        ]);
+        assert_eq!(
+            compose_micro_effort(&answers, &reasoning).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            compose_micro_effort_for(&answers, &worker, WORKER_EFFORT_QUESTION).as_deref(),
+            Some("max")
+        );
+        assert!(compose_micro_effort_for(&answers, &worker, MICRO_EFFORT_QUESTION).is_none());
     }
 
     /// The menu handed to the battery is the model's own, cheapest first.

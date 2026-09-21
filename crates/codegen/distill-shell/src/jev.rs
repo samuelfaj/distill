@@ -1048,17 +1048,9 @@ pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
             .name
             .clone()
             .unwrap_or_else(|| light.info.model.clone()),
-        effort: if let Some(effort) = tiers_cached().light_effort.as_deref() {
-            effort.to_owned()
-        } else if effort_auto_cached() {
-            "auto".to_owned()
-        } else {
-            light
-                .info
-                .reasoning_effort
-                .map(|effort| effort.to_string())
-                .unwrap_or_else(|| "auto".to_owned())
-        },
+        effort: tiers_cached()
+            .light_effort
+            .unwrap_or_else(|| "auto".to_owned()),
         window: light.info.context_window.get(),
     }
 }

@@ -58,6 +58,18 @@ fn resolve_compact(args: &str) -> BuiltinAction {
 /// Order here is the display order in autocomplete.
 pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     BuiltinCommand {
+        name: "openrouter",
+        description: "Import or update a model from OpenRouter",
+        argument_hint: Some("provider/model"),
+        aliases: &[],
+        model_authored_eligibility: ModelAuthoredEligibility::Denied,
+        gate: BuiltinGate::AlwaysOn,
+        workflow_projection: WorkflowProjection::None,
+        resolve: |args| BuiltinAction::ImportOpenRouterModel {
+            model: args.trim().to_owned(),
+        },
+    },
+    BuiltinCommand {
         name: "compact",
         description: "Compress conversation history to save context window",
         argument_hint: Some("optional context about what to preserve"),
@@ -1215,6 +1227,9 @@ pub(super) enum SlashCommandOutcome {
 }
 #[derive(Debug)]
 pub(super) enum BuiltinAction {
+    ImportOpenRouterModel {
+        model: String,
+    },
     Compact {
         user_context: Option<String>,
     },
@@ -1281,6 +1296,7 @@ pub(super) enum BuiltinAction {
 impl BuiltinAction {
     pub(crate) fn command_name(&self) -> &'static str {
         match self {
+            BuiltinAction::ImportOpenRouterModel { .. } => "openrouter",
             BuiltinAction::Compact { .. } => "compact",
             BuiltinAction::SetYolo { .. } => "yolo",
             BuiltinAction::FlushMemory => "flush",
@@ -1314,6 +1330,7 @@ impl BuiltinAction {
     }
     pub(crate) fn args_provided(&self) -> bool {
         match self {
+            BuiltinAction::ImportOpenRouterModel { model } => !model.is_empty(),
             BuiltinAction::Compact { user_context } => user_context.is_some(),
             BuiltinAction::SetYolo { .. } => true,
             BuiltinAction::FlushMemory => false,

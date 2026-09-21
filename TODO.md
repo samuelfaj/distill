@@ -26,6 +26,11 @@ Status possíveis:
 | Um diff unificado é documento, então `diff_crusher` nunca rodou no caminho vivo, nem antes desta mudança | `retention::looks_structured` barra qualquer linha `diff --git`/`@@ `; teste `the_fixture_set_shrinks_and_every_literal_survives` |
 | A pipeline que os testes dirigiam era uma **cópia** da do caminho vivo, não o mesmo código | as duas divergiram: a cópia não aplicava o portão de documento. Agora o caminho vivo chama `jev_lanes::reduce_payload` |
 | Três lanes do modelo de utilidade estavam implementadas e desligadas por default | `e_cheap_task`, `e_cheap_compress` e `e_lane_choice` agora ligadas em `JevFlags::harness_default` |
+| Sessão real (binary `2.0.3 (39f66a78)`, turno `ls -lR crates/codegen`): `e_crushers crush 18522 bytes -> 18279 bytes via log_crusher+padded_table_compact` | `~/.grok/logs/jev.jsonl`, janela 01:41:13Z: o `padded_table_compact` recém-ligado rodou no caminho vivo |
+| Na mesma sessão: `e_importance keep "a reduction would have dropped 235 literal(s); keeping today's bytes"` | o portão recusou a redução lossy e manteve os bytes: a garantia de "nenhum literal perdido" observada ao vivo |
+| Na mesma sessão: `e_cheap_task defer "task tree_listing_digest refused or failed"` | o mapa escolheu a tarefa certa para a forma (listagem → `tree_listing_digest`) e o resultado não foi usado |
+| Por que o modelo de utilidade rende pouco numa listagem: quase todo token dela é literal (caminho, permissão, data, tamanho), então um digest que encurta perde literal e o guard recusa | é a resposta honesta à pergunta do dono; a lane é chamada e a resposta é rejeitada por proteção, não por preguiça |
+| O record de `e_cheap_task` diz "refused or failed" e não distingue recusa de guard de falha de transporte | `tasks::run` colapsa os dois em `None`; os contadores de saúde existem (`jev_cheap::note_failure`) mas nenhum código os lê neste repo, então não há breaker a corrigir hoje. Registrado como pendência: separar `Guard` de `Unavailable` antes de ligar qualquer breaker |
 
 ## 1. No caminho vivo hoje
 

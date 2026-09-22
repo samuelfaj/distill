@@ -5,10 +5,14 @@ Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP23–CP27
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
 > (`4e68e212`), CP26 precedência USD (`e8765e5f`) e CP27 captura de custo do
-> initial title (`450567a8`) estão aceitos. O CP27 passou pela recuperação
-> manual do controller e pelos focos worker 5, manual 1 e weak 1; isso fecha a
-> observabilidade do caminho no candidate, não a avaliação financeira. Os
-> checkpoints funcionais anteriores continuam referenciados: overflow de
+> initial title (`450567a8`) têm recibos funcionais aceitos. O CP27 passou pela
+> recuperação manual do controller e pelos focos worker 5, manual 1 e weak 1;
+> a revisão R1 ainda deixa aberta a correção de contabilização late/pending,
+> portanto isso não fecha a observabilidade financeira do caminho. CP28 prompt,
+> CP30 cited WebSearch e CP31 funcional no Mocha (`739a2fb0`) passaram, mas também não
+> completam T01–T21 nem a prova financeira. O baseline `30b5ada` está
+> versionado/construído, mas a lacuna de contabilização bloqueia a comparação.
+> Os checkpoints funcionais anteriores continuam referenciados: overflow de
 > `/goal` (`b36b39e2`), utility → worker e falhas opcionais (`7f5403a1`,
 > `f40f1d63`), custos free no ledger (`44a5d951`), `title_refresh`
 > (`b725d112`), skill/PDF (`f508eeb7`, `5b99fd6c`), invalidação read/memo

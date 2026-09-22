@@ -271,3 +271,38 @@ python3 -m tools.task_cost_eval.runner --help
 
 These tests validate the evaluator and protocol only. Synthetic records are
 not real measurements, and no report from them can complete T02, T20, or T21.
+
+## T05 first matched-pair readiness (2026-09-22)
+
+The next exploratory protocol is prepared outside the historical cohort under
+`/tmp/distill-cost-orchestration-20260921-b02qc6vm/pilot-prep/`. It plans one
+`tax-bug-en` pair (`product-baseline-d5` versus `candidate-bec1-r1`) to prove
+billing and isolation, not an overall product-gain result. The copied
+active-records and inventory-report fixtures remain the expansion pool; the
+historical cohort and smoke receipts are unchanged.
+
+CP31's functional Mocha receipt (`739a2fb0`) is retained as functional proof
+only; it does not close T01–T21, late accounting, or financial acceptance.
+
+The config pins the primary and auxiliary catalog routes to the same declared
+OpenRouter Qwen model and environment-key name, and requires the initial title
+attempt to be accounted for even though title refresh is disabled. Those routes
+are the generic Qwen Chat Completions decision adapter over OpenRouter; they are
+not an actual Jev service endpoint, and using the same backend is valid here for
+exploratory accounting/isolation only, not empirical calibration of Jev
+primitives. The current candidate runtime row is intentionally pending E2/E3 R1
+fixes and a fresh artifact. The baseline hash is an identity receipt only and
+also remains pending a late-accounting rebuild and proof; neither row is ready
+for execution. Public price math is only a conservative planning envelope.
+Provider-reported complete USD cost for every physical attempt remains
+mandatory; missing, partial, late, or unknown billing blocks the cell and is
+never zero.
+
+The exact protocol, redacted config, cohort, and public price snapshot are in
+`pilot-prep/protocol-t05-first-pair.md`, `pilot-prep/distill-config.toml`,
+`pilot-prep/cohort-t05-first-pair.json`, and
+`pilot-prep/price-snapshot-qwen3.7-flash.json`. The existing one-cell runner
+does not enforce an aggregate provider-call ceiling, so the protocol records
+that finite eligibility/stop condition as a controller dependency rather than
+presenting wall-clock timeout as a hard spend guarantee. This readiness artifact
+does not establish a savings claim.

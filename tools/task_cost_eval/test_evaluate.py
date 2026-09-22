@@ -126,7 +126,9 @@ class TaskCostEvaluationTest(unittest.TestCase):
         }
         path = root / "cohort.json"
         path.write_text(json.dumps(cohort), encoding="utf-8")
-        return load_cohort(path)
+        loaded = load_cohort(path)
+        self._cohort_digest = loaded["_cohort_sha256"]
+        return loaded
 
     def write_session(
         self,
@@ -219,6 +221,7 @@ class TaskCostEvaluationTest(unittest.TestCase):
         task = {
             "revision": revision,
             **self._case_hashes[case_id],
+            "cohort_sha256": self._cohort_digest,
         }
         task.update(task_overrides or {})
         return {
@@ -299,6 +302,51 @@ class TaskCostEvaluationTest(unittest.TestCase):
             self.assertEqual(comparison["secondary_matched_accepted_baseline_ticks"], 250)
             self.assertEqual(comparison["secondary_matched_accepted_candidate_ticks"], 100)
             self.assertEqual(comparison["savings_ticks"], 150)
+
+    def test_cohort_digest_controls_pairing_without_dropping_costs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cohort = self.make_cohort(root)
+            baseline_session = self.write_session(root, "baseline-session", cost="other")
+            candidate_session = self.write_session(root, "candidate-session", cost="present")
+            baseline = self.record("case-a", "baseline", baseline_session)
+
+            valid_report = build_report(
+                cohort,
+                [baseline, self.record("case-a", "candidate", candidate_session)],
+                manifest_dir=root,
+            )
+            valid_comparison = valid_report["comparisons"][0]
+            self.assertEqual(valid_comparison["matched_accepted_pairs"], 1)
+            self.assertTrue(valid_comparison["savings_claim_allowed"])
+
+            for index, (digest, reason) in enumerate(
+                (
+                    (None, "cohort_digest_missing"),
+                    ("f" * 64, "cohort_digest_mismatch"),
+                ),
+                1,
+            ):
+                candidate = self.record("case-a", "candidate", candidate_session)
+                if digest is None:
+                    candidate["task"].pop("cohort_sha256")
+                else:
+                    candidate["task"]["cohort_sha256"] = digest
+                manifest = root / f"runs-{index}.jsonl"
+                manifest.write_text(
+                    "\n".join(json.dumps(record) for record in (baseline, candidate)) + "\n",
+                    encoding="utf-8",
+                )
+                report = build_report(cohort, load_runs(manifest), manifest_dir=root)
+                comparison = report["comparisons"][0]
+                self.assertEqual(comparison["matched_accepted_pairs"], 0)
+                self.assertFalse(comparison["savings_claim_allowed"])
+                self.assertIn(reason, comparison["blocking_reasons"])
+                self.assertEqual(
+                    report["variants"]["candidate"]["cost_complete_ticks_all_runs"],
+                    100,
+                )
+                self.assertEqual(report["variants"]["candidate"]["accepted"], 1)
 
     def test_cost_basis_is_preserved_and_mixed_bases_block_pooling(self):
         with tempfile.TemporaryDirectory() as directory:

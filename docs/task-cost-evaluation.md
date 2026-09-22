@@ -79,7 +79,8 @@ record:
     "revision": "task-worktree-commit",
     "prompt_sha256": "...",
     "fixture_sha256": "...",
-    "grader_sha256": "..."
+    "grader_sha256": "...",
+    "cohort_sha256": "..."
   },
   "runtime": {
     "executable": "distill",
@@ -95,6 +96,12 @@ record:
   }
 }
 ```
+
+`cohort_sha256` is the SHA-256 of the exact cohort JSON bytes evaluated for the
+run. A pair is eligible only when both rows carry that digest and it matches
+the currently evaluated cohort. Missing or historical digests and different
+digests remain visible in the run and variant cost totals, but are explicitly
+unpaired and cannot support a savings claim.
 
 The frozen `task_base_sha` is matched for the Distill pair. Runtime pins are
 per-variant: executable version/SHA and config may legitimately differ between

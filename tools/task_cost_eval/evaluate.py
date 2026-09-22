@@ -53,6 +53,7 @@ RUNTIME_FIELDS = (
     "config_sha256",
 )
 TASK_HASH_FIELDS = ("prompt_sha256", "fixture_sha256", "grader_sha256")
+COHORT_HASH_FIELD = "cohort_sha256"
 SHA256_LENGTH = 64
 
 
@@ -315,6 +316,7 @@ def load_cohort(path: str | Path) -> dict[str, Any]:
             )
 
     cohort["_source"] = str(source)
+    cohort["_cohort_sha256"] = _sha256_file(source)
     cohort["_variant_ids"] = variant_ids
     cohort["_case_ids"] = case_ids
     cohort["_repetitions"] = repetitions
@@ -381,6 +383,9 @@ def load_runs(path: str | Path) -> list[dict[str, Any]]:
         _required_string(task.get("revision"), f"run {index}.task.revision")
         for field in TASK_HASH_FIELDS:
             _required_sha256(task.get(field), f"run {index}.task.{field}")
+        cohort_digest = task.get(COHORT_HASH_FIELD)
+        if cohort_digest is not None:
+            _required_sha256(cohort_digest, f"run {index}.task.{COHORT_HASH_FIELD}")
 
         runtime = record.get("runtime")
         if not isinstance(runtime, dict):
@@ -780,6 +785,7 @@ def _pair_comparison(
             missing.append({"case_id": case_id, "repetition": repetition})
             reasons.add("missing_execution")
             continue
+        pair_protocol_eligible = True
         for row, revisions in ((baseline, baseline_task_revisions), (candidate, candidate_task_revisions)):
             revision = row["task"].get("revision")
             if isinstance(revision, str) and revision:
@@ -797,6 +803,13 @@ def _pair_comparison(
             case_pin = cohort["_case_pins"][case_id]
             if any(row["task"].get(field) != case_pin[field] for field in TASK_HASH_FIELDS):
                 reasons.add("protocol_hash_mismatch")
+            row_cohort_digest = row["task"].get(COHORT_HASH_FIELD)
+            if row_cohort_digest is None:
+                reasons.add("cohort_digest_missing")
+                pair_protocol_eligible = False
+            elif row_cohort_digest != cohort["_cohort_sha256"]:
+                reasons.add("cohort_digest_mismatch")
+                pair_protocol_eligible = False
             runtime_pin = cohort["_variant_runtime_pins"][row["variant"]]
             if runtime_pin.get("status") != "pinned":
                 reasons.add("runtime_not_frozen")
@@ -814,7 +827,11 @@ def _pair_comparison(
         all_pairs.append((baseline, candidate))
         if baseline["accepted"] is True and candidate["accepted"] is not True:
             quality_gaps.append({"case_id": case_id, "repetition": repetition})
-        if baseline["accepted"] is True and candidate["accepted"] is True:
+        if (
+            baseline["accepted"] is True
+            and candidate["accepted"] is True
+            and pair_protocol_eligible
+        ):
             intersection.append((baseline, candidate))
         for row in (baseline, candidate):
             if row["execution_status"] in {"infra_failed", "inconclusive"}:

@@ -504,12 +504,14 @@ fn parse_wire_usage(body: &Json) -> (Usage, UsageBilling) {
         cache_creation_input_tokens: token("cache_creation_input_tokens")
             .or_else(|| nested_token("prompt_tokens_details", "cache_write_tokens")),
         reasoning_tokens: nested_token("completion_tokens_details", "reasoning_tokens"),
-        cost_usd_ticks: wire_usage
-            .and_then(|value| value.get("cost_usd_ticks"))
-            .and_then(Json::as_i64)
-            .filter(|&cost| cost > 0)
-            .or_else(|| parse_usd_ticks(wire_usage.and_then(|value| value.get("cost"))))
-            .or_else(|| parse_usd_ticks(body.get("cost"))),
+        cost_usd_ticks: parse_usd_ticks(wire_usage.and_then(|value| value.get("cost")))
+            .or_else(|| parse_usd_ticks(body.get("cost")))
+            .or_else(|| {
+                wire_usage
+                    .and_then(|value| value.get("cost_usd_ticks"))
+                    .and_then(Json::as_i64)
+                    .filter(|&cost| cost > 0)
+            }),
     };
     (usage, billing)
 }
@@ -935,8 +937,13 @@ mod tests {
         }));
         assert_eq!(legacy_zero.cost_usd_ticks, None);
 
-        let (_, legacy_paid) = parse_wire_usage(&json!({
+        let (_, explicit_zero) = parse_wire_usage(&json!({
             "usage": { "cost_usd_ticks": 12, "cost": 0.0 }
+        }));
+        assert_eq!(explicit_zero.cost_usd_ticks, Some(0));
+
+        let (_, legacy_paid) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 12 }
         }));
         assert_eq!(legacy_paid.cost_usd_ticks, Some(12));
     }

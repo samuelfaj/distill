@@ -229,6 +229,23 @@ pub(crate) fn prune_conversation(
         }
     }
 
+    if !projections.is_empty() {
+        let original_bytes: usize = projections
+            .iter()
+            .map(|(index, _)| match &conversation[*index] {
+                ConversationItem::ToolResult(result) => result.content.len(),
+                _ => 0,
+            })
+            .sum();
+        let projected_bytes: usize = projections.iter().map(|(_, text)| text.len()).sum();
+        tracing::debug!(
+            results = projections.len(),
+            original_bytes,
+            projected_bytes,
+            first_changed_item = projections.iter().map(|(index, _)| *index).min().unwrap_or(0),
+            "old tool results shortened in this request; cached prefix may change"
+        );
+    }
     for (result_index, projection) in projections {
         if let ConversationItem::ToolResult(result) = &mut conversation[result_index] {
             result.content = std::sync::Arc::<str>::from(projection);

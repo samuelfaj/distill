@@ -112,6 +112,10 @@ Only public model IDs are queried; task content is not sent to metadata endpoint
 Jev considers total task cost, retries, and possible loss of prompt-cache reuse
 when switching models. Benchmark and price hints do not override the configured
 candidate set, context guard, explicit effort, or permission policy.
+For direct OpenRouter requests, the sampler sends the existing session ID as
+`x-session-id` for provider affinity unless the user configured that header.
+This does not guarantee a cache hit; compare cache-read tokens and total cost
+before changing cache TTL or context-pruning behavior.
 
 ## Utility work
 

@@ -85,6 +85,15 @@ fn is_codex_base_url(base_url: &str) -> bool {
         )
 }
 
+fn is_openrouter_base_url(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| {
+                host == "openrouter.ai" || host.ends_with(".openrouter.ai")
+            })
+    })
+}
+
 /// The ChatGPT Codex endpoint accepts instruction messages as `developer`,
 /// not `system`, and rejects API-only sampling controls. Apply the same dialect
 /// to normal turns and auxiliary requests such as session titles.
@@ -115,6 +124,7 @@ struct GrokRequestHeaders<'a> {
     req_id: &'a str,
     model_id: &'a str,
     session_id: &'a str,
+    openrouter: bool,
     turn_idx: Option<&'a str>,
     /// Turn-level resubmit attempt; the proxy counts retry traffic by it.
     transient_retry: Option<&'a str>,
@@ -131,6 +141,9 @@ impl GrokRequestHeaders<'_> {
             .header("x-grok-model-override", self.model_id)
             .header("x-grok-session-id", self.session_id)
             .header("x-grok-agent-id", self.agent_id);
+        if self.openrouter && !self.session_id.is_empty() {
+            b = b.header("x-session-id", self.session_id);
+        }
         if let Some(idx) = self.turn_idx {
             b = b.header("x-grok-turn-idx", idx);
         }
@@ -1010,6 +1023,11 @@ impl SamplingClient {
         self.endpoint.url_for_path(path)
     }
 
+    fn should_set_openrouter_session_header(&self) -> bool {
+        is_openrouter_base_url(&self.base_url)
+            && !self.default_headers.contains_key("x-session-id")
+    }
+
     fn apply_defaults(&self, mut request: ChatCompletionRequest) -> Result<ChatCompletionRequest> {
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
@@ -1116,6 +1134,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             transient_retry: payload.x_grok_transient_retry.as_deref(),
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1254,6 +1273,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             transient_retry: payload.x_grok_transient_retry.as_deref(),
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1474,6 +1494,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1620,6 +1641,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1862,6 +1884,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1988,6 +2011,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -2470,6 +2494,50 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn openrouter_receives_session_affinity_without_leaking_it_to_other_providers() {
+        use super::*;
+
+        let client = reqwest::Client::new();
+        let request_for = |base_url: &str, session_id: &str| {
+            GrokRequestHeaders {
+                conv_id: "conversation",
+                req_id: "request",
+                model_id: "model",
+                session_id,
+                openrouter: is_openrouter_base_url(base_url),
+                turn_idx: None,
+                transient_retry: None,
+                agent_id: "agent",
+                deployment_id: None,
+                user_id: None,
+            }
+            .apply(client.post("https://example.com/responses"))
+            .build()
+            .expect("request builds")
+        };
+
+        let openrouter = request_for("https://openrouter.ai/api/v1", "session-1");
+        assert_eq!(openrouter.headers()["x-session-id"], "session-1");
+        assert_eq!(openrouter.headers()["x-grok-session-id"], "session-1");
+        assert!(!request_for("https://api.x.ai/v1", "session-1")
+            .headers()
+            .contains_key("x-session-id"));
+        assert!(!request_for("https://openrouter.ai/api/v1", "")
+            .headers()
+            .contains_key("x-session-id"));
+        assert!(!is_openrouter_base_url("https://openrouter.ai.evil.test/api/v1"));
+
+        let configured = SamplingClient::new(SamplerConfig {
+            base_url: "https://openrouter.ai/api/v1".into(),
+            extra_headers: IndexMap::from([("x-session-id".into(), "custom".into())]),
+            ..minimal_config()
+        })
+        .expect("client builds");
+        assert!(!configured.should_set_openrouter_session_header());
+        assert_eq!(configured.default_headers["x-session-id"], "custom");
+    }
 
     /// A production-shaped `response.created` whose effort the SDK enum does not
     /// carry: without the rewrite the first SSE frame kills the turn.

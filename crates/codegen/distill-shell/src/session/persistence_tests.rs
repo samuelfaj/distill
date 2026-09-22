@@ -33,10 +33,34 @@ fn test_actor_inner(
     remote_sync: Option<RemoteSync>,
     mark_summary_done: bool,
 ) -> ActorGuard {
+    let title_recorder = distill_chat_state::ChatStateHandle::noop();
+    test_actor_inner_with_recorder(
+        info,
+        storage,
+        remote_sync,
+        mark_summary_done,
+        title_recorder,
+    )
+}
+
+fn test_actor_with_recorder(
+    info: Info,
+    storage: Arc<dyn StorageAdapter>,
+    title_recorder: distill_chat_state::ChatStateHandle,
+) -> ActorGuard {
+    test_actor_inner_with_recorder(info, storage, None, false, title_recorder)
+}
+
+fn test_actor_inner_with_recorder(
+    info: Info,
+    storage: Arc<dyn StorageAdapter>,
+    remote_sync: Option<RemoteSync>,
+    mark_summary_done: bool,
+    title_recorder: distill_chat_state::ChatStateHandle,
+) -> ActorGuard {
     let (tx, rx) = mpsc::unbounded_channel();
     let (disk_full_tx, disk_full_rx) = tokio::sync::watch::channel(false);
     let sampling_client = OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap();
-    let title_recorder = distill_chat_state::ChatStateHandle::noop();
     let mut summary =
         crate::session::summary::SummaryGenerator::new(crate::session::summary::SummaryConfig {
             sampling_client,
@@ -68,6 +92,7 @@ fn test_actor_inner(
             last_usage_live: None,
             last_usage_turn: None,
             last_incoming_turn: None,
+            pending_usage_live: None,
         }
         .run(),
     );
@@ -89,6 +114,505 @@ fn notification(info: &Info, text: &str) -> acp::SessionNotification {
 
 fn neutral_update(info: &Info, text: &str) -> SessionUpdate {
     SessionUpdate::Acp(Box::new(notification(info, text)))
+}
+
+#[tokio::test]
+async fn late_title_refresh_clears_pending_persisted_completeness_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("late-title-usage"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let recorder = distill_chat_state::ChatStateActor::spawn(
+        Vec::new(),
+        distill_sampling_types::SamplingConfig::default(),
+        Box::new(distill_chat_state::NullChatPersistence),
+        event_tx,
+        cancellation.clone(),
+    );
+    let actor = test_actor_with_recorder(info.clone(), storage.clone(), recorder.clone());
+
+    recorder.record_usage_attribution(
+        distill_chat_state::UsageAttribution {
+            attempt_id: "main:foreground".to_owned(),
+            task_id: Some("prompt-1".to_owned()),
+            turn_id: Some("1".to_owned()),
+            request_id: Some("main-request".to_owned()),
+            role: "main".to_owned(),
+            model_id: "main-model".to_owned(),
+            endpoint: Some("mock://main".to_owned()),
+            requested_effort: Some("low".to_owned()),
+            applied_effort: Some("low".to_owned()),
+            status: distill_chat_state::UsageCallStatus::Completed,
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 2,
+                total_tokens: 12,
+                reasoning_tokens: 0,
+                cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
+            }),
+            usage_complete: true,
+            api_duration_ms: Some(10),
+            cost_usd_ticks: Some(10),
+            cost_basis: distill_chat_state::UsageCostBasis::Reported,
+        },
+        false,
+    );
+    recorder
+        .register_pending_usage_attempt("initial-title:delayed".to_owned(), false)
+        .unwrap();
+    let pending = recorder
+        .try_get_session_usage()
+        .await
+        .expect("chat-state actor should answer the pending snapshot");
+    assert!(pending.is_incomplete());
+    let pending_live = crate::session::usage_file::UsageSummary::from_ledger(&pending);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::UsageTurn {
+            turn_number: 1,
+            live: pending_live.clone(),
+        })
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let interim = loop {
+        if let Some(file) = storage.read_usage(&info).await.unwrap()
+            && file.session.model_calls == 1
+            && file.session.usage_is_incomplete
+        {
+            break file;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "pending usage was not persisted"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(interim.session.cost_usd_ticks, Some(10));
+    assert_eq!(interim.session.attributions.len(), 1);
+
+    recorder.record_usage_attribution(
+        distill_chat_state::UsageAttribution {
+            attempt_id: "main:foreground-2".to_owned(),
+            task_id: Some("prompt-2".to_owned()),
+            turn_id: Some("2".to_owned()),
+            request_id: Some("main-request-2".to_owned()),
+            role: "main".to_owned(),
+            model_id: "main-model".to_owned(),
+            endpoint: Some("mock://main".to_owned()),
+            requested_effort: Some("low".to_owned()),
+            applied_effort: Some("low".to_owned()),
+            status: distill_chat_state::UsageCallStatus::Completed,
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 3,
+                completion_tokens: 1,
+                total_tokens: 4,
+                reasoning_tokens: 0,
+                cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
+            }),
+            usage_complete: true,
+            api_duration_ms: Some(8),
+            cost_usd_ticks: Some(4),
+            cost_basis: distill_chat_state::UsageCostBasis::Reported,
+        },
+        false,
+    );
+    let pending_turn2 = recorder
+        .try_get_session_usage()
+        .await
+        .expect("chat-state actor should answer the second pending snapshot");
+    assert!(pending_turn2.is_incomplete());
+    assert_eq!(pending_turn2.totals.model_calls, 2);
+    assert_eq!(pending_turn2.totals.cost_usd_ticks, Some(14));
+    assert_eq!(pending_turn2.attributions.len(), 2);
+    let pending_turn2_live = crate::session::usage_file::UsageSummary::from_ledger(&pending_turn2);
+    let mut child_ledger = distill_chat_state::UsageLedger::default();
+    child_ledger.record_auxiliary_call(
+        "child-model",
+        Some(&distill_sampling_types::TokenUsage {
+            prompt_tokens: 5,
+            completion_tokens: 1,
+            total_tokens: 6,
+            reasoning_tokens: 0,
+            cached_prompt_tokens: 0,
+            cache_creation_prompt_tokens: 0,
+        }),
+        Some(5),
+        Some(5),
+        false,
+    );
+    let child_live = crate::session::usage_file::UsageSummary::from_ledger(&child_ledger);
+    let mixed_turn2_live = pending_turn2_live.saturating_add(&child_live);
+    assert_eq!(mixed_turn2_live.model_calls, 3);
+    assert_eq!(mixed_turn2_live.cost_usd_ticks, Some(19));
+
+    recorder.record_usage_attribution(
+        distill_chat_state::UsageAttribution {
+            attempt_id: "initial-title:delayed".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: Some("title-request".to_owned()),
+            role: "auxiliary".to_owned(),
+            model_id: "title-model".to_owned(),
+            endpoint: Some("mock://title".to_owned()),
+            requested_effort: None,
+            applied_effort: Some("absent".to_owned()),
+            status: distill_chat_state::UsageCallStatus::Completed,
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 4,
+                completion_tokens: 2,
+                total_tokens: 6,
+                reasoning_tokens: 0,
+                cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
+            }),
+            usage_complete: true,
+            api_duration_ms: Some(5),
+            cost_usd_ticks: Some(7),
+            cost_basis: distill_chat_state::UsageCostBasis::Reported,
+        },
+        false,
+    );
+    let terminal = recorder
+        .try_get_session_usage()
+        .await
+        .expect("chat-state actor should answer the terminal snapshot");
+    assert!(!terminal.is_incomplete());
+    let terminal_live = crate::session::usage_file::UsageSummary::from_ledger(&terminal)
+        .saturating_add(&child_live);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::RefreshUsage {
+            recorder: recorder.downgrade(),
+        })
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let late_refresh = loop {
+        if let Some(file) = storage.read_usage(&info).await.unwrap()
+            && file.turns.len() == 1
+            && file.turns[0].usage.model_calls == 2
+            && file.turns[0].usage.cost_usd_ticks == Some(17)
+            && file.session.model_calls == 2
+            && file.session.cost_usd_ticks == Some(17)
+            && file.session.attributions.len() == 2
+            && !file.session.usage_is_incomplete
+        {
+            break file;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "late title refresh consumed active turn usage"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(late_refresh.turns[0].usage.model_calls, 2);
+    assert_eq!(late_refresh.turns[0].usage.cost_usd_ticks, Some(17));
+
+    // The captured active-turn snapshot arrives before the terminal full
+    // snapshot. It overlaps the precursor on main1 but omits the title, so
+    // reconciliation must add only main2 and retain the title.
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::UsageTurn {
+            turn_number: 2,
+            live: mixed_turn2_live.clone(),
+        })
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let partial_overlap = loop {
+        if let Some(file) = storage.read_usage(&info).await.unwrap()
+            && file.session.model_calls == 4
+            && file.session.cost_usd_ticks == Some(26)
+            && file.session.attributions.len() == 3
+            && file.turns.len() == 2
+            && !file.session.usage_is_incomplete
+        {
+            break file;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "partial-overlap turn snapshot was rebilled or lost the title"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(partial_overlap.session.model_calls, 4);
+    assert_eq!(partial_overlap.session.cost_usd_ticks, Some(26));
+    assert!(partial_overlap.session.pending_attempt_ids.is_empty());
+    assert_eq!(partial_overlap.turns[0].usage.cost_usd_ticks, Some(17));
+    assert_eq!(partial_overlap.turns[1].usage.model_calls, 2);
+    assert_eq!(partial_overlap.turns[1].usage.cost_usd_ticks, Some(9));
+
+    // The terminal full snapshot arrives after the partial overlap and must
+    // be an identity-only no-op, not another aggregate addition.
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::UsageTurn {
+            turn_number: 2,
+            live: terminal_live,
+        })
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let complete = loop {
+        if let Some(file) = storage.read_usage(&info).await.unwrap()
+            && file.session.model_calls == 4
+            && file.session.cost_usd_ticks == Some(26)
+            && file.session.attributions.len() == 3
+            && file.turns.len() == 2
+        {
+            break file;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "terminal title usage was not persisted as complete"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(complete.turns.len(), 2);
+    assert_eq!(complete.turns[0].usage.model_calls, 2);
+    assert_eq!(complete.turns[0].usage.cost_usd_ticks, Some(17));
+    assert_eq!(complete.turns[1].usage.model_calls, 2);
+    assert_eq!(complete.turns[1].usage.cost_usd_ticks, Some(9));
+    assert_eq!(complete.session.model_calls, 4);
+    assert_eq!(complete.session.cost_usd_ticks, Some(26));
+    assert_eq!(complete.session.attributions.len(), 3);
+    assert!(!complete.session.usage_is_incomplete);
+    assert!(!complete.turns[0].usage.usage_is_incomplete);
+    assert!(!complete.turns[1].usage.usage_is_incomplete);
+    assert!(complete.session.pending_attempt_ids.is_empty());
+    assert!(complete.turns[0].usage.pending_attempt_ids.is_empty());
+    assert!(complete.turns[1].usage.pending_attempt_ids.is_empty());
+    assert_eq!(
+        complete
+            .session
+            .attributions
+            .iter()
+            .filter(|row| row.attempt_id == "initial-title:delayed")
+            .count(),
+        1
+    );
+
+    // Two stale snapshots must both be rejected by the retained canonical
+    // snapshot; the second one used to re-add the older aggregate.
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::RefreshUsage {
+            recorder: recorder.downgrade(),
+        })
+        .unwrap();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::UsageTurn {
+            turn_number: 2,
+            live: mixed_turn2_live.clone(),
+        })
+        .unwrap();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::UsageTurn {
+            turn_number: 2,
+            live: mixed_turn2_live,
+        })
+        .unwrap();
+
+    // A second late notification is harmless: the cursor sees the same
+    // canonical snapshot and must not add another title call or retain the
+    // pending-only incomplete bit.
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::RefreshUsage {
+            recorder: recorder.downgrade(),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let repeated = storage.read_usage(&info).await.unwrap().unwrap();
+    assert_eq!(repeated.session.model_calls, complete.session.model_calls);
+    assert_eq!(
+        repeated.session.cost_usd_ticks,
+        complete.session.cost_usd_ticks
+    );
+    assert!(!repeated.session.usage_is_incomplete);
+    assert_eq!(
+        repeated
+            .session
+            .attributions
+            .iter()
+            .filter(|row| row.attempt_id == "initial-title:delayed")
+            .count(),
+        1
+    );
+
+    actor.stop().await;
+    cancellation.cancel();
+}
+
+#[tokio::test]
+async fn title_refresh_before_first_usage_turn_is_reconciled() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("late-title-before-cursor"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let recorder = distill_chat_state::ChatStateActor::spawn(
+        Vec::new(),
+        distill_sampling_types::SamplingConfig::default(),
+        Box::new(distill_chat_state::NullChatPersistence),
+        event_tx,
+        cancellation.clone(),
+    );
+    let actor = test_actor_with_recorder(info.clone(), storage.clone(), recorder.clone());
+
+    recorder.record_usage_attribution(
+        distill_chat_state::UsageAttribution {
+            attempt_id: "main:before-cursor".to_owned(),
+            task_id: Some("prompt-before-cursor".to_owned()),
+            turn_id: Some("1".to_owned()),
+            request_id: Some("main-before-cursor".to_owned()),
+            role: "main".to_owned(),
+            model_id: "main-model".to_owned(),
+            endpoint: Some("mock://main".to_owned()),
+            requested_effort: Some("low".to_owned()),
+            applied_effort: Some("low".to_owned()),
+            status: distill_chat_state::UsageCallStatus::Completed,
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 2,
+                total_tokens: 12,
+                reasoning_tokens: 0,
+                cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
+            }),
+            usage_complete: true,
+            api_duration_ms: Some(10),
+            cost_usd_ticks: Some(10),
+            cost_basis: distill_chat_state::UsageCostBasis::Reported,
+        },
+        false,
+    );
+    recorder
+        .register_pending_usage_attempt("initial-title:before-cursor".to_owned(), false)
+        .unwrap();
+    let pending = recorder
+        .try_get_session_usage()
+        .await
+        .expect("chat-state actor should answer the pending first-turn snapshot");
+    let pending_live = crate::session::usage_file::UsageSummary::from_ledger(&pending);
+
+    recorder.record_usage_attribution(
+        distill_chat_state::UsageAttribution {
+            attempt_id: "initial-title:before-cursor".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: Some("title-before-cursor".to_owned()),
+            role: "auxiliary".to_owned(),
+            model_id: "title-model".to_owned(),
+            endpoint: Some("mock://title".to_owned()),
+            requested_effort: None,
+            applied_effort: Some("absent".to_owned()),
+            status: distill_chat_state::UsageCallStatus::Completed,
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 4,
+                completion_tokens: 2,
+                total_tokens: 6,
+                reasoning_tokens: 0,
+                cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
+            }),
+            usage_complete: true,
+            api_duration_ms: Some(5),
+            cost_usd_ticks: Some(7),
+            cost_basis: distill_chat_state::UsageCostBasis::Reported,
+        },
+        false,
+    );
+    let terminal = recorder
+        .try_get_session_usage()
+        .await
+        .expect("chat-state actor should answer the terminal first-turn snapshot");
+    assert!(!terminal.is_incomplete());
+
+    // The terminal refresh reaches persistence before the first foreground
+    // UsageTurn. It must remain available for reconciliation with the stale
+    // pending snapshot rather than being dropped for lack of a cursor.
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::RefreshUsage {
+            recorder: recorder.downgrade(),
+        })
+        .unwrap();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::UsageTurn {
+            turn_number: 1,
+            live: pending_live,
+        })
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let file = loop {
+        if let Some(file) = storage.read_usage(&info).await.unwrap()
+            && file.turns.len() == 1
+            && file.session.model_calls == 2
+            && file.session.cost_usd_ticks == Some(17)
+            && file.session.attributions.len() == 2
+            && !file.session.usage_is_incomplete
+        {
+            break file;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "pre-cursor terminal refresh was discarded"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(file.turns[0].usage.cost_usd_ticks, Some(17));
+    assert!(file.session.pending_attempt_ids.is_empty());
+    assert_eq!(
+        file.session
+            .attributions
+            .iter()
+            .filter(|row| row.attempt_id == "initial-title:before-cursor")
+            .count(),
+        1
+    );
+
+    actor.stop().await;
+    cancellation.cancel();
 }
 
 #[tokio::test]

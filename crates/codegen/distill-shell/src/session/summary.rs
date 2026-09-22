@@ -79,6 +79,17 @@ impl SummaryGenerator {
                     return;
                 };
 
+                let attempt_id = format!("initial-title:{}", uuid::Uuid::new_v4());
+                if recorder
+                    .register_pending_usage_attempt(attempt_id.clone(), false)
+                    .is_err()
+                {
+                    tracing::debug!(
+                        "session title generation skipped because its usage recorder closed during admission"
+                    );
+                    return;
+                }
+
                 // Transition to Done so subsequent ContentChunk messages don't spawn duplicate title generation tasks
                 self.state = State::Done;
 
@@ -90,7 +101,13 @@ impl SummaryGenerator {
                 tokio::spawn(async move {
                     // The strong recorder exists only for this bounded call and is
                     // released with the task, avoiding a permanent actor cycle.
-                    let mut attempt = InitialTitleAttempt::new(recorder, &sampling_client, &model);
+                    let mut attempt = InitialTitleAttempt::new(
+                        recorder,
+                        &sampling_client,
+                        &model,
+                        attempt_id,
+                        persistence_tx.clone(),
+                    );
                     let generated =
                         generate_session_summary(content.clone(), sampling_client, &model).await;
                     attempt.record(generated.status, generated.response.as_ref());
@@ -139,6 +156,7 @@ struct InitialTitleAttempt {
     applied_effort: Option<String>,
     started_at: Instant,
     recorded: bool,
+    persistence_tx: mpsc::WeakUnboundedSender<PersistenceMsg>,
 }
 
 impl InitialTitleAttempt {
@@ -146,15 +164,18 @@ impl InitialTitleAttempt {
         recorder: distill_chat_state::ChatStateHandle,
         client: &OaiCompatClient,
         model: &str,
+        attempt_id: String,
+        persistence_tx: mpsc::WeakUnboundedSender<PersistenceMsg>,
     ) -> Self {
         Self {
             recorder,
-            attempt_id: format!("initial-title:{}", uuid::Uuid::new_v4()),
+            attempt_id,
             configured_model: model.to_owned(),
             endpoint: client.attribution_endpoint(),
             applied_effort: client.attribution_applied_effort(None, Some(100)),
             started_at: Instant::now(),
             recorded: false,
+            persistence_tx,
         }
     }
 
@@ -201,6 +222,11 @@ impl InitialTitleAttempt {
             // identity, so fold it once into the session ledger only.
             false,
         );
+        if let Some(tx) = self.persistence_tx.upgrade() {
+            let _ = tx.send(PersistenceMsg::RefreshUsage {
+                recorder: self.recorder.downgrade(),
+            });
+        }
     }
 }
 
@@ -492,15 +518,23 @@ mod tests {
 
         generator.update("capture this initial title request".to_owned());
 
-        let title_message =
-            tokio::time::timeout(std::time::Duration::from_secs(2), persistence_rx.recv())
-                .await
-                .expect("title generation did not finish")
-                .expect("persistence channel closed");
-        assert!(matches!(
-            title_message,
-            PersistenceMsg::GeneratedTitle(title) if title == "Captured initial title"
-        ));
+        let mut saw_refresh = false;
+        loop {
+            let message =
+                tokio::time::timeout(std::time::Duration::from_secs(2), persistence_rx.recv())
+                    .await
+                    .expect("title generation did not finish")
+                    .expect("persistence channel closed");
+            match message {
+                PersistenceMsg::RefreshUsage { .. } => saw_refresh = true,
+                PersistenceMsg::GeneratedTitle(title) => {
+                    assert_eq!(title, "Captured initial title");
+                    break;
+                }
+                other => panic!("unexpected initial-title persistence message: {other:?}"),
+            }
+        }
+        assert!(saw_refresh, "terminal title attribution must refresh usage");
 
         let ledger = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -590,10 +624,13 @@ mod tests {
         let client = OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap();
         let (recorder, cancellation) = chat_state_recorder();
         let observer = recorder.clone();
+        let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
         drop(InitialTitleAttempt::new(
             recorder,
             &client,
             "configured-title-model",
+            "initial-title:cancelled".to_owned(),
+            persistence_tx.downgrade(),
         ));
 
         let ledger = observer

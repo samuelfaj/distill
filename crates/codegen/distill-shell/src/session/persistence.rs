@@ -285,6 +285,11 @@ pub enum PersistenceMsg {
         turn_number: u32,
         live: crate::session::usage_file::UsageSummary,
     },
+    /// Refresh the durable usage snapshot from the canonical chat-state ledger
+    /// after a detached side-call reaches a terminal attribution.
+    RefreshUsage {
+        recorder: distill_chat_state::WeakChatStateHandle,
+    },
     /// Persist announcement tracking state (MCP and skill announcement dedup).
     AnnouncementState(crate::session::announcement_state::AnnouncementState),
     GoalModeState(crate::session::goal_tracker::GoalOrchestration),
@@ -1481,6 +1486,7 @@ struct SessionPersistence {
     last_usage_live: Option<crate::session::usage_file::UsageSummary>,
     last_usage_turn: Option<u32>,
     last_incoming_turn: Option<u32>,
+    pending_usage_live: Option<crate::session::usage_file::UsageSummary>,
 }
 
 impl SessionPersistence {
@@ -2349,8 +2355,14 @@ impl SessionPersistence {
                     }
                 }
                 PersistenceMsg::UsageTurn { turn_number, live } => {
+                    let live = self.take_pending_usage_live(turn_number, live);
                     if let Err(e) = self.persist_usage_turn(turn_number, &live).await {
                         tracing::warn!(?e, turn_number, "failed to write session usage");
+                    }
+                }
+                PersistenceMsg::RefreshUsage { recorder } => {
+                    if let Err(e) = self.refresh_usage(recorder).await {
+                        tracing::warn!(?e, "failed to refresh session usage after detached call");
                     }
                 }
                 PersistenceMsg::AnnouncementState(state) => {
@@ -2445,6 +2457,77 @@ impl SessionPersistence {
 }
 
 impl SessionPersistence {
+    async fn refresh_usage(
+        &mut self,
+        recorder: distill_chat_state::WeakChatStateHandle,
+    ) -> io::Result<()> {
+        let Some(recorder) = recorder.upgrade() else {
+            return Ok(());
+        };
+        let Ok(ledger) = recorder.try_get_session_usage().await else {
+            tracing::debug!("chat-state actor closed before detached usage refresh");
+            return Ok(());
+        };
+        let live = crate::session::usage_file::UsageSummary::from_ledger(&ledger);
+        // Keep the projected detached snapshot even after an immediate late
+        // write. A UsageTurn sent by another producer may already be in flight;
+        // the next FIFO message must not re-apply that older snapshot.
+        if let Some(turn_number) = self.last_incoming_turn {
+            let live = self
+                .last_usage_live
+                .as_ref()
+                .map(|previous| previous.late_refresh_from_attributions(&live, turn_number))
+                .unwrap_or(live);
+            self.pending_usage_live = Some(live.clone());
+            self.persist_usage_turn(turn_number, &live).await
+        } else {
+            self.pending_usage_live = Some(live);
+            Ok(())
+        }
+    }
+
+    fn take_pending_usage_live(
+        &mut self,
+        turn_number: u32,
+        live: crate::session::usage_file::UsageSummary,
+    ) -> crate::session::usage_file::UsageSummary {
+        let Some(pending) = self.pending_usage_live.clone() else {
+            if let Some(last) = self.last_usage_live.as_ref()
+                && last.covers(&live)
+                && !live.covers(last)
+                && !self
+                    .last_incoming_turn
+                    .is_some_and(|last_turn| turn_number > last_turn)
+            {
+                return last.clone();
+            }
+            return live;
+        };
+        if live.covers(&pending) {
+            self.pending_usage_live = None;
+            live
+        } else if pending.covers(&live) {
+            pending
+        } else if let Some(reconciled) = pending.reconcile_overlapping_snapshot(&live) {
+            self.pending_usage_live = Some(reconciled.clone());
+            reconciled
+        } else if self
+            .last_incoming_turn
+            .is_some_and(|last_turn| turn_number > last_turn)
+        {
+            // A non-prefix snapshot on a later turn is a legitimate reset or
+            // fork boundary; let the foreground cursor establish that new
+            // epoch instead of carrying the older detached snapshot forward.
+            self.pending_usage_live = None;
+            live
+        } else {
+            // For the same cursor (or before the first cursor), preserve the
+            // canonical detached snapshot. This is the only safe choice when
+            // the producer snapshots cannot be related by prefix.
+            pending
+        }
+    }
+
     async fn persist_usage_turn(
         &mut self,
         turn_number: u32,
@@ -2813,6 +2896,7 @@ pub(crate) async fn new(
             last_usage_live: None,
             last_usage_turn: None,
             last_incoming_turn: None,
+            pending_usage_live: None,
         };
         persistence.run().await;
     });
@@ -2924,6 +3008,7 @@ pub(crate) async fn new_with_explicit_dir(
             last_usage_live: None,
             last_usage_turn: None,
             last_incoming_turn: None,
+            pending_usage_live: None,
         };
         persistence.run().await;
     });
@@ -3062,6 +3147,7 @@ pub(crate) async fn load_light(
             last_usage_live: None,
             last_usage_turn: None,
             last_incoming_turn: None,
+            pending_usage_live: None,
         };
         persistence.run().await;
     });

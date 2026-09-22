@@ -122,6 +122,12 @@ pub enum ChatStateCommand {
         attribute_to_prompt: bool,
     },
 
+    /// Admit a provider attempt before its detached request starts.
+    RegisterPendingUsageAttempt {
+        attempt_id: String,
+        attribute_to_prompt: bool,
+    },
+
     /// Subagent usage into session (and prompt when attributable). Replies when applied.
     RecordSubagentUsage {
         by_model: Vec<(String, crate::usage::UsageTotals)>,
@@ -131,6 +137,8 @@ pub enum ChatStateCommand {
         attribute_to_prompt: bool,
         /// Nested subagent bill may under-count.
         incomplete: bool,
+        /// Child calls admitted but not terminal at this fold boundary.
+        pending_attempts: Vec<String>,
         reply: oneshot::Sender<()>,
     },
 

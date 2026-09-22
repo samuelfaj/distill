@@ -46,6 +46,11 @@ pub struct UsageSummary {
     pub cost_is_partial: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub usage_is_incomplete: bool,
+    /// Sticky incompleteness from a terminal/missing-usage path. Pending
+    /// attempt IDs are intentionally separate so a successful terminal row
+    /// cannot erase this historical condition.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub permanent_incomplete: bool,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub turn_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +59,10 @@ pub struct UsageSummary {
     pub model_usage: IndexMap<String, UsageSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributions: Vec<UsageAttribution>,
+    /// Pending attempt IDs make a persisted incomplete row distinguishable
+    /// from an older row whose incompleteness is already permanent/unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_attempt_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -68,18 +77,28 @@ pub struct TurnUsage {
 
 impl UsageSummary {
     pub fn from_ledger(ledger: &UsageLedger) -> Self {
+        let pending_attempt_ids = ledger.pending_attempts.iter().cloned().collect::<Vec<_>>();
         let mut model_usage = IndexMap::new();
         for (model, totals) in &ledger.by_model {
-            model_usage.insert(model.clone(), Self::from_totals(totals, ledger.incomplete));
+            let mut usage =
+                Self::from_totals(totals, ledger.is_incomplete(), ledger.incomplete);
+            usage.pending_attempt_ids = pending_attempt_ids.clone();
+            model_usage.insert(model.clone(), usage);
         }
-        let mut summary = Self::from_totals(&ledger.totals, ledger.incomplete);
+        let mut summary =
+            Self::from_totals(&ledger.totals, ledger.is_incomplete(), ledger.incomplete);
         summary.primary_model_id = primary_model(&model_usage);
         summary.model_usage = model_usage;
         summary.attributions = ledger.attributions.clone();
+        summary.pending_attempt_ids = pending_attempt_ids;
         summary
     }
 
-    fn from_totals(totals: &distill_chat_state::UsageTotals, incomplete: bool) -> Self {
+    fn from_totals(
+        totals: &distill_chat_state::UsageTotals,
+        incomplete: bool,
+        permanent_incomplete: bool,
+    ) -> Self {
         Self {
             input_tokens: totals.input_tokens,
             output_tokens: totals.output_tokens,
@@ -91,10 +110,12 @@ impl UsageSummary {
             cost_usd_ticks: totals.cost_usd_ticks,
             cost_is_partial: totals.cost_is_partial(),
             usage_is_incomplete: incomplete,
+            permanent_incomplete,
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
             attributions: Vec::new(),
+            pending_attempt_ids: Vec::new(),
         }
     }
 
@@ -153,19 +174,34 @@ impl UsageSummary {
                 || has_untrusted_cost(self)
                 || has_untrusted_cost(other),
             usage_is_incomplete: self.usage_is_incomplete || other.usage_is_incomplete,
+            permanent_incomplete: self.permanent_incomplete || other.permanent_incomplete,
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
             attributions: Vec::new(),
+            pending_attempt_ids: merge_pending_attempt_ids(
+                &self.pending_attempt_ids,
+                &other.pending_attempt_ids,
+            ),
         }
     }
 
     pub fn saturating_sub(&self, other: &Self) -> Self {
-        let delta_attributions = if self.attributions.starts_with(&other.attributions) {
-            self.attributions[other.attributions.len()..].to_vec()
-        } else {
-            self.attributions.clone()
-        };
+        let previous_attempt_ids = other
+            .attributions
+            .iter()
+            .filter(|attribution| !attribution.attempt_id.is_empty())
+            .map(|attribution| attribution.attempt_id.as_str())
+            .collect::<HashSet<_>>();
+        let delta_attributions = self
+            .attributions
+            .iter()
+            .filter(|attribution| {
+                attribution.attempt_id.is_empty()
+                    || !previous_attempt_ids.contains(attribution.attempt_id.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let mut model_usage = IndexMap::new();
         for (model, row) in &self.model_usage {
             let prev = other.model_usage.get(model).cloned().unwrap_or_default();
@@ -216,10 +252,12 @@ impl UsageSummary {
                 || has_untrusted_cost(self)
                 || has_untrusted_cost(other),
             usage_is_incomplete: self.usage_is_incomplete,
+            permanent_incomplete: self.permanent_incomplete,
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
             attributions: Vec::new(),
+            pending_attempt_ids: self.pending_attempt_ids.clone(),
         }
     }
 
@@ -232,6 +270,165 @@ impl UsageSummary {
             && self.model_calls == 0
             && self.cost_usd_ticks.is_none()
             && self.attributions.is_empty()
+            && self.pending_attempt_ids.is_empty()
+    }
+
+    fn normalize_legacy_incomplete(&mut self) {
+        if self.usage_is_incomplete
+            && !self.permanent_incomplete
+            && self.pending_attempt_ids.is_empty()
+        {
+            self.permanent_incomplete = true;
+        }
+        for row in self.model_usage.values_mut() {
+            row.normalize_legacy_incomplete();
+        }
+    }
+
+    fn refresh_incomplete_projection(&mut self) {
+        self.usage_is_incomplete =
+            self.permanent_incomplete || !self.pending_attempt_ids.is_empty();
+        for row in self.model_usage.values_mut() {
+            row.refresh_incomplete_projection();
+        }
+    }
+
+    pub(crate) fn late_refresh_from_attributions(&self, live: &Self, persisted_turn: u32) -> Self {
+        self.merge_attribution_snapshot(live, Some(persisted_turn), false)
+    }
+
+    pub(crate) fn reconcile_overlapping_snapshot(&self, live: &Self) -> Option<Self> {
+        let known_attempt_ids = self
+            .attributions
+            .iter()
+            .filter(|attribution| !attribution.attempt_id.is_empty())
+            .map(|attribution| attribution.attempt_id.as_str())
+            .collect::<HashSet<_>>();
+        if !live.attributions.iter().any(|attribution| {
+            !attribution.attempt_id.is_empty()
+                && known_attempt_ids.contains(attribution.attempt_id.as_str())
+        }) {
+            return None;
+        }
+        Some(self.merge_attribution_snapshot(live, None, true))
+    }
+
+    fn merge_attribution_snapshot(
+        &self,
+        live: &Self,
+        max_turn: Option<u32>,
+        preserve_incoming_pending: bool,
+    ) -> Self {
+        let known_attempt_ids = self
+            .attributions
+            .iter()
+            .filter(|attribution| !attribution.attempt_id.is_empty())
+            .map(|attribution| attribution.attempt_id.as_str())
+            .collect::<HashSet<_>>();
+        let mut late = Self::default();
+        let mut attributed = Self::default();
+        let mut terminal_attempt_ids = HashSet::new();
+        for attribution in &live.attributions {
+            let belongs_to_persisted_turn = max_turn.is_none_or(|persisted_turn| {
+                !attribution
+                    .turn_id
+                    .as_deref()
+                    .and_then(|turn| turn.parse::<u32>().ok())
+                    .is_some_and(|turn| turn > persisted_turn)
+            });
+            if !belongs_to_persisted_turn {
+                continue;
+            }
+            if !attribution.attempt_id.is_empty() {
+                terminal_attempt_ids.insert(attribution.attempt_id.as_str());
+            }
+            let mut ledger = UsageLedger::default();
+            ledger.record_attribution(attribution.clone());
+            let one = Self::from_ledger(&ledger);
+            attributed = attributed.saturating_add(&one);
+            if !attribution.attempt_id.is_empty()
+                && known_attempt_ids.contains(attribution.attempt_id.as_str())
+            {
+                continue;
+            }
+            late = late.saturating_add(&one);
+        }
+
+        let mut baseline = self.clone();
+        baseline.normalize_legacy_incomplete();
+        let mut projected = baseline.saturating_add(&late);
+        projected
+            .pending_attempt_ids
+            .retain(|attempt_id| !terminal_attempt_ids.contains(attempt_id.as_str()));
+        for row in projected.model_usage.values_mut() {
+            row.pending_attempt_ids
+                .retain(|attempt_id| !terminal_attempt_ids.contains(attempt_id.as_str()));
+        }
+        if preserve_incoming_pending {
+            let incoming_residual = aggregate_residual(live, &attributed);
+            let baseline_attributed = summary_from_attributions(&baseline.attributions);
+            let existing_residual = aggregate_residual(&baseline, &baseline_attributed);
+            if !incoming_residual.is_zero() {
+                if existing_residual.usage_covers(&incoming_residual) {
+                    // This aggregate residual is already present in the
+                    // retained precursor; a repeated stale snapshot must not
+                    // add it a second time.
+                } else if incoming_residual.usage_covers(&existing_residual) {
+                    let residual_delta = incoming_residual.saturating_sub(&existing_residual);
+                    projected = projected.saturating_add(&residual_delta);
+                } else {
+                    // Aggregate-only usage has no identity key. Preserve the
+                    // attributed portion and keep the ambiguity explicit
+                    // instead of guessing between duplicate and new spend.
+                    projected.mark_reconciliation_unknown();
+                }
+            }
+            projected.permanent_incomplete |= live.permanent_incomplete;
+            let pending_attempt_ids = live
+                .pending_attempt_ids
+                .iter()
+                .filter(|attempt_id| {
+                    let attempt_id = (*attempt_id).as_str();
+                    !projected
+                        .attributions
+                        .iter()
+                        .any(|attribution| attribution.attempt_id == attempt_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            projected.pending_attempt_ids =
+                merge_pending_attempt_ids(&projected.pending_attempt_ids, &pending_attempt_ids);
+            for row in projected.model_usage.values_mut() {
+                row.pending_attempt_ids =
+                    merge_pending_attempt_ids(&row.pending_attempt_ids, &pending_attempt_ids);
+            }
+        }
+        projected.refresh_incomplete_projection();
+        projected
+    }
+
+    fn usage_covers(&self, previous: &Self) -> bool {
+        self.input_tokens >= previous.input_tokens
+            && self.output_tokens >= previous.output_tokens
+            && self.cached_read_tokens >= previous.cached_read_tokens
+            && self.cache_creation_tokens >= previous.cache_creation_tokens
+            && self.reasoning_tokens >= previous.reasoning_tokens
+            && self.total_tokens >= previous.total_tokens
+            && self.model_calls >= previous.model_calls
+            && previous.model_usage.iter().all(|(model, row)| {
+                self.model_usage
+                    .get(model)
+                    .is_some_and(|current| current.usage_covers(row))
+            })
+    }
+
+    fn mark_reconciliation_unknown(&mut self) {
+        self.permanent_incomplete = true;
+        self.usage_is_incomplete = true;
+        for row in self.model_usage.values_mut() {
+            row.permanent_incomplete = true;
+            row.usage_is_incomplete = true;
+        }
     }
 }
 
@@ -263,14 +460,25 @@ impl SessionUsageFile {
     }
 
     pub fn retain_turns_through(&mut self, max_turn: u32) {
+        self.normalize_legacy_incomplete();
+        let permanent_incomplete = self.session.permanent_incomplete;
         self.turns.retain(|turn| turn.turn_number <= max_turn);
         let mut session = UsageSummary::default();
         for turn in &self.turns {
             session = session.saturating_add(&turn.usage);
         }
+        session.permanent_incomplete |= permanent_incomplete;
+        session.refresh_incomplete_projection();
         session.turn_count = self.turns.len() as u64;
         session.primary_model_id = primary_model(&session.model_usage);
         self.session = session;
+    }
+
+    fn normalize_legacy_incomplete(&mut self) {
+        self.session.normalize_legacy_incomplete();
+        for turn in &mut self.turns {
+            turn.usage.normalize_legacy_incomplete();
+        }
     }
 
     pub fn apply_turn(
@@ -314,6 +522,7 @@ impl SessionUsageFile {
     ) -> u32 {
         let ended_at = ended_at.into();
         self.updated_at = ended_at.clone();
+        self.normalize_legacy_incomplete();
 
         let mut turn_usage = match prev_live {
             Some(prev) if live.covers(prev) => live.saturating_sub(prev),
@@ -327,14 +536,36 @@ impl SessionUsageFile {
                 .find(|turn| turn.turn_number == fold_n)
         {
             if turn_usage.is_zero() {
+                existing.usage.permanent_incomplete |= live.permanent_incomplete;
+                existing.usage.pending_attempt_ids = live.pending_attempt_ids.clone();
+                existing.usage.usage_is_incomplete = existing.usage.permanent_incomplete
+                    || !existing.usage.pending_attempt_ids.is_empty();
+                for row in existing.usage.model_usage.values_mut() {
+                    row.permanent_incomplete |= live.permanent_incomplete;
+                    row.pending_attempt_ids = live.pending_attempt_ids.clone();
+                    row.usage_is_incomplete =
+                        row.permanent_incomplete || !row.pending_attempt_ids.is_empty();
+                }
+                self.refresh_incomplete_flags_from_turns(live);
                 return fold_n;
             }
             existing.ended_at = ended_at;
             existing.usage = existing.usage.saturating_add(&turn_usage);
+            existing.usage.permanent_incomplete |= live.permanent_incomplete;
+            existing.usage.pending_attempt_ids = live.pending_attempt_ids.clone();
+            existing.usage.usage_is_incomplete = existing.usage.permanent_incomplete
+                || !existing.usage.pending_attempt_ids.is_empty();
+            for row in existing.usage.model_usage.values_mut() {
+                row.permanent_incomplete |= live.permanent_incomplete;
+                row.pending_attempt_ids = live.pending_attempt_ids.clone();
+                row.usage_is_incomplete =
+                    row.permanent_incomplete || !row.pending_attempt_ids.is_empty();
+            }
             existing.usage.turn_count = 1;
             existing.usage.primary_model_id = primary_model(&existing.usage.model_usage);
             self.session = self.session.saturating_add(&turn_usage);
             self.session.turn_count = self.turns.len() as u64;
+            self.refresh_incomplete_flags_from_turns(live);
             return fold_n;
         }
 
@@ -364,7 +595,70 @@ impl SessionUsageFile {
         self.session = self.session.saturating_add(&turn_usage);
         self.session.turn_count = self.turns.len() as u64;
         self.session.primary_model_id = primary_model(&self.session.model_usage);
+        self.refresh_incomplete_flags_from_turns(live);
         turn_number
+    }
+
+    fn refresh_incomplete_flags_from_turns(&mut self, live: &UsageSummary) {
+        if self.turns.is_empty() {
+            return;
+        }
+
+        self.normalize_legacy_incomplete();
+        let terminal_attempt_ids = live
+            .attributions
+            .iter()
+            .map(|attribution| attribution.attempt_id.as_str())
+            .collect::<HashSet<_>>();
+        for turn in &mut self.turns {
+            turn.usage
+                .pending_attempt_ids
+                .retain(|attempt_id| !terminal_attempt_ids.contains(attempt_id.as_str()));
+            for row in turn.usage.model_usage.values_mut() {
+                row.pending_attempt_ids
+                    .retain(|attempt_id| !terminal_attempt_ids.contains(attempt_id.as_str()));
+            }
+            turn.usage.refresh_incomplete_projection();
+        }
+
+        let mut session_pending_attempt_ids = Vec::new();
+        for turn in &self.turns {
+            session_pending_attempt_ids = merge_pending_attempt_ids(
+                &session_pending_attempt_ids,
+                &turn.usage.pending_attempt_ids,
+            );
+        }
+        self.session.pending_attempt_ids = session_pending_attempt_ids;
+        self.session.permanent_incomplete |= live.permanent_incomplete
+            || self
+                .turns
+                .iter()
+                .any(|turn| turn.usage.permanent_incomplete);
+        self.session.usage_is_incomplete = self.session.permanent_incomplete
+            || self
+                .turns
+                .iter()
+                .any(|turn| !turn.usage.pending_attempt_ids.is_empty());
+        for (model, row) in &mut self.session.model_usage {
+            let mut pending_attempt_ids = Vec::new();
+            row.permanent_incomplete |= self.turns.iter().any(|turn| {
+                turn.usage
+                    .model_usage
+                    .get(model)
+                    .is_some_and(|model_usage| model_usage.permanent_incomplete)
+            });
+            for turn in &self.turns {
+                if let Some(model_usage) = turn.usage.model_usage.get(model) {
+                    pending_attempt_ids = merge_pending_attempt_ids(
+                        &pending_attempt_ids,
+                        &model_usage.pending_attempt_ids,
+                    );
+                }
+            }
+            row.pending_attempt_ids = pending_attempt_ids;
+            row.usage_is_incomplete =
+                row.permanent_incomplete || !row.pending_attempt_ids.is_empty();
+        }
     }
 }
 
@@ -405,11 +699,14 @@ fn primary_model(model_usage: &IndexMap<String, UsageSummary>) -> Option<String>
 }
 
 fn attributions_cover(live: &[UsageAttribution], previous: &[UsageAttribution]) -> bool {
-    live.len() >= previous.len()
-        && live
-            .iter()
-            .zip(previous)
-            .all(|(current, old)| current.attempt_id == old.attempt_id)
+    let live_attempt_ids = live
+        .iter()
+        .filter(|attribution| !attribution.attempt_id.is_empty())
+        .map(|attribution| attribution.attempt_id.as_str())
+        .collect::<HashSet<_>>();
+    previous
+        .iter()
+        .all(|old| old.attempt_id.is_empty() || live_attempt_ids.contains(old.attempt_id.as_str()))
 }
 
 fn merge_attributions(
@@ -426,6 +723,39 @@ fn merge_attributions(
         })
         .cloned()
         .collect()
+}
+
+fn merge_pending_attempt_ids(first: &[String], second: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    first
+        .iter()
+        .chain(second)
+        .filter(|attempt_id| seen.insert(attempt_id.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn summary_from_attributions(attributions: &[UsageAttribution]) -> UsageSummary {
+    let mut summary = UsageSummary::default();
+    for attribution in attributions {
+        let mut ledger = UsageLedger::default();
+        ledger.record_attribution(attribution.clone());
+        summary = summary.saturating_add(&UsageSummary::from_ledger(&ledger));
+    }
+    summary
+}
+
+fn aggregate_residual(live: &UsageSummary, attributed: &UsageSummary) -> UsageSummary {
+    let mut residual = live.saturating_sub(attributed);
+    residual.attributions.clear();
+    residual.pending_attempt_ids.clear();
+    residual.usage_is_incomplete = residual.permanent_incomplete;
+    for row in residual.model_usage.values_mut() {
+        row.attributions.clear();
+        row.pending_attempt_ids.clear();
+        row.usage_is_incomplete = row.permanent_incomplete;
+    }
+    residual
 }
 
 fn complete_reported_cost_for_model(

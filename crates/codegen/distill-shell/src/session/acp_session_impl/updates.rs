@@ -169,7 +169,29 @@ impl SessionActor {
         parent_prompt_id: Option<&str>,
         incomplete: bool,
     ) -> Result<SubagentUsageApply, ()> {
-        if by_model.is_empty() && attributions.is_empty() && !incomplete {
+        self.record_subagent_usage_with_attributions_and_pending(
+            by_model,
+            attributions,
+            &[],
+            parent_prompt_id,
+            incomplete,
+        )
+        .await
+    }
+
+    pub(super) async fn record_subagent_usage_with_attributions_and_pending(
+        &self,
+        by_model: &[(String, distill_chat_state::UsageTotals)],
+        attributions: &[distill_chat_state::UsageAttribution],
+        pending_attempts: &[String],
+        parent_prompt_id: Option<&str>,
+        incomplete: bool,
+    ) -> Result<SubagentUsageApply, ()> {
+        if by_model.is_empty()
+            && attributions.is_empty()
+            && pending_attempts.is_empty()
+            && !incomplete
+        {
             return Ok(SubagentUsageApply::AttributedToPrompt);
         }
         let current = self
@@ -180,9 +202,10 @@ impl SessionActor {
         let attributable = parent_prompt_id.is_some() && parent_prompt_id == current.as_deref();
         if !self
             .chat_state_handle
-            .record_subagent_usage_with_attributions(
+            .record_subagent_usage_with_attributions_and_pending(
                 by_model.to_vec(),
                 attributions.to_vec(),
+                pending_attempts.to_vec(),
                 attributable,
                 incomplete,
             )
@@ -224,20 +247,43 @@ impl SessionActor {
         incomplete: bool,
         respond_to: tokio::sync::oneshot::Sender<()>,
     ) {
+        self.handle_record_subagent_usage_command_with_attributions_and_pending(
+            by_model,
+            attributions,
+            &[],
+            parent_prompt_id,
+            incomplete,
+            respond_to,
+        )
+        .await;
+    }
+
+    pub(super) async fn handle_record_subagent_usage_command_with_attributions_and_pending(
+        &self,
+        by_model: &[(String, distill_chat_state::UsageTotals)],
+        attributions: &[distill_chat_state::UsageAttribution],
+        pending_attempts: &[String],
+        parent_prompt_id: Option<&str>,
+        incomplete: bool,
+        respond_to: tokio::sync::oneshot::Sender<()>,
+    ) {
         match self
-            .record_subagent_usage_with_attributions(
+            .record_subagent_usage_with_attributions_and_pending(
                 by_model,
                 attributions,
+                pending_attempts,
                 parent_prompt_id,
                 incomplete,
             )
             .await
         {
             Ok(SubagentUsageApply::AttributedToPrompt) => {
+                self.persist_live_usage().await;
                 let _ = respond_to.send(());
             }
             Ok(SubagentUsageApply::SessionOnly) => {
                 let _ = self.mark_subagent_usage_not_applied(parent_prompt_id).await;
+                self.persist_live_usage().await;
                 let _ = respond_to.send(());
             }
             Err(()) => {}

@@ -192,12 +192,25 @@ fn record_auxiliary_response_with_status(
         },
         attribute_to_prompt,
     );
+    request_usage_refresh(actor);
     tracing::debug!(
         call,
         usage_reported = response.usage.is_some(),
         cost_reported = response.cost_usd_ticks.is_some(),
         "recorded auxiliary model response"
     );
+}
+
+/// Detached side-calls finish outside the foreground turn's usage snapshot.
+/// Route their terminal row through the same persistence FIFO so a late
+/// attribution reaches the existing usage cursor.
+fn request_usage_refresh(actor: &SessionActor) {
+    let _ = actor
+        .notifications
+        .persistence_tx
+        .send(PersistenceMsg::RefreshUsage {
+            recorder: actor.chat_state_handle.downgrade(),
+        });
 }
 
 pub(crate) async fn collect_auxiliary(
@@ -274,6 +287,9 @@ fn record_auxiliary_failures_with_status(
             },
             attribute_to_prompt,
         );
+    }
+    if !attempts.is_empty() {
+        request_usage_refresh(actor);
     }
 }
 

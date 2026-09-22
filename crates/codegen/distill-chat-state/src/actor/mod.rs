@@ -211,16 +211,24 @@ impl ChatStateActor {
             } => {
                 self.record_usage_attribution(attribution, attribute_to_prompt);
             }
+            ChatStateCommand::RegisterPendingUsageAttempt {
+                attempt_id,
+                attribute_to_prompt,
+            } => {
+                self.register_pending_usage_attempt(attempt_id, attribute_to_prompt);
+            }
             ChatStateCommand::RecordSubagentUsage {
                 by_model,
                 attributions,
                 attribute_to_prompt,
                 incomplete,
+                pending_attempts,
                 reply,
             } => {
                 self.record_subagent_usage(
                     &by_model,
                     &attributions,
+                    &pending_attempts,
                     attribute_to_prompt,
                     incomplete,
                 );

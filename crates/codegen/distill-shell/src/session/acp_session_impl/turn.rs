@@ -1838,7 +1838,7 @@ impl SessionActor {
         let incomplete = incomplete || actor_background_spend || shared_background_spend;
         match self.chat_state_handle.try_get_prompt_usage().await {
             Ok(ledger) => {
-                let incomplete = incomplete || ledger.as_ref().is_some_and(|l| l.incomplete);
+                let incomplete = incomplete || ledger.as_ref().is_some_and(|l| l.is_incomplete());
                 crate::extensions::notification::PromptUsage::project_from_ledger(
                     ledger.as_ref(),
                     incomplete,
@@ -2439,7 +2439,7 @@ impl SessionActor {
             _ => false,
         }
     }
-    async fn persist_live_usage(&self) {
+    pub(super) async fn persist_live_usage(&self) {
         let Some(signals) = self.signals_handle().snapshot().await else {
             return;
         };

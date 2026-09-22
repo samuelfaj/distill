@@ -200,6 +200,21 @@ impl ChatStateHandle {
         });
     }
 
+    /// Admit one provider attempt before dispatch so an early usage snapshot
+    /// remains explicitly incomplete until its terminal attribution arrives.
+    pub fn register_pending_usage_attempt(
+        &self,
+        attempt_id: String,
+        attribute_to_prompt: bool,
+    ) -> Result<(), ChatStateMailboxClosed> {
+        self.cmd_tx
+            .send(ChatStateCommand::RegisterPendingUsageAttempt {
+                attempt_id,
+                attribute_to_prompt,
+            })
+            .map_err(|_| ChatStateMailboxClosed)
+    }
+
     /// Apply subagent usage; returns false if the actor did not acknowledge.
     pub async fn record_subagent_usage(
         &self,
@@ -226,12 +241,33 @@ impl ChatStateHandle {
         attribute_to_prompt: bool,
         incomplete: bool,
     ) -> bool {
+        self.record_subagent_usage_with_attributions_and_pending(
+            by_model,
+            attributions,
+            Vec::new(),
+            attribute_to_prompt,
+            incomplete,
+        )
+        .await
+    }
+
+    /// Apply child attempt rows and carry admitted pending IDs across the
+    /// parent boundary. Terminal rows remove their own pending IDs by identity.
+    pub async fn record_subagent_usage_with_attributions_and_pending(
+        &self,
+        by_model: Vec<(String, crate::usage::UsageTotals)>,
+        attributions: Vec<crate::usage::UsageAttribution>,
+        pending_attempts: Vec<String>,
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    ) -> bool {
         self.query("RecordSubagentUsage", |reply| {
             ChatStateCommand::RecordSubagentUsage {
                 by_model,
                 attributions,
                 attribute_to_prompt,
                 incomplete,
+                pending_attempts,
                 reply,
             }
         })

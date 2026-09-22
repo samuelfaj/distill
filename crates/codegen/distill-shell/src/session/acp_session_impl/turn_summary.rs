@@ -5,6 +5,8 @@
 
 use super::*;
 
+use super::side_call::{record_auxiliary_failures, record_auxiliary_response};
+
 impl SessionActor {
     /// Any generation still running is aborted: its result would describe an older turn.
     /// Cancellation can only land before that block, never inside it.
@@ -85,13 +87,23 @@ impl SessionActor {
             )
             .await;
 
+        let call_started = std::time::Instant::now();
         let response = match setup.client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
+                record_auxiliary_failures(self, &setup.model, 1, false);
                 tracing::warn!(error = %e, "turn summary: model call failed");
                 return;
             }
         };
+        record_auxiliary_response(
+            self,
+            "turn_summary",
+            &setup.model,
+            &response,
+            Some(call_started.elapsed().as_millis() as u64),
+            false,
+        );
         super::side_call::log_prompt_cache_usage(
             "turn_summary",
             setup.client.api_backend(),

@@ -154,7 +154,8 @@ impl SessionActor {
             .wall_clock_budget_secs;
         let hosted_tools = self.hosted_tools_for_turn();
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
-        match generate_session_compact(
+        let started = std::time::Instant::now();
+        let result = generate_session_compact(
             history,
             compaction_tool_tokens,
             tools,
@@ -167,13 +168,39 @@ impl SessionActor {
             self.compaction.tool_choice,
             &cancel,
         )
-        .await
-        {
+        .await;
+        self.record_unreported_compaction_calls(
+            &sampling_config.model,
+            1,
+            Some(started.elapsed().as_millis() as u64),
+        );
+        match result {
             Ok(out) => Some(out),
             Err(e) => {
                 tracing::warn!(error = ?e, "two_pass: summarization sample failed");
                 None
             }
+        }
+    }
+
+    /// The compaction transport currently exposes no provider usage metadata at
+    /// this shell seam. Count every sampler attempt as cost-unknown/incomplete
+    /// so discarded, prefired, and retried summaries cannot look free.
+    fn record_unreported_compaction_calls(
+        &self,
+        model: &str,
+        attempts: u32,
+        api_duration_ms: Option<u64>,
+    ) {
+        for _ in 0..attempts {
+            self.chat_state_handle.record_auxiliary_call_usage(
+                Some(model.to_owned()),
+                None,
+                api_duration_ms,
+                None,
+                false,
+                true,
+            );
         }
     }
     /// Per-turn prefire decision: usage has reached `threshold - lead` (so there is still runway before the hard auto-compact line at `threshold`).
@@ -1160,15 +1187,18 @@ impl SessionActor {
         let mut compact_summary: Option<String> =
             two_pass_output.as_ref().map(|o| o.content.clone());
         while compact_summary.is_none() {
-            match distill_compaction::sample_full_replace_summary(
+            let attempts_before = observer.attempt_count();
+            let sample_result = distill_compaction::sample_full_replace_summary(
                 &sampler,
                 &request_turns,
                 user_context.as_deref(),
                 &fr_config,
                 &observer,
             )
-            .await
-            {
+            .await;
+            let attempts = observer.attempt_count().saturating_sub(attempts_before);
+            self.record_unreported_compaction_calls(&sampling_config.model, attempts, None);
+            match sample_result {
                 Ok(summary) => {
                     compact_summary = Some(summary.summary);
                     break;

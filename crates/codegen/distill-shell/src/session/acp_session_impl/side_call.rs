@@ -64,6 +64,60 @@ pub(crate) fn log_prompt_cache_usage(
     );
 }
 
+/// Attribute one completed auxiliary response exactly once, even when its
+/// text is empty or later discarded as stale. A missing provider usage stays a
+/// counted, incomplete call in the shared UsageLedger.
+pub(crate) fn record_auxiliary_response(
+    actor: &SessionActor,
+    call: &str,
+    configured_model: &str,
+    response: &distill_sampling_types::ConversationResponse,
+    api_duration_ms: Option<u64>,
+    attribute_to_prompt: bool,
+) {
+    let model_id = response
+        .assistant()
+        .and_then(|assistant| assistant.model_id.clone())
+        .filter(|model| !model.is_empty())
+        .or_else(|| (!configured_model.is_empty()).then(|| configured_model.to_owned()));
+    actor.chat_state_handle.record_auxiliary_call_usage(
+        model_id,
+        response.usage.clone(),
+        api_duration_ms,
+        response.cost_usd_ticks,
+        attribute_to_prompt,
+        false,
+    );
+    tracing::debug!(
+        call,
+        usage_reported = response.usage.is_some(),
+        cost_reported = response.cost_usd_ticks.is_some(),
+        "recorded auxiliary model response"
+    );
+}
+
+/// Record attempts for which the transport returned no provider usage. This
+/// is deliberately separate from a successful response: the ledger reports
+/// the attempt and its missing cost instead of manufacturing a zero.
+pub(crate) fn record_auxiliary_failures(
+    actor: &SessionActor,
+    configured_model: &str,
+    attempts: u32,
+    attribute_to_prompt: bool,
+) {
+    let model_id = (!configured_model.is_empty()).then(|| configured_model.to_owned());
+    for _ in 0..attempts {
+        actor.chat_state_handle.record_auxiliary_call_usage(
+            model_id.clone(),
+            None,
+            None,
+            None,
+            attribute_to_prompt,
+            true,
+        );
+    }
+}
+
 /// What differs between the two calls that reuse the parent's prompt cache.
 /// The shared parts live in [`SessionActor::parent_cached_request`].
 pub(crate) struct AuxCall {

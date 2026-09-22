@@ -44,6 +44,21 @@ fn first_turn_writes_session_and_one_turn() {
 }
 
 #[test]
+fn auxiliary_missing_usage_is_visible_as_incomplete_and_non_free() {
+    let mut ledger = UsageLedger::default();
+    ledger.record_auxiliary_call("recap-model", None, Some(12), None, false);
+
+    let summary = UsageSummary::from_ledger(&ledger);
+    assert_eq!(summary.model_calls, 1);
+    assert_eq!(summary.input_tokens, 0);
+    assert_eq!(summary.output_tokens, 0);
+    assert_eq!(summary.cost_usd_ticks, None);
+    assert!(summary.cost_is_partial);
+    assert!(summary.usage_is_incomplete);
+    assert_eq!(summary.model_usage["recap-model"].model_calls, 1);
+}
+
+#[test]
 fn session_primary_model_is_the_most_used_not_the_last_turn() {
     let mut file = SessionUsageFile::new("sess-1");
     let first = live(&[("grok-4", 100, 20, Some(50)), ("grok-4", 80, 10, Some(40))]);

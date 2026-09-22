@@ -1052,6 +1052,7 @@ impl SessionActor {
         self.signals_handle().clear_active_dispatch();
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
+        crate::jev::register_usage_recorder(self.chat_state_handle.clone());
         crate::jev::begin_model_round();
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         tracing::info!(target: "jev.decision", event_kind = "llm_round_start",
@@ -2318,15 +2319,19 @@ impl SessionActor {
             );
             self.signals_handle()
                 .record_token_usage(u.completion_tokens, u.reasoning_tokens);
-        } else if self.tool_context.task_output_token_budget.is_some() {
-            self.tool_context.fail_task_output_usage_closed();
-            self.chat_state_handle
-                .mark_usage_incomplete_nowait(true, true);
-        } else if self.tool_context.sampler_retry_only_before_output {
-            self.chat_state_handle
-                .mark_usage_incomplete_nowait(true, true);
+        } else {
+            self.chat_state_handle.record_model_call_without_usage(
+                response.assistant().and_then(|a| a.model_id.clone()),
+                api_duration_ms,
+                response.cost_usd_ticks,
+            );
+            if self.tool_context.task_output_token_budget.is_some() {
+                self.tool_context.fail_task_output_usage_closed();
+            } else if self.tool_context.sampler_retry_only_before_output {
+                self.chat_state_handle
+                    .mark_usage_incomplete_nowait(true, true);
+            }
         }
-        // TODO: a `None` usage outside these contexts is left unmarked, so a genuine mid-turn omission understates spend with no incomplete flag
     }
 
     /// Persist one response's items without re-estimating model output when provider usage already includes it.

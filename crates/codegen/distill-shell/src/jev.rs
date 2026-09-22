@@ -438,11 +438,16 @@ pub async fn ask_item(
     }
     let budget = item_budget(client);
     let in_flight = JevInFlight::begin();
+    let started = std::time::Instant::now();
     let outcome = tokio::time::timeout(budget, client.ask(&state, &questions)).await;
     drop(in_flight);
     match outcome {
-        Ok(Ok(answers)) => Some(answers),
+        Ok(Ok(answers)) => {
+            record_jev_answer_usage(&answers);
+            Some(answers)
+        }
         Ok(Err(error)) => {
+            record_jev_unreported_call(Some(started.elapsed().as_millis() as u64));
             tracing::debug!(
                 lever = lever.as_str(),
                 %error,
@@ -454,6 +459,7 @@ pub async fn ask_item(
             None
         }
         Err(_) => {
+            record_jev_unreported_call(Some(started.elapsed().as_millis() as u64));
             tracing::debug!(
                 lever = lever.as_str(),
                 budget_ms = budget.as_millis() as u64,
@@ -652,6 +658,7 @@ tokio::task_local! {
     static ACTIVE_SESSION_ID: String;
     static ACTIVE_TURN_ID: String;
     static ACTIVE_ROUND_ID: std::cell::Cell<u64>;
+    static ACTIVE_USAGE_RECORDER: std::cell::RefCell<Option<distill_chat_state::ChatStateHandle>>;
 }
 
 pub(crate) fn telemetry_context() -> (String, String, u64) {
@@ -666,6 +673,94 @@ pub(crate) fn telemetry_context() -> (String, String, u64) {
 
 pub(crate) fn begin_model_round() {
     let _ = ACTIVE_ROUND_ID.try_with(|round| round.set(round.get().saturating_add(1)));
+}
+
+/// Installs the session's existing ChatState handle for this turn. The handle
+/// lives in task-local scope, so concurrent sessions cannot attribute Jev usage
+/// to one another and no process-global ledger/handle is leaked.
+pub(crate) fn register_usage_recorder(handle: distill_chat_state::ChatStateHandle) {
+    let _ = ACTIVE_USAGE_RECORDER.try_with(|recorder| {
+        *recorder.borrow_mut() = Some(handle);
+    });
+}
+
+fn active_usage_recorder() -> Option<distill_chat_state::ChatStateHandle> {
+    ACTIVE_USAGE_RECORDER
+        .try_with(|recorder| recorder.borrow().clone())
+        .ok()
+        .flatten()
+}
+
+/// Attribute one completed Jev response once. Jev's workspace metadata has no
+/// provider cost field, so the shared ledger records cost as absent rather than
+/// treating the utility call as free.
+pub(crate) fn record_jev_answer_usage(answers: &distill_workspace::jev::types::JevAnswerSet) {
+    record_jev_usage(
+        &answers.model,
+        answers.usage.input_tokens,
+        answers.usage.output_tokens,
+        answers.latency_ms,
+    );
+}
+
+/// Attribute one completed cheap utility response using the same ledger path
+/// as a normal Jev response.
+pub(crate) fn record_cheap_answer_usage(answer: &distill_workspace::jev::cheap::CheapAnswer) {
+    record_jev_usage(
+        &answer.model,
+        answer.usage.input_tokens,
+        answer.usage.output_tokens,
+        answer.latency_ms,
+    );
+}
+
+fn record_jev_usage(
+    model: &str,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    latency_ms: u64,
+) {
+    let Some(recorder) = active_usage_recorder() else {
+        return;
+    };
+    let usage = match (prompt_tokens, completion_tokens) {
+        (None, None) => None,
+        _ => Some(distill_sampling_types::TokenUsage {
+            prompt_tokens: prompt_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            completion_tokens: completion_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            total_tokens: prompt_tokens
+                .unwrap_or(0)
+                .saturating_add(completion_tokens.unwrap_or(0))
+                .min(u64::from(u32::MAX)) as u32,
+            reasoning_tokens: 0,
+            cached_prompt_tokens: 0,
+            cache_creation_prompt_tokens: 0,
+        }),
+    };
+    recorder.record_auxiliary_call_usage(
+        Some(model.to_owned()),
+        usage,
+        Some(latency_ms),
+        None,
+        true,
+        prompt_tokens.is_none() || completion_tokens.is_none(),
+    );
+}
+
+/// A Jev transport error/timeout has no response metadata, but the request was
+/// attempted. Count one unreported auxiliary call so its cost cannot disappear.
+fn record_jev_unreported_call(api_duration_ms: Option<u64>) {
+    let Some(recorder) = active_usage_recorder() else {
+        return;
+    };
+    recorder.record_auxiliary_call_usage(
+        Some("<jev-unreported>".to_owned()),
+        None,
+        api_duration_ms,
+        None,
+        true,
+        true,
+    );
 }
 
 #[derive(Debug, Default)]
@@ -701,7 +796,10 @@ where
             session_id.into(),
             ACTIVE_TURN_ID.scope(
                 uuid::Uuid::new_v4().to_string(),
-                ACTIVE_ROUND_ID.scope(std::cell::Cell::new(0), future),
+                ACTIVE_USAGE_RECORDER.scope(
+                    std::cell::RefCell::new(None),
+                    ACTIVE_ROUND_ID.scope(std::cell::Cell::new(0), future),
+                ),
             ),
         )
         .await

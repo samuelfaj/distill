@@ -7,7 +7,7 @@
 
 use super::*;
 
-use super::side_call::AuxCall;
+use super::side_call::{AuxCall, record_auxiliary_failures, record_auxiliary_response};
 use crate::session::helpers::{session_recap, session_summary};
 
 /// Upper bound on the title-refresh model call so a hung backend cannot hold the one-at-a-time refresh slot indefinitely.
@@ -142,6 +142,7 @@ impl SessionActor {
             req_id: format!("xai-title-refresh-{}", uuid::Uuid::new_v4()),
         });
 
+        let call_started = std::time::Instant::now();
         let response = match tokio::time::timeout(
             TITLE_REFRESH_MODEL_TIMEOUT,
             setup.client.conversation_collect(request),
@@ -150,10 +151,12 @@ impl SessionActor {
         {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
+                record_auxiliary_failures(self, &setup.model, 1, false);
                 tracing::warn!(error = %e, "title refresh: model call failed");
                 return None;
             }
             Err(_) => {
+                record_auxiliary_failures(self, &setup.model, 1, false);
                 tracing::warn!(
                     timeout_secs = TITLE_REFRESH_MODEL_TIMEOUT.as_secs(),
                     "title refresh: model call timed out"
@@ -161,6 +164,14 @@ impl SessionActor {
                 return None;
             }
         };
+        record_auxiliary_response(
+            self,
+            "title_refresh",
+            &setup.model,
+            &response,
+            Some(call_started.elapsed().as_millis() as u64),
+            false,
+        );
         super::side_call::log_prompt_cache_usage(
             "title_refresh",
             setup.client.api_backend(),

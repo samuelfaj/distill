@@ -4,7 +4,9 @@
 //! Shared cache-aligned request setup lives in [`super::side_call`].
 //! Per-turn dashboard summary lifecycle lives in [`super::turn_summary`].
 
-use super::side_call::{AuxCall, log_prompt_cache_usage};
+use super::side_call::{
+    AuxCall, log_prompt_cache_usage, record_auxiliary_failures, record_auxiliary_response,
+};
 use super::*;
 
 use agent_client_protocol as acp;
@@ -165,6 +167,7 @@ impl SessionActor {
         // /btw adds its own bounded transient-failure retry (the policy and predicate above)
         use backon::Retryable as _;
         let attempts = std::cell::Cell::new(1u32);
+        let started = std::time::Instant::now();
         let result =
             (|| sampling_client.conversation_collect(build_side_question_attempt(&base_request)))
                 .retry(side_question_retry_policy())
@@ -181,6 +184,15 @@ impl SessionActor {
 
         match result {
             Ok(response) => {
+                record_auxiliary_failures(self, &model, attempts.get().saturating_sub(1), false);
+                record_auxiliary_response(
+                    self,
+                    "btw",
+                    &model,
+                    &response,
+                    Some(started.elapsed().as_millis() as u64),
+                    false,
+                );
                 log_prompt_cache_usage("btw", sampling_client.api_backend(), &response);
                 let content = response.assistant_text();
                 if content.is_empty() {
@@ -192,6 +204,7 @@ impl SessionActor {
                 Ok(content)
             }
             Err(e) => {
+                record_auxiliary_failures(self, &model, attempts.get(), false);
                 let err = SideQuestionError::from(e);
                 persist(String::new(), false, Some(err.to_string()), attempts.get());
                 Err(err)
@@ -353,9 +366,11 @@ impl SessionActor {
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
 
+        let call_started = std::time::Instant::now();
         let response = match setup.client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
+                record_auxiliary_failures(self, &model, 1, false);
                 tracing::warn!(error = %e, "recap: model call failed");
                 self.persist_recap_request_artifact(
                     chat_history_for_artifact,
@@ -379,6 +394,14 @@ impl SessionActor {
             }
         };
 
+        record_auxiliary_response(
+            self,
+            "recap",
+            &model,
+            &response,
+            Some(call_started.elapsed().as_millis() as u64),
+            false,
+        );
         log_prompt_cache_usage("recap", setup.client.api_backend(), &response);
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
@@ -608,22 +631,32 @@ impl SessionActor {
         let request = ConversationRequest {
             items,
             tools: vec![],
-            model: Some(model),
+            model: Some(model.clone()),
             temperature: Some(0.1),
             max_output_tokens: Some(50),
             ..Default::default()
         };
 
         // Collect via the client so the LengthPolicy gate applies: a suggestion truncated at the 50-token cap must not become ghost text
+        let call_started = std::time::Instant::now();
         match sampling_client
             .conversation_collect_with_idle_timeout(request, std::time::Duration::from_secs(5))
             .await
         {
             Ok(response) => {
+                record_auxiliary_response(
+                    self,
+                    "ai_suggest",
+                    &model,
+                    &response,
+                    Some(call_started.elapsed().as_millis() as u64),
+                    false,
+                );
                 let text = response.assistant_text();
                 if text.is_empty() { None } else { Some(text) }
             }
             Err(e) => {
+                record_auxiliary_failures(self, &model, 1, false);
                 tracing::debug!(error = %e, "AI suggest inference failed");
                 None
             }
@@ -776,9 +809,11 @@ impl SessionActor {
             });
         };
 
+        let call_started = std::time::Instant::now();
         let response = match sampling_client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
+                record_auxiliary_failures(self, &request_model, 1, false);
                 tracing::debug!(error = %e, "prompt suggest inference failed");
                 log_fetch(
                     PsAction::FetchFailed,
@@ -790,6 +825,14 @@ impl SessionActor {
             }
         };
         let latency_ms = Some(started.elapsed().as_millis() as u64);
+        record_auxiliary_response(
+            self,
+            "prompt_suggest",
+            &request_model,
+            &response,
+            Some(call_started.elapsed().as_millis() as u64),
+            false,
+        );
 
         let raw = response.assistant_text();
         let suggestion = match prompt_suggest::sanitize_suggestion(&raw) {

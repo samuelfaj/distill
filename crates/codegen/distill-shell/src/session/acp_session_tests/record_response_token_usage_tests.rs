@@ -177,6 +177,17 @@ async fn response_without_usage_keeps_model_output_as_estimated_growth() {
                 .record_response_items(response.items, usage_reported)
                 .await;
 
+            let prompt = actor
+                .chat_state_handle
+                .try_get_prompt_usage()
+                .await
+                .expect("chat-state alive")
+                .expect("missing-usage response still opens a bill");
+            assert_eq!(prompt.totals.model_calls, 1);
+            assert_eq!(prompt.totals.input_tokens, 0);
+            assert!(prompt.incomplete);
+            assert_eq!(prompt.totals.cost_missing_calls, 1);
+
             assert_eq!(actor.chat_state_handle.get_total_tokens().await, 100_000);
             assert!(
                 actor

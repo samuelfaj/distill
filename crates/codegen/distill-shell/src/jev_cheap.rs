@@ -157,6 +157,7 @@ impl CheapLane {
         match &outcome {
             Some(outcome) => {
                 note_success(lever);
+                crate::jev::record_cheap_answer_usage(&outcome.answer);
                 crate::jev::record_item(
                     lever,
                     "used",

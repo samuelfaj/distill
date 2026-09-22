@@ -255,6 +255,9 @@ pub struct UserMessageContext {
     pub skills: Vec<SkillInfo>,
     /// Optional listing budget in characters; defaults to the standard 1%-of-context heuristic when None.
     pub skill_listing_budget_chars: Option<usize>,
+    /// Optional rows rendered by the trusted model-facing projection. The
+    /// custom template still owns any surrounding skill envelope.
+    pub skill_listing_rows_override: Option<String>,
     /// Connected MCP servers (alphabetical).
     pub mcp_servers: Vec<McpServerEntry>,
     /// Absolute path to the per-workspace MCP descriptor root.
@@ -322,7 +325,10 @@ impl UserMessageContext {
             has_rules: !self.workspace_rules.is_empty() || !self.user_rules.is_empty(),
             workspace_rules: &self.workspace_rules,
             user_rules: &self.user_rules,
-            skill_listing: self.render_skill_listing_xml().unwrap_or_default(),
+            skill_listing: self
+                .skill_listing_rows_override
+                .clone()
+                .unwrap_or_else(|| self.render_skill_listing_xml().unwrap_or_default()),
             read_tool_name: self.read_tool_name.clone(),
             mcp_servers: &self.mcp_servers,
             mcps_root: self.mcps_root.as_deref(),
@@ -394,6 +400,91 @@ mod tests {
             json.get(TODAY_LOCAL_PLACEHOLDER).is_some(),
             "the local-date placeholder must serialize under TODAY_LOCAL_PLACEHOLDER"
         );
+    }
+    #[test]
+    fn custom_template_uses_owned_model_skill_rows_override() {
+        let mut full_skill = SkillInfo::default();
+        full_skill.name = "full-catalog-skill".into();
+        full_skill.path = "/skills/full-catalog-skill/SKILL.md".into();
+        let ctx = UserMessageContext {
+            template: UserMessageTemplate::Custom("${{ skill_listing }}".into()),
+            workspace_path: PathBuf::from("/repo"),
+            os_family: "macos".into(),
+            shell: "zsh".into(),
+            vcs_root: None,
+            vcs_status: None,
+            today_local: None,
+            terminals_folder: None,
+            workspace_rules: vec![],
+            user_rules: vec![],
+            skills: vec![full_skill],
+            skill_listing_budget_chars: None,
+            skill_listing_rows_override: Some(
+                "<agent_skill fullPath=\"/skills/selected/SKILL.md\">selected</agent_skill>"
+                    .into(),
+            ),
+            mcp_servers: vec![],
+            mcps_root: None,
+            read_tool_name: "Read".into(),
+        };
+        let placeholders = serde_json::to_value(ctx.placeholders()).unwrap();
+        let renderer = distill_tools::types::template_renderer::TemplateRenderer::new(
+            Default::default(),
+            Default::default(),
+        );
+        let rendered = renderer
+            .render_with_extra(
+                "<user_prefix><agent_skills><available_skills description=\"owned envelope\">\n${{ skill_listing }}\n</available_skills></agent_skills></user_prefix>\n<project_instructions>keep this exact instruction</project_instructions>",
+                &placeholders,
+            )
+            .unwrap();
+        assert!(rendered.contains(
+            "<agent_skill fullPath=\"/skills/selected/SKILL.md\">selected</agent_skill>"
+        ));
+        assert!(rendered.contains("keep this exact instruction"));
+        assert!(!rendered.contains("full-catalog-skill"));
+    }
+    #[test]
+    fn custom_template_receives_recovery_handle_for_zero_selected_skills() {
+        let recovery_path = "/tmp/jev-full-skill-catalog.json";
+        let ctx = UserMessageContext {
+            template: UserMessageTemplate::Custom("${{ skill_listing }}".into()),
+            workspace_path: PathBuf::from("/repo"),
+            os_family: "macos".into(),
+            shell: "zsh".into(),
+            vcs_root: None,
+            vcs_status: None,
+            today_local: None,
+            terminals_folder: None,
+            workspace_rules: vec![],
+            user_rules: vec![],
+            skills: vec![],
+            skill_listing_budget_chars: None,
+            skill_listing_rows_override: Some(
+                crate::prompt::skills::render_model_skill_descriptor_rows(
+                    &[],
+                    "Read",
+                    Some(recovery_path),
+                ),
+            ),
+            mcp_servers: vec![],
+            mcps_root: None,
+            read_tool_name: "Read".into(),
+        };
+        let placeholders = serde_json::to_value(ctx.placeholders()).unwrap();
+        let renderer = distill_tools::types::template_renderer::TemplateRenderer::new(
+            Default::default(),
+            Default::default(),
+        );
+        let rendered = renderer
+            .render_with_extra(
+                "<user_prefix><available_skills>\n${{ skill_listing }}\n</available_skills></user_prefix>\n<project_instructions>preserve this</project_instructions>",
+                &placeholders,
+            )
+            .unwrap();
+        assert!(rendered.contains(recovery_path));
+        assert!(rendered.contains("recover the full catalog"));
+        assert!(rendered.contains("preserve this"));
     }
     #[test]
     fn template_override_deserialize_custom_map() {

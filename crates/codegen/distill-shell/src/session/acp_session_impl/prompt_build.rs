@@ -527,6 +527,16 @@ impl SessionActor {
     }
     #[tracing::instrument(skip_all)]
     pub(super) async fn build_user_message_prefix(&self) -> String {
+        self.build_user_message_prefix_with_skill_rows(None).await
+    }
+    /// Render the first-user-message prefix, optionally replacing the
+    /// renderer-owned skill rows with a model-facing projection. The custom
+    /// template still owns all surrounding text and project/user instructions.
+    #[tracing::instrument(skip_all)]
+    pub(super) async fn build_user_message_prefix_with_skill_rows(
+        &self,
+        skill_listing_rows: Option<&str>,
+    ) -> String {
         let display_path = self
             .display_cwd
             .get()
@@ -546,7 +556,12 @@ impl SessionActor {
         let mut prefix_carries_fallback_date = false;
         let mut out = if !matches!(template, UserMessageTemplate::Default) {
             if let Some(rendered) = self
-                .build_templated_user_message(cwd, template.clone(), repo_status.as_ref())
+                .build_templated_user_message(
+                    cwd,
+                    template.clone(),
+                    repo_status.as_ref(),
+                    skill_listing_rows,
+                )
                 .await
             {
                 rendered
@@ -624,6 +639,7 @@ impl SessionActor {
         cwd: &std::path::Path,
         template: distill_agent::prompt::user_message::UserMessageTemplate,
         repo_status: Option<&RepoStatusSnapshot>,
+        skill_listing_rows: Option<&str>,
     ) -> Option<String> {
         use distill_agent::prompt::user_message::UserMessageContext;
         self.wait_for_mcp_startup_grace().await;
@@ -667,6 +683,7 @@ impl SessionActor {
             user_rules,
             skills,
             skill_listing_budget_chars,
+            skill_listing_rows_override: skill_listing_rows.map(str::to_owned),
             mcp_servers,
             mcps_root,
             read_tool_name: bridge

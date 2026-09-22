@@ -19,6 +19,17 @@ use distill_tools::implementations::skills::discovery::{
     is_valid_skill_name, normalize_skill_name, parse_skill_files, scan_md_files, walk_for_skill_md,
 };
 
+/// Maximum number of compact skill descriptors sent to the model for one task.
+/// The full `SkillInfo` catalog remains owned by discovery and the skill tool.
+pub const MODEL_SKILL_DESCRIPTOR_LIMIT: usize = 8;
+const MODEL_SKILL_DESCRIPTION_CHARS: usize = 180;
+
+const SKILL_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "code", "do", "file", "files", "for", "from",
+    "in", "is", "it", "make", "my", "of", "on", "please", "skill", "skills", "the", "this",
+    "to", "use", "with",
+];
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct SkillsConfig {
     /// Additional skill locations to load.
@@ -130,6 +141,256 @@ pub async fn list_skills_with_plugins(
     }
 
     merged
+}
+
+/// Return signal-bearing words in a request or skill description.
+///
+/// Hyphenated and namespaced skill names contribute both their complete token
+/// and their components, so `browser-screenshot` can match a request that says
+/// "browser screenshot". This is deliberately a small deterministic matcher,
+/// not a second discovery index.
+fn signal_terms(text: &str) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != ':') {
+        let raw = raw.trim().to_ascii_lowercase();
+        if raw.len() < 2 {
+            continue;
+        }
+        if !SKILL_STOP_WORDS.contains(&raw.as_str()) {
+            terms.insert(raw.clone());
+        }
+        for part in raw.split(['-', '_', ':']) {
+            if part.len() >= 2 && !SKILL_STOP_WORDS.contains(&part) {
+                terms.insert(part.to_owned());
+            }
+        }
+    }
+    terms
+}
+
+fn request_name_tokens(request: &str) -> impl Iterator<Item = String> + '_ {
+    request.split_whitespace().filter_map(|raw| {
+        let token = raw.trim_matches(|c: char| {
+            matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ';')
+        });
+        let token = token.strip_prefix('/').unwrap_or(token);
+        let token = token.strip_prefix('$').unwrap_or(token);
+        (!token.is_empty()).then(|| token.to_ascii_lowercase())
+    })
+}
+
+fn skill_name_matches(skill: &SkillInfo, name: &str) -> bool {
+    skill.name.eq_ignore_ascii_case(name)
+        || skill.label().eq_ignore_ascii_case(name)
+        || skill.dedup_key().eq_ignore_ascii_case(name)
+}
+
+/// Explicit skill names in a user request, returned as stable dedup keys.
+/// Slash names, backtick names, and bare exact skill names are all pins. A
+/// description match is never treated as an explicit pin.
+pub fn explicit_skill_pins(request: &str, catalog: &[SkillInfo]) -> Vec<String> {
+    let mut pins = Vec::new();
+    for token in request_name_tokens(request) {
+        for skill in catalog.iter().filter(|skill| skill.enabled) {
+            if skill_name_matches(skill, &token) && !pins.contains(&skill.dedup_key()) {
+                pins.push(skill.dedup_key());
+            }
+        }
+    }
+    pins
+}
+
+fn skill_match_score(request_terms: &HashSet<String>, skill: &SkillInfo) -> usize {
+    let name_terms = signal_terms(&format!("{} {} {}", skill.name, skill.label(), skill.dedup_key()));
+    let content_terms = signal_terms(&format!(
+        "{} {} {}",
+        skill.description,
+        skill.when_to_use.as_deref().unwrap_or_default(),
+        skill.path
+    ));
+    request_terms.iter().fold(0, |score, term| {
+        score
+            + if name_terms.contains(term) {
+                5
+            } else if content_terms.contains(term) {
+                1
+            } else {
+                0
+            }
+    })
+}
+
+/// Select compact model-facing descriptors from the entire catalog.
+///
+/// Ordering is independent of discovery order: pinned/active skills win, then
+/// request overlap, then the stable skill key and path. A zero score means no
+/// candidate is emitted, while explicit and active pins are retained even when
+/// they exceed the ordinary bound. The returned `SkillInfo` values are clones
+/// so callers can shorten only descriptor text without changing discovery,
+/// slash commands, or lossless skill bodies.
+pub fn select_model_skills(
+    request: &str,
+    catalog: &[SkillInfo],
+    pinned_names: &[String],
+    active_names: &[String],
+    limit: usize,
+) -> Vec<SkillInfo> {
+    let request_terms = signal_terms(request);
+    let mut ranked: Vec<(bool, bool, usize, &SkillInfo)> = catalog
+        .iter()
+        .filter(|skill| skill.enabled)
+        .filter_map(|skill| {
+            let pinned = pinned_names
+                .iter()
+                .any(|name| skill_name_matches(skill, name));
+            let active = active_names
+                .iter()
+                .any(|name| skill_name_matches(skill, name));
+            if skill.disable_model_invocation && !pinned && !active {
+                return None;
+            }
+            let score = skill_match_score(&request_terms, skill);
+            (pinned || active || score > 0).then_some((pinned, active, score, skill))
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.3.dedup_key().cmp(&b.3.dedup_key()))
+            .then_with(|| a.3.path.cmp(&b.3.path))
+    });
+
+    let pin_count = ranked.iter().filter(|(pinned, active, _, _)| *pinned || *active).count();
+    let take = limit.max(pin_count);
+    let mut seen = HashSet::new();
+    ranked
+        .into_iter()
+        .filter_map(|(_, _, _, skill)| seen.insert(skill.dedup_key()).then(|| skill.clone()))
+        .take(take)
+        .collect()
+}
+
+/// Skill names present in a loaded `<skill name="...">` block. This lets a
+/// later prompt refresh retain a skill already in active use without treating
+/// every name in the catalog announcement as active.
+pub fn skill_names_in_use(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<skill name=\"") {
+        let value = &rest[start + "<skill name=\"".len()..];
+        let Some(end) = value.find('"') else {
+            break;
+        };
+        let name = &value[..end];
+        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+        rest = &value[end + 1..];
+    }
+    names
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    let mut result: String = text.chars().take(limit).collect();
+    if text.chars().count() > limit {
+        result.push('…');
+    }
+    result
+}
+
+fn xml_attribute(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn compact_model_skill_descriptors(skills: &[SkillInfo]) -> Vec<SkillInfo> {
+    let mut compact: Vec<SkillInfo> = skills
+        .iter()
+        .cloned()
+        .map(|mut skill| {
+            skill.description = truncate_chars(&skill.description, MODEL_SKILL_DESCRIPTION_CHARS);
+            skill.when_to_use = skill
+                .when_to_use
+                .as_deref()
+                .map(|text| truncate_chars(text, MODEL_SKILL_DESCRIPTION_CHARS));
+            skill
+        })
+        .collect();
+    // Selection has already authorized these explicit/active pins for this
+    // model-facing projection. The ordinary announcement formatter filters
+    // manual-only skills, so render a projection-only clone without changing
+    // the authoritative catalog or invocation policy.
+    for skill in &mut compact {
+        skill.disable_model_invocation = false;
+    }
+    compact
+}
+
+/// Render only the model-facing rows used by a custom first-user-message
+/// template. The caller owns the surrounding template/envelope, so this is
+/// intentionally the same row renderer used by [`render_model_skill_descriptors`].
+/// When skills were omitted, the recovery node keeps the existing full-catalog
+/// handle reachable from templates that receive rows instead of the envelope.
+pub fn render_model_skill_descriptor_rows(
+    skills: &[SkillInfo],
+    read_tool_name: &str,
+    recovery_path: Option<&str>,
+) -> String {
+    let rows = render_model_skill_descriptor_rows_base(skills);
+    let Some(recovery_path) = recovery_path else {
+        return rows;
+    };
+    let recovery = xml_attribute(recovery_path);
+    let read_tool = xml_attribute(read_tool_name);
+    let recovery_node = format!(
+        "<skill_recovery fullPath=\"{recovery}\" description=\"Omitted skills remain available through normal discovery and are not disabled. Use the {read_tool} tool on this path to recover the full catalog.\" />"
+    );
+    if rows.is_empty() {
+        recovery_node
+    } else {
+        format!("{rows}\n\n{recovery_node}")
+    }
+}
+
+fn render_model_skill_descriptor_rows_base(skills: &[SkillInfo]) -> String {
+    let compact = compact_model_skill_descriptors(skills);
+    let mut announced = HashSet::new();
+    distill_tools::types::skill_discovery_tracker::format_announcement_xml(
+        &compact,
+        &mut announced,
+        None,
+        None,
+        distill_tools::types::skill_discovery_tracker::XmlRenderMode::Verbatim,
+    )
+    .unwrap_or_default()
+}
+
+/// Render the selected descriptors in the same envelope used by existing
+/// discovery announcements. It never serializes `SkillInfo::body`; loaded
+/// instructions therefore remain lossless in the full catalog and on skill
+/// invocation while the request carries only metadata and a recovery path.
+pub fn render_model_skill_descriptors(
+    skills: &[SkillInfo],
+    read_tool_name: &str,
+    recovery_path: Option<&str>,
+) -> String {
+    let rows = render_model_skill_descriptor_rows_base(skills);
+    let read_tool = xml_attribute(read_tool_name);
+    let recovery = recovery_path.map(xml_attribute);
+    let availability = if recovery.is_some() {
+        "Omitted skills remain available through normal discovery and are not disabled."
+    } else {
+        "These are the complete available descriptors for this request."
+    };
+    let recovery_note = recovery.map_or_else(String::new, |path| {
+        format!(" Full catalog index for recovery: use the {read_tool} tool on {path}.")
+    });
+    format!(
+        "<agent_skills>\n<available_skills description=\"Selected skill descriptors for this request. Use the {read_tool} tool with each absolute path for full instructions. {availability}{recovery_note}\">\n{rows}\n</available_skills>\n</agent_skills>"
+    )
 }
 
 /// Canonical source of all config directories that may contain skills.
@@ -1502,6 +1763,176 @@ mod tests {
             enabled: true,
             body: None,
         }
+    }
+
+    #[test]
+    fn model_selection_searches_beyond_the_first_forty_and_is_stable() {
+        let mut catalog: Vec<SkillInfo> = (0..48)
+            .map(|index| make_skill(&format!("generic-{index:02}"), &format!("/skills/{index:02}/SKILL.md")))
+            .collect();
+        catalog[47].name = "browser-screenshot".to_owned();
+        catalog[47].description = "Capture browser screenshots and inspect visual regressions".to_owned();
+        catalog[47].body = Some("# Required instructions\nKeep the full body".to_owned());
+
+        let pins = explicit_skill_pins("take a browser screenshot", &catalog);
+        let selected = select_model_skills(
+            "take a browser screenshot",
+            &catalog,
+            &pins,
+            &[],
+            MODEL_SKILL_DESCRIPTOR_LIMIT,
+        );
+        assert_eq!(selected.first().map(|skill| skill.name.as_str()), Some("browser-screenshot"));
+        assert_eq!(selected.first().and_then(|skill| skill.body.as_deref()), Some("# Required instructions\nKeep the full body"));
+
+        let mut reversed = catalog.clone();
+        reversed.reverse();
+        let reversed_selected = select_model_skills(
+            "take a browser screenshot",
+            &reversed,
+            &pins,
+            &[],
+            MODEL_SKILL_DESCRIPTOR_LIMIT,
+        );
+        assert_eq!(
+            selected.iter().map(|skill| skill.dedup_key()).collect::<Vec<_>>(),
+            reversed_selected
+                .iter()
+                .map(|skill| skill.dedup_key())
+                .collect::<Vec<_>>(),
+            "catalog order must not reintroduce a first-window bias"
+        );
+    }
+
+    #[test]
+    fn model_selection_keeps_multiple_explicit_pins_and_supports_none() {
+        let catalog = vec![
+            make_skill("deploy", "/skills/deploy/SKILL.md"),
+            make_skill("review", "/skills/review/SKILL.md"),
+            make_skill("unrelated", "/skills/unrelated/SKILL.md"),
+        ];
+        let pins = explicit_skill_pins("use `/deploy` and `/review`", &catalog);
+        assert_eq!(pins, vec!["deploy", "review"]);
+        let selected = select_model_skills(
+            "use `/deploy` and `/review`",
+            &catalog,
+            &pins,
+            &[],
+            1,
+        );
+        assert_eq!(
+            selected.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(),
+            vec!["deploy", "review"]
+        );
+
+        let active = select_model_skills(
+            "unmatched capability",
+            &catalog,
+            &[],
+            &["review".to_owned()],
+            1,
+        );
+        assert_eq!(
+            active.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(),
+            vec!["review"]
+        );
+
+        let mut manual = make_skill("manual-only", "/skills/manual-only/SKILL.md");
+        manual.disable_model_invocation = true;
+        manual.plugin_name = Some("team".to_owned());
+        manual.body = Some("manual instructions".to_owned());
+        let dollar_catalog = vec![
+            make_skill("sam-orchestrate", "/skills/sam-orchestrate/SKILL.md"),
+            manual,
+        ];
+        let dollar_pins = explicit_skill_pins(
+            "run $sam-orchestrate and $team:manual-only",
+            &dollar_catalog,
+        );
+        assert_eq!(dollar_pins, vec!["sam-orchestrate", "team:manual-only"]);
+        let manual_selected = select_model_skills(
+            "run $sam-orchestrate and $team:manual-only",
+            &dollar_catalog,
+            &dollar_pins,
+            &[],
+            1,
+        );
+        assert_eq!(
+            manual_selected
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["manual-only", "sam-orchestrate"]
+        );
+        assert_eq!(
+            manual_selected[0].body.as_deref(),
+            Some("manual instructions")
+        );
+        let rendered_pins = render_model_skill_descriptors(&manual_selected, "Read", None);
+        assert!(
+            rendered_pins.contains("manual-only"),
+            "an explicit manual-only pin remains visible in the compact projection"
+        );
+
+        assert!(select_model_skills("unmatched capability", &catalog, &[], &[], 8).is_empty());
+        let recovery = render_model_skill_descriptors(&[], "Read", Some("/tmp/skills.json"));
+        assert!(recovery.contains("normal discovery"));
+        assert!(recovery.contains("not disabled"));
+        assert!(recovery.contains("/tmp/skills.json"));
+    }
+
+    #[test]
+    fn model_descriptors_shorten_metadata_without_touching_skill_bodies() {
+        let mut skill = make_skill("long", "/skills/long/SKILL.md");
+        skill.description = "x".repeat(MODEL_SKILL_DESCRIPTION_CHARS + 20);
+        skill.when_to_use = Some("y".repeat(MODEL_SKILL_DESCRIPTION_CHARS + 20));
+        skill.body = Some("lossless body".to_owned());
+        let rendered = render_model_skill_descriptors(&[skill.clone()], "Read", None);
+        assert!(rendered.matches('x').count() <= MODEL_SKILL_DESCRIPTION_CHARS + 1);
+        assert!(rendered.matches('y').count() <= MODEL_SKILL_DESCRIPTION_CHARS + 1);
+        assert!(!rendered.contains("lossless body"));
+        assert_eq!(skill.body.as_deref(), Some("lossless body"));
+    }
+
+    #[test]
+    fn model_descriptor_recovery_reads_omitted_skill_beyond_forty() {
+        let mut catalog: Vec<SkillInfo> = (0..48)
+            .map(|index| make_skill(&format!("generic-{index:02}"), &format!("/skills/{index:02}/SKILL.md")))
+            .collect();
+        catalog[47].name = "browser-screenshot".to_owned();
+        catalog[47].body = Some("# Required instructions\nKeep the full body".to_owned());
+
+        let dir = tempfile::tempdir().unwrap();
+        let handle = dir.path().join("full-skills.json");
+        fs::write(&handle, serde_json::to_string(&catalog).unwrap()).unwrap();
+        let selected = select_model_skills(
+            "preciso capturar uma imagem do navegador",
+            &catalog,
+            &[],
+            &[],
+            MODEL_SKILL_DESCRIPTOR_LIMIT,
+        );
+        assert!(
+            selected.is_empty(),
+            "the Portuguese request is intentionally not an English lexical match"
+        );
+        let rendered = render_model_skill_descriptors(
+            &selected,
+            "Read",
+            handle.to_str(),
+        );
+        assert!(rendered.contains(handle.to_str().unwrap()));
+
+        let recovered: Vec<SkillInfo> =
+            serde_json::from_str(&fs::read_to_string(&handle).unwrap()).unwrap();
+        let omitted = recovered
+            .iter()
+            .find(|skill| skill.name == "browser-screenshot")
+            .expect("full recovery catalog includes omitted skill");
+        assert_eq!(
+            omitted.body.as_deref(),
+            Some("# Required instructions\nKeep the full body")
+        );
     }
 
     #[test]

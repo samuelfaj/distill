@@ -7,6 +7,7 @@
 use crate::config::PromptMode;
 use crate::prompt::agents_md::{self, AgentConfigFile};
 use crate::prompt::template::{apply_patch_template, base_template, subagent_template};
+use distill_tools::types::skill_discovery_tracker::SkillListingSnapshot;
 use serde::de;
 use serde::{Deserialize, Serialize};
 /// Selects which base template to use for `Extend` mode rendering.
@@ -284,6 +285,57 @@ impl PromptContext {
         Some(prompt)
     }
 }
+
+fn replace_exact_projection(
+    prompt: &str,
+    original: &SkillListingSnapshot,
+    replacement: &str,
+) -> Option<String> {
+    let original = original.text.as_str();
+    if original.is_empty() || replacement.trim().is_empty() {
+        return None;
+    }
+    let mut matches = prompt.match_indices(original);
+    let (start, _) = matches.next()?;
+    // An ambiguous duplicate is not safe to rewrite: one copy may be a quoted
+    // project instruction rather than the harness-owned catalog.
+    if matches.next().is_some() {
+        return None;
+    }
+    let end = start + original.len();
+    let mut result = String::with_capacity(prompt.len() + replacement.len());
+    result.push_str(&prompt[..start]);
+    result.push_str(replacement.trim());
+    result.push_str(&prompt[end..]);
+    Some(result)
+}
+
+/// Replace the exact XML catalog text rendered by the harness. The original
+/// is supplied by the trusted renderer, so literal XML in AGENTS.md or user
+/// content can never be selected by marker matching.
+pub fn replace_agent_skills_section(
+    prompt: &str,
+    original: &SkillListingSnapshot,
+    replacement: &str,
+) -> Option<String> {
+    if !original.text.starts_with("<agent_skills>\n<available_skills")
+        || !original.text.ends_with("</available_skills>\n</agent_skills>")
+    {
+        return None;
+    }
+    replace_exact_projection(prompt, original, replacement)
+}
+
+/// Replace a trusted harness-rendered skill listing while leaving all other
+/// prompt text byte-for-byte intact. Unknown or duplicate originals are kept.
+pub fn replace_skill_projection(
+    prompt: &str,
+    original: &SkillListingSnapshot,
+    replacement: &str,
+) -> Option<String> {
+    replace_exact_projection(prompt, original, replacement)
+}
+
 /// A system prompt with the [`PromptContext`] it was rendered from; only [`PromptContext::render_paired`] produces one.
 pub struct RenderedPrompt {
     prompt_context: PromptContext,
@@ -363,6 +415,103 @@ mod tests {
         assert_eq!(ctx.build_timestamp_utc, ctx2.build_timestamp_utc);
         assert_eq!(ctx.agents_md_files.len(), ctx2.agents_md_files.len());
     }
+
+    #[test]
+    fn skill_projection_replaces_only_model_facing_descriptors() {
+        let old_catalog = "old catalog entry ".repeat(80);
+        let example = "<agent_skills>\n<available_skills description=\"project example\">\n<agent_skill fullPath=\"/example/full\">example</agent_skill>\n</available_skills>\n</agent_skills>";
+        let original = SkillListingSnapshot {
+            text: format!(
+                "<agent_skills>\n<available_skills description=\"harness catalog\">\n<agent_skill fullPath=\"/old/full\">{old_catalog}</agent_skill>\n</available_skills>\n</agent_skills>"
+            ),
+            skill_count: 1,
+        };
+        let prompt = format!(
+            "<project_instructions>Quoted full catalog:\n{example}</project_instructions>\n<rules>keep this instruction</rules>\n{}\n<user_query>do the task</user_query>",
+            original.text
+        );
+        let replacement = "<agent_skills>\n<available_skills>\n<agent_skill fullPath=\"/new/selected\">selected</agent_skill>\n</available_skills>\n</agent_skills>";
+        let narrowed = replace_agent_skills_section(&prompt, &original, replacement).unwrap();
+        assert!(narrowed.len() < prompt.len());
+        assert!(narrowed.contains("/example/full"));
+        assert!(narrowed.contains("keep this instruction"));
+        assert!(narrowed.contains("do the task"));
+        assert!(narrowed.contains("/new/selected"));
+        assert!(!narrowed.contains("/old/full"));
+
+        let legacy_example =
+            "The following skills are available for use:\n\n- example: quoted catalog\n  Absolute path: /example/full";
+        let legacy_original = SkillListingSnapshot {
+            text: "The following skills are available for use:\n\n- old: full description\n  Absolute path: /old/full".to_owned(),
+            skill_count: 1,
+        };
+        let markdown = format!(
+            "<project_instructions>{legacy_example}</project_instructions>\n<system-reminder>\n{}\n\nThe following workflows are available:\n\n- check: keep this too\n</system-reminder>",
+            legacy_original.text
+        );
+        let narrowed = replace_skill_projection(&markdown, &legacy_original, replacement).unwrap();
+        assert!(narrowed.contains("/example/full"));
+        assert!(narrowed.contains("The following workflows are available:"));
+        assert!(narrowed.contains("- check: keep this too"));
+        assert!(!narrowed.contains("full description"));
+
+        let unknown_tail = "The following skills are available for use:\n\n- old: full description\nunknown text";
+        assert!(replace_skill_projection(unknown_tail, &legacy_original, replacement).is_none());
+    }
+
+    #[test]
+    fn skill_projection_replaces_skill_manager_announcement_only() {
+        let mut actual = distill_tools::implementations::skills::types::SkillInfo::default();
+        actual.name = "actual-skill".to_owned();
+        actual.description = "actual catalog description ".repeat(40);
+        actual.path = "/actual/full/SKILL.md".to_owned();
+
+        let mut manager =
+            distill_tools::types::skill_discovery_tracker::SkillManager::new();
+        manager.set_xml_format(true);
+        manager.seed(None, None, vec![actual], None, None, None);
+        let snapshot = manager.listing_snapshot().expect("catalog is listable");
+        let (_, effects) = manager.take_pending().expect("baseline announcement");
+        let announcement = effects
+            .system_reminder
+            .expect("rendered announcement");
+        assert_eq!(snapshot.text, announcement);
+
+        let example = "<agent_skills>\n<available_skills description=\"quoted project example\">\n<agent_skill fullPath=\"/example/full\">example</agent_skill>\n</available_skills>\n</agent_skills>";
+        let prompt = format!(
+            "<project_instructions>Keep this exact example:\n{example}\nMandatory workflow: never skip review.</project_instructions>\n<user_prefix>{announcement}</user_prefix>\n<user_query>capture the result</user_query>"
+        );
+        let replacement = "<agent_skills>\n<available_skills>\n<agent_skill fullPath=\"/selected/full\">selected</agent_skill>\n</available_skills>\n</agent_skills>";
+        let narrowed = replace_skill_projection(&prompt, &snapshot, replacement)
+            .expect("trusted SkillManager listing is present once");
+
+        assert!(narrowed.len() < prompt.len());
+        assert!(narrowed.contains("/example/full"));
+        assert!(narrowed.contains("Mandatory workflow: never skip review."));
+        assert!(narrowed.contains("/selected/full"));
+        assert!(!narrowed.contains("/actual/full"));
+
+        let narrowed_xml = replace_agent_skills_section(&prompt, &snapshot, replacement)
+            .expect("the actual SkillManager XML snapshot has the trusted envelope");
+        assert!(narrowed_xml.contains("/example/full"));
+        assert!(narrowed_xml.contains("/selected/full"));
+        assert!(!narrowed_xml.contains("/actual/full"));
+
+        let unknown_announcement = format!(
+            "{announcement}\nMandatory workflow: preserve this unknown announcement."
+        );
+        let mismatched_snapshot = SkillListingSnapshot {
+            text: format!("{announcement}\nextra source text"),
+            skill_count: snapshot.skill_count,
+        };
+        assert!(replace_skill_projection(
+            &unknown_announcement,
+            &mismatched_snapshot,
+            replacement
+        )
+        .is_none());
+    }
+
     #[test]
     fn test_json_round_trip_with_agents_md() {
         let mut ctx = test_context();

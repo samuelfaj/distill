@@ -192,12 +192,25 @@ fn record_auxiliary_response_with_status(
         },
         attribute_to_prompt,
     );
+    request_usage_refresh(actor);
     tracing::debug!(
         call,
         usage_reported = response.usage.is_some(),
         cost_reported = response.cost_usd_ticks.is_some(),
         "recorded auxiliary model response"
     );
+}
+
+/// Detached display/recap calls finish outside the foreground turn's usage
+/// snapshot. Route their terminal row through the same persistence FIFO so a
+/// late attribution reaches the existing usage cursor.
+fn request_usage_refresh(actor: &SessionActor) {
+    let _ = actor
+        .notifications
+        .persistence_tx
+        .send(PersistenceMsg::RefreshUsage {
+            recorder: actor.chat_state_handle.downgrade(),
+        });
 }
 
 pub(crate) async fn collect_auxiliary(
@@ -275,6 +288,9 @@ fn record_auxiliary_failures_with_status(
             attribute_to_prompt,
         );
     }
+    if !attempts.is_empty() {
+        request_usage_refresh(actor);
+    }
 }
 
 /// What differs between the two calls that reuse the parent's prompt cache.
@@ -327,8 +343,8 @@ pub(crate) async fn run_display_task(
     }
 
     let utility = actor.cheap_lane(JevLever::ECheapCompress).await;
-    if let Some(utility) = utility
-        && let Some(outcome) = utility
+    if let Some(utility) = utility {
+        let outcome = utility
             .run_task_with_acceptance(
                 JevLever::ECheapCompress,
                 task_id,
@@ -342,11 +358,17 @@ pub(crate) async fn run_display_task(
                         .is_some()
                 },
             )
-            .await
-        && let Ok(fragment) = distill_workspace::jev::tasks::display_fragment(source, &outcome.text)
-        && let Some(display) = accept(&fragment)
-    {
-        return Some(display);
+            .await;
+        // The detached utility observer records into the canonical ledger, but
+        // it returns before the foreground turn's durable snapshot is updated.
+        request_usage_refresh(actor);
+        if let Some(outcome) = outcome
+            && let Ok(fragment) =
+                distill_workspace::jev::tasks::display_fragment(source, &outcome.text)
+            && let Some(display) = accept(&fragment)
+        {
+            return Some(display);
+        }
     }
 
     let worker = actor.tool_result_worker().await?;

@@ -42,6 +42,27 @@ fn live(calls: &[(&str, u32, u32, Option<i64>)]) -> UsageSummary {
     UsageSummary::from_ledger(&ledger)
 }
 
+fn completed_attribution(
+    id: &str,
+    role: &str,
+    model: &str,
+    turn: Option<&str>,
+    prompt: u32,
+    completion: u32,
+    cost: i64,
+) -> distill_chat_state::UsageAttribution {
+    let mut row = attribution(id);
+    row.role = role.to_owned();
+    row.model_id = model.to_owned();
+    row.turn_id = turn.map(str::to_owned);
+    row.status = distill_chat_state::UsageCallStatus::Completed;
+    row.usage = Some(tu(prompt, completion));
+    row.usage_complete = true;
+    row.cost_usd_ticks = Some(cost);
+    row.cost_basis = distill_chat_state::UsageCostBasis::Reported;
+    row
+}
+
 #[test]
 fn first_turn_writes_session_and_one_turn() {
     let mut file = SessionUsageFile::new("sess-1");
@@ -161,6 +182,66 @@ fn duplicate_turn_number_zero_delta_does_not_mutate_turns() {
     assert_eq!(t0.ended_at, "t1");
     assert_eq!(file.session.turn_count, 1);
     assert_eq!(file.updated_at, "t1-again");
+}
+
+#[test]
+fn newer_known_turn_does_not_clear_legacy_unknown_incompleteness() {
+    let mut file: SessionUsageFile = serde_json::from_value(serde_json::json!({
+        "sessionId": "sess-1",
+        "session": {
+            "modelCalls": 1,
+            "usageIsIncomplete": true
+        },
+        "turns": [{
+            "turnNumber": 1,
+            "modelCalls": 1,
+            "usageIsIncomplete": true
+        }]
+    }))
+    .unwrap();
+
+    let known = live(&[("grok-4", 10, 2, Some(5))]);
+    file.apply_turn(2, "t2", &known, None);
+
+    assert!(file.turn(1).unwrap().usage.usage_is_incomplete);
+    assert!(file.session.usage_is_incomplete);
+    assert!(file.session.pending_attempt_ids.is_empty());
+
+    let mut session_only: SessionUsageFile = serde_json::from_value(serde_json::json!({
+        "sessionId": "sess-1",
+        "session": {
+            "modelCalls": 0,
+            "usageIsIncomplete": true
+        },
+        "turns": []
+    }))
+    .unwrap();
+    session_only.apply_turn(1, "new", &known, None);
+    assert!(session_only.session.usage_is_incomplete);
+
+    let mut pending_ledger = UsageLedger::default();
+    pending_ledger.record_main_loop_call("grok-4", &tu(10, 2), Some(10), Some(5));
+    pending_ledger.register_pending_attempt("initial-title:legacy".to_owned());
+    let pending = UsageSummary::from_ledger(&pending_ledger);
+    session_only.apply_turn(2, "pending", &pending, None);
+    assert!(session_only.session.usage_is_incomplete);
+    assert_eq!(
+        session_only.session.pending_attempt_ids,
+        vec!["initial-title:legacy"]
+    );
+
+    let mut title = attribution("initial-title:legacy");
+    title.status = distill_chat_state::UsageCallStatus::Completed;
+    title.usage = Some(tu(4, 2));
+    title.usage_complete = true;
+    title.cost_usd_ticks = Some(7);
+    title.cost_basis = distill_chat_state::UsageCostBasis::Reported;
+    pending_ledger.record_attribution(title);
+    let terminal = UsageSummary::from_ledger(&pending_ledger);
+    session_only.apply_turn(2, "terminal", &terminal, Some(&pending));
+    assert!(session_only.session.usage_is_incomplete);
+    assert!(session_only.session.permanent_incomplete);
+    assert!(session_only.session.pending_attempt_ids.is_empty());
 }
 
 #[test]
@@ -311,6 +392,59 @@ fn usage_summary_keeps_attribution_ids_unique_when_rows_are_folded() {
     let mut different = UsageSummary::default();
     different.attributions.push(attribution("other"));
     assert!(!different.covers(&first));
+}
+
+#[test]
+fn missing_price_overlap_admits_known_usage_and_deduplicates_repeat() {
+    let main_1 = completed_attribution("main-1", "main", "main-model", Some("1"), 10, 2, 10);
+    let title = completed_attribution("title-1", "auxiliary", "title-model", None, 4, 2, 7);
+    let main_2 = completed_attribution("main-2", "main", "main-model", Some("2"), 3, 1, 4);
+
+    let mut baseline_ledger = UsageLedger::default();
+    baseline_ledger.record_attribution(main_1.clone());
+    baseline_ledger.record_attribution(title);
+    let baseline = UsageSummary::from_ledger(&baseline_ledger);
+
+    let mut incoming_ledger = UsageLedger::default();
+    incoming_ledger.record_attribution(main_1);
+    incoming_ledger.record_attribution(main_2);
+    incoming_ledger.record_auxiliary_call("child-model", Some(&tu(5, 1)), Some(5), None, false);
+    let incoming = UsageSummary::from_ledger(&incoming_ledger);
+
+    let first = baseline
+        .reconcile_overlapping_snapshot(&incoming)
+        .expect("incoming snapshot overlaps the persisted main call");
+    assert_eq!(first.model_calls, 4);
+    assert_eq!(first.input_tokens, 22);
+    assert_eq!(first.output_tokens, 6);
+    assert_eq!(first.cost_usd_ticks, Some(21));
+    assert!(first.cost_is_partial);
+    assert!(!first.usage_is_incomplete);
+    assert_eq!(first.model_usage["child-model"].model_calls, 1);
+    assert_eq!(first.model_usage["child-model"].input_tokens, 5);
+    assert_eq!(first.model_usage["child-model"].output_tokens, 1);
+    assert_eq!(first.model_usage["child-model"].cost_usd_ticks, None);
+    assert!(first.model_usage["child-model"].cost_is_partial);
+
+    let repeated = first
+        .reconcile_overlapping_snapshot(&incoming)
+        .expect("the repeated snapshot still overlaps by identity");
+    assert_eq!(repeated, first);
+
+    let mut file = SessionUsageFile::new("missing-price-overlap");
+    file.apply_turn(1, "t1", &baseline, None);
+    file.apply_turn(2, "t2", &first, Some(&baseline));
+    file.apply_turn(2, "t2-repeat", &repeated, Some(&first));
+
+    assert_eq!(file.session.model_calls, 4);
+    assert_eq!(file.session.cost_usd_ticks, Some(21));
+    assert!(file.session.cost_is_partial);
+    assert!(!file.session.usage_is_incomplete);
+    assert_eq!(file.turn(2).unwrap().usage.model_calls, 2);
+    assert_eq!(file.turn(2).unwrap().usage.input_tokens, 8);
+    assert_eq!(file.turn(2).unwrap().usage.output_tokens, 2);
+    assert!(file.turn(2).unwrap().usage.cost_is_partial);
+    assert_eq!(file.session.attributions.len(), 3);
 }
 
 fn reported_live(calls: &[(&str, i64)]) -> UsageSummary {

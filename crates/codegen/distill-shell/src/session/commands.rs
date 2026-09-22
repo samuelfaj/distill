@@ -552,6 +552,8 @@ pub enum SessionCommand {
     RecordSubagentUsage {
         by_model: Vec<(String, distill_chat_state::UsageTotals)>,
         attributions: Vec<distill_chat_state::UsageAttribution>,
+        /// Child attempts admitted before their terminal attribution arrived.
+        pending_attempts: Vec<String>,
         parent_prompt_id: Option<String>,
         /// Nested subagent bill may under-count.
         incomplete: bool,

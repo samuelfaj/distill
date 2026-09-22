@@ -100,6 +100,130 @@ fn task_output_body_evidence(
     }
 }
 
+fn web_search_unit_has_claim_text(unit: &str, citations: &[String]) -> bool {
+    let mut remaining = unit.to_owned();
+    for citation in citations {
+        remaining = remaining.replace(citation, " ");
+    }
+    remaining.split_whitespace().any(|token| {
+        let token = token.trim_matches(|character: char| !character.is_ascii_alphabetic());
+        !token.is_empty()
+            && !matches!(
+                token.to_ascii_lowercase().as_str(),
+                "source" | "sources" | "citation" | "citations" | "url" | "urls" | "link" | "links"
+            )
+    })
+}
+
+/// Citation-bearing web content is eligible only when every citation belongs
+/// to one unambiguous, claim-bearing source paragraph. A detached URL unit or
+/// a citation repeated across paragraphs defers before any model call.
+fn web_search_layout_is_unambiguous(content: &str, citations: &[String]) -> bool {
+    let units: Vec<&str> = content
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|unit| !unit.is_empty())
+        .collect();
+    citations.iter().all(|citation| {
+        let citation = citation.trim();
+        if citation.is_empty() {
+            return false;
+        }
+        let matches: Vec<&str> = units
+            .iter()
+            .copied()
+            .filter(|unit| unit.contains(citation))
+            .collect();
+        matches.len() == 1 && web_search_unit_has_claim_text(matches[0], citations)
+    })
+}
+
+/// Web-search claims may only be narrowed to complete original source
+/// paragraphs. The typed result carries citation URLs separately from its
+/// prose, so every selected claim paragraph must carry its own citation; a
+/// detached URL appendix or an omitted qualifier is not safe to reconstruct.
+fn web_search_source_contract(
+    search: &distill_tool_types::WebSearchOutput,
+    answer: &str,
+) -> bool {
+    let Ok(spans) = distill_workspace::jev::tasks::extractive_spans(answer) else {
+        return false;
+    };
+    if spans.is_empty()
+        || !web_search_layout_is_unambiguous(&search.content, &search.citations)
+    {
+        return false;
+    }
+    let header = format!("Web search results for: \"{}\"", search.query);
+    let units: Vec<&str> = search
+        .content
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|unit| !unit.is_empty())
+        .collect();
+    let mut selected_content_unit = false;
+    for span in &spans {
+        let trimmed = span.trim();
+        if trimmed == header {
+            continue;
+        }
+        let Some(unit) = units.iter().find(|unit| **unit == trimmed) else {
+            return false;
+        };
+        selected_content_unit = true;
+        if !search.citations.is_empty()
+            && !search
+                .citations
+                .iter()
+                .any(|citation| unit.contains(citation))
+        {
+            return false;
+        }
+    }
+    selected_content_unit
+        && search
+            .citations
+            .iter()
+            .all(|citation| spans.iter().any(|span| span.contains(citation)))
+}
+
+fn compression_evidence_question(
+    output: &distill_tools::types::output::ToolOutput,
+    request: &str,
+) -> String {
+    let request_context = if request.trim().is_empty() {
+        "the current request".to_owned()
+    } else {
+        format!(
+            "this request: {}",
+            distill_sampling_types::truncate_bytes(request.trim(), 2_048)
+        )
+    };
+    if let distill_tools::types::output::ToolOutput::WebSearch(search) = output {
+        let header = format!("Web search results for: \"{}\"", search.query);
+        return format!(
+            "For {request_context}, keep only relevant complete original WebSearch content paragraphs. Quote each selected paragraph verbatim, preserving every qualifier or negation and its citation URL(s) in that same paragraph. Include the exact header `{header}`; do not split multiline paragraphs, paraphrase, or detach citations."
+        );
+    }
+    format!(
+        "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts for {request_context}."
+    )
+}
+
+fn compression_source_for_lane(
+    output: &distill_tools::types::output::ToolOutput,
+    body: &str,
+    budget: usize,
+) -> Option<String> {
+    if matches!(
+        output,
+        distill_tools::types::output::ToolOutput::WebSearch(_)
+    ) {
+        return (body.len() <= budget).then(|| body.to_owned());
+    }
+    crate::jev_lanes::bounded_tool_evidence(body, budget)
+}
+
 fn compression_replacement_for_output(
     output: &distill_tools::types::output::ToolOutput,
     original: &str,
@@ -109,6 +233,12 @@ fn compression_replacement_for_output(
     producer: &str,
     typed_metadata: Option<&str>,
 ) -> Option<String> {
+    if let distill_tools::types::output::ToolOutput::WebSearch(search) = output
+        && (search.pre_formatted.is_some()
+            || !web_search_source_contract(search, answer))
+    {
+        return None;
+    }
     let body_evidence = task_output_body_evidence(output);
     compression_replacement_with_required_evidence(
         original,
@@ -193,6 +323,10 @@ fn typed_tool_metadata(
         ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => Some(format!(
             "[task metadata]\n{}",
             task_output_result_metadata(result)
+        )),
+        ToolOutput::WebSearch(search) => Some(format!(
+            "header: Web search results for: \"{}\"\nquery: {}",
+            search.query, search.query
         )),
         _ => None,
     }
@@ -685,7 +819,14 @@ impl SessionActor {
         // trigger exactly one real light-tier request. Neither lane receives an
         // unbounded payload, and the original remains at the recovery handle.
         const EXTRACTIVE_TASK: &str = "cite_spans";
-        let cheap_source = matches!(output, distill_tools::types::output::ToolOutput::Bash(_));
+        let cheap_source = match output {
+            distill_tools::types::output::ToolOutput::Bash(_) => true,
+            distill_tools::types::output::ToolOutput::WebSearch(search) => {
+                search.pre_formatted.is_none()
+                    && web_search_layout_is_unambiguous(&search.content, &search.citations)
+            }
+            _ => false,
+        };
         let cheap_eligible = body.len() >= context::BIG_OUTPUT_BYTES
             && (cheap_source || task_output_source)
             && !is_document
@@ -703,15 +844,7 @@ impl SessionActor {
                 None,
             );
             let utility = self.cheap_lane(JevLever::ECheapCompress).await;
-            let evidence_question = if request.trim().is_empty() {
-                "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts."
-                    .to_owned()
-            } else {
-                format!(
-                    "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts for this request: {}",
-                    distill_sampling_types::truncate_bytes(request.trim(), 2_048)
-                )
-            };
+            let evidence_question = compression_evidence_question(output, &request);
             let source_handle = outcome.store_handle.clone().or_else(|| {
                 crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
             });
@@ -727,7 +860,7 @@ impl SessionActor {
                     )
                 });
                 if let Some(evidence) = utility_budget
-                    .and_then(|budget| crate::jev_lanes::bounded_tool_evidence(&body, budget))
+                    .and_then(|budget| compression_source_for_lane(output, &body, budget))
                 {
                     if let Some(utility) = utility.as_ref()
                         && let Some(outcome) = utility
@@ -800,10 +933,9 @@ impl SessionActor {
                     let worker_budget = worker
                         .max_payload_bytes()
                         .saturating_sub(evidence_question.len().saturating_add(512));
-                    if let Some(evidence) = crate::jev_lanes::bounded_tool_evidence(
-                        &body,
-                        worker_budget,
-                    ) && let Some(worker_request) = worker.task_request(
+                    if let Some(evidence) =
+                        compression_source_for_lane(output, &body, worker_budget)
+                        && let Some(worker_request) = worker.task_request(
                         EXTRACTIVE_TASK,
                         &evidence,
                         &evidence_question,
@@ -1546,6 +1678,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn web_search_source_contract_rejects_detached_url_and_dropped_qualifier() {
+        use distill_tools::types::output::WebSearchOutput;
+
+        let search = WebSearchOutput {
+            query: "rust async cancellation".to_owned(),
+            content: "It is false that Rust async cancellation is free of leaks.\n\nhttps://example.com/rust"
+                .to_owned(),
+            citations: vec!["https://example.com/rust".to_owned()],
+            allowed_domains: None,
+            pre_formatted: None,
+        };
+        let answer = format!(
+            "`Web search results for: \"{}\"`\n`Rust async cancellation is free of leaks.`\n`https://example.com/rust`",
+            search.query
+        );
+        assert!(!web_search_source_contract(&search, &answer));
+
+        let ordinary = WebSearchOutput {
+            query: "rust async cancellation".to_owned(),
+            content: "Rust async cancellation uses cooperative task cleanup. https://example.com/rust"
+                .to_owned(),
+            citations: vec!["https://example.com/rust".to_owned()],
+            allowed_domains: None,
+            pre_formatted: None,
+        };
+        let ordinary_answer = format!(
+            "`Web search results for: \"{}\"`\n`Rust async cancellation uses cooperative task cleanup. https://example.com/rust`",
+            ordinary.query
+        );
+        assert!(web_search_source_contract(&ordinary, &ordinary_answer));
+    }
+
+    #[test]
     fn compression_needs_verification_and_a_net_context_reduction() {
         let original = "error E0308 at src/client.rs:868\n".repeat(100);
         let evidence = "error E0308 at src/client.rs:868";
@@ -2054,6 +2219,199 @@ mod tests {
             .expect("spawn compression-bound test thread")
             .join()
             .expect("compression-bound test thread");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn production_web_search_uses_utility_then_worker_with_source_units() {
+        use distill_test_support::sse::responses_api_script_exact;
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_tools::types::output::{ToolOutput, WebSearchOutput};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+
+                let query = "rust async cancellation";
+                let alpha = "Result alpha: It is false that Rust async cancellation is free of leaks. https://example.com/rust";
+                let beta = "Result beta: Rust async cancellation requires a bounded worker. https://example.com/cancellation";
+                let source_content = format!(
+                    "{alpha}\n\n{beta}\n\n{}",
+                    "supporting search context\n".repeat(300)
+                );
+                let utility_answer = format!(
+                    "`Web search results for: \"{query}\"`\n`Rust async cancellation is free of leaks`"
+                );
+                let worker_answer = format!(
+                    "`Web search results for: \"{query}\"`\n`{alpha}`\n`{beta}`"
+                );
+
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                ])
+                .await
+                .expect("start web-search inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "web-search-utility-rejected",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": utility_answer}
+                            }],
+                            "usage": {"prompt_tokens": 120, "completion_tokens": 12}
+                        }),
+                    ),
+                );
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact(
+                        &worker_answer,
+                        "worker-model",
+                    )),
+                );
+
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+
+                let mut worker = crate::agent::config::ModelEntry::fallback(
+                    "worker-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                worker.info.base_url = server.url();
+                worker.info.context_window =
+                    std::num::NonZeroU64::new(128_000).expect("worker window");
+                worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                worker.info.max_retries = Some(0);
+                worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+                worker.info.supports_reasoning_effort = true;
+                worker.info.reasoning_efforts = vec![
+                    distill_sampling_types::ReasoningEffortOption {
+                        id: "low".to_owned(),
+                        value: distill_sampling_types::ReasoningEffort::Low,
+                        label: "Low".to_owned(),
+                        description: Some("bounded test worker".to_owned()),
+                        default: true,
+                    },
+                ];
+                worker.api_key = Some("worker-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("worker-model", worker);
+
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+                    light: Some("worker-model".to_owned()),
+                    light_effort: Some("low".to_owned()),
+                });
+
+                let output = ToolOutput::WebSearch(WebSearchOutput {
+                    query: query.to_owned(),
+                    content: source_content,
+                    citations: vec![
+                        "https://example.com/rust".to_owned(),
+                        "https://example.com/cancellation".to_owned(),
+                    ],
+                    allowed_domains: None,
+                    pre_formatted: None,
+                });
+                let rendered = output.to_prompt_format();
+                assert!(rendered.len() >= context::BIG_OUTPUT_BYTES);
+                let compressed = crate::jev::with_session_scope_and_recorder(
+                    "e3-web-search-utility-worker",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "web_search",
+                        "",
+                        "web-search-call-1",
+                        &output,
+                        rendered,
+                    ),
+                )
+                .await;
+
+                assert!(
+                    compressed.contains("compressed by verified configured light worker"),
+                    "expected worker fallback: {compressed}"
+                );
+                assert!(compressed.contains("full output stored at"));
+                assert!(compressed.contains(&format!("header: Web search results for: \"{query}\"")));
+                assert!(compressed.contains(&format!("query: {query}")));
+                assert!(
+                    compressed.contains(alpha),
+                    "complete negated source unit was not retained: {compressed}"
+                );
+                assert!(compressed.contains(beta));
+                assert!(compressed.contains("https://example.com/rust"));
+                assert!(compressed.contains("https://example.com/cancellation"));
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                assert_eq!(server.request_count_for("/v1/responses"), 1);
+
+                let ledger = actor
+                    .chat_state_handle
+                    .try_get_session_usage()
+                    .await
+                    .expect("web-search ledger remains readable");
+                let utility_rows: Vec<_> = ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "utility")
+                    .collect();
+                let worker_rows: Vec<_> = ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "auxiliary")
+                    .collect();
+                assert_eq!(utility_rows.len(), 1);
+                assert_eq!(worker_rows.len(), 1);
+                assert_eq!(utility_rows[0].model_id, "utility-model");
+                assert_eq!(
+                    utility_rows[0].status,
+                    distill_chat_state::UsageCallStatus::Rejected
+                );
+                assert_eq!(worker_rows[0].model_id, "worker-model");
+                assert_eq!(
+                    worker_rows[0].status,
+                    distill_chat_state::UsageCallStatus::Completed
+                );
+                assert!(utility_rows[0]
+                    .endpoint
+                    .as_deref()
+                    .is_some_and(|endpoint| endpoint.ends_with("/chat/completions")));
+                assert!(worker_rows[0]
+                    .endpoint
+                    .as_deref()
+                    .is_some_and(|endpoint| endpoint.ends_with("/responses")));
+
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_tier_config();
+            })
+            .await;
     }
 
     #[tokio::test(flavor = "current_thread")]

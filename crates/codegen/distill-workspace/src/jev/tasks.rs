@@ -601,6 +601,9 @@ pub fn gate(
     }
     match spec.guard {
         Guard::Literals => {
+            if trimmed.is_empty() && reduce::literals(payload).is_empty() {
+                return Err(Rejected::NoEvidence);
+            }
             if trimmed.len() >= payload.len() {
                 return Err(Rejected::NotShorter);
             }
@@ -752,9 +755,36 @@ pub async fn run_with(
     let spec = spec(id)?;
     // The deterministic pass runs first: there is no reason to pay a model for
     // what a crusher already answered.
-    let prepared = prepare(spec, payload)?;
+    let Some(prepared) = prepare(spec, payload) else {
+        let reason = if payload.trim().is_empty() {
+            "empty_payload"
+        } else {
+            "precleaned_empty_payload"
+        };
+        tracing::info!(target: "jev.decision", event_kind = "utility_skip",
+            task_id = id, skip_reason = reason, accepted = false,
+            "utility task skipped before request");
+        return None;
+    };
+    let skip_reason = match spec.guard {
+        Guard::JsonObject(contract) if contract.fields.is_none() => Some("no_contract"),
+        Guard::ClosedSet(spec_labels) if spec_labels.is_empty() && labels.is_empty() => {
+            Some("no_labels")
+        }
+        Guard::CandidateIds if candidates.is_empty() => Some("no_candidates"),
+        _ => None,
+    };
+    if let Some(skip_reason) = skip_reason {
+        tracing::info!(target: "jev.decision", event_kind = "utility_skip",
+            task_id = id, skip_reason, accepted = false,
+            "utility task skipped before request");
+        return None;
+    }
     let task = task_for(spec, &prepared, question);
     if !task.fits(client.config().max_input_bytes) {
+        tracing::info!(target: "jev.decision", event_kind = "utility_skip",
+            task_id = id, skip_reason = "input_limit", accepted = false,
+            "utility task skipped before request");
         return None;
     }
     let answer = client.ask(&task).await.ok()?;
@@ -894,6 +924,10 @@ mod tests {
         assert_eq!(
             gate(&spec, payload, "NONE", &[], &[]).expect_err("nothing"),
             Rejected::Nothing
+        );
+        assert_eq!(
+            gate(&spec, "plain payload", "", &[], &[]).expect_err("empty answer"),
+            Rejected::NoEvidence
         );
     }
 
@@ -1209,6 +1243,12 @@ mod tests {
         // NONE is an answer, and it is not an outcome either.
         let (_stub, client) = client_answering("NONE").await;
         assert!(run(&client, "distill_command_output", payload, "").await.is_none());
+
+        // An unknown source schema is deterministically ineligible: no request
+        // is sent just to obtain an answer that the guard must reject.
+        let (stub, client) = client_answering(r#"{"id":1}"#).await;
+        assert!(run(&client, "extract_schema", payload, "").await.is_none());
+        assert!(stub.bodies().is_empty(), "no-contract task must not call HTTP");
 
         // An unknown id is not a task.
         let (_stub, client) = client_answering("whatever").await;

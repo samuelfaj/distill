@@ -172,6 +172,46 @@ impl ChatStateHandle {
         });
     }
 
+    /// Record a main-loop response whose provider omitted token usage.
+    /// The call remains visible and incomplete instead of looking free.
+    pub fn record_model_call_without_usage(
+        &self,
+        model_id: Option<String>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::RecordModelCallWithoutUsage {
+                model_id,
+                api_duration_ms,
+                cost_usd_ticks,
+            });
+    }
+
+    /// Record one auxiliary model call. The command is ordered with the rest
+    /// of this session's usage mutations and is intentionally fire-and-forget.
+    pub fn record_auxiliary_call_usage(
+        &self,
+        model_id: Option<String>,
+        usage: Option<TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    ) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::RecordAuxiliaryCallUsage {
+                model_id,
+                usage,
+                api_duration_ms,
+                cost_usd_ticks,
+                attribute_to_prompt,
+                incomplete,
+            });
+    }
+
     /// Apply subagent usage; returns false if the actor did not acknowledge.
     pub async fn record_subagent_usage(
         &self,

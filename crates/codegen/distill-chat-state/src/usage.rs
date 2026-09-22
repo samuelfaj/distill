@@ -2,7 +2,8 @@
 //! Per-prompt and per-session billing ledgers (not serialized).
 //!
 //! `total_tokens()` is input + output: Responses wire `total` is live context
-//! length. Compaction and other side calls never call `record_main_loop_call`.
+//! length. Compaction and other side calls use `record_auxiliary_call` instead
+//! of `record_main_loop_call`.
 //!
 //! # Completeness ownership
 //!
@@ -49,6 +50,15 @@ impl UsageTotals {
         api_duration_ms: Option<u64>,
         cost_usd_ticks: Option<i64>,
     ) -> Self {
+        Self::from_optional_call(Some(usage), api_duration_ms, cost_usd_ticks)
+    }
+
+    fn from_optional_call(
+        usage: Option<&TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) -> Self {
+        let usage = usage.cloned().unwrap_or_default();
         let cost_usd_ticks = distill_sampling_types::reported_cost_ticks(cost_usd_ticks);
         Self {
             input_tokens: u64::from(usage.prompt_tokens),
@@ -67,8 +77,11 @@ impl UsageTotals {
         self.input_tokens.saturating_add(self.output_tokens)
     }
 
+    /// True whenever one or more calls lack provider-reported cost.
+    /// `cost_usd_ticks == None` distinguishes the all-absent case from a
+    /// partially reported total; neither case is treated as free.
     pub fn cost_is_partial(&self) -> bool {
-        self.cost_usd_ticks.is_some() && self.cost_missing_calls > 0
+        self.cost_missing_calls > 0
     }
 
     fn fold_totals(&mut self, other: &UsageTotals) {
@@ -130,6 +143,39 @@ impl UsageLedger {
         self.fold_entry(model_id, &call);
     }
 
+    /// Fold a main-loop call whose response did not report token usage.
+    /// The call is counted, but the token and cost fields stay explicitly
+    /// absent and the ledger is marked incomplete.
+    pub fn record_main_loop_call_without_usage(
+        &mut self,
+        model_id: &str,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) {
+        let call = UsageTotals::from_optional_call(None, api_duration_ms, cost_usd_ticks);
+        self.main_loop_model_calls = self.main_loop_model_calls.saturating_add(1);
+        self.fold_entry(model_id, &call);
+        self.incomplete = true;
+    }
+
+    /// Fold one non-main model call without changing the main-loop count.
+    /// Missing usage is counted as an incomplete call; missing provider cost is
+    /// tracked separately by `cost_missing_calls`.
+    pub fn record_auxiliary_call(
+        &mut self,
+        model_id: &str,
+        usage: Option<&TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+        incomplete: bool,
+    ) {
+        let call = UsageTotals::from_optional_call(usage, api_duration_ms, cost_usd_ticks);
+        self.fold_entry(model_id, &call);
+        if incomplete || usage.is_none() {
+            self.incomplete = true;
+        }
+    }
+
     /// Fold subagent usage without incrementing `main_loop_model_calls`.
     pub fn record_subagent(&mut self, by_model: &[(String, UsageTotals)], incomplete: bool) {
         for (model_id, totals) in by_model {
@@ -174,6 +220,7 @@ mod tests {
         ledger.record_main_loop_call("m", &tu(1, 1), None, Some(0));
         assert_eq!(ledger.totals.cost_usd_ticks, None);
         assert_eq!(ledger.totals.cost_missing_calls, 1);
+        assert!(ledger.totals.cost_is_partial());
 
         ledger.record_main_loop_call("a", &tu(100, 10), Some(100), None);
         ledger.record_main_loop_call("a", &tu(50, 5), Some(50), Some(70));
@@ -199,5 +246,21 @@ mod tests {
 
         ledger.record_subagent(&[], true);
         assert!(ledger.incomplete);
+    }
+
+    #[test]
+    fn auxiliary_and_unreported_main_calls_are_counted_once_without_free_cost() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_auxiliary_call("recap-model", None, Some(12), None, true);
+        ledger.record_main_loop_call_without_usage("main-model", Some(8), Some(30));
+
+        assert_eq!(ledger.main_loop_model_calls, 1);
+        assert_eq!(ledger.totals.model_calls, 2);
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(30));
+        assert_eq!(ledger.totals.cost_missing_calls, 1);
+        assert!(ledger.totals.cost_is_partial());
+        assert!(ledger.incomplete);
+        assert_eq!(ledger.by_model["recap-model"].model_calls, 1);
+        assert_eq!(ledger.by_model["main-model"].model_calls, 1);
     }
 }

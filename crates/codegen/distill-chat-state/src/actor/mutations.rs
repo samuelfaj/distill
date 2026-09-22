@@ -446,6 +446,61 @@ impl ChatStateActor {
         );
     }
 
+    pub(super) fn record_model_call_without_usage(
+        &mut self,
+        model_id: Option<String>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) {
+        let model_key = match model_id.as_deref() {
+            Some(id) if !id.is_empty() => id,
+            _ => self.state.sampling_config.model.as_str(),
+        }
+        .to_owned();
+        self.state
+            .prompt_usage
+            .get_or_insert_default()
+            .record_main_loop_call_without_usage(&model_key, api_duration_ms, cost_usd_ticks);
+        self.state.session_usage.record_main_loop_call_without_usage(
+            &model_key,
+            api_duration_ms,
+            cost_usd_ticks,
+        );
+    }
+
+    pub(super) fn record_auxiliary_call_usage(
+        &mut self,
+        model_id: Option<String>,
+        usage: Option<&distill_sampling_types::TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    ) {
+        let model_key = model_id
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        if attribute_to_prompt {
+            self.state
+                .prompt_usage
+                .get_or_insert_default()
+                .record_auxiliary_call(
+                    &model_key,
+                    usage,
+                    api_duration_ms,
+                    cost_usd_ticks,
+                    incomplete,
+                );
+        }
+        self.state.session_usage.record_auxiliary_call(
+            &model_key,
+            usage,
+            api_duration_ms,
+            cost_usd_ticks,
+            incomplete,
+        );
+    }
+
     pub(super) fn record_subagent_usage(
         &mut self,
         by_model: &[(String, crate::usage::UsageTotals)],

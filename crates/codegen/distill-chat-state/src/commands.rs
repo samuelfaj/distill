@@ -115,6 +115,23 @@ pub enum ChatStateCommand {
         cost_usd_ticks: Option<i64>,
     },
 
+    /// Record a main-loop response whose provider omitted token usage.
+    RecordModelCallWithoutUsage {
+        model_id: Option<String>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    },
+
+    /// Record one non-main model call. Missing usage/cost stays explicit.
+    RecordAuxiliaryCallUsage {
+        model_id: Option<String>,
+        usage: Option<TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    },
+
     /// Subagent usage into session (and prompt when attributable). Replies when applied.
     RecordSubagentUsage {
         by_model: Vec<(String, crate::usage::UsageTotals)>,

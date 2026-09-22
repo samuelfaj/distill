@@ -205,6 +205,30 @@ impl ChatStateActor {
             } => {
                 self.record_model_call_usage(model_id, &usage, api_duration_ms, cost_usd_ticks);
             }
+            ChatStateCommand::RecordModelCallWithoutUsage {
+                model_id,
+                api_duration_ms,
+                cost_usd_ticks,
+            } => {
+                self.record_model_call_without_usage(model_id, api_duration_ms, cost_usd_ticks);
+            }
+            ChatStateCommand::RecordAuxiliaryCallUsage {
+                model_id,
+                usage,
+                api_duration_ms,
+                cost_usd_ticks,
+                attribute_to_prompt,
+                incomplete,
+            } => {
+                self.record_auxiliary_call_usage(
+                    model_id,
+                    usage.as_ref(),
+                    api_duration_ms,
+                    cost_usd_ticks,
+                    attribute_to_prompt,
+                    incomplete,
+                );
+            }
             ChatStateCommand::RecordSubagentUsage {
                 by_model,
                 attribute_to_prompt,

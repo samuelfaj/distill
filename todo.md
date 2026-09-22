@@ -14,6 +14,15 @@ Estudo e plano de execução — 21/09/2026. **Status: checkpoints de implementa
 > sem claim de baseline, economia ou finanças; nenhum checkbox financeiro
 > histórico é concluído. T05/T13/T19 e calibração ficam para fases posteriores.
 
+> **Anotação de steering — overflow e economia de saída (22/09/2026):** a
+> captura de tela mostra um sintoma de overflow no `/goal` e rótulos de modelos
+> na UI; isso não prova qual modelo/endpoint respondeu. A rota efetiva precisa
+> ser registrada pelo request/client metadata. Para conteúdo útil que possa ser
+> reduzido, a ordem exigida é utility elegível → worker configurado e limitado
+> (preservando pins) → saída necessária fiel/original recuperável se ambos
+> falharem. Contar cada chamada, rejeição, fallback e reabertura uma vez; não
+> usar um fallback pago de reasoning só para resumir.
+
 ## 1. Objetivo e critério de sucesso
 
 Fazer o Distill concluir as mesmas tarefas, com a mesma qualidade exigida, gastando menos dinheiro. Usar código determinístico, Jev, utility models e workers para evitar chamadas caras ou diminuir seu contexto e esforço. Reservar o reasoning model para as partes em que ele reduz o custo total esperado, inclusive evitando retrabalho.
@@ -186,7 +195,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - **Dependências:** T01. **Arquivos:** [D4], [D17], [D16].
   - Aproveitar o trabalho já presente em `jev_model_facts.rs` e `openrouter_models.rs`: preço, cache, janela, output, ferramentas, imagens, níveis de effort, endpoint, autenticação e atualização. Não duplicar esse catálogo. Benchmarks gerais são pistas de capacidade, não taxa de sucesso do nosso workload ou prova de um effort melhor.
   - Usar modelo/endpoint realmente atendente e política da conta. Tratar a lista utility atual — Ling Flash VL gratuito, variante paga e Qwen Flash — como fallback configurado, não uma ordenação econômica validada. Nenhum modelo desconhecido ganha capacidade/preço por inferência do nome.
-  - **Aceite/evidência:** candidato incompatível não é oferecido; dados vencidos/ausentes ficam explícitos; as credenciais e o backend pertencem ao candidato correto; seleção manual e restrições de subagente continuam respeitadas. Cobrir com testes existentes de configuração/roteamento e fixtures pequenas das lacunas.
+  - **Aceite/evidência:** candidato incompatível não é oferecido; dados vencidos/ausentes ficam explícitos; as credenciais e o backend pertencem ao candidato correto; seleção manual e restrições de subagente continuam respeitadas. Para `/goal` repetido, a elegibilidade usa a janela/capacidade do endpoint efetivamente roteado, reserva de output e margem antes do envio, com fixture de worker de janela menor versus modelo exibido e caso-limite input+reserva; metadata ausente conserva rota segura explícita, sem inferir pelo nome. Cobrir com testes existentes de configuração/roteamento e fixtures pequenas das lacunas.
 
 - [ ] **T04 — Fechar os contratos das utility tasks antes de ampliar uso.**
   - **Dependências:** nenhuma. **Arquivos:** [D6], [D7], [D8].
@@ -221,7 +230,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Priorizar extração estruturada de saída não parseável, seleção de trechos apoiada em fonte, resumo de logs volumosos e títulos/resumos de apresentação. Classificação pura pode ir direto a Jev; parsing simples fica em código. Conectar somente tarefas com consumidor real e verificador suficiente.
   - Enviar apenas a instrução e o payload necessário, sem conversa, catálogo, ferramentas de edição ou loop de agente. Limitar resposta ao contrato; selecionar um utility compatível pela evidência de custo/sucesso. A chain gratuita→paga deve registrar qual modelo respondeu e o custo de esperas/falhas.
   - Começar sem reasoning quando suportado e comprovado suficiente. Não executar `best_of`/múltiplas amostras por padrão; uma nova tentativa precisa melhorar o custo esperado.
-  - **Aceite/evidência:** para cada tarefa ligada, registrar elegível→chamada→aceita/rejeitada→usada, custo e chamadas principais evitadas. Manter ligada somente se a economia líquida e a qualidade forem demonstradas.
+  - **Aceite/evidência:** para cada tarefa ligada, registrar elegível→chamada→aceita/rejeitada→usada, custo e chamadas principais evitadas. Quando houver conteúdo útil elegível, provar a ordem utility primeiro → worker configurado limitado em indisponibilidade/rejeição/unsupported → saída necessária fiel ou original recuperável se ambos falharem, preservando model/effort/auth pins e sem fallback pago de reasoning apenas para resumir. Cada chamada, rejeição, fallback e reabertura entra uma vez no ledger; manter ligada somente se a economia líquida e a qualidade forem demonstradas.
 
 - [ ] **T09 — Escolher rota pelo custo restante esperado, em um único ponto existente.**
   - **Dependências:** T01, T02, T03, T04, T07. **Arquivos:** [D4], [D14], catálogo de routing em [D18].
@@ -235,7 +244,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Comparar os níveis realmente suportados para utility, edição localizada, diagnóstico e revisão. Selecionar o menor custo total entre os níveis que atendam ao requisito de qualidade; baixo effort não significa automaticamente menor custo após retries.
   - Manter o effort fixado pelo usuário em cada papel e heranças explícitas de subagentes. Em `auto`, reservar aumento para ambiguidade/falha relevante; um diagnóstico resolvido não obriga a manter alto effort nas etapas mecânicas seguintes.
   - Tratar limite de output separadamente do effort: impedir respostas desnecessariamente longas sem truncar tool calls, patches ou JSON e provocar recuperação mais cara. Confirmar que o adaptador transmite o nível escolhido.
-  - **Aceite/evidência:** custo/qualidade por par modelo×effort com versão e endpoint; saída necessária completa; níveis não suportados nunca são enviados. Não concluir que benchmark geral do modelo calibrado em outro effort vale para todos os níveis.
+  - **Aceite/evidência:** custo/qualidade por par modelo×effort com versão e endpoint; saída necessária completa; níveis não suportados nunca são enviados. Em `/goal` repetido, input + reserva de output + margem devem caber na capacidade efetiva antes de enviar e ser reavaliados após compactação/rota; pins de effort/output do usuário permanecem. Não concluir que benchmark geral do modelo calibrado em outro effort vale para todos os níveis.
 
 - [ ] **T11 — Delegar workers com contexto delimitado e evitar viagens ao pai.**
   - **Dependências:** T03, T04, T09, T10. **Arquivos:** [D13], [D4], infraestrutura de spawn existente.
@@ -251,7 +260,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Preferir busca com trechos, paginação e leitura de intervalo; extrair erros de builds/testes com parsers e redutores existentes. Preservar exit code, comandos, paths e informação necessária ao diagnóstico. Edições devolvem confirmação curta e evidência acessível; não reenviar o arquivo inteiro.
   - Separar conteúdo da UI do conteúdo do modelo; permitir lotes de operações independentes e pequenas alterações quando o contrato atual suportar. A saída original permanece recuperável por handle/arquivo e com intervalo claro.
   - Ampliar compressão fora de 24–32 KiB somente com evidência econômica: primeiro reduzir/segmentar deterministicamente, depois resumir a parte útil. Não resumir toda saída nem aplicar um teto cego que esconda o erro.
-  - **Aceite/evidência:** custo de leitura futuro cai, reconstrução da evidência funciona, casos de saída exata/documentos de instrução permanecem exatos e o ganho não é consumido por reabrir o original em quase toda tarefa.
+  - **Aceite/evidência:** custo de leitura futuro cai, reconstrução da evidência funciona, casos de saída exata/documentos de instrução permanecem exatos e o ganho não é consumido por reabrir o original em quase toda tarefa. Em cada producer→model seam aplicável, provar utility primeiro → worker configurado limitado quando utility falha/não é elegível → evidência necessária fiel/original recuperável quando ambos falham, preservando exit status, erros, failed/skipped/not-run, contagens, paths/linhas, comando e handle; sem declarar sucesso por resumo. Fallbacks e reaberturas são contabilizados uma vez.
 
 - [ ] **T13 — Recuperar contexto e memória por relevância, com reuso válido.**
   - **Dependências:** T01, T02, T07. **Arquivos:** [D9], [D19], busca/índices já existentes.
@@ -265,7 +274,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Preservar objetivo, restrições, decisões, estado de arquivos, testes executados, evidências, pendências e referências recuperáveis. Manter prefixos/instruções obrigatórios e pares de protocolo válidos. Usar seleção determinística/Jev sobre descritores limitados antes de gerar resumo.
   - Comparar o summarizer atual com utility sobre segmentos limitados e com redução sem LLM. Ajustar o gatilho dentro da margem segura de contexto conforme economia futura esperada. Um resumo cedo demais custa uma geração e pode destruir cache sem benefício.
   - Medir prefire aplicado, invalidado e nunca utilizado; não confundir latência escondida com custo economizado. Validar resumo contra fontes e reter/recuperar o original em falha. Não exigir segunda geração ou rodada forte se a validação objetiva já resolveu.
-  - **Aceite/evidência:** tarefas longas retomam corretamente após compactação, inclusive branches/rewind/subagentes; tokens pagos e releituras caem; compactações descartadas continuam no ledger. Não copiar os limiares absolutos do Pi sem calibrar janela e workload.
+  - **Aceite/evidência:** tarefas longas retomam corretamente após compactação, inclusive branches/rewind/subagentes; tokens pagos e releituras caem; compactações descartadas continuam no ledger. Em `/goal` repetido, recovery/compactação deve ser limitado, reavaliar input + reserva na rota efetiva e não repetir a mesma requisição impossível; objetivo, pins e fatos necessários permanecem. Não copiar os limiares absolutos do Pi sem calibrar janela e workload.
 
 - [ ] **T15 — Baratear títulos, recaps e resumos auxiliares.**
   - **Dependências:** T01, T02, T03, T08. **Arquivos:** [D12].
@@ -278,7 +287,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Conciliar limites de retries no sampler, transporte e fallback para evitar multiplicação silenciosa. Distinguir rate limit/erro transitório, credencial, contexto excedido, output truncado, resultado inválido e falta de capacidade; cada causa exige reação diferente.
   - Contadores utility hoje não bloqueiam a lane: propor supressão temporária de uma otimização opcional comprovadamente improdutiva, com chave por endpoint/tarefa e recuperação posterior. Começar pela evidência determinística; Jev só classifica erros não estruturados quando acrescenta valor. Respeitar políticas e budgets explicitamente definidos pelo usuário.
   - Calcular se nova tentativa barata compensa mais que escalada direta. Não repetir automaticamente ferramenta com efeito externo cujo resultado ficou incerto. Não transformar economia em abandono silencioso da tarefa.
-  - **Aceite/evidência:** endpoint indisponível e utility sempre rejeitada não adicionam chamadas a cada rodada; caminhos recuperáveis continuam funcionando; tentativas faturadas e canceladas aparecem no custo. Validar com testes de backoff/falhas existentes e o menor caso faltante.
+  - **Aceite/evidência:** endpoint indisponível e utility sempre rejeitada não adicionam chamadas a cada rodada; caminhos recuperáveis continuam funcionando; tentativas faturadas e canceladas aparecem no custo. Para overflow repetido de `/goal`, não reenviar a mesma combinação input+reserva após falha: reavaliar/compactar/rotear uma vez dentro dos limites e então preservar falha e evidência recuperável, sem abandono silencioso. Validar com testes de backoff/falhas existentes e o menor caso faltante.
 
 - [ ] **T17 — Verificar e encerrar com o menor gasto suficiente.**
   - **Dependências:** T02, T04, T09. **Arquivos:** catálogo verify/routing em [D18], execução de ferramentas e testes existentes.

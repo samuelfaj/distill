@@ -230,7 +230,9 @@ pub(crate) fn render_pdf_pages(
         let image = pdf_oxide::rendering::render_page(&doc, page_idx, &opts)
             .map_err(|e| format!("Failed to render page {}: {e}", page_idx + 1))?;
 
-        let b64 = general_purpose::STANDARD.encode(&image.data);
+        let image_data = super::image::compress_jpeg_for_conversation(image.data)
+            .map_err(|e| format!("Failed to prepare page {}: {e}", page_idx + 1))?;
+        let b64 = general_purpose::STANDARD.encode(&image_data);
         page_images.push(PdfPageImage {
             data: b64,
             mime_type: "image/jpeg".to_string(),
@@ -535,5 +537,50 @@ mod tests {
     fn render_pdf_pages_rejects_invalid_pdf() {
         let err = render_pdf_pages(b"not a pdf".to_vec(), None, 10).unwrap_err();
         assert!(err.contains("Failed to open PDF"), "got: {err}");
+    }
+
+    #[test]
+    fn render_pdf_pages_applies_image_caps_and_preserves_page_metadata() {
+        let pdf_bytes = make_test_pdf(&["First", "Second", "Third"]);
+        let file_size = pdf_bytes.len();
+        let result = render_pdf_pages(pdf_bytes, Some("3,1-2,2"), file_size).unwrap();
+        let ReadFileOutput::PdfPageImages(pdf) = result else {
+            panic!("expected rendered PDF pages");
+        };
+
+        assert_eq!(pdf.total_pages, 3);
+        assert_eq!(pdf.file_size, file_size);
+        assert_eq!(
+            pdf.pages
+                .iter()
+                .map(|page| page.page_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "selected pages must retain document order without duplicates"
+        );
+
+        for page in pdf.pages {
+            assert_eq!(page.mime_type, "image/jpeg");
+            let image_data = general_purpose::STANDARD.decode(page.data).unwrap();
+            assert!(
+                (image_data.len() * 4).div_ceil(3)
+                    <= crate::implementations::read_file::image::MAX_IMAGE_PAYLOAD_BYTES
+            );
+            assert_eq!(
+                image::guess_format(&image_data).unwrap(),
+                image::ImageFormat::Jpeg
+            );
+            let decoded = image::load_from_memory(&image_data).unwrap();
+            assert!(
+                decoded.width() <= crate::implementations::read_file::image::MAX_IMAGE_DIMENSION
+            );
+            assert!(
+                decoded.height() <= crate::implementations::read_file::image::MAX_IMAGE_DIMENSION
+            );
+            assert!(
+                u64::from(decoded.width()) * u64::from(decoded.height())
+                    <= crate::implementations::read_file::image::MAX_IMAGE_PIXELS
+            );
+        }
     }
 }

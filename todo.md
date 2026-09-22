@@ -1,6 +1,6 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP42 tool-discovery JSON compacto aceito; CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
@@ -108,6 +108,18 @@ Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP41 narrow
 > O PID 15301 não foi reiniciado. Isto é somente PASS do fork diagnóstico
 > estreito; não valida todas as tarefas ou providers, não é claim de preço/economia,
 > e mantém E1/E2 e economic compaction pendentes.
+>
+> **Status atual — CP42 / JSON compacto de descoberta (22/09/2026):** `c227092a`
+> trocou as duas serializações de resultado do `search_tool` para JSON compacto;
+> os valores parseados permanecem idênticos. No sample STAR real do controller,
+> a resposta caiu de `167397` para `121021` bytes (**bytes, não tokens nem
+> dinheiro**). Focos do controller: filtro `44 PASS`, schema `1 PASS` e
+> descrição `9 PASS`; revisão de fonte R1 `worker-final-source` **PASS** para
+> E3. Recibos: `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-search-tests.log`,
+> `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-task-schema-tests.log`,
+> `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-task-description-tests.log`
+> e `/tmp/distill-cost-orchestration-20260921-b02qc6vm/tool-search-json-parity.json`.
+> Isto não fecha E1/E2: ambos permanecem pendentes em runtime.
 >
 > **Achado factual STAR — sessão `01a0c96b...` (22/09):** main: `374` calls /
 > `108,000,915` tokens; `24` child executions, `24,133,375` únicos após subtrair

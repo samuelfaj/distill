@@ -431,6 +431,199 @@ async fn route_preflight_keeps_budgeted_children_local_without_compaction_or_usa
 }
 
 #[test]
+fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
+    use super::super::support::{create_test_actor, drain_gateway, drain_persistence, transient_state};
+    use super::super::{SamplerTurnOutcome, TurnParkState};
+    use distill_sampling_types::{ApiBackend, ConversationItem};
+    use distill_sampler::{RetryPolicy, SamplerActor, SamplerConfig, SamplingErrorInfo};
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+    use std::sync::Arc;
+    use tokio::task::LocalSet;
+
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            LocalSet::new().block_on(&runtime, async {
+                crate::jev::set_test_decision_answers([]);
+                crate::jev::set_test_local_config(Default::default());
+                crate::jev::set_test_tier_config(Default::default());
+
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("test").with_api_backend("responses"),
+                ])
+                .await
+                .expect("mock server");
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact("bounded success", "test")),
+                );
+
+                let sampling_cfg = SamplerConfig {
+                    api_key: Some("test-key".to_owned()),
+                    base_url: server.url(),
+                    model: "test".to_owned(),
+                    api_backend: ApiBackend::Responses,
+                    context_window: 262_144,
+                    max_completion_tokens: Some(131_072),
+                    max_retries: Some(0),
+                    idle_timeout_secs: Some(30),
+                    ..Default::default()
+                };
+                let (sampler_event_tx, mut sampler_event_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<distill_sampler::SamplingEvent>();
+                let sampler_handle = SamplerActor::spawn(
+                    sampling_cfg,
+                    RetryPolicy {
+                        max_retries: 0,
+                        ..Default::default()
+                    },
+                    sampler_event_tx,
+                );
+                let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+                drain_gateway(gateway_rx);
+                let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+                drain_persistence(persistence_rx);
+                let mut actor =
+                    create_test_actor(49_646, 262_144, 85, gateway_tx, persistence_tx).await;
+                actor.sampler_handle = sampler_handle;
+                actor.max_retries = 0;
+                actor.transient_retry_enabled = true;
+                let mut parent_config = actor
+                    .chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .expect("parent config");
+                parent_config.base_url = server.url();
+                parent_config.api_backend = ApiBackend::Responses;
+                parent_config.model = "test".to_owned();
+                parent_config.max_completion_tokens = Some(131_072);
+                actor.chat_state_handle.update_sampling_config(parent_config);
+
+                let route = actor.reconstruct_full_config().await;
+                let error = SamplingErrorInfo {
+                    kind: distill_sampler::SamplingErrorKind::Api,
+                    status_code: Some(400),
+                    message: "maximum context length of 131072 tokens".to_owned(),
+                    is_retryable: false,
+                    retry_after_secs: None,
+                    should_retry: None,
+                    error_code: None,
+                    model_metadata: None,
+                    empty_response_context: None,
+                    doom_loop_triggers: None,
+                    doom_loop_aborted_at_chunk: None,
+                    credential: distill_sampling_types::SentCredential::Unknown,
+                };
+                actor.remember_observed_route_context_cap(&error, Some(&route), Some("test"));
+                let learned_route = actor
+                    .route_with_observed_context_cap(Some(&route), Some("test"))
+                    .expect("authoritative serving cap must bind this exact route");
+                assert_eq!(learned_route.context_window, 131_072);
+
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("system"),
+                    ConversationItem::user("continue the goal"),
+                ]);
+                actor.chat_state_handle.record_token_usage(49_646);
+                let mut request = actor
+                    .chat_state_handle
+                    .build_request(
+                        Vec::new(),
+                        None,
+                        false,
+                        None,
+                        actor.session_id_string(),
+                        "catalogue-ceiling-bound".to_owned(),
+                    )
+                    .await
+                    .expect("request from the production chat-state builder");
+                assert_eq!(
+                    request.max_output_tokens, None,
+                    "the builder must not turn the catalogue ceiling into a caller pin"
+                );
+                let mut explicit_request = request.clone();
+                explicit_request.max_output_tokens = Some(32_768);
+                actor.chat_state_handle.record_token_usage(99_741);
+                assert!(
+                    actor
+                        .route_request_overflow_trigger(&explicit_request, Some(&learned_route))
+                        .await
+                        .is_some(),
+                    "an explicit output pin must retain the 99741/32768-style overflow guard"
+                );
+                actor.chat_state_handle.record_token_usage(49_646);
+
+                let actor = Arc::new(actor);
+                let drainer = actor.clone();
+                tokio::task::spawn_local(async move {
+                    while let Some(event) = sampler_event_rx.recv().await {
+                        drainer.handle_sampling_event(event).await;
+                    }
+                });
+                let mut budget = actor.rate_limit_wait_budget(None);
+                let result = actor
+                    .run_turn_via_sampler(
+                        request,
+                        &mut budget,
+                        transient_state(0, true),
+                        false,
+                        TurnParkState::Fresh,
+                    )
+                    .await;
+                assert!(
+                    matches!(result, Ok(SamplerTurnOutcome::Response(..))),
+                    "bounded catalogue output must reach the provider without compaction; {}",
+                    server.request_log_summary()
+                );
+                let response_requests: Vec<_> = server
+                    .request_bodies()
+                    .into_iter()
+                    .filter(|body| body.get("model").is_some())
+                    .collect();
+                assert_eq!(response_requests.len(), 1, "one real provider request");
+                assert_eq!(
+                    response_requests[0]
+                        .get("max_output_tokens")
+                        .and_then(|value| value.as_u64()),
+                    Some(79_378),
+                    "wire output must be 131072 - 49646 input - 2048 framing"
+                );
+                assert_eq!(
+                    response_requests[0]
+                        .get("model")
+                        .and_then(|model| model.as_str()),
+                    Some("test")
+                );
+                assert_eq!(
+                    actor.compaction.count.load(std::sync::atomic::Ordering::Relaxed),
+                    0,
+                    "the low-input learned-cap request must not pay for compaction"
+                );
+                assert_eq!(
+                    server
+                        .requests()
+                        .into_iter()
+                        .filter(|entry| entry.path == "/v1/responses")
+                        .count(),
+                    1,
+                    "the bounded request must use the selected Responses endpoint once"
+                );
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_tier_config();
+            });
+        })
+        .expect("spawn large-stack test thread")
+        .join()
+        .expect("test thread");
+}
+
+#[test]
 fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
     use super::super::support::{
         create_test_actor, drain_gateway, drain_persistence, transient_state,
@@ -788,7 +981,7 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
                 "all four scripted provider calls must use /v1/responses"
             );
             let before_later_growth = final_bodies.len();
-            let later_growth_request = actor
+            let mut later_growth_request = actor
                 .chat_state_handle
                 .build_request(
                     Vec::new(),
@@ -800,6 +993,10 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
                 )
                 .await
                 .expect("later growth request");
+            // This is the original explicit 99741 + 32768 request. The
+            // route catalogue ceiling is not a request pin, but this fixture
+            // intentionally keeps the caller's explicit output budget.
+            later_growth_request.max_output_tokens = Some(32_768);
             let unlearned_route = actor.reconstruct_full_config().await;
             assert!(
                 actor
@@ -807,6 +1004,17 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
                     .await
                     .is_none(),
                 "the later-growth request must fit the original 262K route without learned cap"
+            );
+            let learned_route = actor
+                .route_with_observed_context_cap(Some(&unlearned_route), Some("test"))
+                .expect("the learned serving cap remains bound to the selected route");
+            assert_eq!(learned_route.context_window, 131_072);
+            assert!(
+                actor
+                    .route_request_overflow_trigger(&later_growth_request, Some(&learned_route))
+                    .await
+                    .is_some(),
+                "the explicit 32768 output pin must retain the original 99741/131072 overflow"
             );
             server.enqueue_response(
                 "/v1/responses",

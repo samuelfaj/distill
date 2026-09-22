@@ -1919,6 +1919,44 @@ impl SessionActor {
         Some(effective_route)
     }
 
+    /// Materialize only the portion of a route's catalogue output ceiling that
+    /// the learned serving window can actually admit. A request value already
+    /// carries caller/task-budget intent and is therefore left untouched.
+    async fn bound_request_output_to_route(
+        &self,
+        request: &mut ConversationRequest,
+        caller_output_tokens: Option<u32>,
+        route: Option<&SamplingConfig>,
+    ) {
+        if caller_output_tokens.is_some()
+            || self.tool_context.task_output_token_budget.is_some()
+            || self.tool_context.sampler_retry_only_before_output
+        {
+            return;
+        }
+        // The value may have been derived for a previous route. Restore the
+        // original caller state before deriving a new route-local bound.
+        request.max_output_tokens = None;
+        let Some(route) = route else {
+            return;
+        };
+        let effective_route =
+            self.route_with_observed_context_cap(Some(route), request.model.as_deref());
+        let route = effective_route.as_ref().unwrap_or(route);
+        let tracked_estimate = self.chat_state_handle.get_estimated_total_tokens().await;
+        let input_tokens = compaction::request_input_token_estimate(request, tracked_estimate);
+        let Some(configured) = compaction::configured_output_token_budget(request, route) else {
+            return;
+        };
+        let Some(bounded) = compaction::bounded_output_token_budget(request, route, input_tokens)
+        else {
+            return;
+        };
+        if bounded < configured {
+            request.max_output_tokens = Some(bounded);
+        }
+    }
+
     async fn preflight_route_context(
         self: &Arc<Self>,
         request: &ConversationRequest,
@@ -1930,9 +1968,39 @@ impl SessionActor {
         let Some(trigger_info) = self.route_request_overflow_trigger(request, route).await else {
             return Ok(false);
         };
+        let route = route.expect("overflow trigger requires a selected route");
+        let reserved_output =
+            compaction::configured_output_token_budget(request, route).map(u64::from);
+        let model = request
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .unwrap_or(route.model.as_str());
+        let blocking_reason = if mid_salvage_continuation {
+            Some("mid-salvage continuation")
+        } else if self.tool_context.task_output_token_budget.is_some() {
+            Some("workflow child output budget")
+        } else if self.tool_context.sampler_retry_only_before_output {
+            Some("workflow child retry-only mode")
+        } else if self.route_overflow_recovery_armed() {
+            Some("route-overflow recovery already armed")
+        } else if self.compaction.is_suppressed() {
+            Some("compaction suppression state is active")
+        } else {
+            None
+        };
+        let blocking_detail = blocking_reason
+            .map(|reason| format!("; automatic compaction unavailable: {reason}"))
+            .unwrap_or_default();
         let message = format!(
-            "The selected model route cannot fit this request while automatic compaction is suppressed ({} input + reserved output exceeds {} tokens).",
-            trigger_info.tokens_used, trigger_info.context_window
+            "The selected model route cannot fit this request ({} input + {} reserved output + {} framing margin exceeds {}-token effective window for model '{}'{}).",
+            trigger_info.tokens_used,
+            reserved_output
+                .map_or_else(|| "unknown".to_owned(), |tokens| tokens.to_string()),
+            compaction::REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS,
+            trigger_info.context_window,
+            model,
+            blocking_detail,
         );
         if mid_salvage_continuation {
             let mut data = crate::sampling::error::terminal_error_data(
@@ -1979,6 +2047,7 @@ impl SessionActor {
         mid_salvage_continuation: bool,
         park: TurnParkState,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
+        let caller_output_tokens = request.max_output_tokens;
         // Per-turn auth refresh + sampler config push. Mirrors
         // `prepare_chat_completion(false)` from the legacy path.
         let mut route_config = if !park.is_parked() {
@@ -1990,6 +2059,12 @@ impl SessionActor {
         // that model in the request: the chat state built it with the session's.
         let mut routed_local = false;
         self.apply_pending_sampler_config(&mut request, &mut routed_local);
+        self.bound_request_output_to_route(
+            &mut request,
+            caller_output_tokens,
+            route_config.as_ref(),
+        )
+        .await;
 
         // The parent session may advertise a larger UI window than this round's
         // selected endpoint. Compact before the first send when the actual
@@ -2018,6 +2093,12 @@ impl SessionActor {
                     Ok(outcome) => Ok(outcome),
                     Err(info) if is_client_rejection(&info) => {
                         route_config = Some(self.undo_local_route(&mut request, &info).await);
+                        self.bound_request_output_to_route(
+                            &mut request,
+                            caller_output_tokens,
+                            route_config.as_ref(),
+                        )
+                        .await;
                         route_output_tokens = route_config.as_ref().and_then(|config| {
                             compaction::configured_output_token_budget(&request, config)
                         });
@@ -2109,6 +2190,12 @@ impl SessionActor {
                     if routed_local && is_client_rejection(&info) {
                         route_config = Some(self.undo_local_route(&mut request, &info).await);
                         routed_local = false;
+                        self.bound_request_output_to_route(
+                            &mut request,
+                            caller_output_tokens,
+                            route_config.as_ref(),
+                        )
+                        .await;
                         if self
                             .preflight_route_context(
                                 &request,
@@ -2144,6 +2231,12 @@ impl SessionActor {
                     if !park.is_parked() {
                         route_config = Some(self.prepare_sampler_for_turn().await);
                         self.apply_pending_sampler_config(&mut request, &mut routed_local);
+                        self.bound_request_output_to_route(
+                            &mut request,
+                            caller_output_tokens,
+                            route_config.as_ref(),
+                        )
+                        .await;
                         if self
                             .preflight_route_context(
                                 &request,

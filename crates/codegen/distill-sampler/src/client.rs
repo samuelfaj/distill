@@ -54,11 +54,16 @@ const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
 
 /// Return the output reservation applied by the conversation adapters before
 /// dispatch. Chat/Responses leave an unset provider default unknown; Messages
-/// has the concrete Anthropic fallback. An explicit request pin always wins.
+/// has the concrete Anthropic fallback. The canonical ChatGPT Responses
+/// adapter strips `max_output_tokens` before dispatch, so its actual output is
+/// unknown here even when the request/config carries a catalogue ceiling.
 pub fn effective_conversation_output_tokens(
     config: &SamplerConfig,
     request: &ConversationRequest,
 ) -> Option<u32> {
+    if config.api_backend == ApiBackend::Responses && is_codex_base_url(&config.base_url) {
+        return None;
+    }
     request
         .max_output_tokens
         .or(config.max_completion_tokens)
@@ -2970,6 +2975,33 @@ mod tests {
             expected.as_object_mut().unwrap().remove(field);
         }
         assert_eq!(codex, expected);
+
+        let codex_config = SamplerConfig {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            api_backend: ApiBackend::Responses,
+            max_completion_tokens: Some(131_072),
+            ..minimal_config()
+        };
+        let codex_request = ConversationRequest {
+            max_output_tokens: Some(32_768),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::effective_conversation_output_tokens(&codex_config, &codex_request),
+            None,
+            "Codex strips max_output_tokens before the request reaches the wire"
+        );
+        let chat_completions_config = SamplerConfig {
+            base_url: codex_config.base_url.clone(),
+            api_backend: ApiBackend::ChatCompletions,
+            max_completion_tokens: Some(131_072),
+            ..minimal_config()
+        };
+        assert_eq!(
+            super::effective_conversation_output_tokens(&chat_completions_config, &codex_request),
+            Some(32_768),
+            "a non-Responses backend on the same host keeps its output pin"
+        );
 
         let mut grok = original.clone();
         patch_codex_response_request("https://api.x.ai/v1", &mut grok);

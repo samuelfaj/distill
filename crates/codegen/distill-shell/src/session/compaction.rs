@@ -59,6 +59,7 @@ const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
 /// Small allowance for provider framing and estimator drift at the request boundary.
 /// This is intentionally independent of any model name or UI context-window label.
 pub(crate) const REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS: u64 = 2_048;
+const MIN_VALID_DERIVED_OUTPUT_TOKENS: u32 = 1;
 
 /// Estimate the input side of the exact request after the chat-state builder has
 /// applied its current pruning/repair decisions. The tracked state estimate also
@@ -81,6 +82,32 @@ pub(crate) fn configured_output_token_budget(
     route: &distill_sampler::SamplerConfig,
 ) -> Option<u32> {
     distill_sampler::effective_conversation_output_tokens(route, request)
+}
+
+/// Bound an unpinned catalogue ceiling to the selected route's remaining
+/// context. An explicit request value is already the caller's generation
+/// budget and must remain unchanged for preflight and the wire request.
+pub(crate) fn bounded_output_token_budget(
+    request: &ConversationRequest,
+    route: &distill_sampler::SamplerConfig,
+    input_tokens: u64,
+) -> Option<u32> {
+    let configured = configured_output_token_budget(request, route)?;
+    if request.max_output_tokens.is_some() {
+        return Some(configured);
+    }
+    if route.context_window == 0 {
+        return Some(configured);
+    }
+    let available = route
+        .context_window
+        .saturating_sub(input_tokens)
+        .saturating_sub(REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS);
+    Some(
+        configured
+            .min(u32::try_from(available).unwrap_or(u32::MAX))
+            .max(MIN_VALID_DERIVED_OUTPUT_TOKENS),
+    )
 }
 
 fn request_exceeds_route_context(
@@ -2320,6 +2347,9 @@ impl SessionActor {
         }
         let tracked_estimate = self.chat_state_handle.get_estimated_total_tokens().await;
         let input_tokens = request_input_token_estimate(request, tracked_estimate);
+        // This guard describes the request that is already materialized.  Do
+        // not use the derived catalogue bound here: task/retry/parked paths
+        // may intentionally skip materializing it before this check.
         let output_tokens = configured_output_token_budget(request, route);
         if !request_exceeds_route_context(
             input_tokens,

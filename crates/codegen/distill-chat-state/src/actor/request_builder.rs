@@ -76,7 +76,11 @@ impl ChatStateActor {
             tool_choice: None,
             model: Some(self.state.sampling_config.model.clone()),
             temperature: self.state.sampling_config.temperature,
-            max_output_tokens: self.state.sampling_config.max_completion_tokens,
+            // The model catalogue's maximum is a sampler default, not proof
+            // that this caller requested the whole ceiling. Keep the request
+            // field empty so route preflight can distinguish an inherited
+            // ceiling from an explicit/task-budget output pin.
+            max_output_tokens: None,
             top_p: self.state.sampling_config.top_p,
             x_grok_conv_id: Some(conv_id),
             x_grok_req_id: Some(req_id),

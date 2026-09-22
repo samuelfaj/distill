@@ -1832,7 +1832,15 @@ async fn build_request_uses_sampling_config() {
 
     assert_eq!(request.model, Some("grok-3".to_string()));
     assert_eq!(request.temperature, Some(0.7));
-    assert_eq!(request.max_output_tokens, Some(8192));
+    assert_eq!(
+        h.handle
+            .get_sampling_config()
+            .await
+            .unwrap()
+            .max_completion_tokens,
+        Some(8192)
+    );
+    assert_eq!(request.max_output_tokens, None);
     assert_eq!(request.top_p, Some(0.9));
 }
 

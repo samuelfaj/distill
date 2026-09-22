@@ -1,18 +1,29 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status: checkpoints de implementação T04/T12/T01/T02 registrados; T01/T02 continuam parciais e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: checkpoints funcionais aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
-> **Checkpoint E3 — pronto/congelado para commit:** os checkpoints
-> implementados até aqui incluem guardas de contrato T04, reducers T12 com
-> saída recuperável, atribuição T01 de Jev/utility/compactação e o runner
-> T02. Este worker corrigiu arredondamento/contabilidade e a preparação do
-> protocolo: o primeiro receipt Distill usou `tools/task_cost_eval/...` e
-> inferiu raiz vazia; o mesmo cohort foi editado para `graders/...` antes do
-> Pi. Isso é mismatch de preparação, não falha do binário. Smokes autorizados
-> permanecem não pareados: Distill inconclusivo e Pi aceito com custo tarifário
-> estimado; billing real desconhecido (HTTP 404). T01/T02 seguem parciais,
-> sem claim de baseline, economia ou finanças; nenhum checkbox financeiro
-> histórico é concluído. T05/T13/T19 e calibração ficam para fases posteriores.
+> **Status atual — checkpoints funcionais aceitos:** `/goal` recupera overflow
+> de contexto dentro dos budgets (`b36b39e2`); compressão utility → worker e
+> limite de falhas opcionais estão em (`7f5403a1`, `f40f1d63`); o ledger
+> preserva custos free conhecidos (`44a5d951`); as tentativas auxiliares de
+> `title_refresh` são rastreáveis (`b725d112`); e os checkpoints anteriores de
+> skill e PDF permanecem registrados (`f508eeb7`, `5b99fd6c`). `8aabfc50` fica
+> identificado somente como baseline histórico de read; a invalidação atual de
+> read/memo está em (`d80df06e`). A captura de custo USD em Responses
+> está em (`2895b95b`) e o teste com endpoint local simulado passou com custo/modelo; este
+> checkpoint também fecha a preservação de `response.id` como
+> `ConversationResponse.message_id`, com a prova focada de `resp_openrouter`
+> aprovada.
+>
+> **Prova ainda aberta:** T01–T21 não estão concluídos. Não há prova de custo
+> runtime matched/pareado nem revisão independente; roteamento econômico,
+> effort e calibração continuam pendentes. Os smokes anteriores permanecem
+> não pareados: Distill inconclusivo, Pi aceito apenas com custo tarifário
+> estimado e billing real desconhecido (HTTP 404). Baseline, aceitação
+> financeira e comparação econômica continuam pendentes. A auditoria de billing
+> do `initialSummaryGenerator`/title continua aberta: há chamada direta no
+> cliente, sem ledger óbvio confirmado. E2 display aux e E3 Task Output
+> permanecem dirty/em progresso e não são aceitos.
 
 > **Anotação de steering — overflow e economia de saída (22/09/2026):** a
 > captura de tela mostra um sintoma de overflow no `/goal` e rótulos de modelos
@@ -53,7 +64,7 @@ Não há uma porcentagem de economia prometida. Os maiores candidatos a ganho s�
 
 Fontes locais históricas: [list.md](list.md), [plano anterior](plan/plan.md), [medição anterior do Jev](plan/jev-measurement-report.md), [token saver](docs/token-saver.md) e [roteamento](docs/jev-routing.md). Foram usadas como orientação e confrontadas com implementação. Uma flag, função, teste unitário ou item marcado como implementado não comprova que o caminho esteja ativo no payload final nem que economize dinheiro. Resultados sintéticos antigos não são resultados financeiros atuais.
 
-Este arquivo é a única entrega nova. Preservar o trabalho local existente, `list.md` e a pasta `plan/`. Na execução futura, congelar primeiro a revisão e a configuração reais usadas em cada experimento.
+Este arquivo preserva o plano, o histórico e os critérios de aceite originais. Nenhuma alteração foi feita em `list.md`, `plan/` ou outros documentos nesta atualização. Na execução futura, congelar primeiro a revisão e a configuração reais usadas em cada experimento.
 
 ## 3. O que o Pi ensina e onde o Distill pode ir além
 

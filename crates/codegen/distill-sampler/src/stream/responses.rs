@@ -649,6 +649,7 @@ pub(crate) fn stream_responses_tracked<'a>(
         // Convert to ConversationItem(s); patch in accumulated reasoning text as a fallback when the final response lacks `content` or `summary`
         // The streaming deltas may have arrived out of band
         // Splice policy lives in `inject_streaming_reasoning_fallback`.
+        let message_id = (!response.id.is_empty()).then_some(response.id.clone());
         let mut items = distill_sampling_types::response_to_conversation_items(response);
         distill_sampling_types::inject_streaming_reasoning_fallback(&mut items, reasoning_acc);
 
@@ -762,7 +763,7 @@ pub(crate) fn stream_responses_tracked<'a>(
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals,
             stop_message: None, // not reported on the Responses API
-            message_id: None,   // no provider message id on the Responses API
+            message_id, // provider response id when reported
             raw_stop_reason,
             stop_sequence: None,
         };

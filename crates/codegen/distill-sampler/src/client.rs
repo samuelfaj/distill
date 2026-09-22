@@ -2937,6 +2937,7 @@ mod tests {
             panic!("stream did not complete: {events:?}");
         };
         assert_eq!(response.cost_usd_ticks, Some(1_234_500));
+        assert_eq!(response.message_id.as_deref(), Some("resp_openrouter"));
         assert_eq!(response.assistant_text(), "ok");
         assert_eq!(
             response

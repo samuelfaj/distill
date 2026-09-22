@@ -192,6 +192,14 @@ impl CheapLane {
     /// a resolver: the client still reads it at call time, and nothing else in
     /// the process can see it.
     pub fn from_sampler_config(cfg: &distill_sampler::SamplerConfig) -> Option<Self> {
+        // CheapClient is a closed Chat Completions transport with bearer auth.
+        // Defer catalog entries that require another wire backend or auth
+        // scheme so the configured worker path can keep its actual pins.
+        if cfg.api_backend != distill_sampling_types::ApiBackend::ChatCompletions
+            || cfg.auth_scheme != distill_sampler::AuthScheme::Bearer
+        {
+            return None;
+        }
         let api_key = cfg.api_key.clone()?;
         if api_key.trim().is_empty()
             || cfg.base_url.trim().is_empty()
@@ -808,6 +816,46 @@ mod tests {
 
         cfg.base_url = "  ".to_owned();
         assert!(CheapLane::from_sampler_config(&cfg).is_none());
+    }
+
+    #[test]
+    fn a_lane_defers_unsupported_backend_or_auth_before_transport() {
+        assert!(
+            CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+                api_key: Some("sk-test".to_owned()),
+                base_url: "https://utility.example/v1".to_owned(),
+                model: "pinned-model".to_owned(),
+                ..Default::default()
+            })
+            .is_some(),
+            "compatible Chat Completions + bearer config should build a lane"
+        );
+
+        for backend in [ApiBackend::Responses, ApiBackend::Messages] {
+            assert!(
+                CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+                    api_key: Some("sk-test".to_owned()),
+                    base_url: "https://utility.example/v1".to_owned(),
+                    model: "pinned-model".to_owned(),
+                    api_backend: backend,
+                    ..Default::default()
+                })
+                .is_none(),
+                "unsupported backend must defer before the Chat Completions utility transport"
+            );
+        }
+
+        assert!(
+            CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+                api_key: Some("sk-test".to_owned()),
+                base_url: "https://utility.example/v1".to_owned(),
+                model: "pinned-model".to_owned(),
+                auth_scheme: distill_sampler::AuthScheme::XApiKey,
+                ..Default::default()
+            })
+            .is_none(),
+            "unsupported auth must defer before the bearer-only utility transport"
+        );
     }
 
     #[test]

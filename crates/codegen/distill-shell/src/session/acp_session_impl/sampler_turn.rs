@@ -73,6 +73,14 @@ fn sampler_route_attribution_endpoint(
     sampler_attribution_endpoint_for(&config.base_url, config.api_backend.clone(), &config.query_params)
 }
 
+fn sampler_route_backend_key(config: &SamplingConfig) -> &'static str {
+    match &config.api_backend {
+        distill_sampling_types::ApiBackend::ChatCompletions => "chat_completions",
+        distill_sampling_types::ApiBackend::Responses => "responses",
+        distill_sampling_types::ApiBackend::Messages => "messages",
+    }
+}
+
 fn usage_is_complete(usage: Option<&distill_sampling_types::TokenUsage>) -> bool {
     usage.is_some()
 }
@@ -1844,12 +1852,81 @@ impl SessionActor {
         }
     }
 
+    fn remember_observed_route_context_cap(
+        &self,
+        error: &distill_sampler::SamplingErrorInfo,
+        route: Option<&SamplingConfig>,
+        actual_model: Option<&str>,
+    ) {
+        if matches!(
+            error.kind,
+            distill_sampler::SamplingErrorKind::Auth
+                | distill_sampler::SamplingErrorKind::RateLimited
+        ) || matches!(error.status_code, Some(401 | 429))
+            || (!error
+                .error_code
+                .as_ref()
+                .is_some_and(distill_sampling_types::ApiErrorCode::is_size_overflow)
+                && !distill_sampling_types::is_context_length_error(&error.message))
+        {
+            return;
+        }
+        let Some(route) = route else {
+            return;
+        };
+        let reported_cap = [
+            error
+                .model_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.context_window),
+            compaction::explicit_provider_context_window(&error.message),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|cap| *cap > 0)
+        .min();
+        let Some(cap) = reported_cap.filter(|cap| *cap < route.context_window) else {
+            return;
+        };
+        let Some(endpoint) = sampler_route_attribution_endpoint(route) else {
+            return;
+        };
+        let backend = sampler_route_backend_key(route);
+        let model = actual_model
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&route.model);
+        self.compaction
+            .remember_route_context_cap(backend, &endpoint, model, cap);
+    }
+
+    fn route_with_observed_context_cap(
+        &self,
+        route: Option<&SamplingConfig>,
+        actual_model: Option<&str>,
+    ) -> Option<SamplingConfig> {
+        let route = route?;
+        let endpoint = sampler_route_attribution_endpoint(route)?;
+        let backend = sampler_route_backend_key(route);
+        let model = actual_model
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&route.model);
+        let cap = self
+            .compaction
+            .route_context_cap(backend, &endpoint, model)
+            .filter(|cap| *cap < route.context_window)?;
+        let mut effective_route = route.clone();
+        effective_route.context_window = cap;
+        Some(effective_route)
+    }
+
     async fn preflight_route_context(
         self: &Arc<Self>,
         request: &ConversationRequest,
         route: Option<&SamplingConfig>,
         mid_salvage_continuation: bool,
     ) -> Result<bool, acp::Error> {
+        let effective_route = self.route_with_observed_context_cap(route, request.model.as_deref());
+        let route = effective_route.as_ref().or(route);
         let Some(trigger_info) = self.route_request_overflow_trigger(request, route).await else {
             return Ok(false);
         };
@@ -2096,6 +2173,11 @@ impl SessionActor {
         mut request: ConversationRequest,
         route_config: Option<&SamplingConfig>,
     ) -> Result<SamplerTurnOutcome, distill_sampler::SamplingErrorInfo> {
+        let actual_model = request
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned);
         let request_id = distill_sampler::RequestId::random();
         let request_id_str = request_id.as_str().to_string();
         let usage_context = self
@@ -2267,6 +2349,11 @@ impl SessionActor {
                     StreamDrainOutcome::Revoked
                 };
                 let final_info = error_after_stream_drain(outcome, original);
+                self.remember_observed_route_context_cap(
+                    &final_info,
+                    route_config,
+                    actual_model.as_deref(),
+                );
                 let status = if outcome == StreamDrainOutcome::Revoked
                     || final_info
                         .message

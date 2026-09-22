@@ -144,6 +144,41 @@ async fn route_capacity_parser_and_admission_preserve_parent_window() {
             };
             assert_eq!(explicit_provider_context_window(raw), Some(131_072));
             assert_eq!(error_context_window(&error, Some(&route)), Some(131_072));
+            actor.remember_observed_route_context_cap(&error, Some(&route), Some("wire-model"));
+            let learned_route = actor
+                .route_with_observed_context_cap(Some(&route), Some("wire-model"))
+                .expect("authoritative overflow must bind the exact route cap");
+            assert_eq!(learned_route.context_window, 131_072);
+            assert!(
+                actor
+                    .route_with_observed_context_cap(Some(&route), None)
+                    .is_none(),
+                "the route config model must not stand in for the actual wire model"
+            );
+            let mut other_endpoint = route.clone();
+            other_endpoint.base_url = "https://other.example/v1".to_owned();
+            assert!(
+                actor
+                    .route_with_observed_context_cap(Some(&other_endpoint), Some("wire-model"))
+                    .is_none(),
+                "a different wire endpoint must not inherit the observed cap"
+            );
+            let mut other_model = route.clone();
+            other_model.model = "other-model".to_owned();
+            assert!(
+                actor
+                    .route_with_observed_context_cap(Some(&other_model), Some("other-model"))
+                    .is_none(),
+                "a different model must not inherit the observed cap"
+            );
+            let mut other_backend = route.clone();
+            other_backend.api_backend = distill_sampling_types::ApiBackend::Responses;
+            assert!(
+                actor
+                    .route_with_observed_context_cap(Some(&other_backend), Some("wire-model"))
+                    .is_none(),
+                "a different backend must not inherit the observed cap"
+            );
             let mut auth_error = error.clone();
             auth_error.kind = SamplingErrorKind::Auth;
             auth_error.status_code = Some(401);
@@ -609,6 +644,18 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
             assert_eq!(parent_after_compaction.api_backend, ApiBackend::Responses);
             assert_eq!(parent_after_compaction.context_window.get(), 262_144);
             assert_eq!(parent_after_compaction.max_completion_tokens, Some(32_768));
+            let route_after_compaction = actor.reconstruct_full_config().await;
+            assert_eq!(
+                actor
+                    .route_with_observed_context_cap(
+                        Some(&route_after_compaction),
+                        Some("test"),
+                    )
+                    .expect("the provider overflow must be remembered for this route")
+                    .context_window,
+                131_072,
+                "the learned serving ceiling must not mutate the parent model config"
+            );
 
             let rebuilt_request = actor
                 .chat_state_handle
@@ -717,6 +764,7 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
                 actor.check_auto_compact_needed().await.is_some(),
                 "later goal growth must be allowed to compact again"
             );
+            actor.chat_state_handle.record_token_usage(99_741);
             let final_bodies: Vec<_> = server
                 .request_bodies()
                 .into_iter()
@@ -738,6 +786,58 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
                     .count(),
                 4,
                 "all four scripted provider calls must use /v1/responses"
+            );
+            let before_later_growth = final_bodies.len();
+            let later_growth_request = actor
+                .chat_state_handle
+                .build_request(
+                    Vec::new(),
+                    None,
+                    false,
+                    None,
+                    actor.session_id_string(),
+                    "later-growth-preflight".to_owned(),
+                )
+                .await
+                .expect("later growth request");
+            let unlearned_route = actor.reconstruct_full_config().await;
+            assert!(
+                actor
+                    .route_request_overflow_trigger(&later_growth_request, Some(&unlearned_route))
+                    .await
+                    .is_none(),
+                "the later-growth request must fit the original 262K route without learned cap"
+            );
+            server.enqueue_response(
+                "/v1/responses",
+                ScriptedResponse::sse(responses_api_script_exact(&summary, "test")),
+            );
+            let later_growth_result = actor
+                .run_turn_via_sampler(
+                    later_growth_request,
+                    &mut budget,
+                    transient_state(0, true),
+                    false,
+                    TurnParkState::Fresh,
+                )
+                .await;
+            assert!(
+                matches!(
+                    later_growth_result,
+                    Ok(SamplerTurnOutcome::CompactAndResubmit)
+                ),
+                "learned serving cap must compact later growth before another provider overflow; {}",
+                server.request_log_summary()
+            );
+            let after_later_growth = server
+                .request_bodies()
+                .into_iter()
+                .filter(|body| body.get("model").is_some())
+                .count();
+            assert_eq!(
+                after_later_growth,
+                before_later_growth + 1,
+                "later growth should add only the preflight compaction request"
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();

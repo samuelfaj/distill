@@ -19,8 +19,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::error::{JevError, JevErrorKind};
-use super::provider::{ReasoningShape, chat_message_body, parse_chat_reply};
-use super::types::{Json, Usage};
+use super::provider::{
+    ReasoningShape, chat_message_body, parse_chat_reply, parse_response_metadata,
+};
+use super::types::{AttemptGuard, AttemptObserver, AttemptStatus, Json, Usage};
 
 /// Default endpoint root: the cheap provider.
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -163,6 +165,7 @@ pub struct CheapClient {
     http: reqwest::Client,
     config: CheapConfig,
     key_resolver: ApiKeyResolver,
+    observer: Option<AttemptObserver>,
 }
 
 pub fn env_key_resolver() -> ApiKeyResolver {
@@ -195,7 +198,19 @@ impl CheapClient {
             http,
             config,
             key_resolver,
+            observer: None,
         })
+    }
+
+    /// Clone the transport with a per-task observer. The lane's cached client
+    /// stays observer-free so concurrent sessions cannot cross-wire records.
+    pub fn with_call_observer(&self, observer: AttemptObserver) -> Self {
+        Self {
+            http: self.http.clone(),
+            config: self.config.clone(),
+            key_resolver: self.key_resolver.clone(),
+            observer: Some(observer),
+        }
     }
 
     pub fn config(&self) -> &CheapConfig {
@@ -239,6 +254,12 @@ impl CheapClient {
         let deadline = self.config.timeout;
         let http = self.http.clone();
         let started = Instant::now();
+        let mut attempt_guard = AttemptGuard::new(
+            self.observer.as_ref(),
+            self.config.model.clone(),
+            url.clone(),
+            Some(self.config.reasoning_effort.clone()),
+        );
         tracing::info!(target: "jev.decision", event_kind = "utility_request",
             task_id = task.id, requested_model = self.config.model, "bounded utility request");
 
@@ -279,12 +300,30 @@ impl CheapClient {
                     ))
                     .redact(&secret));
                 }
-                Ok(Err(error)) => return Err(error.redact(&secret)),
+                Ok(Err(error)) => {
+                    if let Some(guard) = attempt_guard.take() {
+                        guard.finish(AttemptStatus::Failed);
+                    }
+                    return Err(error.redact(&secret));
+                }
                 Ok(Ok(parts)) => parts,
             };
         let latency_ms = started.elapsed().as_millis() as u64;
+        let (response_model, response_id, response_usage, response_billing) =
+            parse_response_metadata(&bytes);
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_response(
+                response_id.clone().or(request_id.clone()),
+                response_model,
+                (!response_usage.is_empty()).then_some(response_usage),
+            );
+            guard.set_billing(response_billing);
+        }
 
         if !status.is_success() {
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(AttemptStatus::Failed);
+            }
             let parsed: Option<Json> = serde_json::from_slice(&bytes).ok();
             return Err(JevError::from_status(
                 status.as_u16(),
@@ -295,7 +334,23 @@ impl CheapClient {
             .redact(&secret));
         }
 
-        let reply = parse_chat_reply(&bytes).map_err(|error| error.redact(&secret))?;
+        let reply = match parse_chat_reply(&bytes) {
+            Ok(reply) => reply,
+            Err(error) => {
+                if let Some(guard) = attempt_guard.take() {
+                    guard.finish(AttemptStatus::Rejected);
+                }
+                return Err(error.redact(&secret));
+            }
+        };
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_response(
+                reply.id.clone().or(request_id.clone()),
+                reply.model.clone(),
+                Some(reply.usage),
+            );
+            guard.set_billing(reply.billing);
+        }
         // Count a paid response even if truncation or the downstream task guard rejects it.
         tracing::info!(target: "jev.decision", event_kind = "utility_usage",
             task_id = task.id, model = reply.model.as_deref().unwrap_or("unknown"),
@@ -303,6 +358,9 @@ impl CheapClient {
             prompt_tokens = reply.usage.input_tokens, completion_tokens = reply.usage.output_tokens,
             latency_ms, truncated = reply.truncated, "utility response before acceptance checks");
         if reply.truncated {
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(AttemptStatus::Rejected);
+            }
             return Err(JevError::invalid(
                 "the answer was cut at the completion ceiling, so it cannot be used",
             )
@@ -310,14 +368,20 @@ impl CheapClient {
         }
         let text = reply.content.trim().to_owned();
         if text.is_empty() {
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(AttemptStatus::Rejected);
+            }
             return Err(JevError::invalid("the worker answered with nothing").redact(&secret));
         }
         if text.chars().count() > task.max_answer_chars {
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(AttemptStatus::Rejected);
+            }
             return Err(JevError::invalid(
                 "the answer exceeds the task ceiling; refusing instead of truncating it",
             ));
         }
-        Ok(CheapAnswer {
+        let answer = CheapAnswer {
             text,
             // The record names one model, and the reply may not say which one
             // served the call; the primary is the only honest guess.
@@ -329,7 +393,11 @@ impl CheapClient {
             // fallback when the body did not carry one.
             request_id: reply.id.or(request_id),
             latency_ms,
-        })
+        };
+        if let Some(guard) = attempt_guard.take() {
+            guard.finish(AttemptStatus::Completed);
+        }
+        Ok(answer)
     }
 }
 
@@ -627,6 +695,49 @@ mod tests {
             .unwrap();
         assert_eq!(usage["fields"]["prompt_tokens"], 120);
         assert_eq!(usage["fields"]["completion_tokens"], 8);
+    }
+
+    #[tokio::test]
+    async fn attempt_observer_records_rejection_once_and_not_preflight() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let stub = make_stub((200, chat_reply("too long", (120, 8)), false));
+        let client = client_for(&stub, |_| {}).await;
+        let observed = {
+            let records = records.clone();
+            client.with_call_observer(Arc::new(move |record| {
+                records.lock().expect("lock").push(record);
+            }))
+        };
+        assert!(
+            observed
+                .ask(&CheapTask::new("id", "do it", "payload").with_max_answer_chars(1))
+                .await
+                .is_err()
+        );
+        let records_snapshot = records.lock().expect("lock").clone();
+        assert_eq!(records_snapshot.len(), 1);
+        assert_eq!(records_snapshot[0].status, super::AttemptStatus::Rejected);
+        assert_eq!(
+            records_snapshot[0]
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.input_tokens),
+            Some(120)
+        );
+
+        let oversized = observed.with_call_observer({
+            let records = records.clone();
+            Arc::new(move |record| {
+                records.lock().expect("lock").push(record);
+            })
+        });
+        assert!(
+            oversized
+                .ask(&CheapTask::new("id", "instruction", "x".repeat(50_000)))
+                .await
+                .is_err()
+        );
+        assert_eq!(records.lock().expect("lock").len(), 1);
     }
 
     #[tokio::test]

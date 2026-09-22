@@ -23,8 +23,8 @@ use crate::handle::ChatStateHandle;
 use crate::persistence::ChatPersistence;
 use crate::types::{PruningConfig, TurnCapture};
 
-use state::ChatState;
 use distill_sampling_types::{ConversationItem, SamplingConfig};
+use state::ChatState;
 
 /// The actor that owns all chat state.
 /// Runs in a dedicated tokio task and processes commands sequentially.
@@ -228,6 +228,12 @@ impl ChatStateActor {
                     attribute_to_prompt,
                     incomplete,
                 );
+            }
+            ChatStateCommand::RecordUsageAttribution {
+                attribution,
+                attribute_to_prompt,
+            } => {
+                self.record_usage_attribution(attribution, attribute_to_prompt);
             }
             ChatStateCommand::RecordSubagentUsage {
                 by_model,

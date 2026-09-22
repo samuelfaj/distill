@@ -1,7 +1,7 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Turn deltas come from this process's last applied live ledger, not from persisted session totals (those stay large after resume).
 
-use distill_chat_state::UsageLedger;
+use distill_chat_state::{UsageAttribution, UsageLedger};
 use distill_sampling_types::reported_cost_ticks;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,8 @@ pub struct UsageSummary {
     pub primary_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub model_usage: IndexMap<String, UsageSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributions: Vec<UsageAttribution>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -73,6 +75,7 @@ impl UsageSummary {
         let mut summary = Self::from_totals(&ledger.totals, ledger.incomplete);
         summary.primary_model_id = primary_model(&model_usage);
         summary.model_usage = model_usage;
+        summary.attributions = ledger.attributions.clone();
         summary
     }
 
@@ -91,6 +94,7 @@ impl UsageSummary {
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
+            attributions: Vec::new(),
         }
     }
 
@@ -99,6 +103,7 @@ impl UsageSummary {
         self.input_tokens >= previous.input_tokens
             && self.output_tokens >= previous.output_tokens
             && self.model_calls >= previous.model_calls
+            && self.attributions.len() >= previous.attributions.len()
     }
 
     pub fn saturating_add(&self, other: &Self) -> Self {
@@ -108,6 +113,12 @@ impl UsageSummary {
             *entry = entry.saturating_add_row(row);
         }
         let mut out = self.saturating_add_row(other);
+        out.attributions = self
+            .attributions
+            .iter()
+            .cloned()
+            .chain(other.attributions.iter().cloned())
+            .collect();
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out.turn_count = self.turn_count.saturating_add(other.turn_count);
@@ -133,6 +144,7 @@ impl UsageSummary {
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
+            attributions: Vec::new(),
         }
     }
 
@@ -146,6 +158,11 @@ impl UsageSummary {
             }
         }
         let mut out = self.saturating_sub_row(other);
+        out.attributions = if self.attributions.starts_with(&other.attributions) {
+            self.attributions[other.attributions.len()..].to_vec()
+        } else {
+            self.attributions.clone()
+        };
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out
@@ -170,6 +187,7 @@ impl UsageSummary {
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
+            attributions: Vec::new(),
         }
     }
 
@@ -181,6 +199,7 @@ impl UsageSummary {
             && self.reasoning_tokens == 0
             && self.model_calls == 0
             && self.cost_usd_ticks.is_none()
+            && self.attributions.is_empty()
     }
 }
 

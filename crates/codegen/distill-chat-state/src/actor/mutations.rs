@@ -461,11 +461,9 @@ impl ChatStateActor {
             .prompt_usage
             .get_or_insert_default()
             .record_main_loop_call_without_usage(&model_key, api_duration_ms, cost_usd_ticks);
-        self.state.session_usage.record_main_loop_call_without_usage(
-            &model_key,
-            api_duration_ms,
-            cost_usd_ticks,
-        );
+        self.state
+            .session_usage
+            .record_main_loop_call_without_usage(&model_key, api_duration_ms, cost_usd_ticks);
     }
 
     pub(super) fn record_auxiliary_call_usage(
@@ -499,6 +497,20 @@ impl ChatStateActor {
             cost_usd_ticks,
             incomplete,
         );
+    }
+
+    pub(super) fn record_usage_attribution(
+        &mut self,
+        attribution: crate::usage::UsageAttribution,
+        attribute_to_prompt: bool,
+    ) {
+        if attribute_to_prompt {
+            self.state
+                .prompt_usage
+                .get_or_insert_default()
+                .record_attribution(attribution.clone());
+        }
+        self.state.session_usage.record_attribution(attribution);
     }
 
     pub(super) fn record_subagent_usage(

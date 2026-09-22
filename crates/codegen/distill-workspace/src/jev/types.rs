@@ -8,6 +8,8 @@
 //! [`MIN_SCORE_LEVELS`] levels; `Noul.criteria` is `{true?, false?}`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -288,6 +290,10 @@ pub struct Usage {
 }
 
 impl Usage {
+    pub fn is_empty(&self) -> bool {
+        self.input_tokens.is_none() && self.output_tokens.is_none()
+    }
+
     /// Input tokens, or zero when the server omitted the field.
     pub fn input(&self) -> u64 {
         self.input_tokens.unwrap_or(0)
@@ -296,6 +302,131 @@ impl Usage {
     /// Output tokens, or zero when the server omitted the field.
     pub fn output(&self) -> u64 {
         self.output_tokens.unwrap_or(0)
+    }
+}
+
+/// Provider billing/cache metadata carried separately so existing Jev wire
+/// fixture literals remain source-compatible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageBilling {
+    pub cached_input_tokens: Option<u64>,
+    pub cache_creation_input_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub cost_usd_ticks: Option<i64>,
+}
+
+impl UsageBilling {
+    pub fn is_empty(self) -> bool {
+        self.cached_input_tokens.is_none()
+            && self.cache_creation_input_tokens.is_none()
+            && self.reasoning_tokens.is_none()
+            && self.cost_usd_ticks.is_none()
+    }
+}
+
+/// Final state of one dispatched workspace-provider attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptStatus {
+    Completed,
+    Rejected,
+    Failed,
+    Cancelled,
+}
+
+/// Provider metadata emitted once for every dispatched attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptRecord {
+    pub attempt_id: String,
+    pub request_id: Option<String>,
+    pub requested_model: String,
+    pub response_model: Option<String>,
+    pub endpoint: String,
+    pub requested_effort: Option<String>,
+    pub applied_effort: Option<String>,
+    pub usage: Option<Usage>,
+    pub billing: UsageBilling,
+    pub status: AttemptStatus,
+    pub latency_ms: u64,
+}
+
+pub type AttemptObserver = Arc<dyn Fn(AttemptRecord) + Send + Sync>;
+
+/// Lifecycle guard for a request boundary. A dropped in-flight request is
+/// visible as cancelled/unknown; normal completion calls `finish` exactly once.
+pub struct AttemptGuard {
+    observer: Option<AttemptObserver>,
+    record: AttemptRecord,
+    started: Instant,
+}
+
+impl AttemptGuard {
+    pub fn new(
+        observer: Option<&AttemptObserver>,
+        requested_model: impl Into<String>,
+        endpoint: impl Into<String>,
+        requested_effort: Option<String>,
+    ) -> Option<Self> {
+        let observer = observer.cloned()?;
+        Some(Self {
+            observer: Some(observer),
+            record: AttemptRecord {
+                attempt_id: uuid::Uuid::new_v4().to_string(),
+                request_id: None,
+                requested_model: requested_model.into(),
+                response_model: None,
+                endpoint: endpoint.into(),
+                requested_effort,
+                applied_effort: None,
+                usage: None,
+                billing: UsageBilling::default(),
+                status: AttemptStatus::Cancelled,
+                latency_ms: 0,
+            },
+            started: Instant::now(),
+        })
+    }
+
+    pub fn set_response(
+        &mut self,
+        request_id: Option<String>,
+        response_model: Option<String>,
+        usage: Option<Usage>,
+    ) {
+        if request_id.is_some() {
+            self.record.request_id = request_id;
+        }
+        if response_model.is_some() {
+            self.record.response_model = response_model;
+        }
+        if usage.is_some() {
+            self.record.usage = usage;
+        }
+    }
+
+    pub fn set_billing(&mut self, billing: UsageBilling) {
+        if !billing.is_empty() {
+            self.record.billing = billing;
+        }
+    }
+
+    pub fn finish(mut self, status: AttemptStatus) {
+        self.record.status = status;
+        self.record.latency_ms = self.started.elapsed().as_millis() as u64;
+        self.emit();
+    }
+
+    fn emit(&mut self) {
+        if let Some(observer) = self.observer.take() {
+            observer(self.record.clone());
+        }
+    }
+}
+
+impl Drop for AttemptGuard {
+    fn drop(&mut self) {
+        self.record.status = AttemptStatus::Cancelled;
+        self.record.latency_ms = self.started.elapsed().as_millis() as u64;
+        self.emit();
     }
 }
 

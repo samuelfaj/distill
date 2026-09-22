@@ -1052,7 +1052,6 @@ impl SessionActor {
         self.signals_handle().clear_active_dispatch();
         self.refresh_token_if_expired().await;
         let mut sampler_config = self.reconstruct_full_config().await;
-        crate::jev::register_usage_recorder(self.chat_state_handle.clone());
         crate::jev::begin_model_round();
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         tracing::info!(target: "jev.decision", event_kind = "llm_round_start",

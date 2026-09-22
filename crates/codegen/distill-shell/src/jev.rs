@@ -436,18 +436,29 @@ pub async fn ask_item(
     if !client.credential_present() {
         return None;
     }
-    let budget = item_budget(client);
+    let observed_client = active_usage_recorder().map(|recorder| {
+        let turn_id = telemetry_context().1;
+        let observer: distill_workspace::jev::types::AttemptObserver =
+            std::sync::Arc::new(move |attempt| {
+                record_workspace_attempt(
+                    attempt,
+                    "jev",
+                    Some(lever.as_str().to_owned()),
+                    Some(turn_id.clone()),
+                    recorder.clone(),
+                    true,
+                );
+            });
+        client.with_call_observer(observer)
+    });
+    let request_client = observed_client.as_ref().unwrap_or(client);
+    let budget = item_budget(request_client);
     let in_flight = JevInFlight::begin();
-    let started = std::time::Instant::now();
-    let outcome = tokio::time::timeout(budget, client.ask(&state, &questions)).await;
+    let outcome = tokio::time::timeout(budget, request_client.ask(&state, &questions)).await;
     drop(in_flight);
     match outcome {
-        Ok(Ok(answers)) => {
-            record_jev_answer_usage(&answers);
-            Some(answers)
-        }
+        Ok(Ok(answers)) => Some(answers),
         Ok(Err(error)) => {
-            record_jev_unreported_call(Some(started.elapsed().as_millis() as u64));
             tracing::debug!(
                 lever = lever.as_str(),
                 %error,
@@ -459,7 +470,6 @@ pub async fn ask_item(
             None
         }
         Err(_) => {
-            record_jev_unreported_call(Some(started.elapsed().as_millis() as u64));
             tracing::debug!(
                 lever = lever.as_str(),
                 budget_ms = budget.as_millis() as u64,
@@ -675,91 +685,91 @@ pub(crate) fn begin_model_round() {
     let _ = ACTIVE_ROUND_ID.try_with(|round| round.set(round.get().saturating_add(1)));
 }
 
-/// Installs the session's existing ChatState handle for this turn. The handle
-/// lives in task-local scope, so concurrent sessions cannot attribute Jev usage
-/// to one another and no process-global ledger/handle is leaked.
-pub(crate) fn register_usage_recorder(handle: distill_chat_state::ChatStateHandle) {
-    let _ = ACTIVE_USAGE_RECORDER.try_with(|recorder| {
-        *recorder.borrow_mut() = Some(handle);
-    });
-}
-
-fn active_usage_recorder() -> Option<distill_chat_state::ChatStateHandle> {
+pub(crate) fn active_usage_recorder() -> Option<distill_chat_state::ChatStateHandle> {
     ACTIVE_USAGE_RECORDER
         .try_with(|recorder| recorder.borrow().clone())
         .ok()
         .flatten()
 }
 
-/// Attribute one completed Jev response once. Jev's workspace metadata has no
-/// provider cost field, so the shared ledger records cost as absent rather than
-/// treating the utility call as free.
-pub(crate) fn record_jev_answer_usage(answers: &distill_workspace::jev::types::JevAnswerSet) {
-    record_jev_usage(
-        &answers.model,
-        answers.usage.input_tokens,
-        answers.usage.output_tokens,
-        answers.latency_ms,
-    );
-}
-
-/// Attribute one completed cheap utility response using the same ledger path
-/// as a normal Jev response.
-pub(crate) fn record_cheap_answer_usage(answer: &distill_workspace::jev::cheap::CheapAnswer) {
-    record_jev_usage(
-        &answer.model,
-        answer.usage.input_tokens,
-        answer.usage.output_tokens,
-        answer.latency_ms,
-    );
-}
-
-fn record_jev_usage(
-    model: &str,
-    prompt_tokens: Option<u64>,
-    completion_tokens: Option<u64>,
-    latency_ms: u64,
+pub(crate) fn record_workspace_attempt(
+    attempt: distill_workspace::jev::types::AttemptRecord,
+    role: &str,
+    task_id: Option<String>,
+    turn_id: Option<String>,
+    recorder: distill_chat_state::ChatStateHandle,
+    attribute_to_prompt: bool,
 ) {
-    let Some(recorder) = active_usage_recorder() else {
-        return;
-    };
-    let usage = match (prompt_tokens, completion_tokens) {
-        (None, None) => None,
-        _ => Some(distill_sampling_types::TokenUsage {
-            prompt_tokens: prompt_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
-            completion_tokens: completion_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
-            total_tokens: prompt_tokens
-                .unwrap_or(0)
-                .saturating_add(completion_tokens.unwrap_or(0))
-                .min(u64::from(u32::MAX)) as u32,
-            reasoning_tokens: 0,
-            cached_prompt_tokens: 0,
-            cache_creation_prompt_tokens: 0,
-        }),
-    };
-    recorder.record_auxiliary_call_usage(
-        Some(model.to_owned()),
-        usage,
-        Some(latency_ms),
-        None,
-        true,
-        prompt_tokens.is_none() || completion_tokens.is_none(),
-    );
-}
+    use distill_chat_state::{UsageAttribution, UsageCallStatus, UsageCostBasis};
 
-/// A Jev transport error/timeout has no response metadata, but the request was
-/// attempted. Count one unreported auxiliary call so its cost cannot disappear.
-fn record_jev_unreported_call(api_duration_ms: Option<u64>) {
-    let Some(recorder) = active_usage_recorder() else {
-        return;
+    let usage = attempt.usage.as_ref().and_then(|usage| {
+        (!usage.is_empty()).then(|| distill_sampling_types::TokenUsage {
+            prompt_tokens: usage.input_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            completion_tokens: usage.output_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            total_tokens: usage
+                .input_tokens
+                .unwrap_or(0)
+                .saturating_add(usage.output_tokens.unwrap_or(0))
+                .min(u64::from(u32::MAX)) as u32,
+            reasoning_tokens: attempt
+                .billing
+                .reasoning_tokens
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+            cached_prompt_tokens: attempt
+                .billing
+                .cached_input_tokens
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+            cache_creation_prompt_tokens: attempt
+                .billing
+                .cache_creation_input_tokens
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+        })
+    });
+    let cost_usd_ticks = attempt
+        .billing
+        .cost_usd_ticks
+        .and_then(|cost| distill_sampling_types::reported_cost_ticks(Some(cost)));
+    let status = match attempt.status {
+        distill_workspace::jev::types::AttemptStatus::Completed => UsageCallStatus::Completed,
+        distill_workspace::jev::types::AttemptStatus::Rejected => UsageCallStatus::Rejected,
+        distill_workspace::jev::types::AttemptStatus::Failed => UsageCallStatus::Failed,
+        distill_workspace::jev::types::AttemptStatus::Cancelled => UsageCallStatus::Cancelled,
     };
-    recorder.record_auxiliary_call_usage(
-        Some("<jev-unreported>".to_owned()),
-        None,
-        api_duration_ms,
-        None,
-        true,
-        true,
+    let model_id = attempt
+        .response_model
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(attempt.requested_model);
+    recorder.record_usage_attribution(
+        UsageAttribution {
+            attempt_id: attempt.attempt_id,
+            task_id,
+            turn_id,
+            request_id: attempt.request_id,
+            role: role.to_owned(),
+            model_id,
+            endpoint: Some(attempt.endpoint),
+            requested_effort: attempt.requested_effort,
+            applied_effort: attempt.applied_effort,
+            status,
+            usage,
+            usage_complete: attempt
+                .usage
+                .as_ref()
+                .is_some_and(|usage| {
+                    usage.input_tokens.is_some() && usage.output_tokens.is_some()
+                }),
+            api_duration_ms: Some(attempt.latency_ms),
+            cost_usd_ticks,
+            cost_basis: if cost_usd_ticks.is_some() {
+                UsageCostBasis::Reported
+            } else {
+                UsageCostBasis::Unknown
+            },
+        },
+        attribute_to_prompt,
     );
 }
 
@@ -791,13 +801,27 @@ pub async fn with_session_scope<F>(session_id: impl Into<String>, future: F) -> 
 where
     F: Future,
 {
+    with_session_scope_and_recorder(session_id, None, future).await
+}
+
+/// Runs a session turn with its existing ChatState handle installed before any
+/// turn work starts. This captures Jev and utility calls that happen before
+/// sampler preparation while keeping the recorder task-local per session.
+pub(crate) async fn with_session_scope_and_recorder<F>(
+    session_id: impl Into<String>,
+    recorder: Option<distill_chat_state::ChatStateHandle>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
     ACTIVE_SESSION_ID
         .scope(
             session_id.into(),
             ACTIVE_TURN_ID.scope(
                 uuid::Uuid::new_v4().to_string(),
                 ACTIVE_USAGE_RECORDER.scope(
-                    std::cell::RefCell::new(None),
+                    std::cell::RefCell::new(recorder),
                     ACTIVE_ROUND_ID.scope(std::cell::Cell::new(0), future),
                 ),
             ),

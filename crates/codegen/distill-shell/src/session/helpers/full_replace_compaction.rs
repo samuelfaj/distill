@@ -21,6 +21,7 @@ use distill_sampler::SamplerConfig as SamplingConfig;
 use distill_sampling_types::{ConversationItem, HostedTool, ToolSpec};
 use distill_telemetry::events::{CompactionRetryDegraded, CompactionTrigger};
 
+use distill_chat_state::ChatStateHandle;
 use distill_chat_state::compaction_utils::{
     CompactionAttempt, MAX_CAPTURED_SUMMARY_CHARS, bound_captured_output,
 };
@@ -31,7 +32,7 @@ use crate::session::helpers::prepared_compaction_history::{
     PreparedCompactionHistory, build_compaction_chat_history,
 };
 use crate::session::helpers::session_compact::{
-    COMPACT_FAILED_PREFIX, CompactFailure, CompactOutput, generate_session_compact,
+    COMPACT_FAILED_PREFIX, CompactFailure, CompactOutput,
 };
 
 #[derive(Default)]
@@ -65,6 +66,7 @@ pub(crate) struct ShellCompactionSampler {
     wall_clock_budget_secs: u64,
     tool_choice: crate::util::config::CompactionToolChoice,
     cancel: tokio_util::sync::CancellationToken,
+    usage_recorder: ChatStateHandle,
     state: Mutex<SamplerState>,
 }
 
@@ -83,6 +85,7 @@ impl ShellCompactionSampler {
         wall_clock_budget_secs: u64,
         tool_choice: crate::util::config::CompactionToolChoice,
         cancel: tokio_util::sync::CancellationToken,
+        usage_recorder: ChatStateHandle,
     ) -> Self {
         Self {
             use_short_prompt,
@@ -97,6 +100,7 @@ impl ShellCompactionSampler {
             wall_clock_budget_secs,
             tool_choice,
             cancel,
+            usage_recorder,
             state: Mutex::new(SamplerState::default()),
         }
     }
@@ -131,7 +135,21 @@ impl CompactionSampler for ShellCompactionSampler {
         );
         self.state.lock().unwrap().record_attempt(&chat_history);
 
-        match generate_session_compact(
+        let turn_id = crate::jev::telemetry_context().1;
+        let observer: distill_workspace::jev::types::AttemptObserver = std::sync::Arc::new({
+            let recorder = self.usage_recorder.clone();
+            move |attempt| {
+                crate::jev::record_workspace_attempt(
+                    attempt,
+                    "compaction",
+                    Some("full_replace".to_owned()),
+                    (!turn_id.is_empty()).then(|| turn_id.clone()),
+                    recorder.clone(),
+                    false,
+                );
+            }
+        });
+        match crate::session::helpers::session_compact::generate_session_compact_with_observer(
             chat_history,
             self.compaction_tool_tokens,
             self.tools.clone(),
@@ -143,6 +161,7 @@ impl CompactionSampler for ShellCompactionSampler {
             self.wall_clock_budget_secs,
             self.tool_choice,
             &self.cancel,
+            Some(&observer),
         )
         .await
         {

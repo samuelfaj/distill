@@ -4,8 +4,8 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use distill_sampling_types::{ConversationItem, SamplingConfig, SyntheticReason};
+use tokio::sync::mpsc;
 
 use crate::StrictAppendAck;
 use crate::actor::ChatStateActor;
@@ -1967,30 +1967,29 @@ async fn parallel_tool_calls_accept_first_reject_second_skip_third() {
 
     // Model response: one assistant message holding all 3 parallel tool calls.
     // In production this is built from the stream and pushed via `push_assistant_response`.
-    let assistant_with_tools =
-        ConversationItem::Assistant(distill_sampling_types::AssistantItem {
-            content: "I'll read the file, fix it, and run tests.".into(),
-            tool_calls: vec![
-                ToolCall {
-                    id: "call_1".into(),
-                    name: "read_file".to_string(),
-                    arguments: r#"{"target_file":"src/main.rs"}"#.into(),
-                },
-                ToolCall {
-                    id: "call_2".into(),
-                    name: "edit_file".to_string(),
-                    arguments: r#"{"target_file":"src/main.rs","new_string":"fixed"}"#.into(),
-                },
-                ToolCall {
-                    id: "call_3".into(),
-                    name: "run_terminal_cmd".to_string(),
-                    arguments: r#"{"command":"cargo test"}"#.into(),
-                },
-            ],
-            model_id: Some("grok-3".to_string()),
-            model_fingerprint: None,
-            reasoning_effort: None,
-        });
+    let assistant_with_tools = ConversationItem::Assistant(distill_sampling_types::AssistantItem {
+        content: "I'll read the file, fix it, and run tests.".into(),
+        tool_calls: vec![
+            ToolCall {
+                id: "call_1".into(),
+                name: "read_file".to_string(),
+                arguments: r#"{"target_file":"src/main.rs"}"#.into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "edit_file".to_string(),
+                arguments: r#"{"target_file":"src/main.rs","new_string":"fixed"}"#.into(),
+            },
+            ToolCall {
+                id: "call_3".into(),
+                name: "run_terminal_cmd".to_string(),
+                arguments: r#"{"command":"cargo test"}"#.into(),
+            },
+        ],
+        model_id: Some("grok-3".to_string()),
+        model_fingerprint: None,
+        reasoning_effort: None,
+    });
     h.handle.push_assistant_response(assistant_with_tools);
 
     // ── Tool execution results (simulating execute_tool_calls) ──────────
@@ -4530,10 +4529,7 @@ async fn sampling_config_survives_compaction_replacement() {
 
     // Post-compaction: SamplingConfig MUST be preserved.
     let post = h.handle.get_sampling_config().await.unwrap();
-    assert_eq!(
-        post.model, "distill",
-        "BUG: model changed after compaction"
-    );
+    assert_eq!(post.model, "distill", "BUG: model changed after compaction");
     assert_eq!(
         post.context_window.get(),
         500_000,

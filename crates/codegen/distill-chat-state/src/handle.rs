@@ -3,11 +3,11 @@
 
 use std::collections::BTreeSet;
 
-use tokio::sync::{mpsc, oneshot};
 use distill_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
     ToolSpec, TraceContext,
 };
+use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{ChatStateCommand, RepairHistoryBlocked, StrictAppendAck, StrictAppendError};
 use crate::types::{
@@ -210,6 +210,19 @@ impl ChatStateHandle {
                 attribute_to_prompt,
                 incomplete,
             });
+    }
+
+    /// Record one dispatched attempt with its identity and provider metadata.
+    /// The actor deduplicates by `attempt_id` before folding totals.
+    pub fn record_usage_attribution(
+        &self,
+        attribution: crate::usage::UsageAttribution,
+        attribute_to_prompt: bool,
+    ) {
+        let _ = self.cmd_tx.send(ChatStateCommand::RecordUsageAttribution {
+            attribution,
+            attribute_to_prompt,
+        });
     }
 
     /// Apply subagent usage; returns false if the actor did not acknowledge.

@@ -15,7 +15,7 @@ use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
     COMPACT_FAILED_PREFIX, CompactOutput, CompactionOutcome, build_compaction_prompt,
-    generate_session_compact, is_context_length_error,
+    is_context_length_error,
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
@@ -154,26 +154,36 @@ impl SessionActor {
             .wall_clock_budget_secs;
         let hosted_tools = self.hosted_tools_for_turn();
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
-        let started = std::time::Instant::now();
-        let result = generate_session_compact(
-            history,
-            compaction_tool_tokens,
-            tools,
-            hosted_tools,
-            client,
-            self.session_info.id.clone(),
-            &sampling_config,
-            self.inference_idle_timeout,
-            wall_clock_budget_secs,
-            self.compaction.tool_choice,
-            &cancel,
-        )
-        .await;
-        self.record_unreported_compaction_calls(
-            &sampling_config.model,
-            1,
-            Some(started.elapsed().as_millis() as u64),
-        );
+        let turn_id = crate::jev::telemetry_context().1;
+        let observer: distill_workspace::jev::types::AttemptObserver = std::sync::Arc::new({
+            let recorder = self.chat_state_handle.clone();
+            move |attempt| {
+                crate::jev::record_workspace_attempt(
+                    attempt,
+                    "compaction",
+                    Some("two_pass".to_owned()),
+                    (!turn_id.is_empty()).then(|| turn_id.clone()),
+                    recorder.clone(),
+                    false,
+                );
+            }
+        });
+        let result =
+            crate::session::helpers::session_compact::generate_session_compact_with_observer(
+                history,
+                compaction_tool_tokens,
+                tools,
+                hosted_tools,
+                client,
+                self.session_info.id.clone(),
+                &sampling_config,
+                self.inference_idle_timeout,
+                wall_clock_budget_secs,
+                self.compaction.tool_choice,
+                &cancel,
+                Some(&observer),
+            )
+            .await;
         match result {
             Ok(out) => Some(out),
             Err(e) => {
@@ -183,26 +193,6 @@ impl SessionActor {
         }
     }
 
-    /// The compaction transport currently exposes no provider usage metadata at
-    /// this shell seam. Count every sampler attempt as cost-unknown/incomplete
-    /// so discarded, prefired, and retried summaries cannot look free.
-    fn record_unreported_compaction_calls(
-        &self,
-        model: &str,
-        attempts: u32,
-        api_duration_ms: Option<u64>,
-    ) {
-        for _ in 0..attempts {
-            self.chat_state_handle.record_auxiliary_call_usage(
-                Some(model.to_owned()),
-                None,
-                api_duration_ms,
-                None,
-                false,
-                true,
-            );
-        }
-    }
     /// Per-turn prefire decision: usage has reached `threshold - lead` (so there is still runway before the hard auto-compact line at `threshold`).
     pub(crate) async fn should_prefire_two_pass(&self) -> bool {
         if self.compaction.is_suppressed() {
@@ -1162,6 +1152,7 @@ impl SessionActor {
             wall_clock_budget_secs,
             self.compaction.tool_choice,
             cancel.clone(),
+            self.chat_state_handle.clone(),
         );
         let observer =
             crate::session::helpers::full_replace_compaction::ShellFullReplaceObserver::new(
@@ -1187,7 +1178,6 @@ impl SessionActor {
         let mut compact_summary: Option<String> =
             two_pass_output.as_ref().map(|o| o.content.clone());
         while compact_summary.is_none() {
-            let attempts_before = observer.attempt_count();
             let sample_result = distill_compaction::sample_full_replace_summary(
                 &sampler,
                 &request_turns,
@@ -1196,8 +1186,6 @@ impl SessionActor {
                 &observer,
             )
             .await;
-            let attempts = observer.attempt_count().saturating_sub(attempts_before);
-            self.record_unreported_compaction_calls(&sampling_config.model, attempts, None);
             match sample_result {
                 Ok(summary) => {
                     compact_summary = Some(summary.summary);

@@ -2537,8 +2537,9 @@ impl SessionActor {
         salvage: &mut super::length_salvage::LengthSalvage,
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
-        let result = crate::jev::with_session_scope(
+        let result = crate::jev::with_session_scope_and_recorder(
             self.session_info.id.0.to_string(),
+            Some(self.chat_state_handle.clone()),
             self.process_conversation_turn_inner(
                 req_id,
                 trace_gcs_config,

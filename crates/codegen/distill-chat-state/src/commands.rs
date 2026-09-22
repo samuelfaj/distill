@@ -3,11 +3,11 @@
 
 use std::collections::BTreeSet;
 
-use tokio::sync::oneshot;
 use distill_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
     ToolSpec, TraceContext,
 };
+use tokio::sync::oneshot;
 
 use crate::types::{
     AutoCompactTrigger, ChatStateSnapshot, ConversationCounts, Credentials, NotificationMeta,
@@ -130,6 +130,13 @@ pub enum ChatStateCommand {
         cost_usd_ticks: Option<i64>,
         attribute_to_prompt: bool,
         incomplete: bool,
+    },
+
+    /// Record one identified attempt in both the session ledger and, when
+    /// attributable, the open prompt ledger.
+    RecordUsageAttribution {
+        attribution: crate::usage::UsageAttribution,
+        attribute_to_prompt: bool,
     },
 
     /// Subagent usage into session (and prompt when attributable). Replies when applied.

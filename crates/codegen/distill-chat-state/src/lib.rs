@@ -54,7 +54,7 @@ pub use persistence::{
     PersistenceRecord, StripOutcome,
 };
 pub use types::*;
-pub use usage::{UsageLedger, UsageTotals};
+pub use usage::{UsageAttribution, UsageCallStatus, UsageCostBasis, UsageLedger, UsageTotals};
 // Re-exported so `distill_chat_state::CompactionDetail` stays a working path for
 // existing callers.
 pub use distill_compaction_transcript::CompactionDetail;

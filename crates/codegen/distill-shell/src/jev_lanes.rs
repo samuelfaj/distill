@@ -293,14 +293,38 @@ fn summary_count<'a>(tokens: &[&'a str]) -> Option<(usize, &'a str)> {
     let first = tokens.first().and_then(|token| count_token(token));
     let second = tokens.get(1).map(|token| normalized_word(token));
     if let (Some(count), Some(label)) = (first, second)
-        && matches!(label, "pass" | "passed" | "fail" | "failed" | "skip" | "skipped" | "todo")
+        && matches!(
+            label,
+            "pass"
+                | "passed"
+                | "passing"
+                | "fail"
+                | "failed"
+                | "failing"
+                | "skip"
+                | "skipped"
+                | "pending"
+                | "todo"
+        )
     {
         return Some((count, label));
     }
     let first_word = tokens.first().map(|token| normalized_word(token));
     let second_count = tokens.get(1).and_then(|token| count_token(token));
     if let (Some(label), Some(count)) = (first_word, second_count)
-        && matches!(label, "pass" | "passed" | "fail" | "failed" | "skip" | "skipped" | "todo")
+        && matches!(
+            label,
+            "pass"
+                | "passed"
+                | "passing"
+                | "fail"
+                | "failed"
+                | "failing"
+                | "skip"
+                | "skipped"
+                | "pending"
+                | "todo"
+        )
     {
         return Some((count, label));
     }
@@ -321,7 +345,7 @@ pub fn required_tool_evidence(text: &str) -> Vec<String> {
             .collect();
         let is_failure_or_detail = [
             "error", "fail", "failed", "failure", "panic", "assert", "expected", "not", "run",
-            "incomplete", "timed", "out", "timeout", "skipped", "skip", "todo",
+            "incomplete", "timed", "out", "timeout", "skipped", "skip", "pending", "todo",
         ]
         .iter()
         .any(|marker| tokens.contains(marker));
@@ -400,7 +424,7 @@ pub fn bounded_tool_evidence(text: &str, max_bytes: usize) -> Option<String> {
         let line = line.to_ascii_lowercase();
         [
             "error", "failed", "failure", "panic", "assert", "expected", "skip", "todo",
-            "incomplete", "timeout", "ran ", "passed", "warning",
+            "pending", "incomplete", "timeout", "ran ", "passed", "passing", "failing", "warning",
         ]
         .iter()
         .any(|marker| line.contains(marker))

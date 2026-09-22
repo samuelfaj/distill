@@ -1803,6 +1803,38 @@ mod tests {
     }
 
     #[test]
+    fn extractive_guard_keeps_complete_mocha_passing_and_pending_summary() {
+        let original = format!(
+            "exit: 0\n8 passing (20ms)\n1 pending\n{}",
+            "progress noise\n".repeat(300)
+        );
+        let evidence =
+            crate::jev_lanes::bounded_tool_evidence(&original, 256).expect("bounded Mocha output");
+        assert!(evidence.contains("8 passing (20ms)"));
+        assert!(evidence.contains("1 pending"));
+        assert!(compression_replacement(
+            &original,
+            &evidence,
+            "`8 passing (20ms)`",
+            "/tmp/mocha-output",
+            "utility",
+            None,
+        )
+        .is_none());
+        let accepted = compression_replacement(
+            &original,
+            &evidence,
+            "`8 passing (20ms)`\n`1 pending`",
+            "/tmp/mocha-output",
+            "configured light worker",
+            None,
+        )
+        .expect("complete Mocha status summary");
+        assert!(accepted.contains("8 passing (20ms)"));
+        assert!(accepted.contains("1 pending"));
+    }
+
+    #[test]
     fn task_output_exact_command_is_not_compressed() {
         use distill_tool_types::{TaskOutputOutput, TaskOutputResult};
         use distill_tools::types::output::ToolOutput;

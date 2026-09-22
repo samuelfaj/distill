@@ -1,6 +1,6 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP42 tool-discovery JSON compacto aceito; CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP43 E1 pruning PASS (`a02181966d126686928b3b359c55aa384c03749c`, commit/push verificados); CP42 tool-discovery JSON compacto aceito; CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
@@ -120,6 +120,20 @@ Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP42 tool-d
 > `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-task-description-tests.log`
 > e `/tmp/distill-cost-orchestration-20260921-b02qc6vm/tool-search-json-parity.json`.
 > Isto não fecha E1/E2: ambos permanecem pendentes em runtime.
+>
+> **Status atual — CP43 / pruning E1 (22/09/2026):** o commit
+> `a02181966d126686928b3b359c55aa384c03749c` foi commitado, enviado e
+> verificado. O recibo `R1.pruning-final-accept.result.md` registra **9 testes de chat-state
+> + 2 testes host PASS**: conta rondas de tools concluídas dentro de um goal,
+> preserva as 3 mais recentes, pendentes/ambíguas e o histórico canônico;
+> arquiva e lê de volta o original completo antes da redução apenas da cópia
+> de request de corpos conhecidos de progresso puro de build. O envelope nativo
+> permanece exato e falhas permanecem cruas. O install gerenciado CP37
+> (`d4add482`) permanece; a última inspeção não encontrou o PID `15301` e
+> `distill --version` reportou `d4add482`. Isso não prova reinício do usuário
+> nem a conclusão da tarefa original, não altera a janela de 1M e não sustenta
+> ganho monetário/live-provider. Economic compaction e E2 runtime continuam
+> pendentes.
 >
 > **Achado factual STAR — sessão `01a0c96b...` (22/09):** main: `374` calls /
 > `108,000,915` tokens; `24` child executions, `24,133,375` únicos após subtrair

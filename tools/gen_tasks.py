@@ -184,6 +184,29 @@ LABELS = {
     ],
 }
 
+STRUCTURED_JSON = {
+    "extract_schema": (
+        "EXTRACT_SCHEMA_CONTRACT",
+        "Fill a caller-supplied closed JSON schema from handle. If the source schema is absent or ambiguous, answer NONE; otherwise answer one non-empty JSON object only; do not add prose or markdown.",
+    ),
+    "json_shape": (
+        "JSON_SHAPE_CONTRACT",
+        'Infer keys of a JSON blob without values if secret-like. Answer with one JSON object only in the form {"keys":["key"]}; include at least one non-empty key and no prose or markdown.',
+    ),
+    "table_extract": (
+        "TABLE_EXTRACT_CONTRACT",
+        'Markdown/HTML tables → JSON rows. Answer with one JSON object only in the form {"rows":[{...}]}; include at least one non-empty row and no prose or markdown.',
+    ),
+    "log_records": (
+        "LOG_RECORDS_CONTRACT",
+        'Log lines → {ts,level,msg,file}. Answer with one JSON object only in the form {"records":[{"ts":"...","level":"...","msg":"...","file":"..."}]}; include at least one complete record and no prose or markdown.',
+    ),
+    "vuln_scan_digest": (
+        "VULN_SCAN_DIGEST_CONTRACT",
+        'npm audit/trivy/grype JSON → {package, severity, fixedIn} grouped. Answer with one JSON object only in the form {"vulnerabilities":[{"package":"...","severity":"...","fixedIn":"..."}]}; include at least one complete finding and no prose or markdown.',
+    ),
+}
+
 
 def main():
     data = json.loads(CATALOG.read_text())
@@ -197,8 +220,12 @@ def main():
         if fid in HOST_BOUND or fid in LOCAL_MODEL or fid in HOST_AUTHORITY:
             continue
         kind, guard = EXPLICIT.get(fid, ("Digest", "Literals"))
-        summary = fn["summary"].replace("\\", "").replace('"', "'")
-        instruction = f"{summary}. {CLOSING[kind]}"
+        structured = STRUCTURED_JSON.get(fid)
+        if structured is not None:
+            instruction = structured[1]
+        else:
+            summary = fn["summary"].replace("\\", "").replace('"', "'")
+            instruction = f"{summary}. {CLOSING[kind]}"
         rows.append((fid, kind, guard, instruction))
 
     print("/// The catalogue's cheap tasks, one row per function a text model can serve.")
@@ -208,13 +235,17 @@ def main():
     print("/// kind needs, and the guard is what must pass before the answer is used.")
     print("pub const TASKS: &[TaskSpec] = &[")
     for fid, kind, guard, instruction in sorted(rows):
-        if guard == "ClosedSet":
+        structured = STRUCTURED_JSON.get(fid)
+        if structured is not None:
+            guard_rust = f"Guard::JsonObject(&{structured[0]})"
+        elif guard == "ClosedSet":
             labels = LABELS.get(fid, [])
             guard_rust = "Guard::ClosedSet(&[" + ", ".join(f'"{l}"' for l in labels) + "])"
         else:
             guard_rust = f"Guard::{guard}"
+        instruction_rust = instruction.replace("\\", "\\\\").replace('"', '\\"')
         print(f'    TaskSpec {{ id: "{fid}", kind: Kind::{kind}, guard: {guard_rust},')
-        print(f'        instruction: "{instruction}" }},')
+        print(f'        instruction: "{instruction_rust}" }},')
     print("];")
     print(f"// {len(rows)} tasks", file=sys.stderr)
     return 0

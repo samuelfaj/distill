@@ -37,14 +37,144 @@ pub enum Guard {
     /// Every literal of the payload (paths, `file:line`, numbers, error words)
     /// must still appear in the answer, and the answer must be shorter.
     Literals,
-    /// The answer must parse as a JSON object.
-    JsonObject,
-    /// The answer must be one of these labels (empty ⇒ the caller supplies them).
+    /// The answer must parse as a non-empty JSON object satisfying this
+    /// declaration's required fields and types.
+    JsonObject(&'static JsonContract),
+    /// The answer must be exactly one of these labels (empty ⇒ the caller
+    /// supplies them).
     ClosedSet(&'static [&'static str]),
-    /// Every id the answer names must appear in the candidates the caller offered.
+    /// The answer must name at least one id, and every id must appear in the
+    /// candidates the caller offered.
     CandidateIds,
-    /// Every quoted span in the answer must be a substring of the payload.
+    /// The answer must quote at least one span, and every quoted span must be a
+    /// substring of the payload.
     Spans,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonFieldKind {
+    NonEmptyString,
+    StringOrNull,
+    NonEmptyStringArray,
+    NonEmptyObjectArray(&'static [JsonField]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JsonField {
+    name: &'static str,
+    kind: JsonFieldKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JsonContract {
+    fields: Option<&'static [JsonField]>,
+}
+
+const JSON_SHAPE_FIELDS: &[JsonField] = &[JsonField {
+    name: "keys",
+    kind: JsonFieldKind::NonEmptyStringArray,
+}];
+
+const TABLE_FIELDS: &[JsonField] = &[JsonField {
+    name: "rows",
+    kind: JsonFieldKind::NonEmptyObjectArray(&[]),
+}];
+
+const LOG_RECORD_FIELDS: &[JsonField] = &[
+    JsonField {
+        name: "ts",
+        kind: JsonFieldKind::NonEmptyString,
+    },
+    JsonField {
+        name: "level",
+        kind: JsonFieldKind::NonEmptyString,
+    },
+    JsonField {
+        name: "msg",
+        kind: JsonFieldKind::NonEmptyString,
+    },
+    JsonField {
+        name: "file",
+        kind: JsonFieldKind::NonEmptyString,
+    },
+];
+
+const LOG_RECORDS_FIELDS: &[JsonField] = &[JsonField {
+    name: "records",
+    kind: JsonFieldKind::NonEmptyObjectArray(LOG_RECORD_FIELDS),
+}];
+
+const VULNERABILITY_FIELDS: &[JsonField] = &[
+    JsonField {
+        name: "package",
+        kind: JsonFieldKind::NonEmptyString,
+    },
+    JsonField {
+        name: "severity",
+        kind: JsonFieldKind::NonEmptyString,
+    },
+    JsonField {
+        name: "fixedIn",
+        kind: JsonFieldKind::StringOrNull,
+    },
+];
+
+const VULNERABILITIES_FIELDS: &[JsonField] = &[JsonField {
+    name: "vulnerabilities",
+    kind: JsonFieldKind::NonEmptyObjectArray(VULNERABILITY_FIELDS),
+}];
+
+const EXTRACT_SCHEMA_CONTRACT: JsonContract = JsonContract { fields: None };
+const JSON_SHAPE_CONTRACT: JsonContract = JsonContract {
+    fields: Some(JSON_SHAPE_FIELDS),
+};
+const TABLE_EXTRACT_CONTRACT: JsonContract = JsonContract {
+    fields: Some(TABLE_FIELDS),
+};
+const LOG_RECORDS_CONTRACT: JsonContract = JsonContract {
+    fields: Some(LOG_RECORDS_FIELDS),
+};
+const VULN_SCAN_DIGEST_CONTRACT: JsonContract = JsonContract {
+    fields: Some(VULNERABILITIES_FIELDS),
+};
+
+fn json_object_matches(value: &serde_json::Value, fields: &[JsonField]) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    !object.is_empty()
+        && fields.iter().all(|field| {
+            object
+                .get(field.name)
+                .is_some_and(|value| json_field_matches(value, field.kind))
+        })
+}
+
+fn json_field_matches(value: &serde_json::Value, kind: JsonFieldKind) -> bool {
+    match kind {
+        JsonFieldKind::NonEmptyString => value
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty()),
+        JsonFieldKind::StringOrNull => {
+            value.is_null()
+                || value
+                    .as_str()
+                    .is_some_and(|text| !text.trim().is_empty())
+        }
+        JsonFieldKind::NonEmptyStringArray => value.as_array().is_some_and(|items| {
+            !items.is_empty()
+                && items.iter().all(|item| {
+                    item.as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+        }),
+        JsonFieldKind::NonEmptyObjectArray(fields) => value.as_array().is_some_and(|items| {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| json_object_matches(item, fields))
+        }),
+    }
 }
 
 /// One catalogue task.
@@ -237,8 +367,8 @@ pub const TASKS: &[TaskSpec] = &[
         instruction: "Files, tests, error tokens mentioned in blob. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
     TaskSpec { id: "env_key_list", kind: Kind::Extract, guard: Guard::Literals,
         instruction: "Env key names, never values. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
-    TaskSpec { id: "extract_schema", kind: Kind::Extract, guard: Guard::JsonObject,
-        instruction: "Fill closed JSON schema from handle. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
+    TaskSpec { id: "extract_schema", kind: Kind::Extract, guard: Guard::JsonObject(&EXTRACT_SCHEMA_CONTRACT),
+        instruction: "Fill a caller-supplied closed JSON schema from handle. If the source schema is absent or ambiguous, answer NONE; otherwise answer one non-empty JSON object only; do not add prose or markdown." },
     TaskSpec { id: "file_role_classify", kind: Kind::Classify, guard: Guard::ClosedSet(&["test", "impl", "config", "generated", "skill"]),
         instruction: "test/impl/config/generated/skill. Answer with the single label only, exactly as one of the listed labels." },
     TaskSpec { id: "filter_line_numbers", kind: Kind::Ask, guard: Guard::Literals,
@@ -273,8 +403,8 @@ pub const TASKS: &[TaskSpec] = &[
         instruction: "Suggest labels/duplicates/severity for a new issue from handles. Answer with the digest only, in short lines: what changed or what matters, with the paths and identifiers quoted exactly as they appear." },
     TaskSpec { id: "json_path_select", kind: Kind::Ask, guard: Guard::Literals,
         instruction: "Which JSON paths match a question. Answer with the smallest extract that answers the question, quoting the payload verbatim; do not paraphrase." },
-    TaskSpec { id: "json_shape", kind: Kind::Extract, guard: Guard::JsonObject,
-        instruction: "Infer keys of a JSON blob without values if secret-like. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
+    TaskSpec { id: "json_shape", kind: Kind::Extract, guard: Guard::JsonObject(&JSON_SHAPE_CONTRACT),
+        instruction: "Infer keys of a JSON blob without values if secret-like. Answer with one JSON object only in the form {\"keys\":[\"key\"]}; include at least one non-empty key and no prose or markdown." },
     TaskSpec { id: "kubectl_digest", kind: Kind::Compress, guard: Guard::Literals,
         instruction: "Wide kubectl get output. Answer with the compressed text only. Keep every command, path, file:line, number, identifier and error message verbatim; drop repetition and progress noise; aim for at most one third of the payload." },
     TaskSpec { id: "lighthouse_digest", kind: Kind::Extract, guard: Guard::Literals,
@@ -283,8 +413,8 @@ pub const TASKS: &[TaskSpec] = &[
         instruction: "Extract title/AC/labels from issue JSON, no invention. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
     TaskSpec { id: "lint_group", kind: Kind::Digest, guard: Guard::Literals,
         instruction: "Group linter hits by rule. Answer with the digest only, in short lines: what changed or what matters, with the paths and identifiers quoted exactly as they appear." },
-    TaskSpec { id: "log_records", kind: Kind::Extract, guard: Guard::JsonObject,
-        instruction: "Log lines → {ts,level,msg,file}. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
+    TaskSpec { id: "log_records", kind: Kind::Extract, guard: Guard::JsonObject(&LOG_RECORDS_CONTRACT),
+        instruction: "Log lines → {ts,level,msg,file}. Answer with one JSON object only in the form {\"records\":[{\"ts\":\"...\",\"level\":\"...\",\"msg\":\"...\",\"file\":\"...\"}]}; include at least one complete record and no prose or markdown." },
     TaskSpec { id: "log_timeline", kind: Kind::Extract, guard: Guard::Literals,
         instruction: "Timestamped event list. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
     TaskSpec { id: "map_error_to_files", kind: Kind::Ask, guard: Guard::CandidateIds,
@@ -345,8 +475,8 @@ pub const TASKS: &[TaskSpec] = &[
         instruction: "Subagent output → done/partial/failed/off-task with evidence spans. Answer with the single label only, exactly as one of the listed labels." },
     TaskSpec { id: "syscall_trace_digest", kind: Kind::Extract, guard: Guard::Literals,
         instruction: "strace/dtruss/fs_usage trace → files/sockets touched + error syscalls relevant to question. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
-    TaskSpec { id: "table_extract", kind: Kind::Extract, guard: Guard::JsonObject,
-        instruction: "Markdown/HTML tables → JSON rows. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
+    TaskSpec { id: "table_extract", kind: Kind::Extract, guard: Guard::JsonObject(&TABLE_EXTRACT_CONTRACT),
+        instruction: "Markdown/HTML tables → JSON rows. Answer with one JSON object only in the form {\"rows\":[{...}]}; include at least one non-empty row and no prose or markdown." },
     TaskSpec { id: "tabular_digest", kind: Kind::Extract, guard: Guard::Literals,
         instruction: "Big CSV/TSV → columns, row count, question-relevant sample rows. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
     TaskSpec { id: "terraform_plan_digest", kind: Kind::Extract, guard: Guard::Literals,
@@ -357,8 +487,8 @@ pub const TASKS: &[TaskSpec] = &[
         instruction: "Huge find/ls -R listing → subtree summary relevant to question. Answer with the compressed text only. Keep every command, path, file:line, number, identifier and error message verbatim; drop repetition and progress noise; aim for at most one third of the payload." },
     TaskSpec { id: "ui_tree_digest", kind: Kind::Extract, guard: Guard::Literals,
         instruction: "Accessibility/DOM tree dumps (browser or computer-use) → elements matching question {role, label, coords}. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
-    TaskSpec { id: "vuln_scan_digest", kind: Kind::Extract, guard: Guard::JsonObject,
-        instruction: "npm audit/trivy/grype JSON → {package, severity, fixedIn} grouped. Answer with the extracted items only, one per line, each quoted exactly as it appears in the payload." },
+    TaskSpec { id: "vuln_scan_digest", kind: Kind::Extract, guard: Guard::JsonObject(&VULN_SCAN_DIGEST_CONTRACT),
+        instruction: "npm audit/trivy/grype JSON → {package, severity, fixedIn} grouped. Answer with one JSON object only in the form {\"vulnerabilities\":[{\"package\":\"...\",\"severity\":\"...\",\"fixedIn\":\"...\"}]}; include at least one complete finding and no prose or markdown." },
     TaskSpec { id: "watch_summary", kind: Kind::Compress, guard: Guard::Literals,
         instruction: "Existing watchSummary mode. Answer with the compressed text only. Keep every command, path, file:line, number, identifier and error message verbatim; drop repetition and progress noise; aim for at most one third of the payload." },
     TaskSpec { id: "wire_encode", kind: Kind::Compress, guard: Guard::Literals,
@@ -409,12 +539,16 @@ pub enum Rejected {
     LostLiterals(Vec<String>),
     /// The answer was not shorter than the payload.
     NotShorter,
-    /// The answer was not a JSON object.
+    /// The answer was not a JSON object satisfying the task contract.
     NotJson,
+    /// The task has no source schema that can be enforced safely.
+    NoContract,
     /// The answer was not one of the labels the task allows.
     NotALabel(String),
     /// The answer named an id the caller never offered.
     InventedId(String),
+    /// The answer contained no evidence for a task that requires it.
+    NoEvidence,
     /// The answer quoted something that is not in the payload.
     NotQuoted(String),
 }
@@ -426,8 +560,10 @@ impl Rejected {
             Self::LostLiterals(_) => "lost_literals",
             Self::NotShorter => "not_shorter",
             Self::NotJson => "not_json",
+            Self::NoContract => "no_contract",
             Self::NotALabel(_) => "not_a_label",
             Self::InventedId(_) => "invented_id",
+            Self::NoEvidence => "no_evidence",
             Self::NotQuoted(_) => "not_quoted",
         }
     }
@@ -438,9 +574,11 @@ impl Rejected {
             Self::Nothing => "the worker answered NONE".to_owned(),
             Self::LostLiterals(lost) => format!("{} literal(s) missing from the answer", lost.len()),
             Self::NotShorter => "the answer was not shorter than the payload".to_owned(),
-            Self::NotJson => "the answer was not a JSON object".to_owned(),
+            Self::NotJson => "the answer was not a valid JSON object for the task contract".to_owned(),
+            Self::NoContract => "the task has no enforceable source schema".to_owned(),
             Self::NotALabel(label) => format!("`{label}` is not one of the allowed labels"),
             Self::InventedId(id) => format!("`{id}` was not in the candidate list"),
+            Self::NoEvidence => "the answer contained no required evidence".to_owned(),
             Self::NotQuoted(span) => {
                 format!("the answer quoted {} characters that are not in the payload", span.len())
             }
@@ -471,10 +609,13 @@ pub fn gate(
                 return Err(Rejected::LostLiterals(lost));
             }
         }
-        Guard::JsonObject => {
+        Guard::JsonObject(contract) => {
+            let Some(fields) = contract.fields else {
+                return Err(Rejected::NoContract);
+            };
             let parsed: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
             match parsed {
-                Ok(serde_json::Value::Object(_)) => {}
+                Ok(value) if json_object_matches(&value, fields) => {}
                 _ => return Err(Rejected::NotJson),
             }
         }
@@ -484,25 +625,29 @@ pub fn gate(
             } else {
                 spec_labels.to_vec()
             };
-            let first_line = trimmed.lines().next().unwrap_or("").trim();
-            let matched = allowed.iter().any(|label| {
-                first_line.eq_ignore_ascii_case(label)
-                    || first_line.to_ascii_lowercase().contains(&label.to_ascii_lowercase())
-            });
+            let matched = allowed.iter().any(|label| trimmed == *label);
             if !matched {
-                return Err(Rejected::NotALabel(first_line.to_owned()));
+                return Err(Rejected::NotALabel(trimmed.to_owned()));
             }
         }
         Guard::CandidateIds => {
-            for id in identifiers_in(trimmed) {
+            let ids = identifiers_in(trimmed);
+            if ids.is_empty() {
+                return Err(Rejected::NoEvidence);
+            }
+            for id in ids {
                 if !candidates.iter().any(|candidate| candidate == &id) {
                     return Err(Rejected::InventedId(id));
                 }
             }
         }
         Guard::Spans => {
-            for span in quoted_spans(trimmed) {
-                if span.len() >= 8 && !payload.contains(&span) {
+            let spans = quoted_spans(trimmed);
+            if spans.is_empty() {
+                return Err(Rejected::NoEvidence);
+            }
+            for span in spans {
+                if !payload.contains(&span) {
                     return Err(Rejected::NotQuoted(span));
                 }
             }
@@ -511,28 +656,51 @@ pub fn gate(
     Ok(trimmed.to_owned())
 }
 
-/// Identifiers the answer names: the first token of each line, plus backticked or
-/// quoted words — the shapes a pick answer uses.
+/// Identifiers the answer names: one unadorned id per line, allowing the list
+/// markers and quoting the task instruction commonly asks the worker to use.
 fn identifiers_in(answer: &str) -> Vec<String> {
-    let mut ids = Vec::new();
-    for line in answer.lines() {
-        let line = line.trim().trim_start_matches(['-', '*', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ')', ' ']);
-        for candidate in line.split([' ', '\t', ',', '`', '"']) {
-            let candidate = candidate.trim();
-            if candidate.len() >= 3
-                && candidate.chars().any(|c| c.is_alphanumeric())
-                && !candidate.ends_with(':')
-            {
-                ids.push(candidate.to_owned());
-                break;
+    answer
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let line = line
+                .strip_prefix('-')
+                .or_else(|| line.strip_prefix('*'))
+                .map(str::trim)
+                .unwrap_or(line);
+            let line = strip_numbered_list_marker(line);
+            let line = line.trim().trim_end_matches(',').trim();
+            let line = line
+                .strip_prefix('`')
+                .and_then(|line| line.strip_suffix('`'))
+                .or_else(|| {
+                    line.strip_prefix('"')
+                        .and_then(|line| line.strip_suffix('"'))
+                })
+                .unwrap_or(line)
+                .trim();
+            (!line.is_empty()).then(|| line.to_owned())
+        })
+        .collect()
+}
+
+fn strip_numbered_list_marker(line: &str) -> &str {
+    let digit_count = line
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digit_count > 0 {
+        if let Some(marker) = line.as_bytes().get(digit_count) {
+            if matches!(marker, b'.' | b')') {
+                return line[digit_count + 1..].trim();
             }
         }
     }
-    ids
+    line
 }
 
 /// Quoted spans in an answer: backticks and double quotes, the shapes a citation
-/// uses. A span shorter than a few characters is not worth checking.
+/// uses. Empty quotes are not evidence.
 fn quoted_spans(answer: &str) -> Vec<String> {
     let mut spans = Vec::new();
     for quote in ['`', '"'] {
@@ -543,7 +711,7 @@ fn quoted_spans(answer: &str) -> Vec<String> {
                 break;
             };
             let span = &after[..end];
-            if span.len() >= 8 {
+            if !span.is_empty() {
                 spans.push(span.to_owned());
             }
             rest = &after[end + quote.len_utf8()..];
@@ -738,6 +906,18 @@ mod tests {
             gate(&verdict, "x", "MAYBE", &[], &[]).expect_err("not a label"),
             Rejected::NotALabel(_)
         ));
+        assert!(matches!(
+            gate(&verdict, "x", "PASS because the tests passed", &[], &[])
+                .expect_err("substring label"),
+            Rejected::NotALabel(_)
+        ));
+
+        let dynamic = spec_for("classify_closed");
+        assert!(gate(&dynamic, "x", "ready", &[], &["ready", "blocked"]).is_ok());
+        assert!(matches!(
+            gate(&dynamic, "x", "ready", &[], &[]).expect_err("empty closed set"),
+            Rejected::NotALabel(_)
+        ));
 
         let pick = spec_for("pick_candidates");
         let candidates = vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()];
@@ -746,6 +926,23 @@ mod tests {
             gate(&pick, "payload", "src/invented.rs", &candidates, &[]).expect_err("invented"),
             Rejected::InventedId(_)
         ));
+        assert!(matches!(
+            gate(
+                &pick,
+                "payload",
+                "src/a.rs because it matters",
+                &candidates,
+                &[]
+            )
+            .expect_err("unrelated instruction"),
+            Rejected::InventedId(_)
+        ));
+        assert_eq!(
+            gate(&pick, "payload", "", &candidates, &[]).expect_err("empty ids"),
+            Rejected::NoEvidence
+        );
+        let short_id = vec!["a".to_owned()];
+        assert!(gate(&pick, "payload", "a", &short_id, &[]).is_ok());
 
         let ask = spec_for("cite_spans");
         let payload = "the function returns None when the file is missing";
@@ -754,13 +951,84 @@ mod tests {
             gate(&ask, payload, "`a sentence that never appeared`", &[], &[]).expect_err("not quoted"),
             Rejected::NotQuoted(_)
         ));
+        assert_eq!(
+            gate(&ask, payload, "the answer has no citation", &[], &[]).expect_err("no span"),
+            Rejected::NoEvidence
+        );
+        assert!(gate(&ask, "id", "`id`", &[], &[]).is_ok());
+        assert!(matches!(
+            gate(&ask, "id", "`no`", &[], &[]).expect_err("invented short span"),
+            Rejected::NotQuoted(_)
+        ));
 
         let extract = spec_for("extract_schema");
-        assert!(gate(&extract, "payload", r#"{"id": 1}"#, &[], &[]).is_ok());
         assert_eq!(
-            gate(&extract, "payload", "id: 1", &[], &[]).expect_err("not json"),
-            Rejected::NotJson
+            gate(&extract, "payload", r#"{"id": 1}"#, &[], &[])
+                .expect_err("unknown schema"),
+            Rejected::NoContract
         );
+        assert_eq!(
+            gate(&extract, "payload", "id: 1", &[], &[]).expect_err("unknown schema"),
+            Rejected::NoContract
+        );
+    }
+
+    #[test]
+    fn structured_json_guards_require_the_declared_fields_and_types() {
+        let extract = spec_for("extract_schema");
+        assert_eq!(
+            gate(&extract, "payload", "{}", &[], &[]).expect_err("empty object"),
+            Rejected::NoContract
+        );
+        assert_eq!(
+            gate(&extract, "payload", "[]", &[], &[]).expect_err("array"),
+            Rejected::NoContract
+        );
+
+        let shape = spec_for("json_shape");
+        assert!(gate(&shape, "payload", r#"{"keys":["user_id"]}"#, &[], &[]).is_ok());
+        assert!(gate(&shape, "payload", r#"{"keys":[]}"#, &[], &[]).is_err());
+        assert!(gate(&shape, "payload", r#"{"keys":"user_id"}"#, &[], &[]).is_err());
+
+        let table = spec_for("table_extract");
+        assert!(gate(&table, "payload", r#"{"rows":[{"name":"id"}]}"#, &[], &[]).is_ok());
+        assert!(gate(&table, "payload", r#"{"rows":["id"]}"#, &[], &[]).is_err());
+
+        let logs = spec_for("log_records");
+        assert!(gate(
+            &logs,
+            "payload",
+            r#"{"records":[{"ts":"2026-09-21T00:00:00Z","level":"error","msg":"failed","file":"src/lib.rs"}]}"#,
+            &[],
+            &[]
+        )
+        .is_ok());
+        assert!(gate(
+            &logs,
+            "payload",
+            r#"{"records":[{"ts":"now","level":"error","msg":"failed"}]}"#,
+            &[],
+            &[]
+        )
+        .is_err());
+
+        let vulnerabilities = spec_for("vuln_scan_digest");
+        assert!(gate(
+            &vulnerabilities,
+            "payload",
+            r#"{"vulnerabilities":[{"package":"serde","severity":"high","fixedIn":null}]}"#,
+            &[],
+            &[]
+        )
+        .is_ok());
+        assert!(gate(
+            &vulnerabilities,
+            "payload",
+            r#"{"vulnerabilities":[{"package":"serde","severity":2,"fixedIn":null}]}"#,
+            &[],
+            &[]
+        )
+        .is_err());
     }
 
     #[test]

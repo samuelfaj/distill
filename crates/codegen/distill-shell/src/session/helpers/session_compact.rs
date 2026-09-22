@@ -354,7 +354,17 @@ fn jev_billing_from_tokens(usage: &TokenUsage, cost_usd_ticks: Option<i64>) -> U
         cached_input_tokens: Some(u64::from(usage.cached_prompt_tokens)),
         cache_creation_input_tokens: Some(u64::from(usage.cache_creation_prompt_tokens)),
         reasoning_tokens: Some(u64::from(usage.reasoning_tokens)),
-        cost_usd_ticks: distill_sampling_types::reported_cost_ticks(cost_usd_ticks),
+        cost_usd_ticks,
+    }
+}
+
+fn merge_normalized_cost(
+    previous: Option<i64>,
+    usage: &distill_sampling_types::Usage,
+) -> Option<i64> {
+    match (previous, usage.normalized_cost_ticks()) {
+        (_, Some(cost)) => Some(cost),
+        (previous, None) => previous,
     }
 }
 
@@ -375,7 +385,13 @@ fn responses_cost(response: &Response) -> Option<i64> {
         .as_ref()
         .and_then(|metadata| metadata.get("xai.cost_usd_ticks"))
         .and_then(|value| value.parse::<i64>().ok())
-        .and_then(|value| distill_sampling_types::reported_cost_ticks(Some(value)))
+        .filter(|&value| value >= 0)
+}
+
+fn retain_nonempty_identity(previous: &mut Option<String>, candidate: &str) {
+    if !candidate.is_empty() {
+        *previous = Some(candidate.to_owned());
+    }
 }
 
 fn update_response_attempt(
@@ -386,8 +402,8 @@ fn update_response_attempt(
     response_id: &mut Option<String>,
     response_model: &mut Option<String>,
 ) {
-    *response_id = Some(response.id.clone());
-    *response_model = Some(response.model.clone());
+    retain_nonempty_identity(response_id, &response.id);
+    retain_nonempty_identity(response_model, &response.model);
     if let Some(value) = responses_usage(response) {
         *usage = Some(value);
     }
@@ -658,13 +674,11 @@ pub(crate) async fn generate_session_compact_with_observer(
                 }
                 match chunk_result {
                     Ok(chunk) => {
-                        response_id = Some(chunk.id.clone());
-                        response_model = Some(chunk.model.clone());
+                        retain_nonempty_identity(&mut response_id, &chunk.id);
+                        retain_nonempty_identity(&mut response_model, &chunk.model);
                         if let Some(wire_usage) = chunk.usage.as_ref() {
                             usage = Some(TokenUsage::from(wire_usage.clone()));
-                            cost_usd_ticks = distill_sampling_types::reported_cost_ticks(
-                                wire_usage.cost_in_usd_ticks,
-                            );
+                            cost_usd_ticks = merge_normalized_cost(cost_usd_ticks, wire_usage);
                         }
                         if let Some(guard) = attempt_guard.as_mut() {
                             guard.set_response(

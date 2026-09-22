@@ -1371,7 +1371,10 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
     if model_slugs.is_empty() {
         return format!(
             "\n\nNo explicit model slugs are currently available. \
-             Omit `{TASK_MODEL_PARAM}` to inherit the parent model."
+             Omit `{TASK_MODEL_PARAM}` for a fresh bounded task to use the configured Jev worker \
+             when available; otherwise inherit the parent model. Explicit model pins remain \
+             authoritative, and resumed or full-context forked children retain their existing \
+             model/context semantics."
         );
     }
     let model_list = model_slugs
@@ -1382,7 +1385,10 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
     format!(
         "\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
          {model_list}\n\n\
-         If the user does not explicitly request a model, omit `{TASK_MODEL_PARAM}` to inherit the parent model."
+         If the user does not explicitly request a model, omit `{TASK_MODEL_PARAM}`. For a fresh \
+         bounded task this uses the configured Jev worker when available; otherwise it inherits \
+         the parent model. Explicit model pins remain authoritative, and resumed or full-context \
+         forked children retain their existing model/context semantics."
     )
 }
 /// Defers to [`distill_tool_types::build_task_description`] so the CLI and the prod chat stack share one builder.
@@ -1859,6 +1865,7 @@ mod tests {
         );
         assert!(desc.contains("- alpha\n- zeta"));
         assert!(desc.contains("${{ params.task.model }}"));
+        assert!(desc.contains("configured Jev worker"));
     }
     #[test]
     fn build_task_description_handles_empty_model_catalog() {
@@ -1870,6 +1877,7 @@ mod tests {
         let desc = build_task_description(&subagents, &[], &ChildToolNames::new());
         assert!(desc.contains("${{ params.task.model }}"));
         assert!(!desc.contains("- alpha"));
+        assert!(desc.contains("configured Jev worker"));
     }
     #[test]
     fn task_model_guidance_resolves_model_param_override() {

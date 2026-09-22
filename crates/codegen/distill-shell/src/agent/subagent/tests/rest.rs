@@ -2531,10 +2531,11 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         ctx
     };
     let ctx = build_ctx();
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             Some("goal-model"),
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2544,10 +2545,11 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         );
     assert_eq!(model_id.0.as_ref(), "goal-model");
     let ctx = build_ctx();
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             None,
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2557,10 +2559,11 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         );
     assert_eq!(model_id.0.as_ref(), "pinned-model");
     let ctx = build_ctx();
-    let (config, _) = resolve_effective_model_config(
+    let (config, _, _) = resolve_effective_model_config(
             Some("does-not-exist"),
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2568,6 +2571,92 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             config.model, "pinned-model",
             "an unknown override falls through to the pin",
         );
+}
+/// A fresh model-facing TaskTool child uses the configured Jev worker before
+/// inheriting the parent, with the worker's catalog transport/auth/effort/window
+/// preserved and no unrelated parent history in the new context.
+#[tokio::test]
+async fn fresh_task_uses_configured_worker_with_bounded_new_context() {
+    use distill_agent::config::ModelOverride;
+    use distill_sampling_types::conversation::ConversationItem;
+
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.sampling_config.model = "deepseek-model".to_string();
+    ctx.model_id = acp::ModelId::new("deepseek-model");
+    ctx.available_models
+        .insert("deepseek-model".to_string(), test_model_entry("deepseek-model"));
+    let mut worker = test_model_entry("muse-model");
+    worker.info.base_url = "https://muse.example/v1".to_string();
+    worker.info.api_backend = crate::sampling::ApiBackend::Responses;
+    worker.info.supports_reasoning_effort = true;
+    worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+    worker.info.context_window = std::num::NonZeroU64::new(1_000_000).unwrap();
+    worker.api_key = Some("muse-worker-key".to_string());
+    ctx.available_models.insert("muse-model".to_string(), worker);
+
+    let parent_chat = spawn_test_parent_chat_state("deepseek-model");
+    parent_chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user("UNRELATED_PARENT_HISTORY_MARKER"),
+    ]);
+    ctx.parent_chat_state = Some(parent_chat);
+
+    crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+        light: Some("muse-model".to_string()),
+        ..Default::default()
+    });
+
+    let mut request = bootstrap_test_request(false);
+    request.runtime_overrides.model_override_provenance =
+        distill_tools::implementations::distill::task::types::ModelOverrideProvenance::Tool;
+    let configured_worker = configured_worker_model_for(&request, None);
+    assert_eq!(configured_worker.as_deref(), Some("muse-model"));
+
+    let (config, model_id, _) = resolve_effective_model_config(
+        None,
+        "general-purpose",
+        &ModelOverride::Inherit,
+        configured_worker.as_deref(),
+        &ctx,
+    )
+    .await;
+    assert_eq!(config.model, "muse-model");
+    assert_eq!(config.base_url, "https://muse.example/v1");
+    assert_eq!(config.api_backend, crate::sampling::ApiBackend::Responses);
+    assert_eq!(config.api_key.as_deref(), Some("muse-worker-key"));
+    assert_eq!(
+        config.reasoning_effort,
+        Some(distill_sampling_types::ReasoningEffort::High)
+    );
+    assert_eq!(config.context_window, 1_000_000);
+    assert_eq!(model_id.0.as_ref(), "muse-model");
+
+    let child = crate::session::info::Info {
+        id: acp::SessionId::new("fresh-worker-child"),
+        cwd: "/tmp".into(),
+    };
+    let initial = bootstrap_initial_context(
+        &request,
+        None,
+        &ctx,
+        &child,
+        std::path::Path::new("/tmp"),
+        model_id.0.as_ref(),
+        super::super::resume_window::ResumeWindowPolicy {
+            context_window: 1_000_000,
+            auto_compact_threshold_percent: 85,
+        },
+    )
+    .await;
+    match initial {
+        BootstrapInitialContext::Ready(initial) => {
+            assert_eq!(initial.source, InitialContextSource::New);
+            assert!(initial.conversation.is_empty());
+        }
+        BootstrapInitialContext::ResumeAbort(message) => panic!("unexpected abort: {message}"),
+    }
+
+    crate::jev::clear_test_tier_config();
 }
 /// A `fork_context = true` spawn must infer on the parent session model (`ctx.model_id`) for per-model radix reuse. That holds even when a `[subagents.models]` pin and an `AgentDefinition.model` override are both present.
 /// `run_shell_child` forces `effective_runtime.model = Some(ctx.model_id)` on the fork path after other override sources. The runtime override wins in `resolve_effective_model_config`.
@@ -2595,10 +2684,11 @@ async fn fork_context_pins_parent_model_over_overrides() {
     if fork_context {
         runtime_override = Some(ctx.model_id.0.to_string());
     }
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             runtime_override.as_deref(),
             "general-purpose",
             &agent_def,
+            None,
             &ctx,
         )
         .await;
@@ -2608,10 +2698,11 @@ async fn fork_context_pins_parent_model_over_overrides() {
         );
     assert_eq!(model_id.0.as_ref(), "parent-model");
     let ctx = build_ctx();
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             None,
             "general-purpose",
             &agent_def,
+            None,
             &ctx,
         )
         .await;
@@ -2630,9 +2721,10 @@ async fn resolve_subagent_inherits_parent_model_without_pins() {
         let mut ctx = ctx_with_toggle(HashMap::new());
         ctx.sampling_config.model = parent_model.to_string();
         ctx.model_id = acp::ModelId::new(parent_model);
-        let (config, model_id) = resolve_subagent_sampling_config(
+        let (config, model_id, _) = resolve_subagent_sampling_config(
                 "explore",
                 &ModelOverride::Inherit,
+                None,
                 &ctx,
             )
             .await;
@@ -2655,9 +2747,10 @@ async fn resolve_subagent_config_override_pin_applies_for_any_parent() {
             .insert("pinned-model".to_string(), test_model_entry("pinned-model"));
         ctx.subagent_model_overrides
             .insert("explore".to_string(), "pinned-model".to_string());
-        let (config, model_id) = resolve_subagent_sampling_config(
+        let (config, model_id, _) = resolve_subagent_sampling_config(
                 "explore",
                 &ModelOverride::Inherit,
+                None,
                 &ctx,
             )
             .await;
@@ -2678,9 +2771,10 @@ async fn resolve_subagent_agent_definition_pin_applies_for_light_parent() {
     ctx.available_models
         .insert("pinned-model".to_string(), test_model_entry("pinned-model"));
     let agent_model = ModelOverride::Override("pinned-model".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
+            None,
             &ctx,
         )
         .await;
@@ -2700,9 +2794,10 @@ async fn resolve_subagent_config_override_wins_over_agent_definition() {
         .insert("agentdef-pin".to_string(), test_model_entry("agentdef-pin"));
     ctx.subagent_model_overrides.insert("explore".to_string(), "config-pin".to_string());
     let agent_model = ModelOverride::Override("agentdef-pin".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
+            None,
             &ctx,
         )
         .await;
@@ -2732,9 +2827,10 @@ async fn resolve_subagent_config_override_unselectable_model_falls_through_to_in
             crate::config::RequirementSource::Unknown,
         );
     ctx.agent_config = Some(cfg);
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2758,9 +2854,10 @@ async fn resolve_subagent_config_override_user_allowlist_still_applies() {
     ctx.agent_config = Some(
         crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap(),
     );
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2780,9 +2877,10 @@ async fn resolve_subagent_config_override_none_agent_config_blocks_unselectable(
     ctx.subagent_model_overrides
         .insert("explore".to_string(), "blocked-model".to_string());
     assert!(ctx.agent_config.is_none());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2798,9 +2896,10 @@ async fn resolve_subagent_config_override_unknown_model_falls_through_to_inherit
     ctx.model_id = acp::ModelId::new("grok-4.5");
     ctx.subagent_model_overrides
         .insert("explore".to_string(), "does-not-exist".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2815,9 +2914,10 @@ async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inheri
     ctx.sampling_config.model = "grok-4.5".to_string();
     ctx.model_id = acp::ModelId::new("grok-4.5");
     let agent_model = ModelOverride::Override("does-not-exist".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
+            None,
             &ctx,
         )
         .await;
@@ -2847,9 +2947,10 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
         ..Default::default()
     });
     ctx.subagent_model_overrides.insert("explore".to_string(), "proxied".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;
@@ -2859,9 +2960,10 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
             "a cold cache spawns with no key, never the parent session key"
         );
     provider.ensure_fresh_token(None).await.rotated().unwrap();
-    let (config, _) = resolve_subagent_sampling_config(
+    let (config, _, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
+            None,
             &ctx,
         )
         .await;

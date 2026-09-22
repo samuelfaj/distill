@@ -633,14 +633,37 @@ impl SubagentPresentation {
         Arc::clone(&self.is_turn_active)
     }
 }
-/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the parent session's live sampling config.
+fn configured_worker_model_for(
+    request: &SubagentRequest,
+    resume_source: Option<&ResumeSourceData>,
+) -> Option<String> {
+    // The configured Jev worker is only the default for fresh, bounded,
+    // model-facing TaskTool delegation. Explicit pins, resumed state, and
+    // forked full-context children retain their existing semantics.
+    if request.runtime_overrides.model.is_some()
+        || request.runtime_overrides.model_override_provenance != ModelOverrideProvenance::Tool
+        || request.resume_from.is_some()
+        || request.fork_context
+        || resume_source.is_some()
+    {
+        return None;
+    }
+
+    crate::jev::tiers_cached()
+        .light
+        .map(|model| model.trim().to_owned())
+        .filter(|model| !model.is_empty())
+}
+
+/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > configured Jev worker for fresh bounded TaskTool children > the parent session's live sampling config.
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_subagent_sampling_config(
     agent_name: &str,
     agent_model: &distill_agent::config::ModelOverride,
+    default_worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
-) -> (distill_sampler::SamplerConfig, acp::ModelId) {
+) -> (distill_sampler::SamplerConfig, acp::ModelId, Option<String>) {
     let (parent_config, parent_mid) = read_parent_sampling_config(ctx).await;
     let try_pin = |model_id: &str, source: &'static str, unknown_msg: &'static str| {
         match resolve_model_override_to_config(model_id, ctx) {
@@ -667,7 +690,7 @@ async fn resolve_subagent_sampling_config(
             "Subagent model override references unknown model, falling through to inherit",
         )
     {
-        return resolved;
+        return (resolved.0, resolved.1, None);
     }
     if let ModelOverride::Override(model_id) = agent_model
         && let Some(resolved) = try_pin(
@@ -676,7 +699,17 @@ async fn resolve_subagent_sampling_config(
             "Agent definition model references unknown model, falling through to inherit",
         )
     {
-        return resolved;
+        return (resolved.0, resolved.1, None);
+    }
+    if let Some(model_id) = default_worker_model
+        && let Some(resolved) = try_pin(
+            model_id,
+            "jev_worker",
+            "Configured Jev worker references unknown model, falling through to inherit",
+        )
+    {
+        let worker_effort = crate::jev::tiers_cached().light_effort;
+        return (resolved.0, resolved.1, worker_effort);
     }
     log_subagent_model_resolution(
         agent_name,
@@ -685,7 +718,7 @@ async fn resolve_subagent_sampling_config(
         &parent_mid,
         &parent_config,
     );
-    (parent_config, parent_mid)
+    (parent_config, parent_mid, None)
 }
 /// Resolve a subagent's effective sampling config and model id, honoring the model-resolution precedence.
 /// An explicit `runtime_override_model` is the goal role model or a persona override carried on `effective_runtime.model`.
@@ -695,18 +728,25 @@ async fn resolve_effective_model_config(
     runtime_override_model: Option<&str>,
     subagent_type: &str,
     definition_model: &distill_agent::config::ModelOverride,
+    default_worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
-) -> (distill_sampler::SamplerConfig, acp::ModelId) {
+) -> (distill_sampler::SamplerConfig, acp::ModelId, Option<String>) {
     if let Some(model_id) = runtime_override_model {
         if let Some(resolved) = resolve_model_override_to_config(model_id, ctx) {
-            return resolved;
+            return (resolved.0, resolved.1, None);
         }
         tracing::warn!(
             model_id,
             "Runtime model override references unknown model, falling through"
         );
     }
-    resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
+    resolve_subagent_sampling_config(
+        subagent_type,
+        definition_model,
+        default_worker_model,
+        ctx,
+    )
+    .await
 }
 /// Truncate an API key to a safe prefix for logging.
 /// Counts characters, not bytes: a configured key with a multi-byte character would panic a byte slice, and this only ever runs to build a log line.

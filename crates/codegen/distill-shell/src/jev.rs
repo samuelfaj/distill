@@ -396,6 +396,51 @@ p5_call_validation = true"#,
 // Runtime helper for catalogue call sites (todo.md areas A–D)
 // ---------------------------------------------------------------------------
 
+/// Bump when the meaning of a cached Jev decision changes. The descriptor is
+/// hashed before it reaches the client memo, so user state and question text do
+/// not remain in the cache key.
+const DECISION_MEMO_VERSION: u8 = 1;
+
+fn decision_memo_key(
+    client: &distill_workspace::jev::JevClient,
+    lever: distill_workspace::jev::flags::JevLever,
+    state: &serde_json::Value,
+    questions: &std::collections::BTreeMap<
+        String,
+        distill_workspace::jev::types::Question,
+    >,
+) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let config = client.config();
+    let state_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(state).ok()?)
+    );
+    let questions_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(questions).ok()?)
+    );
+    let descriptor = serde_json::json!({
+        "version": DECISION_MEMO_VERSION,
+        "session_id": active_session_id(),
+        "lever": lever.as_str(),
+        "state_sha256": state_hash,
+        "questions_sha256": questions_hash,
+        "endpoint": config.endpoint(),
+        "model": config.model,
+        "provider": config.provider.as_str(),
+        "reasoning_shape": serde_json::to_value(config.reasoning_shape).ok()?,
+        "reasoning_effort": config.reasoning_effort,
+        "max_completion_tokens": config.max_completion_tokens,
+        "max_state_bytes": config.max_state_bytes,
+        "timeout_ms": config.timeout.as_millis(),
+        "item_budget_ms": config.item_budget.as_millis(),
+    });
+    let bytes = serde_json::to_vec(&descriptor).ok()?;
+    Some(Sha256::digest(bytes).into())
+}
+
 /// Ask independent packs about the same state once. Each pack keeps its flag
 /// and answer ids. The first active pack owns the request's usage and latency;
 /// subsequent decision records carry zero usage so the total is counted once.
@@ -474,6 +519,9 @@ pub async fn ask_item(
         distill_workspace::jev::types::Question,
     >,
 ) -> Option<distill_workspace::jev::types::JevAnswerSet> {
+    if questions.is_empty() {
+        return None;
+    }
     #[cfg(test)]
     if let Some(answer) = TEST_DECISION_ANSWERS.with(|queue| {
         queue
@@ -491,6 +539,8 @@ pub async fn ask_item(
     if !client.credential_present() {
         return None;
     }
+    let session_id = active_session_id();
+    let memo_key = decision_memo_key(client, lever, &state, &questions);
     let observed_client = active_usage_recorder().map(|recorder| {
         let turn_id = telemetry_context().1;
         let observer: distill_workspace::jev::types::AttemptObserver =
@@ -509,7 +559,16 @@ pub async fn ask_item(
     let request_client = observed_client.as_ref().unwrap_or(client);
     let budget = item_budget(request_client);
     let in_flight = JevInFlight::begin();
-    let outcome = tokio::time::timeout(budget, request_client.ask(&state, &questions)).await;
+    let outcome = match memo_key {
+        Some(key) => {
+            tokio::time::timeout(
+                budget,
+                request_client.ask_memoized(&session_id, key, &state, &questions),
+            )
+            .await
+        }
+        None => tokio::time::timeout(budget, request_client.ask(&state, &questions)).await,
+    };
     drop(in_flight);
     match outcome {
         Ok(Ok(answers)) => Some(answers),
@@ -698,6 +757,21 @@ pub fn note_payload_read(hash: &str, label: &str) -> Option<String> {
     }
     index.insert(key, label.to_owned());
     None
+}
+
+/// Forgets payloads that the active session may have lost from its
+/// model-visible conversation, such as after a successful compaction rewrite.
+/// A poisoned index is treated as an empty reuse decision so compaction never
+/// fails because this optimization could not be invalidated.
+pub fn invalidate_payload_reads_for_active_session() {
+    let session_id = active_session_id();
+    if let Some(client) = client_cached() {
+        client.clear_memo_for_session(&session_id);
+    }
+    let Ok(mut index) = read_index().lock() else {
+        return;
+    };
+    index.retain(|(owner, _), _| owner != &session_id);
 }
 
 /// How many payloads the process remembers (tests, and a bound on the map).
@@ -1322,6 +1396,68 @@ mod catalogue_helper_tests {
         assert!(budget <= client.config().timeout);
     }
 
+    #[test]
+    fn decision_memo_key_tracks_state_questions_and_model() {
+        use distill_workspace::jev::flags::JevLever;
+        use distill_workspace::jev::types::Question;
+        use std::collections::BTreeMap;
+
+        let client = distill_workspace::jev::JevClient::new(
+            client_config_from(&JevConfig::default()),
+        )
+        .expect("client builds without I/O");
+        let state = serde_json::json!({"evidence": "first"});
+        let questions = BTreeMap::from([(
+            "criteria".to_owned(),
+            Question::noul("Is the candidate eligible?"),
+        )]);
+        let first = decision_memo_key(&client, JevLever::A1FileToEdit, &state, &questions)
+            .expect("memo key");
+
+        assert_ne!(
+            first,
+            decision_memo_key(
+                &client,
+                JevLever::A1FileToEdit,
+                &serde_json::json!({"evidence": "changed"}),
+                &questions,
+            )
+            .expect("changed state key")
+        );
+        let changed_questions = BTreeMap::from([(
+            "criteria".to_owned(),
+            Question::noul("Is the candidate still eligible?"),
+        )]);
+        assert_ne!(
+            first,
+            decision_memo_key(
+                &client,
+                JevLever::A1FileToEdit,
+                &state,
+                &changed_questions,
+            )
+            .expect("changed criteria key")
+        );
+        let changed_model = JevConfig {
+            model: Some("jev-pinned".to_owned()),
+            ..JevConfig::default()
+        };
+        let changed_client = distill_workspace::jev::JevClient::new(
+            client_config_from(&changed_model),
+        )
+        .expect("changed client builds without I/O");
+        assert_ne!(
+            first,
+            decision_memo_key(
+                &changed_client,
+                JevLever::A1FileToEdit,
+                &state,
+                &questions,
+            )
+            .expect("changed model key")
+        );
+    }
+
     /// The reuse lane's rule: the first payload is remembered, the second
     /// identical one becomes a pointer, and a changed payload is never mistaken
     /// for a repeat.
@@ -1371,6 +1507,47 @@ mod catalogue_helper_tests {
         })
         .await;
         assert_eq!(remembered_reads(), 2);
+        reset_read_index_for_test();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn compaction_read_invalidation_clears_only_the_active_session() {
+        reset_read_index_for_test();
+        with_session_scope("active-read", async {
+            assert_eq!(note_payload_read("same-bytes", "active-read"), None);
+            assert_eq!(
+                note_payload_read("same-bytes", "active-read").as_deref(),
+                Some("active-read")
+            );
+        })
+        .await;
+        with_session_scope("other-read", async {
+            assert_eq!(note_payload_read("same-bytes", "other-read"), None);
+            assert_eq!(
+                note_payload_read("same-bytes", "other-read").as_deref(),
+                Some("other-read")
+            );
+        })
+        .await;
+
+        with_session_scope("active-read", async {
+            invalidate_payload_reads_for_active_session();
+            assert_eq!(
+                note_payload_read("same-bytes", "active-read"),
+                None,
+                "the next post-rewrite read must send full content"
+            );
+        })
+        .await;
+        with_session_scope("other-read", async {
+            assert_eq!(
+                note_payload_read("same-bytes", "other-read").as_deref(),
+                Some("other-read"),
+                "another session keeps its valid reuse entry"
+            );
+        })
+        .await;
         reset_read_index_for_test();
     }
 

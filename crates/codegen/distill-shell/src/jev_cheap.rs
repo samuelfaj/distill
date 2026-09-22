@@ -10,15 +10,18 @@
 //!   credential, read from one place.
 //! * **How is the cheap model reached?** from a resolved model entry (base URL,
 //!   slug, key), never from a second copy of the config.
-//! * **How many times?** no cap: a lane keeps being called for every
-//!   micro-action that wants it. A per-lane counter records how often it ran and
-//!   how often it failed, so a flaky endpoint is visible without ever silencing
-//!   the lane.
+//! * **How many times?** required calls are never suppressed. Optional
+//!   compression gets a small, turn-scoped refusal budget keyed to the exact
+//!   endpoint/model/task/effort, so a flaky endpoint is visible without
+//!   repeatedly paying for the same unusable opportunity.
 //! * **What gets recorded?** one content-free line per call — lane, task id,
 //!   decision, model, tokens, latency — through the same recorder as every other
 //!   decision, so the TUI, the turn report and the log cannot disagree.
 
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::{atomic::{AtomicBool, Ordering}, Mutex, OnceLock};
 use std::time::Duration;
 
 use distill_workspace::jev::cheap::{DEFAULT_BASE_URL, DEFAULT_MODELS};
@@ -31,6 +34,102 @@ use distill_sampling_types::{ConversationItem, ConversationRequest, LengthPolicy
 /// fixed framing reserve for the system/task/question wrapper.
 const WORKER_OVERHEAD_TOKENS: u64 = 256;
 const WORKER_FRAMING_BYTES: usize = 4 * 1024;
+const OPTIONAL_COMPRESSION_FAILURE_LIMIT: u8 = 2;
+const OPTIONAL_COMPRESSION_RECOVERY_ROUNDS: u64 = 2;
+
+/// Identity of one optional compression opportunity.
+///
+/// The task-local scope already gives this state the lifetime of one session
+/// turn. Keeping the session/turn in the key as well makes accidental reuse
+/// across nested scopes impossible and makes the isolation contract explicit.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct OptionalCompressionKey {
+    session_id: String,
+    turn_id: String,
+    endpoint: String,
+    model: String,
+    task_id: String,
+    effort: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct OptionalCompressionHealth {
+    failures: u8,
+    retry_after_round: u64,
+}
+
+tokio::task_local! {
+    static OPTIONAL_COMPRESSION_FAILURES:
+        RefCell<HashMap<OptionalCompressionKey, OptionalCompressionHealth>>;
+}
+
+/// Gives optional compression a fresh budget for one production session turn.
+pub(crate) async fn with_optional_compression_scope<F>(future: F) -> F::Output
+where
+    F: Future,
+{
+    OPTIONAL_COMPRESSION_FAILURES
+        .scope(RefCell::new(HashMap::new()), future)
+        .await
+}
+
+/// Build an identity without retaining the source itself in the turn state.
+pub(crate) fn optional_compression_key(
+    endpoint: &str,
+    model: &str,
+    task_id: &str,
+    effort: &str,
+) -> OptionalCompressionKey {
+    let (session_id, turn_id, _) = crate::jev::telemetry_context();
+    OptionalCompressionKey {
+        session_id,
+        turn_id,
+        endpoint: endpoint.to_owned(),
+        model: model.to_owned(),
+        task_id: task_id.to_owned(),
+        effort: effort.to_owned(),
+    }
+}
+
+/// Whether an optional compression attempt may pay for another request.
+/// Outside a production turn scope this fails open, preserving callers that
+/// are intentionally using a lane in isolation.
+pub(crate) fn optional_compression_allowed(key: &OptionalCompressionKey) -> bool {
+    OPTIONAL_COMPRESSION_FAILURES
+        .try_with(|state| {
+            let round_id = crate::jev::telemetry_context().2;
+            let health = state.borrow().get(key).copied();
+            match health {
+                None => true,
+                Some(health) if health.failures < OPTIONAL_COMPRESSION_FAILURE_LIMIT => true,
+                Some(health) if round_id >= health.retry_after_round => {
+                    state.borrow_mut().remove(key);
+                    true
+                }
+                Some(_) => false,
+            }
+        })
+        .unwrap_or(true)
+}
+
+pub(crate) fn note_optional_compression_failure(key: &OptionalCompressionKey) {
+    let _ = OPTIONAL_COMPRESSION_FAILURES.try_with(|state| {
+        let mut state = state.borrow_mut();
+        let failures = state.entry(key.clone()).or_default();
+        failures.failures = failures.failures.saturating_add(1);
+        if failures.failures >= OPTIONAL_COMPRESSION_FAILURE_LIMIT {
+            failures.retry_after_round = crate::jev::telemetry_context()
+                .2
+                .saturating_add(OPTIONAL_COMPRESSION_RECOVERY_ROUNDS);
+        }
+    });
+}
+
+pub(crate) fn note_optional_compression_success(key: &OptionalCompressionKey) {
+    let _ = OPTIONAL_COMPRESSION_FAILURES.try_with(|state| {
+        state.borrow_mut().remove(key);
+    });
+}
 
 /// The cheap-model spec the harness ships with, in priority order.
 ///
@@ -171,41 +270,76 @@ impl CheapLane {
         if !crate::jev::lever_active(lever) {
             return None;
         }
+        let optional_key = matches!(lever, JevLever::ECheapCompress).then(|| {
+            optional_compression_key(
+                &self.client.config().endpoint(),
+                &self.client.config().model,
+                task_id,
+                &self.client.config().reasoning_effort,
+            )
+        });
         // Serialised: one cheap generation at a time across the whole process.
         let _one_at_a_time = lane_queue().lock().await;
+        if let Some(key) = optional_key.as_ref()
+            && !optional_compression_allowed(key)
+        {
+            crate::jev::record_item(
+                lever,
+                "defer:failure-bound",
+                &format!("task `{task_id}` reached the optional compression failure bound"),
+                None,
+                None,
+            );
+            return None;
+        }
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         let span = tracing::info_span!(target: "jev.decision", "utility_context",
             session_id, turn_id, round_id, utility_call_id = %uuid::Uuid::new_v4());
         let recorder = crate::jev::active_usage_recorder();
         let completed_attempts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let observed_client = recorder.as_ref().map(|recorder| {
+        let physical_attempt = std::sync::Arc::new(AtomicBool::new(false));
+        let optional_failure_recorded = std::sync::Arc::new(AtomicBool::new(false));
+        let observed_client = (recorder.is_some() || optional_key.is_some()).then(|| {
             let completed_attempts = completed_attempts.clone();
-            let recorder = recorder.clone();
+            let observer_recorder = recorder.clone();
             let task_id = task_id.to_owned();
             let turn_id = turn_id.clone();
+            let optional_key = optional_key.clone();
+            let physical_attempt = physical_attempt.clone();
+            let optional_failure_recorded = optional_failure_recorded.clone();
             let observer: distill_workspace::jev::types::AttemptObserver =
                 std::sync::Arc::new(move |attempt| {
+                    physical_attempt.store(true, Ordering::Release);
                     if matches!(
                         attempt.status,
                         distill_workspace::jev::types::AttemptStatus::Completed
                     ) {
-                        completed_attempts
-                            .lock()
-                            .expect("utility attempt lock")
-                            .push(attempt);
+                        if observer_recorder.is_some() {
+                            completed_attempts
+                                .lock()
+                                .expect("utility attempt lock")
+                                .push(attempt);
+                        }
                     } else {
+                        if let Some(key) = optional_key.as_ref()
+                            && !optional_failure_recorded.swap(true, Ordering::AcqRel)
+                        {
+                            note_optional_compression_failure(key);
+                        }
                         // Failed, rejected, and cancelled attempts are already
                         // final at the transport boundary. Record each one
                         // immediately so fallback chains and cancellation do
                         // not disappear behind the consumer gate.
-                        crate::jev::record_workspace_attempt(
-                            attempt,
-                            "utility",
-                            Some(task_id.clone()),
-                            Some(turn_id.clone()),
-                            recorder.clone(),
-                            true,
-                        );
+                        if let Some(recorder) = observer_recorder.as_ref() {
+                            crate::jev::record_workspace_attempt(
+                                attempt,
+                                "utility",
+                                Some(task_id.clone()),
+                                Some(turn_id.clone()),
+                                recorder.clone(),
+                                true,
+                            );
+                        }
                     }
                 });
             self.client.with_call_observer(observer)
@@ -242,6 +376,17 @@ impl CheapLane {
                     recorder.clone(),
                     true,
                 );
+            }
+        }
+        if let Some(key) = optional_key.as_ref() {
+            if outcome.is_some() && accepted_by_consumer {
+                note_optional_compression_success(key);
+            } else if physical_attempt.load(Ordering::Acquire)
+                && !optional_failure_recorded.swap(true, Ordering::AcqRel)
+            {
+                // A completed transport response rejected by the task or the
+                // consumer is one failed opportunity, not a second request.
+                note_optional_compression_failure(key);
             }
         }
         if outcome.is_some() && !accepted_by_consumer {
@@ -541,6 +686,52 @@ mod tests {
         reset_turn();
         assert_eq!(lane_calls(JevLever::ECheapTask), (0, 0));
         assert!(lane_summary().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn optional_compression_budget_recovers_by_round_and_isolated_config() {
+        crate::jev::with_session_scope("e3-compression-budget", async {
+            let key = optional_compression_key(
+                "http://utility.test/chat/completions",
+                "utility-model",
+                "cite_spans",
+                "none",
+            );
+            assert!(optional_compression_allowed(&key));
+            note_optional_compression_failure(&key);
+            note_optional_compression_failure(&key);
+            assert!(!optional_compression_allowed(&key));
+
+            crate::jev::begin_model_round();
+            assert!(!optional_compression_allowed(&key));
+            crate::jev::begin_model_round();
+            assert!(optional_compression_allowed(&key));
+
+            note_optional_compression_failure(&key);
+            note_optional_compression_success(&key);
+            assert!(optional_compression_allowed(&key));
+
+            let changed_model = optional_compression_key(
+                "http://utility.test/chat/completions",
+                "utility-model-v2",
+                "cite_spans",
+                "none",
+            );
+            assert!(optional_compression_allowed(&changed_model));
+        })
+        .await;
+
+        crate::jev::with_session_scope("e3-compression-budget-new-session", async {
+            let key = optional_compression_key(
+                "http://utility.test/chat/completions",
+                "utility-model",
+                "cite_spans",
+                "none",
+            );
+            assert!(optional_compression_allowed(&key));
+        })
+        .await;
     }
 
     /// The shipped default is the owner's chain, in order: the free tier first,

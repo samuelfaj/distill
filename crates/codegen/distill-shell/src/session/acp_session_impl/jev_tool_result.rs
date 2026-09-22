@@ -92,14 +92,20 @@ fn typed_tool_metadata(
 struct WorkerAttemptCancellationGuard<'a> {
     actor: &'a SessionActor,
     attempt: Option<super::side_call::AuxiliaryAttempt>,
+    optional_key: Option<crate::jev_cheap::OptionalCompressionKey>,
     dispatched: bool,
 }
 
 impl<'a> WorkerAttemptCancellationGuard<'a> {
-    fn new(actor: &'a SessionActor, attempt: super::side_call::AuxiliaryAttempt) -> Self {
+    fn new(
+        actor: &'a SessionActor,
+        attempt: super::side_call::AuxiliaryAttempt,
+        optional_key: Option<crate::jev_cheap::OptionalCompressionKey>,
+    ) -> Self {
         Self {
             actor,
             attempt: Some(attempt),
+            optional_key,
             dispatched: false,
         }
     }
@@ -119,6 +125,9 @@ impl Drop for WorkerAttemptCancellationGuard<'_> {
             && let Some(attempt) = self.attempt.as_ref()
         {
             crate::jev_cheap::note_failure(JevLever::ECheapCompress);
+            if let Some(key) = self.optional_key.as_ref() {
+                crate::jev_cheap::note_optional_compression_failure(key);
+            }
             super::side_call::record_auxiliary_cancellations(
                 self.actor,
                 std::slice::from_ref(attempt),
@@ -620,104 +629,139 @@ impl SessionActor {
                         &evidence,
                         &evidence_question,
                     ) {
-                        let attempt =
-                            super::side_call::auxiliary_attempt(worker.client(), &worker_request);
-                        let mut cancellation_guard =
-                            WorkerAttemptCancellationGuard::new(self, attempt.clone());
-                        let call_started = std::time::Instant::now();
-                        cancellation_guard.mark_dispatched();
-                        let (response_result, rejected_response) =
-                            worker.collect(worker_request).await;
-                        match response_result {
-                            Ok(response) => {
-                                let answer = response.assistant_text();
-                                let candidate = compression_replacement(
-                                    &body,
-                                    &evidence,
-                                    &answer,
-                                    handle,
-                                    "configured light worker",
-                                    typed_metadata.as_deref(),
+                        let effort = worker.client().attribution_applied_effort(
+                            worker_request.reasoning_effort,
+                            worker_request.max_output_tokens,
+                        );
+                        let worker_key = crate::jev_cheap::optional_compression_key(
+                            &worker.client().attribution_endpoint(),
+                            worker.model(),
+                            EXTRACTIVE_TASK,
+                            effort.as_deref().unwrap_or("provider_default"),
+                        );
+                        if crate::jev_cheap::optional_compression_allowed(&worker_key) {
+                            let attempt = super::side_call::auxiliary_attempt(
+                                worker.client(),
+                                &worker_request,
+                            );
+                            let mut cancellation_guard =
+                                WorkerAttemptCancellationGuard::new(
+                                    self,
+                                    attempt.clone(),
+                                    Some(worker_key.clone()),
                                 );
-                                let api_duration_ms =
-                                    Some(call_started.elapsed().as_millis() as u64);
-                                if candidate.is_some() {
-                                    super::side_call::record_auxiliary_response(
-                                        self,
-                                        "jev_tool_result_worker",
-                                        worker.model(),
-                                        &attempt,
-                                        &response,
-                                        api_duration_ms,
-                                        false,
+                            let call_started = std::time::Instant::now();
+                            cancellation_guard.mark_dispatched();
+                            let (response_result, rejected_response) =
+                                worker.collect(worker_request).await;
+                            match response_result {
+                                Ok(response) => {
+                                    let answer = response.assistant_text();
+                                    let candidate = compression_replacement(
+                                        &body,
+                                        &evidence,
+                                        &answer,
+                                        handle,
+                                        "configured light worker",
+                                        typed_metadata.as_deref(),
                                     );
-                                } else {
-                                    super::side_call::record_auxiliary_rejected_response(
-                                        self,
+                                    let api_duration_ms =
+                                        Some(call_started.elapsed().as_millis() as u64);
+                                    if candidate.is_some() {
+                                        super::side_call::record_auxiliary_response(
+                                            self,
+                                            "jev_tool_result_worker",
+                                            worker.model(),
+                                            &attempt,
+                                            &response,
+                                            api_duration_ms,
+                                            false,
+                                        );
+                                    } else {
+                                        super::side_call::record_auxiliary_rejected_response(
+                                            self,
+                                            "jev_tool_result_worker",
+                                            worker.model(),
+                                            &attempt,
+                                            &response,
+                                            api_duration_ms,
+                                            false,
+                                        );
+                                    }
+                                    cancellation_guard.complete();
+                                    super::side_call::log_prompt_cache_usage(
                                         "jev_tool_result_worker",
-                                        worker.model(),
-                                        &attempt,
+                                        worker.client().api_backend(),
                                         &response,
-                                        api_duration_ms,
-                                        false,
                                     );
+                                    if let Some(candidate) = candidate {
+                                        crate::jev_cheap::note_success(JevLever::ECheapCompress);
+                                        crate::jev_cheap::note_optional_compression_success(
+                                            &worker_key,
+                                        );
+                                        crate::jev::record_item(
+                                            JevLever::ECheapCompress,
+                                            "verify:accept",
+                                            "worker extractive source-span contract",
+                                            None,
+                                            None,
+                                        );
+                                        replacement = Some((candidate, JevLever::ECheapCompress));
+                                    } else {
+                                        crate::jev_cheap::note_success(JevLever::ECheapCompress);
+                                        crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
+                                        crate::jev_cheap::note_optional_compression_failure(
+                                            &worker_key,
+                                        );
+                                        crate::jev::record_item(
+                                            JevLever::ECheapCompress,
+                                            "verify:reject",
+                                            "worker answer did not retain required source evidence",
+                                            None,
+                                            None,
+                                        );
+                                    }
                                 }
-                                cancellation_guard.complete();
-                                super::side_call::log_prompt_cache_usage(
-                                    "jev_tool_result_worker",
-                                    worker.client().api_backend(),
-                                    &response,
-                                );
-                                if let Some(candidate) = candidate {
-                                    crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                                    crate::jev::record_item(
-                                        JevLever::ECheapCompress,
-                                        "verify:accept",
-                                        "worker extractive source-span contract",
-                                        None,
-                                        None,
+                                Err(_) => {
+                                    if let Some(response) = rejected_response {
+                                        super::side_call::record_auxiliary_rejected_response(
+                                            self,
+                                            "jev_tool_result_worker",
+                                            worker.model(),
+                                            &attempt,
+                                            &response,
+                                            None,
+                                            false,
+                                        );
+                                    } else {
+                                        super::side_call::record_auxiliary_failures(
+                                            self,
+                                            std::slice::from_ref(&attempt),
+                                            false,
+                                        );
+                                    }
+                                    cancellation_guard.complete();
+                                    crate::jev_cheap::note_failure(JevLever::ECheapCompress);
+                                    crate::jev_cheap::note_optional_compression_failure(
+                                        &worker_key,
                                     );
-                                    replacement = Some((candidate, JevLever::ECheapCompress));
-                                } else {
-                                    crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                                    crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
                                     crate::jev::record_item(
                                         JevLever::ECheapCompress,
-                                        "verify:reject",
-                                        "worker answer did not retain required source evidence",
+                                        "worker:failure",
+                                        "configured light worker failed or was rejected; original retained",
                                         None,
                                         None,
                                     );
                                 }
                             }
-                            Err(_) => {
-                                if let Some(response) = rejected_response {
-                                    super::side_call::record_auxiliary_rejected_response(
-                                        self,
-                                        "jev_tool_result_worker",
-                                        worker.model(),
-                                        &attempt,
-                                        &response,
-                                        None,
-                                        false,
-                                    );
-                                } else {
-                                    super::side_call::record_auxiliary_failures(
-                                        self,
-                                        std::slice::from_ref(&attempt),
-                                        false,
-                                    );
-                                }
-                                cancellation_guard.complete();
-                                crate::jev_cheap::note_failure(JevLever::ECheapCompress);
-                                crate::jev::record_item(
-                                    JevLever::ECheapCompress,
-                                    "worker:failure",
-                                    "configured light worker failed or was rejected; original retained",
-                                    None,
-                                    None,
-                                );
-                            }
+                        } else {
+                            crate::jev::record_item(
+                                JevLever::ECheapCompress,
+                                "defer:worker-failure-bound",
+                                "configured light worker reached the optional compression failure bound",
+                                None,
+                                None,
+                            );
                         }
                     } else {
                         crate::jev::record_item(
@@ -1413,16 +1457,21 @@ mod tests {
             .is_some());
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[test]
     #[serial_test::serial]
-    async fn production_compression_orders_utility_then_worker_and_keeps_source_on_double_reject() {
+    fn production_compression_bounds_unavailable_lanes_and_recovers_in_new_context() {
         use distill_test_support::sse::responses_api_script_exact;
         use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
         use distill_tools::types::output::{BashOutput, ToolOutput};
 
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime");
+                tokio::task::LocalSet::new().block_on(&runtime, async {
                 let home = tempfile::tempdir().expect("test Jev home");
                 std::fs::write(
                     home.path().join("config.toml"),
@@ -1453,6 +1502,7 @@ mod tests {
                     worker.info.context_window =
                         std::num::NonZeroU64::new(128_000).expect("worker window");
                     worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                    worker.info.max_retries = Some(0);
                     worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
                     worker.info.supports_reasoning_effort = true;
                     worker.info.reasoning_efforts = vec![
@@ -1474,21 +1524,24 @@ mod tests {
                     "0 failed, 16 passed\n1 skipped: src/skip.test.ts\n{}",
                     "progress noise\n".repeat(400)
                 );
-                let output = ToolOutput::Bash(BashOutput {
-                    output: source.as_bytes().to_vec(),
-                    output_for_prompt: source.clone(),
-                    exit_code: 0,
-                    command: "cargo test --lib".to_owned(),
-                    truncated: false,
-                    signal: None,
-                    timed_out: false,
-                    description: None,
-                    current_dir: "/tmp".to_owned(),
-                    output_file: "/tmp/e3-tool-output".to_owned(),
-                    total_bytes: source.len(),
-                    output_delta: None,
-                    was_bare_echo: false,
-                });
+                let make_output = |source: &str| {
+                    ToolOutput::Bash(BashOutput {
+                        output: source.as_bytes().to_vec(),
+                        output_for_prompt: source.to_owned(),
+                        exit_code: 0,
+                        command: "cargo test --lib".to_owned(),
+                        truncated: false,
+                        signal: None,
+                        timed_out: false,
+                        description: None,
+                        current_dir: "/tmp".to_owned(),
+                        output_file: "/tmp/e3-tool-output".to_owned(),
+                        total_bytes: source.len(),
+                        output_delta: None,
+                        was_bare_echo: false,
+                    })
+                };
+                let output = make_output(&source);
 
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
@@ -1595,45 +1648,65 @@ mod tests {
                 ])
                 .await
                 .expect("start second local inference stub");
-                rejected_server.enqueue_response(
-                    "/v1/chat/completions",
-                    ScriptedResponse::json(
-                        200,
-                        serde_json::json!({
-                            "id": "utility-rejected-again",
-                            "model": "utility-model",
-                            "choices": [{
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "`0 failed, 16 passed`"}
-                            }],
-                            "usage": {"prompt_tokens": 120, "completion_tokens": 4}
-                        }),
-                    ),
-                );
-                rejected_server.enqueue_response(
-                    "/v1/responses",
-                    ScriptedResponse::sse(responses_api_script_exact(
-                        "`tests passed`",
-                        "worker-model",
-                    )),
-                );
+                for _ in 0..2 {
+                    rejected_server.enqueue_response(
+                        "/v1/chat/completions",
+                        ScriptedResponse::text(503, "utility unavailable"),
+                    );
+                }
+                for _ in 0..2 {
+                    rejected_server.enqueue_response(
+                        "/v1/responses",
+                        ScriptedResponse::text(503, "worker unavailable"),
+                    );
+                }
                 let rejected_actor = super::super::support::plain_actor().await;
                 install_catalog(&rejected_actor, &rejected_server);
+                let rejected_sources = vec![
+                    format!(
+                        "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nfirst payload\n{}",
+                        "progress noise\n".repeat(400)
+                    ),
+                    format!(
+                        "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nsecond payload\n{}",
+                        "progress noise\n".repeat(400)
+                    ),
+                    format!(
+                        "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nthird payload\n{}",
+                        "progress noise\n".repeat(400)
+                    ),
+                ];
                 let retained = crate::jev::with_session_scope_and_recorder(
                     "e3-production-order-rejected",
                     Some(rejected_actor.chat_state_handle.clone()),
-                    rejected_actor.jev_post_process_tool_result(
-                        "run_terminal_command",
-                        "cargo test --lib",
-                        "call-rejected",
-                        &output,
-                        source.clone(),
-                    ),
+                    async {
+                        let mut retained = Vec::new();
+                        for (index, source) in rejected_sources.iter().enumerate() {
+                            let output = make_output(source);
+                            retained.push(
+                                rejected_actor
+                                    .jev_post_process_tool_result(
+                                        "run_terminal_command",
+                                        "cargo test --lib",
+                                        &format!("call-rejected-{index}"),
+                                        &output,
+                                        source.clone(),
+                                    )
+                                    .await,
+                            );
+                        }
+                        retained
+                    },
                 )
                 .await;
-                assert_eq!(retained, source);
-                assert_eq!(rejected_server.request_count_for("/v1/chat/completions"), 1);
-                assert_eq!(rejected_server.request_count_for("/v1/responses"), 1);
+                assert_eq!(retained, rejected_sources);
+                assert_eq!(rejected_server.request_count_for("/v1/chat/completions"), 2);
+                assert_eq!(rejected_server.request_count_for("/v1/responses"), 2);
+                let rejected_request_bodies = serde_json::to_string(&rejected_server.request_bodies())
+                    .expect("serialize rejected request bodies");
+                assert!(rejected_request_bodies.contains("first payload"));
+                assert!(rejected_request_bodies.contains("second payload"));
+                assert!(!rejected_request_bodies.contains("third payload"));
                 let rejected_ledger = rejected_actor
                     .chat_state_handle
                     .try_get_session_usage()
@@ -1644,15 +1717,81 @@ mod tests {
                     .iter()
                     .filter(|row| row.role == "utility" || row.role == "auxiliary")
                     .collect();
-                assert_eq!(rejected_rows.len(), 2);
+                assert_eq!(rejected_rows.len(), 4);
+                assert_eq!(
+                    rejected_rows
+                        .iter()
+                        .filter(|row| row.role == "utility")
+                        .count(),
+                    2
+                );
+                assert_eq!(
+                    rejected_rows
+                        .iter()
+                        .filter(|row| row.role == "auxiliary")
+                        .count(),
+                    2
+                );
                 assert!(rejected_rows
                     .iter()
-                    .all(|row| row.status == distill_chat_state::UsageCallStatus::Rejected));
+                    .all(|row| row.status == distill_chat_state::UsageCallStatus::Failed));
+
+                rejected_server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "utility-recovery",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`"}
+                            }],
+                            "usage": {"prompt_tokens": 120, "completion_tokens": 4}
+                        }),
+                    ),
+                );
+                let recovered = crate::jev::with_session_scope_and_recorder(
+                    "e3-production-order-recovery",
+                    Some(rejected_actor.chat_state_handle.clone()),
+                    rejected_actor.jev_post_process_tool_result(
+                        "run_terminal_command",
+                        "cargo test --lib",
+                        "call-recovery",
+                        &output,
+                        source.clone(),
+                    ),
+                )
+                .await;
+                assert!(recovered.contains("compressed by verified utility"));
+                assert_eq!(rejected_server.request_count_for("/v1/chat/completions"), 3);
+                assert_eq!(rejected_server.request_count_for("/v1/responses"), 2);
+                let recovered_ledger = rejected_actor
+                    .chat_state_handle
+                    .try_get_session_usage()
+                    .await
+                    .expect("recovery ledger remains readable");
+                let recovered_rows: Vec<_> = recovered_ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "utility" || row.role == "auxiliary")
+                    .collect();
+                assert_eq!(recovered_rows.len(), 5);
+                assert_eq!(
+                    recovered_rows
+                        .iter()
+                        .filter(|row| row.status == distill_chat_state::UsageCallStatus::Completed)
+                        .count(),
+                    1
+                );
 
                 crate::jev::clear_test_local_config();
                 crate::jev::clear_test_tier_config();
+                });
             })
-            .await;
+            .expect("spawn compression-bound test thread")
+            .join()
+            .expect("compression-bound test thread");
     }
 
     #[tokio::test(flavor = "current_thread")]

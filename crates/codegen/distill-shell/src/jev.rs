@@ -953,7 +953,10 @@ where
                 uuid::Uuid::new_v4().to_string(),
                 ACTIVE_USAGE_RECORDER.scope(
                     std::cell::RefCell::new(recorder),
-                    ACTIVE_ROUND_ID.scope(std::cell::Cell::new(0), future),
+                    ACTIVE_ROUND_ID.scope(
+                        std::cell::Cell::new(0),
+                        crate::jev_cheap::with_optional_compression_scope(future),
+                    ),
                 ),
             ),
         )

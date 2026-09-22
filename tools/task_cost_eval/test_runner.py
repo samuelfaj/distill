@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import copy
 import json
 import os
 import tempfile
@@ -18,7 +17,6 @@ except ImportError:  # Direct invocation: python3 tools/task_cost_eval/test_runn
 class TaskCostRunnerTest(unittest.TestCase):
     def test_fake_cli_stages_canonical_fixture_and_grades_original_fixture(self):
         cohort_path = Path(__file__).with_name("cohort-v1.json").resolve()
-        cohort = copy.deepcopy(load_cohort(cohort_path))
         fixture_source = cohort_path.parent / "fixtures/tax_bug"
         grader_source = cohort_path.parent / "graders/grade_tax_bug.py"
         fixture_digest = _sha256_tree(fixture_source)
@@ -38,7 +36,8 @@ def arg(name):
     return sys.argv[sys.argv.index(name) + 1]
 
 worktree = Path(arg('--cwd'))
-if arg('--model') != 'fake-model' or arg('--reasoning-effort') != 'low':
+if (arg('--model') != 'fake-model' or arg('--reasoning-effort') != 'low'
+        or arg('--max-turns') != '12' or '--always-approve' not in sys.argv):
     raise SystemExit(10)
 expected_grok_home = Path(os.environ['EXPECTED_GROK_PARENT']).resolve() / worktree.parent.name
 if Path(os.environ['GROK_HOME']) != expected_grok_home:
@@ -74,6 +73,9 @@ session.mkdir(parents=True)
 }) + '\\n', encoding='utf-8')
 if os.environ.get('FAKE_BREAK_CONFIG') == '1':
     runtime_config.write_text('changed by fake agent', encoding='utf-8')
+if os.environ.get('FAKE_BREAK_COHORT') == '1':
+    cohort_file = Path(os.environ['COHORT_FILE'])
+    cohort_file.write_text(cohort_file.read_text(encoding='utf-8') + '\\n', encoding='utf-8')
 """,
                 encoding="utf-8",
             )
@@ -96,14 +98,35 @@ if os.environ.get('FAKE_BREAK_CONFIG') == '1':
                 "model": "fake-model",
                 "endpoint": "local",
                 "effort": "low",
+                "max_turns": 12,
                 "config_sha256": _sha256_file(config_file),
             }
-            cohort["_variant_runtime_pins"]["distill-current"] = pin
+            protocol_root = root / "protocol"
+            (protocol_root / "tools").mkdir(parents=True)
+            (protocol_root / "tools/task_cost_eval").symlink_to(
+                cohort_path.parent, target_is_directory=True
+            )
+            for directory_name in ("fixtures", "prompts", "graders"):
+                (protocol_root / directory_name).symlink_to(
+                    cohort_path.parent / directory_name, target_is_directory=True
+                )
+            cohort_file = protocol_root / "cohort.json"
+            cohort_data = json.loads(cohort_path.read_text(encoding="utf-8"))
+            cohort_data["repetitions"] = 4
+            for variant_data in cohort_data["variants"]:
+                if variant_data["id"] == "distill-current":
+                    variant_data["runtime_pin"] = pin
+            tax_case = next(case for case in cohort_data["cases"] if case["id"] == "tax-bug-en")
+            tax_case["grader"]["script_ref"] = "tools/task_cost_eval/graders/grade_tax_bug.py"
+            tax_case["grader"]["command"][1] = "tools/task_cost_eval/graders/grade_tax_bug.py"
+            cohort_file.write_text(json.dumps(cohort_data, indent=2) + "\n", encoding="utf-8")
+            cohort = load_cohort(cohort_file)
+            cohort_digest = _sha256_file(cohort_file)
             manifest = root / "runs.jsonl"
             common = [
                 "run-one",
                 "--cohort",
-                str(cohort_path),
+                str(cohort_file),
                 "--case",
                 "tax-bug-en",
                 "--variant",
@@ -134,6 +157,7 @@ if os.environ.get('FAKE_BREAK_CONFIG') == '1':
                 {
                     "EXPECTED_CONFIG": config_file.read_text(encoding="utf-8"),
                     "EXPECTED_GROK_PARENT": str(grok_root),
+                    "COHORT_FILE": str(cohort_file),
                 },
                 clear=False,
             ):
@@ -150,6 +174,11 @@ if os.environ.get('FAKE_BREAK_CONFIG') == '1':
                 ):
                     self.assertEqual(runner.main(with_repetition(3) + ["--execute"]), 1)
 
+                with mock.patch.dict(
+                    os.environ, {"FAKE_FIX": "1", "FAKE_BREAK_COHORT": "1"}, clear=False
+                ):
+                    self.assertEqual(runner.main(with_repetition(4) + ["--execute"]), 1)
+
             first_cell = work_root / "tax-bug-en--distill-current--1"
             second_cell = work_root / "tax-bug-en--distill-current--2"
             self.assertEqual(
@@ -162,20 +191,58 @@ if os.environ.get('FAKE_BREAK_CONFIG') == '1':
             self.assertEqual(_sha256_file(second_fixture), _sha256_file(fixture_source / "tax.py"))
             self.assertEqual(_sha256_tree(fixture_source), fixture_digest)
             self.assertEqual(_sha256_file(grader_source), grader_digest)
+            self.assertNotEqual(_sha256_file(cohort_file), cohort_digest)
             self.assertFalse(
                 (first_cell / "worktree/tools/task_cost_eval/graders/grade_tax_bug.py").exists()
             )
             records = [json.loads(line) for line in manifest.read_text().splitlines()]
-            self.assertEqual([record["grader_exit_code"] for record in records], [0, 1, None])
+            self.assertEqual([record["grader_exit_code"] for record in records], [0, 1, None, None])
             self.assertEqual(records[2]["execution_status"], "inconclusive")
             self.assertIsNone(records[2]["accepted"])
             self.assertEqual(records[2]["failure_reason"], "post_dispatch_agent_verification_error")
             self.assertTrue((Path(records[2]["session_dir"]) / "usage.json").is_file())
+            self.assertEqual(records[3]["execution_status"], "inconclusive")
+            self.assertIsNone(records[3]["accepted"])
+            self.assertEqual(records[3]["failure_reason"], "post_dispatch_agent_verification_error")
+            self.assertTrue((Path(records[3]["session_dir"]) / "usage.json").is_file())
+            for record in records:
+                self.assertEqual(record["task"]["cohort_sha256"], cohort_digest)
+                self.assertEqual(
+                    _sha256_file(Path(record["task"]["cohort_snapshot"])), cohort_digest
+                )
             self.assertEqual(records[0]["runtime"]["config_sha256"], pin["config_sha256"])
             self.assertEqual(
                 records[0]["runtime"]["cli_overrides"],
-                {"model": "fake-model", "reasoning_effort": "low"},
+                {
+                    "model": "fake-model",
+                    "reasoning_effort": "low",
+                    "always_approve": "true",
+                    "max_turns": "12",
+                },
             )
+
+    def test_all_fixture_cases_use_canonical_protocol_root(self):
+        cohort_path = Path(__file__).with_name("cohort-v1.json").resolve()
+        cohort = load_cohort(cohort_path)
+        source = cohort_path.parent
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "worktree"
+            worktree.mkdir()
+            for case in cohort["cases"]:
+                prompt = root / f"{case['id']}.txt"
+                prompt.write_bytes((source / case["prompt_ref"]).read_bytes())
+                fixture_target = runner._copy_protocol_files(cohort, case, worktree, prompt)
+                expected_fixture = worktree / "tools/task_cost_eval" / case["fixture_ref"]
+                expected_prompt = worktree / "tools/task_cost_eval" / case["prompt_ref"]
+                self.assertEqual(fixture_target, expected_fixture)
+                self.assertTrue(expected_fixture.is_dir())
+                self.assertTrue(expected_prompt.is_file())
+
+    def test_decimal_ticks_rounds_provider_float_noise_without_free_zero(self):
+        self.assertEqual(runner._decimal_ticks(5.4399999999999994e-05), 544000)
+        self.assertIsNone(runner._decimal_ticks(-1e-12))
+        self.assertIsNone(runner._decimal_ticks(float("nan")))
 
     def test_pi_normalization_keeps_unknown_cost_and_tool_use_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:

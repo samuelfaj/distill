@@ -17,7 +17,7 @@ import signal
 import subprocess
 import sys
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +71,10 @@ def _decimal_ticks(value: Any) -> int | None:
         ticks = Decimal(str(value)) * Decimal(TICKS_PER_USD)
     except (InvalidOperation, ValueError):
         return None
-    if not ticks.is_finite() or ticks < 0 or ticks != ticks.to_integral_value():
+    if not ticks.is_finite() or ticks < 0:
         return None
-    return int(ticks)
+    # Rust's positive f64::round rounds to the nearest tick, including ties.
+    return int(ticks.to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def _nonnegative_int(value: Any) -> bool:
@@ -231,26 +232,11 @@ def _normalize_pi_session(session_file: Path, output_dir: Path) -> Path:
     return output_dir
 
 
-def _protocol_root(case: dict[str, Any]) -> Path:
-    script_ref = Path(case["grader"]["script_ref"])
-    script_parts = script_ref.parts
-    for item in case["grader"]["command"]:
-        item_path = Path(item)
-        if (
-            not item_path.is_absolute()
-            and len(item_path.parts) >= len(script_parts)
-            and item_path.parts[-len(script_parts) :] == script_parts
-        ):
-            prefix = item_path.parts[: -len(script_parts)]
-            return Path(*prefix) if prefix else Path(".")
-    return Path("tools/task_cost_eval")
-
-
 def _copy_protocol_files(
     cohort: dict[str, Any], case: dict[str, Any], worktree: Path, prompt: Path
 ) -> Path:
     source = Path(cohort["_source"]).resolve().parent
-    protocol_root = _protocol_root(case)
+    protocol_root = Path("tools/task_cost_eval")
     fixture = source / case["fixture_ref"]
     fixture_target = worktree / protocol_root / case["fixture_ref"]
     fixture_target.parent.mkdir(parents=True, exist_ok=True)
@@ -314,10 +300,12 @@ def _command_for(
 ) -> list[str]:
     if variant["runner"] == "distill":
         executable = runtime["executable_path"]
-        return [
+        max_turns = _max_turns(runtime)
+        command = [
             str(executable),
             "--no-leader",
             "--no-subagents",
+            "--always-approve",
             "--disable-web-search",
             "--cwd",
             str(worktree),
@@ -332,6 +320,9 @@ def _command_for(
             "--reasoning-effort",
             runtime["effort"],
         ]
+        if max_turns is not None:
+            command.extend(["--max-turns", str(max_turns)])
+        return command
     if variant["runner"] == "pi":
         return [
             str(runtime["executable_path"]),
@@ -436,12 +427,26 @@ def _apply_runtime_config(
     return target
 
 
+def _max_turns(runtime: dict[str, Any]) -> int | None:
+    value = runtime.get("max_turns")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise EvaluationError("max_turns must be a positive integer")
+    return value
+
+
 def _effective_cli_overrides(variant: dict[str, Any], runtime: dict[str, Any]) -> dict[str, str]:
     if variant["runner"] == "distill":
-        return {
+        max_turns = _max_turns(runtime)
+        overrides = {
             "model": runtime["model"],
             "reasoning_effort": runtime["effort"],
+            "always_approve": "true",
         }
+        if max_turns is not None:
+            overrides["max_turns"] = str(max_turns)
+        return overrides
     if variant["runner"] == "pi":
         return {
             "provider": runtime["provider"],
@@ -507,6 +512,8 @@ def _collect_artifacts(
 
 def run_one(args: argparse.Namespace) -> int:
     cohort = load_cohort(args.cohort)
+    cohort_source = Path(cohort["_source"]).resolve()
+    cohort_digest = _sha256_file(cohort_source)
     case = next((item for item in cohort["cases"] if item["id"] == args.case_id), None)
     variant = next((item for item in cohort["variants"] if item["id"] == args.variant), None)
     if case is None or variant is None:
@@ -568,7 +575,11 @@ def run_one(args: argparse.Namespace) -> int:
         if not grok_home_parent.is_dir():
             raise EvaluationError(f"grok_home is not a directory: {grok_home_parent}")
 
+    _verify_digest(cohort_source, cohort_digest, "cohort")
     cell_dir.mkdir()
+    cohort_snapshot = cell_dir / "cohort.json"
+    shutil.copy2(cohort_source, cohort_snapshot)
+    _verify_digest(cohort_snapshot, cohort_digest, "cohort snapshot")
     worktree = cell_dir / "worktree"
     worktree.mkdir()
     prompt = cell_dir / "prompt.txt"
@@ -626,6 +637,7 @@ def run_one(args: argparse.Namespace) -> int:
     agent_dispatched = False
     stage = "agent_dispatch"
     try:
+        _verify_digest(cohort_source, cohort_digest, "cohort")
         agent_dispatched = True
         stdout_file = cell_dir / "stdout.ndjson"
         stderr_file = cell_dir / "stderr.log"
@@ -642,6 +654,7 @@ def run_one(args: argparse.Namespace) -> int:
             )
 
         stage = "agent_verification"
+        _verify_digest(cohort_source, cohort_digest, "cohort")
         _verify_digest(config_file, config_digest, "configured file")
         _verify_digest(applied_config_file, config_digest, "applied runtime config")
         if _sha256_tree(fixture_source) != fixture_digest_before:
@@ -701,6 +714,7 @@ def run_one(args: argparse.Namespace) -> int:
                     failure_reason = "grader_rejected"
 
         stage = "post_run_verification"
+        _verify_digest(cohort_source, cohort_digest, "cohort")
         _verify_digest(config_file, config_digest, "configured file")
         _verify_digest(applied_config_file, config_digest, "applied runtime config")
         if _sha256_tree(fixture_source) != fixture_digest_before:
@@ -750,6 +764,8 @@ def run_one(args: argparse.Namespace) -> int:
             "prompt_sha256": case["prompt_sha256"],
             "fixture_sha256": case["fixture_sha256"],
             "grader_sha256": case["grader"]["sha256"],
+            "cohort_sha256": cohort_digest,
+            "cohort_snapshot": str(cohort_snapshot),
         },
         "runtime": {
             **{field: pin[field] for field in pin if field != "status"},

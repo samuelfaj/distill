@@ -1,8 +1,8 @@
 # Paired task-cost evaluation
 
-Status at CP1: this is a recording evaluator, a frozen smoke cohort, and a
-one-cell runner. It has not launched Distill, Pi, a provider, or a paid
-benchmark. T02 remains incomplete until real matched executions exist.
+Status at E3: this is a recording evaluator, a frozen smoke cohort, and a
+one-cell runner. Two authorized real-provider smoke cells are recorded below;
+they are not a matched benchmark and T02 remains incomplete.
 
 The evaluator is intentionally small and uses the existing artifacts:
 
@@ -20,6 +20,53 @@ The evaluator is intentionally small and uses the existing artifacts:
 
 No ambient log directory is read by the evaluator, and prompts, responses,
 tokens, and credentials are never printed into the report.
+
+## E3 recorded smoke checkpoint
+
+The only two authorized provider runs used artifact root
+`/tmp/jev-cost-smoke.bfjnuH`; there were no retries or fallback models. The
+runtime pins and raw artifacts are retained there for controller readback;
+the metadata below is sanitized:
+
+| Cell | Frozen runtime | Result and accounting |
+| --- | --- | --- |
+| `tax-bug-en--distill-jev-off--1` | Distill 2.0.6, build `2c87833e5bb4`, executable SHA-256 `b4a7ec2f7aef7f3524655688eef28b66d8d80e84954dee2ecc537548eb8aa10e`, config SHA-256 `d49d5172b59252709fc1c6d5361c013434a8d01461c8017d45e442937755605a`, `qwen/qwen3.7-flash`, effort `none`, max turns `12` | Process exit 0 but post-dispatch verification was inconclusive; no grader result. Six model calls and 202,091 total tokens were retained, but cost is unknown/incomplete. Session `1e1e9b3e-954e-482c-aa01-0393c5e42d3c`. |
+| `tax-bug-en--pi-smoke--1` | Pi 0.73.1, build `pi-0.73.1`, executable SHA-256 `e959f463b06ddd15ed882783ac02f39ecaeef950ef967da86380f39dda6595fa`, config SHA-256 `2b288184c28b1e9ea0d9e3f2d3f1f992059d0eaf142659871eedb5c0059ae0f5`, `qwen/qwen3.7-flash`, thinking `off` | Grader exit 0 and accepted. Four calls, 7,625 total tokens, and 1,642,020 ticks (`$0.000164202`) from Pi tariff estimates. This is an estimate, not provider billing. The four returned generation IDs remain in the raw JSONL; each official generation-metadata lookup returned HTTP 404, so actual billing remains unknown. Session `01a0c6ea-4b60-7634-af61-ac86386a4606`. |
+
+The Distill attempt remains inconclusive because the experiment preparation
+mutated its protocol, not because the historical binary failed. The separate
+receipt snapshots are:
+
+```text
+Distill receipt line 153: script_ref=tools/task_cost_eval/graders/grade_tax_bug.py
+  inferred protocol root: empty; staged fixture: worktree/fixtures/tax_bug
+Pi receipt lines 185/193: script_ref=graders/grade_tax_bug.py
+  corrected protocol root: tools/task_cost_eval; staged fixture: worktree/tools/task_cost_eval/fixtures/tax_bug
+Evidence source: /tmp/distill-cost-orchestration-20260921-b02qc6vm/E3.smoke.events.jsonl
+  lines 153, 185, and 193; corrected Pi cohort: /tmp/jev-cost-smoke.bfjnuH/cohort.json
+```
+
+The same temporary `cohort.json` was changed between those receipts. The
+original Distill row stays inconclusive and the corrected Pi row stays as
+recorded; the old rows do not carry the new cohort digest, so neither is
+retrofit or paired. The offline frozen grader against the original Distill
+worktree exited 1 because its canonical fixture path was absent; it created no
+generation and did not change the manifest. Do not reuse the 201,744 versus
+7,226 token totals as a clean overhead comparison.
+
+The runner now stages all three cases under the fixed canonical
+`tools/task_cost_eval` root, copies each source cohort to the cell, records its
+SHA-256 in `task.cohort_sha256`, and checks the source before and after
+dispatch. It also uses `--always-approve` only for authorized isolated fixture
+cells, validates positive pinned `--max-turns`, and records both effective
+settings for future reproducibility.
+
+The controller's TOML comparison found only the bootstrap key
+`marketplace.default_skills_installs_purged` changed between the original and
+applied Distill config. The config-integrity gate remains strict; a future
+frozen preflight must include a legitimate initial marker before hashing and
+must not mutate these historical pins. These two smoke cells establish no
+savings, price, or other financial conclusion.
 
 ## Identity and frozen protocol
 
@@ -137,6 +184,10 @@ inconclusive manifest row with any raw artifacts found. Without `--execute` it
 prints a command plan without creating the run cell; with an unpinned variant
 it refuses to run.
 
+An executed cell also preserves the exact source cohort bytes as
+`cohort.json`; historical rows without `task.cohort_sha256` remain historical
+evidence and are not backfilled.
+
 Example after the controller has frozen the runtime pin:
 
 ```sh
@@ -152,14 +203,15 @@ python3 -m tools.task_cost_eval.runner run-one \
   --execute
 ```
 
-The runner pins the effective model/provider/effort CLI overrides in the
-manifest and does not accept `--api-key` or any credential as an argument.
+The runner pins the effective model/provider/effort CLI overrides, approval
+setting, and optional turn limit in the manifest and does not accept
+`--api-key` or any credential as an argument.
 
 ## Paid-execution proposal for controller authorization
 
-No paid command has been run at this checkpoint. The exact first pilot should
-be one cell only, using the discovered Distill model and an explicitly pinned
-effort:
+No further paid command is authorized in this slice. The smoke cells above are
+not the matched T02 baseline; a future controller authorization should still
+use one cell only, an explicitly pinned model/effort, and a finite ceiling:
 
 ```sh
 GROK_JEV=1 GROK_HOME="$ISOLATED_GROK_HOME" distill --no-leader \

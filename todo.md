@@ -1,6 +1,18 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status: planejamento; nenhuma mudança de produto implementada e nenhum ganho financeiro validado neste estudo.**
+Estudo e plano de execução — 21/09/2026. **Status: checkpoints de implementação T04/T12/T01/T02 registrados; T01/T02 continuam parciais e nenhum ganho financeiro foi validado.**
+
+> **Checkpoint E3 — pronto/congelado para commit:** os checkpoints
+> implementados até aqui incluem guardas de contrato T04, reducers T12 com
+> saída recuperável, atribuição T01 de Jev/utility/compactação e o runner
+> T02. Este worker corrigiu arredondamento/contabilidade e a preparação do
+> protocolo: o primeiro receipt Distill usou `tools/task_cost_eval/...` e
+> inferiu raiz vazia; o mesmo cohort foi editado para `graders/...` antes do
+> Pi. Isso é mismatch de preparação, não falha do binário. Smokes autorizados
+> permanecem não pareados: Distill inconclusivo e Pi aceito com custo tarifário
+> estimado; billing real desconhecido (HTTP 404). T01/T02 seguem parciais,
+> sem claim de baseline, economia ou finanças; nenhum checkbox financeiro
+> histórico é concluído. T05/T13/T19 e calibração ficam para fases posteriores.
 
 ## 1. Objetivo e critério de sucesso
 

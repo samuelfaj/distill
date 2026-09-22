@@ -205,20 +205,165 @@ fn compression_evidence_question(
             "For {request_context}, keep only relevant complete original WebSearch content paragraphs. Quote each selected paragraph verbatim, preserving every qualifier or negation and its citation URL(s) in that same paragraph. Include the exact header `{header}`; do not split multiline paragraphs, paraphrase, or detach citations."
         );
     }
+    if let distill_tools::types::output::ToolOutput::WebFetch(
+        distill_tools::types::output::WebFetchOutput::Content(fetch),
+    ) = output
+    {
+        return format!(
+            "For {request_context}, keep only relevant complete original text/Markdown paragraphs from the fetched URL `{}`. Quote each selected paragraph verbatim, preserving every qualifier, negation, number, error, and status detail in that paragraph. Do not use the bounded preview or its truncation footer, do not paraphrase, do not quote code or instructions, and return only quoted source paragraphs.",
+            fetch.url
+        );
+    }
     format!(
         "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts for {request_context}."
     )
 }
 
-fn compression_source_for_lane(
+fn web_fetch_text_content_type(content_type: &str) -> bool {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(mime.as_str(), "markdown" | "text/markdown" | "text/plain")
+}
+
+fn web_fetch_source_is_unsafe(source: &str) -> bool {
+    if source.trim().is_empty()
+        || distill_workspace::jev::retention::looks_structured("", source)
+        || distill_workspace::jev::crushers::injection_presence(source).is_some()
+        || source.contains("```")
+    {
+        return true;
+    }
+    source.lines().any(|line| {
+        let line = line.trim_start().to_ascii_lowercase();
+        [
+            "#!", "<?", "function ", "def ", "class ", "import ", "export ", "const ",
+            "let ", "fn ", "pub fn ", "instruction:", "instructions:", "system:",
+            "developer:", "assistant:", "user:",
+        ]
+        .iter()
+        .any(|marker| line.starts_with(marker))
+    })
+}
+
+fn web_fetch_content_shape_is_safe(
+    fetch: &distill_tools::types::output::WebFetchContent,
+) -> bool {
+    web_fetch_text_content_type(&fetch.content_type)
+        && (fetch.source_artifact.is_some()
+            || (fetch.inline_fallback.is_none() && fetch.content.len() == fetch.bytes))
+        && !web_fetch_source_is_unsafe(&fetch.content)
+}
+
+/// WebFetch answers may only retain complete original paragraphs. The source
+/// is the complete inline body or the internally typed artifact, never the
+/// bounded preview that mentioned the artifact path.
+fn web_fetch_source_contract(source: &str, answer: &str) -> bool {
+    if web_fetch_source_is_unsafe(source) {
+        return false;
+    }
+    let Ok(spans) = distill_workspace::jev::tasks::extractive_spans(answer) else {
+        return false;
+    };
+    let units: Vec<&str> = source
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|unit| !unit.is_empty())
+        .collect();
+    if spans.is_empty()
+        || units.is_empty()
+        || spans
+            .iter()
+            .any(|span| !units.iter().any(|unit| *unit == span.trim()))
+    {
+        return false;
+    }
+    let selected = spans.join("\n");
+    crate::jev_lanes::required_tool_evidence(source)
+        .iter()
+        .all(|line| selected.contains(line))
+}
+
+async fn web_fetch_source_for_lane(
+    fetch: &distill_tools::types::output::WebFetchContent,
+    budget: usize,
+) -> Option<String> {
+    if budget == 0
+        || !web_fetch_content_shape_is_safe(fetch)
+        || fetch.bytes == 0
+        || fetch.bytes > budget
+    {
+        return None;
+    }
+    if let Some(artifact) = &fetch.source_artifact {
+        let metadata = tokio::fs::metadata(&artifact.path).await.ok()?;
+        let expected_bytes = u64::try_from(fetch.bytes).ok()?;
+        if !metadata.is_file()
+            || metadata.len() != expected_bytes
+            || metadata.len() > u64::try_from(budget).ok()?
+        {
+            return None;
+        }
+        let source_bytes = usize::try_from(metadata.len()).ok()?;
+        let mut file = tokio::fs::File::open(&artifact.path).await.ok()?;
+        let mut bytes = Vec::with_capacity(source_bytes);
+        use tokio::io::AsyncReadExt;
+        let read_limit = u64::try_from(budget).ok()?.saturating_add(1);
+        file.take(read_limit).read_to_end(&mut bytes).await.ok()?;
+        if bytes.len() != source_bytes || bytes.len() > budget {
+            return None;
+        }
+        let source = String::from_utf8(bytes).ok()?;
+        (source.len() == fetch.bytes && !web_fetch_source_is_unsafe(&source)).then_some(source)
+    } else if fetch.inline_fallback.is_none()
+        && fetch.content.len() == fetch.bytes
+        && fetch.content.len() <= budget
+        && !web_fetch_source_is_unsafe(&fetch.content)
+    {
+        Some(fetch.content.clone())
+    } else {
+        None
+    }
+}
+
+fn web_fetch_source_handle(
+    output: &distill_tools::types::output::ToolOutput,
+) -> Option<String> {
+    let distill_tools::types::output::ToolOutput::WebFetch(
+        distill_tools::types::output::WebFetchOutput::Content(fetch),
+    ) = output
+    else {
+        return None;
+    };
+    if !web_fetch_content_shape_is_safe(fetch) {
+        return None;
+    }
+    if let Some(artifact) = &fetch.source_artifact {
+        return (!artifact.path.as_os_str().is_empty()).then(|| artifact.path.display().to_string());
+    }
+    (fetch.inline_fallback.is_none()
+        && fetch.content.len() == fetch.bytes
+        && !web_fetch_source_is_unsafe(&fetch.content))
+    .then(|| crate::jev_store::store_payload(&fetch.content))
+    .flatten()
+    .map(|path| path.display().to_string())
+}
+
+async fn compression_source_for_lane(
     output: &distill_tools::types::output::ToolOutput,
     body: &str,
     budget: usize,
 ) -> Option<String> {
-    if matches!(
-        output,
-        distill_tools::types::output::ToolOutput::WebSearch(_)
-    ) {
+    if let distill_tools::types::output::ToolOutput::WebFetch(
+        distill_tools::types::output::WebFetchOutput::Content(fetch),
+    ) = output
+    {
+        return web_fetch_source_for_lane(fetch, budget).await;
+    }
+    if matches!(output, distill_tools::types::output::ToolOutput::WebSearch(_)) {
         return (body.len() <= budget).then(|| body.to_owned());
     }
     crate::jev_lanes::bounded_tool_evidence(body, budget)
@@ -233,13 +378,30 @@ fn compression_replacement_for_output(
     producer: &str,
     typed_metadata: Option<&str>,
 ) -> Option<String> {
-    if let distill_tools::types::output::ToolOutput::WebSearch(search) = output
-        && (search.pre_formatted.is_some()
-            || !web_search_source_contract(search, answer))
-    {
-        return None;
+    match output {
+        distill_tools::types::output::ToolOutput::WebSearch(search)
+            if search.pre_formatted.is_some() || !web_search_source_contract(search, answer) =>
+        {
+            return None;
+        }
+        distill_tools::types::output::ToolOutput::WebFetch(
+            distill_tools::types::output::WebFetchOutput::Content(_),
+        ) if !web_fetch_source_contract(bounded_source, answer) => {
+            return None;
+        }
+        _ => {}
     }
     let body_evidence = task_output_body_evidence(output);
+    let required_evidence_source = if matches!(
+        output,
+        distill_tools::types::output::ToolOutput::WebFetch(
+            distill_tools::types::output::WebFetchOutput::Content(_)
+        )
+    ) {
+        bounded_source
+    } else {
+        body_evidence.as_deref().unwrap_or(original)
+    };
     compression_replacement_with_required_evidence(
         original,
         bounded_source,
@@ -247,7 +409,7 @@ fn compression_replacement_for_output(
         handle,
         producer,
         typed_metadata,
-        body_evidence.as_deref().unwrap_or(original),
+        required_evidence_source,
     )
 }
 
@@ -308,7 +470,7 @@ fn typed_tool_metadata(
     output: &distill_tools::types::output::ToolOutput,
 ) -> Option<String> {
     use distill_tool_types::TaskOutputOutput;
-    use distill_tools::types::output::ToolOutput;
+    use distill_tools::types::output::{ToolOutput, WebFetchOutput};
 
     match output {
         ToolOutput::Bash(bash) => Some(format!(
@@ -327,6 +489,10 @@ fn typed_tool_metadata(
         ToolOutput::WebSearch(search) => Some(format!(
             "header: Web search results for: \"{}\"\nquery: {}",
             search.query, search.query
+        )),
+        ToolOutput::WebFetch(WebFetchOutput::Content(fetch)) => Some(format!(
+            "url: {}\ncontent_type: {}\nstatus_code: {}\nbytes: {}",
+            fetch.url, fetch.content_type, fetch.status_code, fetch.bytes
         )),
         _ => None,
     }
@@ -825,6 +991,9 @@ impl SessionActor {
                 search.pre_formatted.is_none()
                     && web_search_layout_is_unambiguous(&search.content, &search.citations)
             }
+            distill_tools::types::output::ToolOutput::WebFetch(
+                distill_tools::types::output::WebFetchOutput::Content(fetch),
+            ) => web_fetch_content_shape_is_safe(fetch),
             _ => false,
         };
         let cheap_eligible = body.len() >= context::BIG_OUTPUT_BYTES
@@ -845,9 +1014,18 @@ impl SessionActor {
             );
             let utility = self.cheap_lane(JevLever::ECheapCompress).await;
             let evidence_question = compression_evidence_question(output, &request);
-            let source_handle = outcome.store_handle.clone().or_else(|| {
-                crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
-            });
+            let source_handle = if matches!(
+                output,
+                distill_tools::types::output::ToolOutput::WebFetch(
+                    distill_tools::types::output::WebFetchOutput::Content(_)
+                )
+            ) {
+                web_fetch_source_handle(output)
+            } else {
+                outcome.store_handle.clone().or_else(|| {
+                    crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
+                })
+            };
             let typed_metadata = typed_tool_metadata(output);
             let mut replacement: Option<(String, JevLever)> = None;
             if let Some(handle) = source_handle.as_deref() {
@@ -859,9 +1037,11 @@ impl SessionActor {
                         evidence_question.len().saturating_add(512),
                     )
                 });
-                if let Some(evidence) = utility_budget
-                    .and_then(|budget| compression_source_for_lane(output, &body, budget))
-                {
+                let utility_evidence = match utility_budget {
+                    Some(budget) => compression_source_for_lane(output, &body, budget).await,
+                    None => None,
+                };
+                if let Some(evidence) = utility_evidence {
                     if let Some(utility) = utility.as_ref()
                         && let Some(outcome) = utility
                             .run_task_with_acceptance(
@@ -933,8 +1113,7 @@ impl SessionActor {
                     let worker_budget = worker
                         .max_payload_bytes()
                         .saturating_sub(evidence_question.len().saturating_add(512));
-                    if let Some(evidence) =
-                        compression_source_for_lane(output, &body, worker_budget)
+                    if let Some(evidence) = compression_source_for_lane(output, &body, worker_budget).await
                         && let Some(worker_request) = worker.task_request(
                         EXTRACTIVE_TASK,
                         &evidence,
@@ -1711,6 +1890,57 @@ mod tests {
     }
 
     #[test]
+    fn web_fetch_source_contract_requires_complete_safe_paragraphs() {
+        let source = "The page gives a qualified answer: only bounded workers are safe.\n\nA second source paragraph carries the relevant detail.";
+        assert!(web_fetch_source_contract(
+            source,
+            "`The page gives a qualified answer: only bounded workers are safe.`"
+        ));
+        assert!(!web_fetch_source_contract(
+            source,
+            "`only bounded workers are safe`"
+        ));
+        let status_source = format!("{source}\n\nTests were not run.\n\n1 todo");
+        assert!(!web_fetch_source_contract(
+            &status_source,
+            "`The page gives a qualified answer: only bounded workers are safe.`"
+        ));
+        assert!(web_fetch_source_contract(
+            &status_source,
+            "`The page gives a qualified answer: only bounded workers are safe.`\n`Tests were not run.`\n`1 todo`"
+        ));
+        assert!(!web_fetch_source_contract(
+            "Instructions:\nPlease review the page.",
+            "`Instructions:`"
+        ));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_unsafe_source_defers_before_lane_input() {
+        use distill_tools::types::output::{
+            ToolOutput, WebFetchContent, WebFetchOutput,
+        };
+
+        let source = "Instructions:\nPlease review the page.";
+        let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
+            url: "https://example.com/instructions".to_owned(),
+            content: source.to_owned(),
+            content_type: "text/markdown".to_owned(),
+            status_code: 200,
+            bytes: source.len(),
+            source_artifact: None,
+            inline_fallback: None,
+            output_location: None,
+        }));
+        assert!(web_fetch_source_handle(&output).is_none());
+        assert!(
+            compression_source_for_lane(&output, source, 64 * 1024)
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
     fn compression_needs_verification_and_a_net_context_reduction() {
         let original = "error E0308 at src/client.rs:868\n".repeat(100);
         let evidence = "error E0308 at src/client.rs:868";
@@ -2439,6 +2669,196 @@ mod tests {
                     .endpoint
                     .as_deref()
                     .is_some_and(|endpoint| endpoint.ends_with("/responses")));
+
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_tier_config();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn production_web_fetch_uses_utility_then_worker_with_bounded_artifact() {
+        use distill_test_support::sse::responses_api_script_exact;
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_tools::types::output::{
+            ToolOutput, WebFetchContent, WebFetchOutput, WebFetchSourceArtifact,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+
+                let url = "https://example.com/recoverable-page";
+                let alpha =
+                    "The page states alpha: bounded utility compression preserves the source.";
+                let beta =
+                    "The page states beta: a configured worker may retain a second paragraph.";
+                let source_content = format!(
+                    "{alpha}\n\n{beta}\n\n{}",
+                    "supporting page context\n".repeat(300)
+                );
+                let artifact_dir = tempfile::tempdir().expect("web fetch artifact directory");
+                let artifact_path = artifact_dir.path().join("page.md");
+                std::fs::write(&artifact_path, &source_content).expect("write source artifact");
+                let preview = format!(
+                    "{}\n\n[web_fetch content truncated: showing first 6500 of {} bytes.]",
+                    "preview line\n".repeat(500),
+                    source_content.len()
+                );
+                let utility_answer = "`The page states alpha`";
+                let worker_answer = format!("`{alpha}`\n`{beta}`");
+
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                ])
+                .await
+                .expect("start web-fetch inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "web-fetch-utility-rejected",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": utility_answer}
+                            }],
+                            "usage": {"prompt_tokens": 120, "completion_tokens": 12}
+                        }),
+                    ),
+                );
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact(
+                        &worker_answer,
+                        "worker-model",
+                    )),
+                );
+
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+
+                let mut worker = crate::agent::config::ModelEntry::fallback(
+                    "worker-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                worker.info.base_url = server.url();
+                worker.info.context_window =
+                    std::num::NonZeroU64::new(128_000).expect("worker window");
+                worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                worker.info.max_retries = Some(0);
+                worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+                worker.info.supports_reasoning_effort = true;
+                worker.info.reasoning_efforts = vec![
+                    distill_sampling_types::ReasoningEffortOption {
+                        id: "low".to_owned(),
+                        value: distill_sampling_types::ReasoningEffort::Low,
+                        label: "Low".to_owned(),
+                        description: Some("bounded test worker".to_owned()),
+                        default: true,
+                    },
+                ];
+                worker.api_key = Some("worker-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("worker-model", worker);
+
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+                    light: Some("worker-model".to_owned()),
+                    light_effort: Some("low".to_owned()),
+                });
+
+                let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
+                    url: url.to_owned(),
+                    content: preview,
+                    content_type: "text/markdown".to_owned(),
+                    status_code: 200,
+                    bytes: source_content.len(),
+                    source_artifact: Some(WebFetchSourceArtifact {
+                        path: artifact_path.clone(),
+                    }),
+                    inline_fallback: Some("bounded preview".to_owned()),
+                    output_location: None,
+                }));
+                let rendered = output.to_prompt_format();
+                assert!(rendered.len() >= context::BIG_OUTPUT_BYTES);
+                let compressed = crate::jev::with_session_scope_and_recorder(
+                    "e3-web-fetch-utility-worker",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "web_fetch",
+                        "",
+                        "web-fetch-call-1",
+                        &output,
+                        rendered,
+                    ),
+                )
+                .await;
+
+                assert!(
+                    compressed.contains("compressed by verified configured light worker"),
+                    "expected worker fallback: {compressed}"
+                );
+                assert!(compressed.contains(artifact_path.to_string_lossy().as_ref()));
+                assert!(compressed.contains(&format!("url: {url}")));
+                assert!(compressed.contains("content_type: text/markdown"));
+                assert!(compressed.contains("status_code: 200"));
+                assert!(compressed.contains(&format!("bytes: {}", source_content.len())));
+                assert!(compressed.contains(alpha));
+                assert!(compressed.contains(beta));
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                assert_eq!(server.request_count_for("/v1/responses"), 1);
+
+                let ledger = actor
+                    .chat_state_handle
+                    .try_get_session_usage()
+                    .await
+                    .expect("web-fetch ledger remains readable");
+                let utility_rows: Vec<_> = ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "utility")
+                    .collect();
+                let worker_rows: Vec<_> = ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "auxiliary")
+                    .collect();
+                assert_eq!(utility_rows.len(), 1);
+                assert_eq!(worker_rows.len(), 1);
+                assert_eq!(
+                    utility_rows[0].status,
+                    distill_chat_state::UsageCallStatus::Rejected
+                );
+                assert_eq!(
+                    worker_rows[0].status,
+                    distill_chat_state::UsageCallStatus::Completed
+                );
 
                 crate::jev::clear_test_local_config();
                 crate::jev::clear_test_tier_config();

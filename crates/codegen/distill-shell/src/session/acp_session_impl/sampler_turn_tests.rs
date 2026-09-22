@@ -267,6 +267,114 @@ async fn route_capacity_parser_and_admission_preserve_parent_window() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn sampler_preparation_keeps_one_million_parent_when_utility_is_confident() {
+    use super::super::support::create_test_actor;
+    use distill_sampling_types::{ApiBackend, ReasoningEffort};
+    use std::num::NonZeroU64;
+    use tokio::task::LocalSet;
+
+    LocalSet::new()
+        .run_until(async {
+            let home = tempfile::tempdir().expect("test Jev home");
+            std::fs::write(
+                home.path().join("config.toml"),
+                "[jev.ladder]\nb2_local_model = true\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+            )
+            .expect("write test Jev config");
+            let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut actor = create_test_actor(0, 1_000_000, 85, gateway_tx, persistence_tx).await;
+
+            let mut utility = crate::agent::config::ModelEntry::fallback(
+                "utility-model",
+                &crate::agent::config::EndpointsConfig::default(),
+            );
+            utility.info.base_url = "https://utility.example/v1".to_owned();
+            utility.info.context_window = NonZeroU64::new(262_144).expect("utility window");
+            utility.info.api_backend = ApiBackend::ChatCompletions;
+            utility.api_key = Some("utility-test-key".to_owned());
+            actor
+                .models_manager
+                .insert_test_entry("utility-model", utility);
+
+            let mut config = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            config.context_window = NonZeroU64::new(1_000_000).expect("parent window");
+            config.max_completion_tokens = Some(131_072);
+            config.reasoning_effort = Some(ReasoningEffort::High);
+            actor.chat_state_handle.update_sampling_config(config);
+            actor
+                .jev_effort_auto
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                model: Some("utility-model".to_owned()),
+                max_context_tokens: Some(262_144),
+                min_capability: Some(0.98),
+                ..Default::default()
+            });
+            crate::jev::set_test_decision_answers([Some({
+                let answers = [
+                    (
+                        distill_workspace::jev::catalog::routing::LOCAL_CAPABLE_QUESTION,
+                        0.99,
+                    ),
+                    (
+                        distill_workspace::jev::catalog::routing::LOCAL_CONTEXT_QUESTION,
+                        0.01,
+                    ),
+                    (
+                        distill_workspace::jev::catalog::routing::LOCAL_FRONTIER_QUESTION,
+                        0.01,
+                    ),
+                ]
+                .into_iter()
+                .map(|(question, noul)| {
+                    (
+                        question.to_owned(),
+                        distill_workspace::jev::Answer::Noul { noul },
+                    )
+                })
+                .collect();
+                distill_workspace::jev::JevAnswerSet {
+                    model: "test-decision-model".to_owned(),
+                    answers,
+                    usage: Default::default(),
+                    request_id: Some("test-decision".to_owned()),
+                    latency_ms: 0,
+                }
+            })]);
+
+            let prepared = actor.prepare_sampler_for_turn().await;
+            assert_eq!(prepared.model, "test");
+            assert_eq!(prepared.context_window, 1_000_000);
+            assert_eq!(prepared.max_completion_tokens, Some(131_072));
+            assert_eq!(prepared.reasoning_effort, Some(ReasoningEffort::High));
+            assert_eq!(
+                crate::jev::test_decision_answers_remaining(),
+                1,
+                "utility confidence must not invoke whole-agent model routing"
+            );
+            let signals = actor
+                .signals_handle()
+                .snapshot()
+                .await
+                .expect("signals actor should be alive");
+            assert_eq!(signals.active_model_id.as_deref(), Some("test"));
+            assert_eq!(signals.active_context_window_tokens, Some(1_000_000));
+
+            crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_local_config();
+            crate::jev::clear_test_tier_config();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn route_preflight_keeps_mid_salvage_terminal_without_rewrite_or_usage() {
     use super::super::support::create_test_actor;
     use super::super::TurnParkState;

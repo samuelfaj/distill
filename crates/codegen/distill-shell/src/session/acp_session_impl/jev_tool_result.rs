@@ -1856,6 +1856,12 @@ fn failing_tests(body: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn set_utility_review_choices(choices: &[&str]) {
+        crate::jev::set_test_decision_answers(choices.iter().map(|choice| {
+            Some(crate::jev_cheap::test_utility_review_answer(choice))
+        }));
+    }
+
     #[test]
     fn web_search_source_contract_rejects_detached_url_and_dropped_qualifier() {
         use distill_tools::types::output::WebSearchOutput;
@@ -2274,6 +2280,7 @@ mod tests {
                 assert!(crate::jev::lever_active(JevLever::ECheapCompress));
                 assert!(!crate::jev::lever_active(JevLever::ECheapTask));
 
+                set_utility_review_choices(&["allow", "accept"]);
                 let accepted = crate::jev::with_session_scope_and_recorder(
                     "e3-production-order-accepted",
                     Some(actor.chat_state_handle.clone()),
@@ -2351,6 +2358,7 @@ mod tests {
                 }
                 let rejected_actor = super::super::support::plain_actor().await;
                 install_catalog(&rejected_actor, &rejected_server);
+                set_utility_review_choices(&["allow", "allow"]);
                 let rejected_sources = vec![
                     format!(
                         "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nfirst payload\n{}",
@@ -2425,6 +2433,7 @@ mod tests {
                     .iter()
                     .all(|row| row.status == distill_chat_state::UsageCallStatus::Failed));
 
+                set_utility_review_choices(&["allow", "accept"]);
                 rejected_server.enqueue_response(
                     "/v1/chat/completions",
                     ScriptedResponse::json(
@@ -2592,6 +2601,7 @@ mod tests {
                     light_effort: Some("low".to_owned()),
                 });
 
+                set_utility_review_choices(&["allow", "accept"]);
                 let output = ToolOutput::WebSearch(WebSearchOutput {
                     query: query.to_owned(),
                     content: source_content,
@@ -2793,6 +2803,7 @@ mod tests {
                     light_effort: Some("low".to_owned()),
                 });
 
+                set_utility_review_choices(&["allow", "accept"]);
                 let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
                     url: url.to_owned(),
                     content: preview,
@@ -3003,6 +3014,7 @@ mod tests {
                     light_effort: Some("low".to_owned()),
                 });
 
+                set_utility_review_choices(&["allow", "accept"]);
                 let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(
                     TaskOutputResult {
                         task_id: snapshot.task_id.clone(),
@@ -3077,7 +3089,7 @@ mod tests {
                 let home = tempfile::tempdir().expect("test Jev home");
                 std::fs::write(
                     home.path().join("config.toml"),
-                    "[jev.ladder]\ne_cheap_compress = true\n",
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
                 )
                 .expect("write test Jev config");
                 let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
@@ -3105,6 +3117,7 @@ mod tests {
                     client,
                     slug: "utility-model".to_owned(),
                 };
+                set_utility_review_choices(&["allow"]);
                 let result = crate::jev::with_session_scope_and_recorder(
                     "e3-utility-cancellation",
                     Some(actor.chat_state_handle.clone()),
@@ -3136,6 +3149,265 @@ mod tests {
                     rows[0].status,
                     distill_chat_state::UsageCallStatus::Cancelled
                 );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_cancellation_after_response_preserves_rejected_billing() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start post-review cancellation stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "utility-completed-before-post-review",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "`source line`"}
+                            }],
+                            "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                        }),
+                    ),
+                );
+                let actor = super::super::support::plain_actor().await;
+                let client = distill_workspace::jev::cheap::CheapClient::with_key_resolver(
+                    distill_workspace::jev::cheap::CheapConfig {
+                        base_url: server.url(),
+                        model: "utility-model".to_owned(),
+                        ..Default::default()
+                    },
+                    std::sync::Arc::new(|_| Some("utility-test-key".to_owned())),
+                )
+                .expect("build post-review cancellation client");
+                let lane = crate::jev_cheap::CheapLane {
+                    client,
+                    slug: "utility-model".to_owned(),
+                };
+                set_utility_review_choices(&["allow", "accept"]);
+                let (entered, _release) = crate::jev_cheap::begin_test_post_review_pause();
+                let entered_wait = entered.notified();
+                let task = tokio::task::spawn_local(crate::jev::with_session_scope_and_recorder(
+                    "e3-utility-post-review-cancellation",
+                    Some(actor.chat_state_handle.clone()),
+                    async move {
+                        lane.run_task_with_acceptance(
+                            JevLever::ECheapCompress,
+                            "cite_spans",
+                            "source line",
+                            "preserve the source line",
+                            true,
+                            |_| true,
+                        )
+                        .await
+                    },
+                ));
+                entered_wait.await;
+                task.abort();
+                assert!(task.await.expect_err("post-review task was cancelled").is_cancelled());
+                crate::jev_cheap::clear_test_post_review_pause();
+                crate::jev::clear_test_decision_answers();
+
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                let ledger = actor
+                    .chat_state_handle
+                    .try_get_session_usage()
+                    .await
+                    .expect("post-review cancellation ledger remains readable");
+                let rows: Vec<_> = ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "utility")
+                    .collect();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].model_id, "utility-model");
+                assert_eq!(rows[0].status, distill_chat_state::UsageCallStatus::Rejected);
+                let usage = rows[0].usage.as_ref().expect("completed usage is preserved");
+                assert_eq!(usage.prompt_tokens, 17);
+                assert_eq!(usage.completion_tokens, 3);
+                assert!(rows[0].usage_complete);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_post_review_states_and_consumer_rejection_are_bounded() {
+        use distill_workspace::jev::types::Answer;
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start post-review state stub");
+                for id in [
+                    "utility-post-reject",
+                    "utility-post-missing",
+                    "utility-post-low-confidence",
+                    "utility-consumer-reject",
+                ] {
+                    server.enqueue_response(
+                        "/v1/chat/completions",
+                        ScriptedResponse::json(
+                            200,
+                            serde_json::json!({
+                                "id": id,
+                                "model": "utility-model",
+                                "choices": [{
+                                    "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": "`source line`"}
+                                }],
+                                "usage": {"prompt_tokens": 11, "completion_tokens": 2}
+                            }),
+                        ),
+                    );
+                }
+                let actor = super::super::support::plain_actor().await;
+                let client = distill_workspace::jev::cheap::CheapClient::with_key_resolver(
+                    distill_workspace::jev::cheap::CheapConfig {
+                        base_url: server.url(),
+                        model: "utility-model".to_owned(),
+                        ..Default::default()
+                    },
+                    std::sync::Arc::new(|_| Some("utility-test-key".to_owned())),
+                )
+                .expect("build post-review state client");
+                let lane = crate::jev_cheap::CheapLane {
+                    client,
+                    slug: "utility-model".to_owned(),
+                };
+
+                set_utility_review_choices(&["allow", "reject"]);
+                let post_rejected = crate::jev::with_session_scope_and_recorder(
+                    "e3-utility-post-rejected",
+                    Some(actor.chat_state_handle.clone()),
+                    lane.run_task_with_acceptance(
+                        JevLever::ECheapCompress,
+                        "cite_spans",
+                        "source line",
+                        "preserve the source line",
+                        true,
+                        |_| true,
+                    ),
+                )
+                .await;
+                assert!(post_rejected.is_none());
+                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+
+                crate::jev::set_test_decision_answers([
+                    Some(crate::jev_cheap::test_utility_review_answer("allow")),
+                    None,
+                ]);
+                let post_missing = crate::jev::with_session_scope_and_recorder(
+                    "e3-utility-post-missing",
+                    Some(actor.chat_state_handle.clone()),
+                    lane.run_task_with_acceptance(
+                        JevLever::ECheapCompress,
+                        "cite_spans",
+                        "source line",
+                        "preserve the source line",
+                        true,
+                        |_| true,
+                    ),
+                )
+                .await;
+                assert!(post_missing.is_none());
+                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+
+                let mut low_confidence = crate::jev_cheap::test_utility_review_answer("accept");
+                if let Some(Answer::Choice { confidence, .. }) =
+                    low_confidence.answers.get_mut("decision")
+                {
+                    *confidence = Some(0.5);
+                }
+                crate::jev::set_test_decision_answers([
+                    Some(crate::jev_cheap::test_utility_review_answer("allow")),
+                    Some(low_confidence),
+                ]);
+                let post_uncertain = crate::jev::with_session_scope_and_recorder(
+                    "e3-utility-post-uncertain",
+                    Some(actor.chat_state_handle.clone()),
+                    lane.run_task_with_acceptance(
+                        JevLever::ECheapCompress,
+                        "cite_spans",
+                        "source line",
+                        "preserve the source line",
+                        true,
+                        |_| true,
+                    ),
+                )
+                .await;
+                assert!(post_uncertain.is_none());
+                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+
+                set_utility_review_choices(&["allow", "accept"]);
+                let consumer_rejected = crate::jev::with_session_scope_and_recorder(
+                    "e3-utility-consumer-rejected",
+                    Some(actor.chat_state_handle.clone()),
+                    lane.run_task_with_acceptance(
+                        JevLever::ECheapCompress,
+                        "cite_spans",
+                        "source line",
+                        "preserve the source line",
+                        true,
+                        |_| false,
+                    ),
+                )
+                .await;
+                assert!(consumer_rejected.is_none());
+                assert_eq!(
+                    crate::jev::test_decision_answers_remaining(),
+                    1,
+                    "consumer rejection must not consume the post-review decision"
+                );
+                crate::jev::clear_test_decision_answers();
+
+                let ledger = actor
+                    .chat_state_handle
+                    .try_get_session_usage()
+                    .await
+                    .expect("post-review state ledger remains readable");
+                let rows: Vec<_> = ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "utility")
+                    .collect();
+                assert_eq!(rows.len(), 4);
+                assert!(rows.iter().all(|row| {
+                    row.status == distill_chat_state::UsageCallStatus::Rejected
+                        && row.usage.is_some()
+                        && row.usage_complete
+                }));
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 4);
             })
             .await;
     }

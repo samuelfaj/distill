@@ -1142,9 +1142,6 @@ impl SessionActor {
         // Choose this call's executor independently of each model's effort policy.
         // Explicit efforts stay fixed; auto efforts use that candidate's own menu.
         self.jev_choose_model_and_effort(&mut sampler_config).await;
-        // B2 (local): with a local model configured, the free model takes the
-        // call whenever it can fully do it.
-        self.jev_route_micro_call(&mut sampler_config).await;
         // B2 (money lever): a routine turn may run at a cheaper setting; the
         // pass can only lower effort, and it is off until its gate passes.
         self.jev_apply_model_tier(&mut sampler_config).await;

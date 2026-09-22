@@ -72,6 +72,12 @@ fn install_display_catalog(
     });
 }
 
+fn set_utility_review_choices(choices: &[&str]) {
+    crate::jev::set_test_decision_answers(choices.iter().map(|choice| {
+        Some(crate::jev_cheap::test_utility_review_answer(choice))
+    }));
+}
+
 /// Checks that an auxiliary call replays the parent conversation verbatim and appends one instruction. A prefix that shifts cannot hit the cache.
 fn assert_rides_parent_prefix(
     body: &serde_json::Value,
@@ -1237,6 +1243,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 ConversationItem::assistant("patched the race and re-ran the suite"),
             ]);
 
+            set_utility_review_choices(&["allow", "accept"]);
             actor.restart_turn_summary("pid-happy".into());
             assert!(
                 actor.turn_summary_task.borrow().is_some(),
@@ -1383,6 +1390,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 "display attempts must remain session-only: {prompt_display_rows:?}"
             );
 
+            crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
             crate::jev::clear_test_tier_config();
         })
@@ -1740,6 +1748,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 .expect("recap Messages body");
             assert_messages_rides_parent_prefix(&body, parent.clone(), "recap");
 
+            set_utility_review_choices(&["allow", "accept", "allow", "accept"]);
             actor.restart_turn_summary("prompt-3".to_string());
             for _ in 0..200 {
                 if actor.turn_summary_task.borrow().is_none() {
@@ -1784,6 +1793,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 2
             );
 
+            crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
             crate::jev::clear_test_tier_config();
         })
@@ -1893,6 +1903,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     .expect("recap Messages body");
                 assert_messages_reasoning_stripped(&body, "recap");
 
+                set_utility_review_choices(&["allow", "accept", "allow", "accept"]);
                 actor.restart_turn_summary("prompt-3".to_string());
                 for _ in 0..200 {
                     if actor.turn_summary_task.borrow().is_none() {
@@ -1928,6 +1939,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                 assert!(!display_requests.contains("signed thinking"));
                 assert!(!display_requests.contains("you are a coding agent"));
 
+                crate::jev::clear_test_decision_answers();
                 crate::jev::clear_test_local_config();
                 crate::jev::clear_test_tier_config();
             }

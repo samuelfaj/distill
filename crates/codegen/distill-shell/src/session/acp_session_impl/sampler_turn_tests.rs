@@ -438,6 +438,7 @@ fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
     use distill_sampler::{RetryPolicy, SamplerActor, SamplerConfig, SamplingErrorInfo};
     use distill_test_support::sse::responses_api_script_exact;
     use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+    use std::num::NonZeroU64;
     use std::sync::Arc;
     use tokio::task::LocalSet;
 
@@ -502,7 +503,61 @@ fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
                 parent_config.api_backend = ApiBackend::Responses;
                 parent_config.model = "test".to_owned();
                 parent_config.max_completion_tokens = Some(131_072);
-                actor.chat_state_handle.update_sampling_config(parent_config);
+                actor
+                    .chat_state_handle
+                    .update_sampling_config(parent_config.clone());
+
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("system"),
+                    ConversationItem::user("continue the goal"),
+                ]);
+                let mut budget_config = parent_config.clone();
+                budget_config.context_window = NonZeroU64::new(100_000).unwrap();
+                budget_config.max_completion_tokens = Some(8_192);
+                actor
+                    .chat_state_handle
+                    .update_sampling_config(budget_config);
+                actor.chat_state_handle.record_token_usage(80_000);
+                let budget_request = actor
+                    .chat_state_handle
+                    .build_request(
+                        Vec::new(),
+                        None,
+                        false,
+                        None,
+                        actor.session_id_string(),
+                        "budgeted-builder".to_owned(),
+                    )
+                    .await
+                    .expect("budgeted request from the production builder");
+                assert_eq!(budget_request.max_output_tokens, None);
+                actor.tool_context.task_output_token_budget = Some(
+                    crate::tools::tool_context::TaskOutputTokenBudget::limited(50_000),
+                );
+                let configured_output_tokens = actor
+                    .chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .expect("budget config")
+                    .max_completion_tokens;
+                let child_output_tokens = actor
+                    .tool_context
+                    .clamp_task_model_request(
+                        budget_request.max_output_tokens,
+                        configured_output_tokens,
+                    )
+                    .expect("child grant must remain available");
+                assert_eq!(configured_output_tokens, Some(8_192));
+                assert_eq!(child_output_tokens, Some(8_192));
+                assert!(
+                    80_000 + u64::from(child_output_tokens.unwrap()) + 2_048 <= 100_000,
+                    "the configured child ceiling must fit the concrete 80K/100K request"
+                );
+                actor.tool_context.task_output_token_budget = None;
+                actor
+                    .chat_state_handle
+                    .update_sampling_config(parent_config.clone());
+                actor.chat_state_handle.record_token_usage(49_646);
 
                 let route = actor.reconstruct_full_config().await;
                 let error = SamplingErrorInfo {
@@ -525,11 +580,6 @@ fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
                     .expect("authoritative serving cap must bind this exact route");
                 assert_eq!(learned_route.context_window, 131_072);
 
-                actor.chat_state_handle.replace_conversation(vec![
-                    ConversationItem::system("system"),
-                    ConversationItem::user("continue the goal"),
-                ]);
-                actor.chat_state_handle.record_token_usage(49_646);
                 let mut request = actor
                     .chat_state_handle
                     .build_request(

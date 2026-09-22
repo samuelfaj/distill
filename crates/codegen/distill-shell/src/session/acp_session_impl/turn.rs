@@ -2965,9 +2965,20 @@ impl SessionActor {
                 request.json_schema = json_schema.clone();
             }
             request.hosted_tools = self.hosted_tools_for_turn();
+            let configured_output_tokens = if self.tool_context.task_output_token_budget.is_some() {
+                self.chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .and_then(|config| config.max_completion_tokens)
+            } else {
+                None
+            };
             request.max_output_tokens = self
                 .tool_context
-                .clamp_task_model_request(request.max_output_tokens)
+                .clamp_task_model_request(
+                    request.max_output_tokens,
+                    configured_output_tokens,
+                )
                 .map_err(|message| {
                     crate::sampling::error::local_error("max_output_tokens_clamp_failed", message)
                 })?;

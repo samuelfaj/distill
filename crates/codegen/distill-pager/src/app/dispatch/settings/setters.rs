@@ -1818,13 +1818,12 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
 // SHELL-OWNED. Unlike `default_model`, these do NOT mutate live runtime state; they update `current_ui` mirrors and persist.
 // No live preview. Rollback touches only the disk and the mirror.
 
-/// Outer dispatcher for `Action::SetTierLight`: the session model's lighter
-/// sibling.
+/// Outer dispatcher for `Action::SetTierLight`: the worker model.
 ///
-/// The value is a `[model.<id>]` entry id, validated at the command boundary.
-/// The sibling rule (same provider, same backend, same credential) is enforced
-/// in the shell where the tier is resolved, and reported by `/tiers`; this only
-/// writes.
+/// The value is a `[model.<id>]` entry id on any provider, validated against
+/// the catalog at the command boundary. Whether it may also share the session's
+/// conversation (same provider, backend and credential) is decided in the shell
+/// where the tier is resolved, and reported by `/tiers`; this only writes.
 pub(in crate::app::dispatch) fn set_tier_light(
     app: &mut AppView,
     id: String,

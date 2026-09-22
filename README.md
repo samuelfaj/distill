@@ -52,7 +52,7 @@ model, or enter `/tiers`. You can edit each tier in that screen.
 | Tier | Purpose | Picker |
 |---|---|---|
 | Reasoning model | Handles the main conversation, difficult reasoning, and code changes. | `/model` or `/tiers reasoning` |
-| Worker model | Takes suitable calls in the same conversation when a lighter model can handle them. Optional. | `/worker-model` or `/tiers worker` |
+| Worker model | Handles bounded subagent work and tool-result compression with its own context. Optional. | `/worker-model` or `/tiers worker` |
 | Utility model | Handles bounded tasks such as extraction, summaries, and compression. | `/utility-model` or `/tiers utility` |
 
 Each picker helps you choose a model and its effort. `auto` is available and is

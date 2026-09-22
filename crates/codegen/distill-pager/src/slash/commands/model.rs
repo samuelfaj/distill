@@ -187,7 +187,7 @@ pub(super) fn tier_suggestions(models: &ModelState, query: &str, worker: bool) -
     let eligible = if worker {
         models
             .current_model_id_str()
-            .map(distill_shell::jev::compatible_worker_models)
+            .map(distill_shell::jev::worker_candidates)
             .unwrap_or_default()
     } else {
         super::provider_status::openrouter_entries()

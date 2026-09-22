@@ -2612,6 +2612,14 @@ async fn fresh_task_uses_configured_worker_with_bounded_new_context() {
     let configured_worker = configured_worker_model_for(&request, None);
     assert_eq!(configured_worker.as_deref(), Some("muse-model"));
 
+    let mut reviewer_request = request.clone();
+    reviewer_request.subagent_type = "code-reviewer".to_string();
+    assert_eq!(
+        configured_worker_model_for(&reviewer_request, None),
+        None,
+        "independent review must not silently use the execution worker"
+    );
+
     let (config, model_id, _) = resolve_effective_model_config(
         None,
         "general-purpose",

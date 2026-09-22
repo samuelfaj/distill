@@ -641,6 +641,7 @@ fn configured_worker_model_for(
     // model-facing TaskTool delegation. Explicit pins, resumed state, and
     // forked full-context children retain their existing semantics.
     if request.runtime_overrides.model.is_some()
+        || request.subagent_type == "code-reviewer"
         || request.runtime_overrides.model_override_provenance != ModelOverrideProvenance::Tool
         || request.resume_from.is_some()
         || request.fork_context

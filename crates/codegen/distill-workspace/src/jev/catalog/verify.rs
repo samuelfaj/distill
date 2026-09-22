@@ -468,8 +468,9 @@ pub fn diff_review_note_with(review: &DiffReview, next_level: Option<&str>) -> O
     let confidence = review.confidence?;
     let second_opinion = review.needs_other_model.then(|| {
         format!(
-            "Jev reviewed this change and cannot settle it on its own: get it reviewed by a \
-             different model — a review subagent pinned to another model — before moving on \
+            "Jev reviewed this change and cannot settle it on its own: ask the read-only \
+             code-reviewer subagent on a different model before moving on; provide the resulting \
+             diff, acceptance criteria and test evidence, without the full conversation \
              (p={confidence:.2})."
         )
     });

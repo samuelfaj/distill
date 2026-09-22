@@ -6,7 +6,8 @@ effort it needs, or which parts of a tool result are worth keeping.
 
 Of the three tiers set in [Choose your models](../README.md#choose-your-models),
 the Reasoning model handles calls unless a routing decision selects another
-path. The Worker shares the conversation. Utility tasks receive a bounded
+path. A different Worker model receives a fresh, bounded task instead of the
+conversation history. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
@@ -16,7 +17,7 @@ full conversation.
                 +-------------+-------------+
                 |                           |
           Reasoning model              Worker model
-                |                  same conversation
+                |                 bounded task context
                 |
            Utility tasks
      bounded payloads and checked results
@@ -30,22 +31,25 @@ the harness keeps its normal execution path.
 
 ## Reasoning and Worker
 
-Jev chooses between the configured Reasoning and Worker models for each call.
+Jev keeps the conversation on the Reasoning model. A different Worker model
+handles fresh, bounded subagent tasks and tool-result compression, including
+when it uses the same provider. Sharing the full conversation requires the
+same wire model and transport; provider identity alone does not preserve the
+other model's prompt cache.
+
 `/effort auto` lets it choose the Reasoning model's effort; a fixed effort pins
 that model's intensity without disabling Worker routing. `/worker-model <model>
 [effort]` independently sets the Worker's effort, defaulting to `auto`. Explicit
 subagent model and effort policies remain pinned.
 
-Model selection and the candidates' separate effort questions share one request.
-Each effort is validated against the selected model's own menu, including model-ID
-variants. The Utility model also keeps its explicit effort, or uses its own auto
-selection. An uncertain answer preserves the selected model's configured default.
-The decision considers the next action, recent results, and the previous dispatch:
-Worker execution should be bounded and already decided; investigative tool use
-can still need the Reasoning model.
+Jev chooses effort from each model's supported menu. An uncertain answer keeps
+that model's configured default. A redo can raise effort when the previous
+attempt lacked reasoning; the next independent step can return to auto.
+Delegation is useful for a coherent task with clear acceptance criteria and
+small relevant context. A trivial step stays with the main agent; a fresh Worker
+subagent returns its result and verification rather than its full transcript.
 
-Worker routing requires a confidence of at least 0.55. Effort selection uses a
-floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
+Effort selection uses a confidence floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
 takes precedence over automatic effort selection.
 
 The configuration keys keep their internal names, so the Worker is `light` and
@@ -58,12 +62,27 @@ effort_auto = true
 [jev.tiers]
 light = "codex-luna"
 
-[jev.ladder]
-b2_light_model = true
 ```
 
-`light` names a configured model entry. Leave it unset to run without a Worker,
-or set `b2_light_model = false` to turn off Worker routing.
+`light` names a configured model entry. Leave it unset to run without a Worker.
+`b2_light_model` controls only the full-conversation tier choice for entries
+that resolve to the same wire model; it does not disable bounded Worker tasks.
+
+The built-in `code-reviewer` subagent inspects a substantive code checkpoint
+using a fresh, read-only context. It inherits the Reasoning model unless pinned
+through `[subagents.models]`; it never silently inherits the Worker. Give it the
+diff, acceptance criteria and test evidence. Routine or unchanged checkpoints
+do not need a separate review. Jev's change-risk decision can request a second
+opinion, while the agent chooses a reviewer at meaningful checkpoints and before
+final code handoff. Goal completion still uses its existing verifier.
+
+```toml
+[subagents.models]
+code-reviewer = "reviewer-catalog-entry"
+```
+
+The value must name an existing model catalog entry. Omit the setting to keep
+the review on the Reasoning model in a separate, focused context.
 
 ## Optional model facts and cache
 

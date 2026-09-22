@@ -197,7 +197,7 @@ pub fn render_tier_editor_overlay(
         buf,
         content.content,
         y,
-        "Worker must use the same family as Reasoning so the conversation stays compatible.",
+        "A worker on another provider only takes bounded tasks, never the conversation.",
         Style::default().fg(theme.gray_bright),
     );
     y = y.saturating_add(2);

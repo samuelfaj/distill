@@ -455,11 +455,8 @@ impl SessionActor {
 
     /// The session model's light sibling, resolved for a round.
     ///
-    /// Same family means the same provider, the same wire backend and the same
-    /// credential scheme: the pair has to be interchangeable for one round of
-    /// the same conversation. Anything else is refused with the reason — a swap
-    /// that changes the transport mid-conversation is not a routing decision,
-    /// it is a second session.
+    /// A different wire model cannot reuse the session model's cached prefix,
+    /// even when it uses the same provider. It serves fresh bounded tasks only.
     async fn light_tier(&self, hard_model: &str) -> LightTier {
         let tiers = crate::jev::tiers_cached();
         let Some(id) = tiers
@@ -483,10 +480,11 @@ impl SessionActor {
                  endpoint and window"
             ));
         };
-        // The rule lives in `crate::jev::same_family`, so the notice a user reads
-        // and the check a round makes cannot disagree.
-        if let Err(reason) = crate::jev::same_family(&hard.info, &light.info) {
-            return LightTier::Refused(reason);
+        // The notice and the round share one rule. A different model is a
+        // valid bounded worker, but replaying the conversation there loses the
+        // session model's cached prefix even on the same provider.
+        if crate::jev::same_family(&hard.info, &light.info).is_err() {
+            return LightTier::BoundedOnly;
         }
         let Some(cfg) = self.resolve_aux_sampler_config(id).await else {
             return LightTier::Refused(format!("`{id}` has no usable credential"));
@@ -914,6 +912,8 @@ enum LightTier {
     Unset,
     /// Configured, but it cannot run the session's conversation.
     Refused(String),
+    /// A different wire model or provider only takes bounded fresh-context work.
+    BoundedOnly,
     /// Same provider family as the session model, ready to take a round.
     Ready(Box<LightModel>),
 }
@@ -1159,6 +1159,69 @@ mod tests {
             selected.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(),
             vec!["late-skill"]
         );
+    }
+
+    /// A different model never replays the session, even when both entries use
+    /// the same provider. The worker remains available for bounded tasks.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_worker_on_another_provider_never_takes_a_round_of_the_conversation() {
+        use super::super::support::create_test_actor;
+        use distill_sampling_types::ApiBackend;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+                let actor = create_test_actor(0, 272_000, 85, gateway_tx, persistence_tx).await;
+                let endpoints = crate::agent::config::EndpointsConfig::default();
+                let entry = |slug: &str, base_url: &str, backend: ApiBackend| {
+                    let mut entry = crate::agent::config::ModelEntry::fallback(slug, &endpoints);
+                    entry.info.base_url = base_url.to_owned();
+                    entry.info.api_backend = backend;
+                    entry
+                };
+                let codex = "https://chatgpt.com/backend-api/codex";
+                actor.models_manager.insert_test_entry(
+                    "chatgpt/chatgpt-6-astra",
+                    entry("chatgpt-6-astra", codex, ApiBackend::Responses),
+                );
+                actor.models_manager.insert_test_entry(
+                    "chatgpt/chatgpt-6-luna",
+                    entry("chatgpt-6-luna", codex, ApiBackend::Responses),
+                );
+                let mut muse = entry(
+                    "muse-spark-1.3-contributor",
+                    "https://openrouter.ai/api/v1",
+                    ApiBackend::ChatCompletions,
+                );
+                muse.api_key = Some("openrouter-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("openrouter/muse-spark-1.3-contributor", muse);
+
+                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+                    light: Some("openrouter/muse-spark-1.3-contributor".to_owned()),
+                    light_effort: None,
+                });
+                let tier = actor.light_tier("chatgpt/chatgpt-6-astra").await;
+                assert!(
+                    matches!(tier, LightTier::BoundedOnly),
+                    "a cross-provider worker must stay out of the conversation, not be refused"
+                );
+
+                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+                    light: Some("chatgpt/chatgpt-6-luna".to_owned()),
+                    light_effort: None,
+                });
+                let tier = actor.light_tier("chatgpt/chatgpt-6-astra").await;
+                assert!(
+                    matches!(tier, LightTier::BoundedOnly),
+                    "a different model on the same provider must not replay the conversation"
+                );
+                crate::jev::clear_test_tier_config();
+            })
+            .await;
     }
 
     /// The rank must follow the ladder, or B2 could "downgrade" upward.

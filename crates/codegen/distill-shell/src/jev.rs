@@ -1189,16 +1189,18 @@ pub enum LightTierStatus {
         name: String,
         effort: String,
         window: u64,
+        /// Same wire model and transport as the session ([`same_family`]), so
+        /// it may share a round. A different model runs bounded fresh-context
+        /// work (task subagents, tool-result compression) instead.
+        shares_conversation: bool,
     },
 }
 
 /// Whether two models can stand in for each other for one round.
 ///
-/// Same family means the same provider, the same wire backend and the same
-/// credential scheme: the pair must be interchangeable for one round of the same
-/// conversation. A swap that changes the transport mid-conversation is not a
-/// routing decision, it is a second session, so anything else is refused with
-/// the reason instead of being attempted.
+/// A full-conversation round can move only between entries for the same wire
+/// model, provider, backend and credential. Another model may accept the
+/// history but cannot reuse this model's cached prompt prefix.
 pub fn same_family(
     hard: &crate::agent::config::ModelInfo,
     light: &crate::agent::config::ModelInfo,
@@ -1223,11 +1225,19 @@ pub fn same_family(
             light.model
         ));
     }
+    if light.model != hard.model {
+        return Err(format!(
+            "`{}` and `{}` are different models; use a fresh bounded worker task instead of replaying the conversation",
+            light.model, hard.model
+        ));
+    }
     Ok(())
 }
 
-/// Catalog keys that can share the reasoning model's conversation.
-pub fn compatible_worker_models(reasoning: &str) -> Vec<String> {
+/// Catalog keys that can serve as the worker for `reasoning`: any other entry,
+/// on any provider. Whether it may also share the conversation is
+/// [`same_family`]'s answer, reported by [`light_tier_status`].
+pub fn worker_candidates(reasoning: &str) -> Vec<String> {
     let Ok(raw) = crate::config::load_effective_config() else {
         return Vec::new();
     };
@@ -1235,32 +1245,32 @@ pub fn compatible_worker_models(reasoning: &str) -> Vec<String> {
         return Vec::new();
     };
     let models = crate::agent::config::resolve_model_list(&cfg, None);
-    let Some(hard) = crate::agent::config::find_model_by_id(&models, reasoning) else {
+    if crate::agent::config::find_model_by_id(&models, reasoning).is_none() {
         return Vec::new();
-    };
+    }
     models
-        .iter()
-        .filter(|(_, entry)| same_family(&hard.info, &entry.info).is_ok())
-        .map(|(id, _)| id.clone())
+        .keys()
+        .filter(|id| id.as_str() != reasoning)
+        .cloned()
         .collect()
 }
 
 /// Validate a worker candidate against the currently selected reasoning model.
-/// Both entries must exist in the resolved model catalog because the worker
-/// needs the same endpoint, backend and credential scheme: the rule
-/// [`same_family`] states. The conversation window is not part of it; a worker
-/// too small for one round is handled where the round is routed.
+/// Both entries must exist in the resolved model catalog, so the worker has its
+/// own endpoint, backend and credential. A different wire model only takes
+/// bounded fresh-context work and never a round of the session's conversation
+/// (see [`LightTierStatus::Ready::shares_conversation`]).
 pub fn validate_light_tier_candidate(hard_model: &str, light_model: &str) -> Result<(), String> {
     let raw = crate::config::load_effective_config()
         .map_err(|_| "the model catalog could not be read".to_owned())?;
     let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw)
         .map_err(|_| "the model catalog could not be read".to_owned())?;
     let models = crate::agent::config::resolve_model_list(&cfg, None);
-    let hard = crate::agent::config::find_model_by_id(&models, hard_model)
+    crate::agent::config::find_model_by_id(&models, hard_model)
         .ok_or_else(|| format!("`{hard_model}` is not in the model catalog"))?;
-    let light = crate::agent::config::find_model_by_id(&models, light_model)
+    crate::agent::config::find_model_by_id(&models, light_model)
         .ok_or_else(|| format!("`{light_model}` is not in the model catalog"))?;
-    same_family(&hard.info, &light.info)
+    Ok(())
 }
 
 /// The light tier against the on-disk catalog, for the surfaces that report it.
@@ -1294,9 +1304,7 @@ pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
              endpoint and window"
         ));
     };
-    if let Err(reason) = same_family(&hard.info, &light.info) {
-        return LightTierStatus::Refused(reason);
-    }
+    let shares_conversation = same_family(&hard.info, &light.info).is_ok();
     LightTierStatus::Ready {
         id,
         name: light
@@ -1308,6 +1316,7 @@ pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
             .light_effort
             .unwrap_or_else(|| "auto".to_owned()),
         window: light.info.context_window.get(),
+        shares_conversation,
     }
 }
 
@@ -1794,15 +1803,16 @@ mod tier_rule_tests {
         }
     }
 
-    /// The rule the user asked for: hard and light must be the same family and
-    /// share the conversation. Same provider, same backend, same credential —
-    /// anything else is refused with the reason, before a round can be routed
-    /// onto a transport the conversation never ran on.
+    /// A different model does not share a cached conversation prefix, even on
+    /// the same provider. An alias for the exact same wire model can share it.
     #[test]
-    fn the_same_family_rule_takes_a_sibling_and_refuses_a_stranger() {
+    fn the_same_family_rule_keeps_different_models_out_of_the_conversation() {
         let hard = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
+        let same_model = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
+        same_family(&hard, &same_model).expect("same wire model and transport");
         let sibling = model("gpt-5.6-luna", "https://chatgpt.com/backend-api/codex");
-        same_family(&hard, &sibling).expect("same host, backend and scheme");
+        let reason = same_family(&hard, &sibling).expect_err("different model loses cache");
+        assert!(reason.contains("different models"), "{reason}");
 
         let other_provider = model("grok-4.6", "https://api.x.ai/v1");
         let reason = same_family(&hard, &other_provider).expect_err("a stranger is refused");

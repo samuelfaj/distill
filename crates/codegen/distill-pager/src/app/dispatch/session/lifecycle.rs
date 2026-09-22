@@ -1876,10 +1876,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
     result: Result<Option<u64>, SwitchModelError>,
     prev_model_id: Option<acp::ModelId>,
 ) -> Vec<Effect> {
-    // The model the switch landed on, for the worker-family check below: a
-    // worker from another family than this one is refused on every round.
-    let mut switched_to: Option<String> = None;
-    let mut effects = if let Some(agent) = app.agents.get_mut(&agent_id) {
+    if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.session.model_switch_pending = false;
         let mut effects = match result {
             Ok(context_window) => {
@@ -1918,7 +1915,6 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 if unchanged {
                     vec![]
                 } else {
-                    switched_to = Some(model_id.0.to_string());
                     vec![Effect::PersistPreferredModel {
                         model_id: model_id.clone(),
                         reasoning_effort: resolved_effort,
@@ -1946,55 +1942,9 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
         effects
     } else {
         vec![]
-    };
-    if let Some(reasoning) = switched_to
-        && let Some(clear) = clear_worker_out_of_family(app, &reasoning)
-    {
-        effects.push(clear);
     }
-    effects
 }
 
-/// The write that drops `[jev.tiers].light` when it can no longer share
-/// `reasoning`'s conversation, plus the report of what was dropped.
-///
-/// `compatible_worker_models` is the same predicate the worker picker offers, so
-/// what is cleared here is exactly what the picker would no longer offer.
-fn clear_worker_out_of_family(app: &mut AppView, reasoning: &str) -> Option<Effect> {
-    let worker = distill_shell::jev::tiers_cached()
-        .light
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)?;
-    if !worker_out_of_family(&worker, &distill_shell::jev::compatible_worker_models(reasoning)) {
-        return None;
-    }
-    tracing::info!(
-        target: "settings",
-        key = "tier_light",
-        worker = %worker,
-        reasoning = %reasoning,
-        "worker model cleared: it can no longer share the reasoning model's conversation",
-    );
-    app.show_toast(&format!(
-        "Worker model cleared ({worker}): it cannot share {reasoning}'s conversation"
-    ));
-    Some(Effect::PersistTierModel {
-        worker: true,
-        model: String::new(),
-        effort: None,
-    })
-}
-
-/// Whether a configured worker can no longer share `reasoning`'s conversation.
-///
-/// `compatible` is the catalog's answer for the reasoning model. An empty answer
-/// means the catalog could not name it at all, and then the setting is kept: an
-/// unreadable or incomplete catalog must not delete a setting.
-pub(in crate::app::dispatch) fn worker_out_of_family(worker: &str, compatible: &[String]) -> bool {
-    !compatible.is_empty() && !compatible.iter().any(|id| id == worker)
-}
 pub(in crate::app::dispatch) fn dispatch_agent_type_mismatch_answered(
     app: &mut AppView,
     start_new: bool,
@@ -2002,8 +1952,7 @@ pub(in crate::app::dispatch) fn dispatch_agent_type_mismatch_answered(
     effort: Option<ReasoningEffort>,
 ) -> Vec<Effect> {
     if start_new {
-        let mut effects = dispatch_new_session_inner(app, Some(model_id.clone()));
-        let reasoning = model_id.0.to_string();
+        let effects = dispatch_new_session_inner(app, Some(model_id.clone()));
         if let ActiveView::Agent(new_aid) = app.active_view
             && let Some(agent) = app.agents.get_mut(&new_aid)
         {
@@ -2015,9 +1964,6 @@ pub(in crate::app::dispatch) fn dispatch_agent_type_mismatch_answered(
                     prev_model_id: None,
                 });
             }
-        }
-        if let Some(clear) = clear_worker_out_of_family(app, &reasoning) {
-            effects.push(clear);
         }
         effects
     } else {

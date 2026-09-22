@@ -264,13 +264,12 @@ pub async fn set_jev_local_model(value: String) -> Result<()> {
     .await
 }
 
-/// Persist `[jev.tiers].light`: the session model's lighter sibling.
+/// Persist `[jev.tiers].light`: the worker model.
 ///
-/// A `[model.<id>]` entry id, or empty to remove the tier. The shell refuses a
-/// sibling that is not the same provider, wire backend and credential scheme as
-/// the session model; the refusal is reported where the tier is read, never
-/// silently ignored. A sibling too small to hold the conversation is reported
-/// the same way, but it is not what the write refuses.
+/// A `[model.<id>]` entry id on any provider, or empty to remove the tier. A
+/// worker that is not the same provider, wire backend and credential scheme as
+/// the session model only takes bounded fresh-context work, never a round of
+/// the session's conversation; `/tiers` reports which one it is.
 pub async fn set_jev_tier_light(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {
         anyhow::bail!(

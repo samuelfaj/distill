@@ -1,6 +1,6 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP43 E1 pruning PASS (`a02181966d126686928b3b359c55aa384c03749c`, commit/push verificados); CP42 tool-discovery JSON compacto aceito; CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP44 worker configurado + baseline contábil reconciliados (`67a80c97`, `67d28abe`, commit/push verificados); CP43 E1 pruning PASS (`a02181966d126686928b3b359c55aa384c03749c`); CP42 tool-discovery JSON compacto aceito; CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido

@@ -1352,6 +1352,7 @@ fn builtin_tools_fragment(name: BuiltinAgentName) -> String {
         BuiltinAgentName::GeneralPurpose => distill_tool_types::GENERAL_PURPOSE_SUBAGENT,
         BuiltinAgentName::Explore => distill_tool_types::EXPLORE_SUBAGENT,
         BuiltinAgentName::Plan => distill_tool_types::PLAN_SUBAGENT,
+        BuiltinAgentName::CodeReviewer => distill_tool_types::EXPLORE_SUBAGENT,
         _ => return String::new(),
     };
     subagent.render_tools(&SUBAGENT_TOOL_NAMING)
@@ -1372,7 +1373,8 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
         return format!(
             "\n\nNo explicit model slugs are currently available. \
              Omit `{TASK_MODEL_PARAM}` for a fresh bounded task to use the configured Jev worker \
-             when available; otherwise inherit the parent model. Explicit model pins remain \
+             when available; a code-reviewer instead inherits the parent model unless pinned in \
+             [subagents.models]. Explicit model pins remain \
              authoritative, and resumed or full-context forked children retain their existing \
              model/context semantics."
         );
@@ -1383,11 +1385,13 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
+        "\n\nIf the user explicitly asks for the model of a subagent/task, or a Jev review signal \
+         requires a different model, you may ONLY use model slugs from this list:\n\
          {model_list}\n\n\
          If the user does not explicitly request a model, omit `{TASK_MODEL_PARAM}`. For a fresh \
-         bounded task this uses the configured Jev worker when available; otherwise it inherits \
-         the parent model. Explicit model pins remain authoritative, and resumed or full-context \
+         bounded task this uses the configured Jev worker when available; a code-reviewer instead \
+         inherits the parent model unless pinned in [subagents.models]. Explicit model pins remain \
+         authoritative, and resumed or full-context \
          forked children retain their existing model/context semantics."
     )
 }
@@ -1421,6 +1425,15 @@ pub(crate) fn build_task_description(
         .collect();
     let mut description = distill_tool_types::build_task_description(&descriptors, &TASK_TOOL_NAMING);
     description.push_str(&task_model_guidance(model_slugs));
+    if subagents.iter().any(|entry| entry.name == "code-reviewer") {
+        description.push_str(
+            "\n\nDelegate coherent, bounded implementation work with the goal, acceptance criteria \
+             and relevant paths; return the result and verification, not the parent transcript. \
+             After a substantive code checkpoint or before final handoff, use code-reviewer when \
+             independent review could catch a material defect. Provide the diff, criteria and test \
+             evidence. Skip trivial or unchanged checkpoints and do not repeat review of the same diff.",
+        );
+    }
     description
 }
 fn resolve_shell_for_prompt() -> String {
@@ -1752,6 +1765,7 @@ mod tests {
         )];
         let desc = build_task_description(&subagents, &[], &ChildToolNames::new());
         assert!(desc.contains("- **code-reviewer**: Reviews code for bugs and style issues."));
+        assert!(desc.contains("substantive code checkpoint"));
         assert!(
             !desc.contains(distill_tool_types::GENERAL_PURPOSE_SUBAGENT.tools_template),
             "user-defined entries should not get built-in tool fragments"

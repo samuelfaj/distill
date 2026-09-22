@@ -640,7 +640,7 @@ where
     Ok(opt)
 }
 /// Eliminates string matching in discovery and ensures built-in names are defined in exactly one place.
-/// `subagent_variants()` returns only the 3 exposed to the LLM. The remaining 6 are resolvable by name but not advertised.
+/// `subagent_variants()` returns the built-ins exposed to the LLM.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr, IntoStaticStr,
 )]
@@ -664,6 +664,7 @@ pub enum BuiltinAgentName {
     GeneralPurpose,
     Explore,
     Plan,
+    CodeReviewer,
     BrowserUse,
     #[strum(
         to_string = "distill-orchestrator",
@@ -693,13 +694,14 @@ impl BuiltinAgentName {
             Self::GeneralPurpose => AgentDefinition::general_purpose(),
             Self::Explore => AgentDefinition::explore(),
             Self::Plan => AgentDefinition::plan(),
+            Self::CodeReviewer => AgentDefinition::code_reviewer(),
             Self::BrowserUse => AgentDefinition::browser_use(),
             Self::DistillOrchestrator => AgentDefinition::distill_orchestrator(),
         }
     }
     /// Built-in agents available as subagents via the Task tool.
     pub fn subagent_variants() -> &'static [Self] {
-        &[Self::GeneralPurpose, Self::Explore, Self::Plan]
+        &[Self::GeneralPurpose, Self::Explore, Self::Plan, Self::CodeReviewer]
     }
 }
 /// Portable agent identity, parsed from .grok/agents/*.md. Usable as a top-level agent or a subagent.
@@ -1546,6 +1548,23 @@ impl AgentDefinition {
             ..Self::base(BuiltinAgentName::Plan, "")
         }
     }
+    pub fn code_reviewer() -> Self {
+        Self {
+            description: "Review a completed code checkpoint for concrete defects using focused evidence. Read-only.".to_string(),
+            tool_config: explore_toolset(),
+            permission_mode: PermissionMode::Plan,
+            prompt_body: Some(
+                "Review the supplied change independently against its goal and acceptance criteria. \
+                 Inspect relevant files and test evidence. Report only concrete defects with a path, \
+                 location, impact and how to verify them. Distinguish verified defects from uncertainty. \
+                 Do not edit files or claim checks you did not run. If no defect is supported, say so \
+                 and state the limits of the review."
+                    .to_string(),
+            ),
+            inherit_skills: false,
+            ..Self::base(BuiltinAgentName::CodeReviewer, "")
+        }
+    }
     pub fn browser_use() -> Self {
         Self {
             prompt_mode: PromptMode::Full,
@@ -1702,6 +1721,7 @@ mod tests {
                 | BuiltinAgentName::GeneralPurpose
                 | BuiltinAgentName::Explore
                 | BuiltinAgentName::Plan
+                | BuiltinAgentName::CodeReviewer
                 | BuiltinAgentName::BrowserUse
                 | BuiltinAgentName::DistillOrchestrator => false,
             };
@@ -1856,6 +1876,7 @@ mod tests {
             | BuiltinAgentName::GeneralPurpose
             | BuiltinAgentName::Explore
             | BuiltinAgentName::Plan
+            | BuiltinAgentName::CodeReviewer
             | BuiltinAgentName::Opencode
             | BuiltinAgentName::BrowserUse => false,
         }
@@ -2523,6 +2544,7 @@ description: Test default tool config
             ("general-purpose", BuiltinAgentName::GeneralPurpose),
             ("explore", BuiltinAgentName::Explore),
             ("plan", BuiltinAgentName::Plan),
+            ("code-reviewer", BuiltinAgentName::CodeReviewer),
             ("browser-use", BuiltinAgentName::BrowserUse),
         ] {
             let parsed = BuiltinAgentName::from_str(s).unwrap();
@@ -2552,10 +2574,24 @@ description: Test default tool config
     #[test]
     fn test_builtin_agent_name_subagent_variants() {
         let variants = BuiltinAgentName::subagent_variants();
-        assert_eq!(variants.len(), 3);
+        assert_eq!(variants.len(), 4);
         assert!(variants.contains(&BuiltinAgentName::GeneralPurpose));
         assert!(variants.contains(&BuiltinAgentName::Explore));
         assert!(variants.contains(&BuiltinAgentName::Plan));
+        assert!(variants.contains(&BuiltinAgentName::CodeReviewer));
+    }
+    #[test]
+    fn code_reviewer_has_read_only_tools_and_independent_prompt() {
+        let definition = BuiltinAgentName::CodeReviewer.definition();
+        assert_eq!(definition.permission_mode, PermissionMode::Plan);
+        let ids: Vec<_> = definition
+            .tool_config
+            .tools
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect();
+        assert!(!ids.iter().any(|id| id.contains("bash") || id.contains("edit")));
+        assert!(definition.prompt_body.unwrap().contains("concrete defects"));
     }
     #[test]
     fn test_all_builtins_have_inherit_model() {

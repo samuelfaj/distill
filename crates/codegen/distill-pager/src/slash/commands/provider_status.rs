@@ -118,25 +118,36 @@ pub fn tier_status(reasoning_model: Option<&str>) -> String {
          A configured OpenRouter model can also be entered as `vendor/model`.",
     );
     match reasoning_model.map(distill_shell::jev::light_tier_status) {
-        Some(distill_shell::jev::LightTierStatus::Ready { name, window, .. }) => {
+        Some(distill_shell::jev::LightTierStatus::Ready {
+            name,
+            window,
+            shares_conversation,
+            ..
+        }) => {
             out.push_str(&format!(
                 "\n\nWorker model: {name} ({window} tokens of context)\n  \
-                 Handles routine steps that do not need the reasoning model. It must use \
-                 the same provider, backend, and credential so it can share the conversation."
+                 Handles routine steps that do not need the reasoning model."
             ));
+            out.push_str(if shares_conversation {
+                " It shares the provider, so it can also take a round of the conversation."
+            } else {
+                " It runs on another provider, so it only takes bounded tasks that start from \
+                 their own context (subagents, tool-result compression); the conversation stays \
+                 on the reasoning model instead of being sent twice."
+            });
         }
         Some(distill_shell::jev::LightTierStatus::Refused(reason)) => {
             out.push_str(&format!(
                 "\n\nWorker model: unavailable: {reason}\n  \
-                 Choose a model from the same family as the reasoning model."
+                 Choose a model from the model catalog."
             ));
         }
         Some(distill_shell::jev::LightTierStatus::Unset) | None => {
             out.push_str(
                 "\n\nWorker model: (not set)\n  \
-                 A worker model handles routine steps while sharing the conversation. Set it with \
+                 A worker model handles routine steps the reasoning model does not need. Set it with \
                  `/worker-model <model-id>`; a configured OpenRouter model may use `vendor/model`. \
-                 It must belong to the same model family.",
+                 It may run on another provider.",
             );
         }
     }

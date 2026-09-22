@@ -1,6 +1,6 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP23–CP27 funcionais aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP37 utility e CP35–CP36 de contexto funcionais aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
@@ -37,6 +37,35 @@ Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP23–CP27
 > (preservando pins) → saída necessária fiel/original recuperável se ambos
 > falharem. Contar cada chamada, rejeição, fallback e reabertura uma vez; não
 > usar um fallback pago de reasoning só para resumir.
+
+> **Status atual — CP37 / política de utility (22/09/2026):** no checkpoint
+> `d4add482`, o caminho de agente inteiro foi removido; resta somente a tarefa
+> fechada `cite_spans`, com input limitado a 24 KiB, pergunta a 2 KiB,
+> estado de revisão a 32 KiB e output de wire a 1024 tokens. Exige Jev
+> pré-chamada `>=0.98`, um limiar conservador de política e não uma garantia
+> calibrada, e pós-revisão Jev após a tarefa e o guard determinístico do
+> consumidor. Falha, incerteza ou indisponibilidade mantém o worker configurado
+> ou o original recuperável; cancelamento durante a pós-revisão conserva o
+> billing como `Rejected`, sem afirmar fallback automático ao worker. Utility é
+> apenas auxiliar: não tem autoridade para arquivo, ferramenta, edição ou
+> agente. O parent de 1M permanece preservado; a janela utility de 262144 foi
+> testada.
+>
+> CP35 (`e0511fd1`) corrigiu a reserva de output herdada e o phantom reserve do
+> Codex; CP36 (`93dc68d5`) preserva o teto do modelo em child budget; CP32
+> (`46fd5aa1`, utility disabled), CP33 (`bdae3b83`, docs), CP34
+> (`92fe97e6`, WebFetch) e a revisão independente de fonte R1 têm PASS. O
+> release isolado de `d4add482` terminou **BUILD PASS (3m19)**, com executável
+> versão `2.0.6` (`d4add4824cc6`); o checkout isolado fresco concluiu os testes
+> focados (**8 utility PASS + 1 display PASS**) e o binário foi instalado
+> atomicamente em `/Users/samuelfajreldines/dev/jev-build/target/release/distill`.
+> SHA-256 verificado:
+> `2c5f9436d3419568011935f1e142c2462d270f7206e1691a0e24d1aad3011f4f`.
+> O main workspace já tinha utility joint `8` + display `1` PASS; processos e
+> sessões de usuários já abertos não foram reiniciados e permanecem no estado
+> anterior. Fluxo live-provider/usuário ainda não foi verificado.
+> Os dois achados de ordenação de billing do E2 continuam não aceitos. Nenhum
+> T01–T21 está concluído e não há economia financeira matched/pareada validada.
 
 ## 1. Objetivo e critério de sucesso
 
@@ -245,6 +274,9 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Priorizar extração estruturada de saída não parseável, seleção de trechos apoiada em fonte, resumo de logs volumosos e títulos/resumos de apresentação. Classificação pura pode ir direto a Jev; parsing simples fica em código. Conectar somente tarefas com consumidor real e verificador suficiente.
   - Enviar apenas a instrução e o payload necessário, sem conversa, catálogo, ferramentas de edição ou loop de agente. Limitar resposta ao contrato; selecionar um utility compatível pela evidência de custo/sucesso. A chain gratuita→paga deve registrar qual modelo respondeu e o custo de esperas/falhas.
   - Começar sem reasoning quando suportado e comprovado suficiente. Não executar `best_of`/múltiplas amostras por padrão; uma nova tentativa precisa melhorar o custo esperado.
+  - **Estado CP37 (implementação funcional, T08 ainda aberto):** a única utility generativa ligada é `cite_spans`, com limites de input/question/review/output acima e sem autoridade de arquivo, ferramenta, edição ou agente. O limiar Jev `0.98` é uma política conservadora, não uma garantia calibrada. Todo resultado utility passa por revisão Jev posterior ao guard determinístico; rejeição, incerteza, indisponibilidade ou cancelamento durante a pós-revisão preserva worker/original e registra o billing como `Rejected`, sem afirmar fallback automático.
+  - A ordem comprovada é utility elegível → worker configurado limitado → saída fiel/original recuperável. Isso não autoriza uma utility a executar uma tarefa inteira, editar arquivos, chamar ferramentas ou criar/gerir agentes; não ampliar o escopo sem consumidor, contrato e revisão pós-geração.
+  - Evidência atual: revisão independente de fonte R1 PASS; o main workspace registrou utility joint `8` + display `1` PASS, parent `1M` incluído `8`, worker exact `1` e side-call `2` PASS. O checkout isolado fresco concluiu **8 utility PASS + 1 display PASS** após o **BUILD PASS (3m19)** de `d4add482`, e o executável `2.0.6` (`d4add4824cc6`) foi instalado atomicamente em `/Users/samuelfajreldines/dev/jev-build/target/release/distill`, com SHA-256 verificado. Processos/sessões já abertos não foram reiniciados e permanecem no estado anterior; fluxo live-provider/usuário não foi verificado. Ainda faltam custo/qualidade financeiros pareados para aceite de T08.
   - **Aceite/evidência:** para cada tarefa ligada, registrar elegível→chamada→aceita/rejeitada→usada, custo e chamadas principais evitadas. Quando houver conteúdo útil elegível, provar a ordem utility primeiro → worker configurado limitado em indisponibilidade/rejeição/unsupported → saída necessária fiel ou original recuperável se ambos falharem, preservando model/effort/auth pins e sem fallback pago de reasoning apenas para resumir. Cada chamada, rejeição, fallback e reabertura entra uma vez no ledger; manter ligada somente se a economia líquida e a qualidade forem demonstradas.
 
 - [ ] **T09 — Escolher rota pelo custo restante esperado, em um único ponto existente.**

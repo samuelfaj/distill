@@ -1,6 +1,6 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
@@ -79,6 +79,35 @@ Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP39 billin
 > `2m28`. Isso avança T01, mas não o conclui: não é CI amplo, live provider,
 > teste de timeout ou prontidão de piloto financeiro; não há alegação de preço
 > ou economia e nenhum binário CP39 instalado é afirmado.
+
+> **Status atual — CP40 / managed install versus running process (22/09/2026):**
+> a sessão urgente 01a0ca29-135b-75c0-aa71-e44b9be60afd falhou às 17:28 UTC
+> no teto DeepInfra 131072: 98853 input + 32768 output = 131621.
+> O controller provou independentemente que o PID 15301, iniciado às 13:43
+> locais, ainda executa ~/.local/share/distill/downloads/distill-2.0.6-local-b4a7ec2f7aef-macos-aarch64;
+> o symlink do PATH apontava para esse binário e --version retornou
+> 2c87833e5bb4. A remoção de utility-routing e o preflight fix do
+> CP37 (d4add482) existiam apenas no install release da raiz. O symlink
+> gerenciado foi então atualizado atomicamente para o artefato CP37 verificado,
+> SHA-256 2c5f9436d3419568011935f1e142c2462d270f7206e1691a0e24d1aad3011f4f;
+> recibo: /tmp/distill-cost-orchestration-20260921-b02qc6vm/urgent-context-managed-install.json.
+> O PID 15301 continua antigo; CUA Terminal bloqueado, portanto não há claim de
+> restart; o narrow liveproof PASS está registrado no CP41 abaixo, sem validar
+> todas as tarefas ou providers.
+> Este checkpoint registra diagnóstico, correção do install gerenciado e a
+> limitação install-versus-processo-running; não fecha Priority 1: E1/E2 e
+> economic compaction continuam pendentes.
+
+> **Status atual — CP41 / narrow liveproof (22/09/2026):** os artefatos exatos
+> urgent-context-live-proof.json e urgent-context-preflight-proof.log registram
+> o diagnóstico somente com tools disabled, plan e sem subagents. O fork da
+> sessão falha 01a0ca29-135b-75c0-aa71-e44b9be60afd para
+> 01a0ca30-ddb0-7ec1-8977-55501f94d48e retornou CONTEXT_OK: Grok 94745
+> input/30 output, Jev 650 input/58 output, sem utility call e zero stderr.
+> O log preflight existente mostra 1 teste passado, 0 falhas, 7065 filtrados.
+> O PID 15301 não foi reiniciado. Isto é somente PASS do fork diagnóstico
+> estreito; não valida todas as tarefas ou providers, não é claim de preço/economia,
+> e mantém E1/E2 e economic compaction pendentes.
 >
 > **Achado factual STAR — sessão `01a0c96b...` (22/09):** main: `374` calls /
 > `108,000,915` tokens; `24` child executions, `24,133,375` únicos após subtrair

@@ -296,9 +296,26 @@ pub(super) async fn record_subagent_usage(
     parent_prompt_id: Option<String>,
     incomplete: bool,
 ) -> bool {
+    record_subagent_usage_with_attributions(
+        parent_cmd_tx,
+        by_model,
+        Vec::new(),
+        parent_prompt_id,
+        incomplete,
+    )
+    .await
+}
+
+pub(super) async fn record_subagent_usage_with_attributions(
+    parent_cmd_tx: Option<&mpsc::UnboundedSender<SessionCommand>>,
+    by_model: Option<Vec<(String, distill_chat_state::UsageTotals)>>,
+    attributions: Vec<distill_chat_state::UsageAttribution>,
+    parent_prompt_id: Option<String>,
+    incomplete: bool,
+) -> bool {
     match by_model {
         None => false,
-        Some(by_model) if by_model.is_empty() && !incomplete => true,
+        Some(by_model) if by_model.is_empty() && attributions.is_empty() && !incomplete => true,
         Some(by_model) => {
             let Some(cmd_tx) = parent_cmd_tx else {
                 return false;
@@ -307,6 +324,7 @@ pub(super) async fn record_subagent_usage(
             if cmd_tx
                 .send(SessionCommand::RecordSubagentUsage {
                     by_model,
+                    attributions,
                     parent_prompt_id,
                     incomplete,
                     respond_to,
@@ -326,7 +344,7 @@ pub(super) async fn capture_and_fold_one_turn_usage(
     result: &mut SubagentResult,
     input: OneTurnUsageInput<'_>,
 ) -> bool {
-    let (by_model, incomplete, output_tokens, total_tokens) =
+    let (by_model, attributions, incomplete, output_tokens, total_tokens) =
         match super::handle_request::child_actor_query(
             "session_usage",
             input.child_handle.chat_state_handle.try_get_session_usage(),
@@ -339,14 +357,24 @@ pub(super) async fn capture_and_fold_one_turn_usage(
                 let total_tokens = canonical_total_tokens(&usage.totals);
                 let incomplete =
                     usage_is_incomplete(usage.incomplete, input.cancellation_may_hide_usage);
+                // A mixed child ledger cannot be represented by identity rows
+                // without a residual aggregate calculation. Keep its proven
+                // aggregate total; once every counted call has an attribution,
+                // send rows only so the parent cannot add both projections.
+                let fully_attributed = usage.attributions.len() as u64 == usage.totals.model_calls;
+                let attributions = fully_attributed.then_some(usage.attributions).unwrap_or_default();
+                let by_model = fully_attributed
+                    .then_some(Vec::new())
+                    .or_else(|| Some(usage.by_model.into_iter().collect::<Vec<_>>()));
                 (
-                    Some(usage.by_model.into_iter().collect::<Vec<_>>()),
+                    by_model,
+                    attributions,
                     incomplete,
                     (!incomplete).then_some(output_tokens),
                     Some(total_tokens),
                 )
             }
-            Err(()) => (None, true, None, None),
+            Err(()) => (None, Vec::new(), true, None, None),
         };
     result.total_tokens_used = total_tokens.unwrap_or(0);
     if let Some((task_spent, task_incomplete)) = input.task_budget_usage {
@@ -356,9 +384,10 @@ pub(super) async fn capture_and_fold_one_turn_usage(
         result.output_tokens_used = output_tokens.unwrap_or(0);
         result.output_usage_incomplete = incomplete || output_tokens.is_none();
     }
-    record_subagent_usage(
+    record_subagent_usage_with_attributions(
         input.parent_cmd_tx,
         by_model,
+        attributions,
         input.parent_prompt_id.map(str::to_owned),
         incomplete,
     )

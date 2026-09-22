@@ -214,6 +214,8 @@ pub enum PersistenceMsg {
             tokio::sync::oneshot::Sender<Result<(), crate::session::storage::AppendUpdateError>>,
     },
     ContentChunk(PersistenceContentChunk),
+    /// Register the weak chat-state recorder before the first content chunk can arrive.
+    RegisterInitialTitleUsageRecorder(distill_chat_state::WeakChatStateHandle),
     Chat(ConversationItem),
     AppendCwdSwitchAndAck {
         item: ConversationItem,
@@ -2193,6 +2195,9 @@ impl SessionPersistence {
                         &self.info.id.to_string(),
                         &self.info.cwd,
                     );
+                }
+                PersistenceMsg::RegisterInitialTitleUsageRecorder(recorder) => {
+                    self.summary.register_initial_title_recorder(recorder);
                 }
                 PersistenceMsg::GeneratedTitle(title) => {
                     // Auto-generated titles must never overwrite a title the user set via `/rename`

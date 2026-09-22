@@ -48,13 +48,13 @@ pub use actor::state::{
 pub use commands::{ModelMetadata, StrictAppendAck, StrictAppendError};
 pub use compaction_mode::CompactionMode;
 pub use events::ChatStateEvent;
-pub use handle::{ChatStateHandle, ChatStateMailboxClosed};
+pub use handle::{ChatStateHandle, ChatStateMailboxClosed, WeakChatStateHandle};
 pub use persistence::{
     ChatPersistence, MockChatPersistence, MockPersistenceReceiver, NullChatPersistence,
     PersistenceRecord, StripOutcome,
 };
 pub use types::*;
-pub use usage::{UsageLedger, UsageTotals};
+pub use usage::{UsageAttribution, UsageCallStatus, UsageCostBasis, UsageLedger, UsageTotals};
 // Re-exported so `distill_chat_state::CompactionDetail` stays a working path for
 // existing callers.
 pub use distill_compaction_transcript::CompactionDetail;

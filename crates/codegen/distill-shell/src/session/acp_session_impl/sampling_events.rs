@@ -2,6 +2,45 @@
 use super::*;
 
 impl SessionActor {
+    async fn record_sampler_retry_usage(
+        &self,
+        request_id: &distill_sampler::RequestId,
+        attempt: u32,
+        kind: distill_sampler::SamplingErrorKind,
+        captured: Option<UsageAttemptContext>,
+    ) {
+        let mut context = captured.unwrap_or_else(|| UsageAttemptContext {
+            attempt_id: format!("sampler:{}", request_id.as_str()),
+            task_id: None,
+            turn_id: None,
+            request_id: None,
+            role: "main_retry".to_owned(),
+            model_id: "<unknown>".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+        });
+        context.attempt_id = format!(
+            "{}:retry:{}:{attempt}",
+            context.attempt_id,
+            kind.as_ref()
+        );
+        // This is a physical sampler retry, not another foreground loop round.
+        // Keep it in the aggregate bill while the ledger's `main` role remains
+        // reserved for the round that owns `numTurns`.
+        context.role = "main_retry".to_owned();
+        self.chat_state_handle.record_usage_attribution(
+            context.into_attribution(
+                distill_chat_state::UsageCallStatus::Failed,
+                None,
+                false,
+                None,
+                None,
+            ),
+            true,
+        );
+    }
+
     async fn send_thought_chunk(&self, text: String, chunk_index: u64) {
         self.send_update(
             acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
@@ -414,6 +453,13 @@ impl SessionActor {
                 if !self.turn_stream_drained.lock().contains_key(&request_id) {
                     return;
                 }
+                let captured = self
+                    .turn_stream_drained
+                    .lock()
+                    .get(&request_id)
+                    .and_then(|ownership| ownership.usage_context.clone());
+                self.record_sampler_retry_usage(&request_id, attempt, kind, captured)
+                    .await;
                 if kind == distill_sampler::SamplingErrorKind::DoomLoopDetected {
                     let triggers = doom_loop_triggers.unwrap_or_default();
                     let (should_count, should_stamp) = {

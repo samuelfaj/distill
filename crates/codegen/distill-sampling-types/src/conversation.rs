@@ -798,12 +798,29 @@ impl TokenUsage {
     }
 }
 
+/// Convert a finite, non-negative USD amount to the exact integer tick scale
+/// used by the billing ledger (1 USD = 1e10 ticks).
+pub fn usd_cost_to_ticks(cost_usd: f64) -> Option<i64> {
+    if !cost_usd.is_finite() || cost_usd < 0.0 {
+        return None;
+    }
+    let ticks = cost_usd * 1e10;
+    if !ticks.is_finite() || ticks < 0.0 || ticks >= 2_f64.powi(63) {
+        return None;
+    }
+    Some(ticks.round() as i64)
+}
+
 impl From<Usage> for TokenUsage {
     fn from(u: Usage) -> Self {
         let cached_prompt_tokens = u
             .prompt_tokens_details
             .as_ref()
             .map_or(0, |d| d.cached_tokens);
+        let cache_creation_prompt_tokens = u
+            .prompt_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.cache_write_tokens);
         Self {
             prompt_tokens: u.prompt_tokens,
             completion_tokens: u.completion_tokens,
@@ -813,7 +830,7 @@ impl From<Usage> for TokenUsage {
                 .as_ref()
                 .map_or(0, |d| d.reasoning_tokens),
             cached_prompt_tokens,
-            cache_creation_prompt_tokens: 0,
+            cache_creation_prompt_tokens,
         }
     }
 }
@@ -830,8 +847,8 @@ pub struct ConversationResponse {
     /// Token usage statistics
     pub usage: Option<TokenUsage>,
     /// Server cost in USD ticks (1 USD = 1e10).
-    /// `None` when unreported.
-    /// Capture sites must normalize with [`reported_cost_ticks`].
+    /// `Some(0)` is an authoritative reported free call; `None` means
+    /// missing or invalid cost.
     pub cost_usd_ticks: Option<i64>,
     /// Number of `AgentMessageChunk` (text-only) streaming events emitted during this response.
     /// Reasoning/thought chunks are **not** counted.
@@ -845,7 +862,8 @@ pub struct ConversationResponse {
     /// Backend-neutral: normalized from the wire (Messages `message_delta.stop_details.explanation`).
     /// `None` otherwise and on backends that don't report one.
     pub stop_message: Option<String>,
-    /// Provider message id (Messages `message.id`); `None` on backends that do not carry one (OAI Chat Completions / Responses).
+    /// Provider message id (`message.id` on Messages, `id` on Chat Completions);
+    /// `None` on backends that do not carry one (such as Responses).
     pub message_id: Option<String>,
     /// Wire stop reason before it collapses into [`StopReason`]: verbatim on the Messages backend.
     /// On the Responses backend only length cuts on tool-less turns are carried.
@@ -857,9 +875,10 @@ pub struct ConversationResponse {
     pub stop_sequence: Option<String>,
 }
 
-/// Normalize a wire cost-ticks value at capture.
+/// Normalize a legacy wire cost-ticks value at capture.
 /// The REST layer backfills `0` for unreported cost, and negative ticks are never valid, so both become `None` ("unreported", never "free").
-/// Every ingestion path must route through this before storing [`ConversationResponse::cost_usd_ticks`].
+/// Authoritative USD costs use [`usd_cost_to_ticks`] so an explicit zero stays
+/// distinguishable from this legacy backfill.
 pub fn reported_cost_ticks(raw: Option<i64>) -> Option<i64> {
     raw.filter(|&t| t > 0)
 }

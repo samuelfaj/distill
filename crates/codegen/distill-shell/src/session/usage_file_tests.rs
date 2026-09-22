@@ -14,6 +14,26 @@ fn tu(prompt: u32, completion: u32) -> TokenUsage {
     }
 }
 
+fn attribution(id: &str) -> distill_chat_state::UsageAttribution {
+    distill_chat_state::UsageAttribution {
+        attempt_id: id.to_owned(),
+        task_id: None,
+        turn_id: None,
+        request_id: None,
+        role: "auxiliary".to_owned(),
+        model_id: "m".to_owned(),
+        endpoint: None,
+        requested_effort: None,
+        applied_effort: None,
+        status: distill_chat_state::UsageCallStatus::Failed,
+        usage: None,
+        usage_complete: false,
+        api_duration_ms: None,
+        cost_usd_ticks: None,
+        cost_basis: distill_chat_state::UsageCostBasis::Unknown,
+    }
+}
+
 fn live(calls: &[(&str, u32, u32, Option<i64>)]) -> UsageSummary {
     let mut ledger = UsageLedger::default();
     for (model, prompt, completion, cost) in calls {
@@ -41,6 +61,21 @@ fn first_turn_writes_session_and_one_turn() {
     assert_eq!(file.session.cost_usd_ticks, Some(50));
     assert_eq!(file.session.primary_model_id.as_deref(), Some("grok-4"));
     assert_eq!(file.updated_at, "2026-08-26T00:00:00Z");
+}
+
+#[test]
+fn auxiliary_missing_usage_is_visible_as_incomplete_and_non_free() {
+    let mut ledger = UsageLedger::default();
+    ledger.record_attribution(attribution("aux-missing"));
+
+    let summary = UsageSummary::from_ledger(&ledger);
+    assert_eq!(summary.model_calls, 1);
+    assert_eq!(summary.input_tokens, 0);
+    assert_eq!(summary.output_tokens, 0);
+    assert_eq!(summary.cost_usd_ticks, None);
+    assert!(summary.cost_is_partial);
+    assert!(summary.usage_is_incomplete);
+    assert_eq!(summary.model_usage["m"].model_calls, 1);
 }
 
 #[test]
@@ -253,4 +288,121 @@ fn covers_detects_same_process_vs_reset_ledger() {
     assert!(bigger.covers(&smaller));
     assert!(!smaller.covers(&bigger));
     assert!(smaller.covers(&UsageSummary::default()));
+}
+
+#[test]
+fn usage_summary_keeps_attribution_ids_unique_when_rows_are_folded() {
+    let duplicate = attribution("attempt-1");
+    let mut first = UsageSummary::default();
+    first.attributions.push(duplicate.clone());
+    let mut second = UsageSummary::default();
+    second
+        .attributions
+        .extend([duplicate, attribution("attempt-2")]);
+
+    let merged = first.saturating_add(&second);
+    assert_eq!(
+        merged
+            .attributions
+            .iter()
+            .map(|row| row.attempt_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["attempt-1", "attempt-2"]
+    );
+
+    let mut different = UsageSummary::default();
+    different.attributions.push(attribution("other"));
+    assert!(!different.covers(&first));
+}
+
+fn reported_live(calls: &[(&str, i64)]) -> UsageSummary {
+    let mut ledger = UsageLedger::default();
+    for (id, cost) in calls {
+        let mut row = attribution(id);
+        row.status = distill_chat_state::UsageCallStatus::Completed;
+        row.usage = Some(tu(1, 1));
+        row.usage_complete = true;
+        row.cost_usd_ticks = Some(*cost);
+        row.cost_basis = distill_chat_state::UsageCostBasis::Reported;
+        ledger.record_attribution(row);
+    }
+    UsageSummary::from_ledger(&ledger)
+}
+
+fn reported_free_live(ids: &[&str]) -> UsageSummary {
+    let calls: Vec<_> = ids.iter().map(|id| (*id, 0)).collect();
+    reported_live(&calls)
+}
+
+#[test]
+fn persistence_preserves_reported_free_cost_but_not_legacy_zero() {
+    let first = reported_free_live(&["free-1"]);
+    let continued = reported_free_live(&["free-1", "free-2"]);
+    let mut file = SessionUsageFile::new("sess-1");
+    file.apply_turn(1, "t1", &first, None);
+    file.apply_turn(2, "t2", &continued, Some(&first));
+
+    assert_eq!(file.turn(1).unwrap().usage.cost_usd_ticks, Some(0));
+    assert_eq!(file.turn(2).unwrap().usage.cost_usd_ticks, Some(0));
+    assert_eq!(file.session.cost_usd_ticks, Some(0));
+    for usage in [
+        &file.turn(1).unwrap().usage,
+        &file.turn(2).unwrap().usage,
+        &file.session,
+    ] {
+        let model = usage.model_usage.get("m").expect("free model row");
+        assert_eq!(model.cost_usd_ticks, Some(0));
+        assert!(!model.cost_is_partial);
+    }
+
+    let paid = reported_live(&[("paid-1", 7)]);
+    let paid_and_free = first.saturating_add(&paid);
+    assert_eq!(paid_and_free.cost_usd_ticks, Some(7));
+    assert!(!paid_and_free.cost_is_partial);
+    let model = paid_and_free
+        .model_usage
+        .get("m")
+        .expect("paid and free model row");
+    assert_eq!(model.cost_usd_ticks, Some(7));
+    assert!(!model.cost_is_partial);
+
+    let legacy_zero = UsageSummary {
+        cost_usd_ticks: Some(0),
+        ..UsageSummary::default()
+    };
+    assert_eq!(
+        legacy_zero
+            .saturating_add(&UsageSummary::default())
+            .cost_usd_ticks,
+        None
+    );
+    assert_eq!(
+        legacy_zero
+            .saturating_sub(&UsageSummary::default())
+            .cost_usd_ticks,
+        None
+    );
+
+    let legacy_unknown_call = UsageSummary {
+        model_calls: 1,
+        cost_usd_ticks: Some(0),
+        ..UsageSummary::default()
+    };
+    let mixed = legacy_unknown_call.saturating_add(&first);
+    assert_eq!(mixed.cost_usd_ticks, Some(0));
+    assert!(mixed.cost_is_partial);
+
+    let mut legacy_model = legacy_unknown_call.clone();
+    legacy_model.model_usage.insert(
+        "m".to_owned(),
+        UsageSummary {
+            model_calls: 1,
+            cost_usd_ticks: Some(0),
+            ..UsageSummary::default()
+        },
+    );
+    let mixed_model = legacy_model.saturating_add(&first);
+    let model = mixed_model.model_usage.get("m").expect("mixed model row");
+    assert_eq!(model.cost_usd_ticks, None);
+    assert!(model.cost_is_partial);
 }

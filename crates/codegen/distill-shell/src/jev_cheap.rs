@@ -149,8 +149,25 @@ impl CheapLane {
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         let span = tracing::info_span!(target: "jev.decision", "utility_context",
             session_id, turn_id, round_id, utility_call_id = %uuid::Uuid::new_v4());
+        let observed_client = crate::jev::active_usage_recorder().map(|recorder| {
+            let task_id = task_id.to_owned();
+            let turn_id = turn_id.clone();
+            let observer: distill_workspace::jev::types::AttemptObserver =
+                std::sync::Arc::new(move |attempt| {
+                    crate::jev::record_workspace_attempt(
+                        attempt,
+                        "utility",
+                        Some(task_id.clone()),
+                        Some(turn_id.clone()),
+                        recorder.clone(),
+                        true,
+                    );
+                });
+            self.client.with_call_observer(observer)
+        });
+        let request_client = observed_client.as_ref().unwrap_or(&self.client);
         let outcome = tracing::Instrument::instrument(
-            tasks::run(&self.client, task_id, payload, question),
+            tasks::run(request_client, task_id, payload, question),
             span,
         )
         .await;

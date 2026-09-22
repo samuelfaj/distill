@@ -3,11 +3,11 @@
 
 use std::collections::BTreeSet;
 
-use tokio::sync::{mpsc, oneshot};
 use distill_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
     ToolSpec, TraceContext,
 };
+use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{ChatStateCommand, RepairHistoryBlocked, StrictAppendAck, StrictAppendError};
 use crate::types::{
@@ -20,6 +20,13 @@ use crate::types::{
 #[derive(Clone)]
 pub struct ChatStateHandle {
     cmd_tx: mpsc::UnboundedSender<ChatStateCommand>,
+}
+
+/// Weak handle used by bounded background work that must not keep the chat-state
+/// actor alive after its owning session is gone.
+#[derive(Clone, Debug)]
+pub struct WeakChatStateHandle {
+    cmd_tx: mpsc::WeakUnboundedSender<ChatStateCommand>,
 }
 
 /// The chat-state actor can no longer accept commands.
@@ -45,6 +52,14 @@ impl ChatStateHandle {
     pub fn noop() -> Self {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
         Self { cmd_tx }
+    }
+
+    /// Downgrade this handle so a background task can observe session teardown
+    /// without creating a persistence-to-chat-state lifetime cycle.
+    pub fn downgrade(&self) -> WeakChatStateHandle {
+        WeakChatStateHandle {
+            cmd_tx: self.cmd_tx.downgrade(),
+        }
     }
 
     // ═══ Fire-and-forget mutations ═══
@@ -172,6 +187,19 @@ impl ChatStateHandle {
         });
     }
 
+    /// Record one dispatched attempt with its identity and provider metadata.
+    /// The actor deduplicates by `attempt_id` before folding totals.
+    pub fn record_usage_attribution(
+        &self,
+        attribution: crate::usage::UsageAttribution,
+        attribute_to_prompt: bool,
+    ) {
+        let _ = self.cmd_tx.send(ChatStateCommand::RecordUsageAttribution {
+            attribution,
+            attribute_to_prompt,
+        });
+    }
+
     /// Apply subagent usage; returns false if the actor did not acknowledge.
     pub async fn record_subagent_usage(
         &self,
@@ -179,9 +207,29 @@ impl ChatStateHandle {
         attribute_to_prompt: bool,
         incomplete: bool,
     ) -> bool {
+        self.record_subagent_usage_with_attributions(
+            by_model,
+            Vec::new(),
+            attribute_to_prompt,
+            incomplete,
+        )
+        .await
+    }
+
+    /// Apply child attempt rows when the child can prove that its rows cover
+    /// every counted call. The aggregate fallback remains available for old
+    /// or partially observed child sessions.
+    pub async fn record_subagent_usage_with_attributions(
+        &self,
+        by_model: Vec<(String, crate::usage::UsageTotals)>,
+        attributions: Vec<crate::usage::UsageAttribution>,
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    ) -> bool {
         self.query("RecordSubagentUsage", |reply| {
             ChatStateCommand::RecordSubagentUsage {
                 by_model,
+                attributions,
                 attribute_to_prompt,
                 incomplete,
                 reply,
@@ -763,5 +811,30 @@ impl ChatStateHandle {
         })
         .await
         .flatten()
+    }
+}
+
+impl WeakChatStateHandle {
+    /// Temporarily acquire a strong handle for one bounded operation.
+    pub fn upgrade(&self) -> Option<ChatStateHandle> {
+        self.cmd_tx
+            .upgrade()
+            .map(|cmd_tx| ChatStateHandle { cmd_tx })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weak_handle_does_not_keep_command_channel_alive() {
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let handle = ChatStateHandle::new(cmd_tx);
+        let weak = handle.downgrade();
+
+        assert!(weak.upgrade().is_some());
+        drop(handle);
+        assert!(weak.upgrade().is_none());
     }
 }

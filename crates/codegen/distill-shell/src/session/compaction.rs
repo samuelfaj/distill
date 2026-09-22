@@ -15,7 +15,7 @@ use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
     COMPACT_FAILED_PREFIX, CompactOutput, CompactionOutcome, build_compaction_prompt,
-    generate_session_compact, is_context_length_error,
+    generate_session_compact_with_observer, is_context_length_error,
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
@@ -154,7 +154,21 @@ impl SessionActor {
             .wall_clock_budget_secs;
         let hosted_tools = self.hosted_tools_for_turn();
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
-        match generate_session_compact(
+        let turn_id = crate::jev::telemetry_context().1;
+        let observer: distill_workspace::jev::types::AttemptObserver = std::sync::Arc::new({
+            let recorder = self.chat_state_handle.clone();
+            move |attempt| {
+                crate::jev::record_workspace_attempt(
+                    attempt,
+                    "compaction",
+                    Some("two_pass".to_owned()),
+                    (!turn_id.is_empty()).then(|| turn_id.clone()),
+                    recorder.clone(),
+                    false,
+                );
+            }
+        });
+        match generate_session_compact_with_observer(
             history,
             compaction_tool_tokens,
             tools,
@@ -166,6 +180,7 @@ impl SessionActor {
             wall_clock_budget_secs,
             self.compaction.tool_choice,
             &cancel,
+            Some(&observer),
         )
         .await
         {
@@ -1135,6 +1150,7 @@ impl SessionActor {
             wall_clock_budget_secs,
             self.compaction.tool_choice,
             cancel.clone(),
+            self.chat_state_handle.clone(),
         );
         let observer =
             crate::session::helpers::full_replace_compaction::ShellFullReplaceObserver::new(

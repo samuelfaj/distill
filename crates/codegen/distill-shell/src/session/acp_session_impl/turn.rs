@@ -2537,8 +2537,9 @@ impl SessionActor {
         salvage: &mut super::length_salvage::LengthSalvage,
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
-        let result = crate::jev::with_session_scope(
+        let result = crate::jev::with_session_scope_and_recorder(
             self.session_info.id.0.to_string(),
+            Some(self.chat_state_handle.clone()),
             self.process_conversation_turn_inner(
                 req_id,
                 trace_gcs_config,
@@ -3007,10 +3008,10 @@ impl SessionActor {
                     turn_parked,
                 )
                 .await;
-            let (response, latency) = match model_sampler_outcome {
-                Ok(SamplerTurnOutcome::Response(r, latency)) => {
+            let (response, latency, usage_context) = match model_sampler_outcome {
+                Ok(SamplerTurnOutcome::Response(r, latency, usage_context)) => {
                     salvage.response_arrived();
-                    (r, latency)
+                    (r, latency, usage_context)
                 }
                 Err(error) => {
                     if salvage.awaiting_continuation()
@@ -3348,7 +3349,11 @@ impl SessionActor {
                     },
                 );
             }
-            self.record_response_token_usage(&response, Some(model_duration_ms));
+            self.record_response_token_usage_with_context(
+                &response,
+                Some(model_duration_ms),
+                usage_context,
+            );
             let response_completed = self.response_completed_update(&response);
             if let Some(mut pt) = prompt_timing.take() {
                 pt.record_stream_latency(latency.time_to_last_byte_ms);

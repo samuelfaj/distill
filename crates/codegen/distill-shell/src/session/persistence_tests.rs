@@ -5,6 +5,7 @@ use crate::session::storage::jsonl::AppendDurability;
 struct ActorGuard {
     handle: PersistenceHandle,
     task: tokio::task::JoinHandle<()>,
+    _title_recorder: distill_chat_state::ChatStateHandle,
 }
 
 impl ActorGuard {
@@ -35,12 +36,14 @@ fn test_actor_inner(
     let (tx, rx) = mpsc::unbounded_channel();
     let (disk_full_tx, disk_full_rx) = tokio::sync::watch::channel(false);
     let sampling_client = OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap();
+    let title_recorder = distill_chat_state::ChatStateHandle::noop();
     let mut summary =
         crate::session::summary::SummaryGenerator::new(crate::session::summary::SummaryConfig {
             sampling_client,
             model: String::new(),
             persistence_tx: tx.downgrade(),
         });
+    summary.register_initial_title_recorder(title_recorder.downgrade());
     if mark_summary_done {
         summary.mark_done();
     }
@@ -71,6 +74,7 @@ fn test_actor_inner(
     ActorGuard {
         handle: PersistenceHandle::from_parts_for_test(tx, disk_full_rx),
         task,
+        _title_recorder: title_recorder,
     }
 }
 

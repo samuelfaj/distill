@@ -3,6 +3,151 @@
 
 use super::*;
 
+/// Identity captured at the sampler submission boundary. It is separate from
+/// the response so failed, cancelled, and retried requests can use the same
+/// ledger shape without inventing provider response fields.
+#[derive(Debug, Clone)]
+pub(crate) struct UsageAttemptContext {
+    pub(crate) attempt_id: String,
+    pub(crate) task_id: Option<String>,
+    pub(crate) turn_id: Option<String>,
+    pub(crate) request_id: Option<String>,
+    pub(crate) role: String,
+    pub(crate) model_id: String,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) requested_effort: Option<String>,
+    pub(crate) applied_effort: Option<String>,
+}
+
+impl UsageAttemptContext {
+    pub(crate) fn update_from_response(
+        &mut self,
+        response: &distill_sampling_types::ConversationResponse,
+    ) {
+        if let Some(message_id) = response.message_id.clone() {
+            self.request_id = Some(message_id);
+        }
+        if let Some(model_id) = response
+            .assistant()
+            .and_then(|assistant| assistant.model_id.clone())
+            .filter(|model| !model.is_empty())
+        {
+            self.model_id = model_id;
+        }
+    }
+
+    pub(crate) fn into_attribution(
+        self,
+        status: distill_chat_state::UsageCallStatus,
+        usage: Option<distill_sampling_types::TokenUsage>,
+        usage_complete: bool,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) -> distill_chat_state::UsageAttribution {
+        // ConversationResponse already normalized provider USD. Preserve an
+        // authoritative free response while rejecting impossible negatives.
+        let cost_usd_ticks = cost_usd_ticks.filter(|&ticks| ticks >= 0);
+        distill_chat_state::UsageAttribution {
+            attempt_id: self.attempt_id,
+            task_id: self.task_id,
+            turn_id: self.turn_id,
+            request_id: self.request_id,
+            role: self.role,
+            model_id: self.model_id,
+            endpoint: self.endpoint,
+            requested_effort: self.requested_effort,
+            applied_effort: self.applied_effort,
+            status,
+            usage,
+            usage_complete,
+            api_duration_ms,
+            cost_usd_ticks,
+            cost_basis: if cost_usd_ticks.is_some() {
+                distill_chat_state::UsageCostBasis::Reported
+            } else {
+                distill_chat_state::UsageCostBasis::Unknown
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context(attempt_id: &str) -> UsageAttemptContext {
+        UsageAttemptContext {
+            attempt_id: attempt_id.to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: Some("local-request".to_owned()),
+            role: "main".to_owned(),
+            model_id: "requested-model".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+        }
+    }
+
+    #[test]
+    fn normalized_provider_identity_and_free_cost_reach_ledger_once() {
+        let response = distill_sampling_types::ConversationResponse {
+            items: vec![distill_sampling_types::ConversationItem::assistant_with_model(
+                "answer",
+                "provider-model",
+            )],
+            stop_reason: None,
+            usage: Some(Default::default()),
+            cost_usd_ticks: Some(0),
+            message_chunks_emitted: 1,
+            doom_loop_signals: Vec::new(),
+            stop_message: None,
+            message_id: Some("provider-generation".to_owned()),
+            raw_stop_reason: None,
+            stop_sequence: None,
+        };
+
+        let mut request_context = context("attempt-free");
+        request_context.update_from_response(&response);
+        let attribution = request_context.into_attribution(
+            distill_chat_state::UsageCallStatus::Completed,
+            response.usage.clone(),
+            true,
+            Some(12),
+            response.cost_usd_ticks,
+        );
+
+        assert_eq!(attribution.request_id.as_deref(), Some("provider-generation"));
+        assert_eq!(attribution.model_id, "provider-model");
+        assert_eq!(attribution.cost_usd_ticks, Some(0));
+        assert_eq!(attribution.cost_basis, distill_chat_state::UsageCostBasis::Reported);
+
+        let mut ledger = distill_chat_state::UsageLedger::default();
+        ledger.record_attribution(attribution.clone());
+        ledger.record_attribution(attribution);
+        assert_eq!(ledger.attributions.len(), 1);
+        assert_eq!(
+            ledger.attributions[0].request_id.as_deref(),
+            Some("provider-generation")
+        );
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(0));
+        assert_eq!(ledger.totals.cost_missing_calls, 0);
+
+        for (attempt_id, raw_cost) in [("attempt-missing", None), ("attempt-negative", Some(-1))]
+        {
+            let attribution = context(attempt_id).into_attribution(
+                distill_chat_state::UsageCallStatus::Completed,
+                None,
+                false,
+                None,
+                raw_cost,
+            );
+            assert_eq!(attribution.cost_usd_ticks, None);
+            assert_eq!(attribution.cost_basis, distill_chat_state::UsageCostBasis::Unknown);
+        }
+    }
+}
+
 /// Controls how MCP server system-reminders are injected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpReminderMode {
@@ -65,6 +210,7 @@ pub(crate) enum SamplerTurnOutcome {
     Response(
         Box<ConversationResponse>,
         Box<distill_sampler::InferenceLatencyStats>,
+        UsageAttemptContext,
     ),
     CompactAndResubmit,
     /// Retry through the auth-retry schedule. Mirrors

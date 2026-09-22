@@ -14,9 +14,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::error::{JevError, JevErrorKind};
-use super::provider::{ChatReply, JevProvider, ReasoningShape, chat_request_body, parse_chat_reply};
+use super::provider::{
+    ChatReply, JevProvider, ReasoningShape, chat_request_body, parse_chat_reply,
+    parse_response_metadata,
+};
 use super::types::{
-    JevAnswerSet, Json, Question, QuestionId, SystemOneRequest, SystemOneResponse, Usage,
+    AttemptGuard, AttemptObserver, AttemptStatus, JevAnswerSet, Json, Question, QuestionId,
+    SystemOneRequest, SystemOneResponse, Usage,
 };
 
 /// Default endpoint root; overridable per config (never from project config).
@@ -101,6 +105,7 @@ pub struct JevClient {
     http: reqwest::Client,
     config: JevClientConfig,
     key_resolver: ApiKeyResolver,
+    observer: Option<AttemptObserver>,
 }
 
 fn env_key_resolver() -> ApiKeyResolver {
@@ -130,7 +135,19 @@ impl JevClient {
             http,
             config,
             key_resolver,
+            observer: None,
         })
+    }
+
+    /// Clone the transport with a turn-scoped observer. The cached client stays
+    /// observer-free so concurrent sessions cannot cross-wire records.
+    pub fn with_call_observer(&self, observer: AttemptObserver) -> Self {
+        Self {
+            http: self.http.clone(),
+            config: self.config.clone(),
+            key_resolver: self.key_resolver.clone(),
+            observer: Some(observer),
+        }
     }
 
     pub fn config(&self) -> &JevClientConfig {
@@ -181,6 +198,20 @@ impl JevClient {
         let deadline = self.config.timeout;
         let http = self.http.clone();
         let url = self.config.endpoint();
+        let mut attempt_guard = AttemptGuard::new(
+            self.observer.as_ref(),
+            self.config.model.clone(),
+            url.clone(),
+            Some(self.config.reasoning_effort.clone()),
+        );
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_applied_effort(super::provider::transmitted_reasoning_effort(
+                self.config.provider,
+                self.config.reasoning_shape,
+                &self.config.reasoning_effort,
+                self.config.max_completion_tokens,
+            ));
+        }
 
         // One attempt; the deadline covers connection, response *and body read*.
         let attempt = async {
@@ -219,12 +250,30 @@ impl JevClient {
                     ))
                     .redact(&secret));
                 }
-                Ok(Err(err)) => return Err(err.redact(&secret)),
+                Ok(Err(err)) => {
+                    if let Some(guard) = attempt_guard.take() {
+                        guard.finish(AttemptStatus::Failed);
+                    }
+                    return Err(err.redact(&secret));
+                }
                 Ok(Ok(parts)) => parts,
             };
         let latency_ms = started.elapsed().as_millis() as u64;
+        let (response_model, response_id, response_usage, response_billing) =
+            parse_response_metadata(&bytes);
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_response(
+                response_id.clone().or(request_id.clone()),
+                response_model,
+                (!response_usage.is_empty()).then_some(response_usage),
+            );
+            guard.set_billing(response_billing);
+        }
 
         if !status.is_success() {
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(AttemptStatus::Failed);
+            }
             let parsed: Option<Json> = serde_json::from_slice(&bytes).ok();
             return Err(JevError::from_status(
                 status.as_u16(),
@@ -235,8 +284,20 @@ impl JevClient {
             .redact(&secret));
         }
 
-        self.parse_reply(&bytes, questions, request_id, latency_ms)
-            .map_err(|error| error.redact(&secret))
+        match self.parse_reply(&bytes, questions, request_id, latency_ms) {
+            Ok(answers) => {
+                if let Some(guard) = attempt_guard.take() {
+                    guard.finish(AttemptStatus::Completed);
+                }
+                Ok(answers)
+            }
+            Err(error) => {
+                if let Some(guard) = attempt_guard.take() {
+                    guard.finish(AttemptStatus::Rejected);
+                }
+                Err(error.redact(&secret))
+            }
+        }
     }
 
     /// One request body for the configured provider: the System One envelope, or
@@ -288,6 +349,7 @@ impl JevClient {
                 id,
                 content,
                 usage,
+                billing: _,
                 truncated,
             } = parse_chat_reply(bytes)?;
             if truncated {

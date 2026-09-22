@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::error::JevError;
-use super::types::{Answer, Json, Question, QuestionId, Usage};
+use super::types::{Answer, Json, Question, QuestionId, Usage, UsageBilling};
 
 /// Which wire protocol the decision layer speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -162,6 +162,46 @@ pub fn reasoning_object(shape: ReasoningShape, level: &str, max_tokens: u32) -> 
             let budget = reasoning_budget_tokens(level).min(max_tokens.saturating_sub(64));
             (budget > 0).then(|| json!({ "max_tokens": budget }))
         }
+    }
+}
+
+/// Describe the reasoning setting emitted by the Jev request builder.
+///
+/// Typed Jev requests have no reasoning field; OpenRouter requests use the
+/// same mapping as [`reasoning_object`]. `none` is retained when it was an
+/// explicit caller setting, while `absent` means that no reasoning setting was
+/// sent (or that a zero budget could not be sent).
+pub fn transmitted_reasoning_effort(
+    provider: JevProvider,
+    shape: ReasoningShape,
+    level: &str,
+    max_tokens: u32,
+) -> Option<String> {
+    if provider.speaks_typed_envelope() {
+        return Some("absent".to_owned());
+    }
+    let level = level.trim();
+    if shape == ReasoningShape::Disabled {
+        return Some("disabled".to_owned());
+    }
+    if level.is_empty() {
+        return Some("absent".to_owned());
+    }
+    if level.eq_ignore_ascii_case("none") {
+        return Some("none".to_owned());
+    }
+    match shape {
+        ReasoningShape::None => Some("absent".to_owned()),
+        ReasoningShape::Effort => Some(format!("effort:{level}")),
+        ReasoningShape::MaxTokens => {
+            let budget = reasoning_budget_tokens(level).min(max_tokens.saturating_sub(64));
+            if budget > 0 {
+                Some(format!("max_tokens:{budget}"))
+            } else {
+                Some("absent".to_owned())
+            }
+        }
+        ReasoningShape::Disabled => Some("disabled".to_owned()),
     }
 }
 
@@ -384,8 +424,110 @@ pub struct ChatReply {
     /// The assistant message text (the JSON answer object lives here).
     pub content: String,
     pub usage: Usage,
+    pub billing: UsageBilling,
     /// `finish_reason == "length"`: the answer was cut, so it cannot be trusted.
     pub truncated: bool,
+}
+
+fn parse_usd_ticks(value: Option<&Json>) -> Option<i64> {
+    let raw = match value {
+        Some(Json::String(value)) => value.clone(),
+        Some(Json::Number(value)) => value.to_string(),
+        _ => return None,
+    };
+    let raw = raw.trim();
+    if raw.is_empty() || raw.starts_with('-') {
+        return None;
+    }
+    let (mantissa, exponent) = raw
+        .split_once(['e', 'E'])
+        .map_or((raw, 0_i32), |(mantissa, exponent)| {
+            (mantissa, exponent.parse::<i32>().ok().unwrap_or(i32::MIN))
+        });
+    if exponent == i32::MIN {
+        return None;
+    }
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty() && fraction.is_empty()
+        || !whole.chars().all(|c| c.is_ascii_digit())
+        || !fraction.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let significant = digits.trim_start_matches('0');
+    let integer = if significant.is_empty() {
+        0_i128
+    } else {
+        significant.parse::<i128>().ok()?
+    };
+    let scale = i32::try_from(fraction.len()).ok()?.saturating_sub(exponent);
+    let ticks = if scale <= 10 {
+        integer.checked_mul(10_i128.checked_pow((10 - scale) as u32)?)?
+    } else {
+        let extra = usize::try_from(scale - 10).ok()?;
+        digits
+            .chars()
+            .rev()
+            .take(extra)
+            .all(|c| c == '0')
+            .then_some(integer / 10_i128.checked_pow(extra as u32)?)?
+    };
+    // JSON `cost: 0` is an authoritative free response; legacy tick backfills
+    // are normalized separately by the attribution path.
+    (ticks >= 0 && ticks <= i128::from(i64::MAX)).then_some(ticks as i64)
+}
+
+fn parse_wire_usage(body: &Json) -> (Usage, UsageBilling) {
+    let wire_usage = body.get("usage");
+    let token = |key: &str| {
+        wire_usage
+            .and_then(|value| value.get(key))
+            .and_then(Json::as_u64)
+    };
+    let nested_token = |outer: &str, inner: &str| {
+        wire_usage
+            .and_then(|value| value.get(outer))
+            .and_then(|value| value.get(inner))
+            .and_then(Json::as_u64)
+    };
+    let usage = Usage {
+        input_tokens: token("prompt_tokens").or_else(|| token("input_tokens")),
+        output_tokens: token("completion_tokens").or_else(|| token("output_tokens")),
+    };
+    let billing = UsageBilling {
+        cached_input_tokens: nested_token("prompt_tokens_details", "cached_tokens")
+            .or_else(|| nested_token("input_tokens_details", "cached_tokens"))
+            .or_else(|| token("cached_prompt_tokens"))
+            .or_else(|| token("cache_read_input_tokens")),
+        cache_creation_input_tokens: token("cache_creation_input_tokens")
+            .or_else(|| nested_token("prompt_tokens_details", "cache_write_tokens")),
+        reasoning_tokens: nested_token("completion_tokens_details", "reasoning_tokens"),
+        cost_usd_ticks: parse_usd_ticks(wire_usage.and_then(|value| value.get("cost")))
+            .or_else(|| parse_usd_ticks(body.get("cost")))
+            .or_else(|| {
+                wire_usage
+                    .and_then(|value| value.get("cost_usd_ticks"))
+                    .and_then(Json::as_i64)
+                    .filter(|&cost| cost > 0)
+            }),
+    };
+    (usage, billing)
+}
+
+pub(crate) fn parse_response_metadata(
+    bytes: &[u8],
+) -> (Option<String>, Option<String>, Usage, UsageBilling) {
+    let Ok(body) = serde_json::from_slice::<Json>(bytes) else {
+        return (None, None, Usage::default(), UsageBilling::default());
+    };
+    let (usage, billing) = parse_wire_usage(&body);
+    (
+        body.get("model").and_then(Json::as_str).map(str::to_owned),
+        body.get("id").and_then(Json::as_str).map(str::to_owned),
+        usage,
+        billing,
+    )
 }
 
 /// Parse a chat-completions 200 body.
@@ -418,21 +560,13 @@ pub fn parse_chat_reply(bytes: &[u8]) -> Result<ChatReply, JevError> {
             ));
         }
     };
-    let usage = Usage {
-        input_tokens: body
-            .get("usage")
-            .and_then(|usage| usage.get("prompt_tokens"))
-            .and_then(Json::as_u64),
-        output_tokens: body
-            .get("usage")
-            .and_then(|usage| usage.get("completion_tokens"))
-            .and_then(Json::as_u64),
-    };
+    let (usage, billing) = parse_wire_usage(&body);
     Ok(ChatReply {
         model: body.get("model").and_then(Json::as_str).map(str::to_owned),
         id: body.get("id").and_then(Json::as_str).map(str::to_owned),
         content,
         usage,
+        billing,
         truncated: choice.get("finish_reason").and_then(Json::as_str) == Some("length"),
     })
 }
@@ -777,6 +911,43 @@ mod tests {
     use super::*;
     use crate::jev::types::NoulCriteria;
 
+    #[test]
+    fn openrouter_billing_keeps_nested_cache_write_and_reported_zero() {
+        let (usage, billing) = parse_wire_usage(&json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "prompt_tokens_details": {
+                    "cached_tokens": 40,
+                    "cache_write_tokens": 12
+                },
+                "cost_usd_ticks": 0,
+                "cost": 0.0
+            }
+        }));
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(25));
+        assert_eq!(billing.cached_input_tokens, Some(40));
+        assert_eq!(billing.cache_creation_input_tokens, Some(12));
+        assert_eq!(billing.cost_usd_ticks, Some(0));
+
+        let (_, legacy_zero) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 0 }
+        }));
+        assert_eq!(legacy_zero.cost_usd_ticks, None);
+
+        let (_, explicit_zero) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 12, "cost": 0.0 }
+        }));
+        assert_eq!(explicit_zero.cost_usd_ticks, Some(0));
+
+        let (_, legacy_paid) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 12 }
+        }));
+        assert_eq!(legacy_paid.cost_usd_ticks, Some(12));
+    }
+
     /// The owner's chain renders as OpenRouter's fallback routing: the primary
     /// in `model`, the rest in `models`, in order. Getting this wrong would mean
     /// paying for a model that was never asked for.
@@ -1095,6 +1266,55 @@ mod tests {
         assert_eq!(
             reasoning_object(ReasoningShape::Effort, "xhigh", 2048).expect("effort")["effort"],
             "xhigh"
+        );
+    }
+
+    #[test]
+    fn applied_effort_describes_the_provider_request_shape() {
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::Typesafe,
+                ReasoningShape::Effort,
+                "high",
+                2048,
+            ),
+            Some("absent".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::Disabled,
+                "none",
+                2048,
+            ),
+            Some("disabled".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::Effort,
+                "none",
+                2048,
+            ),
+            Some("none".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::MaxTokens,
+                "low",
+                2048,
+            ),
+            Some("max_tokens:512".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::MaxTokens,
+                "high",
+                32,
+            ),
+            Some("absent".to_owned())
         );
     }
 

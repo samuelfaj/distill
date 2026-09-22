@@ -57,6 +57,7 @@ pub fn stream_chat_completions<'a>(
         let mut first_token_emitted = false;
         let mut model: String = String::new();
         let mut model_fingerprint: Option<String> = None;
+        let mut message_id: Option<String> = None;
         let mut usage: Option<TokenUsage> = None;
         let mut cost_usd_ticks: Option<i64> = None;
         let mut finish_reason: Option<StopReason> = None;
@@ -113,11 +114,17 @@ pub fn stream_chat_completions<'a>(
                     .filter(|s| !s.is_empty());
                 first_chunk_seen = true;
             }
+            if message_id.is_none() && !chunk.id.is_empty() {
+                message_id = Some(chunk.id.clone());
+            }
+            if model.is_empty() && !chunk.model.is_empty() {
+                model = chunk.model.clone();
+            }
 
             if let Some(u) = chunk.usage.clone() {
                 // Wire cost is cumulative for the response, so last-write-wins.
                 // Never clobber a known cost with missing/unreported.
-                let chunk_cost = distill_sampling_types::reported_cost_ticks(u.cost_in_usd_ticks);
+                let chunk_cost = u.normalized_cost_ticks();
                 cost_usd_ticks = match (cost_usd_ticks, chunk_cost) {
                     (_, Some(n)) => Some(n),
                     (prev, None) => prev,
@@ -301,7 +308,7 @@ pub fn stream_chat_completions<'a>(
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals: Vec::new(),
             stop_message: None,
-            message_id: None,
+            message_id,
             raw_stop_reason: None,
             stop_sequence: None,
         };
@@ -767,6 +774,7 @@ mod tests {
             prompt_tokens_details: None,
             completion_tokens_details: None,
             cost_in_usd_ticks: None,
+            cost: None,
         });
 
         let chunks: Vec<Result<ChatCompletionChunk, SamplingError>> = vec![
@@ -794,7 +802,54 @@ mod tests {
         }
     }
 
-    /// Server-reported cost lands on the response; the REST mapper's `0` backfill means "unreported" and must yield `None`.
+    #[tokio::test]
+    async fn provider_id_model_and_openrouter_cost_reach_completed_response() {
+        let mut text = text_chunk("ok");
+        text.id = "gen-provider-123".into();
+        text.model = "respondent-model".into();
+        let mut chunk_with_usage = make_chunk(vec![ChatChunkDelta::default()]);
+        chunk_with_usage.id = "gen-provider-123".into();
+        chunk_with_usage.model = "respondent-model".into();
+        chunk_with_usage.usage = Some(Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+            cost_in_usd_ticks: None,
+            cost: Some(0.00012345),
+        });
+
+        let raw = stream::iter(vec![
+            Ok(text),
+            Ok(chunk_with_usage),
+            Ok(final_chunk(FinishReason::Stop)),
+        ])
+        .boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(response.message_id.as_deref(), Some("gen-provider-123"));
+                assert_eq!(
+                    response
+                        .assistant()
+                        .and_then(|assistant| assistant.model_id.as_deref()),
+                    Some("respondent-model")
+                );
+                assert_eq!(response.cost_usd_ticks, Some(1_234_500));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    /// Server-reported legacy ticks land on the response; the REST mapper's `0` backfill means "unreported" and must yield `None`.
     #[tokio::test]
     async fn cost_is_extracted_and_zero_is_unreported() {
         for (wire, expected) in [(Some(78), Some(78)), (Some(0), None), (None, None)] {
@@ -806,6 +861,7 @@ mod tests {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
                 cost_in_usd_ticks: wire,
+                cost: None,
             });
             let chunks: Vec<Result<ChatCompletionChunk, SamplingError>> = vec![
                 Ok(text_chunk("ok")),
@@ -839,6 +895,7 @@ mod tests {
             prompt_tokens_details: None,
             completion_tokens_details: None,
             cost_in_usd_ticks: Some(99),
+            cost: None,
         });
         let mut second = make_chunk(vec![ChatChunkDelta::default()]);
         second.usage = Some(Usage {
@@ -848,6 +905,7 @@ mod tests {
             prompt_tokens_details: None,
             completion_tokens_details: None,
             cost_in_usd_ticks: Some(0),
+            cost: None,
         });
         let chunks: Vec<Result<ChatCompletionChunk, SamplingError>> = vec![
             Ok(text_chunk("ok")),

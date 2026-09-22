@@ -1,10 +1,10 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Turn deltas come from this process's last applied live ledger, not from persisted session totals (those stay large after resume).
 
-use distill_chat_state::UsageLedger;
-use distill_sampling_types::reported_cost_ticks;
+use distill_chat_state::{UsageAttribution, UsageCostBasis, UsageLedger};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +52,8 @@ pub struct UsageSummary {
     pub primary_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub model_usage: IndexMap<String, UsageSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributions: Vec<UsageAttribution>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -73,6 +75,7 @@ impl UsageSummary {
         let mut summary = Self::from_totals(&ledger.totals, ledger.incomplete);
         summary.primary_model_id = primary_model(&model_usage);
         summary.model_usage = model_usage;
+        summary.attributions = ledger.attributions.clone();
         summary
     }
 
@@ -91,6 +94,7 @@ impl UsageSummary {
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
+            attributions: Vec::new(),
         }
     }
 
@@ -99,15 +103,31 @@ impl UsageSummary {
         self.input_tokens >= previous.input_tokens
             && self.output_tokens >= previous.output_tokens
             && self.model_calls >= previous.model_calls
+            && attributions_cover(&self.attributions, &previous.attributions)
     }
 
     pub fn saturating_add(&self, other: &Self) -> Self {
         let mut model_usage = self.model_usage.clone();
         for (model, row) in &other.model_usage {
             let entry = model_usage.entry(model.clone()).or_default();
-            *entry = entry.saturating_add_row(row);
+            let mut merged = entry.saturating_add_row(row);
+            if let Some(attributed_cost) = complete_reported_cost_for_model(
+                &self.attributions,
+                &other.attributions,
+                model,
+                merged.model_calls,
+            ) {
+                if merged.cost_usd_ticks.is_none() && attributed_cost == 0 {
+                    merged.cost_usd_ticks = Some(0);
+                }
+                if merged.cost_usd_ticks == Some(attributed_cost) {
+                    merged.cost_is_partial = false;
+                }
+            }
+            *entry = merged;
         }
         let mut out = self.saturating_add_row(other);
+        out.attributions = merge_attributions(&self.attributions, &other.attributions);
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out.turn_count = self.turn_count.saturating_add(other.turn_count);
@@ -127,25 +147,46 @@ impl UsageSummary {
             reasoning_tokens: self.reasoning_tokens.saturating_add(other.reasoning_tokens),
             total_tokens: self.total_tokens.saturating_add(other.total_tokens),
             model_calls: self.model_calls.saturating_add(other.model_calls),
-            cost_usd_ticks: merge_cost_ticks(self.cost_usd_ticks, other.cost_usd_ticks),
-            cost_is_partial: self.cost_is_partial || other.cost_is_partial,
+            cost_usd_ticks: merge_cost_ticks(self, other),
+            cost_is_partial: self.cost_is_partial
+                || other.cost_is_partial
+                || has_untrusted_cost(self)
+                || has_untrusted_cost(other),
             usage_is_incomplete: self.usage_is_incomplete || other.usage_is_incomplete,
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
+            attributions: Vec::new(),
         }
     }
 
     pub fn saturating_sub(&self, other: &Self) -> Self {
+        let delta_attributions = if self.attributions.starts_with(&other.attributions) {
+            self.attributions[other.attributions.len()..].to_vec()
+        } else {
+            self.attributions.clone()
+        };
         let mut model_usage = IndexMap::new();
         for (model, row) in &self.model_usage {
             let prev = other.model_usage.get(model).cloned().unwrap_or_default();
-            let delta = row.saturating_sub_row(&prev);
+            let mut delta = row.saturating_sub_row(&prev);
+            if let Some(attributed_cost) =
+                complete_reported_cost_for_model(&delta_attributions, &[], model, delta.model_calls)
+            {
+                if delta.cost_usd_ticks.is_none() && attributed_cost == 0 {
+                    delta.cost_usd_ticks = Some(0);
+                }
+                if delta.cost_usd_ticks == Some(attributed_cost) {
+                    delta.cost_is_partial = false;
+                }
+            }
             if !delta.is_zero() {
                 model_usage.insert(model.clone(), delta);
             }
         }
         let mut out = self.saturating_sub_row(other);
+        out.attributions = delta_attributions;
+        out.cost_usd_ticks = sub_cost_ticks(self, other, &out.attributions, out.model_calls);
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out
@@ -164,12 +205,21 @@ impl UsageSummary {
             reasoning_tokens: self.reasoning_tokens.saturating_sub(other.reasoning_tokens),
             total_tokens: self.total_tokens.saturating_sub(other.total_tokens),
             model_calls: self.model_calls.saturating_sub(other.model_calls),
-            cost_usd_ticks: sub_cost_ticks(self.cost_usd_ticks, other.cost_usd_ticks),
-            cost_is_partial: self.cost_is_partial || other.cost_is_partial,
+            cost_usd_ticks: sub_cost_ticks(
+                self,
+                other,
+                &[],
+                self.model_calls.saturating_sub(other.model_calls),
+            ),
+            cost_is_partial: self.cost_is_partial
+                || other.cost_is_partial
+                || has_untrusted_cost(self)
+                || has_untrusted_cost(other),
             usage_is_incomplete: self.usage_is_incomplete,
             turn_count: 0,
             primary_model_id: None,
             model_usage: IndexMap::new(),
+            attributions: Vec::new(),
         }
     }
 
@@ -181,6 +231,7 @@ impl UsageSummary {
             && self.reasoning_tokens == 0
             && self.model_calls == 0
             && self.cost_usd_ticks.is_none()
+            && self.attributions.is_empty()
     }
 }
 
@@ -353,18 +404,108 @@ fn primary_model(model_usage: &IndexMap<String, UsageSummary>) -> Option<String>
         .map(|(name, _)| name.clone())
 }
 
-fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {
-    match (a, b) {
-        (None, None) => None,
-        (a, b) => reported_cost_ticks(Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0)))),
+fn attributions_cover(live: &[UsageAttribution], previous: &[UsageAttribution]) -> bool {
+    live.len() >= previous.len()
+        && live
+            .iter()
+            .zip(previous)
+            .all(|(current, old)| current.attempt_id == old.attempt_id)
+}
+
+fn merge_attributions(
+    first: &[UsageAttribution],
+    second: &[UsageAttribution],
+) -> Vec<UsageAttribution> {
+    let mut seen = HashSet::new();
+    first
+        .iter()
+        .chain(second)
+        .filter(|attribution| {
+            attribution.attempt_id.is_empty()
+                || seen.insert(attribution.attempt_id.as_str().to_owned())
+        })
+        .cloned()
+        .collect()
+}
+
+fn complete_reported_cost_for_model(
+    first: &[UsageAttribution],
+    second: &[UsageAttribution],
+    model_id: &str,
+    expected_calls: u64,
+) -> Option<i64> {
+    if expected_calls == 0 {
+        return None;
+    }
+    let mut count = 0_u64;
+    let mut total = 0_i64;
+    for attribution in first.iter().chain(second) {
+        if attribution.model_id != model_id {
+            continue;
+        }
+        let cost = (attribution.cost_basis == UsageCostBasis::Reported)
+            .then_some(attribution.cost_usd_ticks)
+            .flatten()
+            .filter(|&cost| cost >= 0)?;
+        count = count.saturating_add(1);
+        total = total.saturating_add(cost);
+    }
+    (count == expected_calls).then_some(total)
+}
+
+fn has_complete_reported_free(attributions: &[UsageAttribution], expected_calls: u64) -> bool {
+    expected_calls > 0
+        && u64::try_from(attributions.len()).ok() == Some(expected_calls)
+        && attributions.iter().all(|attribution| {
+            attribution.cost_usd_ticks == Some(0)
+                && attribution.cost_basis == UsageCostBasis::Reported
+        })
+}
+
+fn trusted_cost_ticks(summary: &UsageSummary) -> Option<i64> {
+    match summary.cost_usd_ticks {
+        Some(cost) if cost > 0 => Some(cost),
+        Some(0) if has_complete_reported_free(&summary.attributions, summary.model_calls) => {
+            Some(0)
+        }
+        _ => None,
     }
 }
 
-fn sub_cost_ticks(live: Option<i64>, previous: Option<i64>) -> Option<i64> {
-    match (live, previous) {
-        (None, _) => None,
-        (Some(live), None) => reported_cost_ticks(Some(live)),
-        (Some(live), Some(previous)) => reported_cost_ticks(Some(live.saturating_sub(previous))),
+fn has_untrusted_cost(summary: &UsageSummary) -> bool {
+    if summary.cost_is_partial {
+        return true;
+    }
+    let has_calls = summary.model_calls > 0 || !summary.attributions.is_empty();
+    match summary.cost_usd_ticks {
+        None => has_calls,
+        Some(0) => {
+            has_calls && !has_complete_reported_free(&summary.attributions, summary.model_calls)
+        }
+        Some(_) => false,
+    }
+}
+
+fn merge_cost_ticks(a: &UsageSummary, b: &UsageSummary) -> Option<i64> {
+    match (trusted_cost_ticks(a), trusted_cost_ticks(b)) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+    }
+}
+
+fn sub_cost_ticks(
+    live: &UsageSummary,
+    previous: &UsageSummary,
+    delta_attributions: &[UsageAttribution],
+    delta_model_calls: u64,
+) -> Option<i64> {
+    let live = trusted_cost_ticks(live)?;
+    let previous = trusted_cost_ticks(previous).unwrap_or(0);
+    let delta = live.saturating_sub(previous);
+    if delta > 0 || has_complete_reported_free(delta_attributions, delta_model_calls) {
+        Some(delta)
+    } else {
+        None
     }
 }
 

@@ -312,3 +312,95 @@ fn usage_summary_keeps_attribution_ids_unique_when_rows_are_folded() {
     different.attributions.push(attribution("other"));
     assert!(!different.covers(&first));
 }
+
+fn reported_live(calls: &[(&str, i64)]) -> UsageSummary {
+    let mut ledger = UsageLedger::default();
+    for (id, cost) in calls {
+        let mut row = attribution(id);
+        row.status = distill_chat_state::UsageCallStatus::Completed;
+        row.usage = Some(tu(1, 1));
+        row.usage_complete = true;
+        row.cost_usd_ticks = Some(*cost);
+        row.cost_basis = distill_chat_state::UsageCostBasis::Reported;
+        ledger.record_attribution(row);
+    }
+    UsageSummary::from_ledger(&ledger)
+}
+
+fn reported_free_live(ids: &[&str]) -> UsageSummary {
+    let calls: Vec<_> = ids.iter().map(|id| (*id, 0)).collect();
+    reported_live(&calls)
+}
+
+#[test]
+fn persistence_preserves_reported_free_cost_but_not_legacy_zero() {
+    let first = reported_free_live(&["free-1"]);
+    let continued = reported_free_live(&["free-1", "free-2"]);
+    let mut file = SessionUsageFile::new("sess-1");
+    file.apply_turn(1, "t1", &first, None);
+    file.apply_turn(2, "t2", &continued, Some(&first));
+
+    assert_eq!(file.turn(1).unwrap().usage.cost_usd_ticks, Some(0));
+    assert_eq!(file.turn(2).unwrap().usage.cost_usd_ticks, Some(0));
+    assert_eq!(file.session.cost_usd_ticks, Some(0));
+    for usage in [
+        &file.turn(1).unwrap().usage,
+        &file.turn(2).unwrap().usage,
+        &file.session,
+    ] {
+        let model = usage.model_usage.get("m").expect("free model row");
+        assert_eq!(model.cost_usd_ticks, Some(0));
+        assert!(!model.cost_is_partial);
+    }
+
+    let paid = reported_live(&[("paid-1", 7)]);
+    let paid_and_free = first.saturating_add(&paid);
+    assert_eq!(paid_and_free.cost_usd_ticks, Some(7));
+    assert!(!paid_and_free.cost_is_partial);
+    let model = paid_and_free
+        .model_usage
+        .get("m")
+        .expect("paid and free model row");
+    assert_eq!(model.cost_usd_ticks, Some(7));
+    assert!(!model.cost_is_partial);
+
+    let legacy_zero = UsageSummary {
+        cost_usd_ticks: Some(0),
+        ..UsageSummary::default()
+    };
+    assert_eq!(
+        legacy_zero
+            .saturating_add(&UsageSummary::default())
+            .cost_usd_ticks,
+        None
+    );
+    assert_eq!(
+        legacy_zero
+            .saturating_sub(&UsageSummary::default())
+            .cost_usd_ticks,
+        None
+    );
+
+    let legacy_unknown_call = UsageSummary {
+        model_calls: 1,
+        cost_usd_ticks: Some(0),
+        ..UsageSummary::default()
+    };
+    let mixed = legacy_unknown_call.saturating_add(&first);
+    assert_eq!(mixed.cost_usd_ticks, Some(0));
+    assert!(mixed.cost_is_partial);
+
+    let mut legacy_model = legacy_unknown_call.clone();
+    legacy_model.model_usage.insert(
+        "m".to_owned(),
+        UsageSummary {
+            model_calls: 1,
+            cost_usd_ticks: Some(0),
+            ..UsageSummary::default()
+        },
+    );
+    let mixed_model = legacy_model.saturating_add(&first);
+    let model = mixed_model.model_usage.get("m").expect("mixed model row");
+    assert_eq!(model.cost_usd_ticks, None);
+    assert!(model.cost_is_partial);
+}

@@ -1,0 +1,5 @@
+Implement the requested behavior in both files under
+tools/task_cost_eval/fixtures/inventory_report. `render_inventory(items)` must
+sum quantities for duplicate SKUs, sort the resulting SKUs lexicographically,
+and return one `<SKU> <total>` line per SKU joined by newlines. Do not mutate
+the input list. Make the code change in the fixture; do not only report a plan.

@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "cohort_id": "jev-baseline-v1",
+  "task_base_sha": "e34426ba0c0063746867f61f6bc734a6d4001023",
+  "repetitions": 3,
+  "required_run_metadata": [
+    "executable",
+    "version",
+    "build_id",
+    "executable_sha256",
+    "client_version",
+    "provider",
+    "model",
+    "endpoint",
+    "effort",
+    "config_sha256"
+  ],
+  "variants": [
+    {
+      "id": "distill-current",
+      "role": "product-baseline",
+      "runner": "distill",
+      "runtime_pin": {
+        "status": "blocked-until-controller-freezes-config",
+        "executable": "distill",
+        "version": "2.0.6",
+        "build_id": "2c87833e5bb4",
+        "executable_sha256": "b4a7ec2f7aef7f3524655688eef28b66d8d80e84954dee2ecc537548eb8aa10e",
+        "client_version": "2.0.6",
+        "provider": null,
+        "model": "grok-4.7",
+        "endpoint": null,
+        "effort": null,
+        "config_sha256": null
+      }
+    },
+    {
+      "id": "distill-jev-off",
+      "role": "controlled-ablation",
+      "runner": "distill",
+      "runtime_pin": {
+        "status": "blocked-until-candidate-build",
+        "executable": "distill",
+        "version": null,
+        "build_id": null,
+        "executable_sha256": null,
+        "client_version": null,
+        "provider": null,
+        "model": null,
+        "endpoint": null,
+        "effort": null,
+        "config_sha256": null
+      }
+    },
+    {
+      "id": "pi-reference",
+      "role": "external-baseline",
+      "runner": "pi",
+      "availability": "blocked-until-pinned",
+      "runtime_pin": {
+        "status": "blocked-until-controller-pins-provider-and-model",
+        "executable": "pi",
+        "version": "0.73.1",
+        "build_id": null,
+        "executable_sha256": "e959f463b06ddd15ed882783ac02f39ecaeef950ef967da86380f39dda6595fa",
+        "client_version": "0.73.1",
+        "provider": null,
+        "model": null,
+        "endpoint": null,
+        "effort": null,
+        "config_sha256": null
+      }
+    }
+  ],
+  "comparisons": [
+    {
+      "baseline": "distill-current",
+      "candidate": "distill-jev-off",
+      "require_same_task_revision": true,
+      "match_runtime_fields": ["provider", "model", "endpoint", "effort"]
+    },
+    {
+      "baseline": "distill-current",
+      "candidate": "pi-reference",
+      "require_same_task_revision": false,
+      "match_runtime_fields": []
+    }
+  ],
+  "cases": [
+    {
+      "id": "tax-bug-en",
+      "class": "localized_bug",
+      "language": "en",
+      "prompt_ref": "prompts/tax-bug-en.txt",
+      "fixture_ref": "fixtures/tax_bug",
+      "prompt_sha256": "c416374676db936aa226936646bab8407c24d79564af38b65037c28e8239cc2a",
+      "fixture_sha256": "7e6198752d4832761022358cd51c8d2efec565dbd97e7e0e9a29c16f9c73e0e9",
+      "grader": {
+        "id": "tax-behavior-v1",
+        "script_ref": "graders/grade_tax_bug.py",
+        "sha256": "f6c9d14dba47437fe9787d3cc920beaf81fad14561c1780a8dce4e257db4cfcf",
+        "command": [
+          "python3",
+          "tools/task_cost_eval/graders/grade_tax_bug.py",
+          "{worktree}"
+        ]
+      },
+      "isolation": {
+        "fresh_checkout": true,
+        "isolated_session": true,
+        "network_policy": "off"
+      }
+    },
+    {
+      "id": "active-records-pt",
+      "class": "deterministic_transform",
+      "language": "pt",
+      "prompt_ref": "prompts/active-records-pt.txt",
+      "fixture_ref": "fixtures/active_records",
+      "prompt_sha256": "a81c474041480e550e6669ce1086e762b852cc4501ff8b02d96dbbb7ecff929b",
+      "fixture_sha256": "103608d12da9c3f58ac8891b4448efd34ceac30d34f91e843c5b44f218b316f5",
+      "grader": {
+        "id": "active-records-behavior-v1",
+        "script_ref": "graders/grade_active_records.py",
+        "sha256": "d78bcccde2bb7f252c104f33da99fd4fe5c83270c2fcbae4dee134f5feaf60b7",
+        "command": [
+          "python3",
+          "tools/task_cost_eval/graders/grade_active_records.py",
+          "{worktree}"
+        ]
+      },
+      "isolation": {
+        "fresh_checkout": true,
+        "isolated_session": true,
+        "network_policy": "off"
+      }
+    },
+    {
+      "id": "inventory-report-en",
+      "class": "multi_file_change",
+      "language": "en",
+      "prompt_ref": "prompts/inventory-report-en.txt",
+      "fixture_ref": "fixtures/inventory_report",
+      "prompt_sha256": "92d1d29197eeb19632edc25c094816a406d34338339461534904a1c04ca5f37a",
+      "fixture_sha256": "499ed7a5a4bf5b2a8806456be9630e973594c6de716b26b22074dd6c59c49d56",
+      "grader": {
+        "id": "inventory-behavior-v1",
+        "script_ref": "graders/grade_inventory_report.py",
+        "sha256": "b2bae166db48c46c5ac662770776e8984ca6f558a4da43a4d7b6cbc9249e02e3",
+        "command": [
+          "python3",
+          "tools/task_cost_eval/graders/grade_inventory_report.py",
+          "{worktree}"
+        ]
+      },
+      "isolation": {
+        "fresh_checkout": true,
+        "isolated_session": true,
+        "network_policy": "off"
+      }
+    }
+  ]
+}

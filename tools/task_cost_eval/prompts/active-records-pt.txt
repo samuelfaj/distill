@@ -1,0 +1,5 @@
+No arquivo de fixture tools/task_cost_eval/fixtures/active_records/records.py,
+implemente `active_records(records)`. O resultado deve ser uma nova lista, na
+mesma ordem, contendo somente os dicionários cujo campo `active` seja
+exatamente `True`. Registros sem esse campo não são ativos e a entrada original
+não pode ser modificada. Faça a alteração no arquivo, não apenas uma descrição.

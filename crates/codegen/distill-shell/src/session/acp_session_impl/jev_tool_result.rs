@@ -36,6 +36,7 @@ const HINT_OPEN: &str = "\n\n<jev-hints>\n";
 const HINT_BULLET: &str = "- ";
 const HINT_CLOSE: &str = "\n</jev-hints>";
 
+#[cfg(test)]
 fn compression_replacement(
     original: &str,
     bounded_source: &str,
@@ -44,12 +45,32 @@ fn compression_replacement(
     producer: &str,
     typed_metadata: Option<&str>,
 ) -> Option<String> {
+    compression_replacement_with_required_evidence(
+        original,
+        bounded_source,
+        answer,
+        handle,
+        producer,
+        typed_metadata,
+        original,
+    )
+}
+
+fn compression_replacement_with_required_evidence(
+    original: &str,
+    bounded_source: &str,
+    answer: &str,
+    handle: &str,
+    producer: &str,
+    typed_metadata: Option<&str>,
+    required_evidence_source: &str,
+) -> Option<String> {
     let spec = distill_workspace::jev::tasks::spec("cite_spans")?;
     let checked = distill_workspace::jev::tasks::gate(spec, bounded_source, answer, &[], &[]).ok()?;
     let spans = distill_workspace::jev::tasks::extractive_spans(&checked).ok()?;
     let selected = spans.join("\n");
     if selected.trim().is_empty()
-        || !crate::jev_lanes::required_tool_evidence(original)
+        || !crate::jev_lanes::required_tool_evidence(required_evidence_source)
             .iter()
             .all(|line| selected.contains(line))
     {
@@ -67,21 +88,114 @@ fn compression_replacement(
     (replacement.len() < original.len()).then_some(replacement)
 }
 
+fn task_output_body_evidence(
+    output: &distill_tools::types::output::ToolOutput,
+) -> Option<String> {
+    use distill_tool_types::TaskOutputOutput;
+    use distill_tools::types::output::ToolOutput;
+
+    match output {
+        ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => Some(result.output.clone()),
+        _ => None,
+    }
+}
+
+fn compression_replacement_for_output(
+    output: &distill_tools::types::output::ToolOutput,
+    original: &str,
+    bounded_source: &str,
+    answer: &str,
+    handle: &str,
+    producer: &str,
+    typed_metadata: Option<&str>,
+) -> Option<String> {
+    let body_evidence = task_output_body_evidence(output);
+    compression_replacement_with_required_evidence(
+        original,
+        bounded_source,
+        answer,
+        handle,
+        producer,
+        typed_metadata,
+        body_evidence.as_deref().unwrap_or(original),
+    )
+}
+
+/// A single task result has one command that the deterministic lanes can
+/// classify.  The result is checked against the authoritative terminal
+/// backend before this helper is used by the compression lane.
+fn task_output_command(
+    output: &distill_tools::types::output::ToolOutput,
+) -> Option<&str> {
+    use distill_tool_types::TaskOutputOutput;
+    use distill_tools::types::output::ToolOutput;
+
+    match output {
+        ToolOutput::TaskOutput(TaskOutputOutput::Result(result))
+            if !result.command.trim().is_empty() => Some(result.command.as_str()),
+        _ => None,
+    }
+}
+
+/// A line-addressed single task output must remain byte-faithful.
+fn task_output_contains_exact_output(
+    output: &distill_tools::types::output::ToolOutput,
+) -> bool {
+    use distill_tool_types::TaskOutputOutput;
+    use distill_tools::types::output::ToolOutput;
+
+    let is_exact_command = |result: &distill_tool_types::TaskOutputResult| {
+        distill_workspace::jev::crushers::is_exact_output(
+            "run_terminal_command",
+            &result.command,
+        )
+    };
+    match output {
+        ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => is_exact_command(result),
+        _ => false,
+    }
+}
+
+fn task_output_result_metadata(result: &distill_tool_types::TaskOutputResult) -> String {
+    let exit_code = result
+        .exit_code
+        .map_or_else(|| "none".to_owned(), |code| code.to_string());
+    format!(
+        "task_id: {}\ncommand: {}\nstatus: {}\nexit_code: {}\nduration_secs: {}\noutput_file: {}\ntruncated: {}\ntruncation_hint: {}\nraw_output_bytes: {}",
+        result.task_id,
+        result.command,
+        result.status,
+        exit_code,
+        result.duration_secs,
+        result.output_file,
+        result.truncated,
+        result.truncation_hint,
+        result.raw_output_bytes,
+    )
+}
+
 fn typed_tool_metadata(
     output: &distill_tools::types::output::ToolOutput,
 ) -> Option<String> {
-    let distill_tools::types::output::ToolOutput::Bash(bash) = output else {
-        return None;
-    };
-    Some(format!(
-        "command: {}\nexit: {}\ntruncated: {}\ntimed_out: {}\nsignal: {}\noutput_file: {}",
-        bash.command,
-        bash.exit_code,
-        bash.truncated,
-        bash.timed_out,
-        bash.signal.as_deref().unwrap_or("none"),
-        bash.output_file,
-    ))
+    use distill_tool_types::TaskOutputOutput;
+    use distill_tools::types::output::ToolOutput;
+
+    match output {
+        ToolOutput::Bash(bash) => Some(format!(
+            "command: {}\nexit: {}\ntruncated: {}\ntimed_out: {}\nsignal: {}\noutput_file: {}",
+            bash.command,
+            bash.exit_code,
+            bash.truncated,
+            bash.timed_out,
+            bash.signal.as_deref().unwrap_or("none"),
+            bash.output_file,
+        )),
+        ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => Some(format!(
+            "[task metadata]\n{}",
+            task_output_result_metadata(result)
+        )),
+        _ => None,
+    }
 }
 
 /// A worker request is accounted as cancelled if the surrounding session task
@@ -89,7 +203,7 @@ fn typed_tool_metadata(
 /// side-call recorder owns the ledger row; this guard only makes the existing
 /// cancellation seam run on the dropped-future path as well as on explicit
 /// failures.
-struct WorkerAttemptCancellationGuard<'a> {
+pub(super) struct WorkerAttemptCancellationGuard<'a> {
     actor: &'a SessionActor,
     attempt: Option<super::side_call::AuxiliaryAttempt>,
     optional_key: Option<crate::jev_cheap::OptionalCompressionKey>,
@@ -97,7 +211,7 @@ struct WorkerAttemptCancellationGuard<'a> {
 }
 
 impl<'a> WorkerAttemptCancellationGuard<'a> {
-    fn new(
+    pub(super) fn new(
         actor: &'a SessionActor,
         attempt: super::side_call::AuxiliaryAttempt,
         optional_key: Option<crate::jev_cheap::OptionalCompressionKey>,
@@ -110,11 +224,11 @@ impl<'a> WorkerAttemptCancellationGuard<'a> {
         }
     }
 
-    fn mark_dispatched(&mut self) {
+    pub(super) fn mark_dispatched(&mut self) {
         self.dispatched = true;
     }
 
-    fn complete(&mut self) {
+    pub(super) fn complete(&mut self) {
         self.attempt = None;
     }
 }
@@ -201,10 +315,56 @@ fn hint_block(review_note: Option<String>, hints: Vec<String>) -> Option<String>
 }
 
 impl SessionActor {
+    /// `get_task_output` serves terminal commands and non-terminal snapshots
+    /// through one typed envelope. The envelope itself has no origin field,
+    /// so use the same authoritative terminal backend the producer queried;
+    /// command text and status alone are not sufficient evidence.
+    async fn task_output_is_compression_source(
+        &self,
+        output: &distill_tools::types::output::ToolOutput,
+    ) -> bool {
+        use distill_tool_types::TaskOutputOutput;
+        use distill_tools::computer::types::{TaskKind, TerminalBackend};
+        use distill_tools::types::output::ToolOutput;
+        use distill_tools::types::resources::Terminal;
+
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let resources = bridge.shared_resources().await;
+        let terminal = {
+            let resources = resources.lock().await;
+            resources
+                .get::<Terminal>()
+                .map(|terminal| std::sync::Arc::clone(&terminal.0))
+        };
+        let Some(terminal) = terminal else {
+            return false;
+        };
+        let is_terminal_command = |result: &distill_tool_types::TaskOutputResult,
+                                   snapshot: &distill_tools::computer::types::TaskSnapshot| {
+            result.is_terminal()
+                && snapshot.completed
+                && snapshot.kind == TaskKind::Bash
+                && snapshot.display_command.as_deref().unwrap_or(snapshot.command.as_str())
+                    == result.command
+        };
+
+        match output {
+            ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => terminal
+                .get_task(&result.task_id)
+                .await
+                .is_some_and(|snapshot| is_terminal_command(result, &snapshot)),
+            // A multi-result envelope can combine bodies from different tasks.
+            // Until extractive spans carry deterministic child attribution,
+            // keep the complete envelope rather than muddling those bodies.
+            ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(_)) => false,
+            _ => false,
+        }
+    }
+
     /// Resolve the configured light-tier worker through the catalog. A missing
     /// or unknown tier is a clean defer; it must never fall back to the local
     /// utility chain or to the parent/session model.
-    async fn tool_result_worker(&self) -> Option<crate::jev_cheap::WorkerLane> {
+    pub(super) async fn tool_result_worker(&self) -> Option<crate::jev_cheap::WorkerLane> {
         if !crate::jev::lever_active(JevLever::ECheapCompress) {
             return None;
         }
@@ -316,9 +476,25 @@ impl SessionActor {
         if text.len() < MIN_BYTES && !changes_files {
             return text;
         }
+        let is_task_output = matches!(
+            output,
+            distill_tools::types::output::ToolOutput::TaskOutput(_)
+        );
+        let task_output_source =
+            is_task_output && self.task_output_is_compression_source(output).await;
+        if is_task_output && !task_output_source {
+            return text;
+        }
         let mut body = text;
         let mut hints: Vec<String> = Vec::new();
         let request = self.jev_last_human_request().await.unwrap_or_default();
+        // Task-output calls do not carry the executed command in their tool
+        // arguments.  Use the typed result field for lane guards/classifiers;
+        // never infer a command from the retrieval tool name.
+        let lane_command = task_output_command(output).unwrap_or(tool_command);
+        if task_output_contains_exact_output(output) {
+            return body;
+        }
         // The review's note is kept apart from the other hints: it is the one
         // that asks for action, so the cap at the end never drops it.
         let mut review_note: Option<String> = None;
@@ -327,8 +503,8 @@ impl SessionActor {
         // Store the source before replacing it so the reasoning model and any
         // later worker can recover the exact tool result without rerunning it.
         if crate::jev::lever_active(JevLever::ECheapCompress)
-            && !distill_workspace::jev::crushers::is_exact_output(tool, tool_command)
-            && !distill_workspace::jev::retention::looks_structured(tool_command, &body)
+            && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
+            && !distill_workspace::jev::retention::looks_structured(lane_command, &body)
             && let distill_tools::types::output::ToolOutput::Bash(bash) = output
             && let Some(status) = crate::jev_lanes::bun_test_status(
                 &bash.command,
@@ -369,7 +545,7 @@ impl SessionActor {
         };
         let outcome = crate::jev_lanes::reduce_payload(
             tool,
-            tool_command,
+            lane_command,
             &body,
             crate::jev_lanes::LaneFlags {
                 crushers: crate::jev::lever_active(JevLever::ECrushers),
@@ -401,12 +577,12 @@ impl SessionActor {
         if !is_document
             && crate::jev::lever_active(JevLever::ERetention)
             && matches!(
-                distill_workspace::jev::retention::gate(tool_command, &body),
+                distill_workspace::jev::retention::gate(lane_command, &body),
                 distill_workspace::jev::retention::Gate::Prune
             )
         {
             let chunks = distill_workspace::jev::retention::chunk(&body);
-            let category = distill_workspace::jev::retention::classify(tool_command, &body);
+            let category = distill_workspace::jev::retention::classify(lane_command, &body);
             let mut scored = vec![false; chunks.len()];
             let mut answers: Option<distill_workspace::jev::types::JevAnswerSet> = None;
             if let Ok(questions) =
@@ -427,7 +603,7 @@ impl SessionActor {
                     }
                     let state = serde_json::json!({
                         "request": request,
-                        "command": tool_command,
+                        "command": lane_command,
                         "category": category.as_str(),
                         "chunks_total": chunks.len(),
                         "chunks_in_this_request": battery.len(),
@@ -470,7 +646,7 @@ impl SessionActor {
                     &chunks,
                     &retention,
                     archive.as_deref(),
-                    tool_command,
+                    lane_command,
                 );
                 crate::jev::record_item(
                     JevLever::ERetention,
@@ -511,9 +687,9 @@ impl SessionActor {
         const EXTRACTIVE_TASK: &str = "cite_spans";
         let cheap_source = matches!(output, distill_tools::types::output::ToolOutput::Bash(_));
         let cheap_eligible = body.len() >= context::BIG_OUTPUT_BYTES
-            && cheap_source
+            && (cheap_source || task_output_source)
             && !is_document
-            && !distill_workspace::jev::crushers::is_exact_output(tool, tool_command)
+            && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
             crate::jev::record_item(
@@ -561,7 +737,8 @@ impl SessionActor {
                                 &evidence,
                                 &evidence_question,
                                 |answer| {
-                                    compression_replacement(
+                                    compression_replacement_for_output(
+                                        output,
                                         &body,
                                         &evidence,
                                         answer,
@@ -574,7 +751,8 @@ impl SessionActor {
                             )
                             .await
                     {
-                        if let Some(candidate) = compression_replacement(
+                        if let Some(candidate) = compression_replacement_for_output(
+                            output,
                             &body,
                             &evidence,
                             &outcome.text,
@@ -657,7 +835,8 @@ impl SessionActor {
                             match response_result {
                                 Ok(response) => {
                                     let answer = response.assistant_text();
-                                    let candidate = compression_replacement(
+                                    let candidate = compression_replacement_for_output(
+                                        output,
                                         &body,
                                         &evidence,
                                         &answer,
@@ -1458,6 +1637,88 @@ mod tests {
     }
 
     #[test]
+    fn task_output_exact_command_is_not_compressed() {
+        use distill_tool_types::{TaskOutputOutput, TaskOutputResult};
+        use distill_tools::types::output::ToolOutput;
+
+        let exact = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
+            task_id: "exact".to_owned(),
+            command: "cat src/main.rs".to_owned(),
+            status: "completed".to_owned(),
+            exit_code: Some(0),
+            started: "2026-09-22T00:00:00Z".to_owned(),
+            ended: Some("2026-09-22T00:00:01Z".to_owned()),
+            duration_secs: 1.0,
+            output: "body".to_owned(),
+            output_file: "/tmp/exact.log".to_owned(),
+            truncated: false,
+            truncation_hint: String::new(),
+            raw_output_bytes: 4,
+        }));
+        assert!(task_output_contains_exact_output(&exact));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn mixed_task_output_retains_every_ineligible_child_body() {
+        use distill_tool_types::{MultiTaskOutputResult, TaskOutputOutput, TaskOutputResult};
+        use distill_tools::types::output::ToolOutput;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let child = |task_id: &str, status: &str| {
+                    let body = match status {
+                        "failed" => format!(
+                            "1 failed: {task_id}\n1 skipped: {task_id}/late.test.ts\n"
+                        ),
+                        "running" => format!("not run yet: {task_id}\n"),
+                        _ => format!("0 failed, 2 passed: {task_id}\n"),
+                    };
+                    TaskOutputResult {
+                        task_id: task_id.to_owned(),
+                        command: "cargo test --lib".to_owned(),
+                        status: status.to_owned(),
+                        exit_code: (status == "completed").then_some(0),
+                        started: "2026-09-22T00:00:00Z".to_owned(),
+                        ended: (status == "completed")
+                            .then(|| "2026-09-22T00:00:01Z".to_owned()),
+                        duration_secs: 1.0,
+                        output: format!("{body}{}", "child body\n".repeat(120)),
+                        output_file: format!("/tmp/{task_id}.log"),
+                        truncated: false,
+                        truncation_hint: String::new(),
+                        raw_output_bytes: 1_200,
+                    }
+                };
+                let output = ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(
+                    MultiTaskOutputResult {
+                        mode: "wait_any".to_owned(),
+                        results: vec![
+                            child("completed-but-not-authoritative", "completed"),
+                            child("running", "running"),
+                            child("late-error", "failed"),
+                        ],
+                        summary: "1/3 tasks completed (wait_any)".to_owned(),
+                    },
+                ));
+                let rendered = output.to_prompt_format();
+                let actor = super::super::support::plain_actor().await;
+                let retained = actor
+                    .jev_post_process_tool_result(
+                        "get_task_output",
+                        "",
+                        "mixed-task-output-call",
+                        &output,
+                        rendered.clone(),
+                    )
+                    .await;
+                assert_eq!(retained, rendered);
+            })
+            .await;
+    }
+
+    #[test]
     #[serial_test::serial]
     fn production_compression_bounds_unavailable_lanes_and_recovers_in_new_context() {
         use distill_test_support::sse::responses_api_script_exact;
@@ -1792,6 +2053,206 @@ mod tests {
             .expect("spawn compression-bound test thread")
             .join()
             .expect("compression-bound test thread");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn production_task_output_uses_utility_then_worker_with_typed_status() {
+        use distill_test_support::sse::responses_api_script_exact;
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_tools::computer::types::{TaskKind, TerminalBackend, TerminalRunRequest};
+        use distill_tools::notification::ToolNotificationHandle;
+        use distill_tools::types::resources::Terminal;
+        use distill_tool_types::{TaskOutputOutput, TaskOutputResult};
+        use distill_tools::types::output::ToolOutput;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                ])
+                .await
+                .expect("start task-output inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "task-output-utility-rejected",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "`0 failed, 16 passed`"}
+                            }],
+                            "usage": {"prompt_tokens": 120, "completion_tokens": 4}
+                        }),
+                    ),
+                );
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact(
+                        "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`",
+                        "worker-model",
+                    )),
+                );
+
+                let actor = super::super::support::plain_actor().await;
+                let bridge = actor.agent.borrow().tool_bridge().clone();
+                let resources = bridge.shared_resources().await;
+                let terminal = {
+                    let resources = resources.lock().await;
+                    resources
+                        .get::<Terminal>()
+                        .map(|terminal| std::sync::Arc::clone(&terminal.0))
+                        .expect("test tool bridge terminal backend")
+                };
+                let task_dir = tempfile::tempdir().expect("task output directory");
+                let task_command = "printf '0 failed, 16 passed\\n1 skipped: src/skip.test.ts\\n'; i=0; while [ \"$i\" -lt 800 ]; do printf 'progress noise\\n'; i=$((i + 1)); done";
+                let task = terminal
+                    .run_background(TerminalRunRequest {
+                        command: task_command.to_owned(),
+                        working_directory: std::path::PathBuf::from("/tmp"),
+                        env: std::collections::HashMap::new(),
+                        timeout: std::time::Duration::from_secs(20),
+                        output_byte_limit: 100_000,
+                        output_file: task_dir.path().join("task-output.log"),
+                        notification_handle: ToolNotificationHandle::noop(),
+                        tool_call_id: "task-output-call-1".to_owned(),
+                        display_command: Some(task_command.to_owned()),
+                        auto_background_on_timeout: false,
+                        foreground_block_budget: None,
+                        kind: TaskKind::Bash,
+                        owner_session_id: None,
+                        description: None,
+                    })
+                    .await
+                    .expect("start terminal task");
+                let snapshot = terminal
+                    .wait_for_completion(&task.task_id, Some(std::time::Duration::from_secs(20)))
+                    .await
+                    .expect("terminal task snapshot");
+                assert!(snapshot.completed, "test terminal task must complete");
+                let output_text = snapshot.output.clone();
+                let output_file = snapshot.output_file.display().to_string();
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+
+                let mut worker = crate::agent::config::ModelEntry::fallback(
+                    "worker-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                worker.info.base_url = server.url();
+                worker.info.context_window =
+                    std::num::NonZeroU64::new(128_000).expect("worker window");
+                worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                worker.info.max_retries = Some(0);
+                worker.info.reasoning_effort =
+                    Some(distill_sampling_types::ReasoningEffort::Low);
+                worker.info.supports_reasoning_effort = true;
+                worker.info.reasoning_efforts = vec![
+                    distill_sampling_types::ReasoningEffortOption {
+                        id: "low".to_owned(),
+                        value: distill_sampling_types::ReasoningEffort::Low,
+                        label: "Low".to_owned(),
+                        description: Some("bounded test worker".to_owned()),
+                        default: true,
+                    },
+                ];
+                worker.api_key = Some("worker-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("worker-model", worker);
+
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+                    light: Some("worker-model".to_owned()),
+                    light_effort: Some("low".to_owned()),
+                });
+
+                let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(
+                    TaskOutputResult {
+                        task_id: snapshot.task_id.clone(),
+                        command: snapshot
+                            .display_command
+                            .clone()
+                            .unwrap_or_else(|| snapshot.command.clone()),
+                        status: "completed".to_owned(),
+                        exit_code: snapshot.exit_code,
+                        started: "2026-09-22T00:00:00Z".to_owned(),
+                        ended: Some("2026-09-22T00:00:01Z".to_owned()),
+                        duration_secs: 1.0,
+                        output: output_text,
+                        output_file: output_file.clone(),
+                        truncated: snapshot.truncated,
+                        truncation_hint: "[truncated - use read_file on output_file for full content]"
+                            .to_owned(),
+                        raw_output_bytes: snapshot.output_total_bytes.max(snapshot.output.len()),
+                    },
+                ));
+                let rendered = output.to_prompt_format();
+                let compressed = crate::jev::with_session_scope_and_recorder(
+                    "e3-task-output-utility-worker",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "get_task_output",
+                        "",
+                        "task-output-call-1",
+                        &output,
+                        rendered,
+                    ),
+                )
+                .await;
+
+                let activity = crate::jev::turn_activity_for_session(
+                    "e3-task-output-utility-worker",
+                    None,
+                );
+                assert!(
+                    compressed.contains("compressed by verified configured light worker"),
+                    "expected configured worker fallback; utility_requests={}, worker_requests={}, activity={activity:?}",
+                    server.request_count_for("/v1/chat/completions"),
+                    server.request_count_for("/v1/responses"),
+                );
+                for field in [
+                    "1 skipped: src/skip.test.ts",
+                    "status: completed",
+                    &format!("output_file: {output_file}"),
+                    "truncated: false",
+                    "truncation_hint: [truncated - use read_file on output_file for full content]",
+                    "full output stored at",
+                ] {
+                    assert!(compressed.contains(field), "missing {field}: {compressed}");
+                }
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                assert_eq!(server.request_count_for("/v1/responses"), 1);
+
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_tier_config();
+            })
+            .await;
     }
 
     #[tokio::test(flavor = "current_thread")]

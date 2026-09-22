@@ -799,13 +799,28 @@ impl ToolOutput {
                 TaskOutputOutput::MultiResult(mr) => {
                     let mut lines = vec![format!("=== Multi-wait ({}) ===", mr.mode)];
                     for r in &mr.results {
+                        lines.push(format!("--- Task {} [{}] ---", r.task_id, r.status));
+                        lines.push(format!("Command: {}", r.command));
+                        lines.push(format!("Status: {}", r.status));
+                        lines.push(format!("Duration: {:.2}s", r.duration_secs));
                         lines.push(format!(
-                            "--- Task {} [{}] ---\nCommand: {}\nDuration: {:.2}s",
-                            r.task_id, r.status, r.command, r.duration_secs,
+                            "Exit Code: {}",
+                            r.exit_code
+                                .map_or_else(|| "none".to_owned(), |code| code.to_string())
                         ));
-                        if let Some(code) = r.exit_code {
-                            lines.push(format!("Exit Code: {code}"));
+                        lines.push(format!(
+                            "Output File: {}",
+                            if r.output_file.is_empty() {
+                                "(none)"
+                            } else {
+                                r.output_file.as_str()
+                            }
+                        ));
+                        lines.push(format!("Truncated: {}", r.truncated));
+                        if r.truncated || !r.truncation_hint.is_empty() {
+                            lines.push(format!("Truncation Hint: {}", r.truncation_hint));
                         }
+                        lines.push(format!("Raw Output Bytes: {}", r.raw_output_bytes));
                         if !r.output.is_empty() {
                             lines.push(r.output.clone());
                         }
@@ -1284,7 +1299,7 @@ mod tests {
     use crate::implementations::distill::todo::{TodoPriority, TodoStatus};
     use serde_json::json;
     use distill_tool_types::KillTaskResult;
-    use distill_tool_types::TaskOutputResult;
+    use distill_tool_types::{MultiTaskOutputResult, TaskOutputOutput, TaskOutputResult};
     #[test]
     fn send_subagent_message_error_classification_is_closed() {
         use crate::implementations::distill::send_subagent_message::SendSubagentMessageOutput::*;
@@ -1996,6 +2011,61 @@ mod tests {
         let prompt = out.to_prompt_format();
         assert!(!prompt.contains("Output File"), "{prompt}");
     }
+
+    #[test]
+    fn multi_task_output_prompt_preserves_every_child_status_and_recovery_field() {
+        let child = |task_id: &str, status: &str, output_file: &str| TaskOutputResult {
+            task_id: task_id.to_owned(),
+            command: format!("cargo test -- {task_id}"),
+            status: status.to_owned(),
+            exit_code: (status == "completed").then_some(0),
+            started: "2026-09-22T00:00:00Z".to_owned(),
+            ended: (status == "completed").then(|| "2026-09-22T00:00:01Z".to_owned()),
+            duration_secs: 1.5,
+            output: format!("body for {task_id}"),
+            output_file: output_file.to_owned(),
+            truncated: task_id == "done",
+            truncation_hint: if task_id == "done" {
+                "use read_file on /tmp/done.log".to_owned()
+            } else {
+                String::new()
+            },
+            raw_output_bytes: 123,
+        };
+        let out = ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(
+            MultiTaskOutputResult {
+                mode: "wait_any".to_owned(),
+                results: vec![
+                    child("done", "completed", "/tmp/done.log"),
+                    child("running", "running", "/tmp/running.log"),
+                    child("missing", "not_found", ""),
+                ],
+                summary: "1/3 tasks completed (wait_any)".to_owned(),
+            },
+        ));
+        let prompt = out.to_prompt_format();
+        for field in [
+            "=== Multi-wait (wait_any) ===",
+            "1/3 tasks completed (wait_any)",
+            "Task done",
+            "Task running",
+            "Task missing",
+            "Status: completed",
+            "Status: running",
+            "Status: not_found",
+            "Exit Code: 0",
+            "Exit Code: none",
+            "Duration: 1.50s",
+            "Output File: /tmp/done.log",
+            "Output File: /tmp/running.log",
+            "Output File: (none)",
+            "Truncated: true",
+            "Truncation Hint: use read_file on /tmp/done.log",
+        ] {
+            assert!(prompt.contains(field), "missing {field}: {prompt}");
+        }
+    }
+
     fn make_result(status: &str, raw_output_bytes: usize) -> TaskOutputResult {
         TaskOutputResult {
             task_id: "t".into(),

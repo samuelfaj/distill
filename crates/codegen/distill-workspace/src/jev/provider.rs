@@ -507,6 +507,7 @@ fn parse_wire_usage(body: &Json) -> (Usage, UsageBilling) {
         cost_usd_ticks: wire_usage
             .and_then(|value| value.get("cost_usd_ticks"))
             .and_then(Json::as_i64)
+            .filter(|&cost| cost > 0)
             .or_else(|| parse_usd_ticks(wire_usage.and_then(|value| value.get("cost"))))
             .or_else(|| parse_usd_ticks(body.get("cost"))),
     };
@@ -918,6 +919,7 @@ mod tests {
                     "cached_tokens": 40,
                     "cache_write_tokens": 12
                 },
+                "cost_usd_ticks": 0,
                 "cost": 0.0
             }
         }));
@@ -927,6 +929,16 @@ mod tests {
         assert_eq!(billing.cached_input_tokens, Some(40));
         assert_eq!(billing.cache_creation_input_tokens, Some(12));
         assert_eq!(billing.cost_usd_ticks, Some(0));
+
+        let (_, legacy_zero) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 0 }
+        }));
+        assert_eq!(legacy_zero.cost_usd_ticks, None);
+
+        let (_, legacy_paid) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 12, "cost": 0.0 }
+        }));
+        assert_eq!(legacy_paid.cost_usd_ticks, Some(12));
     }
 
     /// The owner's chain renders as OpenRouter's fallback routing: the primary

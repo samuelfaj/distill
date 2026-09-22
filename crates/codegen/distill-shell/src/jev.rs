@@ -363,7 +363,10 @@ p5_call_validation = true"#,
                     input_tokens: Some(7),
                     output_tokens: None,
                 }),
-                billing: UsageBilling::default(),
+                billing: UsageBilling {
+                    cost_usd_ticks: Some(0),
+                    ..UsageBilling::default()
+                },
                 status: AttemptStatus::Completed,
                 latency_ms: 3,
             },
@@ -381,6 +384,8 @@ p5_call_validation = true"#,
         assert_eq!(ledger.totals.input_tokens, 7);
         assert_eq!(ledger.totals.output_tokens, 0);
         assert_eq!(ledger.totals.model_calls, 1);
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(0));
+        assert_eq!(ledger.totals.cost_missing_calls, 0);
         assert!(ledger.incomplete);
         assert!(!ledger
             .attributions
@@ -857,10 +862,7 @@ pub(crate) fn record_workspace_attempt(
                 .min(u64::from(u32::MAX)) as u32,
         })
     });
-    let cost_usd_ticks = attempt
-        .billing
-        .cost_usd_ticks
-        .and_then(|cost| distill_sampling_types::reported_cost_ticks(Some(cost)));
+    let cost_usd_ticks = attempt.billing.cost_usd_ticks.filter(|&cost| cost >= 0);
     let status = match attempt.status {
         distill_workspace::jev::types::AttemptStatus::Completed => UsageCallStatus::Completed,
         distill_workspace::jev::types::AttemptStatus::Rejected => UsageCallStatus::Rejected,

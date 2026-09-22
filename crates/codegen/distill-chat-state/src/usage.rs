@@ -47,6 +47,8 @@ pub enum UsageCallStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageCostBasis {
+    /// Provider-authoritative cost. `Some(0)` is a reported free call, not a
+    /// missing legacy tick value.
     Reported,
     Estimated,
     Unknown,
@@ -115,8 +117,19 @@ impl UsageTotals {
         api_duration_ms: Option<u64>,
         cost_usd_ticks: Option<i64>,
     ) -> Self {
+        Self::from_optional_call_raw(
+            usage,
+            api_duration_ms,
+            distill_sampling_types::reported_cost_ticks(cost_usd_ticks),
+        )
+    }
+
+    fn from_optional_call_raw(
+        usage: Option<&TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) -> Self {
         let usage = usage.cloned().unwrap_or_default();
-        let cost_usd_ticks = distill_sampling_types::reported_cost_ticks(cost_usd_ticks);
         Self {
             input_tokens: u64::from(usage.prompt_tokens),
             output_tokens: u64::from(usage.completion_tokens),
@@ -236,8 +249,13 @@ impl UsageLedger {
         {
             return;
         }
-        let cost = distill_sampling_types::reported_cost_ticks(attribution.cost_usd_ticks);
-        let call = UsageTotals::from_optional_call(
+        let cost = match attribution.cost_basis {
+            UsageCostBasis::Reported => attribution.cost_usd_ticks.filter(|&ticks| ticks >= 0),
+            UsageCostBasis::Estimated | UsageCostBasis::Unknown => {
+                distill_sampling_types::reported_cost_ticks(attribution.cost_usd_ticks)
+            }
+        };
+        let call = UsageTotals::from_optional_call_raw(
             attribution.usage.as_ref(),
             attribution.api_duration_ms,
             cost,
@@ -376,6 +394,42 @@ mod tests {
 
         ledger.record_subagent(&[], true);
         assert!(ledger.incomplete);
+    }
+
+    #[test]
+    fn attributed_reported_zero_cost_is_free_not_unknown() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_attribution(UsageAttribution {
+            attempt_id: "reported-free".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: Some("provider-free".to_owned()),
+            role: "main".to_owned(),
+            model_id: "free-model".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(1, 1)),
+            usage_complete: true,
+            api_duration_ms: None,
+            cost_usd_ticks: Some(0),
+            cost_basis: UsageCostBasis::Reported,
+        });
+
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(0));
+        assert_eq!(ledger.totals.cost_missing_calls, 0);
+        assert!(!ledger.totals.cost_is_partial());
+
+        let mut legacy = UsageLedger::default();
+        legacy.record_attribution(UsageAttribution {
+            attempt_id: "legacy-zero".to_owned(),
+            cost_usd_ticks: Some(0),
+            cost_basis: UsageCostBasis::Unknown,
+            ..ledger.attributions[0].clone()
+        });
+        assert_eq!(legacy.totals.cost_usd_ticks, None);
+        assert_eq!(legacy.totals.cost_missing_calls, 1);
     }
 
     #[test]

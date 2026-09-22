@@ -474,7 +474,9 @@ fn parse_usd_ticks(value: Option<&Json>) -> Option<i64> {
             .all(|c| c == '0')
             .then_some(integer / 10_i128.checked_pow(extra as u32)?)?
     };
-    (ticks > 0 && ticks <= i128::from(i64::MAX)).then_some(ticks as i64)
+    // JSON `cost: 0` is an authoritative free response; legacy tick backfills
+    // are normalized separately by the attribution path.
+    (ticks >= 0 && ticks <= i128::from(i64::MAX)).then_some(ticks as i64)
 }
 
 fn parse_wire_usage(body: &Json) -> (Usage, UsageBilling) {
@@ -499,7 +501,8 @@ fn parse_wire_usage(body: &Json) -> (Usage, UsageBilling) {
             .or_else(|| nested_token("input_tokens_details", "cached_tokens"))
             .or_else(|| token("cached_prompt_tokens"))
             .or_else(|| token("cache_read_input_tokens")),
-        cache_creation_input_tokens: token("cache_creation_input_tokens"),
+        cache_creation_input_tokens: token("cache_creation_input_tokens")
+            .or_else(|| nested_token("prompt_tokens_details", "cache_write_tokens")),
         reasoning_tokens: nested_token("completion_tokens_details", "reasoning_tokens"),
         cost_usd_ticks: wire_usage
             .and_then(|value| value.get("cost_usd_ticks"))
@@ -904,6 +907,27 @@ fn extract_json_object(text: &str) -> Option<Json> {
 mod tests {
     use super::*;
     use crate::jev::types::NoulCriteria;
+
+    #[test]
+    fn openrouter_billing_keeps_nested_cache_write_and_reported_zero() {
+        let (usage, billing) = parse_wire_usage(&json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "prompt_tokens_details": {
+                    "cached_tokens": 40,
+                    "cache_write_tokens": 12
+                },
+                "cost": 0.0
+            }
+        }));
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(25));
+        assert_eq!(billing.cached_input_tokens, Some(40));
+        assert_eq!(billing.cache_creation_input_tokens, Some(12));
+        assert_eq!(billing.cost_usd_ticks, Some(0));
+    }
 
     /// The owner's chain renders as OpenRouter's fallback routing: the primary
     /// in `model`, the rest in `models`, in order. Getting this wrong would mean

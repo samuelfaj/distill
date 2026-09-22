@@ -1,6 +1,6 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP37 utility e CP35–CP36 de contexto funcionais aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
 > **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
 > (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
@@ -64,8 +64,36 @@ Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP37 utilit
 > O main workspace já tinha utility joint `8` + display `1` PASS; processos e
 > sessões de usuários já abertos não foram reiniciados e permanecem no estado
 > anterior. Fluxo live-provider/usuário ainda não foi verificado.
-> Os dois achados de ordenação de billing do E2 continuam não aceitos. Nenhum
+> No aceite do CP37, os dois achados de ordenação de billing do E2 ainda não
+> estavam aceitos; o CP39 abaixo os supersede. Nenhum
 > T01–T21 está concluído e não há economia financeira matched/pareada validada.
+
+> **Status atual — CP39 / billing (22/09/2026):** o fix de billing em 17 arquivos
+> do CP39 (`07ff4057`) foi aceito após revisão independente de regate de preço:
+> atribuição late de auxiliary e
+> child persiste sem snapshots duplicados; preço desconhecido conserva tokens e
+> chamadas conhecidas, lower bound de USD conhecido e flag de parcialidade; as
+> lacunas precursoras e legadas permanecem explícitas. Provas focadas: usage
+> `16 PASS`, late title/precursor/parent fold `1` cada, legacy `1` sobreposto
+> aos 16 e missing-price `1 PASS` pelo controller e R1. Compile fresh release:
+> `2m28`. Isso avança T01, mas não o conclui: não é CI amplo, live provider,
+> teste de timeout ou prontidão de piloto financeiro; não há alegação de preço
+> ou economia e nenhum binário CP39 instalado é afirmado.
+>
+> **Achado factual STAR — sessão `01a0c96b...` (22/09):** main: `374` calls /
+> `108,000,915` tokens; `24` child executions, `24,133,375` únicos após subtrair
+> `361,257` herdados; sessão: `132,134,290` tokens / `873` calls. Input:
+> `131,329,564`, cached `110,216,968` (subset); output `804,726`; reasoning
+> `504,195` (subset). Goal `2,322,098` mede crescimento de contexto/progresso
+> marginal de child, não billing. Utility: `160` attempts, input/output
+> reportados `0`; `160` context-400 rejections distintos do caminho antigo de
+> whole-conversation, antes do CP37. A aritmética exata não encontrou duplicação.
+> Main context: `46,452→496,395`, sem compactação; os 24 children foram
+> DeepSeek; o footer mostra apenas `12` calls do main worker. Prioridades
+> diagnosticadas e pendentes: evitar contexto grande repetido, limitar contexto
+> de worker, reduzir a resposta de descoberta de tools de `167,215` caracteres e distinguir
+> os medidores; utility sem full-round já foi resolvida no CP37. Sem conclusão
+> de economia monetária ou preços.
 
 ## 1. Objetivo e critério de sucesso
 
@@ -228,6 +256,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Associar cada tentativa faturável a tarefa/turno/request, papel, modelo respondente, endpoint, effort solicitado/aplicado, cache, status e custo. Integrar Jev, utility rejeitada, subagentes, títulos, recap, compactação/prefire e retries uma única vez; contabilizar geração paga mesmo descartada ou cancelada. Diferenciar falha sem cobrança comprovada de usage ausente.
   - Estender os dados/fluxos atuais somente onde faltar informação; não criar um segundo ledger. Separar custo reportado, estimado e ausente. Reconciliar o ledger Jev com o geral sem duplicar chamadas já incorporadas.
   - **Aceite/evidência:** uma execução conhecida com chamada principal + auxiliary + utility rejeitada + subagente fecha a soma por request; ausência/duplicidade é detectada; fixtures existentes de usage e subagent folding cobrem os caminhos aplicáveis. Comparar uma pequena amostra com registros do provedor antes de anunciar economia.
+  - **Estado CP39:** T01 avançou com a atribuição late/child e a preservação explícita de uso/preço desconhecido, mas continua aberto; não marcar T01 nem T01–T21 como concluídos sem reconciliação financeira validada.
 
 - [ ] **T02 — Congelar referências e produzir um baseline reproduzível.**
   - **Dependências:** T01. **Base:** [P9], testes existentes do Distill, protocolo da seção 7.

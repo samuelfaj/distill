@@ -223,12 +223,25 @@ fn apply_terminal_event_overrides(event: &mut rs::ResponseStreamEvent, data: &st
     let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
         return;
     };
-    // Stash cost ticks in metadata for stream_responses.
-    if let Some(ticks) = distill_sampling_types::reported_cost_ticks(
-        value
-            .pointer("/response/usage/cost_in_usd_ticks")
-            .and_then(|v| v.as_i64()),
-    ) {
+    // Stash normalized cost ticks in metadata for stream_responses. OpenRouter's
+    // authoritative USD field takes precedence over the legacy Grok backfill.
+    let cost_ticks = value.pointer("/response/usage").and_then(|usage| {
+        let cost_usd = usage.get("cost").and_then(|cost| match cost {
+            serde_json::Value::Number(number) => number.as_f64(),
+            serde_json::Value::String(cost) => cost.parse::<f64>().ok(),
+            _ => None,
+        });
+        cost_usd
+            .and_then(distill_sampling_types::usd_cost_to_ticks)
+            .or_else(|| {
+                distill_sampling_types::reported_cost_ticks(
+                    usage
+                        .get("cost_in_usd_ticks")
+                        .and_then(|value| value.as_i64()),
+                )
+            })
+    });
+    if let Some(ticks) = cost_ticks {
         response
             .metadata
             .get_or_insert_with(Default::default)
@@ -2850,6 +2863,90 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn responses_stream_preserves_openrouter_cost_and_model_identity() {
+        let terminal = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_openrouter",
+                "object": "response",
+                "created_at": 0,
+                "model": "openrouter/provider-model",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_openrouter",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "ok",
+                        "annotations": []
+                    }]
+                }],
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 5,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 15,
+                    "cost": 0.00012345
+                }
+            }
+        });
+        // No context_details: cost must still survive the existing total-token override path.
+        let wire = format!("data: {terminal}\n\n");
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move || {
+                let wire = wire.clone();
+                async move {
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(wire))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        })
+        .unwrap();
+        let request = CreateResponseWrapper::new(rs::CreateResponse {
+            input: rs::InputParam::Text("hello".into()),
+            ..Default::default()
+        });
+        let (raw, metadata, _) = client.create_response_stream(request).await.unwrap();
+        let events: Vec<_> = crate::stream::responses::stream_responses(
+            raw,
+            metadata,
+            crate::types::RequestId::from("openrouter-cost"),
+            std::time::Duration::from_secs(5),
+            None,
+        )
+        .collect()
+        .await;
+
+        let Some(SamplingEvent::Completed { response, .. }) = events.last() else {
+            panic!("stream did not complete: {events:?}");
+        };
+        assert_eq!(response.cost_usd_ticks, Some(1_234_500));
+        assert_eq!(response.assistant_text(), "ok");
+        assert_eq!(
+            response
+                .assistant()
+                .and_then(|assistant| assistant.model_id.as_deref()),
+            Some("openrouter/provider-model")
+        );
+        server.abort();
+    }
+
     #[test]
     fn codex_request_preserves_instructions_and_other_providers() {
         let original = serde_json::json!({
@@ -3805,46 +3902,59 @@ mod tests {
 
     #[test]
     fn deserialize_response_event_stashes_cost_in_metadata() {
-        let make = |ticks: i64| {
-            format!(
-                r#"{{
+        let make = |cost: Option<serde_json::Value>, legacy_ticks: Option<i64>| {
+            let mut usage = serde_json::json!({
+                "input_tokens": 10,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 5,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 15
+            });
+            if let Some(cost) = cost {
+                usage["cost"] = cost;
+            }
+            if let Some(ticks) = legacy_ticks {
+                usage["cost_in_usd_ticks"] = serde_json::json!(ticks);
+            }
+            serde_json::json!({
                 "type": "response.completed",
                 "sequence_number": 0,
-                "response": {{
+                "response": {
                     "id": "resp_1", "object": "response", "created_at": 0,
                     "model": "distill", "status": "completed", "output": [],
-                    "usage": {{
-                        "input_tokens": 10,
-                        "input_tokens_details": {{ "cached_tokens": 0 }},
-                        "output_tokens": 5,
-                        "output_tokens_details": {{ "reasoning_tokens": 0 }},
-                        "total_tokens": 15,
-                        "cost_in_usd_ticks": {ticks}
-                    }}
-                }}
-            }}"#
-            )
+                    "usage": usage
+                }
+            })
+            .to_string()
         };
-
-        let event = deserialize_response_event(&make(78)).expect("parse");
-        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
-            panic!("expected ResponseCompleted");
-        };
-        assert_eq!(
+        let metadata_cost = |sse: String| {
+            let event = deserialize_response_event(&sse).expect("parse");
+            let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+                panic!("expected ResponseCompleted");
+            };
             e.response
                 .metadata
-                .as_ref()
-                .and_then(|m| m.get(COST_USD_TICKS_METADATA_KEY))
-                .map(String::as_str),
-            Some("78")
-        );
-
-        // The REST mapper backfills 0 for unbilled requests: no stash.
-        let event = deserialize_response_event(&make(0)).expect("parse");
-        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
-            panic!("expected ResponseCompleted");
+                .and_then(|metadata| metadata.get(COST_USD_TICKS_METADATA_KEY).cloned())
         };
-        assert!(e.response.metadata.is_none());
+
+        assert_eq!(
+            metadata_cost(make(Some(serde_json::json!(0.00012345)), None)).as_deref(),
+            Some("1234500")
+        );
+        // An authoritative USD zero is a known free call, not an unknown cost.
+        assert_eq!(
+            metadata_cost(make(Some(serde_json::json!(0.0)), None)).as_deref(),
+            Some("0")
+        );
+        // Missing and malformed USD costs remain unknown.
+        assert_eq!(metadata_cost(make(None, None)), None);
+        assert_eq!(
+            metadata_cost(make(Some(serde_json::json!("not-a-cost")), None)),
+            None
+        );
+        // Legacy ticks still work, while the REST mapper's zero backfill is unknown.
+        assert_eq!(metadata_cost(make(None, Some(78))).as_deref(), Some("78"));
+        assert_eq!(metadata_cost(make(None, Some(0))), None);
     }
 
     #[test]

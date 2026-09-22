@@ -94,6 +94,377 @@ pub struct LaneLimits {
     pub importance_bytes: usize,
 }
 
+/// The part of a Bun test result that can be stated without a model.
+///
+/// The parser is intentionally stricter than the exit code: a zero exit is not
+/// enough to prove that the run was complete or that no tests were skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BunTestStatus {
+    pub tests: usize,
+    pub files: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub todo: usize,
+    pub expectations: Option<usize>,
+}
+
+impl BunTestStatus {
+    /// A short, source-backed result. The handle is supplied by the caller so
+    /// replacing the body never makes the original unavailable.
+    pub fn render(&self, command: &str, handle: &str) -> String {
+        let expectations = self
+            .expectations
+            .map_or(String::new(), |count| format!("\nexpectations: {count}"));
+        format!(
+            "bun test: PASS\ncommand: {command}\nexit: 0\ntests: {}\nfiles: {}\npassed: {}\nfailed: {}\nskipped: {}\ntodo: {}{expectations}\nfull output stored at {handle}",
+            self.tests,
+            self.files,
+            self.passed,
+            self.failed,
+            self.skipped,
+            self.todo,
+        )
+    }
+}
+
+/// Parses a complete successful `bun test` result from typed shell metadata.
+///
+/// This is deliberately a zero-generation path. It refuses truncated,
+/// timed-out, signalled, failed, empty, skipped, todo, or incomplete runs; the
+/// caller then keeps the recoverable source or uses a guarded task instead.
+pub fn bun_test_status(
+    command: &str,
+    text: &str,
+    exit_code: i32,
+    truncated: bool,
+    timed_out: bool,
+    signal: Option<&str>,
+) -> Option<BunTestStatus> {
+    if exit_code != 0
+        || truncated
+        || timed_out
+        || signal.is_some()
+        || !is_bun_test_command(command)
+    {
+        return None;
+    }
+    let lowered = text.to_ascii_lowercase();
+    if ["not run", "incomplete", "timed out", "timeout", "no tests found"]
+        .iter()
+        .any(|marker| lowered.contains(marker))
+    {
+        return None;
+    }
+
+    let mut passed = None;
+    let mut failed = None;
+    let mut skipped = None;
+    let mut todo = None;
+    let mut expectations = None;
+    let mut tests = None;
+    let mut files = None;
+
+    for line in text.lines() {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if let Some((count, label)) = summary_count(&tokens) {
+            match label {
+                "pass" | "passed" => {
+                    if passed.replace(count).is_some() {
+                        return None;
+                    }
+                }
+                "fail" | "failed" => {
+                    if failed.replace(count).is_some() {
+                        return None;
+                    }
+                }
+                "skip" | "skipped" => {
+                    if skipped.replace(count).is_some() {
+                        return None;
+                    }
+                }
+                "todo" => {
+                    if todo.replace(count).is_some() {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(count) = count_before_label(&tokens, "expect()") {
+            if expectations.replace(count).is_some() {
+                return None;
+            }
+        }
+        if let Some((test_count, file_count)) = ran_counts(&tokens) {
+            if tests.replace(test_count).is_some() || files.replace(file_count).is_some() {
+                return None;
+            }
+        }
+    }
+
+    let has_unaccounted_skip_marker = text.lines().any(|line| {
+        let lowered = line.to_ascii_lowercase();
+        lowered
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| matches!(token, "skip" | "skipped" | "todo"))
+    });
+    if skipped.is_none() && has_unaccounted_skip_marker {
+        return None;
+    }
+
+    let (Some(passed), Some(failed), Some(tests), Some(files)) =
+        (passed, failed, tests, files)
+    else {
+        return None;
+    };
+    // Bun 1.3 omits a zero skip/todo counter from a successful run.  The
+    // recognized executable plus a complete `Ran ... tests across ... files`
+    // summary and a closed pass/fail count make that omission safe to fill in;
+    // arbitrary output never gets the same inference.
+    let skipped = skipped.unwrap_or(0);
+    let todo = todo.unwrap_or(0);
+    if tests == 0
+        || files == 0
+        || failed != 0
+        || skipped != 0
+        || todo != 0
+        || passed != tests
+        || passed
+            .checked_add(failed)
+            .and_then(|value| value.checked_add(skipped))
+            .and_then(|value| value.checked_add(todo))
+            != Some(tests)
+    {
+        return None;
+    }
+    Some(BunTestStatus {
+        tests,
+        files,
+        passed,
+        failed,
+        skipped,
+        todo,
+        expectations,
+    })
+}
+
+fn is_bun_test_command(command: &str) -> bool {
+    // This shortcut is safe only for one direct invocation. Shell composition,
+    // redirection, or line continuations can append another result whose
+    // counters would otherwise be mistaken for this run.
+    if command
+        .chars()
+        .any(|character| matches!(character, ';' | '|' | '&' | '\n' | '\r' | '<' | '>'))
+    {
+        return false;
+    }
+    let tokens: Vec<String> = command
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| matches!(ch, '\'' | '"' | '`'))
+                .to_ascii_lowercase()
+        })
+        .collect();
+    let Some(token) = tokens.first() else {
+        return false;
+    };
+    let executable = token.rsplit('/').next().unwrap_or(token);
+    executable == "bun" && tokens.get(1).is_some_and(|next| next == "test")
+}
+
+fn normalized_word(token: &str) -> &str {
+    token.trim_matches(|ch: char| {
+        !ch.is_ascii_alphabetic() && ch != '(' && ch != ')'
+    })
+}
+
+fn count_token(token: &str) -> Option<usize> {
+    token
+        .trim_matches(|ch: char| !ch.is_ascii_digit())
+        .replace(',', "")
+        .parse()
+        .ok()
+}
+
+fn summary_count<'a>(tokens: &[&'a str]) -> Option<(usize, &'a str)> {
+    let first = tokens.first().and_then(|token| count_token(token));
+    let second = tokens.get(1).map(|token| normalized_word(token));
+    if let (Some(count), Some(label)) = (first, second)
+        && matches!(label, "pass" | "passed" | "fail" | "failed" | "skip" | "skipped" | "todo")
+    {
+        return Some((count, label));
+    }
+    let first_word = tokens.first().map(|token| normalized_word(token));
+    let second_count = tokens.get(1).and_then(|token| count_token(token));
+    if let (Some(label), Some(count)) = (first_word, second_count)
+        && matches!(label, "pass" | "passed" | "fail" | "failed" | "skip" | "skipped" | "todo")
+    {
+        return Some((count, label));
+    }
+    None
+}
+
+/// Lines that a tool-result consumer must not lose when it accepts an
+/// extractive answer. These are deliberately source lines, not facts inferred
+/// from them, so a worker cannot turn a failed run into a successful one.
+pub fn required_tool_evidence(text: &str) -> Vec<String> {
+    let mut required = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let trimmed = line.trim();
+        let lowered = trimmed.to_ascii_lowercase();
+        let tokens: Vec<&str> = lowered
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect();
+        let is_failure_or_detail = [
+            "error", "fail", "failed", "failure", "panic", "assert", "expected", "not", "run",
+            "incomplete", "timed", "out", "timeout", "skipped", "skip", "todo",
+        ]
+        .iter()
+        .any(|marker| tokens.contains(marker));
+        let is_summary = summary_count(&trimmed.split_whitespace().collect::<Vec<_>>()).is_some()
+            || lowered.contains("test result")
+            || lowered.trim_start().starts_with("ran ")
+            || lowered.contains("tests passed")
+            || matches!(lowered.trim(), "pass" | "passed" | "success" | "ok");
+        // Keep every distinct mandatory line, in source order.  In particular,
+        // a first `0 failed` line cannot hide a later failure or skip line.  A
+        // long set of distinct lines is intentionally allowed to defer when it
+        // cannot fit the bounded source slice.
+        if (is_failure_or_detail || is_summary)
+            && !required.iter().any(|existing| existing == trimmed)
+        {
+            required.push(trimmed.to_owned());
+        }
+    }
+    if required.is_empty()
+        && let Some(line) = text.lines().find(|line| !line.trim().is_empty())
+    {
+        required.push(line.trim().to_owned());
+    }
+    required
+}
+
+/// Select a bounded, deterministic source slice for an extractive task.
+/// Required status/error lines are admitted first, then the head and tail and
+/// other marker-bearing lines in source order. If the required evidence cannot
+/// fit, no model call is safe and the caller keeps the original bytes.
+pub fn bounded_tool_evidence(text: &str, max_bytes: usize) -> Option<String> {
+    if max_bytes == 0 || text.is_empty() {
+        return None;
+    }
+    if text.len() <= max_bytes {
+        return Some(text.to_owned());
+    }
+
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let required = required_tool_evidence(text);
+    let mut selected: Vec<usize> = Vec::new();
+    let mut used = 0usize;
+    let mut add = |index: usize| -> bool {
+        if selected.contains(&index) {
+            return true;
+        }
+        let line = lines[index];
+        let extra = line.len().saturating_add(usize::from(!selected.is_empty()));
+        if used.saturating_add(extra) > max_bytes {
+            return false;
+        }
+        selected.push(index);
+        used = used.saturating_add(extra);
+        true
+    };
+
+    for required_line in &required {
+        let Some(index) = lines
+            .iter()
+            .position(|line| line.trim() == required_line)
+        else {
+            return None;
+        };
+        if !add(index) {
+            return None;
+        }
+    }
+
+    let is_marker = |line: &str| {
+        let line = line.to_ascii_lowercase();
+        [
+            "error", "failed", "failure", "panic", "assert", "expected", "skip", "todo",
+            "incomplete", "timeout", "ran ", "passed", "warning",
+        ]
+        .iter()
+        .any(|marker| line.contains(marker))
+    };
+    let mut candidates = Vec::new();
+    candidates.extend(0..lines.len().min(2));
+    candidates.extend(lines.len().saturating_sub(2)..lines.len());
+    candidates.extend(
+        lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| is_marker(line).then_some(index)),
+    );
+    candidates.sort_unstable();
+    candidates.dedup();
+    for index in candidates {
+        let _ = add(index);
+    }
+    if selected.is_empty() {
+        return None;
+    }
+    selected.sort_unstable();
+    Some(
+        selected
+            .into_iter()
+            .map(|index| lines[index])
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn count_before_label(tokens: &[&str], label: &str) -> Option<usize> {
+    tokens.iter().enumerate().find_map(|(index, token)| {
+        (normalized_word(token) == label).then(|| {
+            index
+                .checked_sub(1)
+                .and_then(|previous| tokens.get(previous))
+                .and_then(|token| count_token(token))
+        })
+    })?
+}
+
+fn ran_counts(tokens: &[&str]) -> Option<(usize, usize)> {
+    let ran = tokens
+        .iter()
+        .position(|token| normalized_word(token).eq_ignore_ascii_case("ran"))?;
+    let tests_index = (ran + 1..tokens.len()).find(|index| {
+        matches!(normalized_word(tokens[*index]), "test" | "tests")
+    })?;
+    let test_count = (ran + 1..tests_index)
+        .rev()
+        .find_map(|index| count_token(tokens[index]))?;
+    let across = (tests_index + 1..tokens.len()).find(|index| {
+        normalized_word(tokens[*index]).eq_ignore_ascii_case("across")
+    })?;
+    let files_index = (across + 1..tokens.len()).find(|index| {
+        matches!(normalized_word(tokens[*index]), "file" | "files")
+    })?;
+    let file_count = (across + 1..files_index)
+        .rev()
+        .find_map(|index| count_token(tokens[index]))?;
+    Some((test_count, file_count))
+}
+
 /// Runs the pipeline. `reuse` is asked only when the flag is on and the payload
 /// is big enough to be worth a lookup; `store` is called only when a lossy stage
 /// is about to lose something.
@@ -924,5 +1295,132 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
         );
         assert!(second.body.len() < 200);
         assert_eq!(second.records[0].lane, "e_read_reuse");
+    }
+
+    #[test]
+    fn a_complete_bun_success_has_a_truthful_zero_generation_status() {
+        // This is the shape emitted by the installed Bun 1.3.13 probe: a
+        // successful run omits zero-valued skip/todo summary lines.
+        let output = "bun test v1.3.13 (bf2e2cec)\n\nsuccess.test.ts:\n(pass) success\n\n 1 pass\n 0 fail\n 1 expect() calls\nRan 1 test across 1 file. [9.00ms]\n";
+        let status = bun_test_status(
+            "/opt/homebrew/bin/bun test",
+            output,
+            0,
+            false,
+            false,
+            None,
+        )
+        .expect("complete successful Bun summary");
+        assert_eq!(status.tests, 1);
+        assert_eq!(status.files, 1);
+        assert_eq!(status.expectations, Some(1));
+        assert_eq!(status.skipped, 0);
+        let rendered = status.render("/opt/homebrew/bin/bun test", "/tmp/jev/store/abc.txt");
+        assert!(rendered.contains("bun test: PASS"));
+        assert!(rendered.contains("tests: 1"));
+        assert!(rendered.contains("failed: 0"));
+        assert!(rendered.contains("skipped: 0"));
+        assert!(rendered.contains("/tmp/jev/store/abc.txt"));
+    }
+
+    #[test]
+    fn bun_status_refuses_failure_skip_incomplete_and_untrusted_exit_metadata() {
+        let failed = "bun test v1.3.0\n1 pass\n1 fail\n0 skip\nRan 2 tests across 1 file.\n";
+        assert!(bun_test_status("bun test", failed, 1, false, false, None).is_none());
+
+        let skipped = "bun test v1.3.0\n1 pass\n0 fail\n1 skip\nRan 2 tests across 1 file.\n";
+        assert!(bun_test_status("bun test", skipped, 0, false, false, None).is_none());
+
+        let incomplete = "bun test v1.3.0\n1 pass\n0 fail\n0 skip\nRan 1 test across 1 file.\nincomplete\n";
+        assert!(bun_test_status("bun test", incomplete, 0, false, false, None).is_none());
+        assert!(bun_test_status("bun test", skipped, 0, true, false, None).is_none());
+        assert!(bun_test_status("bun test", skipped, 0, false, true, None).is_none());
+        assert!(bun_test_status("bun test", skipped, 0, false, false, Some("SIGTERM")).is_none());
+        assert!(bun_test_status("npm test", skipped, 0, false, false, None).is_none());
+        assert!(bun_test_status("echo bun test", skipped, 0, false, false, None).is_none());
+        assert!(bun_test_status("bunx test", skipped, 0, false, false, None).is_none());
+        assert!(bun_test_status("bun run test", skipped, 0, false, false, None).is_none());
+    }
+
+    #[test]
+    fn bun_status_rejects_concatenated_summaries_even_with_zero_exit() {
+        let concatenated = concat!(
+            "bun test v1.3.13\n1 pass\n1 fail\n1 expect() calls\nRan 2 tests across 1 file.\n",
+            "bun test v1.3.13\n1 pass\n0 fail\n1 expect() calls\nRan 1 test across 1 file.\n",
+        );
+        assert!(bun_test_status(
+            "/opt/homebrew/bin/bun test",
+            concatenated,
+            0,
+            false,
+            false,
+            None,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn bun_status_rejects_compound_commands_even_with_a_final_all_pass_summary() {
+        let passing =
+            "bun test v1.3.13\n1 pass\n0 fail\n1 expect() calls\nRan 1 test across 1 file.\n";
+        assert!(bun_test_status(
+            "bun test failing.test.ts; bun test passing.test.ts",
+            passing,
+            0,
+            false,
+            false,
+            None,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn bounded_tool_evidence_keeps_status_and_failure_lines() {
+        let mut output = format!(
+            "heading\n{}\nlong progress noise\n{}\n",
+            "test src/client.test.ts ... FAILED",
+            "1 failed, 0 passed"
+        );
+        output.push_str(&"noise\n".repeat(4_000));
+        let evidence = bounded_tool_evidence(&output, 256).expect("bounded source evidence");
+        assert!(evidence.len() <= 256);
+        assert!(evidence.contains("FAILED"));
+        assert!(evidence.contains("1 failed, 0 passed"));
+        assert!(required_tool_evidence(&output)
+            .iter()
+            .all(|line| evidence.contains(line)));
+
+        let partial = "2 passed\n1 skipped\nrun incomplete\n";
+        let required = required_tool_evidence(partial);
+        assert!(required.iter().any(|line| line.contains("skipped")));
+        assert!(required.iter().any(|line| line.contains("incomplete")));
+    }
+
+    #[test]
+    fn required_evidence_keeps_distinct_late_failure_and_skip_lines() {
+        let output = "0 failed, 8 passed\nprogress\n1 failed: src/a.test.ts\n1 skipped: src/b.test.ts\n";
+        let required = required_tool_evidence(output);
+        assert!(required.iter().any(|line| line.contains("0 failed")));
+        assert!(required.iter().any(|line| line.contains("1 failed")));
+        assert!(required.iter().any(|line| line.contains("1 skipped")));
+        let evidence = bounded_tool_evidence(output, 256).expect("all status evidence fits");
+        assert!(required.iter().all(|line| evidence.contains(line)));
+    }
+
+    #[test]
+    fn bounded_evidence_selects_late_status_from_a_large_source() {
+        let mut output = "noise\n".repeat(9_000);
+        output.push_str("0 failed, 40 passed\n1 failed: src/late.test.ts\n1 skipped: src/skip.test.ts\n");
+        assert!(output.len() > 32 * 1024);
+        let evidence = bounded_tool_evidence(&output, 1_024).expect("bounded source slice");
+        assert!(evidence.len() <= 1_024);
+        assert!(evidence.contains("1 failed: src/late.test.ts"));
+        assert!(evidence.contains("1 skipped: src/skip.test.ts"));
+    }
+
+    #[test]
+    fn bounded_tool_evidence_defers_when_required_source_line_cannot_fit() {
+        let output = format!("error: {}", "x".repeat(100));
+        assert!(bounded_tool_evidence(&output, 32).is_none());
     }
 }

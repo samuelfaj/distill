@@ -19,10 +19,18 @@
 //!   decision, so the TUI, the turn report and the log cannot disagree.
 
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use distill_workspace::jev::cheap::{DEFAULT_BASE_URL, DEFAULT_MODELS};
 use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::tasks;
+use distill_sampling_types::{ConversationItem, ConversationRequest, LengthPolicy, ReasoningEffort};
+
+/// A byte is the conservative upper bound for one input token when the
+/// tokenizer is not available at this layer.  The worker request also keeps a
+/// fixed framing reserve for the system/task/question wrapper.
+const WORKER_OVERHEAD_TOKENS: u64 = 256;
+const WORKER_FRAMING_BYTES: usize = 4 * 1024;
 
 /// The cheap-model spec the harness ships with, in priority order.
 ///
@@ -141,6 +149,25 @@ impl CheapLane {
         payload: &str,
         question: &str,
     ) -> Option<tasks::TaskOutcome> {
+        self.run_task_with_acceptance(lever, task_id, payload, question, |_| true)
+            .await
+    }
+
+    /// Runs one task while letting the caller apply its consumer-specific
+    /// acceptance contract before the physical attempt is recorded. A task
+    /// guard can accept a quoted answer that the final consumer still cannot
+    /// use; that response is one rejected attempt, not a second generation.
+    pub async fn run_task_with_acceptance<F>(
+        &self,
+        lever: JevLever,
+        task_id: &str,
+        payload: &str,
+        question: &str,
+        accepts: F,
+    ) -> Option<tasks::TaskOutcome>
+    where
+        F: Fn(&str) -> bool,
+    {
         if !crate::jev::lever_active(lever) {
             return None;
         }
@@ -149,19 +176,37 @@ impl CheapLane {
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         let span = tracing::info_span!(target: "jev.decision", "utility_context",
             session_id, turn_id, round_id, utility_call_id = %uuid::Uuid::new_v4());
-        let observed_client = crate::jev::active_usage_recorder().map(|recorder| {
+        let recorder = crate::jev::active_usage_recorder();
+        let completed_attempts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_client = recorder.as_ref().map(|recorder| {
+            let completed_attempts = completed_attempts.clone();
+            let recorder = recorder.clone();
             let task_id = task_id.to_owned();
             let turn_id = turn_id.clone();
             let observer: distill_workspace::jev::types::AttemptObserver =
                 std::sync::Arc::new(move |attempt| {
-                    crate::jev::record_workspace_attempt(
-                        attempt,
-                        "utility",
-                        Some(task_id.clone()),
-                        Some(turn_id.clone()),
-                        recorder.clone(),
-                        true,
-                    );
+                    if matches!(
+                        attempt.status,
+                        distill_workspace::jev::types::AttemptStatus::Completed
+                    ) {
+                        completed_attempts
+                            .lock()
+                            .expect("utility attempt lock")
+                            .push(attempt);
+                    } else {
+                        // Failed, rejected, and cancelled attempts are already
+                        // final at the transport boundary. Record each one
+                        // immediately so fallback chains and cancellation do
+                        // not disappear behind the consumer gate.
+                        crate::jev::record_workspace_attempt(
+                            attempt,
+                            "utility",
+                            Some(task_id.clone()),
+                            Some(turn_id.clone()),
+                            recorder.clone(),
+                            true,
+                        );
+                    }
                 });
             self.client.with_call_observer(observer)
         });
@@ -171,6 +216,48 @@ impl CheapLane {
             span,
         )
         .await;
+        let accepted_by_consumer = outcome
+            .as_ref()
+            .is_some_and(|outcome| accepts(&outcome.text));
+        let mut completed_attempts = completed_attempts
+            .lock()
+            .expect("utility attempt lock")
+            .drain(..)
+            .collect::<Vec<_>>();
+        if (outcome.is_none() || !accepted_by_consumer)
+            && let Some(attempt) = completed_attempts.last_mut()
+        {
+            // `tasks::run` applies its own source-span guard after the cheap
+            // transport has returned. Keep that one physical response
+            // rejected in the existing attempt row; never emit a second row.
+            attempt.status = distill_workspace::jev::types::AttemptStatus::Rejected;
+        }
+        if let Some(recorder) = recorder {
+            for attempt in completed_attempts {
+                crate::jev::record_workspace_attempt(
+                    attempt,
+                    "utility",
+                    Some(task_id.to_owned()),
+                    Some(turn_id.clone()),
+                    recorder.clone(),
+                    true,
+                );
+            }
+        }
+        if outcome.is_some() && !accepted_by_consumer {
+            note_success(lever);
+            note_rejection(lever);
+            crate::jev::record_item(
+                lever,
+                "defer",
+                &format!(
+                    "task `{task_id}` answer failed the consumer acceptance contract"
+                ),
+                None,
+                None,
+            );
+            return None;
+        }
         match &outcome {
             Some(outcome) => {
                 note_success(lever);
@@ -209,6 +296,149 @@ impl CheapLane {
     }
 }
 
+/// The configured `[jev.tiers].light` worker. Unlike [`CheapLane`], this keeps
+/// the resolved sampler backend, endpoint, auth and effort intact; it is not a
+/// Chat Completions wrapper around the local utility model.
+pub struct WorkerLane {
+    client: distill_sampler::SamplingClient,
+    model: String,
+    context_window: u64,
+    max_output_tokens: u32,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    reasoning_effort: Option<ReasoningEffort>,
+    idle_timeout: Duration,
+}
+
+impl WorkerLane {
+    /// Build one worker from the catalog-resolved sampler config. Only the
+    /// explicit light-tier effort may override the resolved model default.
+    pub fn from_sampler_config(
+        mut cfg: distill_sampler::SamplerConfig,
+        configured_effort: Option<&str>,
+    ) -> Option<Self> {
+        let model = cfg.model.trim().to_owned();
+        if model.is_empty() || cfg.base_url.trim().is_empty() || cfg.context_window == 0 {
+            return None;
+        }
+        if let Some(raw_effort) = configured_effort
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty() && !effort.eq_ignore_ascii_case("auto"))
+        {
+            let effort = raw_effort.parse::<ReasoningEffort>().ok()?;
+            cfg.reasoning_effort = Some(effort);
+        }
+        let reasoning_effort = cfg.reasoning_effort;
+        let max_output_tokens = cfg
+            .max_completion_tokens
+            .unwrap_or(distill_workspace::jev::cheap::DEFAULT_MAX_COMPLETION_TOKENS)
+            .min(distill_workspace::jev::cheap::DEFAULT_MAX_COMPLETION_TOKENS)
+            .max(1);
+        let idle_timeout = Duration::from_secs(cfg.idle_timeout_secs.unwrap_or(300).max(1));
+        let temperature = cfg.temperature;
+        let top_p = cfg.top_p;
+        let context_window = cfg.context_window;
+        let client = distill_sampler::SamplingClient::new(cfg).ok()?;
+        Some(Self {
+            client,
+            model,
+            context_window,
+            max_output_tokens,
+            temperature,
+            top_p,
+            reasoning_effort,
+            idle_timeout,
+        })
+    }
+
+    pub fn client(&self) -> &distill_sampler::SamplingClient {
+        &self.client
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Conservative payload budget derived from this worker's own context
+    /// window, including its task prompt and the reserved answer budget.
+    pub fn max_payload_bytes(&self) -> usize {
+        let input_budget = self
+            .context_window
+            .saturating_sub(u64::from(self.max_output_tokens) + WORKER_OVERHEAD_TOKENS)
+            as usize;
+        input_budget
+            .saturating_sub(distill_workspace::jev::cheap::TASK_SYSTEM_PROMPT.len())
+            .saturating_sub(WORKER_FRAMING_BYTES)
+    }
+
+    /// Build one tool-free, extractive task request. The request is rejected
+    /// before transport when the rendered task does not fit this worker's own
+    /// context plus its reserved output.
+    pub fn task_request(
+        &self,
+        task_id: &str,
+        payload: &str,
+        question: &str,
+    ) -> Option<ConversationRequest> {
+        let task_spec = tasks::spec(task_id)?;
+        if !matches!(task_spec.guard, tasks::Guard::Spans) {
+            return None;
+        }
+        let task = tasks::task_for(task_spec, payload, question);
+        let rendered = task.render();
+        let input_budget = self
+            .context_window
+            .saturating_sub(u64::from(self.max_output_tokens) + WORKER_OVERHEAD_TOKENS)
+            as usize;
+        let rendered_budget = input_budget
+            .saturating_sub(distill_workspace::jev::cheap::TASK_SYSTEM_PROMPT.len())
+            .saturating_sub(WORKER_FRAMING_BYTES);
+        if rendered.len() > rendered_budget {
+            return None;
+        }
+        let request_id = format!("jev-tool-result-{}", uuid::Uuid::new_v4());
+        Some(ConversationRequest {
+            items: vec![
+                ConversationItem::system(distill_workspace::jev::cheap::TASK_SYSTEM_PROMPT),
+                ConversationItem::user(rendered),
+            ],
+            tools: Vec::new(),
+            hosted_tools: Vec::new(),
+            tool_choice: None,
+            model: Some(self.model.clone()),
+            temperature: self.temperature,
+            max_output_tokens: Some(self.max_output_tokens),
+            top_p: self.top_p,
+            x_grok_conv_id: Some(request_id.clone()),
+            x_grok_req_id: Some(request_id),
+            x_grok_session_id: None,
+            x_grok_turn_idx: None,
+            x_grok_transient_retry: None,
+            x_grok_agent_id: None,
+            x_grok_deployment_id: None,
+            x_grok_user_id: None,
+            trace: None,
+            traceparent: None,
+            reasoning_effort: self.reasoning_effort,
+            json_schema: None,
+            prompt_cache_key: None,
+            length_policy: LengthPolicy::Fail,
+        })
+    }
+
+    pub async fn collect(
+        &self,
+        request: ConversationRequest,
+    ) -> (
+        distill_sampling_types::Result<distill_sampling_types::ConversationResponse>,
+        Option<distill_sampling_types::ConversationResponse>,
+    ) {
+        self.client
+            .conversation_collect_with_idle_timeout_and_rejection(request, self.idle_timeout)
+            .await
+    }
+}
+
 /// One lane's turn-scoped health.
 #[derive(Debug, Default, Clone, Copy)]
 struct LaneHealth {
@@ -228,6 +458,16 @@ pub fn note_failure(lever: JevLever) {
         let entry = map.entry(lever.as_str()).or_default();
         entry.failures = entry.failures.saturating_add(1);
         entry.calls = entry.calls.saturating_add(1);
+    }
+}
+
+/// Counts a post-transport guard rejection without pretending a second
+/// generation occurred. The call count is owned by the transport outcome;
+/// this only marks its answer unusable.
+pub fn note_rejection(lever: JevLever) {
+    if let Ok(mut map) = health().lock() {
+        let entry = map.entry(lever.as_str()).or_default();
+        entry.failures = entry.failures.saturating_add(1);
     }
 }
 
@@ -272,6 +512,7 @@ pub fn reset_turn() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use distill_sampling_types::{ApiBackend, ReasoningEffort};
     use distill_workspace::jev::flags::JevLever;
 
     /// Counting is per lane; a lane that failed all turn is still called on the
@@ -290,6 +531,12 @@ mod tests {
 
         note_success(JevLever::ECheapCompress);
         assert_eq!(lane_calls(JevLever::ECheapCompress), (1, 0));
+        note_rejection(JevLever::ECheapCompress);
+        assert_eq!(
+            lane_calls(JevLever::ECheapCompress),
+            (1, 1),
+            "answer rejection records failure without a second call"
+        );
 
         reset_turn();
         assert_eq!(lane_calls(JevLever::ECheapTask), (0, 0));
@@ -369,5 +616,71 @@ mod tests {
 
         cfg.base_url = "  ".to_owned();
         assert!(CheapLane::from_sampler_config(&cfg).is_none());
+    }
+
+    #[test]
+    fn configured_worker_keeps_backend_effort_and_own_context_budget() {
+        let lane = WorkerLane::from_sampler_config(
+            distill_sampler::SamplerConfig {
+                api_key: Some("test-key".to_owned()),
+                base_url: "https://worker.example/v1".to_owned(),
+                model: "catalog-light".to_owned(),
+                context_window: 16_384,
+                max_completion_tokens: Some(8_192),
+                api_backend: ApiBackend::Responses,
+                ..Default::default()
+            },
+            Some("high"),
+        )
+        .expect("resolved worker config builds");
+
+        assert_eq!(lane.client.api_backend(), ApiBackend::Responses);
+        assert_eq!(
+            lane.client.attribution_endpoint(),
+            "https://worker.example/v1/responses"
+        );
+        assert_eq!(lane.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(lane.max_output_tokens, 1_024);
+        let request = lane
+            .task_request("cite_spans", "error: failed at src/lib.rs:7", "status")
+            .expect("extractive task fits");
+        assert_eq!(request.model.as_deref(), Some("catalog-light"));
+        assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(request.length_policy, LengthPolicy::Fail);
+        assert!(lane.max_payload_bytes() < 16_384);
+
+        let dense = "界".repeat(lane.max_payload_bytes().saturating_div(3) + 1);
+        assert!(
+            lane.task_request("cite_spans", &dense, "status").is_none(),
+            "UTF-8 bytes must not be admitted using a bytes/4 estimate"
+        );
+
+        let narrow = WorkerLane::from_sampler_config(
+            distill_sampler::SamplerConfig {
+                api_key: Some("test-key".to_owned()),
+                base_url: "https://worker.example/v1".to_owned(),
+                model: "catalog-light".to_owned(),
+                context_window: 256,
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("narrow worker config still builds");
+        assert!(narrow.task_request("cite_spans", "error", "status").is_none());
+
+        assert!(
+            WorkerLane::from_sampler_config(
+                distill_sampler::SamplerConfig {
+                    api_key: Some("test-key".to_owned()),
+                    base_url: "https://worker.example/v1".to_owned(),
+                    model: "catalog-light".to_owned(),
+                    context_window: 16_384,
+                    ..Default::default()
+                },
+                Some("not-a-real-effort"),
+            )
+            .is_none(),
+            "an invalid configured effort must defer rather than disappear into the default"
+        );
     }
 }

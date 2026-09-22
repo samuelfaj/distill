@@ -732,6 +732,16 @@ fn fully_quoted_spans(answer: &str) -> Result<Vec<String>, Rejected> {
     }
 }
 
+/// Return the source spans from an already-gated extractive answer.
+///
+/// Callers that need a stronger consumer-specific contract can use this after
+/// [`gate`] has checked the answer against the bounded source payload. Keeping
+/// the parser here prevents a second, subtly different quote grammar in the
+/// session layer.
+pub fn extractive_spans(answer: &str) -> Result<Vec<String>, Rejected> {
+    fully_quoted_spans(answer)
+}
+
 /// One answered, gated cheap task: the answer the turn may use, plus what it cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskOutcome {
@@ -1339,6 +1349,19 @@ mod tests {
             run(&client, "test_verdict", payload, "").await.is_none(),
             "a sentence is not a label"
         );
+    }
+
+    #[tokio::test]
+    async fn cite_spans_runs_once_and_returns_only_source_evidence() {
+        use crate::jev::cheap::test_support::client_answering;
+
+        let payload = "1 failed\n0 passed\n";
+        let (stub, client) = client_answering("`1 failed`").await;
+        let outcome = run(&client, "cite_spans", payload, "preserve status")
+            .await
+            .expect("quoted evidence is accepted");
+        assert_eq!(outcome.text, "`1 failed`");
+        assert_eq!(stub.bodies().len(), 1, "one utility generation");
     }
 
     #[test]

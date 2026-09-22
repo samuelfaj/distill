@@ -6,10 +6,12 @@ use crate::sampling::{
     ToolSpec,
 };
 use crate::session::helpers::chat::floor_char_boundary;
+use distill_sampling_types::ConversationResponse;
 
 /// Upper bound on the user text that feeds title generation.
 /// Titles only need the opening, and this keeps the request well under the model prompt limit.
 const TITLE_SOURCE_MAX_BYTES: usize = 8_000;
+pub(crate) const INITIAL_TITLE_MAX_OUTPUT_TOKENS: u32 = 100;
 
 /// Real-user turn counts at which the auto title is refreshed from the whole conversation, then frozen.
 /// Refreshing at a couple of early turns lets the title catch up to the real topic without churning enough to make sessions hard to recognize.
@@ -264,11 +266,17 @@ pub(crate) fn title_display_text(raw: &str) -> Option<String> {
 
 /// Generate the initial session title from the first user message, for the fast first-prompt path ([`crate::session::summary::SummaryGenerator`]).
 /// The title is later refreshed from the whole conversation at the early checkpoints in [`TITLE_REFRESH_TURNS`], then frozen.
-pub async fn generate_session_summary(
+pub(crate) struct InitialTitleGeneration {
+    pub(crate) title: String,
+    pub(crate) status: distill_chat_state::UsageCallStatus,
+    pub(crate) response: Option<ConversationResponse>,
+}
+
+pub(crate) async fn generate_session_summary(
     user_message: String,
     client: OaiCompatClient,
     model: &str,
-) -> String {
+) -> InitialTitleGeneration {
     let clean_message = title_source_text(&user_message);
     let request = ConversationRequest::from_items(vec![
         ConversationItem::system(
@@ -304,22 +312,44 @@ Just generate the session_title and nothing else"#,
             "additionalProperties": false
         }),
     }])
-    .with_max_output_tokens(100)
+    .with_max_output_tokens(INITIAL_TITLE_MAX_OUTPUT_TOKENS)
     .with_temperature(1.0)
     .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()));
 
-    match client.conversation_collect(request).await {
+    let (response_result, rejected_response) = client
+        .conversation_collect_with_idle_timeout_and_rejection(
+            request,
+            std::time::Duration::from_secs(300),
+        )
+        .await;
+
+    match response_result {
         Ok(response) => {
             if let Some(a) = response.assistant()
                 && let Some(tool_call) = a.tool_calls.first()
                 && let Ok(result) = serde_json::from_str::<SessionTitle>(&tool_call.arguments)
             {
-                return result.session_title;
+                if !result.session_title.trim().is_empty() {
+                    return InitialTitleGeneration {
+                        title: result.session_title,
+                        status: distill_chat_state::UsageCallStatus::Completed,
+                        response: Some(response),
+                    };
+                }
+                tracing::debug!(
+                    model = %model,
+                    "session title generation returned an empty session_title"
+                );
             }
             tracing::debug!(
                 model = %model,
                 "session title generation: response did not contain a session_title tool call"
             );
+            InitialTitleGeneration {
+                title: title_fallback_from_user_text(&clean_message),
+                status: distill_chat_state::UsageCallStatus::Rejected,
+                response: Some(response),
+            }
         }
         Err(e) => {
             tracing::warn!(
@@ -327,9 +357,20 @@ Just generate the session_title and nothing else"#,
                 error = %e,
                 "session title generation failed, falling back to truncated user text"
             );
+            if let Some(response) = rejected_response {
+                return InitialTitleGeneration {
+                    title: title_fallback_from_user_text(&clean_message),
+                    status: distill_chat_state::UsageCallStatus::Rejected,
+                    response: Some(response),
+                };
+            }
+            InitialTitleGeneration {
+                title: title_fallback_from_user_text(&clean_message),
+                status: distill_chat_state::UsageCallStatus::Failed,
+                response: None,
+            }
         }
     }
-    title_fallback_from_user_text(&clean_message)
 }
 
 /// Instruction turn appended to a conversation snapshot to refresh the auto title.

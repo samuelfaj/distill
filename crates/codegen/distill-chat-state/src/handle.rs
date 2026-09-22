@@ -22,6 +22,13 @@ pub struct ChatStateHandle {
     cmd_tx: mpsc::UnboundedSender<ChatStateCommand>,
 }
 
+/// Weak handle used by bounded background work that must not keep the chat-state
+/// actor alive after its owning session is gone.
+#[derive(Clone, Debug)]
+pub struct WeakChatStateHandle {
+    cmd_tx: mpsc::WeakUnboundedSender<ChatStateCommand>,
+}
+
 /// The chat-state actor can no longer accept commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatStateMailboxClosed;
@@ -45,6 +52,14 @@ impl ChatStateHandle {
     pub fn noop() -> Self {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
         Self { cmd_tx }
+    }
+
+    /// Downgrade this handle so a background task can observe session teardown
+    /// without creating a persistence-to-chat-state lifetime cycle.
+    pub fn downgrade(&self) -> WeakChatStateHandle {
+        WeakChatStateHandle {
+            cmd_tx: self.cmd_tx.downgrade(),
+        }
     }
 
     // ═══ Fire-and-forget mutations ═══
@@ -836,5 +851,30 @@ impl ChatStateHandle {
         })
         .await
         .flatten()
+    }
+}
+
+impl WeakChatStateHandle {
+    /// Temporarily acquire a strong handle for one bounded operation.
+    pub fn upgrade(&self) -> Option<ChatStateHandle> {
+        self.cmd_tx
+            .upgrade()
+            .map(|cmd_tx| ChatStateHandle { cmd_tx })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weak_handle_does_not_keep_command_channel_alive() {
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let handle = ChatStateHandle::new(cmd_tx);
+        let weak = handle.downgrade();
+
+        assert!(weak.upgrade().is_some());
+        drop(handle);
+        assert!(weak.upgrade().is_none());
     }
 }

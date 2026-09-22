@@ -1,29 +1,29 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: checkpoints funcionais aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP23–CP27 funcionais aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
 
-> **Status atual — checkpoints funcionais aceitos:** `/goal` recupera overflow
-> de contexto dentro dos budgets (`b36b39e2`); compressão utility → worker e
-> limite de falhas opcionais estão em (`7f5403a1`, `f40f1d63`); o ledger
-> preserva custos free conhecidos (`44a5d951`); as tentativas auxiliares de
-> `title_refresh` são rastreáveis (`b725d112`); e os checkpoints anteriores de
-> skill e PDF permanecem registrados (`f508eeb7`, `5b99fd6c`). `8aabfc50` fica
-> identificado somente como baseline histórico de read; a invalidação atual de
-> read/memo está em (`d80df06e`). A captura de custo USD em Responses
-> está em (`2895b95b`) e o teste com endpoint local simulado passou com custo/modelo; este
-> checkpoint também fecha a preservação de `response.id` como
-> `ConversationResponse.message_id`, com a prova focada de `resp_openrouter`
-> aprovada.
+> **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
+> (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
+> (`4e68e212`), CP26 precedência USD (`e8765e5f`) e CP27 captura de custo do
+> initial title (`450567a8`) estão aceitos. O CP27 passou pela recuperação
+> manual do controller e pelos focos worker 5, manual 1 e weak 1; isso fecha a
+> observabilidade do caminho no candidate, não a avaliação financeira. Os
+> checkpoints funcionais anteriores continuam referenciados: overflow de
+> `/goal` (`b36b39e2`), utility → worker e falhas opcionais (`7f5403a1`,
+> `f40f1d63`), custos free no ledger (`44a5d951`), `title_refresh`
+> (`b725d112`), skill/PDF (`f508eeb7`, `5b99fd6c`), invalidação read/memo
+> (`d80df06e`) e precedência USD/identidade de response (`2895b95b`,
+> `resp_openrouter`).
 >
-> **Prova ainda aberta:** T01–T21 não estão concluídos. Não há prova de custo
-> runtime matched/pareado nem revisão independente; roteamento econômico,
-> effort e calibração continuam pendentes. Os smokes anteriores permanecem
-> não pareados: Distill inconclusivo, Pi aceito apenas com custo tarifário
-> estimado e billing real desconhecido (HTTP 404). Baseline, aceitação
-> financeira e comparação econômica continuam pendentes. A auditoria de billing
-> do `initialSummaryGenerator`/title continua aberta: há chamada direta no
-> cliente, sem ledger óbvio confirmado. E2 display aux e E3 Task Output
-> permanecem dirty/em progresso e não são aceitos.
+> **Prova ainda aberta:** T01–T21 continuam sem aceite financeiro. Não há
+> avaliação runtime matched/pareada, economia validada ou revisão independente
+> de uma avaliação financeira live-provider; o baseline instrumentado,
+> aceitação financeira e comparação econômica, roteamento, effort e calibração
+> continuam pendentes.
+> Os smokes anteriores permanecem não pareados: Distill inconclusivo, Pi
+> aceito apenas com custo tarifário estimado e billing real desconhecido
+> (HTTP 404). Nenhum checkpoint funcional acima deve ser marcado como item
+> inteiro concluído.
 
 > **Anotação de steering — overflow e economia de saída (22/09/2026):** a
 > captura de tela mostra um sintoma de overflow no `/goal` e rótulos de modelos

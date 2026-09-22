@@ -46,7 +46,7 @@ pub enum Guard {
     /// The answer must name at least one id, and every id must appear in the
     /// candidates the caller offered.
     CandidateIds,
-    /// The answer must quote at least one span, and every quoted span must be a
+    /// The answer must consist of quoted evidence, with every quoted span a
     /// substring of the payload.
     Spans,
 }
@@ -645,10 +645,7 @@ pub fn gate(
             }
         }
         Guard::Spans => {
-            let spans = quoted_spans(trimmed);
-            if spans.is_empty() {
-                return Err(Rejected::NoEvidence);
-            }
+            let spans = fully_quoted_spans(trimmed)?;
             for span in spans {
                 if !payload.contains(&span) {
                     return Err(Rejected::NotQuoted(span));
@@ -702,25 +699,37 @@ fn strip_numbered_list_marker(line: &str) -> &str {
     line
 }
 
-/// Quoted spans in an answer: backticks and double quotes, the shapes a citation
-/// uses. Empty quotes are not evidence.
-fn quoted_spans(answer: &str) -> Vec<String> {
+/// Quoted evidence in an extractive answer. Whitespace may separate evidence
+/// spans, but prose or punctuation outside the quotes is not extractive output.
+fn fully_quoted_spans(answer: &str) -> Result<Vec<String>, Rejected> {
     let mut spans = Vec::new();
-    for quote in ['`', '"'] {
-        let mut rest = answer;
-        while let Some(start) = rest.find(quote) {
-            let after = &rest[start + quote.len_utf8()..];
-            let Some(end) = after.find(quote) else {
-                break;
+    let mut rest = answer.trim();
+    while !rest.is_empty() {
+        let quote = rest.chars().next().unwrap_or_default();
+        if !matches!(quote, '`' | '"') {
+            return if spans.is_empty() {
+                Err(Rejected::NoEvidence)
+            } else {
+                Err(Rejected::NotQuoted(rest.to_owned()))
             };
-            let span = &after[..end];
-            if !span.is_empty() {
-                spans.push(span.to_owned());
-            }
-            rest = &after[end + quote.len_utf8()..];
         }
+        let quote_len = quote.len_utf8();
+        let after = &rest[quote_len..];
+        let Some(end) = after.find(quote) else {
+            return Err(Rejected::NotQuoted(rest.to_owned()));
+        };
+        let span = &after[..end];
+        if span.trim().is_empty() {
+            return Err(Rejected::NoEvidence);
+        }
+        spans.push(span.to_owned());
+        rest = after[end + quote_len..].trim_start();
     }
-    spans
+    if spans.is_empty() {
+        Err(Rejected::NoEvidence)
+    } else {
+        Ok(spans)
+    }
 }
 
 /// One answered, gated cheap task: the answer the turn may use, plus what it cost.
@@ -987,6 +996,21 @@ mod tests {
         ));
         assert_eq!(
             gate(&ask, payload, "the answer has no citation", &[], &[]).expect_err("no span"),
+            Rejected::NoEvidence
+        );
+        assert!(matches!(
+            gate(
+                &ask,
+                payload,
+                "`returns None when the file is missing` plus invented prose",
+                &[],
+                &[]
+            )
+            .expect_err("extractive answers cannot add prose"),
+            Rejected::NotQuoted(_)
+        ));
+        assert_eq!(
+            gate(&ask, payload, "`   `", &[], &[]).expect_err("blank span"),
             Rejected::NoEvidence
         );
         assert!(gate(&ask, "id", "`id`", &[], &[]).is_ok());

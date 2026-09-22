@@ -237,22 +237,103 @@ pub fn strip_ansi(text: &str) -> Option<String> {
 }
 
 /// Collapses carriage-return progress frames (npm/pip/docker pull) to the last
-/// state of each bar, and drops an all-noise line that carried only a spinner.
+/// state of each bar. A line is collapsed only when every frame is a
+/// recognisable progress update for the same job; mixed diagnostic frames stay
+/// byte-for-byte intact.
 pub fn collapse_progress(text: &str) -> Option<String> {
     if !text.contains('\r') {
         return None;
     }
     let mut out = String::with_capacity(text.len());
-    for line in text.lines() {
-        // A carriage return rewrites the same visual line: keep the last frame.
-        let visible = line.rsplit('\r').next().unwrap_or(line);
-        if visible.trim().is_empty() && !line.trim().is_empty() {
-            continue;
+    let mut changed = false;
+    for segment in text.split_inclusive('\n') {
+        let (line, newline) = segment
+            .strip_suffix('\n')
+            .map_or((segment, ""), |line| (line, "\n"));
+        let frames: Vec<&str> = line.split('\r').collect();
+        let signatures: Vec<Option<String>> = frames
+            .iter()
+            .map(|frame| progress_signature(frame))
+            .collect();
+        let same_job = frames.len() > 1
+            && signatures.iter().all(Option::is_some)
+            && signatures.windows(2).all(|pair| pair[0] == pair[1]);
+        if same_job {
+            // A carriage return rewrites the same visual line: keep the last
+            // frame and let the caller store the raw frames before this lossy
+            // reduction is sent onward.
+            out.push_str(frames.last().copied().unwrap_or_default());
+            out.push_str(newline);
+            changed = true;
+        } else {
+            out.push_str(segment);
         }
-        out.push_str(visible);
-        out.push('\n');
     }
-    (out.len() < text.len()).then_some(out)
+    (changed && out.len() < text.len()).then_some(out)
+}
+
+/// Returns a stable, case-sensitive identity for a progress frame, excluding
+/// its changing percentage and an ordinary completion suffix after that
+/// percentage. Diagnostics are deliberately not progress frames: an error
+/// printed before a later carriage-return update must not disappear merely
+/// because both lines contain a number.
+fn progress_signature(frame: &str) -> Option<String> {
+    let trimmed = frame.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    if trimmed.is_empty()
+        || [
+            "error", "failed", "failure", "panic", "traceback", "warning", "fatal",
+            "exception", "exit code",
+        ]
+        .iter()
+        .any(|word| lowered.contains(word))
+    {
+        return None;
+    }
+    let first = lowered.split_whitespace().next()?;
+    if !matches!(
+        first,
+        "building"
+            | "compiling"
+            | "downloading"
+            | "extracting"
+            | "installing"
+            | "processing"
+            | "pulling"
+            | "receiving"
+            | "resolving"
+            | "uploading"
+            | "progress"
+    ) {
+        return None;
+    }
+    let percent = trimmed.find('%')?;
+    let mut start = percent;
+    while start > 0 && trimmed.as_bytes()[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    if start == percent {
+        return None;
+    }
+    let suffix = trimmed[percent + 1..].trim_end();
+    let suffix = suffix
+        .rsplit_once(char::is_whitespace)
+        .and_then(|(prefix, word)| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "done" | "complete" | "completed" | "finished"
+            )
+            .then_some(prefix.trim_end())
+        })
+        .unwrap_or(suffix);
+    let mut signature = String::with_capacity(trimmed.len());
+    signature.push_str(&trimmed[..start]);
+    signature.push_str(suffix);
+    let signature = signature
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!signature.is_empty()).then_some(signature)
 }
 
 /// Collapses alignment whitespace in columnar output (three or more spaces used
@@ -1199,7 +1280,9 @@ pub fn preclean(text: &str) -> (String, Vec<&'static str>) {
     let mut current = text.to_owned();
     let mut applied = Vec::new();
     for crusher in [Crusher::Ansi, Crusher::ProgressBar] {
-        if let Some(next) = crusher.crush(&current) {
+        if let Some(next) = crusher.crush(&current)
+            && next.len() < current.len()
+        {
             applied.push(crusher.id());
             current = next;
         }
@@ -1284,6 +1367,31 @@ mod tests {
         let collapsed = collapse_progress(progress).expect("frames collapse");
         assert_eq!(collapsed, "downloading 100% done\n");
         assert!(collapse_progress("no carriage returns").is_none());
+    }
+
+    #[test]
+    fn progress_does_not_overwrite_a_diagnostic_frame() {
+        let overwritten = "error: src/main.rs:12 exit code 1\rdownloading 100%\n";
+        assert!(
+            collapse_progress(overwritten).is_none(),
+            "a diagnostic followed by a progress update stays recoverable"
+        );
+    }
+
+    #[test]
+    fn progress_identity_keeps_case_and_filename_done() {
+        assert!(
+            collapse_progress("downloading Foo 10%\rdownloading foo 100%\n").is_none(),
+            "case-distinct jobs must not collapse"
+        );
+        assert_eq!(
+            progress_signature("downloading Foo/done 10%").as_deref(),
+            Some("downloading Foo/done")
+        );
+        assert_eq!(
+            progress_signature("downloading Foo/done 100% done").as_deref(),
+            Some("downloading Foo/done")
+        );
     }
 
     #[test]
@@ -1529,6 +1637,14 @@ mod tests {
 
         let measured = measure(&noisy, &cleaned);
         assert!(measured.saved_fraction() > 0.3, "{measured:?}");
+    }
+
+    #[test]
+    fn preclean_collapses_recognisable_progress_frames() {
+        let progress = "downloading 10%\rdownloading 55%\rdownloading 100% done\n";
+        let (cleaned, applied) = preclean(progress);
+        assert_eq!(cleaned, "downloading 100% done\n");
+        assert!(applied.contains(&"progress_bar_crusher"));
     }
 
     #[test]

@@ -6,8 +6,8 @@
 //! gain:
 //!
 //! 1. **read reuse** — bytes identical to something already sent become a pointer;
-//! 2. **crushers** — the deterministic transforms (ANSI/progress/class), which
-//!    cannot lose a literal by construction;
+//! 2. **crushers** — deterministic transforms (ANSI/progress/class), with the
+//!    lossy progress case stored before the reduced body is accepted;
 //! 3. **importance extraction** — lossy, so the original is stored first and the
 //!    marker names it, and only after the literal gate agrees.
 //!
@@ -119,6 +119,26 @@ pub fn reduce_payload(
     let mut store_handle = None;
     let is_document = retention::looks_structured(tool_command, text);
 
+    // The exact-output guard: the bytes are the answer, so nothing runs on them.
+    // It must precede read reuse too: replacing an exact result with a pointer is
+    // still a rewrite of a line-addressed answer.
+    if crushers::is_exact_output(tool, tool_command) {
+        records.push(LaneRecord {
+            lever: JevLever::ECrushers,
+            lane: "e_crushers",
+            decision: "keep",
+            detail: "the exact-output guard kept the bytes: this payload is \
+                     line-addressed and the reader asked for it"
+                .to_owned(),
+        });
+        return LaneOutcome {
+            body: text.to_owned(),
+            records,
+            store_handle: None,
+            is_document,
+        };
+    }
+
     // 1. Read reuse: identical bytes are already in the conversation.
     if flags.read_reuse && text.len() >= limits.reuse_bytes {
         let hash = reduce::content_hash(text);
@@ -141,30 +161,12 @@ pub fn reduce_payload(
         }
     }
 
-    // The exact-output guard: the bytes are the answer, so nothing runs on them.
-    if crushers::is_exact_output(tool, tool_command) {
-        records.push(LaneRecord {
-            lever: JevLever::ECrushers,
-            lane: "e_crushers",
-            decision: "keep",
-            detail: "the exact-output guard kept the bytes: this payload is \
-                     line-addressed and the reader asked for it"
-                .to_owned(),
-        });
-        return LaneOutcome {
-            body: text.to_owned(),
-            records,
-            store_handle: None,
-            is_document,
-        };
-    }
-
     let mut body = text.to_owned();
 
-    // 2. The deterministic crushers. Some of them drop lines (a diff's context,
-    //    a stack's dumps), so the literal gate runs here as well: a crusher that
-    //    would take a path, a `file:line`, a number or an error word with it is
-    //    refused and the payload stays whole.
+    // 2. The deterministic crushers. Most are content-preserving, but a
+    //    recognisable progress bar deliberately drops intermediate frames. The
+    //    latter stores the original before accepting the smaller body; a
+    //    diagnostic frame that is not recognisably progress is never collapsed.
     if flags.crushers && !is_document && body.len() >= limits.crushers_bytes {
         let (cleaned, applied) = crushers::preclean(&body);
         if !applied.is_empty() && cleaned.len() < body.len() {
@@ -181,6 +183,32 @@ pub fn reduce_payload(
                     ),
                 });
                 body = cleaned;
+            } else if applied.contains(&"progress_bar_crusher") {
+                if let Some(handle) = store(&body) {
+                    records.push(LaneRecord {
+                        lever: JevLever::ECrushers,
+                        lane: "e_crushers",
+                        decision: "crush",
+                        detail: format!(
+                            "{} bytes -> {} bytes via {}; raw output stored at {handle}",
+                            body.len(),
+                            cleaned.len(),
+                            applied.join("+")
+                        ),
+                    });
+                    body = format!(
+                        "{}\n[raw output stored at {handle} — read that file for the collapsed progress frames]",
+                        cleaned.trim_end()
+                    );
+                    store_handle = Some(handle);
+                } else {
+                    records.push(LaneRecord {
+                        lever: JevLever::ECrushers,
+                        lane: "e_crushers",
+                        decision: "keep",
+                        detail: "the progress crusher would lose intermediate frames, but the store refused the original; keeping today's bytes".to_owned(),
+                    });
+                }
             } else {
                 records.push(LaneRecord {
                     lever: JevLever::ECrushers,
@@ -262,6 +290,10 @@ mod tests {
 
     fn no_reuse() -> impl FnMut(&str) -> ReuseAnswer {
         |_| ReuseAnswer::First
+    }
+
+    fn seen_reuse(_: &str) -> ReuseAnswer {
+        ReuseAnswer::Seen("read_file(src/previous.txt)".to_owned())
     }
 
     fn refusing_store() -> impl Fn(&str) -> Option<String> {
@@ -704,6 +736,83 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
                 outcome.records[0].detail
             );
         }
+    }
+
+    #[test]
+    fn exact_output_wins_before_read_reuse() {
+        let payload = padded_listing();
+        let mut reuse = seen_reuse;
+        let outcome = reduce_payload(
+            "grep",
+            "rg -n timeout src",
+            &payload,
+            LaneFlags {
+                crushers: true,
+                importance: true,
+                read_reuse: true,
+            },
+            LIMITS,
+            &mut reuse,
+            &refusing_store(),
+        );
+        assert_eq!(outcome.body, payload);
+        assert_eq!(outcome.records[0].lane, "e_crushers");
+        assert_eq!(outcome.records[0].decision, "keep");
+    }
+
+    #[test]
+    fn progress_shrinks_but_diagnostics_keep_or_recover_the_raw_output() {
+        let job = "downloading registry.example.invalid/packages/a-really-long-package-name-with-build-metadata";
+        let mut progress = String::new();
+        for percent in 0..100 {
+            progress.push_str(&format!("{job} {percent}%\r"));
+        }
+        progress.push_str(&format!("{job} 100% done\n"));
+        let original = progress.clone();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = dir.path().to_path_buf();
+        let store = move |payload: &str| {
+            crate::jev_store::store_payload_in(&dir, payload).map(|path| path.display().to_string())
+        };
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(
+            TOOL,
+            COMMAND,
+            &progress,
+            LaneFlags {
+                crushers: true,
+                importance: false,
+                read_reuse: false,
+            },
+            LIMITS,
+            &mut reuse,
+            &store,
+        );
+        assert!(outcome.body.len() < original.len(), "progress should shrink");
+        let handle = outcome.store_handle.as_deref().expect("raw frames stored");
+        assert_eq!(std::fs::read_to_string(handle).unwrap(), original);
+        assert!(outcome.body.contains(handle));
+
+        let diagnostic = "error: src/main.rs:12 exit code 1\rdownloading 100%\n";
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(
+            TOOL,
+            COMMAND,
+            diagnostic,
+            LaneFlags {
+                crushers: true,
+                importance: false,
+                read_reuse: false,
+            },
+            LaneLimits {
+                crushers_bytes: 1,
+                ..LIMITS
+            },
+            &mut reuse,
+            &refusing_store(),
+        );
+        assert_eq!(outcome.body, diagnostic, "diagnostics are never overwritten");
+        assert!(outcome.store_handle.is_none());
     }
 
     /// A document is the answer the model asked for, so the rewriting stages stay

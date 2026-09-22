@@ -302,6 +302,148 @@ pub(crate) struct SideCallSetup {
     pub(crate) reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
 }
 
+/// Run one bounded display task utility-first, then on the configured light
+/// worker. Both lanes use the same source-span contract; no parent/session
+/// model or tool catalog is sent to this display-only call.
+pub(crate) async fn run_display_task(
+    actor: &SessionActor,
+    task_id: &str,
+    payload: &str,
+    source: &str,
+    question: &str,
+    accept: fn(&str) -> Option<String>,
+) -> Option<String> {
+    use distill_workspace::jev::flags::JevLever;
+
+    if payload.trim().is_empty()
+        || source.trim().is_empty()
+        || task_id != distill_workspace::jev::tasks::DISPLAY_FRAGMENT_TASK
+        || !crate::jev::lever_active(JevLever::ECheapCompress)
+    {
+        return None;
+    }
+    if !source.lines().any(|unit| accept(unit.trim()).is_some()) {
+        return None;
+    }
+
+    let utility = actor.cheap_lane(JevLever::ECheapCompress).await;
+    if let Some(utility) = utility
+        && let Some(outcome) = utility
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                task_id,
+                payload,
+                question,
+                false,
+                |answer| {
+                    distill_workspace::jev::tasks::display_fragment(source, answer)
+                        .ok()
+                        .and_then(|fragment| accept(&fragment))
+                        .is_some()
+                },
+            )
+            .await
+        && let Ok(fragment) = distill_workspace::jev::tasks::display_fragment(source, &outcome.text)
+        && let Some(display) = accept(&fragment)
+    {
+        return Some(display);
+    }
+
+    let worker = actor.tool_result_worker().await?;
+    let request = worker.task_request(task_id, payload, question)?;
+    let applied_effort = worker
+        .client()
+        .attribution_applied_effort(request.reasoning_effort, request.max_output_tokens);
+    let worker_key = crate::jev_cheap::optional_compression_key(
+        &worker.client().attribution_endpoint(),
+        worker.model(),
+        task_id,
+        applied_effort.as_deref().unwrap_or("provider_default"),
+    );
+    if !crate::jev_cheap::optional_compression_allowed(&worker_key) {
+        return None;
+    }
+
+    let attempt = auxiliary_attempt(worker.client(), &request);
+    let mut cancellation_guard = super::jev_tool_result::WorkerAttemptCancellationGuard::new(
+        actor,
+        attempt.clone(),
+        Some(worker_key.clone()),
+    );
+    cancellation_guard.mark_dispatched();
+    let call_started = std::time::Instant::now();
+    let (response_result, rejected_response) = worker.collect(request).await;
+    match response_result {
+        Ok(response) => {
+            let candidate =
+                distill_workspace::jev::tasks::display_fragment(source, &response.assistant_text())
+                    .ok()
+                    .and_then(|fragment| accept(&fragment));
+            let api_duration_ms = Some(call_started.elapsed().as_millis() as u64);
+            if let Some(display) = candidate {
+                record_auxiliary_response(
+                    actor,
+                    "display_auxiliary_worker",
+                    worker.model(),
+                    &attempt,
+                    &response,
+                    api_duration_ms,
+                    false,
+                );
+                crate::jev_cheap::note_success(JevLever::ECheapCompress);
+                crate::jev_cheap::note_optional_compression_success(&worker_key);
+                cancellation_guard.complete();
+                log_prompt_cache_usage(
+                    "display_auxiliary_worker",
+                    worker.client().api_backend(),
+                    &response,
+                );
+                Some(display)
+            } else {
+                record_auxiliary_rejected_response(
+                    actor,
+                    "display_auxiliary_worker",
+                    worker.model(),
+                    &attempt,
+                    &response,
+                    api_duration_ms,
+                    false,
+                );
+                crate::jev_cheap::note_success(JevLever::ECheapCompress);
+                crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
+                crate::jev_cheap::note_optional_compression_failure(&worker_key);
+                cancellation_guard.complete();
+                log_prompt_cache_usage(
+                    "display_auxiliary_worker",
+                    worker.client().api_backend(),
+                    &response,
+                );
+                None
+            }
+        }
+        Err(error) => {
+            if let Some(response) = rejected_response {
+                record_auxiliary_rejected_response(
+                    actor,
+                    "display_auxiliary_worker",
+                    worker.model(),
+                    &attempt,
+                    &response,
+                    None,
+                    false,
+                );
+            } else {
+                record_auxiliary_failures(actor, std::slice::from_ref(&attempt), false);
+            }
+            crate::jev_cheap::note_failure(JevLever::ECheapCompress);
+            crate::jev_cheap::note_optional_compression_failure(&worker_key);
+            cancellation_guard.complete();
+            tracing::debug!(error = %error, "display auxiliary worker failed");
+            None
+        }
+    }
+}
+
 pub(super) fn should_strip_side_call_reasoning(
     backend: crate::sampling::ApiBackend,
     reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
@@ -403,7 +545,7 @@ impl SessionActor {
         self.recap_epoch.set(self.recap_epoch.get().wrapping_add(1));
         self.abort_turn_summary();
         // The title refresh is deliberately NOT aborted here.
-        // It describes the whole conversation, so completing against the pre-prompt snapshot is still valid.
+        // It is an early-session bounded snapshot, so completing against the pre-prompt snapshot is still valid.
         // Aborting on every prompt would leave the checkpoint unconsumed and re-spawn a call each turn.
     }
 }

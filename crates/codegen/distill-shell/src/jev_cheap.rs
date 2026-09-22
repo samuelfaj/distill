@@ -248,7 +248,7 @@ impl CheapLane {
         payload: &str,
         question: &str,
     ) -> Option<tasks::TaskOutcome> {
-        self.run_task_with_acceptance(lever, task_id, payload, question, |_| true)
+        self.run_task_with_acceptance(lever, task_id, payload, question, true, |_| true)
             .await
     }
 
@@ -262,6 +262,7 @@ impl CheapLane {
         task_id: &str,
         payload: &str,
         question: &str,
+        attribute_to_prompt: bool,
         accepts: F,
     ) -> Option<tasks::TaskOutcome>
     where
@@ -337,7 +338,7 @@ impl CheapLane {
                                 Some(task_id.clone()),
                                 Some(turn_id.clone()),
                                 recorder.clone(),
-                                true,
+                                attribute_to_prompt,
                             );
                         }
                     }
@@ -374,7 +375,7 @@ impl CheapLane {
                     Some(task_id.to_owned()),
                     Some(turn_id.clone()),
                     recorder.clone(),
-                    true,
+                    attribute_to_prompt,
                 );
             }
         }

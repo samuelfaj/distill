@@ -742,6 +742,30 @@ pub fn extractive_spans(answer: &str) -> Result<Vec<String>, Rejected> {
     fully_quoted_spans(answer)
 }
 
+/// The display-only consumers use the existing source-span task with a
+/// narrower contract: one non-empty complete source unit. A substring is not
+/// enough because a user wish or a negated assistant sentence could otherwise
+/// become a false dashboard conclusion.
+pub const DISPLAY_FRAGMENT_TASK: &str = "cite_spans";
+
+pub fn display_fragment(source: &str, answer: &str) -> Result<String, Rejected> {
+    let spec = spec(DISPLAY_FRAGMENT_TASK).ok_or(Rejected::NoContract)?;
+    let spans = extractive_spans(answer)?;
+    if spans.len() != 1 {
+        return Err(Rejected::NoEvidence);
+    }
+    let span = spans.into_iter().next().ok_or(Rejected::NoEvidence)?;
+    let complete_source_unit = source
+        .lines()
+        .map(str::trim)
+        .find(|unit| !unit.is_empty() && *unit == span);
+    if complete_source_unit.is_none() {
+        return Err(Rejected::NotQuoted(span));
+    }
+    gate(spec, source, answer, &[], &[])?;
+    Ok(span)
+}
+
 /// One answered, gated cheap task: the answer the turn may use, plus what it cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskOutcome {
@@ -1008,6 +1032,34 @@ mod tests {
             gate(&ask, payload, "the answer has no citation", &[], &[]).expect_err("no span"),
             Rejected::NoEvidence
         );
+        assert_eq!(
+            display_fragment(
+                "returns None when the file is missing",
+                "`returns None when the file is missing`"
+            )
+            .unwrap(),
+            "returns None when the file is missing"
+        );
+        assert!(matches!(
+            display_fragment(
+                "returns None when the file is missing",
+                "`returns None` `when the file is missing`"
+            ),
+            Err(Rejected::NoEvidence)
+        ));
+        let assistant_source = "cannot say tests passed; the test result is pending";
+        assert_eq!(
+            display_fragment(
+                assistant_source,
+                "`cannot say tests passed; the test result is pending`"
+            )
+            .unwrap(),
+            assistant_source
+        );
+        assert!(matches!(
+            display_fragment(assistant_source, "`tests passed`"),
+            Err(Rejected::NotQuoted(_))
+        ));
         assert!(matches!(
             gate(
                 &ask,

@@ -736,6 +736,7 @@ impl SessionActor {
                                 EXTRACTIVE_TASK,
                                 &evidence,
                                 &evidence_question,
+                                true,
                                 |answer| {
                                     compression_replacement_for_output(
                                         output,
@@ -2302,6 +2303,7 @@ mod tests {
                         "cite_spans",
                         "source line",
                         "preserve the source line",
+                        true,
                         |_| true,
                     ),
                 )

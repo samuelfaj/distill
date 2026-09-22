@@ -24,6 +24,54 @@ fn main_turn_input(items: Vec<ConversationItem>) -> Vec<serde_json::Value> {
         .clone()
 }
 
+fn install_display_catalog(
+    actor: &SessionActor,
+    server: &distill_test_support::MockInferenceServer,
+) {
+    let mut utility = crate::agent::config::ModelEntry::fallback(
+        "display-utility",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    utility.info.base_url = server.url();
+    utility.info.context_window = std::num::NonZeroU64::new(48_000).expect("utility window");
+    utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+    utility.api_key = Some("display-utility-key".to_owned());
+    actor
+        .models_manager
+        .insert_test_entry("display-utility", utility);
+
+    let mut worker = crate::agent::config::ModelEntry::fallback(
+        "display-worker",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    worker.info.base_url = server.url();
+    worker.info.context_window = std::num::NonZeroU64::new(128_000).expect("worker window");
+    worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+    worker.info.max_retries = Some(0);
+    worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+    worker.info.supports_reasoning_effort = true;
+    worker.info.reasoning_efforts = vec![distill_sampling_types::ReasoningEffortOption {
+        id: "low".to_owned(),
+        value: distill_sampling_types::ReasoningEffort::Low,
+        label: "Low".to_owned(),
+        description: Some("bounded display worker".to_owned()),
+        default: true,
+    }];
+    worker.api_key = Some("display-worker-key".to_owned());
+    actor
+        .models_manager
+        .insert_test_entry("display-worker", worker);
+
+    crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+        model: Some("display-utility".to_owned()),
+        ..Default::default()
+    });
+    crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+        light: Some("display-worker".to_owned()),
+        light_effort: Some("low".to_owned()),
+    });
+}
+
 /// Checks that an auxiliary call replays the parent conversation verbatim and appends one instruction. A prefix that shifts cannot hit the cache.
 fn assert_rides_parent_prefix(
     body: &serde_json::Value,
@@ -1126,12 +1174,21 @@ async fn new_prompt_aborts_in_flight_turn_summary() {
 
 /// Happy path: a successful side-call persists the summary and broadcasts it transiently, then clears the task slot.
 #[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
 async fn turn_summary_generate_persists_and_broadcasts() {
-    use distill_test_support::MockInferenceServer;
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
 
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
+            let home = tempfile::tempdir().expect("test Jev home");
+            std::fs::write(
+                home.path().join("config.toml"),
+                "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+            )
+            .expect("write test Jev config");
+            let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
             let (gateway_tx, mut grx) =
                 tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
             let (persistence_tx, mut prx) =
@@ -1140,12 +1197,39 @@ async fn turn_summary_generate_persists_and_broadcasts() {
             actor.turn_summary_enabled = true;
             let actor = std::sync::Arc::new(actor);
 
-            let server = MockInferenceServer::start().await.unwrap();
-            server.set_response("Fixed the parser race; suite green");
+            let server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("display-utility").with_api_backend("chat_completions"),
+                MockModelEntry::new("display-worker").with_api_backend("responses"),
+            ])
+            .await
+            .expect("start display inference stub");
+            server.enqueue_response(
+                "/v1/chat/completions",
+                ScriptedResponse::json(
+                    200,
+                    serde_json::json!({
+                        "id": "display-utility-rejected",
+                        "model": "display-utility",
+                        "choices": [{
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "`tests passed`"}
+                        }],
+                        "usage": {"prompt_tokens": 40, "completion_tokens": 3}
+                    }),
+                ),
+            );
+            server.enqueue_response(
+                "/v1/responses",
+                ScriptedResponse::sse(responses_api_script_exact(
+                    "`patched the race and re-ran the suite`",
+                    "display-worker",
+                )),
+            );
             let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
             cfg.base_url = server.url();
             cfg.api_backend = distill_sampling_types::ApiBackend::Responses;
             actor.chat_state_handle.update_sampling_config(cfg);
+            install_display_catalog(&actor, &server);
 
             actor.chat_state_handle.replace_conversation(vec![
                 ConversationItem::system("you are a coding agent"),
@@ -1214,6 +1298,93 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 found_broadcast = true;
             }
             assert!(found_broadcast, "must broadcast LastTurnSummary to gateway");
+
+            let requests = server.requests();
+            let utility_request = requests
+                .iter()
+                .find(|request| request.path == "/v1/chat/completions")
+                .expect("utility display request");
+            let worker_request = requests
+                .iter()
+                .find(|request| request.path == "/v1/responses")
+                .expect("configured worker display request");
+            assert_eq!(j(
+                utility_request.body.as_ref().expect("utility body"),
+                "model"
+            ), "display-utility");
+            assert_eq!(
+                utility_request.authorization.as_deref(),
+                Some("Bearer display-utility-key")
+            );
+            assert_eq!(j(
+                worker_request.body.as_ref().expect("worker body"),
+                "model"
+            ), "display-worker");
+            assert_eq!(
+                worker_request.authorization.as_deref(),
+                Some("Bearer display-worker-key")
+            );
+            assert!(
+                worker_request
+                    .body
+                    .as_ref()
+                    .expect("worker body")
+                    .to_string()
+                    .contains("low"),
+                "configured worker effort must reach the request"
+            );
+            let display_requests = serde_json::to_string(&server.request_bodies())
+                .expect("serialize display requests");
+            assert!(display_requests.contains("LAST USER TURN:"));
+            assert!(display_requests.contains("ASSISTANT REPLY:"));
+            assert!(display_requests.contains("patched the race and re-ran the suite"));
+            assert!(!display_requests.contains("you are a coding agent"));
+            assert_eq!(server.request_count_for("/v1/messages"), 0);
+            assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+            assert_eq!(server.request_count_for("/v1/responses"), 1);
+
+            let ledger = actor
+                .chat_state_handle
+                .try_get_session_usage()
+                .await
+                .expect("display ledger remains readable");
+            let display_rows: Vec<_> = ledger
+                .attributions
+                .iter()
+                .filter(|row| row.role == "utility" || row.role == "auxiliary")
+                .collect();
+            assert_eq!(display_rows.len(), 2);
+            assert!(display_rows.iter().any(|row| {
+                row.role == "utility"
+                    && row.model_id == "display-utility"
+                    && row.status == distill_chat_state::UsageCallStatus::Rejected
+            }));
+            assert!(display_rows.iter().any(|row| {
+                row.role == "auxiliary"
+                    && row.model_id == "display-worker"
+                    && row.status == distill_chat_state::UsageCallStatus::Completed
+            }));
+
+            let prompt_ledger = actor
+                .chat_state_handle
+                .try_get_prompt_usage()
+                .await
+                .expect("prompt ledger remains readable");
+            let prompt_display_rows: Vec<_> = prompt_ledger
+                .into_iter()
+                .flat_map(|ledger| ledger.attributions)
+                .filter(|row| {
+                    (row.role == "utility" || row.role == "auxiliary")
+                        && (row.model_id == "display-utility" || row.model_id == "display-worker")
+                })
+                .collect();
+            assert!(
+                prompt_display_rows.is_empty(),
+                "display attempts must remain session-only: {prompt_display_rows:?}"
+            );
+
+            crate::jev::clear_test_local_config();
+            crate::jev::clear_test_tier_config();
         })
         .await;
 }
@@ -1461,13 +1632,21 @@ async fn auxiliary_calls_keep_the_main_turn_prefix() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
 async fn messages_side_calls_preserve_completed_reasoning() {
     use distill_sampling_types::{ReasoningEffort, rs};
-    use distill_test_support::MockInferenceServer;
+    use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
 
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
+            let home = tempfile::tempdir().expect("test Jev home");
+            std::fs::write(
+                home.path().join("config.toml"),
+                "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+            )
+            .expect("write test Jev config");
+            let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
             let (gateway_tx, _grx) =
                 tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
             let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
@@ -1484,6 +1663,34 @@ async fn messages_side_calls_preserve_completed_reasoning() {
             cfg.api_backend = distill_sampling_types::ApiBackend::Messages;
             cfg.reasoning_effort = Some(ReasoningEffort::High);
             actor.chat_state_handle.update_sampling_config(cfg);
+
+            let display_server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("display-utility").with_api_backend("chat_completions"),
+                MockModelEntry::new("display-worker").with_api_backend("responses"),
+            ])
+            .await
+            .expect("start display inference stub");
+            for (id, text) in [
+                ("display-summary", "`third answer`"),
+                ("display-title", "`third question`"),
+            ] {
+                display_server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": id,
+                            "model": "display-utility",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": text}
+                            }],
+                            "usage": {"prompt_tokens": 40, "completion_tokens": 2}
+                        }),
+                    ),
+                );
+            }
+            install_display_catalog(&actor, &display_server);
 
             let reasoning = |turn: usize| {
                 ConversationItem::Reasoning(rs::ReasoningItem {
@@ -1544,14 +1751,6 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 actor.turn_summary_task.borrow().is_none(),
                 "turn summary must finish"
             );
-            let body = server
-                .requests()
-                .into_iter()
-                .rev()
-                .find(|request| request.path == "/v1/messages")
-                .and_then(|request| request.body)
-                .expect("turn-summary Messages body");
-            assert_messages_rides_parent_prefix(&body, parent.clone(), "turn summary");
 
             actor.maybe_refresh_title();
             for _ in 0..200 {
@@ -1564,26 +1763,49 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 actor.title_refresh_task.borrow().is_none(),
                 "title refresh must finish"
             );
-            let body = server
-                .requests()
-                .into_iter()
-                .rev()
-                .find(|request| request.path == "/v1/messages")
-                .and_then(|request| request.body)
-                .expect("title-refresh Messages body");
-            assert_messages_rides_parent_prefix(&body, parent, "title refresh");
+            assert_eq!(server.request_count_for("/v1/messages"), 2);
+            assert_eq!(display_server.request_count_for("/v1/chat/completions"), 2);
+            let display_requests = serde_json::to_string(&display_server.request_bodies())
+                .expect("serialize display requests");
+            assert!(display_requests.contains("LAST USER TURN:"));
+            assert!(display_requests.contains("ASSISTANT REPLY:"));
+            assert!(display_requests.contains("third answer"));
+            assert!(display_requests.contains("third question"));
+            assert!(!display_requests.contains("first answer"));
+            assert!(!display_requests.contains("thinking for turn"));
+            assert!(!display_requests.contains("you are a coding agent"));
+            assert_eq!(
+                display_server
+                    .requests()
+                    .iter()
+                    .filter(|request| request.path == "/v1/chat/completions")
+                    .filter(|request| request.authorization.as_deref() == Some("Bearer display-utility-key"))
+                    .count(),
+                2
+            );
+
+            crate::jev::clear_test_local_config();
+            crate::jev::clear_test_tier_config();
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
 async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort() {
     use distill_sampling_types::{ReasoningEffort, synthesized_reasoning_item};
-    use distill_test_support::MockInferenceServer;
+    use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
 
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
+            let home = tempfile::tempdir().expect("test Jev home");
+            std::fs::write(
+                home.path().join("config.toml"),
+                "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+            )
+            .expect("write test Jev config");
+            let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
             for reasoning_effort in [
                 None,
                 Some(ReasoningEffort::None),
@@ -1606,6 +1828,34 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                 cfg.api_backend = distill_sampling_types::ApiBackend::Messages;
                 cfg.reasoning_effort = reasoning_effort;
                 actor.chat_state_handle.update_sampling_config(cfg);
+
+                let display_server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("display-utility").with_api_backend("chat_completions"),
+                    MockModelEntry::new("display-worker").with_api_backend("responses"),
+                ])
+                .await
+                .expect("start display inference stub");
+                for (id, text) in [
+                    ("display-summary", "`third answer`"),
+                    ("display-title", "`third question`"),
+                ] {
+                    display_server.enqueue_response(
+                        "/v1/chat/completions",
+                        ScriptedResponse::json(
+                            200,
+                            serde_json::json!({
+                                "id": id,
+                                "model": "display-utility",
+                                "choices": [{
+                                    "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": text}
+                                }],
+                                "usage": {"prompt_tokens": 40, "completion_tokens": 2}
+                            }),
+                        ),
+                    );
+                }
+                install_display_catalog(&actor, &display_server);
 
                 let parent = vec![
                     ConversationItem::system("you are a coding agent"),
@@ -1654,14 +1904,6 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     actor.turn_summary_task.borrow().is_none(),
                     "turn summary must finish"
                 );
-                let body = server
-                    .requests()
-                    .into_iter()
-                    .rev()
-                    .find(|request| request.path == "/v1/messages")
-                    .and_then(|request| request.body)
-                    .expect("turn-summary Messages body");
-                assert_messages_reasoning_stripped(&body, "turn summary");
 
                 actor.maybe_refresh_title();
                 for _ in 0..200 {
@@ -1674,14 +1916,20 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     actor.title_refresh_task.borrow().is_none(),
                     "title refresh must finish"
                 );
-                let body = server
-                    .requests()
-                    .into_iter()
-                    .rev()
-                    .find(|request| request.path == "/v1/messages")
-                    .and_then(|request| request.body)
-                    .expect("title-refresh Messages body");
-                assert_messages_reasoning_stripped(&body, "title refresh");
+                assert_eq!(server.request_count_for("/v1/messages"), 2);
+                assert_eq!(display_server.request_count_for("/v1/chat/completions"), 2);
+                let display_requests = serde_json::to_string(&display_server.request_bodies())
+                    .expect("serialize display requests");
+                assert!(display_requests.contains("LAST USER TURN:"));
+                assert!(display_requests.contains("ASSISTANT REPLY:"));
+                assert!(display_requests.contains("third answer"));
+                assert!(display_requests.contains("third question"));
+                assert!(!display_requests.contains("first answer"));
+                assert!(!display_requests.contains("signed thinking"));
+                assert!(!display_requests.contains("you are a coding agent"));
+
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_tier_config();
             }
         })
         .await;

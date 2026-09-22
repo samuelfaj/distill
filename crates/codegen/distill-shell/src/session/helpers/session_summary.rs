@@ -27,6 +27,11 @@ pub(crate) fn checkpoints_reached(turns: usize) -> usize {
 /// Applied on a char boundary, so a multibyte title is capped a little shorter, which is fine for a safety bound.
 const TITLE_MAX_BYTES: usize = 80;
 
+const TITLE_DISPLAY_OBJECTIVE_MAX_BYTES: usize = 1_400;
+const TITLE_DISPLAY_LATEST_USER_MAX_BYTES: usize = 1_400;
+const TITLE_DISPLAY_ANSWER_MAX_BYTES: usize = 2_200;
+const DISPLAY_FRAGMENT_MAX_BYTES: usize = 4_000;
+
 /// Durable title-refresh checkpoint watermark under `{session_dir}/`: the number of [`TITLE_REFRESH_TURNS`] checkpoints already consumed.
 /// Only a committed value is persisted, so an aborted refresh still retries.
 pub(crate) const TITLE_REFRESH_WATERMARK_FILE: &str = "title_refresh_idx";
@@ -104,16 +109,20 @@ fn strip_system_reminder_blocks(text: &str) -> String {
 
 /// Text the session title is derived from: strip system reminders and skill XML markup, then cap to the first few KB.
 /// Stripping runs before the cap so a leading reminder larger than the cap is still removed.
-fn title_source_text(user_message: &str) -> String {
+fn title_display_source_text(user_message: &str) -> String {
     let without_reminders = strip_system_reminder_blocks(user_message);
     let base = if without_reminders.is_empty() {
         user_message
     } else {
         &without_reminders
     };
-    let mut display =
-        distill_tools::implementations::skills::skill::extract_skill_display_text(base)
-            .unwrap_or_else(|| base.to_string());
+    let display = distill_tools::implementations::skills::skill::extract_skill_display_text(base)
+        .unwrap_or_else(|| base.to_string());
+    display
+}
+
+fn title_source_text(user_message: &str) -> String {
+    let mut display = title_display_source_text(user_message);
     display.truncate(floor_char_boundary(&display, TITLE_SOURCE_MAX_BYTES));
     display
 }
@@ -130,6 +139,127 @@ pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
     } else {
         s
     }
+}
+
+/// Normalize and bound source text without cutting through a source unit.
+/// Lines are the conservative unit here: if the complete text does not fit,
+/// the caller defers rather than presenting a head/tail fragment as evidence.
+pub(crate) fn bounded_display_text(text: &str, max_bytes: usize) -> Option<String> {
+    if max_bytes == 0 {
+        return None;
+    }
+    let units = text
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if units.is_empty() {
+        return None;
+    }
+    let bounded = units.join("\n");
+    (bounded.len() <= max_bytes).then_some(bounded)
+}
+
+/// The first real user message is the stable objective for a title refresh.
+pub(crate) fn first_human_user_text(conversation: &[ConversationItem]) -> Option<String> {
+    conversation.iter().find_map(|item| match item {
+        ConversationItem::User(user) if user.synthetic_reason.is_human() => {
+            let text = item.text_content();
+            (!text.trim().is_empty()).then_some(text)
+        }
+        _ => None,
+    })
+}
+
+/// The latest real user message supplies current-topic context when the first
+/// message was only a greeting or the topic changed later.
+pub(crate) fn latest_human_user_text(conversation: &[ConversationItem]) -> Option<String> {
+    conversation.iter().rev().find_map(|item| match item {
+        ConversationItem::User(user) if user.synthetic_reason.is_human() => {
+            let text = item.text_content();
+            (!text.trim().is_empty()).then_some(text)
+        }
+        _ => None,
+    })
+}
+
+/// The latest visible assistant text is context only for a title; it is never
+/// the dashboard's source of proof.
+pub(crate) fn latest_visible_assistant_text(conversation: &[ConversationItem]) -> Option<String> {
+    conversation.iter().rev().find_map(|item| {
+        let ConversationItem::Assistant(assistant) = item else {
+            return None;
+        };
+        (!assistant.content.trim().is_empty()).then(|| assistant.content.as_ref().to_owned())
+    })
+}
+
+fn title_user_source(text: &str, max_bytes: usize) -> Option<String> {
+    bounded_display_text(&title_display_source_text(text), max_bytes)
+}
+
+/// Complete user source units allowed to support a title. The latest request
+/// is included alongside the first objective, but assistant text is context
+/// only and cannot become a title evidence source.
+pub(crate) fn title_refresh_source(conversation: &[ConversationItem]) -> Option<String> {
+    let objective = title_user_source(
+        &first_human_user_text(conversation)?,
+        TITLE_DISPLAY_OBJECTIVE_MAX_BYTES,
+    )?;
+    let latest = latest_human_user_text(conversation)
+        .and_then(|text| title_user_source(&text, TITLE_DISPLAY_LATEST_USER_MAX_BYTES));
+    let mut source = objective;
+    if let Some(latest) = latest
+        && latest != source
+    {
+        source.push('\n');
+        source.push_str(&latest);
+    }
+    (source.len() <= DISPLAY_FRAGMENT_MAX_BYTES).then_some(source)
+}
+
+/// Build the bounded request for a title refresh: the first objective, the
+/// latest real user request, and the latest visible answer as context. Tool
+/// results, tool specs, and reasoning siblings never enter this payload.
+pub(crate) fn title_refresh_payload(conversation: &[ConversationItem]) -> Option<String> {
+    let objective = title_user_source(
+        &first_human_user_text(conversation)?,
+        TITLE_DISPLAY_OBJECTIVE_MAX_BYTES,
+    )?;
+    let latest = latest_human_user_text(conversation)
+        .and_then(|text| title_user_source(&text, TITLE_DISPLAY_LATEST_USER_MAX_BYTES));
+    let recent_answer = latest_visible_assistant_text(conversation)
+        .and_then(|text| bounded_display_text(&text, TITLE_DISPLAY_ANSWER_MAX_BYTES));
+    let mut payload = format!("SESSION OBJECTIVE:\n{objective}");
+    if let Some(latest) = latest
+        && latest != objective
+    {
+        payload.push_str("\nCURRENT USER REQUEST:\n");
+        payload.push_str(&latest);
+    }
+    if let Some(answer) = recent_answer {
+        payload.push_str("\nRECENT ANSWER:\n");
+        payload.push_str(&answer);
+    }
+    (payload.len() <= DISPLAY_FRAGMENT_MAX_BYTES).then_some(payload)
+}
+
+/// Accept only a short, complete title. The old cleaner remains truncating for
+/// legacy callers; this display path rejects oversized output instead of
+/// presenting a fabricated truncated title.
+pub(crate) fn title_display_text(raw: &str) -> Option<String> {
+    let normalized = crate::session::helpers::session_recap::clean_recap_text(raw);
+    if normalized.is_empty()
+        || normalized.eq_ignore_ascii_case("none")
+        || normalized.len() > TITLE_MAX_BYTES
+        || normalized.split_whitespace().count() > 10
+        || normalized.starts_with("SESSION OBJECTIVE:")
+        || normalized.starts_with("RECENT ANSWER:")
+    {
+        return None;
+    }
+    let title = clean_title_text(&normalized);
+    (!title.is_empty() && title.len() <= TITLE_MAX_BYTES).then_some(title)
 }
 
 /// Generate the initial session title from the first user message, for the fast first-prompt path ([`crate::session::summary::SummaryGenerator`]).
@@ -231,9 +361,12 @@ pub(crate) fn clean_title_text(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::sampling::ConversationItem;
+
     use super::{
-        TITLE_SOURCE_MAX_BYTES, clean_title_text, strip_system_reminder_blocks,
-        title_fallback_from_user_text, title_refresh_instruction, title_source_text,
+        TITLE_SOURCE_MAX_BYTES, bounded_display_text, clean_title_text,
+        strip_system_reminder_blocks, title_display_text, title_fallback_from_user_text,
+        title_refresh_instruction, title_refresh_payload, title_source_text,
     };
 
     #[test]
@@ -302,6 +435,45 @@ mod tests {
         );
         let capped = clean_title_text(&"word ".repeat(50));
         assert!(capped.len() <= super::TITLE_MAX_BYTES);
+    }
+
+    #[test]
+    fn title_display_rejects_truncated_or_unusable_output() {
+        assert_eq!(
+            title_display_text("Fix parser race"),
+            Some("Fix parser race".into())
+        );
+        assert!(title_display_text(&"word ".repeat(20)).is_none());
+        assert!(title_display_text("none").is_none());
+        assert!(title_display_text("SESSION OBJECTIVE: fix parser").is_none());
+    }
+
+    #[test]
+    fn title_payload_keeps_objective_and_recent_answer_only() {
+        let conversation = vec![
+            ConversationItem::system("system prompt"),
+            ConversationItem::user("first objective"),
+            ConversationItem::assistant("old answer that must not be used"),
+            ConversationItem::user("follow-up question"),
+            ConversationItem::tool_result("tool-call", "tool catalog and output"),
+            ConversationItem::assistant("latest answer: tests pending"),
+        ];
+        let payload = title_refresh_payload(&conversation).expect("objective is present");
+        assert!(payload.contains("SESSION OBJECTIVE:\nfirst objective"));
+        assert!(payload.contains("CURRENT USER REQUEST:\nfollow-up question"));
+        assert!(payload.contains("RECENT ANSWER:\nlatest answer: tests pending"));
+        assert!(!payload.contains("old answer"));
+        assert!(!payload.contains("tool catalog"));
+        assert!(payload.len() <= 4_000);
+    }
+
+    #[test]
+    fn bounded_display_text_keeps_complete_units_or_defers() {
+        assert_eq!(
+            bounded_display_text("objective\ntests pending", 128).as_deref(),
+            Some("objective\ntests pending")
+        );
+        assert!(bounded_display_text(&"objective ".repeat(400), 128).is_none());
     }
 
     #[test]

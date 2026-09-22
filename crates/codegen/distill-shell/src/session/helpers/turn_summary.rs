@@ -2,11 +2,11 @@
 //! After each turn the shell generates an ultra-short one-line summary of the agent's reply for that turn (not a meta activity log).
 //! The dashboard row shows it as its secondary line.
 //! Like recap, it is display-only and never mutates the conversation.
-//! The request is the conversation prefix verbatim plus one instruction turn.
-//! That shape is shared with recap via [`super::session_recap::budget_instruction_items`].
+//! Its auxiliary source is only the last real user turn and the visible
+//! assistant reply; tools, reasoning, and older turns are deliberately absent.
 
 use crate::sampling::ConversationItem;
-use crate::session::helpers::chat::floor_char_boundary;
+use crate::session::helpers::{chat::floor_char_boundary, session_summary};
 
 /// The instruction targets 5-12 words; this only guards against runaway output.
 /// Rows truncate to width on render.
@@ -14,6 +14,9 @@ pub(crate) const TURN_SUMMARY_MAX_CHARS: usize = 200;
 
 /// Max characters of the user message quoted in the instruction as the last-turn anchor.
 const ANCHOR_MAX_CHARS: usize = 120;
+const DISPLAY_USER_MAX_BYTES: usize = 1_200;
+const DISPLAY_ASSISTANT_MAX_BYTES: usize = 2_600;
+const DISPLAY_PAYLOAD_MAX_BYTES: usize = 4_000;
 
 /// The conversation contains user-role turns the user never wrote (reminders, injected context).
 /// Angle brackets are dropped so the quote cannot close the instruction's reminder tag.
@@ -40,6 +43,43 @@ pub(crate) fn last_user_anchor(conversation: &[ConversationItem]) -> Option<Stri
         anchor.push('\u{2026}');
     }
     Some(anchor)
+}
+
+/// Build the bounded source for the dashboard summary. Only the most recent
+/// real user message and the latest visible assistant reply participate; tool
+/// results and reasoning siblings are not display content.
+pub(crate) fn last_turn_display_source(conversation: &[ConversationItem]) -> Option<String> {
+    let user_index = conversation
+        .iter()
+        .rposition(ConversationItem::is_human_user_turn)?;
+    conversation
+        .iter()
+        .skip(user_index + 1)
+        .rev()
+        .find_map(|item| {
+            let ConversationItem::Assistant(assistant) = item else {
+                return None;
+            };
+            (!assistant.content.trim().is_empty()).then(|| {
+                session_summary::bounded_display_text(
+                    assistant.content.as_ref(),
+                    DISPLAY_ASSISTANT_MAX_BYTES,
+                )
+            })
+        })?
+}
+
+pub(crate) fn last_turn_display_payload(conversation: &[ConversationItem]) -> Option<String> {
+    let user_index = conversation
+        .iter()
+        .rposition(ConversationItem::is_human_user_turn)?;
+    let user = session_summary::bounded_display_text(
+        &conversation[user_index].text_content(),
+        DISPLAY_USER_MAX_BYTES,
+    )?;
+    let assistant = last_turn_display_source(conversation)?;
+    let payload = format!("LAST USER TURN:\n{user}\nASSISTANT REPLY:\n{assistant}");
+    (payload.len() <= DISPLAY_PAYLOAD_MAX_BYTES).then_some(payload)
 }
 
 /// Same single-user-message design as recap (`recap_instruction`): all directions live in one reminder-wrapped turn.
@@ -82,6 +122,24 @@ pub(crate) fn clean_turn_summary_text(raw: &str) -> String {
         out.push('\u{2026}');
     }
     out
+}
+
+/// Accept only a complete, short dashboard fragment. In particular, reject
+/// oversized output before the legacy cleaner can truncate it into a false
+/// success.
+pub(crate) fn turn_summary_display_text(raw: &str) -> Option<String> {
+    let normalized = super::session_recap::clean_recap_text(raw);
+    if normalized.is_empty()
+        || normalized.eq_ignore_ascii_case("none")
+        || normalized.len() > TURN_SUMMARY_MAX_CHARS
+        || normalized.split_whitespace().count() > 12
+        || normalized.starts_with("LAST USER TURN:")
+        || normalized.starts_with("ASSISTANT REPLY:")
+    {
+        return None;
+    }
+    let summary = clean_turn_summary_text(&normalized);
+    (!summary.is_empty() && summary.len() <= TURN_SUMMARY_MAX_CHARS).then_some(summary)
 }
 
 #[cfg(test)]
@@ -151,5 +209,38 @@ mod tests {
         let capped = clean_turn_summary_text(&"word ".repeat(100));
         assert!(capped.len() <= TURN_SUMMARY_MAX_CHARS + '\u{2026}'.len_utf8());
         assert!(capped.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn display_payload_uses_only_the_last_real_turn() {
+        let conv = vec![
+            ConversationItem::system("system".to_owned()),
+            user("old objective"),
+            ConversationItem::assistant("old answer"),
+            user("fix the parser"),
+            ConversationItem::Reasoning(distill_sampling_types::synthesized_reasoning_item(
+                "private chain of thought",
+            )),
+            ConversationItem::tool_result("call-1", "tool catalog"),
+            ConversationItem::assistant("parser fixed; tests pending"),
+        ];
+        let payload = last_turn_display_payload(&conv).expect("last turn has a reply");
+        assert!(payload.contains("LAST USER TURN:\nfix the parser"));
+        assert!(payload.contains("ASSISTANT REPLY:\nparser fixed; tests pending"));
+        assert!(!payload.contains("old objective"));
+        assert!(!payload.contains("private chain"));
+        assert!(!payload.contains("tool catalog"));
+        assert!(payload.len() <= 4_000);
+    }
+
+    #[test]
+    fn display_output_rejects_truncation_and_empty_markers() {
+        assert_eq!(
+            turn_summary_display_text("parser fixed; tests pending"),
+            Some("parser fixed; tests pending".into())
+        );
+        assert!(turn_summary_display_text("none").is_none());
+        assert!(turn_summary_display_text(&"word ".repeat(80)).is_none());
+        assert!(turn_summary_display_text("ASSISTANT REPLY: parser fixed").is_none());
     }
 }

@@ -222,10 +222,20 @@ impl CheapLane {
                 .is_some_and(|value| value != "auto")
             {
                 match cfg.reasoning_shape {
+                    // Sampler `None` means no shape translation: preserve the
+                    // caller's explicit effort spelling on Jev's effort wire.
+                    crate::sampling::types::ReasoningShape::None => {
+                        distill_workspace::jev::provider::ReasoningShape::Effort
+                    }
+                    crate::sampling::types::ReasoningShape::Effort => {
+                        distill_workspace::jev::provider::ReasoningShape::Effort
+                    }
                     crate::sampling::types::ReasoningShape::MaxTokens => {
                         distill_workspace::jev::provider::ReasoningShape::MaxTokens
                     }
-                    _ => distill_workspace::jev::provider::ReasoningShape::Effort,
+                    crate::sampling::types::ReasoningShape::Disabled => {
+                        distill_workspace::jev::provider::ReasoningShape::Disabled
+                    }
                 }
             } else {
                 distill_workspace::jev::provider::ReasoningShape::Disabled
@@ -789,13 +799,20 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn a_lane_needs_a_real_model_entry_to_be_built() {
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+
         // No key ⇒ no lane: the caller keeps today's bytes rather than sending a
         // request the endpoint would refuse.
         let mut cfg = distill_sampler::SamplerConfig {
             api_key: None,
             base_url: "https://openrouter.ai/api/v1".to_owned(),
             model: "qwen/qwen3.7-flash".to_owned(),
+            reasoning_shape: crate::sampling::types::ReasoningShape::Disabled,
             ..Default::default()
         };
         assert!(CheapLane::from_sampler_config(&cfg).is_none());
@@ -813,6 +830,56 @@ mod tests {
             lane.client.config().reasoning_shape,
             distill_workspace::jev::provider::ReasoningShape::Disabled
         );
+        let disabled_body = distill_workspace::jev::provider::chat_message_body(
+            &lane.client.config().model,
+            "system",
+            "user",
+            lane.client.config().reasoning_shape,
+            &lane.client.config().reasoning_effort,
+            lane.client.config().max_completion_tokens,
+        );
+        assert_eq!(disabled_body["reasoning"]["enabled"], false);
+        assert_eq!(
+            distill_workspace::jev::provider::transmitted_reasoning_effort(
+                distill_workspace::jev::provider::JevProvider::OpenRouter,
+                lane.client.config().reasoning_shape,
+                &lane.client.config().reasoning_effort,
+                lane.client.config().max_completion_tokens,
+            ),
+            Some("disabled".to_owned())
+        );
+
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            effort: Some("high".to_owned()),
+            ..Default::default()
+        });
+        cfg.reasoning_shape = crate::sampling::types::ReasoningShape::None;
+        let effort_lane = CheapLane::from_sampler_config(&cfg)
+            .expect("explicit effort entry keeps the caller's no-shape setting");
+        assert_eq!(
+            effort_lane.client.config().reasoning_shape,
+            distill_workspace::jev::provider::ReasoningShape::Effort
+        );
+        let effort_body = distill_workspace::jev::provider::chat_message_body(
+            &effort_lane.client.config().model,
+            "system",
+            "user",
+            effort_lane.client.config().reasoning_shape,
+            &effort_lane.client.config().reasoning_effort,
+            effort_lane.client.config().max_completion_tokens,
+        );
+        assert_eq!(effort_body["reasoning"]["effort"], "high");
+        assert_eq!(
+            distill_workspace::jev::provider::transmitted_reasoning_effort(
+                distill_workspace::jev::provider::JevProvider::OpenRouter,
+                effort_lane.client.config().reasoning_shape,
+                &effort_lane.client.config().reasoning_effort,
+                effort_lane.client.config().max_completion_tokens,
+            ),
+            Some("effort:high".to_owned())
+        );
+
+        crate::jev::clear_test_local_config();
 
         cfg.base_url = "  ".to_owned();
         assert!(CheapLane::from_sampler_config(&cfg).is_none());

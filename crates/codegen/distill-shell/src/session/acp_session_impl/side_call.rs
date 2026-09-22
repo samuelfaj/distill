@@ -67,26 +67,130 @@ pub(crate) fn log_prompt_cache_usage(
 /// Attribute one completed auxiliary response exactly once, even when its
 /// text is empty or later discarded as stale. A missing provider usage stays a
 /// counted, incomplete call in the shared UsageLedger.
+#[derive(Debug, Clone)]
+pub(crate) struct AuxiliaryAttempt {
+    pub(crate) attempt_id: String,
+    pub(crate) model_id: String,
+    pub(crate) endpoint: String,
+    pub(crate) requested_effort: Option<String>,
+    pub(crate) applied_effort: Option<String>,
+}
+
+pub(crate) fn auxiliary_attempt(
+    client: &distill_sampler::SamplingClient,
+    request: &ConversationRequest,
+) -> AuxiliaryAttempt {
+    let request_id = request
+        .x_grok_req_id
+        .clone()
+        .unwrap_or_else(|| format!("generated-{}", uuid::Uuid::new_v4()));
+    AuxiliaryAttempt {
+        attempt_id: format!("auxiliary:{request_id}"),
+        model_id: request
+            .model
+            .clone()
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| "<unknown>".to_owned()),
+        endpoint: client.attribution_endpoint(),
+        requested_effort: request.reasoning_effort.map(|effort| effort.to_string()),
+        applied_effort: client.attribution_applied_effort(
+            request.reasoning_effort,
+            request.max_output_tokens,
+        ),
+    }
+}
+
 pub(crate) fn record_auxiliary_response(
     actor: &SessionActor,
     call: &str,
     configured_model: &str,
+    attempt: &AuxiliaryAttempt,
     response: &distill_sampling_types::ConversationResponse,
     api_duration_ms: Option<u64>,
     attribute_to_prompt: bool,
+) {
+    let status = if response.assistant_text().is_empty() {
+        distill_chat_state::UsageCallStatus::Rejected
+    } else {
+        distill_chat_state::UsageCallStatus::Completed
+    };
+    record_auxiliary_response_with_status(
+        actor,
+        call,
+        configured_model,
+        attempt,
+        response,
+        api_duration_ms,
+        attribute_to_prompt,
+        status,
+    );
+}
+
+pub(crate) fn record_auxiliary_rejected_response(
+    actor: &SessionActor,
+    call: &str,
+    configured_model: &str,
+    attempt: &AuxiliaryAttempt,
+    response: &distill_sampling_types::ConversationResponse,
+    api_duration_ms: Option<u64>,
+    attribute_to_prompt: bool,
+) {
+    record_auxiliary_response_with_status(
+        actor,
+        call,
+        configured_model,
+        attempt,
+        response,
+        api_duration_ms,
+        attribute_to_prompt,
+        distill_chat_state::UsageCallStatus::Rejected,
+    );
+}
+
+fn record_auxiliary_response_with_status(
+    actor: &SessionActor,
+    call: &str,
+    configured_model: &str,
+    attempt: &AuxiliaryAttempt,
+    response: &distill_sampling_types::ConversationResponse,
+    api_duration_ms: Option<u64>,
+    attribute_to_prompt: bool,
+    status: distill_chat_state::UsageCallStatus,
 ) {
     let model_id = response
         .assistant()
         .and_then(|assistant| assistant.model_id.clone())
         .filter(|model| !model.is_empty())
         .or_else(|| (!configured_model.is_empty()).then(|| configured_model.to_owned()));
-    actor.chat_state_handle.record_auxiliary_call_usage(
-        model_id,
-        response.usage.clone(),
-        api_duration_ms,
-        response.cost_usd_ticks,
+    let task_id = actor
+        .current_prompt_id
+        .lock()
+        .expect("current_prompt_id mutex poisoned")
+        .clone();
+    let model_id = model_id.unwrap_or_else(|| "<unknown>".to_owned());
+    actor.chat_state_handle.record_usage_attribution(
+        distill_chat_state::UsageAttribution {
+            attempt_id: attempt.attempt_id.clone(),
+            task_id,
+            turn_id: Some(actor.current_turn_number.get().to_string()),
+            request_id: response.message_id.clone(),
+            role: "auxiliary".to_owned(),
+            model_id,
+            endpoint: Some(attempt.endpoint.clone()),
+            requested_effort: attempt.requested_effort.clone(),
+            applied_effort: attempt.applied_effort.clone(),
+            status,
+            usage: response.usage.clone(),
+            usage_complete: response.usage.is_some(),
+            api_duration_ms,
+            cost_usd_ticks: response.cost_usd_ticks,
+            cost_basis: if response.cost_usd_ticks.is_some() {
+                distill_chat_state::UsageCostBasis::Reported
+            } else {
+                distill_chat_state::UsageCostBasis::Unknown
+            },
+        },
         attribute_to_prompt,
-        false,
     );
     tracing::debug!(
         call,
@@ -96,24 +200,79 @@ pub(crate) fn record_auxiliary_response(
     );
 }
 
+pub(crate) async fn collect_auxiliary(
+    client: &distill_sampler::SamplingClient,
+    request: ConversationRequest,
+    idle_timeout: std::time::Duration,
+) -> (
+    distill_sampling_types::Result<distill_sampling_types::ConversationResponse>,
+    Option<distill_sampling_types::ConversationResponse>,
+) {
+    client
+        .conversation_collect_with_idle_timeout_and_rejection(request, idle_timeout)
+        .await
+}
+
 /// Record attempts for which the transport returned no provider usage. This
 /// is deliberately separate from a successful response: the ledger reports
 /// the attempt and its missing cost instead of manufacturing a zero.
 pub(crate) fn record_auxiliary_failures(
     actor: &SessionActor,
-    configured_model: &str,
-    attempts: u32,
+    attempts: &[AuxiliaryAttempt],
     attribute_to_prompt: bool,
 ) {
-    let model_id = (!configured_model.is_empty()).then(|| configured_model.to_owned());
-    for _ in 0..attempts {
-        actor.chat_state_handle.record_auxiliary_call_usage(
-            model_id.clone(),
-            None,
-            None,
-            None,
+    record_auxiliary_failures_with_status(
+        actor,
+        attempts,
+        attribute_to_prompt,
+        distill_chat_state::UsageCallStatus::Failed,
+    );
+}
+
+pub(crate) fn record_auxiliary_cancellations(
+    actor: &SessionActor,
+    attempts: &[AuxiliaryAttempt],
+    attribute_to_prompt: bool,
+) {
+    record_auxiliary_failures_with_status(
+        actor,
+        attempts,
+        attribute_to_prompt,
+        distill_chat_state::UsageCallStatus::Cancelled,
+    );
+}
+
+fn record_auxiliary_failures_with_status(
+    actor: &SessionActor,
+    attempts: &[AuxiliaryAttempt],
+    attribute_to_prompt: bool,
+    status: distill_chat_state::UsageCallStatus,
+) {
+    let task_id = actor
+        .current_prompt_id
+        .lock()
+        .expect("current_prompt_id mutex poisoned")
+        .clone();
+    for attempt in attempts {
+        actor.chat_state_handle.record_usage_attribution(
+            distill_chat_state::UsageAttribution {
+                attempt_id: attempt.attempt_id.clone(),
+                task_id: task_id.clone(),
+                turn_id: Some(actor.current_turn_number.get().to_string()),
+                request_id: None,
+                role: "auxiliary".to_owned(),
+                model_id: attempt.model_id.clone(),
+                endpoint: Some(attempt.endpoint.clone()),
+                requested_effort: attempt.requested_effort.clone(),
+                applied_effort: attempt.applied_effort.clone(),
+                status,
+                usage: None,
+                usage_complete: false,
+                api_duration_ms: None,
+                cost_usd_ticks: None,
+                cost_basis: distill_chat_state::UsageCostBasis::Unknown,
+            },
             attribute_to_prompt,
-            true,
         );
     }
 }

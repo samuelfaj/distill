@@ -260,6 +260,14 @@ impl CheapClient {
             url.clone(),
             Some(self.config.reasoning_effort.clone()),
         );
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_applied_effort(super::provider::transmitted_reasoning_effort(
+                super::provider::JevProvider::OpenRouter,
+                self.config.reasoning_shape,
+                &self.config.reasoning_effort,
+                self.config.max_completion_tokens,
+            ));
+        }
         tracing::info!(target: "jev.decision", event_kind = "utility_request",
             task_id = task.id, requested_model = self.config.model, "bounded utility request");
 
@@ -717,6 +725,10 @@ mod tests {
         let records_snapshot = records.lock().expect("lock").clone();
         assert_eq!(records_snapshot.len(), 1);
         assert_eq!(records_snapshot[0].status, super::AttemptStatus::Rejected);
+        assert!(records_snapshot[0].attempt_id.len() > 8);
+        assert_eq!(records_snapshot[0].requested_effort.as_deref(), Some("none"));
+        assert_eq!(records_snapshot[0].applied_effort.as_deref(), Some("disabled"));
+        assert!(records_snapshot[0].endpoint.ends_with("/chat/completions"));
         assert_eq!(
             records_snapshot[0]
                 .usage

@@ -165,6 +165,46 @@ pub fn reasoning_object(shape: ReasoningShape, level: &str, max_tokens: u32) -> 
     }
 }
 
+/// Describe the reasoning setting emitted by the Jev request builder.
+///
+/// Typed Jev requests have no reasoning field; OpenRouter requests use the
+/// same mapping as [`reasoning_object`]. `none` is retained when it was an
+/// explicit caller setting, while `absent` means that no reasoning setting was
+/// sent (or that a zero budget could not be sent).
+pub fn transmitted_reasoning_effort(
+    provider: JevProvider,
+    shape: ReasoningShape,
+    level: &str,
+    max_tokens: u32,
+) -> Option<String> {
+    if provider.speaks_typed_envelope() {
+        return Some("absent".to_owned());
+    }
+    let level = level.trim();
+    if shape == ReasoningShape::Disabled {
+        return Some("disabled".to_owned());
+    }
+    if level.is_empty() {
+        return Some("absent".to_owned());
+    }
+    if level.eq_ignore_ascii_case("none") {
+        return Some("none".to_owned());
+    }
+    match shape {
+        ReasoningShape::None => Some("absent".to_owned()),
+        ReasoningShape::Effort => Some(format!("effort:{level}")),
+        ReasoningShape::MaxTokens => {
+            let budget = reasoning_budget_tokens(level).min(max_tokens.saturating_sub(64));
+            if budget > 0 {
+                Some(format!("max_tokens:{budget}"))
+            } else {
+                Some("absent".to_owned())
+            }
+        }
+        ReasoningShape::Disabled => Some("disabled".to_owned()),
+    }
+}
+
 /// The level the model is asked for, adapted to what it advertises.
 ///
 /// A model that reports `supported_efforts` may not accept our ladder's top
@@ -1207,6 +1247,55 @@ mod tests {
         assert_eq!(
             reasoning_object(ReasoningShape::Effort, "xhigh", 2048).expect("effort")["effort"],
             "xhigh"
+        );
+    }
+
+    #[test]
+    fn applied_effort_describes_the_provider_request_shape() {
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::Typesafe,
+                ReasoningShape::Effort,
+                "high",
+                2048,
+            ),
+            Some("absent".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::Disabled,
+                "none",
+                2048,
+            ),
+            Some("disabled".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::Effort,
+                "none",
+                2048,
+            ),
+            Some("none".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::MaxTokens,
+                "low",
+                2048,
+            ),
+            Some("max_tokens:512".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::MaxTokens,
+                "high",
+                32,
+            ),
+            Some("absent".to_owned())
         );
     }
 

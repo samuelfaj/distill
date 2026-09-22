@@ -5,7 +5,10 @@
 
 use super::*;
 
-use super::side_call::{record_auxiliary_failures, record_auxiliary_response};
+use super::side_call::{
+    collect_auxiliary, record_auxiliary_failures, record_auxiliary_rejected_response,
+    record_auxiliary_response,
+};
 
 impl SessionActor {
     /// Any generation still running is aborted: its result would describe an older turn.
@@ -86,12 +89,31 @@ impl SessionActor {
                 format!("xai-turn-summary-{}", uuid::Uuid::new_v4()),
             )
             .await;
+        let attempt = super::side_call::auxiliary_attempt(&setup.client, &request);
 
         let call_started = std::time::Instant::now();
-        let response = match setup.client.conversation_collect(request).await {
+        let (response_result, rejected_response) = collect_auxiliary(
+            &setup.client,
+            request,
+            std::time::Duration::from_secs(300),
+        )
+        .await;
+        let response = match response_result {
             Ok(r) => r,
             Err(e) => {
-                record_auxiliary_failures(self, &setup.model, 1, false);
+                if let Some(response) = rejected_response {
+                    record_auxiliary_rejected_response(
+                        self,
+                        "turn_summary",
+                        &setup.model,
+                        &attempt,
+                        &response,
+                        None,
+                        false,
+                    );
+                } else {
+                    record_auxiliary_failures(self, std::slice::from_ref(&attempt), false);
+                }
                 tracing::warn!(error = %e, "turn summary: model call failed");
                 return;
             }
@@ -100,6 +122,7 @@ impl SessionActor {
             self,
             "turn_summary",
             &setup.model,
+            &attempt,
             &response,
             Some(call_started.elapsed().as_millis() as u64),
             false,

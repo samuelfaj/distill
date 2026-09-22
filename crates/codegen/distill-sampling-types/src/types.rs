@@ -966,6 +966,50 @@ pub fn reasoning_budget_tokens(level: ReasoningEffort) -> u32 {
     }
 }
 
+/// Describe the reasoning setting that the current request builder actually
+/// puts on the wire. This is based on the selected backend and shape, not on a
+/// model-name capability guess. `"absent"`, `"disabled"`, and `"none"` are
+/// distinct known outcomes; `None` means the mapping was not captured.
+pub fn transmitted_reasoning_effort(
+    backend: ApiBackend,
+    shape: ReasoningShape,
+    requested: Option<ReasoningEffort>,
+    max_tokens: Option<u32>,
+) -> Option<String> {
+    let absent = || Some("absent".to_owned());
+    match backend {
+            ApiBackend::ChatCompletions => match shape {
+                ReasoningShape::Disabled => Some("disabled".to_owned()),
+                ReasoningShape::MaxTokens => {
+                let Some(effort) = requested else {
+                    return absent();
+                };
+                let budget = reasoning_budget_tokens(effort)
+                    .min(max_tokens.unwrap_or(u32::MAX).saturating_sub(64));
+                if budget > 0 {
+                    Some(format!("max_tokens:{budget}"))
+                } else {
+                    absent()
+                }
+            }
+            ReasoningShape::Effort | ReasoningShape::None => match requested {
+                None => absent(),
+                Some(ReasoningEffort::None) => Some("none".to_owned()),
+                Some(effort) => Some(format!("effort:{effort}")),
+            },
+        },
+        ApiBackend::Responses => match requested {
+            None => absent(),
+            Some(ReasoningEffort::None) => Some("none".to_owned()),
+            Some(effort) => Some(format!("effort:{effort}")),
+        },
+        ApiBackend::Messages => requested
+            .and_then(ReasoningEffort::to_messages_api)
+            .map(|effort| format!("effort:{effort}"))
+            .or_else(absent),
+    }
+}
+
 impl std::str::FromStr for ReasoningEffort {
     type Err = String;
 
@@ -1944,6 +1988,46 @@ mod tests {
         request.apply_reasoning_shape(ReasoningShape::Effort);
         assert_eq!(request.reasoning_effort, Some(ReasoningEffort::Medium));
         assert!(request.reasoning.is_none());
+    }
+
+    #[test]
+    fn transmitted_effort_keeps_absent_disabled_and_none_distinct() {
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::ChatCompletions,
+                ReasoningShape::None,
+                None,
+                None,
+            ),
+            Some("absent".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::ChatCompletions,
+                ReasoningShape::Disabled,
+                Some(ReasoningEffort::None),
+                Some(2048),
+            ),
+            Some("disabled".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::Responses,
+                ReasoningShape::None,
+                Some(ReasoningEffort::None),
+                None,
+            ),
+            Some("none".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::Messages,
+                ReasoningShape::None,
+                Some(ReasoningEffort::Minimal),
+                None,
+            ),
+            Some("absent".to_owned())
+        );
     }
 
     /// Verify that cloning a `ChatCompletionRequest` with a trace does not recurse.

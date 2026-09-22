@@ -142,6 +142,9 @@ pub enum ChatStateCommand {
     /// Subagent usage into session (and prompt when attributable). Replies when applied.
     RecordSubagentUsage {
         by_model: Vec<(String, crate::usage::UsageTotals)>,
+        /// Complete child attempt rows when the child ledger has identity for
+        /// every counted call. Aggregate rows are retained for legacy callers.
+        attributions: Vec<crate::usage::UsageAttribution>,
         attribute_to_prompt: bool,
         /// Nested subagent bill may under-count.
         incomplete: bool,

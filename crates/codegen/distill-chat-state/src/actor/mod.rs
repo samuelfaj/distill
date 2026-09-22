@@ -237,11 +237,17 @@ impl ChatStateActor {
             }
             ChatStateCommand::RecordSubagentUsage {
                 by_model,
+                attributions,
                 attribute_to_prompt,
                 incomplete,
                 reply,
             } => {
-                self.record_subagent_usage(&by_model, attribute_to_prompt, incomplete);
+                self.record_subagent_usage(
+                    &by_model,
+                    &attributions,
+                    attribute_to_prompt,
+                    incomplete,
+                );
                 let _ = reply.send(());
             }
             ChatStateCommand::MarkUsageIncomplete {

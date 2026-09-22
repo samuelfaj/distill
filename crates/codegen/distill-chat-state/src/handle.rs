@@ -232,9 +232,29 @@ impl ChatStateHandle {
         attribute_to_prompt: bool,
         incomplete: bool,
     ) -> bool {
+        self.record_subagent_usage_with_attributions(
+            by_model,
+            Vec::new(),
+            attribute_to_prompt,
+            incomplete,
+        )
+        .await
+    }
+
+    /// Apply child attempt rows when the child can prove that its rows cover
+    /// every counted call. The aggregate fallback remains available for old
+    /// or partially observed child sessions.
+    pub async fn record_subagent_usage_with_attributions(
+        &self,
+        by_model: Vec<(String, crate::usage::UsageTotals)>,
+        attributions: Vec<crate::usage::UsageAttribution>,
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    ) -> bool {
         self.query("RecordSubagentUsage", |reply| {
             ChatStateCommand::RecordSubagentUsage {
                 by_model,
+                attributions,
                 attribute_to_prompt,
                 incomplete,
                 reply,

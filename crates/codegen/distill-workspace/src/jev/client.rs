@@ -204,6 +204,14 @@ impl JevClient {
             url.clone(),
             Some(self.config.reasoning_effort.clone()),
         );
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_applied_effort(super::provider::transmitted_reasoning_effort(
+                self.config.provider,
+                self.config.reasoning_shape,
+                &self.config.reasoning_effort,
+                self.config.max_completion_tokens,
+            ));
+        }
 
         // One attempt; the deadline covers connection, response *and body read*.
         let attempt = async {
@@ -837,6 +845,7 @@ mod tests {
             Some(321)
         );
         assert!(records[0].endpoint.ends_with("/v1/systemone"));
+        assert_eq!(records[0].applied_effort.as_deref(), Some("absent"));
     }
 
     #[tokio::test]

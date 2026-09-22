@@ -153,7 +153,23 @@ impl SessionActor {
         parent_prompt_id: Option<&str>,
         incomplete: bool,
     ) -> Result<SubagentUsageApply, ()> {
-        if by_model.is_empty() && !incomplete {
+        self.record_subagent_usage_with_attributions(
+            by_model,
+            &[],
+            parent_prompt_id,
+            incomplete,
+        )
+        .await
+    }
+
+    pub(super) async fn record_subagent_usage_with_attributions(
+        &self,
+        by_model: &[(String, distill_chat_state::UsageTotals)],
+        attributions: &[distill_chat_state::UsageAttribution],
+        parent_prompt_id: Option<&str>,
+        incomplete: bool,
+    ) -> Result<SubagentUsageApply, ()> {
+        if by_model.is_empty() && attributions.is_empty() && !incomplete {
             return Ok(SubagentUsageApply::AttributedToPrompt);
         }
         let current = self
@@ -164,7 +180,12 @@ impl SessionActor {
         let attributable = parent_prompt_id.is_some() && parent_prompt_id == current.as_deref();
         if !self
             .chat_state_handle
-            .record_subagent_usage(by_model.to_vec(), attributable, incomplete)
+            .record_subagent_usage_with_attributions(
+                by_model.to_vec(),
+                attributions.to_vec(),
+                attributable,
+                incomplete,
+            )
             .await
         {
             return Err(());
@@ -185,8 +206,31 @@ impl SessionActor {
         incomplete: bool,
         respond_to: tokio::sync::oneshot::Sender<()>,
     ) {
+        self.handle_record_subagent_usage_command_with_attributions(
+            by_model,
+            &[],
+            parent_prompt_id,
+            incomplete,
+            respond_to,
+        )
+        .await;
+    }
+
+    pub(super) async fn handle_record_subagent_usage_command_with_attributions(
+        &self,
+        by_model: &[(String, distill_chat_state::UsageTotals)],
+        attributions: &[distill_chat_state::UsageAttribution],
+        parent_prompt_id: Option<&str>,
+        incomplete: bool,
+        respond_to: tokio::sync::oneshot::Sender<()>,
+    ) {
         match self
-            .record_subagent_usage(by_model, parent_prompt_id, incomplete)
+            .record_subagent_usage_with_attributions(
+                by_model,
+                attributions,
+                parent_prompt_id,
+                incomplete,
+            )
             .await
         {
             Ok(SubagentUsageApply::AttributedToPrompt) => {

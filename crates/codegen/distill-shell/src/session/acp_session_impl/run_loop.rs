@@ -1336,13 +1336,15 @@ pub(super) async fn run_session(
                         }
                         SessionCommand::RecordSubagentUsage {
                             by_model,
+                            attributions,
                             parent_prompt_id,
                             incomplete,
                             respond_to,
                         } => {
                             session
-                                .handle_record_subagent_usage_command(
+                                .handle_record_subagent_usage_command_with_attributions(
                                     &by_model,
+                                    &attributions,
                                     parent_prompt_id.as_deref(),
                                     incomplete,
                                     respond_to,

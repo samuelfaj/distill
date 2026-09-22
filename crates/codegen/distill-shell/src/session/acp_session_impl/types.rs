@@ -3,6 +3,72 @@
 
 use super::*;
 
+/// Identity captured at the sampler submission boundary. It is separate from
+/// the response so failed, cancelled, and retried requests can use the same
+/// ledger shape without inventing provider response fields.
+#[derive(Debug, Clone)]
+pub(crate) struct UsageAttemptContext {
+    pub(crate) attempt_id: String,
+    pub(crate) task_id: Option<String>,
+    pub(crate) turn_id: Option<String>,
+    pub(crate) request_id: Option<String>,
+    pub(crate) role: String,
+    pub(crate) model_id: String,
+    pub(crate) endpoint: Option<String>,
+    pub(crate) requested_effort: Option<String>,
+    pub(crate) applied_effort: Option<String>,
+}
+
+impl UsageAttemptContext {
+    pub(crate) fn update_from_response(
+        &mut self,
+        response: &distill_sampling_types::ConversationResponse,
+    ) {
+        if let Some(message_id) = response.message_id.clone() {
+            self.request_id = Some(message_id);
+        }
+        if let Some(model_id) = response
+            .assistant()
+            .and_then(|assistant| assistant.model_id.clone())
+            .filter(|model| !model.is_empty())
+        {
+            self.model_id = model_id;
+        }
+    }
+
+    pub(crate) fn into_attribution(
+        self,
+        status: distill_chat_state::UsageCallStatus,
+        usage: Option<distill_sampling_types::TokenUsage>,
+        usage_complete: bool,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) -> distill_chat_state::UsageAttribution {
+        let cost_usd_ticks = distill_sampling_types::reported_cost_ticks(cost_usd_ticks);
+        distill_chat_state::UsageAttribution {
+            attempt_id: self.attempt_id,
+            task_id: self.task_id,
+            turn_id: self.turn_id,
+            request_id: self.request_id,
+            role: self.role,
+            model_id: self.model_id,
+            endpoint: self.endpoint,
+            requested_effort: self.requested_effort,
+            applied_effort: self.applied_effort,
+            status,
+            usage,
+            usage_complete,
+            api_duration_ms,
+            cost_usd_ticks,
+            cost_basis: if cost_usd_ticks.is_some() {
+                distill_chat_state::UsageCostBasis::Reported
+            } else {
+                distill_chat_state::UsageCostBasis::Unknown
+            },
+        }
+    }
+}
+
 /// Controls how MCP server system-reminders are injected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpReminderMode {
@@ -65,6 +131,7 @@ pub(crate) enum SamplerTurnOutcome {
     Response(
         Box<ConversationResponse>,
         Box<distill_sampler::InferenceLatencyStats>,
+        UsageAttemptContext,
     ),
     CompactAndResubmit,
     /// Retry through the auth-retry schedule. Mirrors

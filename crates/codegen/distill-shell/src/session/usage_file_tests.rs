@@ -14,6 +14,26 @@ fn tu(prompt: u32, completion: u32) -> TokenUsage {
     }
 }
 
+fn attribution(id: &str) -> distill_chat_state::UsageAttribution {
+    distill_chat_state::UsageAttribution {
+        attempt_id: id.to_owned(),
+        task_id: None,
+        turn_id: None,
+        request_id: None,
+        role: "auxiliary".to_owned(),
+        model_id: "m".to_owned(),
+        endpoint: None,
+        requested_effort: None,
+        applied_effort: None,
+        status: distill_chat_state::UsageCallStatus::Failed,
+        usage: None,
+        usage_complete: false,
+        api_duration_ms: None,
+        cost_usd_ticks: None,
+        cost_basis: distill_chat_state::UsageCostBasis::Unknown,
+    }
+}
+
 fn live(calls: &[(&str, u32, u32, Option<i64>)]) -> UsageSummary {
     let mut ledger = UsageLedger::default();
     for (model, prompt, completion, cost) in calls {
@@ -268,4 +288,27 @@ fn covers_detects_same_process_vs_reset_ledger() {
     assert!(bigger.covers(&smaller));
     assert!(!smaller.covers(&bigger));
     assert!(smaller.covers(&UsageSummary::default()));
+}
+
+#[test]
+fn usage_summary_keeps_attribution_ids_unique_when_rows_are_folded() {
+    let duplicate = attribution("attempt-1");
+    let mut first = UsageSummary::default();
+    first.attributions.push(duplicate.clone());
+    let mut second = UsageSummary::default();
+    second.attributions.extend([duplicate, attribution("attempt-2")]);
+
+    let merged = first.saturating_add(&second);
+    assert_eq!(
+        merged
+            .attributions
+            .iter()
+            .map(|row| row.attempt_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["attempt-1", "attempt-2"]
+    );
+
+    let mut different = UsageSummary::default();
+    different.attributions.push(attribution("other"));
+    assert!(!different.covers(&first));
 }

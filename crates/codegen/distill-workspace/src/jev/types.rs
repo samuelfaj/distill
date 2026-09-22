@@ -403,6 +403,10 @@ impl AttemptGuard {
         }
     }
 
+    pub fn set_applied_effort(&mut self, applied_effort: Option<String>) {
+        self.record.applied_effort = applied_effort;
+    }
+
     pub fn set_billing(&mut self, billing: UsageBilling) {
         if !billing.is_empty() {
             self.record.billing = billing;

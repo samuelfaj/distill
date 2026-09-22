@@ -13,6 +13,41 @@ fn classifier_request_fits_context(input_tokens: u64, context_window: u64) -> bo
     input_tokens <= context_window.saturating_sub(CLASSIFIER_REQUEST_TOKEN_RESERVE)
 }
 
+pub(super) fn sampler_attribution_endpoint(
+    config: &distill_sampling_types::SamplingConfig,
+) -> Option<String> {
+    let suffix = match config.api_backend {
+        distill_sampling_types::ApiBackend::ChatCompletions => "chat/completions",
+        distill_sampling_types::ApiBackend::Responses => "responses",
+        distill_sampling_types::ApiBackend::Messages => "messages",
+    };
+    let mut url = url::Url::parse(&config.base_url).ok()?;
+    let mut path = url.path().trim_end_matches('/').to_owned();
+    path.push('/');
+    path.push_str(suffix);
+    url.set_path(&path);
+
+    let mut query = indexmap::IndexMap::new();
+    for (key, value) in url.query_pairs() {
+        query.insert(key.into_owned(), value.into_owned());
+    }
+    url.set_query(None);
+    for (key, value) in &config.query_params {
+        query.insert(key.clone(), value.clone());
+    }
+    if !query.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in query {
+            pairs.append_pair(&key, &value);
+        }
+    }
+    Some(url.to_string())
+}
+
+fn usage_is_complete(usage: Option<&distill_sampling_types::TokenUsage>) -> bool {
+    usage.is_some()
+}
+
 /// Per-prompt cap on the Length tool-call salvage streak. Matches the agent implementation's `MAX_RETRY_ITERATIONS`.
 pub(super) const MAX_OUTPUT_TOKEN_LIMIT_RETRIES: u32 = 5;
 
@@ -1869,6 +1904,8 @@ impl SessionActor {
         mut request: ConversationRequest,
     ) -> Result<SamplerTurnOutcome, distill_sampler::SamplingErrorInfo> {
         let request_id = distill_sampler::RequestId::random();
+        let request_id_str = request_id.as_str().to_string();
+        let usage_context = self.sampler_usage_context(&request_id_str, &request).await;
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
         let stream_drained_rx = {
@@ -1878,12 +1915,12 @@ impl SessionActor {
                 crate::session::acp_session::StreamOwnership {
                     generation: self.turn_phases.current_generation(),
                     waiter: Some(tx),
+                    usage_context: Some(usage_context.clone()),
                 },
             );
             rx
         };
 
-        let request_id_str = request_id.as_str().to_string();
         let collected = {
             let gate_span = region!("turn.sampling_gate", Parent::Inherit);
             let _permit = acquire_subagent_sampling_permit(&self.sampling_gate).await;
@@ -1941,9 +1978,33 @@ impl SessionActor {
                         .await
                         == StreamDrainOutcome::Revoked
                     {
+                        let mut usage_context = usage_context.clone();
+                        usage_context.update_from_response(&response);
+                        self.chat_state_handle.record_usage_attribution(
+                            usage_context.into_attribution(
+                                distill_chat_state::UsageCallStatus::Cancelled,
+                                response.usage.clone(),
+                                usage_is_complete(response.usage.as_ref()),
+                                Some(metrics.time_to_last_byte_ms),
+                                response.cost_usd_ticks,
+                            ),
+                            false,
+                        );
                         return Err(revoked_sampling_info());
                     }
                 } else if !self.turn_stream_drained.lock().contains_key(&request_id) {
+                    let mut usage_context = usage_context.clone();
+                    usage_context.update_from_response(&response);
+                    self.chat_state_handle.record_usage_attribution(
+                        usage_context.into_attribution(
+                            distill_chat_state::UsageCallStatus::Cancelled,
+                            response.usage.clone(),
+                            usage_is_complete(response.usage.as_ref()),
+                            Some(metrics.time_to_last_byte_ms),
+                            response.cost_usd_ticks,
+                        ),
+                        false,
+                    );
                     return Err(revoked_sampling_info());
                 }
 
@@ -1980,9 +2041,12 @@ impl SessionActor {
                 if !terminal_event_queued {
                     self.turn_stream_drained.lock().remove(&request_id);
                 }
+                let mut usage_context = usage_context;
+                usage_context.update_from_response(&response);
                 Ok(SamplerTurnOutcome::Response(
                     Box::new(response),
                     Box::new(metrics),
+                    usage_context,
                 ))
             }
             Err(rich_err) => {
@@ -2006,8 +2070,71 @@ impl SessionActor {
                 } else {
                     StreamDrainOutcome::Revoked
                 };
-                Err(error_after_stream_drain(outcome, original))
+                let final_info = error_after_stream_drain(outcome, original);
+                let status = if outcome == StreamDrainOutcome::Revoked
+                    || final_info
+                        .message
+                        .contains("sampling result revoked by turn cancellation")
+                {
+                    distill_chat_state::UsageCallStatus::Cancelled
+                } else if is_client_rejection(&final_info) {
+                    distill_chat_state::UsageCallStatus::Rejected
+                } else {
+                    distill_chat_state::UsageCallStatus::Failed
+                };
+                self.chat_state_handle.record_usage_attribution(
+                    usage_context.into_attribution(status, None, false, None, None),
+                    true,
+                );
+                Err(final_info)
             }
+        }
+    }
+
+    async fn sampler_usage_context(
+        &self,
+        request_id: &str,
+        request: &ConversationRequest,
+    ) -> UsageAttemptContext {
+        let config = self.chat_state_handle.get_sampling_config().await;
+        let model_id = request
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned)
+            .or_else(|| config.as_ref().map(|config| config.model.clone()))
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        let requested_effort = request
+            .reasoning_effort
+            .or_else(|| config.as_ref().and_then(|config| config.reasoning_effort))
+            .map(|effort| effort.to_string());
+        let applied_effort = config.as_ref().and_then(|config| {
+            distill_sampling_types::transmitted_reasoning_effort(
+                config.api_backend.clone(),
+                config.reasoning_shape,
+                request
+                    .reasoning_effort
+                    .or(config.reasoning_effort),
+                request
+                    .max_output_tokens
+                    .or(config.max_completion_tokens),
+            )
+        });
+        let task_id = self
+            .current_prompt_id
+            .lock()
+            .expect("current_prompt_id mutex poisoned")
+            .clone();
+        UsageAttemptContext {
+            attempt_id: format!("sampler:{request_id}"),
+            task_id,
+            turn_id: Some(self.current_turn_number.get().to_string()),
+            request_id: None,
+            role: "main".to_owned(),
+            model_id,
+            endpoint: config.as_ref().and_then(sampler_attribution_endpoint),
+            requested_effort,
+            applied_effort,
         }
     }
 
@@ -2304,25 +2431,63 @@ impl SessionActor {
         response: &ConversationResponse,
         api_duration_ms: Option<u64>,
     ) {
+        let model_id = response
+            .assistant()
+            .and_then(|assistant| assistant.model_id.clone())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        self.record_response_token_usage_with_context(
+            response,
+            api_duration_ms,
+            UsageAttemptContext {
+                attempt_id: format!("response:{}", uuid::Uuid::new_v4()),
+                task_id: None,
+                turn_id: None,
+                request_id: response.message_id.clone(),
+                role: "main".to_owned(),
+                model_id,
+                endpoint: None,
+                requested_effort: None,
+                applied_effort: None,
+            },
+        );
+    }
+
+    pub(crate) fn record_response_token_usage_with_context(
+        &self,
+        response: &ConversationResponse,
+        api_duration_ms: Option<u64>,
+        mut usage_context: UsageAttemptContext,
+    ) {
+        usage_context.update_from_response(response);
         if let Some(ref u) = response.usage {
             self.tool_context
                 .record_task_model_output(u64::from(u.completion_tokens));
             self.chat_state_handle
                 .record_token_usage(u64::from(u.total_tokens));
             self.chat_state_handle.record_last_turn_usage(u.clone());
-            self.chat_state_handle.record_model_call_usage(
-                response.assistant().and_then(|a| a.model_id.clone()),
-                u.clone(),
-                api_duration_ms,
-                response.cost_usd_ticks,
+            self.chat_state_handle.record_usage_attribution(
+                usage_context.into_attribution(
+                    distill_chat_state::UsageCallStatus::Completed,
+                    Some(u.clone()),
+                    usage_is_complete(response.usage.as_ref()),
+                    api_duration_ms,
+                    response.cost_usd_ticks,
+                ),
+                true,
             );
             self.signals_handle()
                 .record_token_usage(u.completion_tokens, u.reasoning_tokens);
         } else {
-            self.chat_state_handle.record_model_call_without_usage(
-                response.assistant().and_then(|a| a.model_id.clone()),
-                api_duration_ms,
-                response.cost_usd_ticks,
+            self.chat_state_handle.record_usage_attribution(
+                usage_context.into_attribution(
+                    distill_chat_state::UsageCallStatus::Completed,
+                    None,
+                    false,
+                    api_duration_ms,
+                    response.cost_usd_ticks,
+                ),
+                true,
             );
             if self.tool_context.task_output_token_budget.is_some() {
                 self.tool_context.fail_task_output_usage_closed();

@@ -5,6 +5,7 @@ use distill_chat_state::{UsageAttribution, UsageLedger};
 use distill_sampling_types::reported_cost_ticks;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,7 +104,7 @@ impl UsageSummary {
         self.input_tokens >= previous.input_tokens
             && self.output_tokens >= previous.output_tokens
             && self.model_calls >= previous.model_calls
-            && self.attributions.len() >= previous.attributions.len()
+            && attributions_cover(&self.attributions, &previous.attributions)
     }
 
     pub fn saturating_add(&self, other: &Self) -> Self {
@@ -113,12 +114,7 @@ impl UsageSummary {
             *entry = entry.saturating_add_row(row);
         }
         let mut out = self.saturating_add_row(other);
-        out.attributions = self
-            .attributions
-            .iter()
-            .cloned()
-            .chain(other.attributions.iter().cloned())
-            .collect();
+        out.attributions = merge_attributions(&self.attributions, &other.attributions);
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out.turn_count = self.turn_count.saturating_add(other.turn_count);
@@ -370,6 +366,30 @@ fn primary_model(model_usage: &IndexMap<String, UsageSummary>) -> Option<String>
         .iter()
         .max_by_key(|(_, row)| (row.model_calls, row.total_tokens))
         .map(|(name, _)| name.clone())
+}
+
+fn attributions_cover(live: &[UsageAttribution], previous: &[UsageAttribution]) -> bool {
+    live.len() >= previous.len()
+        && live
+            .iter()
+            .zip(previous)
+            .all(|(current, old)| current.attempt_id == old.attempt_id)
+}
+
+fn merge_attributions(
+    first: &[UsageAttribution],
+    second: &[UsageAttribution],
+) -> Vec<UsageAttribution> {
+    let mut seen = HashSet::new();
+    first
+        .iter()
+        .chain(second)
+        .filter(|attribution| {
+            attribution.attempt_id.is_empty()
+                || seen.insert(attribution.attempt_id.as_str().to_owned())
+        })
+        .cloned()
+        .collect()
 }
 
 fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {

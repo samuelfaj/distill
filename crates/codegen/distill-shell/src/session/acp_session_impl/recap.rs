@@ -5,7 +5,8 @@
 //! Per-turn dashboard summary lifecycle lives in [`super::turn_summary`].
 
 use super::side_call::{
-    AuxCall, log_prompt_cache_usage, record_auxiliary_failures, record_auxiliary_response,
+    AuxCall, AuxiliaryAttempt, auxiliary_attempt, collect_auxiliary, log_prompt_cache_usage,
+    record_auxiliary_failures, record_auxiliary_rejected_response, record_auxiliary_response,
 };
 use super::*;
 
@@ -167,30 +168,53 @@ impl SessionActor {
         // /btw adds its own bounded transient-failure retry (the policy and predicate above)
         use backon::Retryable as _;
         let attempts = std::cell::Cell::new(1u32);
-        let started = std::time::Instant::now();
-        let result =
-            (|| sampling_client.conversation_collect(build_side_question_attempt(&base_request)))
-                .retry(side_question_retry_policy())
-                .when(should_retry_side_question)
-                .notify(|e: &SamplingError, backoff: std::time::Duration| {
-                    attempts.set(attempts.get() + 1);
-                    tracing::warn!(
-                        backoff_ms = backoff.as_millis() as u64,
-                        error = %e,
-                        "side question transient failure; retrying"
-                    );
-                })
+        let attempted_requests = std::cell::RefCell::<Vec<AuxiliaryAttempt>>::new(Vec::new());
+        let rejected_responses = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let result = (|| {
+            let request = build_side_question_attempt(&base_request);
+            let client = sampling_client.clone();
+            attempted_requests
+                .borrow_mut()
+                .push(auxiliary_attempt(&sampling_client, &request));
+            let rejected_responses = std::rc::Rc::clone(&rejected_responses);
+            async move {
+                let (result, rejected) = collect_auxiliary(
+                    &client,
+                    request,
+                    std::time::Duration::from_secs(300),
+                )
                 .await;
+                rejected_responses.borrow_mut().push(rejected);
+                result
+            }
+        })
+        .retry(side_question_retry_policy())
+        .when(should_retry_side_question)
+        .notify(|e: &SamplingError, backoff: std::time::Duration| {
+            attempts.set(attempts.get() + 1);
+            tracing::warn!(
+                backoff_ms = backoff.as_millis() as u64,
+                error = %e,
+                "side question transient failure; retrying"
+            );
+        })
+        .await;
 
         match result {
             Ok(response) => {
-                record_auxiliary_failures(self, &model, attempts.get().saturating_sub(1), false);
+                let _ = rejected_responses.borrow_mut().pop();
+                let mut attempted = attempted_requests.into_inner();
+                let final_attempt = attempted
+                    .pop()
+                    .unwrap_or_else(|| auxiliary_attempt(&sampling_client, &base_request));
+                record_auxiliary_failures(self, &attempted, false);
                 record_auxiliary_response(
                     self,
                     "btw",
                     &model,
+                    &final_attempt,
                     &response,
-                    Some(started.elapsed().as_millis() as u64),
+                    None,
                     false,
                 );
                 log_prompt_cache_usage("btw", sampling_client.api_backend(), &response);
@@ -204,7 +228,26 @@ impl SessionActor {
                 Ok(content)
             }
             Err(e) => {
-                record_auxiliary_failures(self, &model, attempts.get(), false);
+                let rejected_response = rejected_responses.borrow_mut().pop().flatten();
+                let attempted = attempted_requests.into_inner();
+                let mut attempted = attempted;
+                let final_attempt = attempted
+                    .pop()
+                    .unwrap_or_else(|| auxiliary_attempt(&sampling_client, &base_request));
+                record_auxiliary_failures(self, &attempted, false);
+                if let Some(response) = rejected_response {
+                    record_auxiliary_rejected_response(
+                        self,
+                        "btw",
+                        &model,
+                        &final_attempt,
+                        &response,
+                        None,
+                        false,
+                    );
+                } else {
+                    record_auxiliary_failures(self, std::slice::from_ref(&final_attempt), false);
+                }
                 let err = SideQuestionError::from(e);
                 persist(String::new(), false, Some(err.to_string()), attempts.get());
                 Err(err)
@@ -363,14 +406,33 @@ impl SessionActor {
         let request = self
             .side_call_request(&setup, items, x_grok_conv_id.clone(), x_grok_req_id.clone())
             .await;
+        let attempt = auxiliary_attempt(&setup.client, &request);
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
 
         let call_started = std::time::Instant::now();
-        let response = match setup.client.conversation_collect(request).await {
+        let (response_result, rejected_response) = collect_auxiliary(
+            &setup.client,
+            request,
+            std::time::Duration::from_secs(300),
+        )
+        .await;
+        let response = match response_result {
             Ok(r) => r,
             Err(e) => {
-                record_auxiliary_failures(self, &model, 1, false);
+                if let Some(response) = rejected_response {
+                    record_auxiliary_rejected_response(
+                        self,
+                        "recap",
+                        &model,
+                        &attempt,
+                        &response,
+                        None,
+                        false,
+                    );
+                } else {
+                    record_auxiliary_failures(self, std::slice::from_ref(&attempt), false);
+                }
                 tracing::warn!(error = %e, "recap: model call failed");
                 self.persist_recap_request_artifact(
                     chat_history_for_artifact,
@@ -398,6 +460,7 @@ impl SessionActor {
             self,
             "recap",
             &model,
+            &attempt,
             &response,
             Some(call_started.elapsed().as_millis() as u64),
             false,
@@ -636,18 +699,23 @@ impl SessionActor {
             max_output_tokens: Some(50),
             ..Default::default()
         };
+        let attempt = auxiliary_attempt(&sampling_client, &request);
 
         // Collect via the client so the LengthPolicy gate applies: a suggestion truncated at the 50-token cap must not become ghost text
         let call_started = std::time::Instant::now();
-        match sampling_client
-            .conversation_collect_with_idle_timeout(request, std::time::Duration::from_secs(5))
-            .await
-        {
+        let (response_result, rejected_response) = collect_auxiliary(
+            &sampling_client,
+            request,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        match response_result {
             Ok(response) => {
                 record_auxiliary_response(
                     self,
                     "ai_suggest",
                     &model,
+                    &attempt,
                     &response,
                     Some(call_started.elapsed().as_millis() as u64),
                     false,
@@ -656,7 +724,19 @@ impl SessionActor {
                 if text.is_empty() { None } else { Some(text) }
             }
             Err(e) => {
-                record_auxiliary_failures(self, &model, 1, false);
+                if let Some(response) = rejected_response {
+                    record_auxiliary_rejected_response(
+                        self,
+                        "ai_suggest",
+                        &model,
+                        &attempt,
+                        &response,
+                        None,
+                        false,
+                    );
+                } else {
+                    record_auxiliary_failures(self, std::slice::from_ref(&attempt), false);
+                }
                 tracing::debug!(error = %e, "AI suggest inference failed");
                 None
             }
@@ -795,6 +875,7 @@ impl SessionActor {
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
             ..Default::default()
         };
+        let attempt = auxiliary_attempt(&sampling_client, &request);
 
         let started = std::time::Instant::now();
         let log_fetch = |action, chars, words, latency_ms| {
@@ -810,10 +891,28 @@ impl SessionActor {
         };
 
         let call_started = std::time::Instant::now();
-        let response = match sampling_client.conversation_collect(request).await {
+        let (response_result, rejected_response) = collect_auxiliary(
+            &sampling_client,
+            request,
+            std::time::Duration::from_secs(300),
+        )
+        .await;
+        let response = match response_result {
             Ok(r) => r,
             Err(e) => {
-                record_auxiliary_failures(self, &request_model, 1, false);
+                if let Some(response) = rejected_response {
+                    record_auxiliary_rejected_response(
+                        self,
+                        "prompt_suggest",
+                        &request_model,
+                        &attempt,
+                        &response,
+                        None,
+                        false,
+                    );
+                } else {
+                    record_auxiliary_failures(self, std::slice::from_ref(&attempt), false);
+                }
                 tracing::debug!(error = %e, "prompt suggest inference failed");
                 log_fetch(
                     PsAction::FetchFailed,
@@ -829,6 +928,7 @@ impl SessionActor {
             self,
             "prompt_suggest",
             &request_model,
+            &attempt,
             &response,
             Some(call_started.elapsed().as_millis() as u64),
             false,

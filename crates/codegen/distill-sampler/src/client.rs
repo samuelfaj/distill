@@ -759,6 +759,33 @@ impl SamplingClient {
         self.defaults.api_backend.clone()
     }
 
+    /// The exact endpoint template used by the corresponding conversation
+    /// request, including configured query parameters.
+    pub fn attribution_endpoint(&self) -> String {
+        let path = match self.defaults.api_backend {
+            ApiBackend::ChatCompletions => "chat/completions",
+            ApiBackend::Responses => "responses",
+            ApiBackend::Messages => "messages",
+        };
+        self.endpoint(path)
+    }
+
+    /// The effort mapping after the client fills its model defaults and applies
+    /// the configured wire shape.
+    pub fn attribution_applied_effort(
+        &self,
+        requested: Option<distill_sampling_types::ReasoningEffort>,
+        max_tokens: Option<u32>,
+    ) -> Option<String> {
+        let requested = requested.or(self.defaults.reasoning_effort);
+        distill_sampling_types::transmitted_reasoning_effort(
+            self.defaults.api_backend.clone(),
+            self.defaults.reasoning_shape,
+            requested,
+            max_tokens.or(self.defaults.max_completion_tokens),
+        )
+    }
+
     /// Give the bearer resolver its pre-send hook before [`Self::post`] reads it.
     /// Awaited separately because `post` is sync (its callers hand the builder straight to `send()`).
     async fn prepare_bearer(&self) {
@@ -2296,31 +2323,56 @@ impl SamplingClient {
         request: ConversationRequest,
         idle_timeout: std::time::Duration,
     ) -> Result<ConversationResponse> {
+        self.conversation_collect_with_idle_timeout_and_rejection(request, idle_timeout)
+            .await
+            .0
+    }
+
+    /// Collect a response and retain it when the existing length gate rejects
+    /// it. The normal error stays unchanged; the side channel lets billing
+    /// consumers keep provider usage, cost, and response identity for a paid
+    /// truncation instead of turning it into an unknown failed call.
+    pub async fn conversation_collect_with_idle_timeout_and_rejection(
+        &self,
+        request: ConversationRequest,
+        idle_timeout: std::time::Duration,
+    ) -> (Result<ConversationResponse>, Option<ConversationResponse>) {
         let request_id = crate::types::RequestId::random();
         let length_policy = request.length_policy;
         let result = match self.api_backend() {
             ApiBackend::ChatCompletions => {
-                let (raw, meta) = self.conversation_stream(request).await?;
+                let (raw, meta) = match self.conversation_stream(request).await {
+                    Ok(value) => value,
+                    Err(error) => return (Err(error), None),
+                };
                 let events =
                     crate::stream::stream_chat_completions(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
             ApiBackend::Responses => {
-                let (raw, meta, doom_loop) = self.conversation_stream_responses(request).await?;
+                let (raw, meta, doom_loop) = match self.conversation_stream_responses(request).await
+                {
+                    Ok(value) => value,
+                    Err(error) => return (Err(error), None),
+                };
                 let events =
                     crate::stream::stream_responses(raw, meta, request_id, idle_timeout, doom_loop);
                 crate::stream::collect_response(events).await
             }
             ApiBackend::Messages => {
-                let (raw, meta) = self.conversation_stream_messages(request).await?;
+                let (raw, meta) = match self.conversation_stream_messages(request).await {
+                    Ok(value) => value,
+                    Err(error) => return (Err(error), None),
+                };
                 let events = crate::stream::stream_messages(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
         };
-        let response = result
-            .map(|(response, _metrics)| response)
-            .map_err(stream_collect_error)?;
-        apply_length_policy(length_policy, response)
+        let response = match result {
+            Ok((response, _metrics)) => response,
+            Err(error) => return (Err(stream_collect_error(error)), None),
+        };
+        apply_length_policy_with_rejection(length_policy, response)
     }
 }
 
@@ -2331,10 +2383,20 @@ pub(crate) fn apply_length_policy(
     policy: distill_sampling_types::LengthPolicy,
     response: distill_sampling_types::ConversationResponse,
 ) -> Result<distill_sampling_types::ConversationResponse> {
+    apply_length_policy_with_rejection(policy, response).0
+}
+
+fn apply_length_policy_with_rejection(
+    policy: distill_sampling_types::LengthPolicy,
+    response: distill_sampling_types::ConversationResponse,
+) -> (
+    Result<distill_sampling_types::ConversationResponse>,
+    Option<distill_sampling_types::ConversationResponse>,
+) {
     use distill_sampling_types::LengthVerdict;
     match policy.verdict(&response) {
-        LengthVerdict::Pass => Ok(response),
-        LengthVerdict::Fail => Err(SamplingError::MaxTokensTruncation),
+        LengthVerdict::Pass => (Ok(response), None),
+        LengthVerdict::Fail => (Err(SamplingError::MaxTokensTruncation), Some(response)),
         LengthVerdict::Salvage => {
             // Breadcrumb for "why did the user get half an answer".
             tracing::info!(
@@ -2342,7 +2404,7 @@ pub(crate) fn apply_length_policy(
                 completion_tokens = response.usage.as_ref().map(|u| u.completion_tokens),
                 "salvaging Length-truncated response per LengthPolicy::CompletePartial"
             );
-            Ok(response)
+            (Ok(response), None)
         }
         LengthVerdict::SalvageToolCalls => {
             // Breadcrumb for counting turns rescued from max_tokens_truncation.
@@ -2352,7 +2414,7 @@ pub(crate) fn apply_length_policy(
                 completion_tokens = response.usage.as_ref().map(|u| u.completion_tokens),
                 "completing Length-truncated response with completed tool calls"
             );
-            Ok(response)
+            (Ok(response), None)
         }
     }
 }
@@ -2502,6 +2564,42 @@ mod tests {
                 Some(ApiErrorCode::InvalidImage)
             ),
         );
+    }
+
+    #[test]
+    fn rejected_length_response_retains_paid_metadata_for_billing() {
+        let response = ConversationResponse {
+            items: vec![distill_sampling_types::ConversationItem::assistant("partial")],
+            stop_reason: Some(distill_sampling_types::StopReason::Length),
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 7,
+                total_tokens: 18,
+                ..Default::default()
+            }),
+            cost_usd_ticks: Some(1234),
+            message_chunks_emitted: 1,
+            doom_loop_signals: Vec::new(),
+            stop_message: None,
+            message_id: Some("msg-paid".to_string()),
+            raw_stop_reason: None,
+            stop_sequence: None,
+        };
+
+        let (result, rejected) =
+            apply_length_policy_with_rejection(distill_sampling_types::LengthPolicy::Fail, response);
+
+        assert!(matches!(
+            result,
+            Err(SamplingError::MaxTokensTruncation)
+        ));
+        let rejected = rejected.expect("the rejected response remains available to billing");
+        assert_eq!(
+            rejected.usage.map(|usage| usage.total_tokens),
+            Some(18)
+        );
+        assert_eq!(rejected.cost_usd_ticks, Some(1234));
+        assert_eq!(rejected.message_id.as_deref(), Some("msg-paid"));
     }
 
     fn minimal_config() -> SamplerConfig {

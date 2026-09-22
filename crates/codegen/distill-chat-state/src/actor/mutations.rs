@@ -516,23 +516,24 @@ impl ChatStateActor {
     pub(super) fn record_subagent_usage(
         &mut self,
         by_model: &[(String, crate::usage::UsageTotals)],
+        attributions: &[crate::usage::UsageAttribution],
         attribute_to_prompt: bool,
         incomplete: bool,
     ) {
-        if by_model.is_empty() && !incomplete {
+        if by_model.is_empty() && attributions.is_empty() && !incomplete {
             return;
         }
         if attribute_to_prompt {
             self.state
                 .prompt_usage
                 .get_or_insert_default()
-                .record_subagent(by_model, incomplete);
+                .record_subagent_usage(by_model, attributions, incomplete);
         }
         // The session ledger always folds, even when usage is not attributable to the open prompt.
         // Reporting that gap is the coordinator's sticky flag — never mark a different live prompt's ledger.
         self.state
             .session_usage
-            .record_subagent(by_model, incomplete);
+            .record_subagent_usage(by_model, attributions, incomplete);
     }
 
     pub(super) fn mark_usage_incomplete(&mut self, prompt: bool, session: bool) {

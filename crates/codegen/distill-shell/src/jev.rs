@@ -335,6 +335,61 @@ p5_call_validation = true"#,
         assert_eq!(config.api_key_env, "JEV_API_KEY");
         assert_eq!(config.endpoint(), "https://api.typesafe.ai/v1/systemone");
     }
+
+    #[tokio::test]
+    async fn partial_workspace_usage_keeps_known_tokens_and_marks_incomplete() {
+        use distill_workspace::jev::types::{AttemptRecord, AttemptStatus, Usage, UsageBilling};
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let recorder = distill_chat_state::ChatStateActor::spawn(
+            Vec::new(),
+            distill_sampling_types::SamplingConfig::default(),
+            Box::new(distill_chat_state::NullChatPersistence),
+            event_tx,
+            cancellation.clone(),
+        );
+
+        record_workspace_attempt(
+            AttemptRecord {
+                attempt_id: "partial-attempt".to_owned(),
+                request_id: Some("request-1".to_owned()),
+                requested_model: "jev-model".to_owned(),
+                response_model: Some("jev-model".to_owned()),
+                endpoint: "https://api.typesafe.ai/v1/systemone".to_owned(),
+                requested_effort: Some("none".to_owned()),
+                applied_effort: Some("absent".to_owned()),
+                usage: Some(Usage {
+                    input_tokens: Some(7),
+                    output_tokens: None,
+                }),
+                billing: UsageBilling::default(),
+                status: AttemptStatus::Completed,
+                latency_ms: 3,
+            },
+            "jev",
+            Some("routing".to_owned()),
+            Some("turn-1".to_owned()),
+            recorder.clone(),
+            false,
+        );
+
+        let ledger = recorder
+            .try_get_session_usage()
+            .await
+            .expect("chat-state actor must acknowledge the usage query");
+        assert_eq!(ledger.totals.input_tokens, 7);
+        assert_eq!(ledger.totals.output_tokens, 0);
+        assert_eq!(ledger.totals.model_calls, 1);
+        assert!(ledger.incomplete);
+        assert!(!ledger
+            .attributions
+            .first()
+            .expect("partial attempt attribution")
+            .usage_complete);
+
+        cancellation.cancel();
+    }
 }
 
 // ---------------------------------------------------------------------------

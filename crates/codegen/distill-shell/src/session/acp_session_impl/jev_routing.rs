@@ -1482,7 +1482,7 @@ impl SessionActor {
         &self,
         request: &mut ConversationRequest,
         error: &distill_sampler::SamplingErrorInfo,
-    ) {
+    ) -> SamplingConfig {
         self.signals_handle().clear_active_dispatch();
         let session = self.reconstruct_full_config().await;
         request.model = Some(session.model.clone());
@@ -1527,5 +1527,6 @@ impl SessionActor {
             None,
             None,
         );
+        session
     }
 }

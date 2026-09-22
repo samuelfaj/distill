@@ -24,6 +24,9 @@ pub(crate) const SUPPRESS_UNTIL_SUCCESS: u8 = 3;
 /// Auth-expired auto-compact: suppress until login/token refresh, not until 200.
 /// Waiting for a sample deadlocks when context is already over the window.
 pub(crate) const SUPPRESS_AUTH: u8 = 4;
+/// A route-boundary overflow has already compacted once; the rebuilt request
+/// must not immediately compact and resend the same impossible payload again.
+pub(crate) const SUPPRESS_ROUTE_OVERFLOW: u8 = 5;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreviousModelInfo {

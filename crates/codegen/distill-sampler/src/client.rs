@@ -52,6 +52,22 @@ const DEFAULT_CLIENT_IDENTIFIER: &str = "grok-shell";
 const AGENT_PRODUCT: &str = "grok-shell";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
 
+/// Return the output reservation applied by the conversation adapters before
+/// dispatch. Chat/Responses leave an unset provider default unknown; Messages
+/// has the concrete Anthropic fallback. An explicit request pin always wins.
+pub fn effective_conversation_output_tokens(
+    config: &SamplerConfig,
+    request: &ConversationRequest,
+) -> Option<u32> {
+    request
+        .max_output_tokens
+        .or(config.max_completion_tokens)
+        .or_else(|| match config.api_backend {
+            ApiBackend::Messages => Some(ANTHROPIC_DEFAULT_MAX_TOKENS),
+            ApiBackend::ChatCompletions | ApiBackend::Responses => None,
+        })
+}
+
 fn is_codex_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;

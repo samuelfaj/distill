@@ -7,8 +7,8 @@ use super::is_project_instructions;
 use crate::extensions::notification::MODEL_FAMILY_SWITCH_COMPACT_BANNER;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::session::compaction_config::{
-    AsyncCompactionCache, SUPPRESS_AUTH, SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN,
-    SUPPRESS_UNTIL_SUCCESS,
+    AsyncCompactionCache, SUPPRESS_AUTH, SUPPRESS_NONE, SUPPRESS_ROUTE_OVERFLOW, SUPPRESS_STICKY,
+    SUPPRESS_TURN, SUPPRESS_UNTIL_SUCCESS,
 };
 use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
@@ -28,7 +28,7 @@ use distill_chat_state::compaction_utils::{
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
-use distill_sampling_types::{ApiBackend, ConversationItem};
+use distill_sampling_types::{ApiBackend, ConversationItem, ConversationRequest};
 use std::sync::Arc;
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
@@ -56,6 +56,119 @@ fn format_loop_next_fire(
 }
 /// Reserve for the prompt and generated summary (plus reasoning on Responses/Messages); 32_768 covers p99 of prod output (~20k p95).
 const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
+/// Small allowance for provider framing and estimator drift at the request boundary.
+/// This is intentionally independent of any model name or UI context-window label.
+pub(crate) const REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS: u64 = 2_048;
+
+/// Estimate the input side of the exact request after the chat-state builder has
+/// applied its current pruning/repair decisions. The tracked state estimate also
+/// carries provider-side overhead learned from prior responses, so retain the
+/// larger of the two bounded estimates.
+pub(crate) fn request_input_token_estimate(
+    request: &ConversationRequest,
+    tracked_estimate: u64,
+) -> u64 {
+    let request_estimate = distill_chat_state::estimate_conversation_tokens(&request.items)
+        .saturating_add(distill_chat_state::estimate_tool_specs_tokens(&request.tools));
+    tracked_estimate.max(request_estimate)
+}
+
+/// Resolve the output budget that the sampler will put on the wire when the
+/// request leaves the session. `None` remains unknown; it is never guessed from
+/// a model slug or a parent UI setting.
+pub(crate) fn configured_output_token_budget(
+    request: &ConversationRequest,
+    route: &distill_sampler::SamplerConfig,
+) -> Option<u32> {
+    distill_sampler::effective_conversation_output_tokens(route, request)
+}
+
+fn request_exceeds_route_context(
+    input_tokens: u64,
+    output_tokens: Option<u64>,
+    context_window: u64,
+) -> bool {
+    input_tokens
+        .saturating_add(output_tokens.unwrap_or_default())
+        .saturating_add(REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS)
+        > context_window
+}
+
+/// Read a provider-reported endpoint limit only when the error labels that
+/// number as a context limit. In particular, do not mistake request/input/
+/// completion counters or a model slug for the endpoint's capacity.
+pub(crate) fn explicit_provider_context_window(message: &str) -> Option<u64> {
+    const LABELS: &[&str] = &[
+        "actual endpoint",
+        "context window",
+        "context_window",
+        "context limit",
+        "context-limit",
+        "maximum context length",
+        "maximum context",
+        "max context",
+    ];
+    let lower = message.to_ascii_lowercase();
+    for label in LABELS {
+        let mut search_from = 0;
+        while let Some(relative) = lower[search_from..].find(label) {
+            let start = search_from + relative + label.len();
+            let Some(value) = labelled_number(&message[start..]) else {
+                search_from = start;
+                continue;
+            };
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn labelled_number(rest: &str) -> Option<u64> {
+    let mut rest = rest.trim_start_matches(|ch: char| {
+        ch.is_ascii_whitespace() || matches!(ch, ':' | '=' | '<' | '>')
+    });
+    for connector in ["is", "of", "at", "limit"] {
+        let Some(after) = rest.strip_prefix(connector) else {
+            continue;
+        };
+        if after
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic())
+        {
+            continue;
+        }
+        rest = after.trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, ':' | '=' | '<' | '>')
+        });
+        break;
+    }
+    let digits: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    (!digits.is_empty())
+        .then(|| digits.parse::<u64>().ok())
+        .flatten()
+        .filter(|value| *value > 0)
+}
+
+pub(crate) fn error_context_window(
+    err: &distill_sampler::SamplingErrorInfo,
+    route: Option<&distill_sampler::SamplerConfig>,
+) -> Option<u64> {
+    let route_window = route.map(|config| config.context_window).filter(|window| *window > 0);
+    let reported_window = err
+        .model_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.context_window)
+        .filter(|window| *window > 0);
+    let provider_window = explicit_provider_context_window(&err.message);
+    [route_window, reported_window, provider_window]
+        .into_iter()
+        .flatten()
+        .min()
+}
 /// Default percentage points below the auto-compact threshold at which prefire (background pass-1) starts.
 /// The lead gives pass-1 runway to finish before the limit.
 /// Override with `GROK_PREFIRE_LEAD_PERCENT`.
@@ -629,6 +742,7 @@ impl SessionActor {
                 None,
                 distill_telemetry::events::CompactionTrigger::Manual,
                 false,
+                None,
             )
             .await
         {
@@ -838,6 +952,35 @@ impl SessionActor {
             std::sync::atomic::Ordering::Relaxed,
         );
     }
+
+    /// Keep a route-boundary overflow from immediately re-running the same
+    /// compaction episode. The existing per-turn suppression state is reset at
+    /// the next prompt; a successful model response clears it sooner so a
+    /// growing long-running goal can compact again.
+    pub(crate) fn arm_route_overflow_recovery(&self) {
+        let _ = self.compaction.auto_compact_suppressed.compare_exchange(
+            SUPPRESS_NONE,
+            SUPPRESS_ROUTE_OVERFLOW,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn route_overflow_recovery_armed(&self) -> bool {
+        self.compaction
+            .auto_compact_suppressed
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == SUPPRESS_ROUTE_OVERFLOW
+    }
+
+    pub(crate) fn clear_route_overflow_recovery(&self) {
+        let _ = self.compaction.auto_compact_suppressed.compare_exchange(
+            SUPPRESS_ROUTE_OVERFLOW,
+            SUPPRESS_NONE,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     /// Credit or auth suppress; a model switch cannot clear these.
     fn is_account_state_suppressed(&self) -> bool {
         matches!(
@@ -942,6 +1085,7 @@ impl SessionActor {
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
         trigger: distill_telemetry::events::CompactionTrigger,
         lossy_input: bool,
+        destination_context_window: Option<u64>,
     ) -> Result<(), acp::Error> {
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
@@ -952,10 +1096,15 @@ impl SessionActor {
             distill_telemetry::events::CompactionTrigger::Auto => "auto",
         };
         let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let context_window = sampling_config
+        let parent_context_window = sampling_config
             .as_ref()
             .map(|c| c.context_window.get())
             .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let context_window = destination_context_window
+            .filter(|window| *window > 0)
+            .map_or(parent_context_window, |window| {
+                parent_context_window.min(window)
+            });
         {
             let span = tracing::Span::current();
             let trigger_pct = if context_window == 0 {
@@ -1929,6 +2078,7 @@ impl SessionActor {
         };
         self.chat_state_handle
             .replace_conversation_for_compaction(compacted_history);
+        crate::jev::invalidate_payload_reads_for_active_session();
         self.reseed_active_goal_after_compaction().await;
         let new_len = self.chat_state_handle.get_conversation_len().await;
         if self.startup_hints.inherited_prefix_len.is_some() {
@@ -2074,37 +2224,122 @@ impl SessionActor {
             None
         }
     }
-    /// Returns true if the error response indicates tokens exceed the model's context window.
-    /// Inspects only the model-metadata portion of the [`SamplingErrorInfo`] (the `context_window` field) against the tracked token estimate.
-    /// Called from `handle_sampling_failure` with the `SamplingErrorInfo` the sampler hands back.
+    /// Returns true if the failed request cannot fit the selected route's
+    /// context window. The route snapshot is preferred over the parent session
+    /// config; response metadata remains a compatible fallback for providers
+    /// that report it.
+    #[cfg(test)]
     pub(crate) async fn should_compact_on_error(
         &self,
         err: &distill_sampler::SamplingErrorInfo,
     ) -> bool {
+        self.should_compact_on_error_for_route(err, None, None).await
+    }
+
+    pub(crate) async fn should_compact_on_error_for_route(
+        &self,
+        err: &distill_sampler::SamplingErrorInfo,
+        route: Option<&distill_sampler::SamplerConfig>,
+        requested_output_tokens: Option<u32>,
+    ) -> bool {
+        if matches!(
+            err.kind,
+            distill_sampler::SamplingErrorKind::Auth
+                | distill_sampler::SamplingErrorKind::RateLimited
+        ) || matches!(err.status_code, Some(401 | 429))
+        {
+            return false;
+        }
         if self.compaction.is_suppressed() {
             return false;
         }
-        self.estimate_exceeds_error_context_window(err).await
+        self.estimate_exceeds_error_context_window_for_route(
+            err,
+            route,
+            requested_output_tokens,
+        )
+        .await
     }
-    /// The request's token estimate exceeds the failed response's reported context window.
-    /// This probable-overflow signal is shared by compact-and-resubmit and the mid-salvage truncated-complete arm.
-    /// The latter must see overflows even while compaction is suppressed.
-    pub(crate) async fn estimate_exceeds_error_context_window(
+
+    /// The request's effective input plus its reserved output and a small
+    /// framing allowance exceeds the selected route. A raw streamed context
+    /// error is also enough when the endpoint omitted response metadata.
+    pub(crate) async fn estimate_exceeds_error_context_window_for_route(
         &self,
         err: &distill_sampler::SamplingErrorInfo,
+        route: Option<&distill_sampler::SamplerConfig>,
+        requested_output_tokens: Option<u32>,
     ) -> bool {
-        let Some(ref metadata) = err.model_metadata else {
+        let Some(context_window) = error_context_window(err, route) else {
             return false;
         };
-        let Some(context_window) = metadata.context_window else {
-            return false;
-        };
-        if context_window == 0 {
-            return false;
-        }
         let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
-        estimated_total > context_window
+        let output_tokens = requested_output_tokens
+            .map(u64::from)
+            .or_else(|| route.and_then(|cfg| cfg.max_completion_tokens.map(u64::from)))
+            .or_else(|| {
+                err.model_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.max_completion_tokens.map(u64::from))
+            });
+        let has_capacity_evidence = err
+            .model_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.context_window)
+            .is_some()
+            || explicit_provider_context_window(&err.message).is_some()
+            || err
+                .error_code
+                .as_ref()
+                .is_some_and(distill_sampling_types::ApiErrorCode::is_size_overflow)
+            || distill_sampling_types::is_context_length_error(&err.message);
+        let predicted_overflow = has_capacity_evidence
+            && estimated_total
+                .saturating_add(output_tokens.unwrap_or_default())
+                .saturating_add(REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS)
+                > context_window;
+        predicted_overflow
+            || distill_sampling_types::is_context_length_error(&err.message)
+            || err
+                .error_code
+                .as_ref()
+                .is_some_and(distill_sampling_types::ApiErrorCode::is_size_overflow)
     }
+
+    /// The request-boundary version of the overflow check. It uses the exact
+    /// request items/tools and the selected route's cap, while retaining the
+    /// tracked estimate's provider overhead.
+    pub(crate) async fn route_request_overflow_trigger(
+        &self,
+        request: &ConversationRequest,
+        route: Option<&distill_sampler::SamplerConfig>,
+    ) -> Option<AutoCompactTriggerInfo> {
+        let route = route?;
+        if route.context_window == 0 {
+            return None;
+        }
+        let tracked_estimate = self.chat_state_handle.get_estimated_total_tokens().await;
+        let input_tokens = request_input_token_estimate(request, tracked_estimate);
+        let output_tokens = configured_output_token_budget(request, route);
+        if !request_exceeds_route_context(
+            input_tokens,
+            output_tokens.map(u64::from),
+            route.context_window,
+        ) {
+            return None;
+        }
+        let percentage = distill_token_estimation::usage_percentage_u8(
+            input_tokens.saturating_add(u64::from(output_tokens.unwrap_or_default())),
+            route.context_window,
+        );
+        Some(AutoCompactTriggerInfo {
+            tokens_used: input_tokens,
+            context_window: route.context_window,
+            percentage,
+            reason_override: None,
+        })
+    }
+
     /// Pre-sampling compaction check.
     /// Uses `get_estimated_total_tokens()` (exact prior count plus a byte-estimate of items since last response) so tool results are accounted for.
     /// Returns `None` when `is_flushing`.
@@ -2304,6 +2539,7 @@ impl SessionActor {
                 None,
                 distill_telemetry::events::CompactionTrigger::Auto,
                 lossy_input,
+                Some(trigger_info.context_window),
             )
             .await;
         let elapsed_ms = compact_start.elapsed().as_millis() as i64;

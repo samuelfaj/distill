@@ -8,6 +8,17 @@ use distill_telemetry::region;
 use distill_telemetry::region::Parent;
 
 const CLASSIFIER_REQUEST_TOKEN_RESERVE: u64 = 16_384;
+const COMPACT_SKILL_TOOL_DESCRIPTION: &str = "Load a specialized skill that provides domain-specific instructions and workflows.\n\nWhen a task matches a skill named in the current session prompt, invoke this tool with that exact name. The tool reads the authoritative AvailableSkills resource and injects the full SKILL.md content plus bundled-file access into the conversation via a <skill_content name=\"...\"> block. If the name is not present in the compact prompt announcement, use its recovery/resource instructions before invoking it.";
+
+fn compact_skill_tool_definition(
+    mut definition: ToolDefinition,
+    skill_tool_name: Option<&str>,
+) -> ToolDefinition {
+    if skill_tool_name == Some(definition.function.name.as_str()) {
+        definition.function.description = Some(COMPACT_SKILL_TOOL_DESCRIPTION.to_owned());
+    }
+    definition
+}
 
 fn classifier_request_fits_context(input_tokens: u64, context_window: u64) -> bool {
     input_tokens <= context_window.saturating_sub(CLASSIFIER_REQUEST_TOKEN_RESERVE)
@@ -16,12 +27,24 @@ fn classifier_request_fits_context(input_tokens: u64, context_window: u64) -> bo
 pub(super) fn sampler_attribution_endpoint(
     config: &distill_sampling_types::SamplingConfig,
 ) -> Option<String> {
-    let suffix = match config.api_backend {
+    sampler_attribution_endpoint_for(
+        &config.base_url,
+        config.api_backend.clone(),
+        &config.query_params,
+    )
+}
+
+fn sampler_attribution_endpoint_for(
+    base_url: &str,
+    api_backend: distill_sampling_types::ApiBackend,
+    query_params: &indexmap::IndexMap<String, String>,
+) -> Option<String> {
+    let suffix = match api_backend {
         distill_sampling_types::ApiBackend::ChatCompletions => "chat/completions",
         distill_sampling_types::ApiBackend::Responses => "responses",
         distill_sampling_types::ApiBackend::Messages => "messages",
     };
-    let mut url = url::Url::parse(&config.base_url).ok()?;
+    let mut url = url::Url::parse(base_url).ok()?;
     let mut path = url.path().trim_end_matches('/').to_owned();
     path.push('/');
     path.push_str(suffix);
@@ -32,7 +55,7 @@ pub(super) fn sampler_attribution_endpoint(
         query.insert(key.into_owned(), value.into_owned());
     }
     url.set_query(None);
-    for (key, value) in &config.query_params {
+    for (key, value) in query_params {
         query.insert(key.clone(), value.clone());
     }
     if !query.is_empty() {
@@ -42,6 +65,12 @@ pub(super) fn sampler_attribution_endpoint(
         }
     }
     Some(url.to_string())
+}
+
+fn sampler_route_attribution_endpoint(
+    config: &distill_sampler::SamplerConfig,
+) -> Option<String> {
+    sampler_attribution_endpoint_for(&config.base_url, config.api_backend.clone(), &config.query_params)
 }
 
 fn usage_is_complete(usage: Option<&distill_sampling_types::TokenUsage>) -> bool {
@@ -478,6 +507,15 @@ impl SessionActor {
 
         // Local mode: tool search is always enabled
         let defs = bridge.tool_definitions_builtins_only().await;
+        let skill_tool_name = bridge
+            .tool_for_kind(distill_tools::types::tool::ToolKind::Skill)
+            .await;
+        let defs = defs
+            .into_iter()
+            .map(|definition| {
+                compact_skill_tool_definition(definition, skill_tool_name.as_deref())
+            })
+            .collect();
 
         let plan_active = self.plan_mode.lock().is_active();
         let defs = filter_cursor_tools_by_plan_mode(defs, plan_active);
@@ -1080,7 +1118,7 @@ impl SessionActor {
     // (See `SamplerFailureRecovery` enum near the bottom of the impl block.)
 
     /// Refresh auth and push a fresh `SamplerConfig` before each turn.
-    pub(crate) async fn prepare_sampler_for_turn(&self) {
+    pub(crate) async fn prepare_sampler_for_turn(&self) -> SamplingConfig {
         // A retry/fallback can arrive after a prior round has already
         // published its route. Clear that attribution before selecting the
         // next final route so the parent never sees a stale active model.
@@ -1134,11 +1172,12 @@ impl SessionActor {
         // Carry over the session's per-chunk idle timeout via `SamplerConfig.idle_timeout_secs`
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.emit_usage_update().await;
-        self.sampler_handle.update_config(sampler_config);
+        self.sampler_handle.update_config(sampler_config.clone());
         // Ensure the transient status snapshot observes the final route's
         // signal before the detached emitter reads it.
         let _ = self.signals_handle().snapshot().await;
         self.emit_status_snapshot_detached();
+        sampler_config
     }
 
     /// Fold an auth remedy into a turn failure: its advice becomes the tail of the message.
@@ -1282,6 +1321,7 @@ impl SessionActor {
     /// Classify a terminal sampler failure and decide recovery.
     /// `transient`: turn-loop retry state (the loop owns the counters).
     /// `park`: already parked — a still-credential-less 401 re-parks without a recovery dispatch.
+    #[cfg(test)]
     pub(crate) async fn handle_sampling_failure(
         self: &Arc<Self>,
         error: distill_sampler::SamplingErrorInfo,
@@ -1289,6 +1329,28 @@ impl SessionActor {
         transient: TransientRetryState,
         mid_salvage_continuation: bool,
         park: TurnParkState,
+    ) -> Result<SamplerFailureRecovery, acp::Error> {
+        self.handle_sampling_failure_for_route(
+            error,
+            rate_limit_waits,
+            transient,
+            mid_salvage_continuation,
+            park,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn handle_sampling_failure_for_route(
+        self: &Arc<Self>,
+        error: distill_sampler::SamplingErrorInfo,
+        rate_limit_waits: u32,
+        transient: TransientRetryState,
+        mid_salvage_continuation: bool,
+        park: TurnParkState,
+        route_config: Option<&SamplingConfig>,
+        requested_output_tokens: Option<u32>,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         use distill_sampler::SamplingErrorKind;
 
@@ -1305,7 +1367,13 @@ impl SessionActor {
                     error.kind,
                     SamplingErrorKind::Auth | SamplingErrorKind::RateLimited
                 ) && !encrypted_content_mismatch
-                    && self.estimate_exceeds_error_context_window(&error).await));
+                    && self
+                        .estimate_exceeds_error_context_window_for_route(
+                            &error,
+                            route_config,
+                            requested_output_tokens,
+                        )
+                        .await));
         if quiet_mid_salvage {
             self.mark_turn_usage_unaccounted();
             let mut data = crate::sampling::error::terminal_error_data(
@@ -1355,25 +1423,20 @@ impl SessionActor {
         // Never compact mid-salvage: the rewrite would drop the continue reminder and split the joined report
         // Genuine overflows already completed truncated in the quiet arm above
         // The remaining mid-salvage kinds (rate limit) take their terminal arms below
-        if !mid_salvage_continuation && self.should_compact_on_error(&error).await {
-            // SAFETY: `should_compact_on_error` returned true only when `model_metadata.context_window` was Some(>0)
-            let cw = error
-                .model_metadata
-                .as_ref()
-                .and_then(|m| m.context_window)
-                .expect("should_compact_on_error guarantees context_window");
+        if !mid_salvage_continuation
+            && self
+                .should_compact_on_error_for_route(
+                    &error,
+                    route_config,
+                    requested_output_tokens,
+                )
+                .await
+        {
+            let cw = compaction::error_context_window(&error, route_config)
+                .expect("should_compact_on_error_for_route guarantees context_window");
             {
                 let total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
                 let percentage = distill_token_estimation::usage_percentage_u8(total_tokens, cw);
-
-                // Update the in-memory sampling config's `context_window` if the model reported a different value (mirror the legacy path's bookkeeping)
-                if let Some(mut cfg) = self.chat_state_handle.get_sampling_config().await
-                    && let Some(new_cw) = std::num::NonZeroU64::new(cw)
-                    && self.compaction.context_window_override.is_none()
-                {
-                    cfg.context_window = new_cw;
-                    self.chat_state_handle.update_sampling_config(cfg);
-                }
 
                 let trigger_info = compaction::AutoCompactTriggerInfo {
                     tokens_used: total_tokens,
@@ -1387,6 +1450,7 @@ impl SessionActor {
                     }
                     return Err(e);
                 }
+                self.arm_route_overflow_recovery();
                 return Ok(SamplerFailureRecovery::CompactAndResubmit);
             }
         }
@@ -1780,6 +1844,53 @@ impl SessionActor {
         }
     }
 
+    async fn preflight_route_context(
+        self: &Arc<Self>,
+        request: &ConversationRequest,
+        route: Option<&SamplingConfig>,
+        mid_salvage_continuation: bool,
+    ) -> Result<bool, acp::Error> {
+        let Some(trigger_info) = self.route_request_overflow_trigger(request, route).await else {
+            return Ok(false);
+        };
+        let message = format!(
+            "The selected model route cannot fit this request while automatic compaction is suppressed ({} input + reserved output exceeds {} tokens).",
+            trigger_info.tokens_used, trigger_info.context_window
+        );
+        if mid_salvage_continuation {
+            let mut data = crate::sampling::error::terminal_error_data(
+                message,
+                None,
+                distill_sampler::SamplingErrorKind::MaxTokensTruncation,
+            );
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert(
+                    crate::sampling::error::SALVAGE_CAUSE_KEY.to_owned(),
+                    serde_json::json!(crate::sampling::error::SALVAGE_CAUSE_OVERFLOW),
+                );
+            }
+            return Err(acp::Error::internal_error().data(data));
+        }
+        if self.route_overflow_recovery_armed()
+            || self.compaction.is_suppressed()
+            || self.tool_context.task_output_token_budget.is_some()
+            || self.tool_context.sampler_retry_only_before_output
+        {
+            return Err(crate::sampling::error::local_error(
+                crate::extensions::notification::CONTEXT_LENGTH_ERROR_TYPE,
+                message,
+            ));
+        }
+        if let Err(error) = self.run_compact_only(trigger_info, false).await {
+            if Self::is_auth_compact_error(&error) {
+                return Err(self.surface_compact_auth_failure(error).await);
+            }
+            return Err(error);
+        }
+        self.arm_route_overflow_recovery();
+        Ok(true)
+    }
+
     /// Drive one turn through the sampler, pacing a subagent's 429s via `budget`.
     /// `Parked` resubmits skip every refresh-driving prepare (see the re-park arm);
     /// the wire bearer comes from the live resolver at send time.
@@ -1793,13 +1904,25 @@ impl SessionActor {
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         // Per-turn auth refresh + sampler config push. Mirrors
         // `prepare_chat_completion(false)` from the legacy path.
-        if !park.is_parked() {
-            self.prepare_sampler_for_turn().await;
-        }
+        let mut route_config = if !park.is_parked() {
+            Some(self.prepare_sampler_for_turn().await)
+        } else {
+            None
+        };
         // A round the decision layer moved (e.g. to the local model) must name
         // that model in the request: the chat state built it with the session's.
         let mut routed_local = false;
         self.apply_pending_sampler_config(&mut request, &mut routed_local);
+
+        // The parent session may advertise a larger UI window than this round's
+        // selected endpoint. Compact before the first send when the actual
+        // request envelope plus its reserved output cannot fit.
+        if self
+            .preflight_route_context(&request, route_config.as_ref(), mid_salvage_continuation)
+            .await?
+        {
+            return Ok(SamplerTurnOutcome::CompactAndResubmit);
+        }
 
         if !budget.can_wait() {
             if routed_local {
@@ -1808,11 +1931,33 @@ impl SessionActor {
                 // fallback as a child. Retain the request until the local
                 // endpoint has accepted it or the base-model replacement has
                 // been attempted.
-                return match self.submit_turn_request(request.clone()).await {
+                let mut route_output_tokens = route_config.as_ref().and_then(|config| {
+                    compaction::configured_output_token_budget(&request, config)
+                });
+                return match self
+                    .submit_turn_request_with_route(request.clone(), route_config.as_ref())
+                    .await
+                {
                     Ok(outcome) => Ok(outcome),
                     Err(info) if is_client_rejection(&info) => {
-                        self.undo_local_route(&mut request, &info).await;
-                        match self.submit_turn_request(request).await {
+                        route_config = Some(self.undo_local_route(&mut request, &info).await);
+                        route_output_tokens = route_config.as_ref().and_then(|config| {
+                            compaction::configured_output_token_budget(&request, config)
+                        });
+                        if self
+                            .preflight_route_context(
+                                &request,
+                                route_config.as_ref(),
+                                mid_salvage_continuation,
+                            )
+                            .await?
+                        {
+                            return Ok(SamplerTurnOutcome::CompactAndResubmit);
+                        }
+                        match self
+                            .submit_turn_request_with_route(request, route_config.as_ref())
+                            .await
+                        {
                             Ok(outcome) => Ok(outcome),
                             Err(info) => {
                                 self.recover_from_sampling_failure(
@@ -1821,6 +1966,8 @@ impl SessionActor {
                                     transient,
                                     mid_salvage_continuation,
                                     park,
+                                    route_config.as_ref(),
+                                    route_output_tokens,
                                 )
                                 .await
                             }
@@ -1833,13 +1980,21 @@ impl SessionActor {
                             transient,
                             mid_salvage_continuation,
                             park,
+                            route_config.as_ref(),
+                            route_output_tokens,
                         )
                         .await
                     }
                 };
             }
             // Nothing will send this request a second time, so move it into the sampler instead of deep-cloning the whole message history on every main-session turn
-            return match self.submit_turn_request(request).await {
+            let route_output_tokens = route_config.as_ref().and_then(|config| {
+                compaction::configured_output_token_budget(&request, config)
+            });
+            return match self
+                .submit_turn_request_with_route(request, route_config.as_ref())
+                .await
+            {
                 Ok(outcome) => Ok(outcome),
                 Err(info) => {
                     self.recover_from_sampling_failure(
@@ -1848,6 +2003,8 @@ impl SessionActor {
                         transient,
                         mid_salvage_continuation,
                         park,
+                        route_config.as_ref(),
+                        route_output_tokens,
                     )
                     .await
                 }
@@ -1855,7 +2012,13 @@ impl SessionActor {
         }
 
         loop {
-            match self.submit_turn_request(request.clone()).await {
+            let route_output_tokens = route_config.as_ref().and_then(|config| {
+                compaction::configured_output_token_budget(&request, config)
+            });
+            match self
+                .submit_turn_request_with_route(request.clone(), route_config.as_ref())
+                .await
+            {
                 Ok(outcome) => {
                     budget.record_submission_accepted();
                     return Ok(outcome);
@@ -1867,8 +2030,18 @@ impl SessionActor {
                     // so the round goes back to the session model and the rest
                     // of the turn stays there.
                     if routed_local && is_client_rejection(&info) {
-                        self.undo_local_route(&mut request, &info).await;
+                        route_config = Some(self.undo_local_route(&mut request, &info).await);
                         routed_local = false;
+                        if self
+                            .preflight_route_context(
+                                &request,
+                                route_config.as_ref(),
+                                mid_salvage_continuation,
+                            )
+                            .await?
+                        {
+                            return Ok(SamplerTurnOutcome::CompactAndResubmit);
+                        }
                         continue;
                     }
                     let decision = budget.decide(&info);
@@ -1881,6 +2054,8 @@ impl SessionActor {
                                 transient,
                                 mid_salvage_continuation,
                                 park,
+                                route_config.as_ref(),
+                                route_output_tokens,
                             )
                             .await;
                     };
@@ -1890,8 +2065,18 @@ impl SessionActor {
                     // A token can expire across minutes of accumulated waits
                     // (parked turns skip it — see `run_turn_via_sampler`).
                     if !park.is_parked() {
-                        self.prepare_sampler_for_turn().await;
+                        route_config = Some(self.prepare_sampler_for_turn().await);
                         self.apply_pending_sampler_config(&mut request, &mut routed_local);
+                        if self
+                            .preflight_route_context(
+                                &request,
+                                route_config.as_ref(),
+                                mid_salvage_continuation,
+                            )
+                            .await?
+                        {
+                            return Ok(SamplerTurnOutcome::CompactAndResubmit);
+                        }
                     }
                     self.turn_phases.record_sampling_retries(1);
                 }
@@ -1901,11 +2086,21 @@ impl SessionActor {
 
     async fn submit_turn_request(
         self: &Arc<Self>,
+        request: ConversationRequest,
+    ) -> Result<SamplerTurnOutcome, distill_sampler::SamplingErrorInfo> {
+        self.submit_turn_request_with_route(request, None).await
+    }
+
+    async fn submit_turn_request_with_route(
+        self: &Arc<Self>,
         mut request: ConversationRequest,
+        route_config: Option<&SamplingConfig>,
     ) -> Result<SamplerTurnOutcome, distill_sampler::SamplingErrorInfo> {
         let request_id = distill_sampler::RequestId::random();
         let request_id_str = request_id.as_str().to_string();
-        let usage_context = self.sampler_usage_context(&request_id_str, &request).await;
+        let usage_context = self
+            .sampler_usage_context(&request_id_str, &request, route_config)
+            .await;
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
         let stream_drained_rx = {
@@ -2043,6 +2238,7 @@ impl SessionActor {
                 }
                 let mut usage_context = usage_context;
                 usage_context.update_from_response(&response);
+                self.clear_route_overflow_recovery();
                 Ok(SamplerTurnOutcome::Response(
                     Box::new(response),
                     Box::new(metrics),
@@ -2095,31 +2291,56 @@ impl SessionActor {
         &self,
         request_id: &str,
         request: &ConversationRequest,
+        route_config: Option<&SamplingConfig>,
     ) -> UsageAttemptContext {
-        let config = self.chat_state_handle.get_sampling_config().await;
+        let parent_config = if route_config.is_none() {
+            self.chat_state_handle.get_sampling_config().await
+        } else {
+            None
+        };
+        let (configured_model, api_backend, reasoning_shape, configured_effort, max_output_tokens,
+            endpoint) = match route_config {
+            Some(config) => (
+                config.model.clone(),
+                config.api_backend.clone(),
+                config.reasoning_shape,
+                config.reasoning_effort,
+                config.max_completion_tokens,
+                sampler_route_attribution_endpoint(config),
+            ),
+            None => {
+                let config = parent_config.as_ref();
+                (
+                    config.map(|config| config.model.clone()).unwrap_or_default(),
+                    config
+                        .map(|config| config.api_backend.clone())
+                        .unwrap_or_default(),
+                    config
+                        .map(|config| config.reasoning_shape)
+                        .unwrap_or_default(),
+                    config.and_then(|config| config.reasoning_effort),
+                    config.and_then(|config| config.max_completion_tokens),
+                    config.and_then(sampler_attribution_endpoint),
+                )
+            }
+        };
         let model_id = request
             .model
             .as_deref()
             .filter(|model| !model.is_empty())
             .map(str::to_owned)
-            .or_else(|| config.as_ref().map(|config| config.model.clone()))
+            .or_else(|| (!configured_model.is_empty()).then_some(configured_model))
             .unwrap_or_else(|| "<unknown>".to_owned());
-        let requested_effort = request
+        let configured_effort = request
             .reasoning_effort
-            .or_else(|| config.as_ref().and_then(|config| config.reasoning_effort))
-            .map(|effort| effort.to_string());
-        let applied_effort = config.as_ref().and_then(|config| {
-            distill_sampling_types::transmitted_reasoning_effort(
-                config.api_backend.clone(),
-                config.reasoning_shape,
-                request
-                    .reasoning_effort
-                    .or(config.reasoning_effort),
-                request
-                    .max_output_tokens
-                    .or(config.max_completion_tokens),
-            )
-        });
+            .or(configured_effort);
+        let requested_effort = configured_effort.map(|effort| effort.to_string());
+        let applied_effort = distill_sampling_types::transmitted_reasoning_effort(
+            api_backend,
+            reasoning_shape,
+            configured_effort,
+            request.max_output_tokens.or(max_output_tokens),
+        );
         let task_id = self
             .current_prompt_id
             .lock()
@@ -2132,7 +2353,7 @@ impl SessionActor {
             request_id: None,
             role: "main".to_owned(),
             model_id,
-            endpoint: config.as_ref().and_then(sampler_attribution_endpoint),
+            endpoint,
             requested_effort,
             applied_effort,
         }
@@ -2145,16 +2366,20 @@ impl SessionActor {
         transient: TransientRetryState,
         mid_salvage_continuation: bool,
         park: TurnParkState,
+        route_config: Option<&SamplingConfig>,
+        requested_output_tokens: Option<u32>,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         // Single funnel for every sampler-call failure.
         super::turn::record_failed_sample_on_turn_span(&tracing::Span::current(), info.kind);
         match self
-            .handle_sampling_failure(
+            .handle_sampling_failure_for_route(
                 info,
                 budget.attempts_used(),
                 transient,
                 mid_salvage_continuation,
                 park,
+                route_config,
+                requested_output_tokens,
             )
             .await?
         {

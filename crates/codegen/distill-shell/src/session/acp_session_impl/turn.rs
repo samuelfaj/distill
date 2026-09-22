@@ -1989,6 +1989,7 @@ impl SessionActor {
         salvage: &mut super::length_salvage::LengthSalvage,
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
+        self.clear_route_overflow_recovery();
         let _ = self.compaction.auto_compact_suppressed.compare_exchange(
             crate::session::compaction_config::SUPPRESS_TURN,
             crate::session::compaction_config::SUPPRESS_NONE,

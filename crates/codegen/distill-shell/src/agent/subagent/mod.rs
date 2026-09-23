@@ -702,6 +702,28 @@ async fn resolve_subagent_sampling_config(
     {
         return (resolved.0, resolved.1, None);
     }
+    // With the worker owning the parent conversation, independent review uses
+    // the selected reasoning model unless the user pinned a reviewer.
+    if agent_name == "code-reviewer"
+        && crate::jev::tiers_cached().light.as_deref() == Some(parent_mid.0.as_ref())
+    {
+        let reasoning = ctx
+            .agent_config
+            .as_ref()
+            .and_then(|cfg| cfg.models.default.as_deref())
+            .filter(|id| *id != parent_mid.0.as_ref())
+            .map(str::to_owned)
+            .unwrap_or_else(|| ctx.models_manager.current_model_id().0.to_string());
+        if reasoning.as_str() != parent_mid.0.as_ref()
+            && let Some(resolved) = try_pin(
+                &reasoning,
+                "reasoning_reviewer",
+                "Reasoning model unavailable for review, falling through to parent",
+            )
+        {
+            return (resolved.0, resolved.1, None);
+        }
+    }
     if let Some(model_id) = default_worker_model
         && let Some(resolved) = try_pin(
             model_id,

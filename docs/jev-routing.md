@@ -5,22 +5,19 @@ state assembled by the harness: which model should handle a call, how much
 effort it needs, or which parts of a tool result are worth keeping.
 
 Of the three tiers set in [Choose your models](../README.md#choose-your-models),
-the Reasoning model handles calls unless a routing decision selects another
-path. A different Worker model receives a fresh, bounded task instead of the
-conversation history. Utility tasks receive a bounded
+a configured Worker model owns new build sessions by default. An explicitly
+selected model still wins. Without a Worker, the selected Reasoning model owns
+the session. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
 ```text
-                         Jev decision
-                              |
-                +-------------+-------------+
-                |                           |
-          Reasoning model              Worker model
-                |                 bounded task context
-                |
-           Utility tasks
-     bounded payloads and checked results
+   Worker session (when configured)
+      |           |             |
+  conversation   |       bounded Reasoning task
+                  |
+             Utility task
+           bounded payload
 ```
 
 Jev chooses among candidates supplied by code. It does not invent candidates
@@ -31,15 +28,17 @@ the harness keeps its normal execution path.
 
 ## Reasoning and Worker
 
-Jev keeps the conversation on the Reasoning model. A different Worker model
-handles fresh, bounded subagent tasks and tool-result compression, including
-when it uses the same provider. Sharing the full conversation requires the
-same wire model and transport; provider identity alone does not preserve the
-other model's prompt cache.
+The Worker keeps the conversation when configured for a new build session.
+Fresh bounded tasks inherit it. Difficult diagnosis, architecture, failure
+recovery, and material review can use the Reasoning model through an explicit
+model selection on a bounded subagent. The built-in `code-reviewer` uses the
+Reasoning model by default when its parent session runs on the Worker. An
+explicit subagent model pin still wins. A different wire model does not reuse
+the Worker's prompt cache or receive its full conversation automatically.
 
-`/effort auto` lets it choose the Reasoning model's effort; a fixed effort pins
-that model's intensity without disabling Worker routing. `/worker-model <model>
-[effort]` independently sets the Worker's effort, defaulting to `auto`. Explicit
+`/effort auto` chooses the current session model's effort; a fixed effort pins
+that model's intensity. `/worker-model <model> [effort]` sets the Worker's
+effort independently, defaulting to `auto`. Explicit
 subagent model and effort policies remain pinned.
 
 Jev chooses effort from each model's supported menu. An uncertain answer keeps
@@ -69,8 +68,8 @@ light = "codex-luna"
 that resolve to the same wire model; it does not disable bounded Worker tasks.
 
 The built-in `code-reviewer` subagent inspects a substantive code checkpoint
-using a fresh, read-only context. It inherits the Reasoning model unless pinned
-through `[subagents.models]`; it never silently inherits the Worker. Give it the
+using a fresh, read-only context. With a Worker parent, it uses the configured
+Reasoning model unless pinned through `[subagents.models]`. Give it the
 diff, acceptance criteria and test evidence. Routine or unchanged checkpoints
 do not need a separate review. Jev's change-risk decision can request a second
 opinion, while the agent chooses a reviewer at meaningful checkpoints and before
@@ -81,8 +80,8 @@ final code handoff. Goal completion still uses its existing verifier.
 code-reviewer = "reviewer-catalog-entry"
 ```
 
-The value must name an existing model catalog entry. Omit the setting to keep
-the review on the Reasoning model in a separate, focused context.
+The value must name an existing model catalog entry. With a Worker parent,
+omitting it sends a fresh review to the configured Reasoning model.
 
 ## Optional model facts and cache
 

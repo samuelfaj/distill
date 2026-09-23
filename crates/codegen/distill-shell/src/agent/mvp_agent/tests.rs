@@ -5044,6 +5044,58 @@ fn new_session_registers_root_identity() {
         agent.remove_session(&sid);
     });
 }
+
+#[test]
+fn new_session_uses_configured_worker_as_its_model() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let worker = crate::agent::config::ModelEntry::fallback(
+            "session-worker",
+            &crate::agent::config::EndpointsConfig::default(),
+        );
+        agent.models_manager.insert_test_entry("session-worker", worker);
+        let reasoning = agent.models_manager.current_model_id();
+        crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
+            light: Some("session-worker".to_owned()),
+            ..Default::default()
+        });
+        let cwd = tempfile::tempdir().unwrap();
+        agent.set_auth_method(acp::AuthMethodId::new("cached_token"));
+        let init = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
+            acp::ClientCapabilities::new()
+                .fs(acp::FileSystemCapabilities::new())
+                .terminal(false),
+        );
+        agent.initialize_request.set(init).unwrap();
+        let sid = agent
+            .new_session_inner(acp::NewSessionRequest::new(cwd.path().to_path_buf()))
+            .await
+            .expect("session/new succeeds")
+            .session_id;
+        let handle = agent.resident_handle(&sid).expect("new session is resident");
+        assert_eq!(handle.model_id.0.as_ref(), "session-worker");
+        assert_eq!(
+            handle.chat_state_handle.get_sampling_config().await.unwrap().model,
+            "session-worker"
+        );
+        assert_eq!(agent.models_manager.current_model_id(), reasoning);
+        agent.remove_session(&sid);
+        let meta = serde_json::json!({"modelId": "test-model"})
+            .as_object()
+            .cloned();
+        let explicit = agent
+            .new_session_inner(acp::NewSessionRequest::new(cwd.path().to_path_buf()).meta(meta))
+            .await
+            .expect("explicit model session/new succeeds")
+            .session_id;
+        assert_eq!(
+            agent.resident_handle(&explicit).unwrap().model_id.0.as_ref(),
+            "test-model"
+        );
+        agent.remove_session(&explicit);
+        crate::jev::clear_test_tier_config();
+    });
+}
 #[test]
 fn new_session_records_setup_phases_for_bisection() {
     distill_telemetry::unified_log::redirect_to_temp_for_tests();

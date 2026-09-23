@@ -2,7 +2,7 @@
 [package]
 license = "Apache-2.0"
 name = "distill-version"
-version = "2.0.7"
+version = "2.0.8"
 edition.workspace = true
 description = "Lockstepped grok CLI version."
 

@@ -2664,6 +2664,25 @@ async fn fresh_task_uses_configured_worker_with_bounded_new_context() {
         BootstrapInitialContext::ResumeAbort(message) => panic!("unexpected abort: {message}"),
     }
 
+    ctx.model_id = acp::ModelId::new("muse-model");
+    ctx.sampling_config.model = "muse-model".to_owned();
+    ctx.parent_chat_state = Some(spawn_test_parent_chat_state("muse-model"));
+    let mut agent_config = crate::agent::config::Config::default();
+    agent_config.models.default = Some("deepseek-model".to_owned());
+    ctx.agent_config = Some(agent_config);
+    ctx.models_manager
+        .set_current_model_id(acp::ModelId::new("muse-model"));
+    let (review_config, review_model, _) = resolve_effective_model_config(
+        None,
+        "code-reviewer",
+        &ModelOverride::Inherit,
+        None,
+        &ctx,
+    )
+    .await;
+    assert_eq!(review_config.model, "deepseek-model");
+    assert_eq!(review_model.0.as_ref(), "deepseek-model");
+
     crate::jev::clear_test_tier_config();
 }
 /// A `fork_context = true` spawn must infer on the parent session model (`ctx.model_id`) for per-model radix reuse. That holds even when a `[subagents.models]` pin and an `AgentDefinition.model` override are both present.

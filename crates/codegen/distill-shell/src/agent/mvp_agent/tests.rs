@@ -5080,7 +5080,7 @@ fn new_session_uses_configured_worker_as_its_model() {
         );
         assert_eq!(agent.models_manager.current_model_id(), reasoning);
         agent.remove_session(&sid);
-        let meta = serde_json::json!({"modelId": "test-model"})
+        let meta = serde_json::json!({"modelId": reasoning.0.as_ref()})
             .as_object()
             .cloned();
         let explicit = agent
@@ -5090,7 +5090,7 @@ fn new_session_uses_configured_worker_as_its_model() {
             .session_id;
         assert_eq!(
             agent.resident_handle(&explicit).unwrap().model_id.0.as_ref(),
-            "test-model"
+            reasoning.0.as_ref()
         );
         agent.remove_session(&explicit);
         crate::jev::clear_test_tier_config();

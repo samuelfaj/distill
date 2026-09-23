@@ -1653,9 +1653,9 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
     }]
 }
 
-// Model-family settings: fork_secondary_model (and formerly web_search_model, session_summary_model, default_reasoning_effort)
-// SHELL-OWNED. Unlike `default_model`, these do NOT mutate live runtime state; they update `current_ui` mirrors and persist.
-// No live preview. Rollback touches only the disk and the mirror.
+// Model-family settings: fork_secondary_model (and formerly web_search_model,
+// session_summary_model, default_reasoning_effort). The fork setting updates
+// only its UI mirror; the worker tier also selects the live session model.
 
 /// Outer dispatcher for `Action::SetTierLight`: the worker model.
 ///

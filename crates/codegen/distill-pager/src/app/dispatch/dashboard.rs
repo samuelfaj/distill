@@ -1554,6 +1554,7 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             let effects = dispatch(Action::SetDefaultModel(model_id), app);
             if let Some(d) = app.dashboard.as_mut() {
                 d.dispatch.set_text("");
+                d.models.reasoning_model = app.models.reasoning_model.clone();
             }
             effects
         }

@@ -2672,6 +2672,7 @@ async fn fresh_task_uses_configured_worker_with_bounded_new_context() {
     ctx.agent_config = Some(agent_config);
     ctx.models_manager
         .set_current_model_id(acp::ModelId::new("muse-model"));
+    crate::jev::clear_test_tier_config();
     let (review_config, review_model, _) = resolve_effective_model_config(
         None,
         "code-reviewer",
@@ -2691,8 +2692,6 @@ async fn fresh_task_uses_configured_worker_with_bounded_new_context() {
     )
     .await;
     assert_eq!(plan_model.0.as_ref(), "deepseek-model");
-
-    crate::jev::clear_test_tier_config();
 }
 /// A `fork_context = true` spawn must infer on the parent session model (`ctx.model_id`) for per-model radix reuse. That holds even when a `[subagents.models]` pin and an `AgentDefinition.model` override are both present.
 /// `run_shell_child` forces `effective_runtime.model = Some(ctx.model_id)` on the fork path after other override sources. The runtime override wins in `resolve_effective_model_config`.

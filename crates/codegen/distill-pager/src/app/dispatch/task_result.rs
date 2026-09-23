@@ -2408,12 +2408,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     "default_model" => state.finish_setting_persistence(
                         key,
                         true,
-                        "Primary model saved. Runtime switching follows the existing /model path.",
+                        "Reasoning model saved for planning and review.",
                     ),
                     "tier_light" => state.finish_setting_persistence(
                         key,
                         true,
-                        "Worker model saved. Continue when ready.",
+                        "Worker model saved as the main session model.",
                     ),
                     _ => {}
                 }

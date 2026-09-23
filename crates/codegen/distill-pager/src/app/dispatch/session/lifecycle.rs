@@ -1912,7 +1912,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                     };
                     agent.scrollback.push_block(RenderBlock::system(msg));
                 }
-                if unchanged {
+                if unchanged || agent.session.models.reasoning_model.as_ref() != Some(&model_id) {
                     vec![]
                 } else {
                     vec![Effect::PersistPreferredModel {
@@ -1924,12 +1924,20 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
             Err(SwitchModelError::IncompatibleAgent { .. }) => {
                 if let Some(ref prev) = prev_model_id {
                     agent.session.models.set_current(prev.clone(), None);
+                    if app.models.current.as_ref() == Some(&model_id) {
+                        app.models.set_current(prev.clone(), None);
+                    }
                 }
                 agent.active_modal = None;
                 let display_name = agent.session.models.display_name_for(&model_id);
                 return open_agent_type_mismatch_question(app, model_id, effort, &display_name);
             }
             Err(SwitchModelError::Other(msg)) => {
+                if let Some(ref prev) = prev_model_id
+                    && app.models.current.as_ref() == Some(&model_id)
+                {
+                    app.models.set_current(prev.clone(), None);
+                }
                 agent
                     .scrollback
                     .push_block(RenderBlock::system(format!("Couldn't switch model: {msg}")));

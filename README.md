@@ -51,16 +51,16 @@ model, or enter `/tiers`. You can edit each tier in that screen.
 
 | Tier | Purpose | Picker |
 |---|---|---|
-| Reasoning model | Handles difficult diagnosis, architecture, and review through bounded tasks; owns the session when no Worker is configured. | `/tiers reasoning`, or `/model` for an explicit session switch |
-| Worker model | Owns new build sessions when configured and handles routine bounded work. Optional. | `/worker-model` or `/tiers worker` |
+| Worker model | Main model for the session and routine work. | `/model` or `/tiers worker` |
+| Reasoning model | Handles difficult planning and review through bounded tasks; owns the session when no Worker is configured. | `/reasoning-model` or `/tiers reasoning` |
 | Utility model | Handles bounded tasks such as extraction, summaries, and compression. | `/utility-model` or `/tiers utility` |
 
-Each picker helps you choose a model and its effort. `auto` is available and is
-the default. You can also supply the selection directly:
+The main model picker also lets you set effort; `auto` is the default. You can
+supply each selection directly:
 
 ```text
-/model gpt-6-astra auto
-/worker-model gpt-5.6-luna auto
+/model gpt-6-luna auto
+/reasoning-model gpt-6-sol
 /utility-model openrouter-qwen37 auto
 ```
 

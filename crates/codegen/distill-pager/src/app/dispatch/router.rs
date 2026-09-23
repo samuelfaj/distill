@@ -974,15 +974,11 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::SwitchModel { model_id, effort } => {
             if matches!(app.active_view, ActiveView::Welcome) {
-                let mut effects = set_default_model(app, model_id.clone());
                 app.models.set_current(model_id.clone(), effort);
                 app.models.effort_auto = effort.is_none();
+                app.cli_model_override = Some(model_id);
                 app.cli_effort_token = effort.map(|level| level.to_string());
-                effects.push(Effect::PersistPreferredModel {
-                    model_id,
-                    reasoning_effort: effort,
-                });
-                return effects;
+                return vec![];
             }
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
@@ -1011,7 +1007,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         effort,
                         prev_model_id: rollback_prev,
                     });
-                return if unchanged {
+                return if unchanged || agent.session.models.reasoning_model.as_ref() != Some(&model_id) {
                     vec![]
                 } else {
                     vec![Effect::PersistPreferredModel {

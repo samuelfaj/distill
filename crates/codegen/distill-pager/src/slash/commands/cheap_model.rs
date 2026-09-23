@@ -22,7 +22,7 @@ impl SlashCommand for CheapModelCommand {
     }
 
     fn suggest_args(&self, ctx: &AppCtx, query: &str) -> Option<Vec<ArgItem>> {
-        Some(super::model::tier_suggestions(ctx.models, query, false))
+        Some(super::model::tier_suggestions(ctx.models, query))
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

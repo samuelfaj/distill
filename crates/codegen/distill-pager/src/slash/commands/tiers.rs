@@ -1,8 +1,6 @@
 //! `/tiers`: the three models a call can run on, and how to set each one.
 //!
-//! Reasoning is the session's own model, worker is its sibling for steps that do not
-//! need it, utility is the OpenRouter lane. Jev picks between reasoning and worker (and
-//! the effort) for each single model call while auto effort is on.
+//! Worker owns the session; reasoning handles bounded planning and review tasks.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
@@ -27,8 +25,8 @@ impl SlashCommand for TiersCommand {
             None => (args, ""),
         };
         match what {
-            "reasoning" | "hard" => super::model::ModelCommand.run(ctx, rest),
-            "worker" | "light" => super::worker_model::WorkerModelCommand.run(ctx, rest),
+            "reasoning" | "hard" => super::reasoning_model::ReasoningModelCommand.run(ctx, rest),
+            "worker" | "light" => super::model::ModelCommand.run(ctx, rest),
             "utility" | "cheap" => super::cheap_model::CheapModelCommand.run(ctx, rest),
             other => CommandResult::Error(format!(
                 "Unknown tier `{other}`. Usage: /tiers [reasoning <name>|worker <id>|utility <ids>]"

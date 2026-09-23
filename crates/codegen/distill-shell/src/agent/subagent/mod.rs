@@ -702,9 +702,9 @@ async fn resolve_subagent_sampling_config(
     {
         return (resolved.0, resolved.1, None);
     }
-    // With the worker owning the parent conversation, independent review uses
-    // the selected reasoning model unless the user pinned a reviewer.
-    if agent_name == "code-reviewer"
+    // With the worker owning the parent conversation, bounded planning and
+    // review use the selected reasoning model unless explicitly pinned.
+    if matches!(agent_name, "plan" | "code-reviewer")
         && crate::jev::tiers_cached().light.as_deref() == Some(parent_mid.0.as_ref())
     {
         let reasoning = ctx

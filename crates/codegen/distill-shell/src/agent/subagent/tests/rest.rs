@@ -2682,6 +2682,15 @@ async fn fresh_task_uses_configured_worker_with_bounded_new_context() {
     .await;
     assert_eq!(review_config.model, "deepseek-model");
     assert_eq!(review_model.0.as_ref(), "deepseek-model");
+    let (_, plan_model, _) = resolve_effective_model_config(
+        None,
+        "plan",
+        &ModelOverride::Inherit,
+        None,
+        &ctx,
+    )
+    .await;
+    assert_eq!(plan_model.0.as_ref(), "deepseek-model");
 
     crate::jev::clear_test_tier_config();
 }

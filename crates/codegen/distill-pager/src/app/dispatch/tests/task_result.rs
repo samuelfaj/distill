@@ -1204,6 +1204,7 @@ fn switch_model_complete_success_updates_model_and_pushes_message() {
         .unwrap()
         .session
         .model_switch_pending = true;
+    app.agents.get_mut(&id).unwrap().session.models.reasoning_model = Some(model_id.clone());
 
     let initial_scrollback = expect_agent(&app, id).scrollback.len();
 
@@ -1234,6 +1235,33 @@ fn switch_model_complete_success_updates_model_and_pushes_message() {
         effects.first(),
         Some(Effect::PersistPreferredModel { model_id: mid, .. }) if *mid == model_id.clone()
     ));
+}
+
+#[test]
+fn worker_switch_keeps_secondary_reasoning_model() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let worker = acp::ModelId::new("chatgpt/gpt-6-luna");
+    let reasoning = acp::ModelId::new("chatgpt/gpt-6-sol");
+    let agent = app.agents.get_mut(&agent_id).unwrap();
+    agent.session.models.available.insert(
+        worker.clone(),
+        acp::ModelInfo::new(worker.clone(), "GPT-6-Luna"),
+    );
+    agent.session.models.reasoning_model = Some(reasoning.clone());
+    agent.session.model_switch_pending = true;
+
+    let effects = dispatch(Action::TaskComplete(TaskResult::SwitchModelComplete {
+        agent_id,
+        model_id: worker.clone(),
+        effort: None,
+        result: Ok(None),
+        prev_model_id: None,
+    }), &mut app);
+
+    assert!(!effects.iter().any(|effect| matches!(effect, Effect::PersistPreferredModel { .. })));
+    assert_eq!(expect_agent(&app, agent_id).session.models.current, Some(worker));
+    assert_eq!(expect_agent(&app, agent_id).session.models.reasoning_model, Some(reasoning));
 }
 
 #[test]
@@ -1304,6 +1332,7 @@ fn switch_model_complete_persists_resolved_effort_from_catalog_meta() {
             acp::ModelInfo::new(model_id.clone(), "BYOK Model 4.7".to_string())
                 .meta(serde_json::Value::Object(meta).as_object().cloned()),
         );
+    app.agents.get_mut(&id).unwrap().session.models.reasoning_model = Some(model_id.clone());
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -1370,6 +1399,7 @@ fn switch_to_non_reasoning_model_clears_persisted_effort() {
             model_id.clone(),
             acp::ModelInfo::new(model_id.clone(), "Distill".to_string()),
         );
+    app.agents.get_mut(&id).unwrap().session.models.reasoning_model = Some(model_id.clone());
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -1628,11 +1658,7 @@ fn same_agent_type_switch_no_modal() {
     // The model switched and no modal opened
     assert_eq!(expect_agent(&app, id).session.models.current, Some(model_b));
     assert!(expect_agent(&app, id).question_view.is_none());
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistPreferredModel { .. }))
-    );
+    assert!(!effects.iter().any(|e| matches!(e, Effect::PersistPreferredModel { .. })));
 }
 
 #[test]

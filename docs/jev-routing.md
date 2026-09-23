@@ -31,14 +31,15 @@ the harness keeps its normal execution path.
 The Worker keeps the conversation when configured for a new build session.
 Fresh bounded tasks inherit it. Difficult diagnosis, architecture, failure
 recovery, and material review can use the Reasoning model through an explicit
-model selection on a bounded subagent. The built-in `code-reviewer` uses the
+model selection on a bounded subagent. The built-in `plan` and `code-reviewer` use the
 Reasoning model by default when its parent session runs on the Worker. An
 explicit subagent model pin still wins. A different wire model does not reuse
 the Worker's prompt cache or receive its full conversation automatically.
 
 `/effort auto` chooses the current session model's effort; a fixed effort pins
-that model's intensity. `/worker-model <model> [effort]` sets the Worker's
-effort independently, defaulting to `auto`. Explicit
+that model's intensity. `/model <model> [effort]` selects the main Worker;
+`/reasoning-model <model>` sets the secondary Reasoning model. The Worker's
+effort defaults to `auto`. Explicit
 subagent model and effort policies remain pinned.
 
 Jev chooses effort from each model's supported menu. An uncertain answer keeps

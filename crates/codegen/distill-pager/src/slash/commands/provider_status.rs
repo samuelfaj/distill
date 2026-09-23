@@ -111,11 +111,14 @@ pub fn cheap_lane_status() -> String {
 /// A tier the harness would refuse must not read as ready here.
 pub fn tier_status(session_model: Option<&str>) -> String {
     let session = session_model.unwrap_or("(no session model yet)");
-    let mut out = format!("Session model: {session}");
+    let mut out = format!("Main session model: {session}");
     out.push_str(
-        "\n  Handles the full conversation. Set it with `/model <name-or-id>`. \
+        "\n  Handles the full conversation. Set the worker with `/model <name-or-id>`. \
          A configured OpenRouter model can also be entered as `vendor/model`.",
     );
+    if let Some(reasoning) = crate::acp::ModelState::configured_reasoning_model() {
+        out.push_str(&format!("\n\nReasoning model: {}\n  Secondary model for planning and review. Set it with `/reasoning-model <name-or-id>`. ", reasoning.0));
+    }
     match session_model.map(distill_shell::jev::light_tier_status) {
         Some(distill_shell::jev::LightTierStatus::Ready {
             id,
@@ -153,7 +156,7 @@ pub fn tier_status(session_model: Option<&str>) -> String {
             out.push_str(
                 "\n\nWorker model: (not set)\n  \
                  A worker model handles new build sessions and routine tasks. Set it with \
-                 `/worker-model <model-id>`; a configured OpenRouter model may use `vendor/model`. \
+                 `/model <model-id>`; a configured OpenRouter model may use `vendor/model`. \
                  It may run on another provider.",
             );
         }

@@ -1373,7 +1373,7 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
         return format!(
             "\n\nNo explicit model slugs are currently available. \
              Omit `{TASK_MODEL_PARAM}` for a fresh bounded task to use the session model \
-             when available; a code-reviewer may use the configured reasoning model unless pinned in \
+             when available; plan and code-reviewer may use the configured reasoning model unless pinned in \
              [subagents.models]. Explicit model pins remain \
              authoritative, and resumed or full-context forked children retain their existing \
              model/context semantics."
@@ -1390,7 +1390,7 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
          model, you may ONLY use model slugs from this list:\n\
          {model_list}\n\n\
          Otherwise omit `{TASK_MODEL_PARAM}`. For a fresh bounded task this uses the session \
-         model when available; a code-reviewer may use the configured reasoning model unless \
+         model when available; plan and code-reviewer may use the configured reasoning model unless \
          pinned in [subagents.models]. Explicit model pins remain \
          authoritative, and resumed or full-context \
          forked children retain their existing model/context semantics."

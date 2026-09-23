@@ -65,7 +65,7 @@ impl TierEditorState {
         };
         state
             .reasoning
-            .set_text(models.current_model_id_str().unwrap_or_default());
+            .set_text(models.reasoning_model.as_ref().map_or("", |id| id.0.as_ref()));
         state.worker.set_text(
             distill_shell::jev::tiers_cached()
                 .light
@@ -197,7 +197,7 @@ pub fn render_tier_editor_overlay(
         buf,
         content.content,
         y,
-        "A worker on another provider only takes bounded tasks, never the conversation.",
+        "The worker keeps the conversation; reasoning runs bounded tasks.",
         Style::default().fg(theme.gray_bright),
     );
     y = y.saturating_add(2);
@@ -208,7 +208,7 @@ pub fn render_tier_editor_overlay(
         y,
         content.content.width,
         "Reasoning model",
-        "The main model for the session. Use a configured id or an OpenRouter vendor/model id.",
+        "Secondary model for planning and review. Use a configured model id.",
         &mut state.reasoning,
         state.focus == TierField::Reasoning,
         theme,

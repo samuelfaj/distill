@@ -2985,10 +2985,7 @@ fn dashboard_slash_model_stages_pending_model() {
     seed_model(&mut app, "grok-4.5", "Grok 4.5");
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model grok-4.5".into());
-    assert!(
-        effects.is_empty(),
-        "staging a model must not spawn a session"
-    );
+    assert!(matches!(effects.as_slice(), [Effect::PersistTierModel { worker: true, model, effort: None }] if model == "grok-4.5"));
     assert!(app.agents.is_empty(), "no session should be created");
     let pending = app
         .dashboard

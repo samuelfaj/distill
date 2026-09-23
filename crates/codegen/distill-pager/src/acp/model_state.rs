@@ -47,6 +47,8 @@ impl EffortTokenError {
 pub struct ModelState {
     pub available: IndexMap<acp::ModelId, acp::ModelInfo>,
     pub current: Option<acp::ModelId>,
+    /// Configured secondary model; independent of the active session model.
+    pub reasoning_model: Option<acp::ModelId>,
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Set when the user asked for **auto effort** (`/effort auto`): the harness
     /// picks the effort for each model call, and the footer shows `(auto)`.
@@ -86,6 +88,20 @@ impl ModelState {
         } else {
             Some(current.0.to_string())
         }
+    }
+
+    pub fn reasoning_model_name(&self) -> Option<String> {
+        let id = self.reasoning_model.as_ref()?;
+        Some(self.available.get(id).map_or_else(|| id.0.to_string(), |info| info.name.clone()))
+    }
+
+    pub fn configured_reasoning_model() -> Option<acp::ModelId> {
+        distill_shell::config::load_effective_config()
+            .ok()?
+            .get("models")?
+            .get("default")?
+            .as_str()
+            .map(acp::ModelId::new)
     }
 
     /// Machine-readable model ID string for the current model (e.g. "grok-4.5").
@@ -321,6 +337,7 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                 Self {
                     available: models,
                     current: current_model,
+                    reasoning_model: Self::configured_reasoning_model(),
                     reasoning_effort,
                     // A session starts in auto effort: the harness ships with
                     // `[jev] effort_auto` on (unset ⇒ on) and the shell seeds

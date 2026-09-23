@@ -3866,13 +3866,13 @@
     }
 
     #[test]
-    fn model_tier_footer_shows_reasoning_worker_and_change_with_distinct_colors() {
+    fn model_tier_footer_shows_main_worker_and_secondary_reasoning() {
         let _guard = crate::theme::cache::pin_theme();
         crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
         let area = Rect::new(0, 0, 120, 3);
         let tiers = PromptModelTiers {
-            reasoning: "gpt-6-astra (high)".to_owned(),
-            worker: Some("gpt-5.6-luna (low)".to_owned()),
+            primary: "gpt-6-luna (auto)".to_owned(),
+            reasoning: Some("gpt-6-sol".to_owned()),
         };
         let info = PromptInfo {
             model_tiers: Some(&tiers),
@@ -3890,7 +3890,7 @@
             .map(|y| buf_text_at(&buf, 0, area.width, y))
             .find(|line| line.contains("Reasoning:"))
             .expect("model tier footer row");
-        assert!(row.contains("Reasoning: gpt-6-astra (high) | Worker: gpt-5.6-luna (low) | change"));
+        assert!(row.contains("Main: gpt-6-luna (auto) | Reasoning: gpt-6-sol | change"));
 
         let style_at = |needle: &str| {
             let byte_x = row.find(needle).expect("footer text") as usize;
@@ -3901,8 +3901,8 @@
             buf.cell((x, y)).expect("footer cell").style()
         };
         let theme = Theme::current();
+        assert_eq!(style_at("Main:").fg, Some(theme.accent_skill));
         assert_eq!(style_at("Reasoning:").fg, Some(theme.accent_success));
-        assert_eq!(style_at("Worker:").fg, Some(theme.accent_skill));
         let change_style = style_at("change");
         assert_eq!(change_style.fg, Some(theme.accent_system));
         assert!(change_style.add_modifier.contains(Modifier::UNDERLINED));
@@ -3913,11 +3913,33 @@
     }
 
     #[test]
-    fn model_tier_footer_omits_worker_when_unconfigured() {
+    fn model_tier_summary_reads_secondary_separately_from_main_session_model() {
+        let mut models = crate::acp::ModelState::default();
+        let worker = agent_client_protocol::ModelId::new("chatgpt/gpt-6-luna");
+        let reasoning = agent_client_protocol::ModelId::new("chatgpt/gpt-6-sol");
+        models.available.insert(
+            worker.clone(),
+            agent_client_protocol::ModelInfo::new(worker.clone(), "GPT-6-Luna"),
+        );
+        models.available.insert(
+            reasoning.clone(),
+            agent_client_protocol::ModelInfo::new(reasoning.clone(), "GPT-6-Sol"),
+        );
+        models.current = Some(worker);
+        models.reasoning_model = Some(reasoning);
+        models.effort_auto = true;
+
+        let summary = PromptModelTiers::from_model_state(&models).expect("main model");
+        assert_eq!(summary.primary, "GPT-6-Luna (auto)");
+        assert_eq!(summary.reasoning.as_deref(), Some("GPT-6-Sol"));
+    }
+
+    #[test]
+    fn model_tier_footer_omits_reasoning_when_unconfigured() {
         let area = Rect::new(0, 0, 80, 3);
         let tiers = PromptModelTiers {
-            reasoning: "gpt-6-astra (auto)".to_owned(),
-            worker: None,
+            primary: "gpt-6-astra (auto)".to_owned(),
+            reasoning: None,
         };
         let info = PromptInfo {
             model_tiers: Some(&tiers),
@@ -3935,8 +3957,8 @@
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("gpt-6-astra (auto) | change"));
-        assert!(!text.contains("Worker:"));
+        assert!(text.contains("Main: gpt-6-astra (auto) | change"));
+        assert!(!text.contains("Reasoning:"));
         assert!(result.change_rect.is_some());
     }
 

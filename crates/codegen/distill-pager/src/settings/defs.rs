@@ -827,14 +827,14 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // SHELL-owned. It reads from `pager.current_model_name` (not `cfg.models.default`) so the modal reflects `/model` switches.
+        // SHELL-owned. The pager snapshot exposes the selected reasoning model.
         // The empty-string default means "no opinion": the shell's resolution applies
         SettingMeta {
             key: "default_model",
             category: SettingCategory::Models,
             owner: SettingOwner::Shell,
-            label: "Default model",
-            description: "Model used for new sessions. Changing this also switches the active session. Pick `(no override)` to clear.",
+            label: "Reasoning model",
+            description: "Secondary model for planning and review. Pick `(no override)` to clear.",
             keywords: &["model", "default", "agent", "llm", "grok", "switch"],
             kind: SettingKind::DynamicEnum {
                 default: "",

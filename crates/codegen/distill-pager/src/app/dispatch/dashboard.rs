@@ -1521,15 +1521,41 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             dispatch(Action::ExitDashboard, app)
         }
-        // `/model` on the session-less dashboard stages the model for the NEXT spawned agent instead of switching a (nonexistent) session
-        // Both the effort-bearing (`SwitchModel`) and bare (`SetDefaultModel`) forms share the per-spawn staging; no global default is persisted
+        // A session-scoped switch can still stage the next dashboard agent.
         CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
             stage_dashboard_model(app, model_id, effort);
             vec![]
         }
+        CommandResult::Action(Action::SetTierLight(model, effort)) => {
+            if model.is_empty() {
+                app.cli_model_override = None;
+                app.cli_effort_token = None;
+                if let Some(reasoning) = app.models.reasoning_model.clone()
+                    && app.models.available.contains_key(&reasoning)
+                {
+                    app.models.set_current(reasoning, None);
+                }
+                if let Some(d) = app.dashboard.as_mut() {
+                    d.pending_model = None;
+                    d.dispatch.set_text("");
+                    d.models = app.models.clone();
+                    d.error_toast = Some("✓ Worker model: removed".into());
+                }
+            } else {
+                let model_id = acp::ModelId::new(model.clone());
+                app.models.set_current(model_id.clone(), effort);
+                app.cli_model_override = Some(model_id.clone());
+                app.cli_effort_token = effort.map(|level| level.to_string());
+                stage_dashboard_model(app, model_id, effort);
+            }
+            vec![Effect::PersistTierModel { worker: true, model, effort }]
+        }
         CommandResult::Action(Action::SetDefaultModel(model_id)) => {
-            stage_dashboard_model(app, model_id, None);
-            vec![]
+            let effects = dispatch(Action::SetDefaultModel(model_id), app);
+            if let Some(d) = app.dashboard.as_mut() {
+                d.dispatch.set_text("");
+            }
+            effects
         }
         // `/plan` toggles whether the next spawned agent starts in plan mode
         // The command always reports `On` here (the dashboard's `plan_mode_active` snapshot is always false)

@@ -2344,7 +2344,8 @@ impl AppView {
     }
 
     fn onboarding_worker_options(&self) -> Vec<(String, String)> {
-        let Some(reasoning) = self.models.current_model_id_str() else {
+        let Some(reasoning) = self.models.reasoning_model.as_ref().map(|id| id.0.as_ref())
+            .or_else(|| self.models.current_model_id_str()) else {
             return Vec::new();
         };
         let current_worker = distill_shell::jev::tiers_cached().light;

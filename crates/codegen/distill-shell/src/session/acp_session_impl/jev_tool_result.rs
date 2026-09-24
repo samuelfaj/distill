@@ -2,7 +2,8 @@
 //! Jev post-processing of a finished tool result (`todo.md` areas A, C, D).
 //!
 //! One insertion point, one pass, and a strict rule set:
-//! * small results are never sent to Jev (the golden rule: no call for nothing);
+//! * small non-compression results are skipped; Jev judges source-backed
+//!   compression opportunities by their expected savings;
 //! * every item is gated by its own flag inside [`crate::jev::ask_item`], and a
 //!   missing/errored answer leaves the result **exactly** as it was;
 //! * the pass may only *narrow* what the model will re-read (A1…A4, D2) or
@@ -25,7 +26,7 @@ use super::SessionActor;
 /// Payloads at or above this size are remembered, so a repeat can be a pointer
 /// instead of the bytes (small results are not worth a lookup).
 const READ_REUSE_BYTES: usize = 2_000;
-/// Results below this size are left alone: no call, no latency, no cost.
+/// Small outputs normally bypass the post-processing pipeline.
 const MIN_BYTES: usize = 400;
 /// At most this many advisory hints are appended, whatever the answers say.
 const MAX_HINTS: usize = 3;
@@ -217,6 +218,54 @@ fn compression_evidence_question(
     format!(
         "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts for {request_context}."
     )
+}
+
+async fn jev_wants_worker_compression(
+    worker: &crate::jev_cheap::WorkerLane,
+    original: &str,
+    evidence: &str,
+    question: &str,
+) -> bool {
+    let criteria = [
+        ("allow".to_owned(), serde_json::json!("one worker call is likely to save total cost and preserve required evidence")),
+        ("reject".to_owned(), serde_json::json!("pass the original through")),
+        ("defer".to_owned(), serde_json::json!("savings or answer quality are uncertain")),
+    ]
+    .into_iter()
+    .collect();
+    let Ok(question_pack) = distill_workspace::jev::types::Question::choice(
+        "The direct utility compression did not produce an accepted answer. Decide whether one bounded, source-backed call to the configured worker is still worthwhile. Include its call cost, the expected reduction in future context, and the risk of omitting evidence. Choose reject or defer unless net savings and task adequacy are likely.",
+        criteria,
+    ) else {
+        return false;
+    };
+    let endpoint = worker.client().attribution_endpoint();
+    let state = serde_json::json!({
+        "original_bytes": original.len(),
+        "bounded_source_bytes": evidence.len(),
+        "source_excerpt": distill_sampling_types::truncate_bytes(evidence, 600),
+        "task_question": question,
+        "worker_model": worker.model(),
+        "candidate_facts": crate::jev_model_facts::model_facts(&[(
+            worker.model(),
+            endpoint.as_str(),
+        )]),
+    });
+    let answers = crate::jev::ask_item(
+        JevLever::ECheapCompress,
+        state,
+        [("decision".to_owned(), question_pack)].into_iter().collect(),
+    )
+    .await;
+    let allow = answers.as_ref().is_some_and(|answer| answer.choice("decision") == Some("allow"));
+    crate::jev::record_item(
+        JevLever::ECheapCompress,
+        if allow { "worker:allow" } else { "worker:defer" },
+        "Jev assessed worker fallback after utility compression",
+        answers.as_ref().and_then(|answer| answer.confidence("decision")),
+        answers.as_ref(),
+    );
+    allow
 }
 
 fn web_fetch_text_content_type(content_type: &str) -> bool {
@@ -773,7 +822,15 @@ impl SessionActor {
         }
         let review_evidence = review_evidence.filter(|(_, prose_only)| !prose_only);
         let changes_files = review_evidence.is_some();
-        if text.len() < MIN_BYTES && !changes_files {
+        let compression_candidate = crate::jev::lever_active(JevLever::ECheapCompress)
+            && matches!(
+                output,
+                distill_tools::types::output::ToolOutput::Bash(_)
+                    | distill_tools::types::output::ToolOutput::WebSearch(_)
+                    | distill_tools::types::output::ToolOutput::WebFetch(_)
+                    | distill_tools::types::output::ToolOutput::TaskOutput(_)
+            );
+        if text.len() < MIN_BYTES && !changes_files && !compression_candidate {
             return text;
         }
         let is_task_output = matches!(
@@ -996,8 +1053,7 @@ impl SessionActor {
             ) => web_fetch_content_shape_is_safe(fetch),
             _ => false,
         };
-        let cheap_eligible = body.len() >= context::BIG_OUTPUT_BYTES
-            && (cheap_source || task_output_source)
+        let cheap_eligible = (cheap_source || task_output_source)
             && !is_document
             && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
             && crate::jev::lever_active(JevLever::ECheapCompress);
@@ -1129,7 +1185,15 @@ impl SessionActor {
                             EXTRACTIVE_TASK,
                             effort.as_deref().unwrap_or("provider_default"),
                         );
-                        if crate::jev_cheap::optional_compression_allowed(&worker_key) {
+                        let worker_allowed = crate::jev_cheap::optional_compression_allowed(&worker_key);
+                        if worker_allowed
+                            && jev_wants_worker_compression(
+                                &worker,
+                                &body,
+                                &evidence,
+                                &evidence_question,
+                            ).await
+                        {
                             let attempt = super::side_call::auxiliary_attempt(
                                 worker.client(),
                                 &worker_request,
@@ -1245,7 +1309,7 @@ impl SessionActor {
                                     );
                                 }
                             }
-                        } else {
+                        } else if !worker_allowed {
                             crate::jev::record_item(
                                 JevLever::ECheapCompress,
                                 "defer:worker-failure-bound",
@@ -1600,8 +1664,21 @@ impl SessionActor {
                         raised_level = Some(level);
                     }
                     if !prose_only {
-                        review_note =
-                            verify::diff_review_note_with(&review, raised_level.as_deref());
+                        if review.needs_other_model {
+                            self.jev_ledger
+                                .borrow_mut()
+                                .request_reasoning_review(change.to_string());
+                        }
+                        let needs_reasoner = review.needs_other_model;
+                        review.needs_other_model = false;
+                        review_note = verify::diff_review_note_with(&review, raised_level.as_deref());
+                        if needs_reasoner {
+                            let instruction = "Jev requested independent review of this edit. Use the supplied reasoning_advice for this change; if it is absent, ask the read-only code-reviewer subagent before moving on.";
+                            review_note = Some(match review_note {
+                                Some(note) => format!("{note} {instruction}"),
+                                None => instruction.to_owned(),
+                            });
+                        }
                     }
                 }
             }
@@ -1860,6 +1937,31 @@ mod tests {
         crate::jev::set_test_decision_answers(choices.iter().map(|choice| {
             Some(crate::jev_cheap::test_utility_review_answer(choice))
         }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn worker_compression_fallback_requires_jev_approval() {
+        let worker = crate::jev_cheap::WorkerLane::from_sampler_config(
+            distill_sampler::SamplerConfig {
+                model: "worker-model".to_owned(),
+                base_url: "http://127.0.0.1:1/v1".to_owned(),
+                context_window: 32_000,
+                api_key: Some("test-key".to_owned()),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("worker lane");
+        set_utility_review_choices(&["reject"]);
+        let allowed = crate::jev::with_session_scope(
+            "worker-compression-rejected",
+            jev_wants_worker_compression(&worker, "source text", "source text", "summarize"),
+        )
+        .await;
+        assert!(!allowed);
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+        crate::jev::clear_test_decision_answers();
     }
 
     #[test]
@@ -2280,7 +2382,7 @@ mod tests {
                 assert!(crate::jev::lever_active(JevLever::ECheapCompress));
                 assert!(!crate::jev::lever_active(JevLever::ECheapTask));
 
-                set_utility_review_choices(&["allow", "accept"]);
+                set_utility_review_choices(&["allow", "allow"]);
                 let accepted = crate::jev::with_session_scope_and_recorder(
                     "e3-production-order-accepted",
                     Some(actor.chat_state_handle.clone()),
@@ -2297,6 +2399,7 @@ mod tests {
                 assert!(accepted.contains("full output stored at"));
                 assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
                 assert_eq!(server.request_count_for("/v1/responses"), 1);
+                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
                 let request_models: Vec<String> = server
                     .request_bodies()
                     .into_iter()
@@ -2358,7 +2461,7 @@ mod tests {
                 }
                 let rejected_actor = super::super::support::plain_actor().await;
                 install_catalog(&rejected_actor, &rejected_server);
-                set_utility_review_choices(&["allow", "allow"]);
+                set_utility_review_choices(&["allow"; 12]);
                 let rejected_sources = vec![
                     format!(
                         "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nfirst payload\n{}",
@@ -2398,7 +2501,10 @@ mod tests {
                 .await;
                 assert_eq!(retained, rejected_sources);
                 assert_eq!(rejected_server.request_count_for("/v1/chat/completions"), 2);
-                assert_eq!(rejected_server.request_count_for("/v1/responses"), 2);
+                assert_eq!(rejected_server.request_count_for("/v1/responses"), 2,
+                    "remaining_jev_answers={}, activity={:?}",
+                    crate::jev::test_decision_answers_remaining(),
+                    crate::jev::turn_activity_for_session("e3-production-order-rejected", None));
                 let rejected_request_bodies = serde_json::to_string(&rejected_server.request_bodies())
                     .expect("serialize rejected request bodies");
                 assert!(rejected_request_bodies.contains("first payload"));
@@ -2601,7 +2707,7 @@ mod tests {
                     light_effort: Some("low".to_owned()),
                 });
 
-                set_utility_review_choices(&["allow", "accept"]);
+                set_utility_review_choices(&["allow", "allow"]);
                 let output = ToolOutput::WebSearch(WebSearchOutput {
                     query: query.to_owned(),
                     content: source_content,
@@ -2803,7 +2909,7 @@ mod tests {
                     light_effort: Some("low".to_owned()),
                 });
 
-                set_utility_review_choices(&["allow", "accept"]);
+                set_utility_review_choices(&["allow", "allow"]);
                 let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
                     url: url.to_owned(),
                     content: preview,
@@ -3014,7 +3120,7 @@ mod tests {
                     light_effort: Some("low".to_owned()),
                 });
 
-                set_utility_review_choices(&["allow", "accept"]);
+                set_utility_review_choices(&["allow", "allow"]);
                 let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(
                     TaskOutputResult {
                         task_id: snapshot.task_id.clone(),

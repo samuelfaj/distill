@@ -55,6 +55,8 @@ pub(crate) struct JevTurnLedger {
     effort_floor: Option<(String, distill_sampling_types::ReasoningEffort)>,
     /// A review may reserve one higher-effort call per turn, not a sticky floor.
     review_escalated: bool,
+    /// C4 asked for an independent reasoning review of the last executed edit.
+    reasoning_review_pending: Option<String>,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// Stable schemas within a turn; invalidate when the request or available names change.
     pub(crate) tool_selection: Option<(String, Vec<String>)>,
@@ -168,6 +170,14 @@ impl JevTurnLedger {
         self.effort_floor.take()
     }
 
+    pub(crate) fn request_reasoning_review(&mut self, change: String) {
+        self.reasoning_review_pending = Some(change);
+    }
+
+    pub(crate) fn take_reasoning_review(&mut self) -> Option<String> {
+        std::mem::take(&mut self.reasoning_review_pending)
+    }
+
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()
@@ -215,6 +225,7 @@ impl JevTurnLedger {
         self.pending_effort_label = None;
         self.effort_floor = None;
         self.review_escalated = false;
+        self.reasoning_review_pending = None;
         self.last_execution = None;
         self.tool_selection = None;
         rows.sort_by(|a, b| {

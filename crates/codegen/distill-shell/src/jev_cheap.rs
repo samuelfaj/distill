@@ -40,7 +40,6 @@ const OPTIONAL_COMPRESSION_RECOVERY_ROUNDS: u64 = 2;
 const UTILITY_MAX_PAYLOAD_BYTES: usize = 24 * 1024;
 const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
 const UTILITY_MAX_DECISION_STATE_BYTES: usize = 32 * 1024;
-const UTILITY_JEV_CONFIDENCE_THRESHOLD: f64 = 0.98;
 const UTILITY_PRE_APPROVAL: &str = "pre_approval";
 const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
@@ -154,6 +153,8 @@ fn utility_review_state(
         "task_id": task_id,
         "question": question,
         "source": source,
+        "source_bytes": source.len(),
+        "question_bytes": question.len(),
         "utility_model_candidate": utility_model,
         "candidate_capabilities": {
             "transport": "chat_completions",
@@ -173,7 +174,7 @@ fn utility_review_state(
 fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::jev::types::Question> {
     let (instructions, criteria) = match phase {
         UTILITY_PRE_APPROVAL => (
-            "Assess the named utility_model_candidate for this exact explicit allowlisted task. Allow only when that candidate is suitable for one tiny source-backed auxiliary call, the input/output bounds are sufficient, there is no agent or tool authority, and the caller retains the original or configured-worker fallback.",
+            "Decide whether calling the named utility_model_candidate for this source-backed auxiliary task is likely to reduce total tokens and cost, including this decision, output review, and possible fallback. Allow when its bounded answer can replace a materially larger source or a more expensive display call. Reject when the source is already concise or the savings are unlikely. It has no agent or tool authority; the caller retains the original or configured-worker fallback. Choose defer when unsure.",
             [
                 (
                     "allow",
@@ -182,6 +183,10 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
                 (
                     "reject",
                     serde_json::json!("keep the configured worker or original content"),
+                ),
+                (
+                    "defer",
+                    serde_json::json!("insufficient evidence of net savings"),
                 ),
             ],
         ),
@@ -195,6 +200,10 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
                 (
                     "reject",
                     serde_json::json!("keep the configured worker or original content"),
+                ),
+                (
+                    "defer",
+                    serde_json::json!("the source does not establish the answer's correctness"),
                 ),
             ],
         ),
@@ -213,20 +222,14 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
     .collect()
 }
 
-fn utility_review_is_high_confidence(
+fn utility_review_approves(
     answers: &distill_workspace::jev::types::JevAnswerSet,
     expected: &str,
 ) -> bool {
-    let confidence = answers.confidence(UTILITY_DECISION_ID);
-    let confidence_ok = confidence.is_some_and(|value| {
-        value.is_finite() && (UTILITY_JEV_CONFIDENCE_THRESHOLD..=1.0).contains(&value)
-    });
-    let probability_ok = answers
-        .probability(UTILITY_DECISION_ID, expected)
-        .is_none_or(|value| {
-            value.is_finite() && (UTILITY_JEV_CONFIDENCE_THRESHOLD..=1.0).contains(&value)
-        });
-    answers.choice(UTILITY_DECISION_ID) == Some(expected) && confidence_ok && probability_ok
+    answers.choice(UTILITY_DECISION_ID) == Some(expected)
+        && answers
+            .confidence(UTILITY_DECISION_ID)
+            .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value))
 }
 
 async fn ask_utility_review(
@@ -255,7 +258,7 @@ async fn ask_utility_review(
     let answers = crate::jev::ask_item(lever, state, utility_review_questions(phase)).await;
     let approved = answers
         .as_ref()
-        .is_some_and(|answers| utility_review_is_high_confidence(answers, expected));
+        .is_some_and(|answers| utility_review_approves(answers, expected));
     let confidence = answers
         .as_ref()
         .and_then(|answers| answers.confidence(UTILITY_DECISION_ID));
@@ -1332,6 +1335,22 @@ mod tests {
         assert!(criteria.contains_key("accept"));
         assert!(criteria.contains_key("reject"));
         assert!(!criteria.contains_key("allow"));
+    }
+
+    #[test]
+    fn utility_review_uses_jevs_explicit_choice() {
+        let mut allow = test_utility_review_answer("allow");
+        if let Some(distill_workspace::jev::types::Answer::Choice { confidence, .. }) =
+            allow.answers.get_mut(UTILITY_DECISION_ID)
+        {
+            *confidence = Some(0.7);
+        }
+        assert!(utility_review_approves(&allow, "allow"));
+        assert!(!utility_review_approves(&allow, "accept"));
+        assert!(!utility_review_approves(
+            &test_utility_review_answer("defer"),
+            "allow"
+        ));
     }
 
     #[test]

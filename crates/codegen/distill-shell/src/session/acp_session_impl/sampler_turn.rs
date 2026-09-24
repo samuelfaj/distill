@@ -2072,6 +2072,19 @@ impl SessionActor {
         {
             return Ok(SamplerTurnOutcome::CompactAndResubmit);
         }
+        if let Some(config) = route_config.as_ref().filter(|_| {
+            !routed_local && transient.step_attempts == 0 && !mid_salvage_continuation
+        }) {
+            let items_before = request.items.len();
+            self.jev_reasoning_step(&mut request, config).await;
+            if request.items.len() != items_before
+                && self
+                .preflight_route_context(&request, route_config.as_ref(), mid_salvage_continuation)
+                .await?
+            {
+                return Ok(SamplerTurnOutcome::CompactAndResubmit);
+            }
+        }
 
         if !budget.can_wait() {
             if routed_local {

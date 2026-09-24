@@ -26,19 +26,24 @@ the harness keeps its normal execution path.
 
 ## Main and reasoning
 
-The main model does all the work. The reasoning model is consulted only at
-three kinds of decision points, and its advice joins the conversation as
-`<reasoning_advice>`, so the main model keeps following it on later rounds:
+The main model does all the work. Jev decides every consult of the reasoning
+model, and the advice joins the conversation as `<reasoning_advice>`, so the
+main model keeps following it on later rounds:
 
-| Point | When | How it is decided |
+| Decision | When Jev is asked | What it weighs |
 |---|---|---|
-| Plan | Once per request | At the first round, Jev answers whether the request needs an up-front plan, its intent and its complexity. A confident answer decides; an unsure one plans only multi-file or larger work. A question is planned right away; work on the workspace is planned after the main model's first tool results, so the plan rests on what it found. |
-| Recover | When the main model is stuck | No Jev question: the same call failing twice, three failed calls in a row, the same call issued three times, an edit that undoes an earlier one, or 20 rounds without advice. An edit the change review (C4) flags for another model's opinion is handled here too. |
-| Review | Before delivery | When the main model finishes a request that changed files, the reasoning model reviews the diff, the final message and the last test or build. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. A change of at most six lines, with nothing failing after it, on a request Jev did not judge complex, is delivered without a review. |
+| Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text, such as an explanation or a design), or once the main model has looked at the workspace, so the plan rests on what it found. It also judges the request's complexity, which the later decisions read. |
+| Step | Every later round in which the main model did something the reasoning model has not weighed | Whether the main model is stuck and needs a diagnosis before its next round. The facts since the last advice are in the question: tool calls and failures, the call that failed most, the call repeated most (waiting on background work aside), failures in a row, edits undone, rounds without advice and the latest calls. |
+| Review | Before delivery, while there is work no review has seen | Whether the reasoning model reviews the work: the files and lines changed, the last test or build, failures, the request's complexity, earlier consults and verdicts, and the start of the final message. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. |
 
-Each request allows one plan, two recoveries and one review; a recovery waits at
-least two rounds after the previous consult. Without a reasoning model, or when
-Jev is unavailable, the main model works alone.
+An edit the change review (C4) flags for another model's opinion is itself a
+Jev decision and is reviewed as it comes. There is no fixed budget, cooldown or
+size threshold: the only rules left are facts (nothing new since the last
+consult or review leaves nothing to decide). An unsure or missing answer spends
+nothing: the main model works on, and the work is delivered as it is. With
+`/effort auto`, the round's question rides in the same decision request as the
+main model's effort, so a round costs one Jev call. Without a reasoning model,
+or when Jev is unavailable, the main model works alone.
 
 The consults of one request are one conversation with the reasoning model. The
 instructions are the same for every consult, and each consult resends the
@@ -62,9 +67,9 @@ a consult that does not fit even then is skipped and logged.
 While the reasoning model works, the status row names it (for example
 `reasoning review gpt-6-sol high`). The turn report lists its tokens like any
 other model, plus a `Reasoning - Nx (plan, review)` line. With `GROK_LOG_JEV=1`,
-each gate decision and a per-request summary (rounds, failures, changes,
-complexity, consults) are logged under `b2_reasoning_model`, which is what the
-thresholds should be tuned from.
+each decision and a per-request summary (rounds, failures, changes,
+complexity, consults, review verdicts) are logged under `b2_reasoning_model`,
+which is what the questions should be tuned from.
 
 The built-in `plan` and `code-reviewer` subagents run on the reasoning model;
 every other subagent runs on the main model. An explicit subagent model pin

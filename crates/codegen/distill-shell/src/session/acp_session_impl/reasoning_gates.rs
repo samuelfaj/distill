@@ -1,20 +1,21 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! When the main model consults the reasoning model.
 //!
-//! The main model runs every step. The reasoning model is consulted only at a
-//! few decision points, each with its own trigger:
+//! The main model runs every step. Jev decides every consult, from the facts
+//! this module keeps about the request:
 //!
-//! * **plan**: once per request. Jev judges whether the request needs a plan
-//!   and how complex it is; a request that acts on the workspace is planned
-//!   after the main model's first tool results, so the plan rests on evidence.
-//! * **recover**: deterministic signs that the main model is stuck: the same
-//!   call failing twice, three failures in a row, the same call issued three
-//!   times, an edit undone, or a long request without advice.
-//! * **review**: before the main model delivers a request that changed files,
-//!   unless the change is trivial.
+//! * **plan**: once per request, whether the reasoning model plans it, now or
+//!   once the main model has looked at the workspace.
+//! * **step**: each round with work the reasoning model has not weighed yet,
+//!   whether the main model is stuck and needs advice before the next round.
+//!   Repeated failures, loops, undone edits and rounds since the last advice
+//!   are facts Jev reads, not triggers.
+//! * **review**: before delivery, whether the reasoning model reviews the work.
 //!
-//! A per-request budget and a cooldown bound the cost. Everything here is pure
-//! over the facts the session records, so each rule is testable on its own.
+//! An edit the change review (C4) flags is Jev's decision already and is
+//! reviewed as it comes. Nothing here counts toward a fixed budget: the only
+//! rules left are facts (nothing new since the last consult or review means
+//! there is nothing to decide).
 //!
 //! The consults of one request share a [`ReasoningThread`]: each one resends
 //! the thread unchanged and appends only the work since the last reply, so the
@@ -23,25 +24,10 @@
 
 use distill_sampling_types::ConversationItem;
 use distill_tools::types::output::{ApplyPatchOutput, SearchReplaceOutput, ToolOutput};
+use distill_workspace::jev::JevAnswerSet;
 
-/// Recovery consults (struggle signals and flagged edits) per request.
-pub(crate) const MAX_RECOVERIES: u32 = 2;
-/// Main-model rounds between two recovery consults.
-pub(crate) const RECOVERY_COOLDOWN_ROUNDS: u32 = 2;
-/// Rounds without advice after which the request gets one checkpoint.
-pub(crate) const LONG_REQUEST_ROUNDS: u32 = 20;
-/// Changed lines up to which a delivery is trivial, when nothing failed after
-/// the change and Jev did not judge the request complex.
-pub(crate) const TRIVIAL_CHANGE_LINES: u64 = 6;
-/// B1 complexity (0..=1) from which a request needs planning: "multi-file work
-/// with investigation" and above.
-pub(crate) const COMPLEX_REQUEST: f64 = 0.5;
 /// Bytes of diff handed to a delivery review; the rest is listed by file.
 pub(crate) const REVIEW_DIFF_BYTES: usize = 24_000;
-/// Consecutive failed tool results that count as being stuck.
-const CONSECUTIVE_FAILURES: usize = 3;
-/// Times the same call may run before it counts as a loop.
-const REPEATED_CALLS: usize = 3;
 /// Characters of a call kept as its identity.
 const SIGNATURE_CHARS: usize = 200;
 /// Tool results remembered per request.
@@ -56,8 +42,14 @@ const SUMMARY_CHARS: usize = 160;
 const SOURCE_ARGS_CHARS: usize = 120;
 /// Source of a work item the main model wrote itself.
 const MAIN_MODEL_SOURCE: &str = "main model";
+/// Latest calls a step decision sees one by one.
+const RECENT_CALLS: usize = 12;
+/// Changed files a delivery decision sees by name.
+const LISTED_FILES: usize = 20;
+/// Characters of the final message a delivery decision sees.
+const FINAL_MESSAGE_CHARS: usize = 600;
 
-/// One finished tool call, as the struggle signals read it.
+/// One finished tool call, as the step facts read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolEvent {
     pub(crate) signature: String,
@@ -97,12 +89,11 @@ pub(crate) enum PlanGate {
     Done,
 }
 
-/// What the plan gate does with Jev's answers.
+/// The question Jev answers for this round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlanDecision {
-    MainAlone,
-    ConsultNow,
-    AfterEvidence,
+pub(crate) enum RoundQuestion {
+    Plan,
+    Step,
 }
 
 /// Why the reasoning model was consulted.
@@ -125,51 +116,54 @@ impl ConsultKind {
     }
 }
 
-/// A deterministic sign that the main model is not managing on its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Struggle {
-    SameCallFailedTwice(String),
-    ConsecutiveFailures(usize),
-    RepeatedCall(String),
-    EditReverted(String),
-    LongRequest(u32),
+/// A call and how often it came up.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct CallCount {
+    pub(crate) call: String,
+    pub(crate) times: usize,
 }
 
-impl Struggle {
-    /// Short label for the decision log.
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            Self::SameCallFailedTwice(_) => "same-call-failed",
-            Self::ConsecutiveFailures(_) => "consecutive-failures",
-            Self::RepeatedCall(_) => "repeated-call",
-            Self::EditReverted(_) => "edit-reverted",
-            Self::LongRequest(_) => "long-request",
-        }
-    }
+/// What the main model did since the reasoning model last advised it (or
+/// since the request began): the evidence a step decision weighs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StepFacts {
+    pub(crate) rounds_since_advice: u32,
+    pub(crate) tool_calls: usize,
+    pub(crate) failed_calls: usize,
+    /// Failed calls in a row at the end.
+    pub(crate) trailing_failures: usize,
+    /// The call that failed most often, when one failed more than once.
+    pub(crate) repeated_failure: Option<CallCount>,
+    /// The call made most often, when one ran more than once; waiting on
+    /// background work repeats a call by design and is left out.
+    pub(crate) repeated_call: Option<CallCount>,
+    /// Files where an edit undid an earlier one.
+    pub(crate) undone_edits: Vec<String>,
+    /// The latest calls, oldest first.
+    pub(crate) recent_calls: Vec<String>,
+}
 
-    /// What the reasoning model and the main model are told.
+impl StepFacts {
+    /// The facts in one sentence, for the decision log and the reasoning model.
     pub(crate) fn describe(&self) -> String {
-        match self {
-            Self::SameCallFailedTwice(call) => {
-                format!("the same call failed twice: `{call}`")
-            }
-            Self::ConsecutiveFailures(count) => format!("the last {count} tool calls failed"),
-            Self::RepeatedCall(call) => {
-                format!("the same call ran {REPEATED_CALLS} times: `{call}`")
-            }
-            Self::EditReverted(path) => format!("an edit to `{path}` was undone"),
-            Self::LongRequest(rounds) => {
-                format!("{rounds} rounds without a plan or advice")
-            }
+        let mut parts = vec![format!(
+            "{} rounds and {} tool calls since the last advice, {} failed",
+            self.rounds_since_advice, self.tool_calls, self.failed_calls
+        )];
+        if self.trailing_failures > 1 {
+            parts.push(format!("the last {} in a row", self.trailing_failures));
         }
+        if let Some(failure) = &self.repeated_failure {
+            parts.push(format!("`{}` failed {} times", failure.call, failure.times));
+        }
+        if let Some(repeat) = &self.repeated_call {
+            parts.push(format!("`{}` ran {} times", repeat.call, repeat.times));
+        }
+        for path in &self.undone_edits {
+            parts.push(format!("an edit to `{path}` was undone"));
+        }
+        parts.join("; ")
     }
-}
-
-/// Whether a finished request gets a delivery review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReviewNeed {
-    Skip(&'static str),
-    Review,
 }
 
 /// The first line of a delivery review.
@@ -190,14 +184,15 @@ pub(crate) struct ReasoningGates {
     last_test: Option<TestEvidence>,
     plan: PlanGate,
     complexity: Option<f64>,
-    recoveries: u32,
-    reviewed: bool,
     last_consult_round: Option<u32>,
     events_at_last_consult: usize,
     changes_at_last_consult: usize,
     consults: Vec<ConsultKind>,
-    /// Gates already logged as blocked, so a lasting signal is logged once.
-    blocked: std::collections::HashSet<String>,
+    /// Tool results and changes the last review saw.
+    reviewed_upto: Option<(usize, usize)>,
+    verdicts: Vec<&'static str>,
+    /// Answers a battery shared with another decision gave for this round.
+    round_answers: Option<(RoundQuestion, JevAnswerSet)>,
     thread: ReasoningThread,
 }
 
@@ -253,7 +248,7 @@ impl ReasoningGates {
         !self.events.is_empty()
     }
 
-    /// How complex Jev judged the request at the plan gate.
+    /// How complex Jev judged the request when it decided the plan.
     pub(crate) fn note_assessment(&mut self, complexity: Option<f64>) {
         self.complexity = complexity;
     }
@@ -263,37 +258,66 @@ impl ReasoningGates {
         &mut self.thread
     }
 
-    /// The first sign, since the last consult, that the main model is stuck.
-    /// A consult resets the window, so one signal never triggers twice.
-    pub(crate) fn struggle(&self) -> Option<Struggle> {
+    /// The question Jev answers this round: the plan while the request is
+    /// undecided, then whether the main model needs advice, as long as it did
+    /// something the reasoning model has not weighed. A plan waiting for the
+    /// first evidence has nothing to ask.
+    pub(crate) fn round_question(&self) -> Option<RoundQuestion> {
+        match self.plan {
+            PlanGate::Undecided => Some(RoundQuestion::Plan),
+            PlanGate::AfterEvidence => None,
+            PlanGate::Done => (self.events.len() > self.events_at_last_consult
+                || self.changes.len() > self.changes_at_last_consult)
+                .then_some(RoundQuestion::Step),
+        }
+    }
+
+    /// Keeps the answers a shared battery gave for this round's question.
+    pub(crate) fn set_round_answers(&mut self, question: RoundQuestion, answers: JevAnswerSet) {
+        self.round_answers = Some((question, answers));
+    }
+
+    /// The answers kept for `question`, if any. The store is emptied either
+    /// way, so answers never outlive the round they were given for.
+    pub(crate) fn take_round_answers(&mut self, question: RoundQuestion) -> Option<JevAnswerSet> {
+        self.round_answers
+            .take()
+            .filter(|(asked, _)| *asked == question)
+            .map(|(_, answers)| answers)
+    }
+
+    pub(crate) fn clear_round_answers(&mut self) {
+        self.round_answers = None;
+    }
+
+    /// What happened since the last consult, or since the request began.
+    pub(crate) fn step_facts(&self) -> StepFacts {
         let events = self
             .events
             .get(self.events_at_last_consult..)
             .unwrap_or_default();
-        let mut failures: std::collections::HashMap<&str, usize> = Default::default();
-        for event in events.iter().filter(|event| event.failed) {
-            let count = failures.entry(event.signature.as_str()).or_default();
-            *count += 1;
-            if *count >= 2 {
-                return Some(Struggle::SameCallFailedTwice(event.signature.clone()));
+        let most_frequent = |calls: &mut dyn Iterator<Item = &ToolEvent>| {
+            let mut counts: Vec<(&str, usize)> = Vec::new();
+            for event in calls {
+                match counts.iter_mut().find(|(call, _)| *call == event.signature) {
+                    Some((_, count)) => *count += 1,
+                    None => counts.push((&event.signature, 1)),
+                }
             }
-        }
-        let trailing = events.iter().rev().take_while(|event| event.failed).count();
-        if trailing >= CONSECUTIVE_FAILURES {
-            return Some(Struggle::ConsecutiveFailures(trailing));
-        }
-        let mut calls: std::collections::HashMap<&str, usize> = Default::default();
-        for event in events.iter().filter(|event| !event.polling) {
-            let count = calls.entry(event.signature.as_str()).or_default();
-            *count += 1;
-            if *count >= REPEATED_CALLS {
-                return Some(Struggle::RepeatedCall(event.signature.clone()));
-            }
-        }
+            counts
+                .into_iter()
+                .filter(|(_, times)| *times > 1)
+                .max_by_key(|(_, times)| *times)
+                .map(|(call, times)| CallCount {
+                    call: call.to_owned(),
+                    times,
+                })
+        };
         let changes = self
             .changes
             .get(self.changes_at_last_consult..)
             .unwrap_or_default();
+        let mut undone_edits: Vec<String> = Vec::new();
         for (index, later) in changes.iter().enumerate() {
             let Some((later_old, later_new)) = &later.replaced else {
                 continue;
@@ -305,52 +329,60 @@ impl ReasoningGates {
                         .as_ref()
                         .is_some_and(|(old, new)| old == later_new && new == later_old)
             });
-            if undoes {
-                return Some(Struggle::EditReverted(later.path.clone()));
+            if undoes && !undone_edits.contains(&later.path) {
+                undone_edits.push(later.path.clone());
             }
         }
-        let since = self
-            .rounds
-            .saturating_sub(self.last_consult_round.unwrap_or(0));
-        (since >= LONG_REQUEST_ROUNDS).then_some(Struggle::LongRequest(since))
+        StepFacts {
+            rounds_since_advice: self
+                .rounds
+                .saturating_sub(self.last_consult_round.unwrap_or(0)),
+            tool_calls: events.len(),
+            failed_calls: events.iter().filter(|event| event.failed).count(),
+            trailing_failures: events.iter().rev().take_while(|event| event.failed).count(),
+            repeated_failure: most_frequent(&mut events.iter().filter(|event| event.failed)),
+            repeated_call: most_frequent(&mut events.iter().filter(|event| !event.polling)),
+            undone_edits,
+            recent_calls: events
+                .iter()
+                .skip(events.len().saturating_sub(RECENT_CALLS))
+                .map(|event| {
+                    if event.failed {
+                        format!("{} (failed)", event.signature)
+                    } else {
+                        event.signature.clone()
+                    }
+                })
+                .collect(),
+        }
     }
 
-    /// Whether another recovery consult fits the budget and the cooldown.
-    pub(crate) fn may_recover(&self) -> Result<(), &'static str> {
-        if self.recoveries >= MAX_RECOVERIES {
-            return Err("budget");
-        }
-        if self
-            .last_consult_round
-            .is_some_and(|round| self.rounds.saturating_sub(round) < RECOVERY_COOLDOWN_ROUNDS)
-        {
-            return Err("cooldown");
-        }
-        Ok(())
+    /// What a step decision reads besides the round's own step.
+    pub(crate) fn step_state(&self) -> serde_json::Value {
+        serde_json::json!({
+            "since_last_advice": self.step_facts(),
+            "consults_this_request": self.consult_labels(),
+            "rounds_this_request": self.rounds,
+            "request_complexity": self.complexity,
+        })
     }
 
-    /// Books one consult: it spends its budget and resets the struggle window.
-    /// Any advice before delivery also settles the plan gate: the reasoning
-    /// model has already oriented the request.
+    /// Books one consult: later decisions weigh only what came after it. Any
+    /// advice before delivery also settles the plan: the reasoning model has
+    /// already oriented the request.
     pub(crate) fn note_consult(&mut self, kind: ConsultKind) {
         self.consults.push(kind);
         self.last_consult_round = Some(self.rounds);
         self.events_at_last_consult = self.events.len();
         self.changes_at_last_consult = self.changes.len();
         match kind {
-            ConsultKind::Plan => self.plan = PlanGate::Done,
-            ConsultKind::Recover | ConsultKind::EditReview => {
-                self.recoveries = self.recoveries.saturating_add(1);
+            ConsultKind::Plan | ConsultKind::Recover | ConsultKind::EditReview => {
                 self.plan = PlanGate::Done;
             }
-            ConsultKind::Review => self.reviewed = true,
+            ConsultKind::Review => {
+                self.reviewed_upto = Some((self.events.len(), self.changes.len()));
+            }
         }
-    }
-
-    /// `true` the first time `gate` is blocked in this request, so the log
-    /// names a lasting signal once instead of on every round.
-    pub(crate) fn first_block(&mut self, gate: String) -> bool {
-        self.blocked.insert(gate)
     }
 
     /// The consults of this request, in order.
@@ -358,28 +390,55 @@ impl ReasoningGates {
         &self.consults
     }
 
-    /// Whether the finished request gets a delivery review.
-    pub(crate) fn delivery_review_need(&self) -> ReviewNeed {
-        if self.reviewed {
-            return ReviewNeed::Skip("already-reviewed");
+    fn consult_labels(&self) -> Vec<&'static str> {
+        self.consults.iter().map(|kind| kind.label()).collect()
+    }
+
+    /// Whether a delivery has anything a review has not seen: always before
+    /// the first review; after one, only new tool results or changes. A second
+    /// review of the same work would repeat the first.
+    pub(crate) fn has_new_work_since_review(&self) -> bool {
+        self.reviewed_upto
+            .is_none_or(|(events, changes)| self.events.len() > events || self.changes.len() > changes)
+    }
+
+    pub(crate) fn note_verdict(&mut self, verdict: ReviewVerdict) {
+        self.verdicts.push(match verdict {
+            ReviewVerdict::Approve => "approve",
+            ReviewVerdict::Revise => "revise",
+            ReviewVerdict::Unclear => "unclear",
+        });
+    }
+
+    /// What a delivery decision reads.
+    pub(crate) fn delivery_state(&self, final_message: &str) -> serde_json::Value {
+        let (added, removed) = self.changes.iter().fold((0u64, 0u64), |(a, r), change| {
+            (a.saturating_add(change.added), r.saturating_add(change.removed))
+        });
+        let mut files: Vec<&str> = Vec::new();
+        for change in &self.changes {
+            if !files.contains(&change.path.as_str()) {
+                files.push(&change.path);
+            }
         }
-        if self.changes.is_empty() {
-            return ReviewNeed::Skip("no-changes");
-        }
-        let lines: u64 = self
-            .changes
-            .iter()
-            .map(|change| change.added.saturating_add(change.removed))
-            .sum();
-        let failing = self.last_test.as_ref().is_some_and(|test| test.failed)
-            || self.events.last().is_some_and(|event| event.failed);
-        let complex = self
-            .complexity
-            .is_some_and(|complexity| complexity >= COMPLEX_REQUEST);
-        if lines <= TRIVIAL_CHANGE_LINES && !failing && !complex {
-            return ReviewNeed::Skip("trivial-change");
-        }
-        ReviewNeed::Review
+        serde_json::json!({
+            "changed_files": files.len(),
+            "files": files.iter().take(LISTED_FILES).collect::<Vec<_>>(),
+            "lines_added": added,
+            "lines_removed": removed,
+            "last_check": self.last_test.as_ref().map(|check| serde_json::json!({
+                "command": check.command,
+                "failed": check.failed,
+            })),
+            "last_tool_failed": self.events.last().is_some_and(|event| event.failed),
+            "tool_calls": self.events.len(),
+            "failed_tool_calls": self.events.iter().filter(|event| event.failed).count(),
+            "rounds": self.rounds,
+            "request_complexity": self.complexity,
+            "consults": self.consult_labels(),
+            "earlier_review_verdicts": self.verdicts,
+            "final_message_start": final_message.chars().take(FINAL_MESSAGE_CHARS).collect::<String>(),
+        })
     }
 
     /// The request's changes for a reviewer: diffs up to the byte budget, then
@@ -414,16 +473,16 @@ impl ReasoningGates {
         let (added, removed) = self.changes.iter().fold((0u64, 0u64), |(a, r), change| {
             (a.saturating_add(change.added), r.saturating_add(change.removed))
         });
-        let consults: Vec<&str> = self.consults.iter().map(|kind| kind.label()).collect();
         format!(
             "rounds={} tools={} failures={failures} changes={} (+{added} -{removed}) \
-             complexity={} consults=[{}]",
+             complexity={} consults=[{}] reviews=[{}]",
             self.rounds,
             self.events.len(),
             self.changes.len(),
             self.complexity
                 .map_or_else(|| "unknown".to_owned(), |c| format!("{c:.2}")),
-            consults.join(", ")
+            self.consult_labels().join(", "),
+            self.verdicts.join(", ")
         )
     }
 }
@@ -546,29 +605,6 @@ impl ReasoningThread {
         self.items.push(ConversationItem::user(message));
         self.items.push(ConversationItem::assistant(advice));
         self.sent = sent;
-    }
-}
-
-/// The plan gate's decision. A confident Jev answer decides whether the request
-/// needs a plan; an unsure one falls back to how complex Jev judged it, and an
-/// unknown complexity leaves the main model alone (the struggle and delivery
-/// gates still watch it). A request that only asks for an answer is planned
-/// now; one that works on the workspace is planned after the main model's
-/// first tool results, so the plan rests on what it found.
-pub(crate) fn plan_decision(
-    consult: Option<bool>,
-    complexity: Option<f64>,
-    intent: Option<&str>,
-) -> PlanDecision {
-    let needs_plan = consult.unwrap_or_else(|| {
-        complexity.is_some_and(|complexity| complexity >= COMPLEX_REQUEST)
-    });
-    if !needs_plan {
-        PlanDecision::MainAlone
-    } else if intent == Some("question") {
-        PlanDecision::ConsultNow
-    } else {
-        PlanDecision::AfterEvidence
     }
 }
 
@@ -723,195 +759,145 @@ mod tests {
         }
     }
 
-    fn gates_with(events: Vec<ToolEvent>) -> ReasoningGates {
-        ReasoningGates {
-            events,
-            ..Default::default()
-        }
+    /// Jev is asked the plan first; after that, only when the main model did
+    /// something the reasoning model has not weighed: with nothing new there is
+    /// nothing to decide, and a plan waiting for evidence asks nothing.
+    #[test]
+    fn the_round_asks_the_plan_first_then_only_about_new_work() {
+        let mut gates = ReasoningGates::default();
+        assert_eq!(gates.round_question(), Some(RoundQuestion::Plan));
+        gates.set_plan(PlanGate::AfterEvidence);
+        assert_eq!(gates.round_question(), None);
+        gates.set_plan(PlanGate::Done);
+        assert_eq!(gates.round_question(), None, "no work yet");
+        gates.events.push(event("read_file a.rs", false));
+        assert_eq!(gates.round_question(), Some(RoundQuestion::Step));
+        gates.note_consult(ConsultKind::Recover);
+        assert_eq!(gates.round_question(), None, "the consult weighed it");
+        gates.changes.push(change("a.rs", "x", "y"));
+        assert_eq!(gates.round_question(), Some(RoundQuestion::Step));
     }
 
-    /// Planning a request the main model can do alone wastes a reasoning call;
-    /// not planning a complex one lets it act without a plan. A confident
-    /// answer decides, an unsure one follows complexity, and nothing known
-    /// means the main model works alone (the other gates still watch it).
+    /// The step decision gets the evidence of trouble as facts, counted since
+    /// the last advice: repeated failures, loops (waiting on background work
+    /// aside), undone edits and the rounds without advice.
     #[test]
-    fn the_plan_gate_follows_confidence_then_complexity() {
-        use PlanDecision::*;
-        assert_eq!(plan_decision(Some(false), Some(1.0), Some("edit")), MainAlone);
-        assert_eq!(plan_decision(Some(true), Some(0.0), Some("edit")), AfterEvidence);
-        assert_eq!(plan_decision(None, Some(0.67), Some("edit")), AfterEvidence);
-        assert_eq!(plan_decision(None, Some(0.33), Some("edit")), MainAlone);
-        assert_eq!(plan_decision(None, None, None), MainAlone);
-    }
-
-    /// A question is answered without tools, so its plan cannot wait for
-    /// evidence; work on the workspace is planned on what the main model found.
-    #[test]
-    fn answers_are_planned_now_and_workspace_work_after_evidence() {
-        use PlanDecision::*;
-        assert_eq!(plan_decision(Some(true), None, Some("question")), ConsultNow);
-        assert_eq!(plan_decision(Some(true), None, Some("research")), AfterEvidence);
-        assert_eq!(plan_decision(Some(true), None, Some("command")), AfterEvidence);
-        assert_eq!(plan_decision(Some(true), None, None), AfterEvidence);
-    }
-
-    /// Each struggle signal is a concrete sign the main model is not managing:
-    /// the same failure twice, a run of failures, a loop, or an edit undone.
-    #[test]
-    fn struggle_signals_fire_on_repeated_failure_loops_and_undone_edits() {
-        let same = gates_with(vec![
-            event("bash cargo test foo", true),
-            event("read_file a.rs", false),
-            event("bash cargo test foo", true),
-        ]);
-        assert_eq!(
-            same.struggle(),
-            Some(Struggle::SameCallFailedTwice("bash cargo test foo".to_owned()))
-        );
-
-        let run = gates_with(vec![
-            event("bash a", true),
-            event("bash b", true),
-            event("bash c", true),
-        ]);
-        assert_eq!(run.struggle(), Some(Struggle::ConsecutiveFailures(3)));
-
-        let looped = gates_with(vec![
-            event("grep x", false),
-            event("grep x", false),
-            event("grep x", false),
-        ]);
-        assert_eq!(looped.struggle(), Some(Struggle::RepeatedCall("grep x".to_owned())));
-
-        let reverted = ReasoningGates {
-            changes: vec![change("src/a.rs", "old", "new"), change("src/a.rs", "new", "old")],
-            ..Default::default()
-        };
-        assert_eq!(reverted.struggle(), Some(Struggle::EditReverted("src/a.rs".to_owned())));
-    }
-
-    /// Normal progress is not a struggle: one failure that was then fixed,
-    /// polling a background task, and edits that move forward stay quiet.
-    #[test]
-    fn ordinary_progress_is_not_a_struggle() {
-        let fixed = gates_with(vec![
-            event("bash cargo test", true),
-            event("search_replace a.rs", false),
-            event("bash cargo test", false),
-        ]);
-        assert_eq!(fixed.struggle(), None);
-
-        let polling = gates_with(
-            (0..5)
-                .map(|_| ToolEvent {
+    fn step_facts_report_failures_loops_and_undone_edits_since_the_last_advice() {
+        let mut gates = ReasoningGates {
+            events: vec![
+                event("bash old failure", true),
+                event("bash cargo test foo", true),
+                event("read_file a.rs", false),
+                event("bash cargo test foo", true),
+                event("grep x", false),
+                event("grep x", false),
+                event("grep x", false),
+                ToolEvent {
                     signature: "task_output t1".to_owned(),
                     failed: false,
                     polling: true,
-                })
-                .collect(),
-        );
-        assert_eq!(polling.struggle(), None);
-
-        let forward = ReasoningGates {
-            changes: vec![change("src/a.rs", "a", "b"), change("src/a.rs", "b", "c")],
+                },
+            ],
+            changes: vec![change("src/a.rs", "old", "new"), change("src/a.rs", "new", "old")],
             ..Default::default()
         };
-        assert_eq!(forward.struggle(), None);
+        gates.events_at_last_consult = 1;
+        gates.last_consult_round = Some(2);
+        for _ in 0..9 {
+            gates.note_round();
+        }
+        let facts = gates.step_facts();
+        assert_eq!(facts.rounds_since_advice, 7);
+        assert_eq!((facts.tool_calls, facts.failed_calls), (7, 2), "the old failure was weighed");
+        assert_eq!(facts.trailing_failures, 0);
+        assert_eq!(
+            facts.repeated_failure,
+            Some(CallCount {
+                call: "bash cargo test foo".to_owned(),
+                times: 2
+            })
+        );
+        assert_eq!(
+            facts.repeated_call,
+            Some(CallCount {
+                call: "grep x".to_owned(),
+                times: 3
+            })
+        );
+        assert_eq!(facts.undone_edits, ["src/a.rs"]);
+        assert_eq!(facts.recent_calls.len(), 7);
+        assert_eq!(facts.recent_calls[0], "bash cargo test foo (failed)");
+        assert_eq!(facts.recent_calls[1], "read_file a.rs");
+        let said = facts.describe();
+        assert!(
+            said.contains("`bash cargo test foo` failed 2 times") && said.contains("`src/a.rs` was undone"),
+            "{said}"
+        );
+
+        gates.note_consult(ConsultKind::Recover);
+        let after = gates.step_facts();
+        assert_eq!((after.tool_calls, after.rounds_since_advice), (0, 0));
+        assert!(after.undone_edits.is_empty() && after.repeated_call.is_none());
+    }
+
+    /// Answers a shared battery gave are for one round and one question: a
+    /// different question never reads them, and they never reach a later round.
+    #[test]
+    fn shared_answers_serve_only_their_own_round_question() {
+        let answers = || JevAnswerSet {
+            model: "test".to_owned(),
+            answers: Default::default(),
+            usage: Default::default(),
+            request_id: None,
+            latency_ms: 0,
+        };
+        let mut gates = ReasoningGates::default();
+        gates.set_round_answers(RoundQuestion::Step, answers());
+        assert!(gates.take_round_answers(RoundQuestion::Plan).is_none());
+        assert!(gates.take_round_answers(RoundQuestion::Step).is_none(), "the store emptied");
+        gates.set_round_answers(RoundQuestion::Step, answers());
+        assert!(gates.take_round_answers(RoundQuestion::Step).is_some());
+        gates.set_round_answers(RoundQuestion::Plan, answers());
+        gates.clear_round_answers();
+        assert!(gates.take_round_answers(RoundQuestion::Plan).is_none());
     }
 
     /// Advice for a stuck main model already orients the request, so the plan
-    /// gate must not pay for a second consult right after it.
+    /// must not be paid for again right after it.
     #[test]
-    fn a_recovery_settles_the_plan_gate_and_blocks_are_logged_once() {
+    fn a_recovery_settles_the_plan() {
         let mut gates = ReasoningGates::default();
         gates.set_plan(PlanGate::AfterEvidence);
         gates.note_consult(ConsultKind::Recover);
         assert_eq!(gates.plan(), PlanGate::Done);
-        assert!(gates.first_block("recover:budget".to_owned()));
-        assert!(!gates.first_block("recover:budget".to_owned()));
     }
 
-    /// A long request gets one checkpoint, counted from the last advice.
+    /// A delivery can be reviewed until a review saw it; after that only new
+    /// work can be, or the same review would be paid for twice. The delivery
+    /// decision reads the size, the files, the last check and earlier verdicts.
     #[test]
-    fn a_long_request_without_advice_gets_a_checkpoint() {
+    fn a_delivery_is_reviewable_until_a_review_saw_it() {
         let mut gates = ReasoningGates::default();
-        for _ in 0..LONG_REQUEST_ROUNDS - 1 {
-            gates.note_round();
-        }
-        assert_eq!(gates.struggle(), None);
-        gates.note_round();
-        assert_eq!(gates.struggle(), Some(Struggle::LongRequest(LONG_REQUEST_ROUNDS)));
-        gates.note_consult(ConsultKind::Recover);
-        assert_eq!(gates.struggle(), None, "the checkpoint resets the window");
-    }
+        assert!(gates.has_new_work_since_review(), "a plain answer can be reviewed too");
+        gates.changes = vec![change("a.rs", "x", "y"), change("a.rs", "y", "z"), change("b.rs", "p", "q")];
+        gates.last_test = Some(TestEvidence {
+            command: "cargo test".to_owned(),
+            failed: true,
+            excerpt: "1 failed".to_owned(),
+        });
+        let state = gates.delivery_state("Done: fixed the parser.");
+        assert_eq!(state["changed_files"], 2);
+        assert_eq!(state["files"], serde_json::json!(["a.rs", "b.rs"]));
+        assert_eq!((state["lines_added"].as_u64(), state["lines_removed"].as_u64()), (Some(3), Some(3)));
+        assert_eq!(state["last_check"]["failed"], true);
+        assert_eq!(state["final_message_start"], "Done: fixed the parser.");
 
-    /// A consult resets the window: the failures it was asked about must not
-    /// trigger it again, and budget and cooldown bound the cost.
-    #[test]
-    fn consults_reset_the_window_and_respect_budget_and_cooldown() {
-        let mut gates = gates_with(vec![event("bash x", true), event("bash x", true)]);
-        assert!(gates.struggle().is_some());
-        assert_eq!(gates.may_recover(), Ok(()));
-        gates.note_consult(ConsultKind::Recover);
-        assert_eq!(gates.struggle(), None);
-        assert_eq!(gates.may_recover(), Err("cooldown"));
-        gates.note_round();
-        gates.note_round();
-        assert_eq!(gates.may_recover(), Ok(()));
-        gates.note_consult(ConsultKind::EditReview);
-        gates.note_round();
-        gates.note_round();
-        assert_eq!(gates.may_recover(), Err("budget"));
-        assert_eq!(
-            gates.consults(),
-            [ConsultKind::Recover, ConsultKind::EditReview]
-        );
-    }
-
-    /// A delivery review is for work that changed something that matters: no
-    /// change or a tiny, passing one on a simple request is delivered as is;
-    /// a larger change, a failing check or a complex request is reviewed, once.
-    #[test]
-    fn delivery_review_skips_trivial_work_and_reviews_the_rest_once() {
-        assert_eq!(
-            ReasoningGates::default().delivery_review_need(),
-            ReviewNeed::Skip("no-changes")
-        );
-        let tiny = ReasoningGates {
-            changes: vec![change("a.rs", "x", "y")],
-            ..Default::default()
-        };
-        assert_eq!(tiny.delivery_review_need(), ReviewNeed::Skip("trivial-change"));
-
-        let failing = ReasoningGates {
-            changes: vec![change("a.rs", "x", "y")],
-            last_test: Some(TestEvidence {
-                command: "cargo test".to_owned(),
-                failed: true,
-                excerpt: "1 failed".to_owned(),
-            }),
-            ..Default::default()
-        };
-        assert_eq!(failing.delivery_review_need(), ReviewNeed::Review);
-
-        let mut complex = ReasoningGates {
-            changes: vec![change("a.rs", "x", "y")],
-            ..Default::default()
-        };
-        complex.note_assessment(Some(0.67));
-        assert_eq!(complex.delivery_review_need(), ReviewNeed::Review);
-
-        let mut large = ReasoningGates {
-            changes: vec![ChangeRecord {
-                added: 40,
-                removed: 3,
-                ..change("a.rs", "x", "y")
-            }],
-            ..Default::default()
-        };
-        assert_eq!(large.delivery_review_need(), ReviewNeed::Review);
-        large.note_consult(ConsultKind::Review);
-        assert_eq!(large.delivery_review_need(), ReviewNeed::Skip("already-reviewed"));
+        gates.note_consult(ConsultKind::Review);
+        gates.note_verdict(ReviewVerdict::Revise);
+        assert!(!gates.has_new_work_since_review());
+        assert_eq!(gates.delivery_state("")["earlier_review_verdicts"], serde_json::json!(["revise"]));
+        gates.events.push(event("search_replace a.rs", false));
+        assert!(gates.has_new_work_since_review());
     }
 
     /// The reviewer sees whole diffs while they fit, then names what it could

@@ -334,9 +334,10 @@ pub struct EffortChoice {
 /// the session's own effort.
 pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.40;
 
-/// The reasoning-consult floor. Two options put chance at 0.5, so an answer is
-/// taken only clearly above it; below it [`reasoning_consult_pick`] is unsure and
-/// the harness falls back to the request's complexity.
+/// The floor for every reasoning decision: an answer is taken only when Jev
+/// holds it more likely than all the alternatives together, with a margin.
+/// Below it the pick is unsure, and the harness takes the choice that spends
+/// nothing: the main model works on, and the work is delivered as it is.
 pub const REASONING_CONSULT_MIN_CONFIDENCE: f64 = 0.55;
 
 /// B2 (auto): one `choice` over the efforts **this model** offers for a single
@@ -412,55 +413,93 @@ pub struct TierProfile {
     pub notes: String,
 }
 
-/// Question id of the reasoning consult: can the main model do this request alone?
+/// Question id of the plan decision at the start of a request.
 pub const REASONING_CONSULT_QUESTION: &str = "reasoning_consult";
-/// The main model does this step on its own.
+/// The main model does the request on its own.
 pub const MAIN_ALONE_LABEL: &str = "main_alone";
-/// The reasoning model plans or reviews this step for the main model first.
+/// The reasoning model plans the request before the main model acts.
+pub const PLAN_NOW_LABEL: &str = "plan_now";
+/// The reasoning model plans the request once the main model has looked.
+pub const PLAN_AFTER_EVIDENCE_LABEL: &str = "plan_after_evidence";
+/// Question id of the per-round decision: does the main model need advice now?
+pub const REASONING_STEP_QUESTION: &str = "reasoning_step";
+/// The main model goes on without advice.
+pub const CONTINUE_ALONE_LABEL: &str = "continue_alone";
+/// The reasoning model advises the main model before its next round.
 pub const CONSULT_REASONING_LABEL: &str = "consult_reasoning";
+/// Question id of the delivery decision: is the work reviewed first?
+pub const REASONING_REVIEW_QUESTION: &str = "reasoning_review";
+/// The work is delivered as it is.
+pub const DELIVER_LABEL: &str = "deliver";
+/// The reasoning model reviews the work before it is delivered.
+pub const REVIEW_LABEL: &str = "review";
 
-/// B2: does the main model need the reasoning model to plan THIS request?
+/// When the reasoning model plans a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanTiming {
+    MainAlone,
+    Now,
+    AfterEvidence,
+}
+
+/// One line naming a model and its role, for the criteria.
+fn role_line(role: &str, profile: &TierProfile) -> Json {
+    let notes = if profile.notes.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" Notes from its owner: {}", profile.notes)
+    };
+    Json::String(format!(
+        "{role}: `{}` ({} tokens of context).{notes}",
+        profile.name, profile.context_window
+    ))
+}
+
+/// The same model in both roles would consult itself.
+fn distinct(main: &TierProfile, reasoning: &TierProfile) -> Result<(), JevError> {
+    if main.id == reasoning.id {
+        return Err(JevError::invalid("the reasoning model is the main model"));
+    }
+    Ok(())
+}
+
+/// B2: does THIS request need the reasoning model to plan it, and when?
 ///
 /// Asked once, at the start of a request. The main model always does the work;
-/// the answer only decides whether the reasoning model plans it first. Getting
-/// stuck and delivering changes are watched separately by the harness, so this
-/// question is about up-front planning only. Only asked when a reasoning model
-/// is configured and differs from the main model.
+/// the answer only decides whether and when the reasoning model plans it.
+/// Getting stuck and delivering are decided separately, each round and at the
+/// end, so this question is about up-front planning only.
 pub fn reasoning_consult_questions(
     main: &TierProfile,
     reasoning: &TierProfile,
 ) -> Result<BTreeMap<QuestionId, Question>, JevError> {
-    if main.id == reasoning.id {
-        return Err(JevError::invalid("the reasoning model is the main model"));
-    }
-    let describe = |role: &str, profile: &TierProfile| {
-        let notes = if profile.notes.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" Notes from its owner: {}", profile.notes)
-        };
-        format!(
-            "{role}: `{}` ({} tokens of context).{notes}",
-            profile.name, profile.context_window
-        )
-    };
+    distinct(main, reasoning)?;
     let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
     criteria.insert(
         MAIN_ALONE_LABEL.to_owned(),
-        Json::String(describe(
+        role_line(
             "The main model does this request correctly and completely on its own: a direct \
              answer, a routine or clearly specified change, or a mechanical task",
             main,
-        )),
+        ),
     );
     criteria.insert(
-        CONSULT_REASONING_LABEL.to_owned(),
-        Json::String(describe(
-            "The reasoning model plans this request for the main model first: architecture or \
-             design, multi-file or multi-step work, ambiguous requirements, a subtle bug to \
-             diagnose, or a result the main model would likely get wrong or leave incomplete",
+        PLAN_NOW_LABEL.to_owned(),
+        role_line(
+            "The reasoning model plans this request before the main model acts: it can be \
+             planned from the request alone (an explanation, a design or a decision), and a \
+             wrong start would cost more than the plan",
             reasoning,
-        )),
+        ),
+    );
+    criteria.insert(
+        PLAN_AFTER_EVIDENCE_LABEL.to_owned(),
+        role_line(
+            "The reasoning model plans this request once the main model has looked at the \
+             workspace: architecture, multi-file or multi-step work, ambiguous requirements or \
+             a subtle bug, where a plan written before reading the code would be guesswork",
+            reasoning,
+        ),
     );
     let mut questions = BTreeMap::new();
     questions.insert(
@@ -469,16 +508,16 @@ pub fn reasoning_consult_questions(
             format!(
                 "A new user request is in `request`. The main model `{}` will do the work \
                  either way. Decide whether it can do this request correctly and completely the \
-                 first time on its own, or needs the reasoning model `{}` to plan it first. \
-                 The harness separately consults the reasoning model if the main model gets stuck \
-                 and reviews changes before delivery, so consult now only when the request needs \
-                 an up-front plan: the main model would likely take a wrong approach, miss \
-                 requirements, or need retries without one. Judge the work the request needs, not \
-                 its wording or length. Minimize total task cost including retries and recovery: \
-                 a wrong approach costs more than one consult, and a needless consult costs a \
-                 reasoning-model call. Compare benchmarks only within the same source and metric; \
-                 missing scores are unknown, never zero. Pricing and endpoint metrics describe \
-                 OpenRouter only, not subscriptions or other providers.",
+                 first time on its own, or needs the reasoning model `{}` to plan it first, and \
+                 when. Whether the main model is stuck is asked every round, and whether to \
+                 review the work before delivery is asked at the end, so plan only when the \
+                 request needs an up-front plan: the main model would likely take a wrong \
+                 approach, miss requirements, or need retries without one. Judge the work the \
+                 request needs, not its wording or length. Minimize total task cost including \
+                 retries and recovery: a wrong approach costs more than one consult, and a \
+                 needless consult costs a reasoning-model call. Compare benchmarks only within \
+                 the same source and metric; missing scores are unknown, never zero. Pricing and \
+                 endpoint metrics describe OpenRouter only, not subscriptions or other providers.",
                 main.name, reasoning.name
             ),
             criteria,
@@ -487,20 +526,139 @@ pub fn reasoning_consult_questions(
     Ok(questions)
 }
 
-/// B2: Jev's confident answer to the consult question: `Some(true)` to plan
-/// with the reasoning model, `Some(false)` for the main model alone, `None`
-/// when unsure (below the floor, missing, or an unknown label). The harness
-/// decides what an unsure answer means.
-pub fn reasoning_consult_pick(answers: &JevAnswerSet) -> Option<bool> {
+/// B2: Jev's confident plan decision, or `None` when unsure (below the floor,
+/// missing, or an unknown label).
+pub fn reasoning_plan_pick(answers: &JevAnswerSet) -> Option<PlanTiming> {
     let pick = pick_one(
         answers,
         REASONING_CONSULT_QUESTION,
-        &[MAIN_ALONE_LABEL, CONSULT_REASONING_LABEL],
+        &[MAIN_ALONE_LABEL, PLAN_NOW_LABEL, PLAN_AFTER_EVIDENCE_LABEL],
+        REASONING_CONSULT_MIN_CONFIDENCE,
+    );
+    match pick.choice.as_deref()? {
+        MAIN_ALONE_LABEL => Some(PlanTiming::MainAlone),
+        PLAN_NOW_LABEL => Some(PlanTiming::Now),
+        PLAN_AFTER_EVIDENCE_LABEL => Some(PlanTiming::AfterEvidence),
+        _ => None,
+    }
+}
+
+/// B2: after a round of the main model's work, does it need the reasoning
+/// model's advice before the next one? `reasoning` in the state holds what
+/// happened since the last advice (or since the request began).
+pub fn reasoning_step_questions(
+    main: &TierProfile,
+    reasoning: &TierProfile,
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    distinct(main, reasoning)?;
+    let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
+    criteria.insert(
+        CONTINUE_ALONE_LABEL.to_owned(),
+        role_line(
+            "The main model is making progress, or is already working through the problem it \
+             hit: its next round needs no advice",
+            main,
+        ),
+    );
+    criteria.insert(
+        CONSULT_REASONING_LABEL.to_owned(),
+        role_line(
+            "The main model is stuck or heading the wrong way: the reasoning model diagnoses it \
+             and re-plans before the next round, saving the rounds a wrong path would waste",
+            reasoning,
+        ),
+    );
+    let mut questions = BTreeMap::new();
+    questions.insert(
+        REASONING_STEP_QUESTION.to_owned(),
+        Question::choice(
+            format!(
+                "The main model `{}` is working on the request in `request`; \
+                 `reasoning.since_last_advice` lists what it did since the reasoning model `{}` \
+                 last advised it (or since the request began). Decide whether it needs that \
+                 advice before its next round. Consult when the evidence shows it is stuck or off \
+                 course: the same failure again, the same call over and over, an edit undone, or \
+                 long work without progress. Do not consult for ordinary progress, for a failure \
+                 it is already fixing, or right after advice it has not had the rounds to follow. \
+                 Each consult costs a reasoning-model call; a stuck main model costs every round \
+                 it stays stuck.",
+                main.name, reasoning.name
+            ),
+            criteria,
+        )?,
+    );
+    Ok(questions)
+}
+
+/// B2: `Some(true)` to consult now, `Some(false)` to continue alone, `None`
+/// when unsure.
+pub fn reasoning_step_pick(answers: &JevAnswerSet) -> Option<bool> {
+    let pick = pick_one(
+        answers,
+        REASONING_STEP_QUESTION,
+        &[CONTINUE_ALONE_LABEL, CONSULT_REASONING_LABEL],
         REASONING_CONSULT_MIN_CONFIDENCE,
     );
     pick.choice
         .as_deref()
         .map(|choice| choice == CONSULT_REASONING_LABEL)
+}
+
+/// B2: before the main model delivers, does the reasoning model review the
+/// work? `reasoning.delivery` in the state describes it.
+pub fn reasoning_review_questions(
+    main: &TierProfile,
+    reasoning: &TierProfile,
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    distinct(main, reasoning)?;
+    let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
+    criteria.insert(
+        DELIVER_LABEL.to_owned(),
+        role_line(
+            "Deliver as it is: the work is trivial or already verified, a plain answer the main \
+             model is sure of, or work a review already approved",
+            main,
+        ),
+    );
+    criteria.insert(
+        REVIEW_LABEL.to_owned(),
+        role_line(
+            "The reasoning model reviews it first: a defect, a missing requirement or a claim \
+             the evidence does not support is plausible and would cost the user",
+            reasoning,
+        ),
+    );
+    let mut questions = BTreeMap::new();
+    questions.insert(
+        REASONING_REVIEW_QUESTION.to_owned(),
+        Question::choice(
+            format!(
+                "The main model `{}` is about to deliver its work on the request in `request`; \
+                 `reasoning.delivery` describes it: the changes, the last check, earlier consults \
+                 and reviews, and the start of its final message. Decide whether the reasoning \
+                 model `{}` reviews it first. Review when a mistake is plausible and costly: \
+                 non-trivial or risky changes, a failing or missing check, a complex request, or \
+                 claims the evidence may not support. Deliver without a review for trivial or \
+                 well-verified work. A review costs a reasoning-model call; a defect the user \
+                 finds costs a new request.",
+                main.name, reasoning.name
+            ),
+            criteria,
+        )?,
+    );
+    Ok(questions)
+}
+
+/// B2: `Some(true)` to review first, `Some(false)` to deliver, `None` when
+/// unsure.
+pub fn reasoning_review_pick(answers: &JevAnswerSet) -> Option<bool> {
+    let pick = pick_one(
+        answers,
+        REASONING_REVIEW_QUESTION,
+        &[DELIVER_LABEL, REVIEW_LABEL],
+        REASONING_CONSULT_MIN_CONFIDENCE,
+    );
+    pick.choice.as_deref().map(|choice| choice == REVIEW_LABEL)
 }
 
 /// B2 — floor for sending one piece of work to the reasoning model in full.
@@ -1217,10 +1375,11 @@ mod tests {
         }
     }
 
-    /// The consult question offers exactly the two roles the caller can act on
-    /// and names both models, so the decision knows who runs and who advises.
+    /// The plan question offers what the harness can act on — no plan, a plan
+    /// now, or a plan once the main model has looked — and names both models,
+    /// so the decision knows who runs and who advises.
     #[test]
-    fn the_consult_question_offers_main_alone_or_consulting_reasoning() {
+    fn the_plan_question_offers_no_plan_now_or_after_evidence() {
         let main = profile("codex-luna", "gpt-6-luna");
         let reasoning = profile("codex-sol", "gpt-6-sol");
         let questions = reasoning_consult_questions(&main, &reasoning).expect("distinct models");
@@ -1229,43 +1388,59 @@ mod tests {
             criteria,
         } = questions
             .get(REASONING_CONSULT_QUESTION)
-            .expect("consult question")
+            .expect("plan question")
         else {
             panic!("expected a choice");
         };
         assert_eq!(
             criteria.keys().map(String::as_str).collect::<Vec<_>>(),
-            [CONSULT_REASONING_LABEL, MAIN_ALONE_LABEL]
+            [MAIN_ALONE_LABEL, PLAN_AFTER_EVIDENCE_LABEL, PLAN_NOW_LABEL]
         );
         let instructions = instructions.as_str().expect("text instructions");
         assert!(instructions.contains("gpt-6-luna") && instructions.contains("gpt-6-sol"));
         assert!(
             instructions.contains("stuck") && instructions.contains("before delivery"),
-            "the question must say the other gates exist, or Jev plans defensively: {instructions}"
-        );
-        assert!(
-            criteria[CONSULT_REASONING_LABEL]
-                .as_str()
-                .expect("consult description")
-                .contains("plans this request")
+            "the question must say the other decisions exist, or Jev plans defensively: {instructions}"
         );
     }
 
-    /// The same model in both roles would consult itself: refuse the question.
+    /// Each round's question and the delivery question say what the state
+    /// holds and what a consult costs, and a model never consults itself.
     #[test]
-    fn the_consult_question_refuses_the_same_model_twice() {
+    fn the_step_and_review_questions_name_their_evidence_and_refuse_one_model() {
+        let main = profile("codex-luna", "gpt-6-luna");
+        let reasoning = profile("codex-sol", "gpt-6-sol");
+        let text = |questions: BTreeMap<QuestionId, Question>, id: &str| match questions.get(id) {
+            Some(Question::Choice { instructions, .. }) => {
+                instructions.as_str().unwrap_or_default().to_owned()
+            }
+            other => panic!("expected a choice, got {other:?}"),
+        };
+        let step = text(
+            reasoning_step_questions(&main, &reasoning).expect("distinct models"),
+            REASONING_STEP_QUESTION,
+        );
+        assert!(step.contains("since_last_advice") && step.contains("costs"), "{step}");
+        let review = text(
+            reasoning_review_questions(&main, &reasoning).expect("distinct models"),
+            REASONING_REVIEW_QUESTION,
+        );
+        assert!(review.contains("reasoning.delivery") && review.contains("costs"), "{review}");
+
         let one = profile("codex-sol", "gpt-6-sol");
         assert!(reasoning_consult_questions(&one, &one).is_err());
+        assert!(reasoning_step_questions(&one, &one).is_err());
+        assert!(reasoning_review_questions(&one, &one).is_err());
     }
 
     /// Only a confident, known answer is a pick: an unsure or unknown one is
-    /// `None`, so the harness (not a coin flip) decides what doubt means.
+    /// `None`, and the harness then takes the choice that spends nothing.
     #[test]
-    fn only_a_confident_known_answer_is_a_consult_pick() {
-        let answers = |choice: &str, confidence: f64| JevAnswerSet {
+    fn only_a_confident_known_answer_is_a_reasoning_pick() {
+        let answers = |id: &str, choice: &str, confidence: f64| JevAnswerSet {
             model: "test".to_owned(),
             answers: [(
-                REASONING_CONSULT_QUESTION.to_owned(),
+                id.to_owned(),
                 crate::jev::types::Answer::Choice {
                     choice: choice.to_owned(),
                     probabilities: std::collections::BTreeMap::new(),
@@ -1278,10 +1453,27 @@ mod tests {
             request_id: None,
             latency_ms: 0,
         };
-        assert_eq!(reasoning_consult_pick(&answers(CONSULT_REASONING_LABEL, 0.9)), Some(true));
-        assert_eq!(reasoning_consult_pick(&answers(MAIN_ALONE_LABEL, 0.9)), Some(false));
-        assert_eq!(reasoning_consult_pick(&answers(MAIN_ALONE_LABEL, 0.3)), None);
-        assert_eq!(reasoning_consult_pick(&answers(CONSULT_REASONING_LABEL, 0.3)), None);
-        assert_eq!(reasoning_consult_pick(&answers("something-else", 0.99)), None);
+        let plan = |choice, confidence| {
+            reasoning_plan_pick(&answers(REASONING_CONSULT_QUESTION, choice, confidence))
+        };
+        assert_eq!(plan(PLAN_NOW_LABEL, 0.9), Some(PlanTiming::Now));
+        assert_eq!(plan(PLAN_AFTER_EVIDENCE_LABEL, 0.9), Some(PlanTiming::AfterEvidence));
+        assert_eq!(plan(MAIN_ALONE_LABEL, 0.9), Some(PlanTiming::MainAlone));
+        assert_eq!(plan(PLAN_NOW_LABEL, 0.4), None);
+        assert_eq!(plan("something-else", 0.99), None);
+
+        let step = |choice, confidence| {
+            reasoning_step_pick(&answers(REASONING_STEP_QUESTION, choice, confidence))
+        };
+        assert_eq!(step(CONSULT_REASONING_LABEL, 0.9), Some(true));
+        assert_eq!(step(CONTINUE_ALONE_LABEL, 0.9), Some(false));
+        assert_eq!(step(CONSULT_REASONING_LABEL, 0.5), None);
+
+        let review = |choice, confidence| {
+            reasoning_review_pick(&answers(REASONING_REVIEW_QUESTION, choice, confidence))
+        };
+        assert_eq!(review(REVIEW_LABEL, 0.9), Some(true));
+        assert_eq!(review(DELIVER_LABEL, 0.9), Some(false));
+        assert_eq!(review(REVIEW_LABEL, 0.3), None);
     }
 }

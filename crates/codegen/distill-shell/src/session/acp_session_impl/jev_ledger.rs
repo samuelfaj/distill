@@ -213,6 +213,10 @@ impl JevTurnLedger {
         std::mem::take(&mut self.reasoning_review_pending)
     }
 
+    pub(crate) fn reasoning_review_pending(&self) -> bool {
+        self.reasoning_review_pending.is_some()
+    }
+
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()

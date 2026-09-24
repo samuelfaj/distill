@@ -57,8 +57,8 @@ pub(crate) struct JevTurnLedger {
     review_escalated: bool,
     /// C4 asked for an independent reasoning review of the last executed edit.
     reasoning_review_pending: Option<String>,
-    /// The reasoning model already advised the main model during this turn.
-    reasoning_consulted: bool,
+    /// What the reasoning gates know about this request.
+    pub(crate) reasoning: super::reasoning_gates::ReasoningGates,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// Stable schemas within a turn; invalidate when the request or available names change.
     pub(crate) tool_selection: Option<(String, Vec<String>)>,
@@ -90,6 +90,39 @@ impl JevTurnLedger {
             row.requests = row.requests.saturating_add(1);
         }
         self.pending = Some(index);
+        self.started.get_or_insert_with(Instant::now);
+    }
+
+    /// Adds a side call's usage (the reasoning model advising the main one) to
+    /// its own row, without touching the round the next response belongs to.
+    pub(crate) fn add_side_usage(
+        &mut self,
+        model: impl Into<String>,
+        effort: Option<String>,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) {
+        let model = model.into();
+        let index = match self
+            .rows
+            .iter()
+            .position(|row| row.model == model && row.effort == effort)
+        {
+            Some(index) => index,
+            None => {
+                self.rows.push(LedgerRow {
+                    model,
+                    effort,
+                    ..Default::default()
+                });
+                self.rows.len() - 1
+            }
+        };
+        if let Some(row) = self.rows.get_mut(index) {
+            row.requests = row.requests.saturating_add(1);
+            row.input_tokens = row.input_tokens.saturating_add(input_tokens);
+            row.output_tokens = row.output_tokens.saturating_add(output_tokens);
+        }
         self.started.get_or_insert_with(Instant::now);
     }
 
@@ -180,14 +213,6 @@ impl JevTurnLedger {
         std::mem::take(&mut self.reasoning_review_pending)
     }
 
-    pub(crate) fn note_reasoning_consulted(&mut self) {
-        self.reasoning_consulted = true;
-    }
-
-    pub(crate) fn reasoning_consulted(&self) -> bool {
-        self.reasoning_consulted
-    }
-
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()
@@ -236,7 +261,7 @@ impl JevTurnLedger {
         self.effort_floor = None;
         self.review_escalated = false;
         self.reasoning_review_pending = None;
-        self.reasoning_consulted = false;
+        self.reasoning = Default::default();
         self.last_execution = None;
         self.tool_selection = None;
         rows.sort_by(|a, b| {
@@ -252,6 +277,27 @@ impl JevTurnLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reasoning model's advice is billed on its own row, like the main
+    /// model's rounds, and never takes the usage of the round still pending.
+    #[test]
+    fn side_usage_gets_its_own_row_and_keeps_the_pending_round() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.note_round("GPT-6-Luna (ChatGPT)", Some("medium".to_owned()));
+        ledger.add_side_usage("GPT-6-Sol (ChatGPT)", Some("high".to_owned()), 4_000, 900);
+        ledger.add_usage(10_000, 500);
+        ledger.add_side_usage("GPT-6-Sol (ChatGPT)", Some("high".to_owned()), 1_000, 100);
+
+        let rows = ledger.take_rows();
+        let main = rows.iter().find(|row| row.model.starts_with("GPT-6-Luna")).unwrap();
+        assert_eq!((main.requests, main.input_tokens, main.output_tokens), (1, 10_000, 500));
+        let reasoning = rows.iter().find(|row| row.model.starts_with("GPT-6-Sol")).unwrap();
+        assert_eq!(reasoning.effort.as_deref(), Some("high"));
+        assert_eq!(
+            (reasoning.requests, reasoning.input_tokens, reasoning.output_tokens),
+            (2, 5_000, 1_000)
+        );
+    }
 
     #[test]
     fn usage_lands_on_the_round_it_belongs_to() {

@@ -496,6 +496,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            reasoning_consults: Vec::new(),
         };
         let free = "subscription:free-usage-exhausted quota hit";
         let err = attach_prompt_usage(

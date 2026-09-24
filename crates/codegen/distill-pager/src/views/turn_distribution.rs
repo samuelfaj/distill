@@ -2,9 +2,10 @@
 //! "Where did this turn go": the per-model/effort distribution block.
 //!
 //! The shell reports, with the turn's terminal, which model ran each call, at
-//! which effort, and how much it cost in tokens — plus how many decisions the
-//! Jev layer took. This module turns that payload into the short block that is
-//! appended to the scrollback when the turn ends.
+//! which effort, and how much it cost in tokens (the reasoning model's consults
+//! included, on their own rows) — plus why the reasoning model was consulted and
+//! how many decisions the Jev layer took. This module turns that payload into
+//! the short block that is appended to the scrollback when the turn ends.
 
 use distill_shell::extensions::notification::PromptUsage;
 
@@ -30,6 +31,13 @@ pub(crate) fn report(usage: Option<&PromptUsage>) -> Option<String> {
             ),
         })
         .collect();
+    if !usage.reasoning_consults.is_empty() {
+        lines.push(format!(
+            "Reasoning - {}x ({})",
+            usage.reasoning_consults.len(),
+            usage.reasoning_consults.join(", ")
+        ));
+    }
     if usage.jev_calls > 0 {
         lines.push(format!("Jev - {}x", usage.jev_calls));
     }
@@ -87,6 +95,27 @@ mod tests {
              DeepSeek V4.1 Flash high - 1.00M tokens\n\
              DeepSeek V4.1 Flash medium - 500.0k tokens\n\
              Jev - 41x"
+        );
+    }
+
+    /// The reasoning model's tokens read like the main model's (its own row, with
+    /// its effort), and the block says why it was consulted.
+    #[test]
+    fn the_report_shows_the_reasoning_model_like_the_main_one() {
+        let mut usage = usage(
+            vec![
+                row("GPT-6-Luna (ChatGPT)", Some("medium"), 5_000_000, 140_000),
+                row("GPT-6-Sol (ChatGPT)", Some("high"), 38_000, 4_100),
+            ],
+            12,
+        );
+        usage.reasoning_consults = vec!["plan".to_owned(), "review".to_owned()];
+        assert_eq!(
+            report(Some(&usage)).expect("a report"),
+            "GPT-6-Luna (ChatGPT) medium - 5.14M tokens\n\
+             GPT-6-Sol (ChatGPT) high - 42.1k tokens\n\
+             Reasoning - 2x (plan, review)\n\
+             Jev - 12x"
         );
     }
 

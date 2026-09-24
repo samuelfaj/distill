@@ -190,6 +190,8 @@ mod jev_tool_result;
 mod jev_tool_subset;
 #[path = "acp_session_impl/length_salvage.rs"]
 mod length_salvage;
+#[path = "acp_session_impl/reasoning_gates.rs"]
+pub(crate) mod reasoning_gates;
 #[path = "acp_session_impl/sampler_turn.rs"]
 mod sampler_turn;
 pub(crate) use jev_routing::*;

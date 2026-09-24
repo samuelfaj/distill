@@ -17,6 +17,13 @@ pub fn line_diff(old: &str, new: &str) -> (i64, i64) {
     }
     (added, removed)
 }
+/// A unified diff of `old` → `new` with `context` lines around each change.
+pub fn unified_diff(old: &str, new: &str, context: usize) -> String {
+    similar::TextDiff::from_lines(old, new)
+        .unified_diff()
+        .context_radius(context)
+        .to_string()
+}
 /// Wrapper for [`ToolOutput::Text`] so it can round-trip through
 /// `#[serde(tag = "type")]` (internally-tagged enums require struct/map
 /// payloads, not bare primitives).
@@ -1300,6 +1307,18 @@ mod tests {
     use serde_json::json;
     use distill_tool_types::KillTaskResult;
     use distill_tool_types::{MultiTaskOutputResult, TaskOutputOutput, TaskOutputResult};
+    /// A reviewer reads the change, not two whole files: the diff keeps the
+    /// changed lines and only the requested context around them.
+    #[test]
+    fn unified_diff_keeps_changed_lines_and_bounded_context() {
+        let old = "a\nb\nc\nd\ne\nf\ng\n";
+        let new = "a\nb\nc\nD\ne\nf\ng\n";
+        let diff = unified_diff(old, new, 1);
+        assert!(diff.contains("-d\n") && diff.contains("+D\n"), "{diff}");
+        assert!(diff.contains(" c\n") && diff.contains(" e\n"), "{diff}");
+        assert!(!diff.contains(" a\n") && !diff.contains(" g\n"), "{diff}");
+        assert!(unified_diff(old, old, 3).is_empty());
+    }
     #[test]
     fn send_subagent_message_error_classification_is_closed() {
         use crate::implementations::distill::send_subagent_message::SendSubagentMessageOutput::*;

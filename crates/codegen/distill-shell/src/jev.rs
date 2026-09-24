@@ -669,6 +669,33 @@ pub fn record_item(
     ActivitySink.record(&record);
 }
 
+/// Logs a reasoning-gate decision the harness took without asking Jev (a
+/// struggle signal, the budget, a delivery review) next to Jev's decisions,
+/// without counting it as a Jev call on the row or in the turn report.
+pub fn record_gate(decision: &str, reason: &str) {
+    use distill_workspace::jev::policy::{DecisionRecord, DecisionSink};
+    let (session, turn, round) = telemetry_context();
+    let record = DecisionRecord {
+        lever: distill_workspace::jev::flags::JevLever::B2ReasoningModel
+            .as_str()
+            .to_owned(),
+        questions: Vec::new(),
+        decision: decision.to_owned(),
+        reason: reason.to_owned(),
+        confidence: None,
+        model: "n/a".to_owned(),
+        latency_ms: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        request_id: None,
+        session_id: (!session.is_empty()).then_some(session),
+        turn_id: (!turn.is_empty()).then_some(turn),
+        round_id: (round > 0).then_some(round),
+        escalated: false,
+    };
+    distill_workspace::jev::policy::TracingSink.record(&record);
+}
+
 // ---------------------------------------------------------------------------
 // Activity for the turn-status row ("Jev was used here")
 // ---------------------------------------------------------------------------
@@ -1555,10 +1582,10 @@ mod catalogue_helper_tests {
             turn_activity(None).label().as_deref(),
             Some("jev 0.3s ·gpt-6-luna medium")
         );
-        let advising = ReasoningInFlight::begin("gpt-6-sol high".to_owned());
+        let advising = ReasoningInFlight::begin("plan gpt-6-sol high".to_owned());
         assert_eq!(
             turn_activity(None).label().as_deref(),
-            Some("jev 0.3s ·reasoning gpt-6-sol high")
+            Some("jev 0.3s ·reasoning plan gpt-6-sol high")
         );
         drop(advising);
         assert_eq!(

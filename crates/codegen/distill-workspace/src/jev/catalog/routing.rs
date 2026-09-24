@@ -332,8 +332,8 @@ pub struct EffortChoice {
 pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.40;
 
 /// The reasoning-consult floor. Two options put chance at 0.5, so an answer is
-/// taken only clearly above it; below it [`compose_reasoning_consult`] falls back
-/// to whether the request already has the reasoning model's advice.
+/// taken only clearly above it; below it [`reasoning_consult_pick`] is unsure and
+/// the harness falls back to the request's complexity.
 pub const REASONING_CONSULT_MIN_CONFIDENCE: f64 = 0.55;
 
 /// B2 (auto): one `choice` over the efforts **this model** offers for a single
@@ -409,17 +409,19 @@ pub struct TierProfile {
     pub notes: String,
 }
 
-/// Question id of the reasoning consult: can the main model do this step alone?
+/// Question id of the reasoning consult: can the main model do this request alone?
 pub const REASONING_CONSULT_QUESTION: &str = "reasoning_consult";
 /// The main model does this step on its own.
 pub const MAIN_ALONE_LABEL: &str = "main_alone";
 /// The reasoning model plans or reviews this step for the main model first.
 pub const CONSULT_REASONING_LABEL: &str = "consult_reasoning";
 
-/// B2: does the main model need the reasoning model to get THIS step right?
+/// B2: does the main model need the reasoning model to plan THIS request?
 ///
-/// The main model always runs the step; the answer only decides whether the
-/// reasoning model plans or reviews it first. Only asked when a reasoning model
+/// Asked once, at the start of a request. The main model always does the work;
+/// the answer only decides whether the reasoning model plans it first. Getting
+/// stuck and delivering changes are watched separately by the harness, so this
+/// question is about up-front planning only. Only asked when a reasoning model
 /// is configured and differs from the main model.
 pub fn reasoning_consult_questions(
     main: &TierProfile,
@@ -443,17 +445,17 @@ pub fn reasoning_consult_questions(
     criteria.insert(
         MAIN_ALONE_LABEL.to_owned(),
         Json::String(describe(
-            "The main model does this step correctly and completely on its own: the next action is \
-             routine, already decided, or follows the plan it was given",
+            "The main model does this request correctly and completely on its own: a direct \
+             answer, a routine or clearly specified change, or a mechanical task",
             main,
         )),
     );
     criteria.insert(
         CONSULT_REASONING_LABEL.to_owned(),
         Json::String(describe(
-            "The reasoning model plans or reviews this step for the main model first: a new \
-             non-trivial request, architecture or design, ambiguous requirements, interpreting \
-             evidence, recovering from a failure, or reviewing a change the main model may get wrong",
+            "The reasoning model plans this request for the main model first: architecture or \
+             design, multi-file or multi-step work, ambiguous requirements, a subtle bug to \
+             diagnose, or a result the main model would likely get wrong or leave incomplete",
             reasoning,
         )),
     );
@@ -462,16 +464,15 @@ pub fn reasoning_consult_questions(
         REASONING_CONSULT_QUESTION.to_owned(),
         Question::choice(
             format!(
-                "The next single model call is described in `micro_action`; \
-                 `reasoning_advice_given` says whether the reasoning model already advised the \
-                 main model on this request. The main model `{}` runs this call either way. \
-                 Decide whether it can do THIS step correctly and completely the first time on its \
-                 own, or needs the reasoning model `{}` to plan or review it first. Consult the \
-                 reasoning model only when the main model would likely get the step wrong, leave \
-                 it incomplete, or need retries; when the step follows advice already given, the \
-                 main model continues alone. Classify the decision the step needs, not the tool \
-                 name. Minimize total task cost including retries and recovery: a wrong or \
-                 incomplete step costs more than one consult, and a needless consult costs a \
+                "A new user request is in `request`. The main model `{}` will do the work \
+                 either way. Decide whether it can do this request correctly and completely the \
+                 first time on its own, or needs the reasoning model `{}` to plan it first. \
+                 The harness separately consults the reasoning model if the main model gets stuck \
+                 and reviews changes before delivery, so consult now only when the request needs \
+                 an up-front plan: the main model would likely take a wrong approach, miss \
+                 requirements, or need retries without one. Judge the work the request needs, not \
+                 its wording or length. Minimize total task cost including retries and recovery: \
+                 a wrong approach costs more than one consult, and a needless consult costs a \
                  reasoning-model call. Compare benchmarks only within the same source and metric; \
                  missing scores are unknown, never zero. Pricing and endpoint metrics describe \
                  OpenRouter only, not subscriptions or other providers.",
@@ -483,23 +484,20 @@ pub fn reasoning_consult_questions(
     Ok(questions)
 }
 
-/// B2: whether this step consults the reasoning model.
-///
-/// A confident answer decides. An unsure one depends on the request: before
-/// any advice a wrong first step costs more than one consult, so the reasoning
-/// model plans it; once advice was given, the main model keeps following it.
-pub fn compose_reasoning_consult(answers: &JevAnswerSet, advice_given: bool) -> bool {
+/// B2: Jev's confident answer to the consult question: `Some(true)` to plan
+/// with the reasoning model, `Some(false)` for the main model alone, `None`
+/// when unsure (below the floor, missing, or an unknown label). The harness
+/// decides what an unsure answer means.
+pub fn reasoning_consult_pick(answers: &JevAnswerSet) -> Option<bool> {
     let pick = pick_one(
         answers,
         REASONING_CONSULT_QUESTION,
         &[MAIN_ALONE_LABEL, CONSULT_REASONING_LABEL],
         REASONING_CONSULT_MIN_CONFIDENCE,
     );
-    match pick.choice.as_deref() {
-        Some(CONSULT_REASONING_LABEL) => true,
-        Some(_) => false,
-        None => !advice_given,
-    }
+    pick.choice
+        .as_deref()
+        .map(|choice| choice == CONSULT_REASONING_LABEL)
 }
 
 /// B2: the effort to use for this call, or `None` to keep the session's.
@@ -1167,12 +1165,15 @@ mod tests {
         );
         let instructions = instructions.as_str().expect("text instructions");
         assert!(instructions.contains("gpt-6-luna") && instructions.contains("gpt-6-sol"));
-        assert!(instructions.contains("reasoning_advice_given"));
+        assert!(
+            instructions.contains("stuck") && instructions.contains("before delivery"),
+            "the question must say the other gates exist, or Jev plans defensively: {instructions}"
+        );
         assert!(
             criteria[CONSULT_REASONING_LABEL]
                 .as_str()
                 .expect("consult description")
-                .contains("plans or reviews")
+                .contains("plans this request")
         );
     }
 
@@ -1183,12 +1184,10 @@ mod tests {
         assert!(reasoning_consult_questions(&one, &one).is_err());
     }
 
-    /// A confident answer decides. An unsure one plans a request that has no
-    /// advice yet (a wrong first step costs more than a consult) and keeps the
-    /// main model on a plan it already has (a consult per round would waste the
-    /// reasoning model on work that is already decided).
+    /// Only a confident, known answer is a pick: an unsure or unknown one is
+    /// `None`, so the harness (not a coin flip) decides what doubt means.
     #[test]
-    fn an_unsure_consult_plans_new_requests_and_keeps_existing_plans() {
+    fn only_a_confident_known_answer_is_a_consult_pick() {
         let answers = |choice: &str, confidence: f64| JevAnswerSet {
             model: "test".to_owned(),
             answers: [(
@@ -1205,27 +1204,10 @@ mod tests {
             request_id: None,
             latency_ms: 0,
         };
-        for advice_given in [false, true] {
-            assert!(compose_reasoning_consult(
-                &answers(CONSULT_REASONING_LABEL, 0.9),
-                advice_given
-            ));
-            assert!(!compose_reasoning_consult(
-                &answers(MAIN_ALONE_LABEL, 0.9),
-                advice_given
-            ));
-        }
-        assert!(
-            compose_reasoning_consult(&answers(MAIN_ALONE_LABEL, 0.3), false),
-            "an unsure `main_alone` on a fresh request still gets a plan"
-        );
-        assert!(
-            !compose_reasoning_consult(&answers(CONSULT_REASONING_LABEL, 0.3), true),
-            "an unsure consult does not repeat advice already given"
-        );
-        assert!(
-            compose_reasoning_consult(&answers("something-else", 0.99), false),
-            "an unknown label is unsure, not an answer"
-        );
+        assert_eq!(reasoning_consult_pick(&answers(CONSULT_REASONING_LABEL, 0.9)), Some(true));
+        assert_eq!(reasoning_consult_pick(&answers(MAIN_ALONE_LABEL, 0.9)), Some(false));
+        assert_eq!(reasoning_consult_pick(&answers(MAIN_ALONE_LABEL, 0.3)), None);
+        assert_eq!(reasoning_consult_pick(&answers(CONSULT_REASONING_LABEL, 0.3)), None);
+        assert_eq!(reasoning_consult_pick(&answers("something-else", 0.99)), None);
     }
 }

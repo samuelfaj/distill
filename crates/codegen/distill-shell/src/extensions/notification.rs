@@ -132,6 +132,10 @@ pub struct PromptUsage {
     /// Decisions the Jev layer took during this turn (0 when it was not used).
     #[serde(default, rename = "jevCalls", skip_serializing_if = "is_zero")]
     pub jev_calls: u64,
+    /// Why the reasoning model was consulted this turn, in order (`plan`,
+    /// `recover`, `edit review`, `review`). Its tokens ride `effort_usage`.
+    #[serde(default, rename = "reasoningConsults", skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_consults: Vec<String>,
 }
 
 /// One row of a turn's distribution: which model, at which effort, how much.
@@ -334,6 +338,7 @@ impl From<&distill_chat_state::UsageLedger> for PromptUsage {
             usage_is_incomplete: ledger.is_incomplete(),
             effort_usage: Vec::new(),
             jev_calls: 0,
+            reasoning_consults: Vec::new(),
         };
         usage.scrub_untrustworthy_costs();
         usage
@@ -2852,6 +2857,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            reasoning_consults: Vec::new(),
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &partial);
@@ -2886,6 +2892,7 @@ mod tests {
             usage_is_incomplete: true,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            reasoning_consults: Vec::new(),
         };
         incomplete.scrub_untrustworthy_costs();
         assert!(incomplete.totals.cost_usd_ticks.is_none());
@@ -2961,6 +2968,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            reasoning_consults: Vec::new(),
         };
         usage.scrub_untrustworthy_costs();
         assert!(usage.totals.cost_usd_ticks.is_none());
@@ -2997,6 +3005,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            reasoning_consults: Vec::new(),
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &usage);

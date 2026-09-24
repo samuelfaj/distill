@@ -2910,6 +2910,12 @@ impl SessionActor {
             .or_else(|| tool_parsed_args.get("script"))
             .and_then(|value| value.as_str())
             .unwrap_or_default();
+        // Every finished call is a fact for the reasoning gates (failures,
+        // loops, edits, checks), whether or not Jev post-processes its text.
+        self.jev_ledger
+            .borrow_mut()
+            .reasoning
+            .note_tool_result(requested_tool_name, tool_parsed_args, &result.output);
         let prompt_text = if should_bypass_jev_post_process(&prompt_text, output_replaced) {
             prompt_text
         } else {

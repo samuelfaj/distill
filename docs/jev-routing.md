@@ -26,23 +26,28 @@ the harness keeps its normal execution path.
 
 ## Main and reasoning
 
-Before each step, Jev decides whether the main model can do it correctly and
-completely on its own. When it can, the main model continues alone. When it
-cannot (a new non-trivial request, architecture or design, ambiguous
-requirements, interpreting evidence, recovering from a failure, or reviewing a
-change), the reasoning model receives a bounded, tool-free view of the work and
-returns a plan or review. The advice joins the conversation as
-`<reasoning_advice>`, so the main model keeps following it on later rounds of
-the same request.
+The main model does all the work. The reasoning model is consulted only at
+three kinds of decision points, and its advice joins the conversation as
+`<reasoning_advice>`, so the main model keeps following it on later rounds:
 
-A confident answer decides. An unsure answer depends on the request: a request
-with no advice yet still gets a plan, because a wrong first step costs more
-than one consult; once advice was given, the main model keeps following it and
-only a confident answer (usually after a failure) consults again. When the
-change review asks for an independent review, the reasoning model reviews the
-edit without a second question. The same decision picks the reasoning model's
-effort from its own menu. Without a reasoning model, or when Jev is unavailable,
-the main model works alone.
+| Point | When | How it is decided |
+|---|---|---|
+| Plan | Once per request | At the first round, Jev answers whether the request needs an up-front plan, its intent and its complexity. A confident answer decides; an unsure one plans only multi-file or larger work. A question is planned right away; work on the workspace is planned after the main model's first tool results, so the plan rests on what it found. |
+| Recover | When the main model is stuck | No Jev question: the same call failing twice, three failed calls in a row, the same call issued three times, an edit that undoes an earlier one, or 20 rounds without advice. An edit the change review (C4) flags for another model's opinion is handled here too. |
+| Review | Before delivery | When the main model finishes a request that changed files, the reasoning model reviews the diff, the final message and the last test or build. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. A change of at most six lines, with nothing failing after it, on a request Jev did not judge complex, is delivered without a review. |
+
+Each request allows one plan, two recoveries and one review; a recovery waits at
+least two rounds after the previous consult. The plan gate also picks the
+reasoning model's effort from its own menu, and later consults reuse it.
+Without a reasoning model, or when Jev is unavailable, the main model works
+alone.
+
+While the reasoning model works, the status row names it (for example
+`reasoning review gpt-6-sol high`). The turn report lists its tokens like any
+other model, plus a `Reasoning - Nx (plan, review)` line. With `GROK_LOG_JEV=1`,
+each gate decision and a per-request summary (rounds, failures, changes,
+complexity, consults) are logged under `b2_reasoning_model`, which is what the
+thresholds should be tuned from.
 
 The built-in `plan` and `code-reviewer` subagents run on the reasoning model;
 every other subagent runs on the main model. An explicit subagent model pin
@@ -62,8 +67,8 @@ Delegation is useful for a coherent task with clear acceptance criteria and
 small relevant context. A trivial step stays with the main agent; a fresh
 subagent returns its result and verification rather than its full transcript.
 
-Effort selection uses a confidence floor of 0.40, and the reasoning consult a
-floor of 0.55. A fixed effort, selected in a picker or with `/effort <level>`,
+Effort selection uses a confidence floor of 0.40, and the plan decision a floor
+of 0.55. A fixed effort, selected in a picker or with `/effort <level>`,
 takes precedence over automatic effort selection.
 
 ```toml

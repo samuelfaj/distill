@@ -1380,6 +1380,16 @@ impl SessionActor {
                         );
                     }
                 }
+                // The reasoning model reviews a delivery that changed files; a
+                // review asking for changes keeps the main model working. It
+                // runs at most once per request.
+                if let Some(review) = self.jev_delivery_review().await {
+                    salvage.round_boundary();
+                    self.chat_state_handle.push_user_message(ConversationItem::system_reminder(
+                        distill_tools::reminders::wrap_reminder(&review),
+                    ));
+                    continue;
+                }
                 match self
                     .run_stop_gate(prompt_id, stop_continuations_this_turn)
                     .await

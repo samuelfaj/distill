@@ -42,6 +42,13 @@ fn is_mcp_create_pull_request(tool_name: &str) -> bool {
 fn is_mcp_error_result(output: &ToolsToolOutput) -> bool {
     matches!(output, ToolsToolOutput::MCP(_)) && output.is_error()
 }
+
+/// Harness notices are protocol instructions, not disposable tool prose.  A
+/// result carrying one must bypass Jev's body replacement so deterministic
+/// status extraction and generic reducers cannot erase the notice.
+fn should_bypass_jev_post_process(prompt_text: &str, output_replaced: bool) -> bool {
+    output_replaced || prompt_text.contains("<system-reminder>")
+}
 /// One `tool.execution` span, wrapping a single dispatch attempt.
 /// Outcome fields are declared `Empty` here because `record` on a field the span never declared is silently dropped.
 /// [`record_tool_span_outcome`] fills them in once the result is known.
@@ -2903,7 +2910,7 @@ impl SessionActor {
             .or_else(|| tool_parsed_args.get("script"))
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let prompt_text = if output_replaced {
+        let prompt_text = if should_bypass_jev_post_process(&prompt_text, output_replaced) {
             prompt_text
         } else {
             self.jev_post_process_tool_result(
@@ -3224,6 +3231,35 @@ mod mcp_error_routing_tests {
             !is_mcp_error_result(&builtin_error),
             "built-in logical error stays PostToolUse"
         );
+    }
+}
+
+#[cfg(test)]
+mod jev_prompt_preservation_tests {
+    use super::should_bypass_jev_post_process;
+
+    #[test]
+    fn bun_success_with_a_harness_notice_bypasses_body_replacement_byte_for_byte() {
+        let prompt = concat!(
+            "bun test v1.3.13\n",
+            "1 pass\n0 fail\nRan 1 test across 1 file.\n",
+            "\n<system-reminder>\n",
+            "only one operation executed; make separate tool calls",
+            "\n</system-reminder>",
+        );
+        assert!(should_bypass_jev_post_process(prompt, false));
+        let preserved = if should_bypass_jev_post_process(prompt, false) {
+            prompt
+        } else {
+            "<jev replacement>"
+        };
+        assert_eq!(preserved.as_bytes(), prompt.as_bytes());
+    }
+
+    #[test]
+    fn ordinary_tool_text_still_reaches_jev_post_process() {
+        assert!(!should_bypass_jev_post_process("bun test: PASS", false));
+        assert!(should_bypass_jev_post_process("ordinary", true));
     }
 }
 #[cfg(test)]

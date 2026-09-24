@@ -5,21 +5,19 @@ state assembled by the harness: which model should handle a call, how much
 effort it needs, or which parts of a tool result are worth keeping.
 
 Of the three tiers set in [Choose your models](../README.md#choose-your-models),
-the Reasoning model handles calls unless a routing decision selects another
-path. The Worker shares the conversation. Utility tasks receive a bounded
+a configured Worker model owns new build sessions by default. An explicitly
+selected model still wins. Without a Worker, the selected Reasoning model owns
+the session. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
 ```text
-                         Jev decision
-                              |
-                +-------------+-------------+
-                |                           |
-          Reasoning model              Worker model
-                |                  same conversation
-                |
-           Utility tasks
-     bounded payloads and checked results
+   Worker session (when configured)
+      |           |             |
+  conversation   |       bounded Reasoning task
+                  |
+             Utility task
+           bounded payload
 ```
 
 Jev chooses among candidates supplied by code. It does not invent candidates
@@ -30,22 +28,28 @@ the harness keeps its normal execution path.
 
 ## Reasoning and Worker
 
-Jev chooses between the configured Reasoning and Worker models for each call.
-`/effort auto` lets it choose the Reasoning model's effort; a fixed effort pins
-that model's intensity without disabling Worker routing. `/worker-model <model>
-[effort]` independently sets the Worker's effort, defaulting to `auto`. Explicit
+The Worker keeps the conversation when configured for a new build session.
+Fresh bounded tasks inherit it. Difficult diagnosis, architecture, failure
+recovery, and material review can use the Reasoning model through an explicit
+model selection on a bounded subagent. The built-in `plan` and `code-reviewer` use the
+Reasoning model by default when its parent session runs on the Worker. An
+explicit subagent model pin still wins. A different wire model does not reuse
+the Worker's prompt cache or receive its full conversation automatically.
+
+`/effort auto` chooses the current session model's effort; a fixed effort pins
+that model's intensity. `/model <model> [effort]` selects the main Worker;
+`/reasoning-model <model>` sets the secondary Reasoning model. The Worker's
+effort defaults to `auto`. Explicit
 subagent model and effort policies remain pinned.
 
-Model selection and the candidates' separate effort questions share one request.
-Each effort is validated against the selected model's own menu, including model-ID
-variants. The Utility model also keeps its explicit effort, or uses its own auto
-selection. An uncertain answer preserves the selected model's configured default.
-The decision considers the next action, recent results, and the previous dispatch:
-Worker execution should be bounded and already decided; investigative tool use
-can still need the Reasoning model.
+Jev chooses effort from each model's supported menu. An uncertain answer keeps
+that model's configured default. A redo can raise effort when the previous
+attempt lacked reasoning; the next independent step can return to auto.
+Delegation is useful for a coherent task with clear acceptance criteria and
+small relevant context. A trivial step stays with the main agent; a fresh Worker
+subagent returns its result and verification rather than its full transcript.
 
-Worker routing requires a confidence of at least 0.55. Effort selection uses a
-floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
+Effort selection uses a confidence floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
 takes precedence over automatic effort selection.
 
 The configuration keys keep their internal names, so the Worker is `light` and
@@ -58,12 +62,27 @@ effort_auto = true
 [jev.tiers]
 light = "codex-luna"
 
-[jev.ladder]
-b2_light_model = true
 ```
 
-`light` names a configured model entry. Leave it unset to run without a Worker,
-or set `b2_light_model = false` to turn off Worker routing.
+`light` names a configured model entry. Leave it unset to run without a Worker.
+`b2_light_model` controls only the full-conversation tier choice for entries
+that resolve to the same wire model; it does not disable bounded Worker tasks.
+
+The built-in `code-reviewer` subagent inspects a substantive code checkpoint
+using a fresh, read-only context. With a Worker parent, it uses the configured
+Reasoning model unless pinned through `[subagents.models]`. Give it the
+diff, acceptance criteria and test evidence. Routine or unchanged checkpoints
+do not need a separate review. Jev's change-risk decision can request a second
+opinion, while the agent chooses a reviewer at meaningful checkpoints and before
+final code handoff. Goal completion still uses its existing verifier.
+
+```toml
+[subagents.models]
+code-reviewer = "reviewer-catalog-entry"
+```
+
+The value must name an existing model catalog entry. With a Worker parent,
+omitting it sends a fresh review to the configured Reasoning model.
 
 ## Optional model facts and cache
 
@@ -93,6 +112,10 @@ Only public model IDs are queried; task content is not sent to metadata endpoint
 Jev considers total task cost, retries, and possible loss of prompt-cache reuse
 when switching models. Benchmark and price hints do not override the configured
 candidate set, context guard, explicit effort, or permission policy.
+For direct OpenRouter requests, the sampler sends the existing session ID as
+`x-session-id` for provider affinity unless the user configured that header.
+This does not guarantee a cache hit; compare cache-read tokens and total cost
+before changing cache TTL or context-pruning behavior.
 
 ## Utility work
 

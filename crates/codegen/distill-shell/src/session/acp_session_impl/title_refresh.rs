@@ -1,13 +1,14 @@
 //! Early-session auto-title refresh on `SessionActor`.
 //!
 //! The first title comes from the fast first-prompt path ([`crate::session::summary::SummaryGenerator`]).
-//! This side-call refreshes it from the whole conversation at [`crate::session::helpers::session_summary::TITLE_REFRESH_TURNS`] and then freezes.
+//! This display-only call refreshes it from a bounded objective/recent-answer
+//! payload at [`crate::session::helpers::session_summary::TITLE_REFRESH_TURNS`] and then freezes.
 //! A weak first prompt therefore doesn't leave the session mistitled.
 //! The refresh is best-effort and generation-guarded; a manual `/rename` always wins (enforced by the `RegenerateTitle` persistence path).
 
 use super::*;
 
-use super::side_call::AuxCall;
+use super::side_call::run_display_task;
 use crate::session::helpers::{session_recap, session_summary};
 
 /// Upper bound on the title-refresh model call so a hung backend cannot hold the one-at-a-time refresh slot indefinitely.
@@ -24,7 +25,7 @@ impl SessionActor {
         if self.next_title_refresh_idx.get() >= session_summary::TITLE_REFRESH_TURNS.len() {
             return;
         }
-        // One refresh at a time: a whole-conversation title doesn't need the very latest turn.
+        // One refresh at a time: a bounded display title doesn't need a second request.
         // Letting the in-flight call finish (rather than aborting and respawning every turn) guarantees the checkpoint is eventually consumed.
         // The check is `is_finished` (not just `is_some`) so a panicked task can't wedge the slot shut.
         if self
@@ -38,7 +39,12 @@ impl SessionActor {
         let generation = self.title_refresh_generation.get();
         let actor = self.clone();
         let task = tokio::task::spawn_local(async move {
-            actor.refresh_title(generation).await;
+            crate::jev::with_session_scope_and_recorder(
+                actor.session_info.id.0.to_string(),
+                Some(actor.chat_state_handle.clone()),
+                actor.refresh_title(generation),
+            )
+            .await;
             if actor.title_refresh_generation.get() == generation {
                 *actor.title_refresh_task.borrow_mut() = None;
             }
@@ -47,7 +53,7 @@ impl SessionActor {
     }
 
     /// A manual rename freezes the auto refresh (so a racing in-flight refresh can't flip the title and no later refresh fights the user's title).
-    /// `/rename --auto` reopens it so the whole-conversation refresh can re-title.
+    /// `/rename --auto` reopens it so the bounded display refresh can re-title.
     /// Aborts any in-flight refresh either way and persists the new checkpoint so the decision survives resume.
     pub(crate) fn on_title_renamed(&self, manual: bool) {
         self.abort_title_refresh();
@@ -109,68 +115,30 @@ impl SessionActor {
         }
     }
 
-    /// One tool-free model call producing a cleaned whole-conversation title, or `None` on any setup/model failure or empty output.
+    /// One bounded source-backed display call producing a cleaned title, or
+    /// `None` on unavailable lanes, invalid output, or model failure.
     async fn generate_refreshed_title(
         &self,
         conversation: Vec<ConversationItem>,
     ) -> Option<String> {
-        let setup = match self.prepare_side_call().await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "title refresh: failed to prepare sampling client");
-                return None;
-            }
+        let payload = session_summary::title_refresh_payload(&conversation);
+        let source = session_summary::title_refresh_source(&conversation);
+        let (Some(payload), Some(source)) = (payload, source) else {
+            return None;
         };
-        let instruction = session_summary::title_refresh_instruction(self.reminder_wrapper_tag());
-        let items = session_recap::budget_instruction_items(
-            conversation,
-            instruction,
-            setup.strip_reasoning,
-            setup.context_window,
-        );
-        // Deliberately tool-free: unlike the turn summary, the request carries no tools
-        // The model then can't spend the call on a tool invocation that would leave empty text and burn the checkpoint
-        // (The conversation prefix still shares the parent prompt-cache key.)
-        let request = self.parent_cached_request(AuxCall {
-            items,
-            tools: Vec::new(),
-            hosted_tools: Vec::new(),
-            model: setup.model.clone(),
-            reasoning_effort: setup.reasoning_effort,
-            backend: setup.client.api_backend(),
-            conv_id: format!("title-refresh-{}", uuid::Uuid::new_v4()),
-            req_id: format!("xai-title-refresh-{}", uuid::Uuid::new_v4()),
-        });
-
-        let response = match tokio::time::timeout(
+        tokio::time::timeout(
             TITLE_REFRESH_MODEL_TIMEOUT,
-            setup.client.conversation_collect(request),
+            run_display_task(
+                self,
+                distill_workspace::jev::tasks::DISPLAY_FRAGMENT_TASK,
+                &payload,
+                &source,
+                "Choose one short title span from the source. Reply with exactly one quoted source span, 5-10 words, and no labels or prose.",
+                session_summary::title_display_text,
+            ),
         )
         .await
-        {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "title refresh: model call failed");
-                return None;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    timeout_secs = TITLE_REFRESH_MODEL_TIMEOUT.as_secs(),
-                    "title refresh: model call timed out"
-                );
-                return None;
-            }
-        };
-        super::side_call::log_prompt_cache_usage(
-            "title_refresh",
-            setup.client.api_backend(),
-            &response,
-        );
-        let title = session_summary::clean_title_text(&response.assistant_text());
-        if title.is_empty() {
-            tracing::debug!("title refresh: model returned empty title");
-            return None;
-        }
-        Some(title)
+        .ok()
+        .flatten()
     }
 }

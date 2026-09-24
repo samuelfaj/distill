@@ -514,7 +514,21 @@ impl MvpAgent {
         let mut disallowed_custom: Option<String> = None;
         let session_initial_model = chat_initial_model(is_chat_kind, custom_model_id);
         let build_custom_model_id = if is_chat_kind { None } else { custom_model_id };
-        let campaign_nudge = if is_chat_kind {
+        // A configured worker owns new build conversations unless the client
+        // explicitly chose a model. Resolve it before campaign defaults.
+        let session_worker = if !is_chat_kind && build_custom_model_id.is_none() {
+            crate::jev::tiers_cached()
+                .light
+                .filter(|id| self.models_manager.task_model_error(id).is_none())
+                .and_then(|id| {
+                    self.resolve_model_id(&acp::ModelId::new(id.as_str()))
+                        .ok()
+                        .map(|model| (id, model))
+                })
+        } else {
+            None
+        };
+        let campaign_nudge = if is_chat_kind || session_worker.is_some() {
             None
         } else {
             crate::util::config::campaign_driven_models_default().filter(|c| {
@@ -567,6 +581,13 @@ impl MvpAgent {
                     None
                 }
             });
+        if let Some((id, model)) = &session_worker {
+            model_agent_type = Some(model.info().agent_type.clone());
+            let origin_client = self.origin_client_info_from_meta(arguments.meta.as_ref());
+            session_sampling_override =
+                Some(self.prepare_sampling_config_for_model(model, origin_client));
+            tracing::info!(worker_model = %id, "new_session: worker selected as session model");
+        }
         if model_agent_type.is_none()
             && custom_model_id.is_none()
             && let Ok(default_model) =
@@ -588,20 +609,37 @@ impl MvpAgent {
                 origin_client.clone(),
             )
         });
+        let worker_effort = session_worker.as_ref().and_then(|_| {
+            crate::jev::tiers_cached()
+                .light_effort
+                .as_deref()
+                .filter(|value| *value != "auto")
+                .and_then(|value| value.parse::<ReasoningEffort>().ok())
+        });
+        let current_effort = self.models_manager.current_reasoning_effort();
         let effort_route = split_new_session_effort(
             resolved_custom_model,
             resolve_new_session_effort_hint(
                 parse_reasoning_effort_meta(arguments.meta.as_ref()),
-                self.models_manager.current_reasoning_effort(),
+                if session_worker.is_some() {
+                    worker_effort
+                } else {
+                    current_effort
+                },
             ),
         );
         let spawn_effort = match effort_route {
             NewSessionEffort::Spawn(effort) => Some(effort),
             NewSessionEffort::Switch(_) | NewSessionEffort::None => None,
         };
+        let summary_effort = if session_worker.is_some() {
+            spawn_effort
+        } else {
+            spawn_effort.or(current_effort)
+        };
         self.models_manager.apply_supported_effort(
             &mut session_sampling,
-            spawn_effort.or_else(|| self.models_manager.current_reasoning_effort()),
+            summary_effort,
             &session_id,
             EffortTarget::SummaryClient,
         );
@@ -615,6 +653,11 @@ impl MvpAgent {
             Some(chat_model) => acp::ModelId::new(chat_model.clone()),
             None => resolved_custom_model
                 .map(acp::ModelId::new)
+                .or_else(|| {
+                    session_worker
+                        .as_ref()
+                        .map(|(id, _)| acp::ModelId::new(id.clone()))
+                })
                 .unwrap_or_else(|| self.models_manager.current_model_id()),
         };
         let session_model_id = model_id.clone();

@@ -1443,11 +1443,31 @@ pub(crate) fn image_api_key_provider(
 
 /// The Codex client version the backend expects in the `version` header.
 ///
-/// Pinned to the release the OAuth contract was taken from; a proxy or a test
-/// can override it.
+/// Use the installed Codex CLI version for model discovery and sampling.
+/// A proxy or a test can override it; the fallback keeps standalone installs working.
 pub const CODEX_CLIENT_VERSION_ENV: &str = "DISTILL_CODEX_CLIENT_VERSION";
 pub const LEGACY_CODEX_CLIENT_VERSION_ENV: &str = "REMOTE_CODE_CODEX_CLIENT_VERSION";
-pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.153.1";
+pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.156.0";
+static INSTALLED_CODEX_VERSION: OnceLock<Option<String>> = OnceLock::new();
+
+fn installed_codex_version() -> Option<String> {
+    let output = std::process::Command::new("codex")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_codex_cli_version(&String::from_utf8(output.stdout).ok()?)
+}
+
+fn parse_codex_cli_version(output: &str) -> Option<String> {
+    output
+        .trim()
+        .strip_prefix("codex-cli ")
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
 
 pub fn codex_client_version() -> String {
     [CODEX_CLIENT_VERSION_ENV, LEGACY_CODEX_CLIENT_VERSION_ENV]
@@ -1456,6 +1476,11 @@ pub fn codex_client_version() -> String {
             std::env::var(name)
                 .ok()
                 .filter(|value| !value.trim().is_empty())
+        })
+        .or_else(|| {
+            INSTALLED_CODEX_VERSION
+                .get_or_init(installed_codex_version)
+                .clone()
         })
         .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_owned())
 }
@@ -1513,6 +1538,15 @@ pub fn apply_codex_backend(cfg: &mut distill_sampler::SamplerConfig) {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn reads_installed_codex_version() {
+        assert_eq!(
+            parse_codex_cli_version("codex-cli 0.156.0\n").as_deref(),
+            Some("0.156.0")
+        );
+        assert_eq!(parse_codex_cli_version("unexpected output"), None);
+    }
 
     #[test]
     #[serial_test::serial]

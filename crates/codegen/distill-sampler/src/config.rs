@@ -50,7 +50,8 @@ pub struct SamplerConfig {
     pub auth_scheme: AuthScheme,
     #[serde(default)]
     pub request_compression: RequestCompression,
-    /// Extra request headers applied verbatim. The sampler never inspects the URL to derive headers.
+    /// Extra request headers applied verbatim. The sampler may add OpenRouter session affinity
+    /// when this does not already provide `x-session-id`.
     /// Callers (the session) inject proxy auth and other access headers here before constructing the config.
     pub extra_headers: IndexMap<String, String>,
     /// Additional Responses API `include` values not represented by the typed client.

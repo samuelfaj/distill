@@ -1,0 +1,5 @@
+Open the fixture in tools/task_cost_eval/fixtures/tax_bug/tax.py and fix the
+localized billing bug. `total_with_tax(amount_cents, rate_bps)` must return the
+original amount plus tax, where tax is floor(amount_cents * rate_bps / 10000).
+Keep the existing function signature, use integer arithmetic, and edit the
+fixture rather than only describing the answer.

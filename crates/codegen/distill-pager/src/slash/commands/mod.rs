@@ -51,6 +51,7 @@ pub mod privacy;
 pub mod provider_status;
 pub mod queue;
 pub mod recap;
+pub mod reasoning_model;
 pub mod release_notes;
 pub mod remember;
 pub mod rename;
@@ -73,7 +74,6 @@ pub mod usage;
 pub mod view_plan;
 pub mod vim_mode;
 pub mod voice;
-pub mod worker_model;
 pub mod workflow;
 pub mod workflows;
 use super::command::SlashCommand;
@@ -162,7 +162,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(login_codex::LoginCodexCommand),
         Arc::new(login_openrouter::LoginOpenrouterCommand),
         Arc::new(cheap_model::CheapModelCommand),
-        Arc::new(worker_model::WorkerModelCommand),
+        Arc::new(reasoning_model::ReasoningModelCommand),
         Arc::new(tiers::TiersCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),
@@ -373,8 +373,7 @@ mod tests {
             other => panic!("expected QueueCommand, got {other:?}"),
         }
     }
-    /// Bare `/model <name>` returns `SetDefaultModel`, which switches and persists.
-    /// `/model <name> <effort>` returns `SwitchModel`, which is session-scoped.
+    /// `/model` selects the primary worker by display name or id.
     #[test]
     fn model_resolves_by_display_name() {
         let models = sample_models();
@@ -382,10 +381,10 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "Grok 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "grok-4.5");
+            CommandResult::Action(Action::SetTierLight(id, None)) => {
+                assert_eq!(id, "grok-4.5");
             }
-            other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+            other => panic!("expected worker selection, got {other:?}"),
         }
     }
     #[test]
@@ -395,10 +394,10 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "grok-4.3");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "grok-4.3");
+            CommandResult::Action(Action::SetTierLight(id, None)) => {
+                assert_eq!(id, "grok-4.3");
             }
-            other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+            other => panic!("expected worker selection, got {other:?}"),
         }
     }
     #[test]
@@ -408,10 +407,10 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "grok 4.5");
         match result {
-            CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "grok-4.5");
+            CommandResult::Action(Action::SetTierLight(id, None)) => {
+                assert_eq!(id, "grok-4.5");
             }
-            other => panic!("expected Action(SetDefaultModel), got {other:?}"),
+            other => panic!("expected worker selection, got {other:?}"),
         }
     }
     #[test]
@@ -463,7 +462,7 @@ mod tests {
         };
         let cmd = model::ModelCommand;
         let items = cmd.suggest_args(&ctx, "").expect("should have suggestions");
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert!(
             items
                 .iter()

@@ -720,6 +720,7 @@ impl ImageStripRewriteBarrier {
 pub(crate) struct StreamOwnership {
     pub(crate) generation: u64,
     pub(crate) waiter: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) usage_context: Option<UsageAttemptContext>,
 }
 #[cfg(test)]
 impl StreamOwnership {
@@ -727,6 +728,7 @@ impl StreamOwnership {
         Self {
             generation: 0,
             waiter,
+            usage_context: None,
         }
     }
 }

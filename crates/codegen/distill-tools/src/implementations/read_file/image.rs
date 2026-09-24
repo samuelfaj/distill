@@ -61,6 +61,21 @@ pub fn compress_image_for_conversation(
     )
 }
 
+/// Resize and compress a rendered PDF page while preserving the PDF page
+/// output contract of JPEG data.
+pub(crate) fn compress_jpeg_for_conversation(
+    raw_bytes: Vec<u8>,
+) -> Result<Vec<u8>, CompressImageError> {
+    compress_image_for_conversation_with_caps_and_format(
+        raw_bytes,
+        "image/jpeg".to_string(),
+        MAX_IMAGE_RAW_BYTES,
+        MAX_IMAGE_PAYLOAD_BYTES,
+        true,
+    )
+    .map(|(bytes, _mime)| bytes)
+}
+
 /// [`compress_image_for_conversation`] off the async path, mapped to the read tools' output: an embeddable
 /// [`ImageContent`](crate::types::output::ImageContent) on success, or
 /// [`ImageSizeError`](crate::types::output::ReadFileOutput::ImageSizeError) with the model-visible reason.
@@ -107,6 +122,22 @@ fn compress_image_for_conversation_with_caps(
     original_mime: String,
     max_raw_bytes: usize,
     max_payload_bytes: usize,
+) -> Result<(Vec<u8>, String), CompressImageError> {
+    compress_image_for_conversation_with_caps_and_format(
+        raw_bytes,
+        original_mime,
+        max_raw_bytes,
+        max_payload_bytes,
+        false,
+    )
+}
+
+fn compress_image_for_conversation_with_caps_and_format(
+    raw_bytes: Vec<u8>,
+    original_mime: String,
+    max_raw_bytes: usize,
+    max_payload_bytes: usize,
+    jpeg_only: bool,
 ) -> Result<(Vec<u8>, String), CompressImageError> {
     use crate::util::image_compress::{FilterType, ReEncodeParams, re_encode_under_limit};
     use image::ImageReader;
@@ -207,8 +238,14 @@ fn compress_image_for_conversation_with_caps(
         }
     };
 
-    use crate::util::image_compress::ReEncodeError;
-    let (buf, _w, _h, mime) = match re_encode_under_limit(&img, &params) {
+    use crate::util::image_compress::{ReEncodeError, re_encode_jpeg_under_limit};
+    let encoded = if jpeg_only {
+        re_encode_jpeg_under_limit(&img, &params)
+            .map(|(buf, width, height)| (buf, width, height, "image/jpeg"))
+    } else {
+        re_encode_under_limit(&img, &params)
+    };
+    let (buf, _w, _h, mime) = match encoded {
         Ok(v) => v,
         Err(ReEncodeError::CouldNotFit { .. }) => {
             tracing::warn!("image re-encode could not fit under payload cap");

@@ -104,39 +104,60 @@ pub fn cheap_lane_status() -> String {
     out
 }
 
-/// The three tiers, in the order a call falls through them: the session's model,
-/// its worker sibling, then the utility model.
+/// The session model and configured auxiliary models.
 ///
-/// `reasoning_model` is the session's own model id, which only the caller knows. The
-/// sibling's usability comes from the shell, which is where the rule is enforced
+/// `session_model` is the session's own model id, which only the caller knows. The
+/// worker's usability comes from the shell, which is where the rule is enforced.
 /// A tier the harness would refuse must not read as ready here.
-pub fn tier_status(reasoning_model: Option<&str>) -> String {
-    let reasoning = reasoning_model.unwrap_or("(no session model yet)");
-    let mut out = format!("Reasoning model (the session's): {reasoning}");
+pub fn tier_status(session_model: Option<&str>) -> String {
+    let session = session_model.unwrap_or("(no session model yet)");
+    let mut out = format!("Main session model: {session}");
     out.push_str(
-        "\n  Handles the session and the full conversation. Set it with `/model <name-or-id>`. \
+        "\n  Handles the full conversation. Set the worker with `/model <name-or-id>`. \
          A configured OpenRouter model can also be entered as `vendor/model`.",
     );
-    match reasoning_model.map(distill_shell::jev::light_tier_status) {
-        Some(distill_shell::jev::LightTierStatus::Ready { name, window, .. }) => {
+    if let Some(reasoning) = crate::acp::ModelState::configured_reasoning_model() {
+        out.push_str(&format!("\n\nReasoning model: {}\n  Secondary model for planning and review. Set it with `/reasoning-model <name-or-id>`. ", reasoning.0));
+    }
+    match session_model.map(distill_shell::jev::light_tier_status) {
+        Some(distill_shell::jev::LightTierStatus::Ready {
+            id,
+            name,
+            window,
+            shares_conversation,
+            ..
+        }) => {
             out.push_str(&format!(
                 "\n\nWorker model: {name} ({window} tokens of context)\n  \
-                 Handles routine steps that do not need the reasoning model. It must use \
-                 the same provider, backend, and credential so it can share the conversation."
+                 {}",
+                if Some(id.as_str()) == session_model {
+                    "Owns this session; bounded tasks can inherit it."
+                } else {
+                    "Handles routine bounded tasks."
+                }
             ));
+            out.push_str(if Some(id.as_str()) == session_model {
+                " Use the configured reasoning model for difficult bounded tasks and review."
+            } else if shares_conversation {
+                " It shares the provider, so it can also take a round of the conversation."
+            } else {
+                " It runs on another provider, so it only takes bounded tasks that start from \
+                 their own context (subagents, tool-result compression); the conversation stays \
+                 on the reasoning model instead of being sent twice."
+            });
         }
         Some(distill_shell::jev::LightTierStatus::Refused(reason)) => {
             out.push_str(&format!(
                 "\n\nWorker model: unavailable: {reason}\n  \
-                 Choose a model from the same family as the reasoning model."
+                 Choose a model from the model catalog."
             ));
         }
         Some(distill_shell::jev::LightTierStatus::Unset) | None => {
             out.push_str(
                 "\n\nWorker model: (not set)\n  \
-                 A worker model handles routine steps while sharing the conversation. Set it with \
-                 `/worker-model <model-id>`; a configured OpenRouter model may use `vendor/model`. \
-                 It must belong to the same model family.",
+                 A worker model handles new build sessions and routine tasks. Set it with \
+                 `/model <model-id>`; a configured OpenRouter model may use `vendor/model`. \
+                 It may run on another provider.",
             );
         }
     }
@@ -214,12 +235,12 @@ mod tests {
         }
     }
 
-    /// The three tiers are read in the order a call falls through them, and a
-    /// tier the shell refuses must not read as ready.
+    /// The status lists the session and both auxiliary models, and a tier the
+    /// shell refuses must not read as ready.
     #[test]
-    fn the_tier_status_names_all_three_in_fall_through_order() {
+    fn the_tier_status_names_session_and_auxiliary_models() {
         let text = tier_status(Some("grok-4.6"));
-        let hard = text.find("Reasoning model").expect("reasoning tier named");
+        let hard = text.find("Session model").expect("session model named");
         let light = text.find("Worker model").expect("worker tier named");
         let cheap = text.find("Utility model:").expect("utility tier named");
         assert!(hard < light && light < cheap, "{text}");

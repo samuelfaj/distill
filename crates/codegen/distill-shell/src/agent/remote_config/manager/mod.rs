@@ -889,7 +889,7 @@ impl ModelsManager {
         });
     }
 
-    /// One-shot background catalog refresh after readiness; no-op when a fresh disk cache already loaded a real catalog.
+    /// Consult the remote catalog at startup even when a disk cache supplied the initial models.
     pub fn spawn_background_refresh(&self) {
         self.spawn_background_refresh_inner(crate::util::config::resolve_remote_fetch_enabled());
     }
@@ -908,9 +908,7 @@ impl ModelsManager {
 
     fn spawn_background_refresh_inner(&self, remote_fetch_enabled: bool) {
         if self.inner.catalog.read().has_fetched_real_catalog {
-            tracing::debug!(
-                "skipping startup background model refresh: fresh cache already loaded"
-            );
+            self.spawn_fetch_inner(None, remote_fetch_enabled);
             return;
         }
         self.spawn_catalog_retry(remote_fetch_enabled);

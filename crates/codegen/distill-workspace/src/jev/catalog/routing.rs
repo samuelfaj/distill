@@ -448,7 +448,7 @@ pub fn micro_tier_questions(
     criteria.insert(
         TIER_HARD_LABEL.to_owned(),
         Json::String(describe(
-            "The reasoning model: reserve for planning, architecture, ambiguous decisions, review, verification, and recovery from failures",
+            "The reasoning model: reserve for planning, architecture, ambiguous decisions, review, interpreting evidence, and recovery from failures",
             hard,
         )),
     );
@@ -461,7 +461,7 @@ pub fn micro_tier_questions(
     );
     criteria.insert(
         MICRO_TIER_KEEP_LABEL.to_owned(),
-        Json::String("Keep the session's model for this call".to_owned()),
+        Json::String("Use the reasoning model when the worker's adequacy is uncertain".to_owned()),
     );
     let mut questions = BTreeMap::new();
     questions.insert(
@@ -472,14 +472,14 @@ pub fn micro_tier_questions(
                  call, without considering the whole task. Prefer the worker when the next action is already decided and bounded. \
                  A tool call, search, or implementation can still require deep reasoning; classify the \
                  decision needed, not the tool name. Use the \
-                 reasoning model for planning, architecture, ambiguous decisions, review, verification, \
+                 reasoning model for planning, architecture, ambiguous decisions, review, interpreting evidence, \
                  or recovery from a failure. When the role is unclear, keep the reasoning model. The \
                  harness already provides both models; choose only between these offered roles. \
                  Minimize total task cost including retries and recovery. Compare benchmarks only within \
                  the same source and metric; missing scores are unknown, never zero. Pricing and endpoint \
                  metrics describe OpenRouter only, not subscriptions or other providers. Prefer continuity \
                  when both choices are adequate and savings are marginal: switching can lose prompt cache. The \
-                 session's reasoning model is `{}`.",
+                 configured reasoning model is `{}`.",
                 hard.name
             ),
             criteria,

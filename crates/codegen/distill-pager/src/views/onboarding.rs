@@ -170,7 +170,7 @@ impl OnboardingState {
 
     pub fn set_primary_model_pending(&mut self) {
         self.setting_pending = Some(PendingSetting::PrimaryModel);
-        self.status = Some("Runtime model updated; saving the primary model…".to_owned());
+        self.status = Some("Saving the secondary reasoning model…".to_owned());
         self.status_is_error = false;
     }
 
@@ -503,7 +503,7 @@ pub fn render_onboarding(
         }
         OnboardingStep::Connect => {
             lines.push(Line::from(
-                "Reuse an existing account, then choose the primary model used by new work.",
+                "Reuse an existing account, then choose a reasoning model for planning and review.",
             ));
             lines.push(Line::from("Logins return here after success, error, or cancellation; account status updates here before you choose a model."));
             lines.push(Line::from(""));
@@ -555,7 +555,7 @@ pub fn render_onboarding(
                     &mut row_lines,
                     index + 3,
                     state.selected,
-                    format!("Primary model: {name} [{id}]"),
+                    format!("Reasoning model: {name} [{id}]"),
                     &theme,
                 );
             }
@@ -564,13 +564,13 @@ pub fn render_onboarding(
                 &mut row_lines,
                 3 + models.len(),
                 state.selected,
-                "Continue without changing the primary model",
+                "Continue without changing the reasoning model",
                 &theme,
             );
         }
         OnboardingStep::Worker => {
             lines.push(Line::from(
-                "A worker handles eligible model calls so the primary model can focus on harder work.",
+                "The worker owns the session; the reasoning model handles bounded planning and review.",
             ));
             lines.push(Line::from("Automatic routing requires effort set to auto. A worker must also share a compatible backend, connection, and credentials."));
             if let Some(current) = current_worker.filter(|value| !value.is_empty()) {
@@ -806,11 +806,11 @@ mod tests {
     fn model_and_worker_messages_wait_for_persistence_results() {
         let mut state = OnboardingState::new();
         state.set_primary_model_pending();
-        assert!(state.status.as_deref().unwrap().contains("saving"));
+        assert!(state.status.as_deref().unwrap().to_lowercase().contains("saving"));
         state.finish_setting_persistence(
             "default_model",
             true,
-            "Primary model saved. Continue when ready.",
+            "Reasoning model saved for planning and review.",
         );
         assert!(!state.status_is_error);
         assert!(state.status.as_deref().unwrap().contains("saved"));

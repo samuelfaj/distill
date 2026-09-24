@@ -57,7 +57,6 @@ use super::session::modal::{
     dispatch_rename_session, dispatch_reset_session_title, dispatch_sessions_confirm_close,
     drop_other_agents_in_minimal,
 };
-use super::settings::setters::set_default_model_inner;
 use super::settings::ui::{action_for_reset, apply_setting_rollback};
 use super::status::scrub_error_for_toast;
 use super::task_result::dispatch_task_result;

@@ -4,8 +4,8 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use distill_sampling_types::{ConversationItem, SamplingConfig, SyntheticReason};
+use tokio::sync::mpsc;
 
 use crate::StrictAppendAck;
 use crate::actor::ChatStateActor;
@@ -1832,7 +1832,15 @@ async fn build_request_uses_sampling_config() {
 
     assert_eq!(request.model, Some("grok-3".to_string()));
     assert_eq!(request.temperature, Some(0.7));
-    assert_eq!(request.max_output_tokens, Some(8192));
+    assert_eq!(
+        h.handle
+            .get_sampling_config()
+            .await
+            .unwrap()
+            .max_completion_tokens,
+        Some(8192)
+    );
+    assert_eq!(request.max_output_tokens, None);
     assert_eq!(request.top_p, Some(0.9));
 }
 
@@ -1967,30 +1975,29 @@ async fn parallel_tool_calls_accept_first_reject_second_skip_third() {
 
     // Model response: one assistant message holding all 3 parallel tool calls.
     // In production this is built from the stream and pushed via `push_assistant_response`.
-    let assistant_with_tools =
-        ConversationItem::Assistant(distill_sampling_types::AssistantItem {
-            content: "I'll read the file, fix it, and run tests.".into(),
-            tool_calls: vec![
-                ToolCall {
-                    id: "call_1".into(),
-                    name: "read_file".to_string(),
-                    arguments: r#"{"target_file":"src/main.rs"}"#.into(),
-                },
-                ToolCall {
-                    id: "call_2".into(),
-                    name: "edit_file".to_string(),
-                    arguments: r#"{"target_file":"src/main.rs","new_string":"fixed"}"#.into(),
-                },
-                ToolCall {
-                    id: "call_3".into(),
-                    name: "run_terminal_cmd".to_string(),
-                    arguments: r#"{"command":"cargo test"}"#.into(),
-                },
-            ],
-            model_id: Some("grok-3".to_string()),
-            model_fingerprint: None,
-            reasoning_effort: None,
-        });
+    let assistant_with_tools = ConversationItem::Assistant(distill_sampling_types::AssistantItem {
+        content: "I'll read the file, fix it, and run tests.".into(),
+        tool_calls: vec![
+            ToolCall {
+                id: "call_1".into(),
+                name: "read_file".to_string(),
+                arguments: r#"{"target_file":"src/main.rs"}"#.into(),
+            },
+            ToolCall {
+                id: "call_2".into(),
+                name: "edit_file".to_string(),
+                arguments: r#"{"target_file":"src/main.rs","new_string":"fixed"}"#.into(),
+            },
+            ToolCall {
+                id: "call_3".into(),
+                name: "run_terminal_cmd".to_string(),
+                arguments: r#"{"command":"cargo test"}"#.into(),
+            },
+        ],
+        model_id: Some("grok-3".to_string()),
+        model_fingerprint: None,
+        reasoning_effort: None,
+    });
     h.handle.push_assistant_response(assistant_with_tools);
 
     // ── Tool execution results (simulating execute_tool_calls) ──────────
@@ -4016,7 +4023,13 @@ async fn push_turns(handle: &crate::handle::ChatStateHandle, turns: usize, conte
     for i in 0..turns {
         handle.push_user_message(ConversationItem::user(format!("q{i}")));
         handle.increment_prompt_index();
-        handle.push_assistant_response(ConversationItem::assistant(format!("a{i}")));
+        handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![
+            distill_sampling_types::conversation::ToolCall {
+                id: format!("call_{i}").into(),
+                name: "run_terminal_command".to_owned(),
+                arguments: r#"{"command":"cargo build"}"#.into(),
+            },
+        ]));
         handle.push_tool_result(ConversationItem::tool_result(
             format!("call_{i}"),
             "x".repeat(content_len),
@@ -4024,6 +4037,237 @@ async fn push_turns(handle: &crate::handle::ChatStateHandle, turns: usize, conte
     }
     // Sync point
     let _ = handle.get_conversation_len().await;
+}
+
+fn append_complete_tool_group(
+    items: &mut Vec<ConversationItem>,
+    id: &str,
+    name: &str,
+    arguments: &str,
+    content: String,
+) {
+    items.push(ConversationItem::assistant_tool_calls(vec![
+        distill_sampling_types::conversation::ToolCall {
+            id: id.to_owned().into(),
+            name: name.to_owned(),
+            arguments: arguments.to_owned().into(),
+        },
+    ]));
+    items.push(ConversationItem::tool_result(id, content));
+}
+
+#[tokio::test]
+async fn request_pruning_projects_old_groups_and_preserves_provenance() {
+    let large_log = |label: &str| {
+        format!(
+            "{label}-head\n{}\n{label}-tail",
+            "log-line ".repeat(2_500)
+        )
+    };
+    let mut conversation = vec![
+        ConversationItem::system("SYSTEM: preserve instructions and exact tool evidence"),
+        ConversationItem::user("one user goal"),
+    ];
+    for i in 0..12 {
+        append_complete_tool_group(
+            &mut conversation,
+            &format!("old-{i}"),
+            "run_terminal_command",
+            r#"{"command":"printf logs"}"#,
+            large_log(&format!("old-{i}")),
+        );
+    }
+    append_complete_tool_group(
+        &mut conversation,
+        "raw-read",
+        "read_file",
+        r#"{"path":"SKILL.md"}"#,
+        large_log("raw-read"),
+    );
+    append_complete_tool_group(
+        &mut conversation,
+        "search-output",
+        "search_tool",
+        r#"{"query":"instruction"}"#,
+        large_log("search-output"),
+    );
+    append_complete_tool_group(
+        &mut conversation,
+        "exact-output",
+        "get_command_or_subagent_output",
+        r#"{"call_id":"source-call"}"#,
+        large_log("exact-output"),
+    );
+    let (mock, persistence_rx) = MockChatPersistence::new();
+    let h = TestHarness::with_persistence(
+        conversation,
+        test_config_with_window(1_000_000),
+        mock,
+        persistence_rx,
+    );
+    h.handle
+        .push_assistant_response(ConversationItem::assistant_tool_calls(vec![
+            distill_sampling_types::conversation::ToolCall {
+                id: "pending-a".into(),
+                name: "run_terminal_command".to_owned(),
+                arguments: r#"{"command":"printf pending"}"#.into(),
+            },
+            distill_sampling_types::conversation::ToolCall {
+                id: "pending-b".into(),
+                name: "run_terminal_command".to_owned(),
+                arguments: r#"{"command":"printf pending"}"#.into(),
+            },
+        ]));
+    h.handle
+        .push_tool_result(ConversationItem::tool_result("pending-a", large_log("pending-a")));
+    let incomplete_before = h.handle.get_conversation().await;
+    let incomplete_request = h
+        .handle
+        .apply_turn_request_pruning(incomplete_before.clone())
+        .await;
+    assert_eq!(
+        incomplete_request.iter().any(|item| matches!(
+            item,
+            ConversationItem::ToolResult(result)
+                if result.tool_call_id.to_string() == "pending-a"
+                    && result.content.as_ref() == large_log("pending-a").as_str()
+        )),
+        true,
+        "request-only pruning must preserve the incomplete pending-a result"
+    );
+    let incomplete_canonical = h.handle.get_conversation().await;
+    assert!(
+        serde_json::to_vec(&incomplete_canonical).unwrap()
+            == serde_json::to_vec(&incomplete_before).unwrap(),
+        "request-only pruning must not mutate canonical incomplete history"
+    );
+    h.handle.push_tool_result(ConversationItem::tool_result(
+        "pending-b",
+        "execution cancelled/not executed",
+    ));
+    for i in 0..3 {
+        h.handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![
+            distill_sampling_types::conversation::ToolCall {
+                id: format!("recent-{i}").into(),
+                name: "run_terminal_command".to_owned(),
+                arguments: r#"{"command":"printf recent"}"#.into(),
+            },
+        ]));
+        h.handle
+            .push_tool_result(ConversationItem::tool_result(
+                format!("recent-{i}"),
+                large_log(&format!("recent-{i}")),
+            ));
+    }
+    let original = h.handle.get_conversation().await;
+    let request = h
+        .handle
+        .build_request(vec![], None, false, None, "conv-cost".into(), "req-cost".into())
+        .await
+        .expect("request should build");
+    let canonical = h.handle.get_conversation().await;
+    assert!(
+        serde_json::to_vec(&canonical).unwrap() == serde_json::to_vec(&original).unwrap(),
+        "request-only pruning must not mutate canonical history"
+    );
+
+    let ids = |items: &[ConversationItem]| {
+        items
+            .iter()
+            .flat_map(|item| match item {
+                ConversationItem::Assistant(assistant) => assistant
+                    .tool_calls
+                    .iter()
+                    .map(|call| format!("call:{}", call.id))
+                    .collect::<Vec<_>>(),
+                ConversationItem::ToolResult(result) => {
+                    vec![format!("result:{}", result.tool_call_id)]
+                }
+                _ => Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&request.items), ids(&original), "tool provenance IDs changed");
+    assert!(matches!(
+        request.items.first(),
+        Some(ConversationItem::System(system))
+            if system.content.as_ref() == "SYSTEM: preserve instructions and exact tool evidence"
+    ));
+
+    let result_text = |items: &[ConversationItem], id: &str| {
+        items.iter().find_map(|item| match item {
+            ConversationItem::ToolResult(result) if result.tool_call_id.to_string() == id => {
+                Some(result.content.to_string())
+            }
+            _ => None,
+        })
+    };
+    for id in [
+        "raw-read",
+        "search-output",
+        "exact-output",
+        "pending-b",
+        "recent-0",
+        "recent-1",
+        "recent-2",
+    ] {
+        assert_eq!(
+            result_text(&request.items, id),
+            result_text(&original, id),
+            "protected result {id} changed"
+        );
+    }
+    assert!(
+        result_text(&request.items, "old-0")
+            .is_some_and(|text| text.contains("[…trimmed…]") && text.contains("/mock/jev/store/")),
+        "an old completed shell result should carry a stable recovery marker"
+    );
+
+    let pruned_body = serialize_via_public_api(&request);
+    let pruned_size = serde_json::to_vec(&pruned_body).unwrap().len();
+    let mut baseline = request;
+    baseline.items = canonical;
+    let baseline_size = serde_json::to_vec(&serialize_via_public_api(&baseline))
+        .unwrap()
+        .len();
+    assert!(
+        pruned_size.saturating_mul(100) <= baseline_size.saturating_mul(70),
+        "eligible old output should reduce serialized request by at least 30% ({} -> {})",
+        baseline_size,
+        pruned_size
+    );
+}
+
+#[tokio::test]
+async fn request_pruning_keeps_original_when_archive_is_unavailable() {
+    let large = "old output ".repeat(2_500);
+    let mut original = vec![ConversationItem::user("one goal")];
+    for i in 0..4 {
+        append_complete_tool_group(
+            &mut original,
+            &format!("unarchived-{i}"),
+            "run_terminal_command",
+            r#"{"command":"printf logs"}"#,
+            large.clone(),
+        );
+    }
+    let (mock, persistence_rx) = MockChatPersistence::new_failing_tool_archive();
+    let h = TestHarness::with_persistence(
+        original.clone(),
+        test_config_with_window(1_000_000),
+        mock,
+        persistence_rx,
+    );
+    let request = h
+        .handle
+        .build_request(vec![], None, false, None, "conv-failure".into(), "req-failure".into())
+        .await
+        .expect("request should build");
+    let canonical = h.handle.get_conversation().await;
+    assert!(
+        serde_json::to_vec(&request.items).unwrap() == serde_json::to_vec(&canonical).unwrap(),
+        "archive failure must preserve every original result"
+    );
 }
 
 /// After fewer turns than `hard_clear_age_turns` the retained conversation
@@ -4159,7 +4403,7 @@ async fn prune_retained_disabled_is_noop() {
 }
 
 #[tokio::test]
-async fn apply_turn_request_pruning_soft_trims_old_results_over_half_window() {
+async fn apply_turn_request_pruning_soft_trims_old_results_over_output_threshold() {
     use crate::actor::ChatStateActor;
     use crate::persistence::MockChatPersistence;
     use crate::types::PruningConfig;
@@ -4177,7 +4421,7 @@ async fn apply_turn_request_pruning_soft_trims_old_results_over_half_window() {
     };
     let handle = ChatStateActor::spawn_with_pruning(
         vec![],
-        test_config_with_window(10_000),
+        test_config_with_window(1_000_000),
         config,
         Box::new(mock),
         event_tx,
@@ -4185,8 +4429,6 @@ async fn apply_turn_request_pruning_soft_trims_old_results_over_half_window() {
     );
 
     push_turns(&handle, 5, 8_000).await;
-    handle.record_token_usage(6_001);
-    let _ = handle.get_total_tokens().await;
 
     let conv = handle.get_conversation().await;
     let pruned = handle.apply_turn_request_pruning(conv.clone()).await;
@@ -4215,7 +4457,68 @@ async fn apply_turn_request_pruning_soft_trims_old_results_over_half_window() {
 }
 
 #[tokio::test]
-async fn apply_turn_request_pruning_is_noop_under_half_window() {
+async fn apply_turn_request_pruning_keeps_native_envelope_when_body_trimmed_to_zero() {
+    use crate::actor::ChatStateActor;
+    use crate::persistence::MockChatPersistence;
+    use crate::types::PruningConfig;
+
+    let prefix = "Exit code: 0\n\nCommand output:\n\n```\n";
+    let body = "Compiling crate\n".repeat(1_000);
+    let suffix = "\n```\n\nCommand completed.\n\nThe previous shell command ended, so on the next invocation of this tool, you will be using a new shell session.\n\nOn the next terminal tool call, the directory of the shell will be /workspace/project.";
+    let envelope = format!("{prefix}{body}{suffix}");
+    let body_range = prefix.len()..prefix.len() + body.len();
+    let original_len = envelope.len();
+
+    let (mut mock, _rx) = MockChatPersistence::new();
+    mock.archive_body_range = Some(body_range);
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let token = tokio_util::sync::CancellationToken::new();
+    let config = PruningConfig {
+        keep_last_n_turns: 2,
+        soft_trim_threshold: 4000,
+        soft_trim_head: 0,
+        soft_trim_tail: 0,
+        hard_clear_age_turns: 10,
+        ..Default::default()
+    };
+    let handle = ChatStateActor::spawn_with_pruning(
+        vec![],
+        test_config_with_window(1_000_000),
+        config,
+        Box::new(mock),
+        event_tx,
+        token,
+    );
+
+    push_turns(&handle, 5, 8_000).await;
+
+    let mut conv = handle.get_conversation().await;
+    for item in &mut conv {
+        if let ConversationItem::ToolResult(result) = item {
+            result.content = std::sync::Arc::<str>::from(envelope.clone());
+        }
+    }
+    let pruned = handle.apply_turn_request_pruning(conv.clone()).await;
+
+    let stored_oldest = match conv.get(2) {
+        Some(ConversationItem::ToolResult(result)) => result.content.len(),
+        other => panic!("expected ToolResult at index 2, got {other:?}"),
+    };
+    assert_eq!(stored_oldest, original_len);
+
+    let projected_oldest = match pruned.get(2) {
+        Some(ConversationItem::ToolResult(result)) => result.content.as_ref(),
+        other => panic!("expected ToolResult at index 2, got {other:?}"),
+    };
+    assert!(projected_oldest.starts_with(prefix));
+    assert!(projected_oldest.contains(suffix));
+    assert!(projected_oldest.contains("[…trimmed…]"));
+    assert!(!projected_oldest.contains("Compiling crate\n"));
+    assert!(projected_oldest.len() < original_len);
+}
+
+#[tokio::test]
+async fn apply_turn_request_pruning_is_noop_under_output_threshold() {
     use crate::actor::ChatStateActor;
     use crate::persistence::MockChatPersistence;
 
@@ -4231,7 +4534,7 @@ async fn apply_turn_request_pruning_is_noop_under_half_window() {
         token,
     );
 
-    push_turns(&handle, 5, 8_000).await;
+    push_turns(&handle, 5, 1_000).await;
     handle.record_token_usage(4_000);
     let _ = handle.get_total_tokens().await;
 
@@ -4241,7 +4544,7 @@ async fn apply_turn_request_pruning_is_noop_under_half_window() {
         Some(ConversationItem::ToolResult(tr)) => tr.content.len(),
         other => panic!("expected ToolResult at index 2, got {other:?}"),
     };
-    assert_eq!(oldest, 8_000);
+    assert_eq!(oldest, 1_000);
 }
 
 #[tokio::test]
@@ -4530,10 +4833,7 @@ async fn sampling_config_survives_compaction_replacement() {
 
     // Post-compaction: SamplingConfig MUST be preserved.
     let post = h.handle.get_sampling_config().await.unwrap();
-    assert_eq!(
-        post.model, "distill",
-        "BUG: model changed after compaction"
-    );
+    assert_eq!(post.model, "distill", "BUG: model changed after compaction");
     assert_eq!(
         post.context_window.get(),
         500_000,

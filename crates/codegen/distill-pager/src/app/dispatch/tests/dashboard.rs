@@ -2985,10 +2985,7 @@ fn dashboard_slash_model_stages_pending_model() {
     seed_model(&mut app, "grok-4.5", "Grok 4.5");
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model grok-4.5".into());
-    assert!(
-        effects.is_empty(),
-        "staging a model must not spawn a session"
-    );
+    assert!(matches!(effects.as_slice(), [Effect::PersistTierModel { worker: true, model, effort: None }] if model == "grok-4.5"));
     assert!(app.agents.is_empty(), "no session should be created");
     let pending = app
         .dashboard
@@ -3011,6 +3008,36 @@ fn dashboard_slash_model_stages_pending_model() {
         Some("grok-4.5"),
         "staging must update the snapshot's current selection",
     );
+}
+
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_reasoning_model_keeps_worker_selection() {
+    let mut app = test_app();
+    seed_model(&mut app, "worker", "Worker");
+    seed_model(&mut app, "reasoning", "Reasoning");
+    app.models.set_current(acp::ModelId::new("worker"), None);
+    open_dashboard(&mut app);
+
+    let effects =
+        dispatch_dashboard_dispatch_slash(&mut app, "/reasoning-model reasoning".into());
+
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "default_model",
+            ..
+        }]
+    ));
+    assert_eq!(app.models.current_model_id_str(), Some("worker"));
+    assert_eq!(
+        app.models
+            .reasoning_model
+            .as_ref()
+            .map(|id| id.0.as_ref()),
+        Some("reasoning")
+    );
+    assert!(app.dashboard.as_ref().unwrap().pending_model.is_none());
 }
 /// A tier-restricted command typed into the dashboard dispatch input must upsell via the feedback toast, not execute, and not fall through the unknown-command path, which would spawn a session whose first prompt is the raw slash text.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]

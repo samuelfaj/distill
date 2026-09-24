@@ -290,15 +290,61 @@ pub(super) fn usage_is_incomplete(
 ) -> bool {
     ledger_incomplete || cancellation_may_hide_usage
 }
+const LATE_USAGE_RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(305);
+const LATE_USAGE_RECONCILE_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub(super) async fn record_subagent_usage(
     parent_cmd_tx: Option<&mpsc::UnboundedSender<SessionCommand>>,
     by_model: Option<Vec<(String, distill_chat_state::UsageTotals)>>,
     parent_prompt_id: Option<String>,
     incomplete: bool,
 ) -> bool {
+    record_subagent_usage_with_attributions(
+        parent_cmd_tx,
+        by_model,
+        Vec::new(),
+        parent_prompt_id,
+        incomplete,
+    )
+    .await
+}
+
+pub(super) async fn record_subagent_usage_with_attributions(
+    parent_cmd_tx: Option<&mpsc::UnboundedSender<SessionCommand>>,
+    by_model: Option<Vec<(String, distill_chat_state::UsageTotals)>>,
+    attributions: Vec<distill_chat_state::UsageAttribution>,
+    parent_prompt_id: Option<String>,
+    incomplete: bool,
+) -> bool {
+    record_subagent_usage_with_attributions_and_pending(
+        parent_cmd_tx,
+        by_model,
+        attributions,
+        Vec::new(),
+        parent_prompt_id,
+        incomplete,
+    )
+    .await
+}
+
+pub(super) async fn record_subagent_usage_with_attributions_and_pending(
+    parent_cmd_tx: Option<&mpsc::UnboundedSender<SessionCommand>>,
+    by_model: Option<Vec<(String, distill_chat_state::UsageTotals)>>,
+    attributions: Vec<distill_chat_state::UsageAttribution>,
+    pending_attempts: Vec<String>,
+    parent_prompt_id: Option<String>,
+    incomplete: bool,
+) -> bool {
     match by_model {
         None => false,
-        Some(by_model) if by_model.is_empty() && !incomplete => true,
+        Some(by_model)
+            if by_model.is_empty()
+                && attributions.is_empty()
+                && pending_attempts.is_empty()
+                && !incomplete =>
+        {
+            true
+        }
         Some(by_model) => {
             let Some(cmd_tx) = parent_cmd_tx else {
                 return false;
@@ -307,6 +353,8 @@ pub(super) async fn record_subagent_usage(
             if cmd_tx
                 .send(SessionCommand::RecordSubagentUsage {
                     by_model,
+                    attributions,
+                    pending_attempts,
                     parent_prompt_id,
                     incomplete,
                     respond_to,
@@ -322,11 +370,79 @@ pub(super) async fn record_subagent_usage(
         }
     }
 }
+
+fn spawn_late_usage_reconciler(
+    child_handle: SessionHandle,
+    parent_cmd_tx: mpsc::UnboundedSender<SessionCommand>,
+    parent_prompt_id: Option<String>,
+    mut pending_attempts: Vec<String>,
+) {
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + LATE_USAGE_RECONCILE_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::debug!(
+                    pending_attempts = ?pending_attempts,
+                    "late child usage reconciliation reached its bound"
+                );
+                break;
+            }
+
+            let query = tokio::time::timeout(
+                remaining.min(super::handle_request::PARENT_ACK_TIMEOUT),
+                child_handle.chat_state_handle.try_get_session_usage(),
+            )
+            .await;
+            let Ok(Ok(usage)) = query else {
+                break;
+            };
+
+            let terminal = usage
+                .attributions
+                .iter()
+                .filter(|attribution| {
+                    pending_attempts
+                        .iter()
+                        .any(|attempt_id| attempt_id == &attribution.attempt_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let still_pending = pending_attempts
+                .iter()
+                .any(|attempt_id| usage.pending_attempts.contains(attempt_id));
+
+            if !terminal.is_empty() {
+                if !record_subagent_usage_with_attributions_and_pending(
+                    Some(&parent_cmd_tx),
+                    Some(Vec::new()),
+                    terminal,
+                    Vec::new(),
+                    parent_prompt_id.clone(),
+                    usage.incomplete,
+                )
+                .await
+                {
+                    break;
+                }
+                pending_attempts.retain(|attempt_id| usage.pending_attempts.contains(attempt_id));
+                if pending_attempts.is_empty() {
+                    break;
+                }
+            } else if !still_pending {
+                break;
+            }
+
+            tokio::time::sleep(remaining.min(LATE_USAGE_RECONCILE_POLL)).await;
+        }
+    });
+}
+
 pub(super) async fn capture_and_fold_one_turn_usage(
     result: &mut SubagentResult,
     input: OneTurnUsageInput<'_>,
 ) -> bool {
-    let (by_model, incomplete, output_tokens, total_tokens) =
+    let (by_model, attributions, pending_attempts, incomplete, output_incomplete, output_tokens, total_tokens) =
         match super::handle_request::child_actor_query(
             "session_usage",
             input.child_handle.chat_state_handle.try_get_session_usage(),
@@ -339,30 +455,60 @@ pub(super) async fn capture_and_fold_one_turn_usage(
                 let total_tokens = canonical_total_tokens(&usage.totals);
                 let incomplete =
                     usage_is_incomplete(usage.incomplete, input.cancellation_may_hide_usage);
+                let output_incomplete =
+                    usage_is_incomplete(usage.is_incomplete(), input.cancellation_may_hide_usage);
+                // A mixed child ledger cannot be represented by identity rows
+                // without a residual aggregate calculation. Keep its proven
+                // aggregate total; once every counted call has an attribution,
+                // send rows only so the parent cannot add both projections.
+                let fully_attributed = usage.attributions.len() as u64 == usage.totals.model_calls;
+                let attributions = fully_attributed.then_some(usage.attributions).unwrap_or_default();
+                let by_model = fully_attributed
+                    .then_some(Vec::new())
+                    .or_else(|| Some(usage.by_model.into_iter().collect::<Vec<_>>()));
+                let pending_attempts = usage.pending_attempts.into_iter().collect::<Vec<_>>();
                 (
-                    Some(usage.by_model.into_iter().collect::<Vec<_>>()),
+                    by_model,
+                    attributions,
+                    pending_attempts,
                     incomplete,
-                    (!incomplete).then_some(output_tokens),
+                    output_incomplete,
+                    (!output_incomplete).then_some(output_tokens),
                     Some(total_tokens),
                 )
             }
-            Err(()) => (None, true, None, None),
+            Err(()) => (None, Vec::new(), Vec::new(), true, true, None, None),
         };
     result.total_tokens_used = total_tokens.unwrap_or(0);
     if let Some((task_spent, task_incomplete)) = input.task_budget_usage {
         result.output_tokens_used = output_tokens.unwrap_or(task_spent);
-        result.output_usage_incomplete = task_incomplete || incomplete || output_tokens.is_none();
+        result.output_usage_incomplete =
+            task_incomplete || output_incomplete || output_tokens.is_none();
     } else {
         result.output_tokens_used = output_tokens.unwrap_or(0);
-        result.output_usage_incomplete = incomplete || output_tokens.is_none();
+        result.output_usage_incomplete = output_incomplete || output_tokens.is_none();
     }
-    record_subagent_usage(
+    let late_pending_attempts = pending_attempts.clone();
+    let fold_acked = record_subagent_usage_with_attributions_and_pending(
         input.parent_cmd_tx,
         by_model,
+        attributions,
+        pending_attempts,
         input.parent_prompt_id.map(str::to_owned),
         incomplete,
     )
-    .await
+    .await;
+    if fold_acked && !late_pending_attempts.is_empty() {
+        if let Some(parent_cmd_tx) = input.parent_cmd_tx.cloned() {
+            spawn_late_usage_reconciler(
+                input.child_handle.clone(),
+                parent_cmd_tx,
+                input.parent_prompt_id.map(str::to_owned),
+                late_pending_attempts,
+            );
+        }
+    }
+    fold_acked
 }
 #[cfg(test)]
 mod trace_turn_tests {

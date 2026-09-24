@@ -48,7 +48,7 @@ pub struct SubagentEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentSource {
-    /// One of the 3 built-in subagent types, not shadowed by a user agent.
+    /// A built-in subagent type, not shadowed by a user agent.
     Builtin(BuiltinAgentName),
     /// User-defined agent from project, user, or bundled discovery.
     UserDefined { scope: AgentScope },

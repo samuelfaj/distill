@@ -1556,228 +1556,67 @@ pub(in crate::app::dispatch) fn preview_auto_light_theme(
     vec![]
 }
 
-// default_model resolves the display name to a `ModelId`
-// It then emits both `Effect::SwitchModel` (active session) and `Effect::PersistSetting` (next-session default)
-// No live preview: a model switch has ACP side effects
-
-/// State-only mutation for `default_model`: set the selected model in the active
-/// session, or in the welcome screen's app-level model state.
-/// Returns `true` if the catalog contains `id`; `false` otherwise.
-pub(in crate::app::dispatch) fn set_default_model_inner(
-    app: &mut AppView,
-    id: &acp::ModelId,
-) -> bool {
-    match app.active_view {
-        ActiveView::Agent(aid) => {
-            let Some(agent) = app.agents.get_mut(&aid) else {
-                return false;
-            };
-            if !agent.session.models.available.contains_key(id) {
-                return false;
-            }
-            agent.session.models.set_current(id.clone(), None);
-        }
-        ActiveView::Welcome => {
-            if !app.models.available.contains_key(id) {
-                return false;
-            }
-            app.models.set_current(id.clone(), None);
-        }
-        _ => return false,
-    }
-    if matches!(app.active_view, ActiveView::Agent(_)) && app.models.available.contains_key(id) {
-        // Keep the app-level mirror aligned with the active session. A later
-        // `/new` or `/clear` clones this state for its fresh session.
-        app.models.set_current(id.clone(), None);
-    }
-    true
-}
-
 /// Toast format for `default_model`, mirroring `save_theme_toast`.
 /// Renders the user-friendly model name (NOT the internal id) so the toast text matches what the user typed.
 fn save_default_model_toast(value: &str) -> String {
     format!("\u{2713} Reasoning model: {value}")
 }
 
-/// Outer dispatcher for `Action::SetDefaultModel`. Switches and persists and toasts.
-/// `PersistSetting` is emitted first for consistent rollback; `SwitchModel` second.
-/// Idempotent: when the same model is already active, this is a no-op.
+/// Save the secondary reasoning model without changing the session's worker.
 pub(in crate::app::dispatch) fn set_default_model(
     app: &mut AppView,
     new_id: acp::ModelId,
 ) -> Vec<Effect> {
-    let active_agent = match app.active_view {
-        ActiveView::Agent(aid) => Some(aid),
-        ActiveView::Welcome => None,
-        _ => {
-            tracing::error!(
-                target: "settings",
-                key = "default_model",
-                "Action::SetDefaultModel dispatched on a screen without model state",
-            );
-            return vec![];
-        }
+    let models = match app.active_view {
+        ActiveView::Agent(aid) => app.agents.get(&aid).map(|agent| &agent.session.models),
+        ActiveView::Welcome | ActiveView::AgentDashboard => Some(&app.models),
+        _ => None,
     };
-
-    // Snapshot the previous id and display name from the active agent's session (the same source `set_default_model_inner` mutates and the modal reads)
-    let (prev_id, session_id, available_has_new, new_display) = if let Some(aid) = active_agent {
-        let Some(agent) = app.agents.get(&aid) else {
-            tracing::error!(
-                target: "settings",
-                key = "default_model",
-                "Action::SetDefaultModel: active agent is missing",
-            );
-            return vec![];
-        };
-        (
-            agent.session.models.current.clone(),
-            agent.session.session_id.clone(),
-            agent.session.models.available.contains_key(&new_id),
-            agent.session.models.display_name_for(&new_id),
-        )
-    } else {
-        (
-            app.models.current.clone(),
-            None,
-            app.models.available.contains_key(&new_id),
-            app.models.display_name_for(&new_id),
-        )
-    };
-
-    if !available_has_new {
-        tracing::error!(
-            target: "settings",
-            key = "default_model",
-            id = ?new_id,
-            "Action::SetDefaultModel dispatched with model id not in catalog — \
-             validator skew; no-op",
-        );
+    let Some(models) = models else { return vec![] };
+    if !models.available.contains_key(&new_id) {
+        app.show_toast("Reasoning model is not in the catalog.");
         return vec![];
     }
-
-    if active_agent.is_none() {
-        app.cli_model_override = Some(new_id.clone());
-        app.cli_effort_token = None;
-    }
-    let was_auto = active_agent
-        .and_then(|id| app.agents.get(&id))
-        .map_or(app.models.effort_auto, |agent| {
-            agent.session.models.effort_auto
-        });
-    if prev_id.as_ref() == Some(&new_id) && was_auto {
-        let cli_override = app.cli_model_override.is_some();
-        if let Some(state) = app.onboarding.as_mut() {
-            state.set_info(if cli_override {
-                "Runtime model is already selected by the CLI override; the saved default was not changed."
-            } else {
-                "Runtime model is already active; the saved default was not changed."
-            });
-        }
-        return vec![];
-    }
-    if let Some(agent) = active_agent.and_then(|id| app.agents.get_mut(&id)) {
-        agent.session.models.effort_auto = true;
-    } else {
-        app.models.effort_auto = true;
-    }
-
-    let did_mutate = set_default_model_inner(app, &new_id);
-    debug_assert!(
-        did_mutate || prev_id.as_ref() == Some(&new_id),
-        "validated model"
-    );
-    refresh_open_settings_modals(app);
-    tracing::info!(
-        target: "settings",
-        key = "default_model",
-        new = ?new_display,
-        new_id = %new_id.0,
-        prev_id = ?prev_id.as_ref().map(|id| id.0.as_ref()),
-        "setting changed",
-    );
-    app.show_toast(&save_default_model_toast(&new_display));
-
-    // Persist the **model ID** (catalog key), not the display name.
-    // would silently fail to resolve on the next startup.
-    // slugs that must not become the global Build `default_model`.
-    let mut effects: Vec<Effect> = Vec::new();
-    let active_chat_session = active_agent
-        .and_then(|id| app.agents.get(&id))
-        .is_some_and(|agent| agent.chat_kind);
-    if !distill_shell::agent::chat_modes::process_chat_mode_enabled() && !active_chat_session {
-        let new_id_str = new_id.0.to_string();
-        let prev_id_str = prev_id
-            .as_ref()
-            .map(|id| id.0.to_string())
-            .unwrap_or_default();
-        effects.push(Effect::PersistSetting {
-            key: "default_model",
-            value: crate::settings::SettingValue::String(new_id_str),
-            rollback_value: crate::settings::SettingValue::String(prev_id_str),
-        });
-    }
-
-    // Best-effort session-level switch
-    // The `Effect::SwitchModel` pipeline handles its own deferred switch when no session id exists yet (see line 583 of this file)
-    if let (Some(aid), Some(sid)) = (active_agent, session_id) {
-        // We already hold a reference path to the agent above; re-borrow mutably here to flip `model_switch_pending`
-        if let Some(agent) = app.agents.get_mut(&aid) {
-            agent.session.model_switch_pending = true;
-        }
-        effects.push(Effect::SwitchModel {
-            agent_id: aid,
-            session_id: sid,
-            model_id: new_id,
-            effort: None,
-            prev_model_id: prev_id.clone(),
-        });
-    } else if let Some(aid) = active_agent
-        && let Some(agent) = app.agents.get_mut(&aid)
+    if distill_shell::agent::chat_modes::process_chat_mode_enabled()
+        || matches!(app.active_view, ActiveView::Agent(aid) if app.agents.get(&aid).is_some_and(|agent| agent.chat_kind))
     {
-        // No session id yet: stash for `EventLoop::on_session_created` to apply once the session id arrives
-        // Mirrors `Action::SwitchModel` line 586
-        agent.session.deferred_model_switch = Some(crate::app::agent::DeferredModelSwitch {
-            model_id: new_id,
-            effort: None,
-            prev_model_id: prev_id,
-        });
+        app.show_toast("Reasoning model cannot be saved in chat mode.");
+        return vec![];
     }
+    let prev_id = app.models.reasoning_model.clone()
+        .or_else(crate::acp::ModelState::configured_reasoning_model);
+    if prev_id.as_ref() == Some(&new_id) {
+        app.show_toast("Reasoning model is already selected.");
+        return vec![];
+    }
+    let new_display = models.display_name_for(&new_id);
+    app.models.reasoning_model = Some(new_id.clone());
+    for agent in app.agents.values_mut() {
+        agent.session.models.reasoning_model = Some(new_id.clone());
+    }
+    refresh_open_settings_modals(app);
+    app.show_toast(&save_default_model_toast(&new_display));
     if let Some(state) = app.onboarding.as_mut() {
-        if effects.iter().any(|effect| {
-            matches!(
-                effect,
-                Effect::PersistSetting {
-                    key: "default_model",
-                    ..
-                }
-            )
-        }) {
-            state.set_primary_model_pending();
-        } else {
-            state.set_info("Runtime model changed for this chat; no saved default was written.");
-        }
+        state.set_primary_model_pending();
     }
-    effects
+    vec![Effect::PersistSetting {
+        key: "default_model",
+        value: crate::settings::SettingValue::String(new_id.0.to_string()),
+        rollback_value: crate::settings::SettingValue::String(
+            prev_id.map_or_else(String::new, |id| id.0.to_string()),
+        ),
+    }]
 }
 
 /// Clear the default model override.
 /// Persists `[models].default = None`; does NOT mutate the active session's current model.
 pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Effect> {
-    // Active-agent snapshot: the previous model ID for the rollback payload
-    // Use the model ID (catalog key), not the display name, so that rollback persists a value `resolve_default_model` can match
-    let prev_id_str = if let ActiveView::Agent(aid) = app.active_view
-        && let Some(agent) = app.agents.get(&aid)
-    {
-        agent
-            .session
-            .models
-            .current
-            .as_ref()
-            .map(|id| id.0.to_string())
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    let prev_id_str = app.models.reasoning_model.take()
+        .or_else(crate::acp::ModelState::configured_reasoning_model)
+        .map_or_else(String::new, |id| id.0.to_string());
+    for agent in app.agents.values_mut() {
+        agent.session.models.reasoning_model = None;
+    }
 
     // During the startup window `current` is None even if a default is on disk
     // Emit persist unconditionally; the shell de-dupes
@@ -1790,7 +1629,7 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
             "setting changed (startup-window clear — pager mirror was already None; \
              persist proceeds to ensure disk state matches user intent)",
         );
-        app.show_toast("\u{2713} Default model: cleared");
+        app.show_toast("\u{2713} Reasoning model: cleared");
         return vec![Effect::PersistSetting {
             key: "default_model",
             value: crate::settings::SettingValue::String(String::new()),
@@ -1806,7 +1645,7 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
         "setting changed",
     );
     refresh_open_settings_modals(app);
-    app.show_toast("\u{2713} Default model: cleared");
+    app.show_toast("\u{2713} Reasoning model: cleared");
     vec![Effect::PersistSetting {
         key: "default_model",
         value: crate::settings::SettingValue::String(String::new()),
@@ -1814,37 +1653,27 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
     }]
 }
 
-// Model-family settings: fork_secondary_model (and formerly web_search_model, session_summary_model, default_reasoning_effort)
-// SHELL-OWNED. Unlike `default_model`, these do NOT mutate live runtime state; they update `current_ui` mirrors and persist.
-// No live preview. Rollback touches only the disk and the mirror.
+// Model-family settings: fork_secondary_model (and formerly web_search_model,
+// session_summary_model, default_reasoning_effort). The fork setting updates
+// only its UI mirror; the worker tier also selects the live session model.
 
-/// Outer dispatcher for `Action::SetTierLight`: the session model's lighter
-/// sibling.
+/// Outer dispatcher for `Action::SetTierLight`: the worker model.
 ///
-/// The value is a `[model.<id>]` entry id, validated at the command boundary.
-/// The sibling rule (same provider, same backend, same credential) is enforced
-/// in the shell where the tier is resolved, and reported by `/tiers`; this only
-/// writes.
+/// The value is a `[model.<id>]` entry id on any provider. It is saved as the
+/// worker selection and becomes the active session model.
 pub(in crate::app::dispatch) fn set_tier_light(
     app: &mut AppView,
     id: String,
     effort: Option<distill_shell::sampling::types::ReasoningEffort>,
 ) -> Vec<Effect> {
     if !id.is_empty() {
-        let reasoning = match app.active_view {
-            ActiveView::Agent(aid) => app
-                .agents
-                .get(&aid)
-                .and_then(|agent| agent.session.models.current_model_id_str()),
-            ActiveView::Welcome => app.models.current_model_id_str(),
+        let models = match app.active_view {
+            ActiveView::Agent(aid) => app.agents.get(&aid).map(|agent| &agent.session.models),
+            ActiveView::Welcome => Some(&app.models),
             _ => None,
         };
-        let Some(reasoning) = reasoning else {
-            app.show_toast("Choose a reasoning model before setting a worker model.");
-            return vec![];
-        };
-        if let Err(reason) = distill_shell::jev::validate_light_tier_candidate(reasoning, &id) {
-            app.show_toast(&format!("Worker model not saved: {reason}"));
+        if !models.is_some_and(|models| models.available.keys().any(|candidate| candidate.0.as_ref() == id.as_str())) {
+            app.show_toast("Worker model is not in the available catalog.");
             return vec![];
         }
     }
@@ -1852,13 +1681,34 @@ pub(in crate::app::dispatch) fn set_tier_light(
         .light
         .clone()
         .unwrap_or_default();
-    if prev == id
+    let same_selection = prev == id
         && distill_shell::jev::tiers_cached()
             .light_effort
             .as_deref()
             .unwrap_or("auto")
-            == effort.map(|e| e.to_string()).as_deref().unwrap_or("auto")
-    {
+            == effort.map(|e| e.to_string()).as_deref().unwrap_or("auto");
+    let current = match app.active_view {
+        ActiveView::Agent(aid) => app.agents.get(&aid).and_then(|agent| agent.session.models.current_model_id_str().map(str::to_owned)),
+        ActiveView::Welcome => app.models.current_model_id_str().map(str::to_owned),
+        _ => None,
+    };
+    let active_effort_matches = match app.active_view {
+        ActiveView::Agent(aid) => app.agents.get(&aid).is_some_and(|agent| {
+            agent.session.models.effort_auto == effort.is_none()
+                && (effort.is_none() || agent.session.models.reasoning_effort == effort)
+        }),
+        ActiveView::Welcome => app.models.effort_auto == effort.is_none()
+            && (effort.is_none() || app.models.reasoning_effort == effort),
+        _ => true,
+    };
+    if same_selection && (id.is_empty() || current.as_deref() == Some(id.as_str()) && active_effort_matches) {
+        if !id.is_empty() {
+            let model_id = acp::ModelId::new(id.clone());
+            app.models.set_current(model_id.clone(), effort);
+            app.models.effort_auto = effort.is_none();
+            app.cli_model_override = Some(model_id);
+            app.cli_effort_token = effort.map(|level| level.to_string());
+        }
         app.show_toast(&format!("\u{2713} Worker model: already {id}"));
         return vec![];
     }
@@ -1876,11 +1726,60 @@ pub(in crate::app::dispatch) fn set_tier_light(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "auto".into())
     ));
-    let effects = vec![Effect::PersistTierModel {
-        worker: true,
-        model: id,
-        effort,
-    }];
+    let mut effects = Vec::new();
+    if !same_selection {
+        effects.push(Effect::PersistTierModel {
+            worker: true,
+            model: id.clone(),
+            effort,
+        });
+    }
+    if id.is_empty() {
+        app.cli_model_override = None;
+        app.cli_effort_token = None;
+        if let Some(reasoning) = app.models.reasoning_model.clone()
+            && app.models.available.contains_key(&reasoning)
+        {
+            app.models.set_current(reasoning, None);
+        }
+    }
+    if !id.is_empty() && (current.as_deref() != Some(id.as_str()) || !same_selection || !active_effort_matches) {
+        let model_id = acp::ModelId::new(id);
+        match app.active_view {
+            ActiveView::Agent(aid) => {
+                if let Some(agent) = app.agents.get_mut(&aid) {
+                    if let Some(session_id) = agent.session.session_id.clone() {
+                        agent.session.model_switch_pending = true;
+                        agent.session.models.effort_auto = effort.is_none();
+                        effects.push(Effect::SwitchModel {
+                            agent_id: aid,
+                            session_id,
+                            model_id: model_id.clone(),
+                            effort,
+                            prev_model_id: agent.session.models.current.clone(),
+                        });
+                    } else {
+                        let prev_model_id = agent.session.models.current.clone();
+                        agent.session.models.set_current(model_id.clone(), effort);
+                        agent.session.models.effort_auto = effort.is_none();
+                        agent.session.deferred_model_switch = Some(crate::app::agent::DeferredModelSwitch {
+                            model_id: model_id.clone(),
+                            effort,
+                            prev_model_id,
+                        });
+                    }
+                }
+            }
+            ActiveView::Welcome => {
+                app.models.set_current(model_id.clone(), effort);
+            }
+            _ => {}
+        }
+        app.models.set_current(model_id.clone(), effort);
+        app.models.effort_auto = effort.is_none();
+        app.cli_model_override = Some(model_id);
+        app.cli_effort_token = effort.map(|level| level.to_string());
+    }
     if let Some(state) = app.onboarding.as_mut() {
         state.set_worker_model_pending();
     }
@@ -2058,16 +1957,19 @@ pub(in crate::app::dispatch) fn set_tier_editor(
     let Some(models) = models else {
         return vec![];
     };
-    let Some(reasoning_id) = models.resolve_by_name_or_id(&reasoning) else {
-        app.show_toast(&format!("Unknown reasoning model: {reasoning}"));
-        return vec![];
+    let reasoning_id = if reasoning.is_empty() {
+        None
+    } else {
+        match models.resolve_by_name_or_id(&reasoning) {
+            Some(id) => Some(id),
+            None => {
+                app.show_toast(&format!("Unknown reasoning model: {reasoning}"));
+                return vec![];
+            }
+        }
     };
-
-    if !worker.is_empty()
-        && let Err(reason) =
-            distill_shell::jev::validate_light_tier_candidate(reasoning_id.0.as_ref(), &worker)
-    {
-        app.show_toast(&format!("Worker model not saved: {reason}"));
+    if !worker.is_empty() && !models.available.keys().any(|id| id.0.as_ref() == worker.as_str()) {
+        app.show_toast(&format!("Unknown worker model: {worker}"));
         return vec![];
     }
     if !utility.is_empty()
@@ -2082,7 +1984,11 @@ pub(in crate::app::dispatch) fn set_tier_editor(
         return vec![];
     }
 
-    let mut effects = set_default_model(app, reasoning_id);
+    let mut effects = match reasoning_id {
+        Some(id) => set_default_model(app, id),
+        None if app.models.reasoning_model.is_some() => clear_default_model(app),
+        None => vec![],
+    };
     effects.extend(set_tier_light(app, worker, None));
     effects.extend(set_cheap_model(app, utility, None));
     match app.active_view {

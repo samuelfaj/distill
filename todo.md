@@ -1,6 +1,154 @@
 # Distill: menor custo monetário por tarefa concluída
 
-Estudo e plano de execução — 21/09/2026. **Status: planejamento; nenhuma mudança de produto implementada e nenhum ganho financeiro validado neste estudo.**
+Estudo e plano de execução — 21/09/2026. **Status em 22/09/2026: CP44 worker configurado + baseline contábil reconciliados (`67a80c97`, `67d28abe`, commit/push verificados); CP43 E1 pruning PASS (`a02181966d126686928b3b359c55aa384c03749c`); CP42 tool-discovery JSON compacto aceito; CP41 narrow liveproof PASS recorded; CP40 managed-install diagnosis/fix recorded; CP39 billing, CP37 utility e CP35–CP36 de contexto aceitos; T01–T21 continuam abertos e nenhum ganho financeiro foi validado.**
+
+> **Status atual — checkpoints funcionais aceitos:** CP23 Task Output
+> (`bbaa494c`), CP24 display (`bc633b94`), CP25 serving-cap aprendido
+> (`4e68e212`), CP26 precedência USD (`e8765e5f`) e CP27 captura de custo do
+> initial title (`450567a8`) têm recibos funcionais aceitos. O CP27 passou pela
+> recuperação manual do controller e pelos focos worker 5, manual 1 e weak 1;
+> a revisão R1 ainda deixa aberta a correção de contabilização late/pending,
+> portanto isso não fecha a observabilidade financeira do caminho. CP28 prompt,
+> CP30 cited WebSearch e CP31 funcional no Mocha (`739a2fb0`) passaram, mas também não
+> completam T01–T21 nem a prova financeira. O baseline `30b5ada` está
+> versionado/construído, mas a lacuna de contabilização bloqueia a comparação.
+> Os checkpoints funcionais anteriores continuam referenciados: overflow de
+> `/goal` (`b36b39e2`), utility → worker e falhas opcionais (`7f5403a1`,
+> `f40f1d63`), custos free no ledger (`44a5d951`), `title_refresh`
+> (`b725d112`), skill/PDF (`f508eeb7`, `5b99fd6c`), invalidação read/memo
+> (`d80df06e`) e precedência USD/identidade de response (`2895b95b`,
+> `resp_openrouter`).
+>
+> **Prova ainda aberta:** T01–T21 continuam sem aceite financeiro. Não há
+> avaliação runtime matched/pareada, economia validada ou revisão independente
+> de uma avaliação financeira live-provider; o baseline instrumentado,
+> aceitação financeira e comparação econômica, roteamento, effort e calibração
+> continuam pendentes.
+> Os smokes anteriores permanecem não pareados: Distill inconclusivo, Pi
+> aceito apenas com custo tarifário estimado e billing real desconhecido
+> (HTTP 404). Nenhum checkpoint funcional acima deve ser marcado como item
+> inteiro concluído.
+
+> **Anotação de steering — overflow e economia de saída (22/09/2026):** a
+> captura de tela mostra um sintoma de overflow no `/goal` e rótulos de modelos
+> na UI; isso não prova qual modelo/endpoint respondeu. A rota efetiva precisa
+> ser registrada pelo request/client metadata. Para conteúdo útil que possa ser
+> reduzido, a ordem exigida é utility elegível → worker configurado e limitado
+> (preservando pins) → saída necessária fiel/original recuperável se ambos
+> falharem. Contar cada chamada, rejeição, fallback e reabertura uma vez; não
+> usar um fallback pago de reasoning só para resumir.
+
+> **Status atual — CP37 / política de utility (22/09/2026):** no checkpoint
+> `d4add482`, o caminho de agente inteiro foi removido; resta somente a tarefa
+> fechada `cite_spans`, com input limitado a 24 KiB, pergunta a 2 KiB,
+> estado de revisão a 32 KiB e output de wire a 1024 tokens. Exige Jev
+> pré-chamada `>=0.98`, um limiar conservador de política e não uma garantia
+> calibrada, e pós-revisão Jev após a tarefa e o guard determinístico do
+> consumidor. Falha, incerteza ou indisponibilidade mantém o worker configurado
+> ou o original recuperável; cancelamento durante a pós-revisão conserva o
+> billing como `Rejected`, sem afirmar fallback automático ao worker. Utility é
+> apenas auxiliar: não tem autoridade para arquivo, ferramenta, edição ou
+> agente. O parent de 1M permanece preservado; a janela utility de 262144 foi
+> testada.
+>
+> CP35 (`e0511fd1`) corrigiu a reserva de output herdada e o phantom reserve do
+> Codex; CP36 (`93dc68d5`) preserva o teto do modelo em child budget; CP32
+> (`46fd5aa1`, utility disabled), CP33 (`bdae3b83`, docs), CP34
+> (`92fe97e6`, WebFetch) e a revisão independente de fonte R1 têm PASS. O
+> release isolado de `d4add482` terminou **BUILD PASS (3m19)**, com executável
+> versão `2.0.6` (`d4add4824cc6`); o checkout isolado fresco concluiu os testes
+> focados (**8 utility PASS + 1 display PASS**) e o binário foi instalado
+> atomicamente em `/Users/samuelfajreldines/dev/jev-build/target/release/distill`.
+> SHA-256 verificado:
+> `2c5f9436d3419568011935f1e142c2462d270f7206e1691a0e24d1aad3011f4f`.
+> O main workspace já tinha utility joint `8` + display `1` PASS; processos e
+> sessões de usuários já abertos não foram reiniciados e permanecem no estado
+> anterior. Fluxo live-provider/usuário ainda não foi verificado.
+> No aceite do CP37, os dois achados de ordenação de billing do E2 ainda não
+> estavam aceitos; o CP39 abaixo os supersede. Nenhum
+> T01–T21 está concluído e não há economia financeira matched/pareada validada.
+
+> **Status atual — CP39 / billing (22/09/2026):** o fix de billing em 17 arquivos
+> do CP39 (`07ff4057`) foi aceito após revisão independente de regate de preço:
+> atribuição late de auxiliary e
+> child persiste sem snapshots duplicados; preço desconhecido conserva tokens e
+> chamadas conhecidas, lower bound de USD conhecido e flag de parcialidade; as
+> lacunas precursoras e legadas permanecem explícitas. Provas focadas: usage
+> `16 PASS`, late title/precursor/parent fold `1` cada, legacy `1` sobreposto
+> aos 16 e missing-price `1 PASS` pelo controller e R1. Compile fresh release:
+> `2m28`. Isso avança T01, mas não o conclui: não é CI amplo, live provider,
+> teste de timeout ou prontidão de piloto financeiro; não há alegação de preço
+> ou economia e nenhum binário CP39 instalado é afirmado.
+
+> **Status atual — CP40 / managed install versus running process (22/09/2026):**
+> a sessão urgente 01a0ca29-135b-75c0-aa71-e44b9be60afd falhou às 17:28 UTC
+> no teto DeepInfra 131072: 98853 input + 32768 output = 131621.
+> O controller provou independentemente que o PID 15301, iniciado às 13:43
+> locais, ainda executa ~/.local/share/distill/downloads/distill-2.0.6-local-b4a7ec2f7aef-macos-aarch64;
+> o symlink do PATH apontava para esse binário e --version retornou
+> 2c87833e5bb4. A remoção de utility-routing e o preflight fix do
+> CP37 (d4add482) existiam apenas no install release da raiz. O symlink
+> gerenciado foi então atualizado atomicamente para o artefato CP37 verificado,
+> SHA-256 2c5f9436d3419568011935f1e142c2462d270f7206e1691a0e24d1aad3011f4f;
+> recibo: /tmp/distill-cost-orchestration-20260921-b02qc6vm/urgent-context-managed-install.json.
+> O PID 15301 continua antigo; CUA Terminal bloqueado, portanto não há claim de
+> restart; o narrow liveproof PASS está registrado no CP41 abaixo, sem validar
+> todas as tarefas ou providers.
+> Este checkpoint registra diagnóstico, correção do install gerenciado e a
+> limitação install-versus-processo-running; não fecha Priority 1: E1/E2 e
+> economic compaction continuam pendentes.
+
+> **Status atual — CP41 / narrow liveproof (22/09/2026):** os artefatos exatos
+> urgent-context-live-proof.json e urgent-context-preflight-proof.log registram
+> o diagnóstico somente com tools disabled, plan e sem subagents. O fork da
+> sessão falha 01a0ca29-135b-75c0-aa71-e44b9be60afd para
+> 01a0ca30-ddb0-7ec1-8977-55501f94d48e retornou CONTEXT_OK: Grok 94745
+> input/30 output, Jev 650 input/58 output, sem utility call e zero stderr.
+> O log preflight existente mostra 1 teste passado, 0 falhas, 7065 filtrados.
+> O PID 15301 não foi reiniciado. Isto é somente PASS do fork diagnóstico
+> estreito; não valida todas as tarefas ou providers, não é claim de preço/economia,
+> e mantém E1/E2 e economic compaction pendentes.
+>
+> **Status atual — CP42 / JSON compacto de descoberta (22/09/2026):** `c227092a`
+> trocou as duas serializações de resultado do `search_tool` para JSON compacto;
+> os valores parseados permanecem idênticos. No sample STAR real do controller,
+> a resposta caiu de `167397` para `121021` bytes (**bytes, não tokens nem
+> dinheiro**). Focos do controller: filtro `44 PASS`, schema `1 PASS` e
+> descrição `9 PASS`; revisão de fonte R1 `worker-final-source` **PASS** para
+> E3. Recibos: `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-search-tests.log`,
+> `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-task-schema-tests.log`,
+> `/tmp/distill-cost-orchestration-20260921-b02qc6vm/priority-task-description-tests.log`
+> e `/tmp/distill-cost-orchestration-20260921-b02qc6vm/tool-search-json-parity.json`.
+> Isto não fecha E1/E2: ambos permanecem pendentes em runtime.
+>
+> **Status atual — CP43 / pruning E1 (22/09/2026):** o commit
+> `a02181966d126686928b3b359c55aa384c03749c` foi commitado, enviado e
+> verificado. O recibo `R1.pruning-final-accept.result.md` registra **9 testes de chat-state
+> + 2 testes host PASS**: conta rondas de tools concluídas dentro de um goal,
+> preserva as 3 mais recentes, pendentes/ambíguas e o histórico canônico;
+> arquiva e lê de volta o original completo antes da redução apenas da cópia
+> de request de corpos conhecidos de progresso puro de build. O envelope nativo
+> permanece exato e falhas permanecem cruas. O install gerenciado CP37
+> (`d4add482`) permanece; a última inspeção não encontrou o PID `15301` e
+> `distill --version` reportou `d4add482`. Isso não prova reinício do usuário
+> nem a conclusão da tarefa original, não altera a janela de 1M e não sustenta
+> ganho monetário/live-provider. Economic compaction e E2 runtime continuam
+> pendentes.
+>
+> **Achado factual STAR — sessão `01a0c96b...` (22/09):** main: `374` calls /
+> `108,000,915` tokens; `24` child executions, `24,133,375` únicos após subtrair
+> `361,257` herdados; sessão: `132,134,290` tokens / `873` calls. Input:
+> `131,329,564`, cached `110,216,968` (subset); output `804,726`; reasoning
+> `504,195` (subset). Goal `2,322,098` mede crescimento de contexto/progresso
+> marginal de child, não billing. Utility: `160` attempts, input/output
+> reportados `0`; `160` context-400 rejections distintos do caminho antigo de
+> whole-conversation, antes do CP37. A aritmética exata não encontrou duplicação.
+> Main context: `46,452→496,395`, sem compactação; os 24 children foram
+> DeepSeek; o footer mostra apenas `12` calls do main worker. Prioridades
+> diagnosticadas e pendentes: evitar contexto grande repetido, limitar contexto
+> de worker, reduzir a resposta de descoberta de tools de `167,215` caracteres e distinguir
+> os medidores; utility sem full-round já foi resolvida no CP37. Sem conclusão
+> de economia monetária ou preços.
 
 ## 1. Objetivo e critério de sucesso
 
@@ -32,7 +180,7 @@ Não há uma porcentagem de economia prometida. Os maiores candidatos a ganho s�
 
 Fontes locais históricas: [list.md](list.md), [plano anterior](plan/plan.md), [medição anterior do Jev](plan/jev-measurement-report.md), [token saver](docs/token-saver.md) e [roteamento](docs/jev-routing.md). Foram usadas como orientação e confrontadas com implementação. Uma flag, função, teste unitário ou item marcado como implementado não comprova que o caminho esteja ativo no payload final nem que economize dinheiro. Resultados sintéticos antigos não são resultados financeiros atuais.
 
-Este arquivo é a única entrega nova. Preservar o trabalho local existente, `list.md` e a pasta `plan/`. Na execução futura, congelar primeiro a revisão e a configuração reais usadas em cada experimento.
+Este arquivo preserva o plano, o histórico e os critérios de aceite originais. Nenhuma alteração foi feita em `list.md`, `plan/` ou outros documentos nesta atualização. Na execução futura, congelar primeiro a revisão e a configuração reais usadas em cada experimento.
 
 ## 3. O que o Pi ensina e onde o Distill pode ir além
 
@@ -163,6 +311,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Associar cada tentativa faturável a tarefa/turno/request, papel, modelo respondente, endpoint, effort solicitado/aplicado, cache, status e custo. Integrar Jev, utility rejeitada, subagentes, títulos, recap, compactação/prefire e retries uma única vez; contabilizar geração paga mesmo descartada ou cancelada. Diferenciar falha sem cobrança comprovada de usage ausente.
   - Estender os dados/fluxos atuais somente onde faltar informação; não criar um segundo ledger. Separar custo reportado, estimado e ausente. Reconciliar o ledger Jev com o geral sem duplicar chamadas já incorporadas.
   - **Aceite/evidência:** uma execução conhecida com chamada principal + auxiliary + utility rejeitada + subagente fecha a soma por request; ausência/duplicidade é detectada; fixtures existentes de usage e subagent folding cobrem os caminhos aplicáveis. Comparar uma pequena amostra com registros do provedor antes de anunciar economia.
+  - **Estado CP39:** T01 avançou com a atribuição late/child e a preservação explícita de uso/preço desconhecido, mas continua aberto; não marcar T01 nem T01–T21 como concluídos sem reconciliação financeira validada.
 
 - [ ] **T02 — Congelar referências e produzir um baseline reproduzível.**
   - **Dependências:** T01. **Base:** [P9], testes existentes do Distill, protocolo da seção 7.
@@ -174,7 +323,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - **Dependências:** T01. **Arquivos:** [D4], [D17], [D16].
   - Aproveitar o trabalho já presente em `jev_model_facts.rs` e `openrouter_models.rs`: preço, cache, janela, output, ferramentas, imagens, níveis de effort, endpoint, autenticação e atualização. Não duplicar esse catálogo. Benchmarks gerais são pistas de capacidade, não taxa de sucesso do nosso workload ou prova de um effort melhor.
   - Usar modelo/endpoint realmente atendente e política da conta. Tratar a lista utility atual — Ling Flash VL gratuito, variante paga e Qwen Flash — como fallback configurado, não uma ordenação econômica validada. Nenhum modelo desconhecido ganha capacidade/preço por inferência do nome.
-  - **Aceite/evidência:** candidato incompatível não é oferecido; dados vencidos/ausentes ficam explícitos; as credenciais e o backend pertencem ao candidato correto; seleção manual e restrições de subagente continuam respeitadas. Cobrir com testes existentes de configuração/roteamento e fixtures pequenas das lacunas.
+  - **Aceite/evidência:** candidato incompatível não é oferecido; dados vencidos/ausentes ficam explícitos; as credenciais e o backend pertencem ao candidato correto; seleção manual e restrições de subagente continuam respeitadas. Para `/goal` repetido, a elegibilidade usa a janela/capacidade do endpoint efetivamente roteado, reserva de output e margem antes do envio, com fixture de worker de janela menor versus modelo exibido e caso-limite input+reserva; metadata ausente conserva rota segura explícita, sem inferir pelo nome. Cobrir com testes existentes de configuração/roteamento e fixtures pequenas das lacunas.
 
 - [ ] **T04 — Fechar os contratos das utility tasks antes de ampliar uso.**
   - **Dependências:** nenhuma. **Arquivos:** [D6], [D7], [D8].
@@ -209,7 +358,10 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Priorizar extração estruturada de saída não parseável, seleção de trechos apoiada em fonte, resumo de logs volumosos e títulos/resumos de apresentação. Classificação pura pode ir direto a Jev; parsing simples fica em código. Conectar somente tarefas com consumidor real e verificador suficiente.
   - Enviar apenas a instrução e o payload necessário, sem conversa, catálogo, ferramentas de edição ou loop de agente. Limitar resposta ao contrato; selecionar um utility compatível pela evidência de custo/sucesso. A chain gratuita→paga deve registrar qual modelo respondeu e o custo de esperas/falhas.
   - Começar sem reasoning quando suportado e comprovado suficiente. Não executar `best_of`/múltiplas amostras por padrão; uma nova tentativa precisa melhorar o custo esperado.
-  - **Aceite/evidência:** para cada tarefa ligada, registrar elegível→chamada→aceita/rejeitada→usada, custo e chamadas principais evitadas. Manter ligada somente se a economia líquida e a qualidade forem demonstradas.
+  - **Estado CP37 (implementação funcional, T08 ainda aberto):** a única utility generativa ligada é `cite_spans`, com limites de input/question/review/output acima e sem autoridade de arquivo, ferramenta, edição ou agente. O limiar Jev `0.98` é uma política conservadora, não uma garantia calibrada. Todo resultado utility passa por revisão Jev posterior ao guard determinístico; rejeição, incerteza, indisponibilidade ou cancelamento durante a pós-revisão preserva worker/original e registra o billing como `Rejected`, sem afirmar fallback automático.
+  - A ordem comprovada é utility elegível → worker configurado limitado → saída fiel/original recuperável. Isso não autoriza uma utility a executar uma tarefa inteira, editar arquivos, chamar ferramentas ou criar/gerir agentes; não ampliar o escopo sem consumidor, contrato e revisão pós-geração.
+  - Evidência atual: revisão independente de fonte R1 PASS; o main workspace registrou utility joint `8` + display `1` PASS, parent `1M` incluído `8`, worker exact `1` e side-call `2` PASS. O checkout isolado fresco concluiu **8 utility PASS + 1 display PASS** após o **BUILD PASS (3m19)** de `d4add482`, e o executável `2.0.6` (`d4add4824cc6`) foi instalado atomicamente em `/Users/samuelfajreldines/dev/jev-build/target/release/distill`, com SHA-256 verificado. Processos/sessões já abertos não foram reiniciados e permanecem no estado anterior; fluxo live-provider/usuário não foi verificado. Ainda faltam custo/qualidade financeiros pareados para aceite de T08.
+  - **Aceite/evidência:** para cada tarefa ligada, registrar elegível→chamada→aceita/rejeitada→usada, custo e chamadas principais evitadas. Quando houver conteúdo útil elegível, provar a ordem utility primeiro → worker configurado limitado em indisponibilidade/rejeição/unsupported → saída necessária fiel ou original recuperável se ambos falharem, preservando model/effort/auth pins e sem fallback pago de reasoning apenas para resumir. Cada chamada, rejeição, fallback e reabertura entra uma vez no ledger; manter ligada somente se a economia líquida e a qualidade forem demonstradas.
 
 - [ ] **T09 — Escolher rota pelo custo restante esperado, em um único ponto existente.**
   - **Dependências:** T01, T02, T03, T04, T07. **Arquivos:** [D4], [D14], catálogo de routing em [D18].
@@ -223,7 +375,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Comparar os níveis realmente suportados para utility, edição localizada, diagnóstico e revisão. Selecionar o menor custo total entre os níveis que atendam ao requisito de qualidade; baixo effort não significa automaticamente menor custo após retries.
   - Manter o effort fixado pelo usuário em cada papel e heranças explícitas de subagentes. Em `auto`, reservar aumento para ambiguidade/falha relevante; um diagnóstico resolvido não obriga a manter alto effort nas etapas mecânicas seguintes.
   - Tratar limite de output separadamente do effort: impedir respostas desnecessariamente longas sem truncar tool calls, patches ou JSON e provocar recuperação mais cara. Confirmar que o adaptador transmite o nível escolhido.
-  - **Aceite/evidência:** custo/qualidade por par modelo×effort com versão e endpoint; saída necessária completa; níveis não suportados nunca são enviados. Não concluir que benchmark geral do modelo calibrado em outro effort vale para todos os níveis.
+  - **Aceite/evidência:** custo/qualidade por par modelo×effort com versão e endpoint; saída necessária completa; níveis não suportados nunca são enviados. Em `/goal` repetido, input + reserva de output + margem devem caber na capacidade efetiva antes de enviar e ser reavaliados após compactação/rota; pins de effort/output do usuário permanecem. Não concluir que benchmark geral do modelo calibrado em outro effort vale para todos os níveis.
 
 - [ ] **T11 — Delegar workers com contexto delimitado e evitar viagens ao pai.**
   - **Dependências:** T03, T04, T09, T10. **Arquivos:** [D13], [D4], infraestrutura de spawn existente.
@@ -239,7 +391,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Preferir busca com trechos, paginação e leitura de intervalo; extrair erros de builds/testes com parsers e redutores existentes. Preservar exit code, comandos, paths e informação necessária ao diagnóstico. Edições devolvem confirmação curta e evidência acessível; não reenviar o arquivo inteiro.
   - Separar conteúdo da UI do conteúdo do modelo; permitir lotes de operações independentes e pequenas alterações quando o contrato atual suportar. A saída original permanece recuperável por handle/arquivo e com intervalo claro.
   - Ampliar compressão fora de 24–32 KiB somente com evidência econômica: primeiro reduzir/segmentar deterministicamente, depois resumir a parte útil. Não resumir toda saída nem aplicar um teto cego que esconda o erro.
-  - **Aceite/evidência:** custo de leitura futuro cai, reconstrução da evidência funciona, casos de saída exata/documentos de instrução permanecem exatos e o ganho não é consumido por reabrir o original em quase toda tarefa.
+  - **Aceite/evidência:** custo de leitura futuro cai, reconstrução da evidência funciona, casos de saída exata/documentos de instrução permanecem exatos e o ganho não é consumido por reabrir o original em quase toda tarefa. Em cada producer→model seam aplicável, provar utility primeiro → worker configurado limitado quando utility falha/não é elegível → evidência necessária fiel/original recuperável quando ambos falham, preservando exit status, erros, failed/skipped/not-run, contagens, paths/linhas, comando e handle; sem declarar sucesso por resumo. Fallbacks e reaberturas são contabilizados uma vez.
 
 - [ ] **T13 — Recuperar contexto e memória por relevância, com reuso válido.**
   - **Dependências:** T01, T02, T07. **Arquivos:** [D9], [D19], busca/índices já existentes.
@@ -253,7 +405,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Preservar objetivo, restrições, decisões, estado de arquivos, testes executados, evidências, pendências e referências recuperáveis. Manter prefixos/instruções obrigatórios e pares de protocolo válidos. Usar seleção determinística/Jev sobre descritores limitados antes de gerar resumo.
   - Comparar o summarizer atual com utility sobre segmentos limitados e com redução sem LLM. Ajustar o gatilho dentro da margem segura de contexto conforme economia futura esperada. Um resumo cedo demais custa uma geração e pode destruir cache sem benefício.
   - Medir prefire aplicado, invalidado e nunca utilizado; não confundir latência escondida com custo economizado. Validar resumo contra fontes e reter/recuperar o original em falha. Não exigir segunda geração ou rodada forte se a validação objetiva já resolveu.
-  - **Aceite/evidência:** tarefas longas retomam corretamente após compactação, inclusive branches/rewind/subagentes; tokens pagos e releituras caem; compactações descartadas continuam no ledger. Não copiar os limiares absolutos do Pi sem calibrar janela e workload.
+  - **Aceite/evidência:** tarefas longas retomam corretamente após compactação, inclusive branches/rewind/subagentes; tokens pagos e releituras caem; compactações descartadas continuam no ledger. Em `/goal` repetido, recovery/compactação deve ser limitado, reavaliar input + reserva na rota efetiva e não repetir a mesma requisição impossível; objetivo, pins e fatos necessários permanecem. Não copiar os limiares absolutos do Pi sem calibrar janela e workload.
 
 - [ ] **T15 — Baratear títulos, recaps e resumos auxiliares.**
   - **Dependências:** T01, T02, T03, T08. **Arquivos:** [D12].
@@ -266,7 +418,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
   - Conciliar limites de retries no sampler, transporte e fallback para evitar multiplicação silenciosa. Distinguir rate limit/erro transitório, credencial, contexto excedido, output truncado, resultado inválido e falta de capacidade; cada causa exige reação diferente.
   - Contadores utility hoje não bloqueiam a lane: propor supressão temporária de uma otimização opcional comprovadamente improdutiva, com chave por endpoint/tarefa e recuperação posterior. Começar pela evidência determinística; Jev só classifica erros não estruturados quando acrescenta valor. Respeitar políticas e budgets explicitamente definidos pelo usuário.
   - Calcular se nova tentativa barata compensa mais que escalada direta. Não repetir automaticamente ferramenta com efeito externo cujo resultado ficou incerto. Não transformar economia em abandono silencioso da tarefa.
-  - **Aceite/evidência:** endpoint indisponível e utility sempre rejeitada não adicionam chamadas a cada rodada; caminhos recuperáveis continuam funcionando; tentativas faturadas e canceladas aparecem no custo. Validar com testes de backoff/falhas existentes e o menor caso faltante.
+  - **Aceite/evidência:** endpoint indisponível e utility sempre rejeitada não adicionam chamadas a cada rodada; caminhos recuperáveis continuam funcionando; tentativas faturadas e canceladas aparecem no custo. Para overflow repetido de `/goal`, não reenviar a mesma combinação input+reserva após falha: reavaliar/compactar/rotear uma vez dentro dos limites e então preservar falha e evidência recuperável, sem abandono silencioso. Validar com testes de backoff/falhas existentes e o menor caso faltante.
 
 - [ ] **T17 — Verificar e encerrar com o menor gasto suficiente.**
   - **Dependências:** T02, T04, T09. **Arquivos:** catálogo verify/routing em [D18], execução de ferramentas e testes existentes.
@@ -290,7 +442,7 @@ Cada item abaixo é trabalho futuro. Checkboxes permanecem abertas; constatar qu
 ### P3 — Calibrar, comparar e promover somente o que funciona
 
 - [ ] **T20 — Calibrar decisões com resultados reais, sem criar um sistema de ML desnecessário.**
-  - **Dependências:** T01, T02, T09, T10; incorporar as demais rotas conforme forem validadas.
+  - **Dependências:** T01, T02 e a ação sob avaliação. Calibrar roteamento/effort após T09/T10; os ganhos de prompt e contexto podem ser avaliados e promovidos antes disso.
   - Começar com agregados de logs: tipo de tarefa, modelo/endpoint/versão, effort, tamanho de contexto, cache, custo, aceite, rejeição, escalada e recuperação. Separar custo/sucesso de classe prevista pelo Jev e resultado medido; incluir tarefas em português e inglês.
   - Ajustar tabelas de rota e limiares por pergunta com amostra de calibração. Preservar conjunto final sem ajuste. Mudanças de versão/preço/endpoint invalidam conclusões pertinentes; não treinar roteador novo ou bandit online antes de demonstrar necessidade.
   - Considerar viés de seleção: não concluir que modelo só recebeu tarefas fáceis e por isso serve para todas. Usar execuções pareadas/controladas para comparar candidatos; não experimentar rotas novas ocultamente em tarefas reais para coletar dados.

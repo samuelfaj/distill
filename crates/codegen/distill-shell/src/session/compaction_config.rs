@@ -3,6 +3,7 @@
 
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
@@ -24,6 +25,9 @@ pub(crate) const SUPPRESS_UNTIL_SUCCESS: u8 = 3;
 /// Auth-expired auto-compact: suppress until login/token refresh, not until 200.
 /// Waiting for a sample deadlocks when context is already over the window.
 pub(crate) const SUPPRESS_AUTH: u8 = 4;
+/// A route-boundary overflow has already compacted once; the rebuilt request
+/// must not immediately compact and resend the same impossible payload again.
+pub(crate) const SUPPRESS_ROUTE_OVERFLOW: u8 = 5;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreviousModelInfo {
@@ -176,6 +180,10 @@ pub(crate) struct CompactionConfig {
     /// When `true`, feed the summarizer the verbatim conversation instead of the lossy rewrite (the retry loop may still fall back).
     pub verbatim_input: bool,
     pub tool_choice: crate::util::config::CompactionToolChoice,
+    /// Session-local serving ceilings learned from authoritative provider overflow
+    /// evidence. The key is the actual backend, wire endpoint, and model, so a
+    /// route's smaller cap never changes another route's preflight.
+    pub route_context_caps: RefCell<HashMap<(String, String, String), u64>>,
     pub prefire: PrefireState,
     /// Sticky once a forked session releases its inherited prefix under compaction pressure (see `run_compact_inner`), so it stops re-pinning it.
     pub prefix_released: AtomicBool,
@@ -184,6 +192,35 @@ pub(crate) struct CompactionConfig {
 }
 
 impl CompactionConfig {
+    pub(crate) fn remember_route_context_cap(
+        &self,
+        backend: &str,
+        endpoint: &str,
+        model: &str,
+        cap: u64,
+    ) {
+        if cap == 0 {
+            return;
+        }
+        let key = (backend.to_owned(), endpoint.to_owned(), model.to_owned());
+        let mut caps = self.route_context_caps.borrow_mut();
+        caps.entry(key)
+            .and_modify(|known| *known = (*known).min(cap))
+            .or_insert(cap);
+    }
+
+    pub(crate) fn route_context_cap(
+        &self,
+        backend: &str,
+        endpoint: &str,
+        model: &str,
+    ) -> Option<u64> {
+        self.route_context_caps
+            .borrow()
+            .get(&(backend.to_owned(), endpoint.to_owned(), model.to_owned()))
+            .copied()
+    }
+
     /// Whether AUTO compaction is suppressed. The single gate shared by every
     /// automatic trigger so a doomed compact request can't re-fire on a
     /// sibling path; manual `/compact` stays exempt.

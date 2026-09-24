@@ -335,11 +335,116 @@ p5_call_validation = true"#,
         assert_eq!(config.api_key_env, "JEV_API_KEY");
         assert_eq!(config.endpoint(), "https://api.typesafe.ai/v1/systemone");
     }
+
+    #[tokio::test]
+    async fn partial_workspace_usage_keeps_known_tokens_and_marks_incomplete() {
+        use distill_workspace::jev::types::{AttemptRecord, AttemptStatus, Usage, UsageBilling};
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let recorder = distill_chat_state::ChatStateActor::spawn(
+            Vec::new(),
+            distill_sampling_types::SamplingConfig::default(),
+            Box::new(distill_chat_state::NullChatPersistence),
+            event_tx,
+            cancellation.clone(),
+        );
+
+        record_workspace_attempt(
+            AttemptRecord {
+                attempt_id: "partial-attempt".to_owned(),
+                request_id: Some("request-1".to_owned()),
+                requested_model: "jev-model".to_owned(),
+                response_model: Some("jev-model".to_owned()),
+                endpoint: "https://api.typesafe.ai/v1/systemone".to_owned(),
+                requested_effort: Some("none".to_owned()),
+                applied_effort: Some("absent".to_owned()),
+                usage: Some(Usage {
+                    input_tokens: Some(7),
+                    output_tokens: None,
+                }),
+                billing: UsageBilling {
+                    cost_usd_ticks: Some(0),
+                    ..UsageBilling::default()
+                },
+                status: AttemptStatus::Completed,
+                latency_ms: 3,
+            },
+            "jev",
+            Some("routing".to_owned()),
+            Some("turn-1".to_owned()),
+            recorder.clone(),
+            false,
+        );
+
+        let ledger = recorder
+            .try_get_session_usage()
+            .await
+            .expect("chat-state actor must acknowledge the usage query");
+        assert_eq!(ledger.totals.input_tokens, 7);
+        assert_eq!(ledger.totals.output_tokens, 0);
+        assert_eq!(ledger.totals.model_calls, 1);
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(0));
+        assert_eq!(ledger.totals.cost_missing_calls, 0);
+        assert!(ledger.incomplete);
+        assert!(!ledger
+            .attributions
+            .first()
+            .expect("partial attempt attribution")
+            .usage_complete);
+
+        cancellation.cancel();
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Runtime helper for catalogue call sites (todo.md areas A–D)
 // ---------------------------------------------------------------------------
+
+/// Bump when the meaning of a cached Jev decision changes. The descriptor is
+/// hashed before it reaches the client memo, so user state and question text do
+/// not remain in the cache key.
+const DECISION_MEMO_VERSION: u8 = 1;
+
+fn decision_memo_key(
+    client: &distill_workspace::jev::JevClient,
+    lever: distill_workspace::jev::flags::JevLever,
+    state: &serde_json::Value,
+    questions: &std::collections::BTreeMap<
+        String,
+        distill_workspace::jev::types::Question,
+    >,
+) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let config = client.config();
+    let state_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(state).ok()?)
+    );
+    let questions_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(questions).ok()?)
+    );
+    let descriptor = serde_json::json!({
+        "version": DECISION_MEMO_VERSION,
+        "session_id": active_session_id(),
+        "lever": lever.as_str(),
+        "state_sha256": state_hash,
+        "questions_sha256": questions_hash,
+        "endpoint": config.endpoint(),
+        "model": config.model,
+        "provider": config.provider.as_str(),
+        "reasoning_shape": serde_json::to_value(config.reasoning_shape).ok()?,
+        "reasoning_effort": config.reasoning_effort,
+        "max_completion_tokens": config.max_completion_tokens,
+        "max_state_bytes": config.max_state_bytes,
+        "timeout_ms": config.timeout.as_millis(),
+        "item_budget_ms": config.item_budget.as_millis(),
+    });
+    let bytes = serde_json::to_vec(&descriptor).ok()?;
+    Some(Sha256::digest(bytes).into())
+}
 
 /// Ask independent packs about the same state once. Each pack keeps its flag
 /// and answer ids. The first active pack owns the request's usage and latency;
@@ -419,6 +524,9 @@ pub async fn ask_item(
         distill_workspace::jev::types::Question,
     >,
 ) -> Option<distill_workspace::jev::types::JevAnswerSet> {
+    if questions.is_empty() {
+        return None;
+    }
     #[cfg(test)]
     if let Some(answer) = TEST_DECISION_ANSWERS.with(|queue| {
         queue
@@ -436,9 +544,36 @@ pub async fn ask_item(
     if !client.credential_present() {
         return None;
     }
-    let budget = item_budget(client);
+    let session_id = active_session_id();
+    let memo_key = decision_memo_key(client, lever, &state, &questions);
+    let observed_client = active_usage_recorder().map(|recorder| {
+        let turn_id = telemetry_context().1;
+        let observer: distill_workspace::jev::types::AttemptObserver =
+            std::sync::Arc::new(move |attempt| {
+                record_workspace_attempt(
+                    attempt,
+                    "jev",
+                    Some(lever.as_str().to_owned()),
+                    Some(turn_id.clone()),
+                    recorder.clone(),
+                    true,
+                );
+            });
+        client.with_call_observer(observer)
+    });
+    let request_client = observed_client.as_ref().unwrap_or(client);
+    let budget = item_budget(request_client);
     let in_flight = JevInFlight::begin();
-    let outcome = tokio::time::timeout(budget, client.ask(&state, &questions)).await;
+    let outcome = match memo_key {
+        Some(key) => {
+            tokio::time::timeout(
+                budget,
+                request_client.ask_memoized(&session_id, key, &state, &questions),
+            )
+            .await
+        }
+        None => tokio::time::timeout(budget, request_client.ask(&state, &questions)).await,
+    };
     drop(in_flight);
     match outcome {
         Ok(Ok(answers)) => Some(answers),
@@ -629,6 +764,21 @@ pub fn note_payload_read(hash: &str, label: &str) -> Option<String> {
     None
 }
 
+/// Forgets payloads that the active session may have lost from its
+/// model-visible conversation, such as after a successful compaction rewrite.
+/// A poisoned index is treated as an empty reuse decision so compaction never
+/// fails because this optimization could not be invalidated.
+pub fn invalidate_payload_reads_for_active_session() {
+    let session_id = active_session_id();
+    if let Some(client) = client_cached() {
+        client.clear_memo_for_session(&session_id);
+    }
+    let Ok(mut index) = read_index().lock() else {
+        return;
+    };
+    index.retain(|(owner, _), _| owner != &session_id);
+}
+
 /// How many payloads the process remembers (tests, and a bound on the map).
 pub fn remembered_reads() -> usize {
     read_index().lock().map(|index| index.len()).unwrap_or(0)
@@ -652,6 +802,7 @@ tokio::task_local! {
     static ACTIVE_SESSION_ID: String;
     static ACTIVE_TURN_ID: String;
     static ACTIVE_ROUND_ID: std::cell::Cell<u64>;
+    static ACTIVE_USAGE_RECORDER: std::cell::RefCell<Option<distill_chat_state::ChatStateHandle>>;
 }
 
 pub(crate) fn telemetry_context() -> (String, String, u64) {
@@ -666,6 +817,91 @@ pub(crate) fn telemetry_context() -> (String, String, u64) {
 
 pub(crate) fn begin_model_round() {
     let _ = ACTIVE_ROUND_ID.try_with(|round| round.set(round.get().saturating_add(1)));
+}
+
+pub(crate) fn active_usage_recorder() -> Option<distill_chat_state::ChatStateHandle> {
+    ACTIVE_USAGE_RECORDER
+        .try_with(|recorder| recorder.borrow().clone())
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn record_workspace_attempt(
+    attempt: distill_workspace::jev::types::AttemptRecord,
+    role: &str,
+    task_id: Option<String>,
+    turn_id: Option<String>,
+    recorder: distill_chat_state::ChatStateHandle,
+    attribute_to_prompt: bool,
+) {
+    use distill_chat_state::{UsageAttribution, UsageCallStatus, UsageCostBasis};
+
+    let usage = attempt.usage.as_ref().and_then(|usage| {
+        (!usage.is_empty()).then(|| distill_sampling_types::TokenUsage {
+            prompt_tokens: usage.input_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            completion_tokens: usage.output_tokens.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            total_tokens: usage
+                .input_tokens
+                .unwrap_or(0)
+                .saturating_add(usage.output_tokens.unwrap_or(0))
+                .min(u64::from(u32::MAX)) as u32,
+            reasoning_tokens: attempt
+                .billing
+                .reasoning_tokens
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+            cached_prompt_tokens: attempt
+                .billing
+                .cached_input_tokens
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+            cache_creation_prompt_tokens: attempt
+                .billing
+                .cache_creation_input_tokens
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32,
+        })
+    });
+    let cost_usd_ticks = attempt.billing.cost_usd_ticks.filter(|&cost| cost >= 0);
+    let status = match attempt.status {
+        distill_workspace::jev::types::AttemptStatus::Completed => UsageCallStatus::Completed,
+        distill_workspace::jev::types::AttemptStatus::Rejected => UsageCallStatus::Rejected,
+        distill_workspace::jev::types::AttemptStatus::Failed => UsageCallStatus::Failed,
+        distill_workspace::jev::types::AttemptStatus::Cancelled => UsageCallStatus::Cancelled,
+    };
+    let model_id = attempt
+        .response_model
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(attempt.requested_model);
+    recorder.record_usage_attribution(
+        UsageAttribution {
+            attempt_id: attempt.attempt_id,
+            task_id,
+            turn_id,
+            request_id: attempt.request_id,
+            role: role.to_owned(),
+            model_id,
+            endpoint: Some(attempt.endpoint),
+            requested_effort: attempt.requested_effort,
+            applied_effort: attempt.applied_effort,
+            status,
+            usage,
+            usage_complete: attempt
+                .usage
+                .as_ref()
+                .is_some_and(|usage| {
+                    usage.input_tokens.is_some() && usage.output_tokens.is_some()
+                }),
+            api_duration_ms: Some(attempt.latency_ms),
+            cost_usd_ticks,
+            cost_basis: if cost_usd_ticks.is_some() {
+                UsageCostBasis::Reported
+            } else {
+                UsageCostBasis::Unknown
+            },
+        },
+        attribute_to_prompt,
+    );
 }
 
 #[derive(Debug, Default)]
@@ -696,12 +932,32 @@ pub async fn with_session_scope<F>(session_id: impl Into<String>, future: F) -> 
 where
     F: Future,
 {
+    with_session_scope_and_recorder(session_id, None, future).await
+}
+
+/// Runs a session turn with its existing ChatState handle installed before any
+/// turn work starts. This captures Jev and utility calls that happen before
+/// sampler preparation while keeping the recorder task-local per session.
+pub(crate) async fn with_session_scope_and_recorder<F>(
+    session_id: impl Into<String>,
+    recorder: Option<distill_chat_state::ChatStateHandle>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
     ACTIVE_SESSION_ID
         .scope(
             session_id.into(),
             ACTIVE_TURN_ID.scope(
                 uuid::Uuid::new_v4().to_string(),
-                ACTIVE_ROUND_ID.scope(std::cell::Cell::new(0), future),
+                ACTIVE_USAGE_RECORDER.scope(
+                    std::cell::RefCell::new(recorder),
+                    ACTIVE_ROUND_ID.scope(
+                        std::cell::Cell::new(0),
+                        crate::jev_cheap::with_optional_compression_scope(future),
+                    ),
+                ),
             ),
         )
         .await
@@ -933,16 +1189,18 @@ pub enum LightTierStatus {
         name: String,
         effort: String,
         window: u64,
+        /// Same wire model and transport as the session ([`same_family`]), so
+        /// it may share a round. A different model runs bounded fresh-context
+        /// work (task subagents, tool-result compression) instead.
+        shares_conversation: bool,
     },
 }
 
 /// Whether two models can stand in for each other for one round.
 ///
-/// Same family means the same provider, the same wire backend and the same
-/// credential scheme: the pair must be interchangeable for one round of the same
-/// conversation. A swap that changes the transport mid-conversation is not a
-/// routing decision, it is a second session, so anything else is refused with
-/// the reason instead of being attempted.
+/// A full-conversation round can move only between entries for the same wire
+/// model, provider, backend and credential. Another model may accept the
+/// history but cannot reuse this model's cached prompt prefix.
 pub fn same_family(
     hard: &crate::agent::config::ModelInfo,
     light: &crate::agent::config::ModelInfo,
@@ -967,11 +1225,19 @@ pub fn same_family(
             light.model
         ));
     }
+    if light.model != hard.model {
+        return Err(format!(
+            "`{}` and `{}` are different models; use a fresh bounded worker task instead of replaying the conversation",
+            light.model, hard.model
+        ));
+    }
     Ok(())
 }
 
-/// Catalog keys that can share the reasoning model's conversation.
-pub fn compatible_worker_models(reasoning: &str) -> Vec<String> {
+/// Catalog keys that can serve as the worker for `reasoning`: any other entry,
+/// on any provider. Whether it may also share the conversation is
+/// [`same_family`]'s answer, reported by [`light_tier_status`].
+pub fn worker_candidates(reasoning: &str) -> Vec<String> {
     let Ok(raw) = crate::config::load_effective_config() else {
         return Vec::new();
     };
@@ -979,32 +1245,32 @@ pub fn compatible_worker_models(reasoning: &str) -> Vec<String> {
         return Vec::new();
     };
     let models = crate::agent::config::resolve_model_list(&cfg, None);
-    let Some(hard) = crate::agent::config::find_model_by_id(&models, reasoning) else {
+    if crate::agent::config::find_model_by_id(&models, reasoning).is_none() {
         return Vec::new();
-    };
+    }
     models
-        .iter()
-        .filter(|(_, entry)| same_family(&hard.info, &entry.info).is_ok())
-        .map(|(id, _)| id.clone())
+        .keys()
+        .filter(|id| id.as_str() != reasoning)
+        .cloned()
         .collect()
 }
 
 /// Validate a worker candidate against the currently selected reasoning model.
-/// Both entries must exist in the resolved model catalog because the worker
-/// needs the same endpoint, backend and credential scheme: the rule
-/// [`same_family`] states. The conversation window is not part of it; a worker
-/// too small for one round is handled where the round is routed.
+/// Both entries must exist in the resolved model catalog, so the worker has its
+/// own endpoint, backend and credential. A different wire model only takes
+/// bounded fresh-context work and never a round of the session's conversation
+/// (see [`LightTierStatus::Ready::shares_conversation`]).
 pub fn validate_light_tier_candidate(hard_model: &str, light_model: &str) -> Result<(), String> {
     let raw = crate::config::load_effective_config()
         .map_err(|_| "the model catalog could not be read".to_owned())?;
     let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw)
         .map_err(|_| "the model catalog could not be read".to_owned())?;
     let models = crate::agent::config::resolve_model_list(&cfg, None);
-    let hard = crate::agent::config::find_model_by_id(&models, hard_model)
+    crate::agent::config::find_model_by_id(&models, hard_model)
         .ok_or_else(|| format!("`{hard_model}` is not in the model catalog"))?;
-    let light = crate::agent::config::find_model_by_id(&models, light_model)
+    crate::agent::config::find_model_by_id(&models, light_model)
         .ok_or_else(|| format!("`{light_model}` is not in the model catalog"))?;
-    same_family(&hard.info, &light.info)
+    Ok(())
 }
 
 /// The light tier against the on-disk catalog, for the surfaces that report it.
@@ -1038,9 +1304,7 @@ pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
              endpoint and window"
         ));
     };
-    if let Err(reason) = same_family(&hard.info, &light.info) {
-        return LightTierStatus::Refused(reason);
-    }
+    let shares_conversation = same_family(&hard.info, &light.info).is_ok();
     LightTierStatus::Ready {
         id,
         name: light
@@ -1052,6 +1316,7 @@ pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
             .light_effort
             .unwrap_or_else(|| "auto".to_owned()),
         window: light.info.context_window.get(),
+        shares_conversation,
     }
 }
 
@@ -1145,6 +1410,68 @@ mod catalogue_helper_tests {
         assert!(budget <= client.config().timeout);
     }
 
+    #[test]
+    fn decision_memo_key_tracks_state_questions_and_model() {
+        use distill_workspace::jev::flags::JevLever;
+        use distill_workspace::jev::types::Question;
+        use std::collections::BTreeMap;
+
+        let client = distill_workspace::jev::JevClient::new(
+            client_config_from(&JevConfig::default()),
+        )
+        .expect("client builds without I/O");
+        let state = serde_json::json!({"evidence": "first"});
+        let questions = BTreeMap::from([(
+            "criteria".to_owned(),
+            Question::noul("Is the candidate eligible?"),
+        )]);
+        let first = decision_memo_key(&client, JevLever::A1FileToEdit, &state, &questions)
+            .expect("memo key");
+
+        assert_ne!(
+            first,
+            decision_memo_key(
+                &client,
+                JevLever::A1FileToEdit,
+                &serde_json::json!({"evidence": "changed"}),
+                &questions,
+            )
+            .expect("changed state key")
+        );
+        let changed_questions = BTreeMap::from([(
+            "criteria".to_owned(),
+            Question::noul("Is the candidate still eligible?"),
+        )]);
+        assert_ne!(
+            first,
+            decision_memo_key(
+                &client,
+                JevLever::A1FileToEdit,
+                &state,
+                &changed_questions,
+            )
+            .expect("changed criteria key")
+        );
+        let changed_model = JevConfig {
+            model: Some("jev-pinned".to_owned()),
+            ..JevConfig::default()
+        };
+        let changed_client = distill_workspace::jev::JevClient::new(
+            client_config_from(&changed_model),
+        )
+        .expect("changed client builds without I/O");
+        assert_ne!(
+            first,
+            decision_memo_key(
+                &changed_client,
+                JevLever::A1FileToEdit,
+                &state,
+                &questions,
+            )
+            .expect("changed model key")
+        );
+    }
+
     /// The reuse lane's rule: the first payload is remembered, the second
     /// identical one becomes a pointer, and a changed payload is never mistaken
     /// for a repeat.
@@ -1194,6 +1521,47 @@ mod catalogue_helper_tests {
         })
         .await;
         assert_eq!(remembered_reads(), 2);
+        reset_read_index_for_test();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn compaction_read_invalidation_clears_only_the_active_session() {
+        reset_read_index_for_test();
+        with_session_scope("active-read", async {
+            assert_eq!(note_payload_read("same-bytes", "active-read"), None);
+            assert_eq!(
+                note_payload_read("same-bytes", "active-read").as_deref(),
+                Some("active-read")
+            );
+        })
+        .await;
+        with_session_scope("other-read", async {
+            assert_eq!(note_payload_read("same-bytes", "other-read"), None);
+            assert_eq!(
+                note_payload_read("same-bytes", "other-read").as_deref(),
+                Some("other-read")
+            );
+        })
+        .await;
+
+        with_session_scope("active-read", async {
+            invalidate_payload_reads_for_active_session();
+            assert_eq!(
+                note_payload_read("same-bytes", "active-read"),
+                None,
+                "the next post-rewrite read must send full content"
+            );
+        })
+        .await;
+        with_session_scope("other-read", async {
+            assert_eq!(
+                note_payload_read("same-bytes", "other-read").as_deref(),
+                Some("other-read"),
+                "another session keeps its valid reuse entry"
+            );
+        })
+        .await;
         reset_read_index_for_test();
     }
 
@@ -1435,15 +1803,16 @@ mod tier_rule_tests {
         }
     }
 
-    /// The rule the user asked for: hard and light must be the same family and
-    /// share the conversation. Same provider, same backend, same credential —
-    /// anything else is refused with the reason, before a round can be routed
-    /// onto a transport the conversation never ran on.
+    /// A different model does not share a cached conversation prefix, even on
+    /// the same provider. An alias for the exact same wire model can share it.
     #[test]
-    fn the_same_family_rule_takes_a_sibling_and_refuses_a_stranger() {
+    fn the_same_family_rule_keeps_different_models_out_of_the_conversation() {
         let hard = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
+        let same_model = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
+        same_family(&hard, &same_model).expect("same wire model and transport");
         let sibling = model("gpt-5.6-luna", "https://chatgpt.com/backend-api/codex");
-        same_family(&hard, &sibling).expect("same host, backend and scheme");
+        let reason = same_family(&hard, &sibling).expect_err("different model loses cache");
+        assert!(reason.contains("different models"), "{reason}");
 
         let other_provider = model("grok-4.6", "https://api.x.ai/v1");
         let reason = same_family(&hard, &other_provider).expect_err("a stranger is refused");

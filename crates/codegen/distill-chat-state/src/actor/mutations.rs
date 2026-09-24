@@ -446,26 +446,123 @@ impl ChatStateActor {
         );
     }
 
-    pub(super) fn record_subagent_usage(
+    pub(super) fn record_model_call_without_usage(
         &mut self,
-        by_model: &[(String, crate::usage::UsageTotals)],
+        model_id: Option<String>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) {
+        let model_key = match model_id.as_deref() {
+            Some(id) if !id.is_empty() => id,
+            _ => self.state.sampling_config.model.as_str(),
+        }
+        .to_owned();
+        self.state
+            .prompt_usage
+            .get_or_insert_default()
+            .record_main_loop_call_without_usage(&model_key, api_duration_ms, cost_usd_ticks);
+        self.state
+            .session_usage
+            .record_main_loop_call_without_usage(&model_key, api_duration_ms, cost_usd_ticks);
+    }
+
+    pub(super) fn record_auxiliary_call_usage(
+        &mut self,
+        model_id: Option<String>,
+        usage: Option<&distill_sampling_types::TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
         attribute_to_prompt: bool,
         incomplete: bool,
     ) {
-        if by_model.is_empty() && !incomplete {
+        let model_key = model_id
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        if attribute_to_prompt {
+            self.state
+                .prompt_usage
+                .get_or_insert_default()
+                .record_auxiliary_call(
+                    &model_key,
+                    usage,
+                    api_duration_ms,
+                    cost_usd_ticks,
+                    incomplete,
+                );
+        }
+        self.state.session_usage.record_auxiliary_call(
+            &model_key,
+            usage,
+            api_duration_ms,
+            cost_usd_ticks,
+            incomplete,
+        );
+    }
+
+    pub(super) fn record_usage_attribution(
+        &mut self,
+        attribution: crate::usage::UsageAttribution,
+        attribute_to_prompt: bool,
+    ) {
+        if attribute_to_prompt {
+            self.state
+                .prompt_usage
+                .get_or_insert_default()
+                .record_attribution(attribution.clone());
+        }
+        self.state.session_usage.record_attribution(attribution);
+    }
+
+    pub(super) fn register_pending_usage_attempt(
+        &mut self,
+        attempt_id: String,
+        attribute_to_prompt: bool,
+    ) {
+        if attribute_to_prompt {
+            self.state
+                .prompt_usage
+                .get_or_insert_default()
+                .register_pending_attempt(attempt_id.clone());
+        }
+        self.state.session_usage.register_pending_attempt(attempt_id);
+    }
+
+    pub(super) fn record_subagent_usage(
+        &mut self,
+        by_model: &[(String, crate::usage::UsageTotals)],
+        attributions: &[crate::usage::UsageAttribution],
+        pending_attempts: &[String],
+        attribute_to_prompt: bool,
+        incomplete: bool,
+    ) {
+        if by_model.is_empty()
+            && attributions.is_empty()
+            && pending_attempts.is_empty()
+            && !incomplete
+        {
             return;
         }
         if attribute_to_prompt {
             self.state
                 .prompt_usage
                 .get_or_insert_default()
-                .record_subagent(by_model, incomplete);
+                .record_subagent_usage_with_pending(
+                    by_model,
+                    attributions,
+                    pending_attempts,
+                    incomplete,
+                );
         }
         // The session ledger always folds, even when usage is not attributable to the open prompt.
         // Reporting that gap is the coordinator's sticky flag — never mark a different live prompt's ledger.
         self.state
             .session_usage
-            .record_subagent(by_model, incomplete);
+            .record_subagent_usage_with_pending(
+                by_model,
+                attributions,
+                pending_attempts,
+                incomplete,
+            );
     }
 
     pub(super) fn mark_usage_incomplete(&mut self, prompt: bool, session: bool) {

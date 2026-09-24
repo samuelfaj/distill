@@ -23,8 +23,8 @@ use crate::handle::ChatStateHandle;
 use crate::persistence::ChatPersistence;
 use crate::types::{PruningConfig, TurnCapture};
 
-use state::ChatState;
 use distill_sampling_types::{ConversationItem, SamplingConfig};
+use state::ChatState;
 
 /// The actor that owns all chat state.
 /// Runs in a dedicated tokio task and processes commands sequentially.
@@ -205,13 +205,57 @@ impl ChatStateActor {
             } => {
                 self.record_model_call_usage(model_id, &usage, api_duration_ms, cost_usd_ticks);
             }
-            ChatStateCommand::RecordSubagentUsage {
-                by_model,
+            ChatStateCommand::RecordModelCallWithoutUsage {
+                model_id,
+                api_duration_ms,
+                cost_usd_ticks,
+            } => {
+                self.record_model_call_without_usage(model_id, api_duration_ms, cost_usd_ticks);
+            }
+            ChatStateCommand::RecordAuxiliaryCallUsage {
+                model_id,
+                usage,
+                api_duration_ms,
+                cost_usd_ticks,
                 attribute_to_prompt,
                 incomplete,
+            } => {
+                self.record_auxiliary_call_usage(
+                    model_id,
+                    usage.as_ref(),
+                    api_duration_ms,
+                    cost_usd_ticks,
+                    attribute_to_prompt,
+                    incomplete,
+                );
+            }
+            ChatStateCommand::RecordUsageAttribution {
+                attribution,
+                attribute_to_prompt,
+            } => {
+                self.record_usage_attribution(attribution, attribute_to_prompt);
+            }
+            ChatStateCommand::RegisterPendingUsageAttempt {
+                attempt_id,
+                attribute_to_prompt,
+            } => {
+                self.register_pending_usage_attempt(attempt_id, attribute_to_prompt);
+            }
+            ChatStateCommand::RecordSubagentUsage {
+                by_model,
+                attributions,
+                attribute_to_prompt,
+                incomplete,
+                pending_attempts,
                 reply,
             } => {
-                self.record_subagent_usage(&by_model, attribute_to_prompt, incomplete);
+                self.record_subagent_usage(
+                    &by_model,
+                    &attributions,
+                    &pending_attempts,
+                    attribute_to_prompt,
+                    incomplete,
+                );
                 let _ = reply.send(());
             }
             ChatStateCommand::MarkUsageIncomplete {

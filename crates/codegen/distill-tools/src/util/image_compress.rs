@@ -63,6 +63,26 @@ pub fn re_encode_under_limit(
     decoded: &DynamicImage,
     params: &ReEncodeParams,
 ) -> Result<(Vec<u8>, u32, u32, &'static str), ReEncodeError> {
+    re_encode_under_limit_with_candidates(decoded, params, true)
+}
+
+/// Try JPEG only at descending dimensions, returning the best quality that fits
+/// under `params.max_bytes`. This preserves callers whose public contract
+/// requires JPEG while sharing the same resize and byte-budget loop.
+pub(crate) fn re_encode_jpeg_under_limit(
+    decoded: &DynamicImage,
+    params: &ReEncodeParams,
+) -> Result<(Vec<u8>, u32, u32), ReEncodeError> {
+    let (bytes, width, height, _mime) =
+        re_encode_under_limit_with_candidates(decoded, params, false)?;
+    Ok((bytes, width, height))
+}
+
+fn re_encode_under_limit_with_candidates(
+    decoded: &DynamicImage,
+    params: &ReEncodeParams,
+    include_png: bool,
+) -> Result<(Vec<u8>, u32, u32, &'static str), ReEncodeError> {
     // Never upscale: a small-but-heavy image is re-encoded at its own resolution, not enlarged to `max_side_px`.
     // `image::resize` scales *up* to fill the target box, so starting at `max_side_px` would enlarge anything smaller —
     // adding no detail and wasting request bytes / cache headroom.
@@ -90,13 +110,15 @@ pub fn re_encode_under_limit(
         let (w, h) = (img.width(), img.height());
 
         // --- PNG candidate ---------------------------------------------------
-        let png_candidate = {
-            let mut buf = Vec::new();
-            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
-                .ok()
-                .filter(|_| buf.len() <= params.max_bytes)
-                .map(|_| buf)
-        };
+        let png_candidate = include_png
+            .then(|| {
+                let mut buf = Vec::new();
+                img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+                    .ok()
+                    .filter(|_| buf.len() <= params.max_bytes)
+                    .map(|_| buf)
+            })
+            .flatten();
 
         // --- JPEG candidate (best quality that fits) -------------------------
         let jpeg_candidate = params.quality_steps.iter().find_map(|&quality| {

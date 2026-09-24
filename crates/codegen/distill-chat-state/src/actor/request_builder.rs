@@ -1,11 +1,14 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! ConversationRequest assembly — image compaction, pruning, repair, memory injection.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use distill_sampling_types::{ConversationItem, ConversationRequest, ToolSpec, TraceContext};
 
 use super::ChatStateActor;
 use crate::events::ChatStateEvent;
 use crate::image_budget::{ImageBudgetOutcome, apply_image_budget};
+use crate::persistence::ChatPersistence;
 use crate::types::PruningConfig;
 
 /// Placeholder inserted when a tool result is hard-cleared.
@@ -76,7 +79,11 @@ impl ChatStateActor {
             tool_choice: None,
             model: Some(self.state.sampling_config.model.clone()),
             temperature: self.state.sampling_config.temperature,
-            max_output_tokens: self.state.sampling_config.max_completion_tokens,
+            // The model catalogue's maximum is a sampler default, not proof
+            // that this caller requested the whole ceiling. Keep the request
+            // field empty so route preflight can distinguish an inherited
+            // ceiling from an explicit/task-budget output pin.
+            max_output_tokens: None,
             top_p: self.state.sampling_config.top_p,
             x_grok_conv_id: Some(conv_id),
             x_grok_req_id: Some(req_id),
@@ -98,15 +105,10 @@ impl ChatStateActor {
     }
 
     pub(super) fn prune_items_for_turn_request(
-        &self,
+        &mut self,
         mut items: Vec<ConversationItem>,
     ) -> Vec<ConversationItem> {
-        if should_prune(
-            self.state.total_tokens,
-            self.state.sampling_config.context_window,
-        ) {
-            prune_conversation(&mut items, &self.pruning_config);
-        }
+        prune_conversation(&mut *self.persistence, &mut items, &self.pruning_config);
         items
     }
 }
@@ -115,58 +117,154 @@ impl ChatStateActor {
 // Pruning (standalone functions, no actor state needed)
 // ============================================================================
 
-/// Check whether pruning should run based on context utilization.
-///
-/// Returns `true` when `total_tokens` exceeds 50% of `context_window`.
-pub(crate) fn should_prune(total_tokens: u64, context_window: std::num::NonZeroU64) -> bool {
-    total_tokens > context_window.get() / 2
+/// The request copy is eligible once old output exceeds the existing
+/// per-result trim threshold. This deliberately does not depend on the
+/// model's context window: a 1M window remains available to the sampler.
+pub(crate) fn should_prune(eligible_old_output_bytes: usize, config: &PruningConfig) -> bool {
+    config.enabled && eligible_old_output_bytes > config.soft_trim_threshold
 }
 
-/// Prune old, large tool results from the conversation in place.
-/// Turn age is estimated by walking backward and counting `User` items.
-pub(crate) fn prune_conversation(conversation: &mut [ConversationItem], config: &PruningConfig) {
+/// Prune old, large tool results from a request copy only.
+///
+/// The canonical conversation is never changed. Ambiguous IDs fail open, and
+/// the persistence seam owns producer and safety eligibility before any lossy
+/// projection is applied.
+pub(crate) fn prune_conversation(
+    persistence: &mut dyn ChatPersistence,
+    conversation: &mut [ConversationItem],
+    config: &PruningConfig,
+) {
     if !config.enabled {
         return;
     }
 
-    let mut turn_from_end: usize = 0;
-    let mut seen_first_user = false;
+    let Some(result_indices) = unique_result_indices(conversation) else {
+        return;
+    };
 
-    for item in conversation.iter_mut().rev() {
-        if matches!(item, ConversationItem::User(_)) {
-            if seen_first_user {
-                turn_from_end += 1;
-            }
-            seen_first_user = true;
-            continue;
-        }
-
-        let ConversationItem::ToolResult(tool_result) = item else {
+    let mut seen_call_ids = BTreeSet::new();
+    let mut completed_groups_seen = 0usize;
+    let mut candidates = Vec::new();
+    let mut eligible_old_output_bytes = 0usize;
+    for (assistant_index, item) in conversation.iter().enumerate().rev() {
+        let ConversationItem::Assistant(assistant) = item else {
             continue;
         };
-
-        // Never prune recent turns.
-        if turn_from_end < config.keep_last_n_turns {
+        if assistant.tool_calls.is_empty() {
             continue;
         }
 
-        // Hard clear: very old tool results → replace entirely.
-        if turn_from_end >= config.hard_clear_age_turns {
-            if tool_result.content.as_ref() != HARD_CLEAR_PLACEHOLDER {
-                tool_result.content = std::sync::Arc::<str>::from(HARD_CLEAR_PLACEHOLDER);
+        if assistant
+            .tool_calls
+            .iter()
+            .any(|call| !seen_call_ids.insert(call.id.to_string()))
+        {
+            return;
+        }
+
+        let completed = assistant.tool_calls.iter().all(|call| {
+            let call_id = call.id.to_string();
+            result_indices
+                .get(&call_id)
+                .is_some_and(|result_index| *result_index > assistant_index)
+        });
+        if !completed {
+            continue;
+        }
+        if completed_groups_seen < config.keep_last_n_turns {
+            completed_groups_seen += 1;
+            continue;
+        }
+
+        for call in &assistant.tool_calls {
+            let call_id = call.id.to_string();
+            let Some(&result_index) = result_indices.get(&call_id) else {
+                continue;
+            };
+            let ConversationItem::ToolResult(result) = &conversation[result_index] else {
+                continue;
+            };
+            if result.content.len() > config.soft_trim_threshold {
+                eligible_old_output_bytes += result.content.len();
+                candidates.push((
+                    result_index,
+                    call.name.clone(),
+                    call.arguments.to_string(),
+                ));
             }
-            continue;
-        }
-
-        // Soft trim: large tool results → keep head + tail.
-        let content_len = tool_result.content.chars().count();
-        if content_len > config.soft_trim_threshold {
-            let head = safe_char_slice(&tool_result.content, 0, config.soft_trim_head);
-            let tail = safe_char_slice_tail(&tool_result.content, config.soft_trim_tail);
-            tool_result.content =
-                std::sync::Arc::<str>::from(format!("{head}{SOFT_TRIM_SEPARATOR}{tail}"));
         }
     }
+
+    if !should_prune(eligible_old_output_bytes, config) {
+        return;
+    }
+
+    let mut projections = Vec::new();
+    for (result_index, tool_name, tool_arguments) in candidates {
+        let ConversationItem::ToolResult(result) = &conversation[result_index] else {
+            continue;
+        };
+        let original = result.content.as_ref();
+        let Some((path, body_range)) =
+            persistence.archive_tool_result(&tool_name, &tool_arguments, original)
+        else {
+            continue;
+        };
+        let Some(body) = original.get(body_range.clone()) else {
+            continue;
+        };
+        let Some(prefix) = original.get(..body_range.start) else {
+            continue;
+        };
+        let Some(suffix) = original.get(body_range.end..) else {
+            continue;
+        };
+        let head = safe_char_slice(body, 0, config.soft_trim_head);
+        let tail = safe_char_slice_tail(body, config.soft_trim_tail);
+        let projected = format!(
+            "{prefix}{head}{SOFT_TRIM_SEPARATOR}{tail}{suffix}\n[full output stored at {path} — read that file for complete output]"
+        );
+        if projected.len() < original.len() {
+            projections.push((result_index, projected));
+        }
+    }
+
+    if !projections.is_empty() {
+        let original_bytes: usize = projections
+            .iter()
+            .map(|(index, _)| match &conversation[*index] {
+                ConversationItem::ToolResult(result) => result.content.len(),
+                _ => 0,
+            })
+            .sum();
+        let projected_bytes: usize = projections.iter().map(|(_, text)| text.len()).sum();
+        tracing::debug!(
+            results = projections.len(),
+            original_bytes,
+            projected_bytes,
+            first_changed_item = projections.iter().map(|(index, _)| *index).min().unwrap_or(0),
+            "old tool results shortened in this request; cached prefix may change"
+        );
+    }
+    for (result_index, projection) in projections {
+        if let ConversationItem::ToolResult(result) = &mut conversation[result_index] {
+            result.content = std::sync::Arc::<str>::from(projection);
+        }
+    }
+}
+
+fn unique_result_indices(conversation: &[ConversationItem]) -> Option<BTreeMap<String, usize>> {
+    let mut result_indices = BTreeMap::new();
+    for (result_index, item) in conversation.iter().enumerate() {
+        let ConversationItem::ToolResult(result) = item else {
+            continue;
+        };
+        let result_id = result.tool_call_id.to_string();
+        if result_indices.insert(result_id, result_index).is_some() {
+            return None;
+        }
+    }
+    Some(result_indices)
 }
 
 // ============================================================================
@@ -249,11 +347,13 @@ mod tests {
 
     #[test]
     fn should_prune_gating() {
-        use std::num::NonZeroU64;
-        let cw = NonZeroU64::new(10000).unwrap();
-        assert!(!should_prune(1000, cw)); // 10%
-        assert!(should_prune(6000, cw)); // 60%
-        assert!(!should_prune(5000, cw)); // 50% exact (> not >=)
+        let config = PruningConfig {
+            soft_trim_threshold: 4_000,
+            ..Default::default()
+        };
+        assert!(!should_prune(4_000, &config));
+        assert!(should_prune(4_001, &config));
+        assert!(!should_prune(5_000, &PruningConfig { enabled: false, ..config }));
     }
 
     #[test]
@@ -263,7 +363,8 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        prune_conversation(&mut conv, &config);
+        let mut persistence = crate::persistence::NullChatPersistence;
+        prune_conversation(&mut persistence, &mut conv, &config);
         let [ConversationItem::ToolResult(tr)] = conv.as_slice() else {
             panic!("expected one tool result: {conv:?}")
         };

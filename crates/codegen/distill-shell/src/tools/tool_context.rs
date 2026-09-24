@@ -267,14 +267,15 @@ pub struct ToolContext {
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
         &self,
+        requested: Option<u32>,
         configured: Option<u32>,
     ) -> Result<Option<u32>, &'static str> {
         match self.task_output_token_budget.as_ref() {
-            Some(budget) => match budget.clamp_request(configured) {
+            Some(budget) => match budget.clamp_request(requested.or(configured)) {
                 Some(0) => Err("workflow child output-token budget exhausted"),
                 clamped => Ok(clamped),
             },
-            None => Ok(configured),
+            None => Ok(requested),
         }
     }
     pub(crate) fn record_task_model_output(&self, output_tokens: u64) {

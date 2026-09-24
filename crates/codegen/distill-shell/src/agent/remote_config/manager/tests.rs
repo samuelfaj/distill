@@ -1115,11 +1115,26 @@ fn make_prefetched(ids: &[&str]) -> IndexMap<String, ModelEntry> {
         .collect()
 }
 
-#[test]
-fn spawn_background_refresh_is_noop_when_real_catalog_present() {
-    let mgr = test_manager();
+#[tokio::test]
+async fn spawn_background_refresh_fetches_when_cached_catalog_present() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mgr = cold_manager(
+        config::Config::default(),
+        Arc::new(CountingEndpoint {
+            calls: calls.clone(),
+        }),
+    );
     mgr.inner.catalog.write().has_fetched_real_catalog = true;
-    mgr.spawn_background_refresh_inner(/*remote_fetch_enabled*/ true); // must not panic (no tokio::spawn taken)
+    mgr.spawn_background_refresh_inner(/*remote_fetch_enabled*/ true);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("startup did not consult the remote catalog");
     assert!(mgr.has_fetched_real_catalog());
 }
 

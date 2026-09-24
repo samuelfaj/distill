@@ -257,7 +257,7 @@ impl distill_tool_runtime::Tool for SearchTool {
 
         let Some(tool_index) = resources.lock().await.get::<ToolIndex>().cloned() else {
             return Ok(ToolOutput::Text(
-                serde_json::to_string_pretty(&serde_json::json!({
+                serde_json::to_string(&serde_json::json!({
                     "results": [],
                     "total_hidden_tools": 0,
                     "note": "No integration tools are configured. MCP servers are not connected."
@@ -341,7 +341,7 @@ impl distill_tool_runtime::Tool for SearchTool {
         });
 
         let result_count = snapshot.results.len();
-        let content = serde_json::to_string_pretty(&response).unwrap();
+        let content = serde_json::to_string(&response).unwrap();
         Ok(ToolOutput::SearchTool(SearchToolOutput {
             result_count,
             content,

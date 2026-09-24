@@ -2,7 +2,8 @@
 //! Per-prompt and per-session billing ledgers (not serialized).
 //!
 //! `total_tokens()` is input + output: Responses wire `total` is live context
-//! length. Compaction and other side calls never call `record_main_loop_call`.
+//! length. Compaction and other side calls use `record_auxiliary_call` instead
+//! of `record_main_loop_call`.
 //!
 //! # Completeness ownership
 //!
@@ -11,6 +12,10 @@
 //! - **`UsageLedger.incomplete`** — durable on the bill snapshot. Set by nested
 //!   subagent incomplete fold, drain timeout, true apply-miss, and
 //!   `mark_usage_incomplete`. Monotonic for a ledger instance.
+//! - **Pending attempt IDs** — an admitted call that has not reached a terminal
+//!   attribution. The projection is incomplete while any ID is pending, but a
+//!   successful terminal row clears that pending state without leaving a false
+//!   permanent unknown.
 //! - **Sticky (`subagent_usage_not_applied` on the coordinator)** — pin-scoped
 //!   **report** signal (session-only attribution or apply-miss report). Not a
 //!   second token sink; does not stain ledgers by itself.
@@ -26,8 +31,68 @@
 //! Projection (`PromptUsage`) never invents tokens; it only ORs completeness
 //! and scrubs costs when partial or incomplete.
 
-use indexmap::IndexMap;
 use distill_sampling_types::TokenUsage;
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+/// Outcome of one dispatched provider attempt. Rejected responses still count;
+/// they are distinct from a local preflight refusal, which never creates one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageCallStatus {
+    Completed,
+    Rejected,
+    Failed,
+    Cancelled,
+}
+
+/// How the recorded cost was obtained. Unknown is intentionally not rendered
+/// as zero and is kept alongside the aggregate cost-missing counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageCostBasis {
+    /// Provider-authoritative cost. `Some(0)` is a reported free call, not a
+    /// missing legacy tick value.
+    Reported,
+    Estimated,
+    Unknown,
+}
+
+/// Identity and provider metadata for one billable attempt.
+///
+/// `attempt_id` is a local unique identity used for exactly-once folding;
+/// `request_id` is the provider identity when the response supplies one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageAttribution {
+    pub attempt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    pub role: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_effort: Option<String>,
+    pub status: UsageCallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    /// Both provider token components were present. Known one-sided counts are
+    /// still retained in `usage`; this flag keeps the missing side explicit.
+    #[serde(default)]
+    pub usage_complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd_ticks: Option<i64>,
+    pub cost_basis: UsageCostBasis,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageTotals {
@@ -49,7 +114,27 @@ impl UsageTotals {
         api_duration_ms: Option<u64>,
         cost_usd_ticks: Option<i64>,
     ) -> Self {
-        let cost_usd_ticks = distill_sampling_types::reported_cost_ticks(cost_usd_ticks);
+        Self::from_optional_call(Some(usage), api_duration_ms, cost_usd_ticks)
+    }
+
+    fn from_optional_call(
+        usage: Option<&TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) -> Self {
+        Self::from_optional_call_raw(
+            usage,
+            api_duration_ms,
+            distill_sampling_types::reported_cost_ticks(cost_usd_ticks),
+        )
+    }
+
+    fn from_optional_call_raw(
+        usage: Option<&TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) -> Self {
+        let usage = usage.cloned().unwrap_or_default();
         Self {
             input_tokens: u64::from(usage.prompt_tokens),
             output_tokens: u64::from(usage.completion_tokens),
@@ -67,8 +152,11 @@ impl UsageTotals {
         self.input_tokens.saturating_add(self.output_tokens)
     }
 
+    /// True whenever one or more calls lack provider-reported cost.
+    /// `cost_usd_ticks == None` distinguishes the all-absent case from a
+    /// partially reported total; neither case is treated as free.
     pub fn cost_is_partial(&self) -> bool {
-        self.cost_usd_ticks.is_some() && self.cost_missing_calls > 0
+        self.cost_missing_calls > 0
     }
 
     fn fold_totals(&mut self, other: &UsageTotals) {
@@ -108,13 +196,142 @@ fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 pub struct UsageLedger {
     pub totals: UsageTotals,
     pub by_model: IndexMap<String, UsageTotals>,
+    /// One row per dispatched auxiliary/main attempt with provider metadata.
+    /// Aggregate totals remain the billable token/cost projection.
+    pub attributions: Vec<UsageAttribution>,
     /// Main-agent loop rounds for `num_turns` (subagents excluded).
     pub main_loop_model_calls: u64,
     /// Bill may under-count (drain timeout, nested subagent incomplete, apply failure).
     pub incomplete: bool,
+    /// Admitted provider attempts whose terminal attribution has not arrived.
+    /// This is part of the canonical ledger lifecycle, not a second accounting store.
+    pub pending_attempts: BTreeSet<String>,
 }
 
 impl UsageLedger {
+    /// Admit one provider attempt before dispatch. The attempt id is also the
+    /// exactly-once key used by the terminal attribution row.
+    pub fn register_pending_attempt(&mut self, attempt_id: String) {
+        if !self
+            .attributions
+            .iter()
+            .any(|existing| existing.attempt_id == attempt_id)
+        {
+            self.pending_attempts.insert(attempt_id);
+        }
+    }
+
+    /// Whether this ledger can still be missing the result of an admitted call.
+    pub fn is_incomplete(&self) -> bool {
+        self.incomplete || !self.pending_attempts.is_empty()
+    }
+
+    /// Fold one attributed attempt exactly once. The attempt id is the local
+    /// deduplication key; provider request ids are not guaranteed to exist or
+    /// to be unique across providers.
+    pub fn record_attribution(&mut self, attribution: UsageAttribution) {
+        self.record_attribution_inner(attribution, true);
+    }
+
+    /// Fold child-attempt metadata without turning nested model calls into
+    /// foreground loop turns. The child attempt id remains the exactly-once
+    /// key, so a delayed coordinator fold cannot rebill the parent.
+    pub fn record_subagent_attributions(
+        &mut self,
+        attributions: &[UsageAttribution],
+        incomplete: bool,
+    ) {
+        self.record_subagent_attributions_with_pending(attributions, &[], incomplete);
+    }
+
+    /// Fold child-attempt metadata and preserve any child calls that were
+    /// admitted but had not reached a terminal row at the fold boundary.
+    pub fn record_subagent_attributions_with_pending(
+        &mut self,
+        attributions: &[UsageAttribution],
+        pending_attempts: &[String],
+        incomplete: bool,
+    ) {
+        for attempt_id in pending_attempts {
+            self.register_pending_attempt(attempt_id.clone());
+        }
+        for attribution in attributions {
+            self.record_attribution_inner(attribution.clone(), false);
+        }
+        if incomplete {
+            self.incomplete = true;
+        }
+    }
+
+    /// Fold a child snapshot using identity rows when they cover the child
+    /// ledger, otherwise retain the historical aggregate-only fold. Callers
+    /// must not pass both a partial attribution set and aggregate totals: that
+    /// would intentionally be ambiguous rather than silently double-counted.
+    pub fn record_subagent_usage(
+        &mut self,
+        by_model: &[(String, UsageTotals)],
+        attributions: &[UsageAttribution],
+        incomplete: bool,
+    ) {
+        self.record_subagent_usage_with_pending(by_model, attributions, &[], incomplete);
+    }
+
+    /// Fold a child snapshot while carrying admitted-but-not-terminal attempt
+    /// IDs across the parent boundary.
+    pub fn record_subagent_usage_with_pending(
+        &mut self,
+        by_model: &[(String, UsageTotals)],
+        attributions: &[UsageAttribution],
+        pending_attempts: &[String],
+        incomplete: bool,
+    ) {
+        if attributions.is_empty() {
+            self.record_subagent_with_pending(by_model, pending_attempts, incomplete);
+        } else {
+            self.record_subagent_attributions_with_pending(
+                attributions,
+                pending_attempts,
+                incomplete,
+            );
+        }
+    }
+
+    fn record_attribution_inner(&mut self, attribution: UsageAttribution, count_main: bool) {
+        self.pending_attempts.remove(&attribution.attempt_id);
+        if self
+            .attributions
+            .iter()
+            .any(|existing| existing.attempt_id == attribution.attempt_id)
+        {
+            return;
+        }
+        let cost = match attribution.cost_basis {
+            UsageCostBasis::Reported => attribution.cost_usd_ticks.filter(|&ticks| ticks >= 0),
+            UsageCostBasis::Estimated | UsageCostBasis::Unknown => {
+                distill_sampling_types::reported_cost_ticks(attribution.cost_usd_ticks)
+            }
+        };
+        let call = UsageTotals::from_optional_call_raw(
+            attribution.usage.as_ref(),
+            attribution.api_duration_ms,
+            cost,
+        );
+        if count_main && attribution.role == "main" {
+            self.main_loop_model_calls = self.main_loop_model_calls.saturating_add(1);
+        }
+        self.fold_entry(&attribution.model_id, &call);
+        if !attribution.usage_complete
+            || attribution.usage.is_none()
+            || matches!(
+                attribution.status,
+                UsageCallStatus::Failed | UsageCallStatus::Cancelled
+            )
+        {
+            self.incomplete = true;
+        }
+        self.attributions.push(attribution);
+    }
+
     /// Fold one main-agent-loop model call. This is the only writer of
     /// `main_loop_model_calls` (the wire `numTurns`); side calls such as
     /// compaction must not use it.
@@ -130,8 +347,54 @@ impl UsageLedger {
         self.fold_entry(model_id, &call);
     }
 
+    /// Fold a main-loop call whose response did not report token usage.
+    /// The call is counted, but the token and cost fields stay explicitly
+    /// absent and the ledger is marked incomplete.
+    pub fn record_main_loop_call_without_usage(
+        &mut self,
+        model_id: &str,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+    ) {
+        let call = UsageTotals::from_optional_call(None, api_duration_ms, cost_usd_ticks);
+        self.main_loop_model_calls = self.main_loop_model_calls.saturating_add(1);
+        self.fold_entry(model_id, &call);
+        self.incomplete = true;
+    }
+
+    /// Fold one non-main model call without changing the main-loop count.
+    /// Missing usage is counted as an incomplete call; missing provider cost is
+    /// tracked separately by `cost_missing_calls`.
+    pub fn record_auxiliary_call(
+        &mut self,
+        model_id: &str,
+        usage: Option<&TokenUsage>,
+        api_duration_ms: Option<u64>,
+        cost_usd_ticks: Option<i64>,
+        incomplete: bool,
+    ) {
+        let call = UsageTotals::from_optional_call(usage, api_duration_ms, cost_usd_ticks);
+        self.fold_entry(model_id, &call);
+        if incomplete || usage.is_none() {
+            self.incomplete = true;
+        }
+    }
+
     /// Fold subagent usage without incrementing `main_loop_model_calls`.
     pub fn record_subagent(&mut self, by_model: &[(String, UsageTotals)], incomplete: bool) {
+        self.record_subagent_with_pending(by_model, &[], incomplete);
+    }
+
+    /// Fold aggregate child usage and preserve admitted pending attempt IDs.
+    pub fn record_subagent_with_pending(
+        &mut self,
+        by_model: &[(String, UsageTotals)],
+        pending_attempts: &[String],
+        incomplete: bool,
+    ) {
+        for attempt_id in pending_attempts {
+            self.register_pending_attempt(attempt_id.clone());
+        }
         for (model_id, totals) in by_model {
             self.fold_entry(model_id, totals);
         }
@@ -174,6 +437,7 @@ mod tests {
         ledger.record_main_loop_call("m", &tu(1, 1), None, Some(0));
         assert_eq!(ledger.totals.cost_usd_ticks, None);
         assert_eq!(ledger.totals.cost_missing_calls, 1);
+        assert!(ledger.totals.cost_is_partial());
 
         ledger.record_main_loop_call("a", &tu(100, 10), Some(100), None);
         ledger.record_main_loop_call("a", &tu(50, 5), Some(50), Some(70));
@@ -199,5 +463,251 @@ mod tests {
 
         ledger.record_subagent(&[], true);
         assert!(ledger.incomplete);
+    }
+
+    #[test]
+    fn attributed_reported_zero_cost_is_free_not_unknown() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_attribution(UsageAttribution {
+            attempt_id: "reported-free".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: Some("provider-free".to_owned()),
+            role: "main".to_owned(),
+            model_id: "free-model".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(1, 1)),
+            usage_complete: true,
+            api_duration_ms: None,
+            cost_usd_ticks: Some(0),
+            cost_basis: UsageCostBasis::Reported,
+        });
+
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(0));
+        assert_eq!(ledger.totals.cost_missing_calls, 0);
+        assert!(!ledger.totals.cost_is_partial());
+
+        let mut legacy = UsageLedger::default();
+        legacy.record_attribution(UsageAttribution {
+            attempt_id: "legacy-zero".to_owned(),
+            cost_usd_ticks: Some(0),
+            cost_basis: UsageCostBasis::Unknown,
+            ..ledger.attributions[0].clone()
+        });
+        assert_eq!(legacy.totals.cost_usd_ticks, None);
+        assert_eq!(legacy.totals.cost_missing_calls, 1);
+    }
+
+    #[test]
+    fn child_attributions_fold_once_without_foreground_turns() {
+        let first = UsageAttribution {
+            attempt_id: "child-1".to_owned(),
+            task_id: Some("child-task".to_owned()),
+            turn_id: Some("child-turn".to_owned()),
+            request_id: Some("provider-1".to_owned()),
+            role: "main".to_owned(),
+            model_id: "child-model".to_owned(),
+            endpoint: Some("https://provider.test".to_owned()),
+            requested_effort: Some("low".to_owned()),
+            applied_effort: Some("effort:low".to_owned()),
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(7, 2)),
+            usage_complete: true,
+            api_duration_ms: Some(4),
+            cost_usd_ticks: Some(3),
+            cost_basis: UsageCostBasis::Reported,
+        };
+        let second = UsageAttribution {
+            attempt_id: "child-2".to_owned(),
+            task_id: Some("child-task".to_owned()),
+            turn_id: Some("child-turn".to_owned()),
+            request_id: None,
+            role: "auxiliary".to_owned(),
+            model_id: "child-model".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: Some("absent".to_owned()),
+            status: UsageCallStatus::Failed,
+            usage: None,
+            usage_complete: false,
+            api_duration_ms: None,
+            cost_usd_ticks: None,
+            cost_basis: UsageCostBasis::Unknown,
+        };
+        let mut ledger = UsageLedger::default();
+        ledger.record_subagent_usage(
+            &[],
+            &[first.clone(), first, second.clone()],
+            true,
+        );
+
+        assert_eq!(ledger.attributions.len(), 2);
+        assert_eq!(ledger.totals.model_calls, 2);
+        assert_eq!(ledger.totals.input_tokens, 7);
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(3));
+        assert_eq!(ledger.main_loop_model_calls, 0);
+        assert!(ledger.incomplete);
+        assert_eq!(ledger.attributions[1], second);
+    }
+
+    #[test]
+    fn physical_main_retry_is_billed_without_becoming_an_extra_loop_round() {
+        let mut ledger = UsageLedger::default();
+        for (attempt_id, role, prompt) in [("main", "main", 10), ("retry", "main_retry", 4)] {
+            ledger.record_attribution(UsageAttribution {
+                attempt_id: attempt_id.to_owned(),
+                task_id: Some("task".to_owned()),
+                turn_id: Some("turn".to_owned()),
+                request_id: None,
+                role: role.to_owned(),
+                model_id: "model".to_owned(),
+                endpoint: Some("https://provider.test/chat".to_owned()),
+                requested_effort: None,
+                applied_effort: Some("absent".to_owned()),
+                status: if role == "main" {
+                    UsageCallStatus::Completed
+                } else {
+                    UsageCallStatus::Failed
+                },
+                usage: Some(tu(prompt, 1)),
+                usage_complete: true,
+                api_duration_ms: Some(1),
+                cost_usd_ticks: Some(1),
+                cost_basis: UsageCostBasis::Reported,
+            });
+        }
+
+        assert_eq!(ledger.totals.model_calls, 2);
+        assert_eq!(ledger.main_loop_model_calls, 1);
+        assert_eq!(ledger.totals.input_tokens, 14);
+    }
+
+    #[test]
+    fn auxiliary_and_unreported_main_calls_are_counted_once_without_free_cost() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_auxiliary_call("recap-model", None, Some(12), None, true);
+        ledger.record_main_loop_call_without_usage("main-model", Some(8), Some(30));
+
+        assert_eq!(ledger.main_loop_model_calls, 1);
+        assert_eq!(ledger.totals.model_calls, 2);
+        assert_eq!(ledger.totals.cost_usd_ticks, Some(30));
+        assert_eq!(ledger.totals.cost_missing_calls, 1);
+        assert!(ledger.totals.cost_is_partial());
+        assert!(ledger.incomplete);
+        assert_eq!(ledger.by_model["recap-model"].model_calls, 1);
+        assert_eq!(ledger.by_model["main-model"].model_calls, 1);
+    }
+
+    #[test]
+    fn attributed_attempts_are_deduplicated_and_keep_unknown_cost_explicit() {
+        let usage = tu(9, 3);
+        let attribution = UsageAttribution {
+            attempt_id: "attempt-1".to_owned(),
+            task_id: Some("utility-task".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            request_id: Some("provider-1".to_owned()),
+            role: "utility".to_owned(),
+            model_id: "cheap-model".to_owned(),
+            endpoint: Some("https://provider.test/chat".to_owned()),
+            requested_effort: Some("low".to_owned()),
+            applied_effort: None,
+            status: UsageCallStatus::Rejected,
+            usage: Some(usage),
+            usage_complete: true,
+            api_duration_ms: Some(12),
+            cost_usd_ticks: None,
+            cost_basis: UsageCostBasis::Unknown,
+        };
+        let mut ledger = UsageLedger::default();
+        ledger.record_attribution(attribution.clone());
+        ledger.record_attribution(attribution);
+
+        assert_eq!(ledger.attributions.len(), 1);
+        assert_eq!(ledger.totals.model_calls, 1);
+        assert_eq!(ledger.totals.input_tokens, 9);
+        assert_eq!(ledger.totals.cost_missing_calls, 1);
+        assert!(ledger.totals.cost_is_partial());
+        assert!(!ledger.incomplete);
+    }
+
+    #[test]
+    fn attributed_partial_usage_keeps_known_tokens_and_marks_incomplete() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_attribution(UsageAttribution {
+            attempt_id: "input-only".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: None,
+            role: "utility".to_owned(),
+            model_id: "jev".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(11, 0)),
+            usage_complete: false,
+            api_duration_ms: None,
+            cost_usd_ticks: None,
+            cost_basis: UsageCostBasis::Unknown,
+        });
+
+        assert_eq!(ledger.totals.input_tokens, 11);
+        assert_eq!(ledger.totals.output_tokens, 0);
+        assert!(ledger.incomplete);
+    }
+
+    #[test]
+    fn pending_attempt_is_incomplete_until_terminal_row_arrives() {
+        let mut child = UsageLedger::default();
+        child.record_main_loop_call("child-model", &tu(3, 1), Some(5), Some(5));
+        child.register_pending_attempt("initial-title:pending".to_owned());
+        assert!(!child.incomplete);
+        assert!(child.is_incomplete());
+
+        let pending = child.pending_attempts.iter().cloned().collect::<Vec<_>>();
+        let mut parent = UsageLedger::default();
+        parent.record_subagent_usage_with_pending(
+            &[("child-model".to_owned(), child.totals.clone())],
+            &[],
+            &pending,
+            false,
+        );
+        assert!(parent.is_incomplete());
+        assert_eq!(parent.totals.model_calls, 1);
+        assert_eq!(parent.totals.cost_usd_ticks, Some(5));
+
+        let title = UsageAttribution {
+            attempt_id: "initial-title:pending".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: Some("title-request".to_owned()),
+            role: "auxiliary".to_owned(),
+            model_id: "title-model".to_owned(),
+            endpoint: Some("https://provider.test/chat".to_owned()),
+            requested_effort: None,
+            applied_effort: Some("absent".to_owned()),
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(4, 2)),
+            usage_complete: true,
+            api_duration_ms: Some(5),
+            cost_usd_ticks: Some(7),
+            cost_basis: UsageCostBasis::Reported,
+        };
+        child.record_attribution(title.clone());
+
+        assert!(child.pending_attempts.is_empty());
+        assert!(!child.is_incomplete());
+        assert_eq!(child.totals.model_calls, 2);
+        assert_eq!(child.totals.cost_usd_ticks, Some(12));
+
+        parent.record_subagent_usage_with_pending(&[], &[title.clone()], &[], false);
+        parent.record_subagent_usage_with_pending(&[], &[title], &[], false);
+        assert!(!parent.is_incomplete());
+        assert_eq!(parent.totals.model_calls, 2);
+        assert_eq!(parent.totals.cost_usd_ticks, Some(12));
+        assert_eq!(parent.attributions.len(), 1);
     }
 }

@@ -5,6 +5,10 @@
 
 use super::*;
 
+use super::side_call::run_display_task;
+
+const TURN_SUMMARY_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl SessionActor {
     /// Any generation still running is aborted: its result would describe an older turn.
     /// Cancellation can only land before that block, never inside it.
@@ -28,7 +32,12 @@ impl SessionActor {
         self.turn_summary_generation.set(generation);
         let actor = self.clone();
         let task = tokio::task::spawn_local(async move {
-            actor.generate_turn_summary(&prompt_id, generation).await;
+            crate::jev::with_session_scope_and_recorder(
+                actor.session_info.id.0.to_string(),
+                Some(actor.chat_state_handle.clone()),
+                actor.generate_turn_summary(&prompt_id, generation),
+            )
+            .await;
             // Drop the slot only if we are still the registered task
             // An abort-and-respawn can replace the handle before we finish
             if actor.turn_summary_generation.get() == generation {
@@ -50,58 +59,37 @@ impl SessionActor {
         }
     }
 
-    /// The turn-summary side-call body: snapshot, one tool-free model call, then persist to `summary.json` and broadcast transiently to clients.
+    /// The turn-summary side-call body: bounded source snapshot, one
+    /// source-backed display call, then persist to `summary.json` and broadcast
+    /// transiently to clients.
     /// Display-only and best-effort: failures log and drop, the turn is already over.
     /// `generation` is the spawn-time token; if it no longer matches at commit time, this result is stale and is dropped.
     async fn generate_turn_summary(&self, prompt_id: &str, generation: u64) {
         use crate::session::helpers::turn_summary;
 
         let conversation = self.chat_state_handle.get_conversation().await;
-        let Some(anchor) = turn_summary::last_user_anchor(&conversation) else {
+        let Some(payload) = turn_summary::last_turn_display_payload(&conversation) else {
             return;
         };
-
-        let setup = match self.prepare_side_call().await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "turn summary: failed to prepare sampling client");
-                return;
-            }
-        };
-        let instruction =
-            turn_summary::turn_summary_instruction(self.reminder_wrapper_tag(), &anchor);
-        let items = crate::session::helpers::session_recap::budget_instruction_items(
-            conversation,
-            instruction,
-            setup.strip_reasoning,
-            setup.context_window,
-        );
-        let request = self
-            .side_call_request(
-                &setup,
-                items,
-                format!("turn-summary-{}", uuid::Uuid::new_v4()),
-                format!("xai-turn-summary-{}", uuid::Uuid::new_v4()),
-            )
-            .await;
-
-        let response = match setup.client.conversation_collect(request).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "turn summary: model call failed");
-                return;
-            }
-        };
-        super::side_call::log_prompt_cache_usage(
-            "turn_summary",
-            setup.client.api_backend(),
-            &response,
-        );
-        let summary = turn_summary::clean_turn_summary_text(&response.assistant_text());
-        if summary.is_empty() {
-            tracing::debug!("turn summary: model returned empty summary");
+        let Some(source) = turn_summary::last_turn_display_source(&conversation) else {
             return;
-        }
+        };
+        let Some(summary) = tokio::time::timeout(
+            TURN_SUMMARY_MODEL_TIMEOUT,
+            run_display_task(
+                self,
+                distill_workspace::jev::tasks::DISPLAY_FRAGMENT_TASK,
+                &payload,
+                &source,
+                "Choose one short dashboard fragment from the assistant reply. Reply with exactly one quoted source span, at most 12 words, preserving paths, numbers, and unresolved or test status; no labels or prose.",
+                turn_summary::turn_summary_display_text,
+            ),
+        )
+        .await
+        .ok()
+        .flatten() else {
+            return;
+        };
 
         // Stale after an abort or a newer spawn: do not persist or broadcast
         if self.turn_summary_generation.get() != generation {

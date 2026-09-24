@@ -445,6 +445,21 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_patch_template_retains_execution_contract() {
+        let prompt = render_apply_patch(&default_renderer(), &default_placeholders());
+        for required in [
+            "Sandbox and approvals",
+            "# AGENTS.md spec",
+            "Use the `apply_patch` tool",
+            "When testing, your philosophy",
+            "Reference files with clickable paths",
+            "Do not output raw ANSI escape codes",
+        ] {
+            assert!(prompt.contains(required), "missing retained contract: {required}");
+        }
+    }
+
+    #[test]
     fn test_apply_patch_template_plan_absent_omits_planning() {
         // Renderer without Plan tool
         let tools: HashMap<ToolKind, String> = [

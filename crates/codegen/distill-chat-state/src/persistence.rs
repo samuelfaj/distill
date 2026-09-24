@@ -7,6 +7,7 @@
 //! in the actor / message-passing paradigm.
 
 use std::io;
+use std::ops::Range;
 
 use tokio::sync::{mpsc, oneshot};
 use distill_sampling_types::ConversationItem;
@@ -18,6 +19,22 @@ use crate::commands::{StrictAppendAck, StrictAppendError};
 pub trait ChatPersistence: Send + 'static {
     /// Persist a single conversation item (append to chat_history.jsonl).
     fn persist_message(&mut self, item: &ConversationItem);
+
+    /// Store a tool result before a request-only lossy projection.
+    ///
+    /// The returned path must be readable by the model's existing file tool,
+    /// the stored bytes must be byte-identical to `payload`, and the range must
+    /// identify the eligible body to project. Implementations must return
+    /// `None` for secret-like content or storage failure; callers then keep the
+    /// original payload.
+    fn archive_tool_result(
+        &mut self,
+        _tool_name: &str,
+        _tool_arguments: &str,
+        _payload: &str,
+    ) -> Option<(String, Range<usize>)> {
+        None
+    }
 
     /// Persist one working-directory switch generation and report commit status.
     fn persist_working_directory_switch_and_ack(
@@ -81,6 +98,11 @@ pub enum PersistenceRecord {
 /// the actor did. No locks, no atomics — just message passing.
 pub struct MockChatPersistence {
     tx: mpsc::UnboundedSender<PersistenceRecord>,
+    /// Visible recovery path returned for request-only projections. `None`
+    /// models an unavailable/unwritable archive.
+    archive_path: Option<String>,
+    /// Optional byte range to project inside the original tool result.
+    pub(crate) archive_body_range: Option<Range<usize>>,
     /// When set, strip rewrites ack an I/O error instead of success:
     /// pins the honest-failure half of the [`StripOutcome`] contract.
     fail_strip_writes: bool,
@@ -105,6 +127,8 @@ impl MockChatPersistence {
         (
             Self {
                 tx,
+                archive_path: Some("/mock/jev/store/tool-output.txt".to_owned()),
+                archive_body_range: None,
                 fail_strip_writes: false,
                 persistence_ack_tx: None,
                 persisted_working_directory_switches: Vec::new(),
@@ -131,6 +155,8 @@ impl MockChatPersistence {
         (
             Self {
                 tx,
+                archive_path: Some("/mock/jev/store/tool-output.txt".to_owned()),
+                archive_body_range: None,
                 fail_strip_writes: false,
                 persistence_ack_tx: Some(persistence_ack_tx),
                 persisted_working_directory_switches: Vec::new(),
@@ -140,6 +166,13 @@ impl MockChatPersistence {
                 persistence_ack_rx: Some(persistence_ack_rx),
             },
         )
+    }
+
+    /// Create a mock whose request-only tool-result archive is unavailable.
+    pub fn new_failing_tool_archive() -> (Self, MockPersistenceReceiver) {
+        let (mut mock, rx) = Self::new();
+        mock.archive_path = None;
+        (mock, rx)
     }
 }
 
@@ -178,6 +211,28 @@ impl MockPersistenceReceiver {
 impl ChatPersistence for MockChatPersistence {
     fn persist_message(&mut self, item: &ConversationItem) {
         let _ = self.tx.send(PersistenceRecord::Message(item.clone()));
+    }
+
+    fn archive_tool_result(
+        &mut self,
+        tool_name: &str,
+        _tool_arguments: &str,
+        payload: &str,
+    ) -> Option<(String, Range<usize>)> {
+        let tool = tool_name
+            .rsplit([':', '/'])
+            .next()
+            .unwrap_or(tool_name)
+            .to_ascii_lowercase();
+        if !matches!(tool.as_str(), "run_terminal_command" | "bash" | "shell") {
+            return None;
+        }
+        self.archive_path.clone().map(|path| {
+            (
+                path,
+                self.archive_body_range.clone().unwrap_or(0..payload.len()),
+            )
+        })
     }
 
     fn persist_working_directory_switch_and_ack(

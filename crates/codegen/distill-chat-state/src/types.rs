@@ -64,12 +64,12 @@ pub struct NotificationMeta {
 }
 
 /// Configuration for tool-result pruning.
-/// Soft trim keeps head + tail; hard clear replaces entirely.
+/// Request-only soft trim keeps head + tail; retained-history hard clear replaces entirely.
 #[derive(Debug, Clone)]
 pub struct PruningConfig {
     /// Whether pruning is enabled.
     pub enabled: bool,
-    /// Number of recent turns whose tool results are never pruned.
+    /// Number of most-recent completed tool-call groups whose results are never pruned.
     pub keep_last_n_turns: usize,
     /// Character threshold above which old tool results are soft-trimmed.
     pub soft_trim_threshold: usize,

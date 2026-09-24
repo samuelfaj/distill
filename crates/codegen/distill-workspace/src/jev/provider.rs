@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::error::JevError;
-use super::types::{Answer, Json, Question, QuestionId, Usage};
+use super::types::{Answer, Json, Question, QuestionId, Usage, UsageBilling};
 
 /// Which wire protocol the decision layer speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -165,6 +165,46 @@ pub fn reasoning_object(shape: ReasoningShape, level: &str, max_tokens: u32) -> 
     }
 }
 
+/// Describe the reasoning setting emitted by the Jev request builder.
+///
+/// Typed Jev requests have no reasoning field; OpenRouter requests use the
+/// same mapping as [`reasoning_object`]. `none` is retained when it was an
+/// explicit caller setting, while `absent` means that no reasoning setting was
+/// sent (or that a zero budget could not be sent).
+pub fn transmitted_reasoning_effort(
+    provider: JevProvider,
+    shape: ReasoningShape,
+    level: &str,
+    max_tokens: u32,
+) -> Option<String> {
+    if provider.speaks_typed_envelope() {
+        return Some("absent".to_owned());
+    }
+    let level = level.trim();
+    if shape == ReasoningShape::Disabled {
+        return Some("disabled".to_owned());
+    }
+    if level.is_empty() {
+        return Some("absent".to_owned());
+    }
+    if level.eq_ignore_ascii_case("none") {
+        return Some("none".to_owned());
+    }
+    match shape {
+        ReasoningShape::None => Some("absent".to_owned()),
+        ReasoningShape::Effort => Some(format!("effort:{level}")),
+        ReasoningShape::MaxTokens => {
+            let budget = reasoning_budget_tokens(level).min(max_tokens.saturating_sub(64));
+            if budget > 0 {
+                Some(format!("max_tokens:{budget}"))
+            } else {
+                Some("absent".to_owned())
+            }
+        }
+        ReasoningShape::Disabled => Some("disabled".to_owned()),
+    }
+}
+
 /// The level the model is asked for, adapted to what it advertises.
 ///
 /// A model that reports `supported_efforts` may not accept our ladder's top
@@ -233,9 +273,10 @@ pub fn render_decision_prompt(
         return Err(JevError::invalid("questions must not be empty"));
     }
     let mut out = String::from("STATE:\n");
-    out.push_str(&serde_json::to_string(state).map_err(|error| {
-        JevError::invalid(format!("state is not serializable: {error}"))
-    })?);
+    out.push_str(
+        &serde_json::to_string(state)
+            .map_err(|error| JevError::invalid(format!("state is not serializable: {error}")))?,
+    );
     out.push_str("\n\nQUESTIONS:\n");
     for (id, question) in questions {
         match question {
@@ -384,8 +425,110 @@ pub struct ChatReply {
     /// The assistant message text (the JSON answer object lives here).
     pub content: String,
     pub usage: Usage,
+    pub billing: UsageBilling,
     /// `finish_reason == "length"`: the answer was cut, so it cannot be trusted.
     pub truncated: bool,
+}
+
+fn parse_usd_ticks(value: Option<&Json>) -> Option<i64> {
+    let raw = match value {
+        Some(Json::String(value)) => value.clone(),
+        Some(Json::Number(value)) => value.to_string(),
+        _ => return None,
+    };
+    let raw = raw.trim();
+    if raw.is_empty() || raw.starts_with('-') {
+        return None;
+    }
+    let (mantissa, exponent) = raw
+        .split_once(['e', 'E'])
+        .map_or((raw, 0_i32), |(mantissa, exponent)| {
+            (mantissa, exponent.parse::<i32>().ok().unwrap_or(i32::MIN))
+        });
+    if exponent == i32::MIN {
+        return None;
+    }
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty() && fraction.is_empty()
+        || !whole.chars().all(|c| c.is_ascii_digit())
+        || !fraction.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let significant = digits.trim_start_matches('0');
+    let integer = if significant.is_empty() {
+        0_i128
+    } else {
+        significant.parse::<i128>().ok()?
+    };
+    let scale = i32::try_from(fraction.len()).ok()?.saturating_sub(exponent);
+    let ticks = if scale <= 10 {
+        integer.checked_mul(10_i128.checked_pow((10 - scale) as u32)?)?
+    } else {
+        let extra = usize::try_from(scale - 10).ok()?;
+        digits
+            .chars()
+            .rev()
+            .take(extra)
+            .all(|c| c == '0')
+            .then_some(integer / 10_i128.checked_pow(extra as u32)?)?
+    };
+    // JSON `cost: 0` is an authoritative free response; legacy tick backfills
+    // are normalized separately by the attribution path.
+    (ticks >= 0 && ticks <= i128::from(i64::MAX)).then_some(ticks as i64)
+}
+
+fn parse_wire_usage(body: &Json) -> (Usage, UsageBilling) {
+    let wire_usage = body.get("usage");
+    let token = |key: &str| {
+        wire_usage
+            .and_then(|value| value.get(key))
+            .and_then(Json::as_u64)
+    };
+    let nested_token = |outer: &str, inner: &str| {
+        wire_usage
+            .and_then(|value| value.get(outer))
+            .and_then(|value| value.get(inner))
+            .and_then(Json::as_u64)
+    };
+    let usage = Usage {
+        input_tokens: token("prompt_tokens").or_else(|| token("input_tokens")),
+        output_tokens: token("completion_tokens").or_else(|| token("output_tokens")),
+    };
+    let billing = UsageBilling {
+        cached_input_tokens: nested_token("prompt_tokens_details", "cached_tokens")
+            .or_else(|| nested_token("input_tokens_details", "cached_tokens"))
+            .or_else(|| token("cached_prompt_tokens"))
+            .or_else(|| token("cache_read_input_tokens")),
+        cache_creation_input_tokens: token("cache_creation_input_tokens")
+            .or_else(|| nested_token("prompt_tokens_details", "cache_write_tokens")),
+        reasoning_tokens: nested_token("completion_tokens_details", "reasoning_tokens"),
+        cost_usd_ticks: parse_usd_ticks(wire_usage.and_then(|value| value.get("cost")))
+            .or_else(|| parse_usd_ticks(body.get("cost")))
+            .or_else(|| {
+                wire_usage
+                    .and_then(|value| value.get("cost_usd_ticks"))
+                    .and_then(Json::as_i64)
+                    .filter(|&cost| cost > 0)
+            }),
+    };
+    (usage, billing)
+}
+
+pub(crate) fn parse_response_metadata(
+    bytes: &[u8],
+) -> (Option<String>, Option<String>, Usage, UsageBilling) {
+    let Ok(body) = serde_json::from_slice::<Json>(bytes) else {
+        return (None, None, Usage::default(), UsageBilling::default());
+    };
+    let (usage, billing) = parse_wire_usage(&body);
+    (
+        body.get("model").and_then(Json::as_str).map(str::to_owned),
+        body.get("id").and_then(Json::as_str).map(str::to_owned),
+        usage,
+        billing,
+    )
 }
 
 /// Parse a chat-completions 200 body.
@@ -418,21 +561,13 @@ pub fn parse_chat_reply(bytes: &[u8]) -> Result<ChatReply, JevError> {
             ));
         }
     };
-    let usage = Usage {
-        input_tokens: body
-            .get("usage")
-            .and_then(|usage| usage.get("prompt_tokens"))
-            .and_then(Json::as_u64),
-        output_tokens: body
-            .get("usage")
-            .and_then(|usage| usage.get("completion_tokens"))
-            .and_then(Json::as_u64),
-    };
+    let (usage, billing) = parse_wire_usage(&body);
     Ok(ChatReply {
         model: body.get("model").and_then(Json::as_str).map(str::to_owned),
         id: body.get("id").and_then(Json::as_str).map(str::to_owned),
         content,
         usage,
+        billing,
         truncated: choice.get("finish_reason").and_then(Json::as_str) == Some("length"),
     })
 }
@@ -631,10 +766,7 @@ fn score_field(raw: &Json, criteria: &[Json], id: &str) -> Option<f64> {
     }
     let owned;
     if let Some(Json::Object(inner)) = raw.get("score") {
-        owned = inner
-            .iter()
-            .map(|(_, value)| value)
-            .collect::<Vec<&Json>>();
+        owned = inner.iter().map(|(_, value)| value).collect::<Vec<&Json>>();
         candidates.extend(owned);
     }
     for value in candidates {
@@ -705,7 +837,9 @@ fn raw_kind(value: &Json) -> &'static str {
 /// asked; the alternative is throwing away a usable answer because of a wrapper.
 fn unwrap_answer_keyed_by_id<'a>(raw: &'a Json, id: &str) -> &'a Json {
     match raw.get(id) {
-        Some(inner @ Json::Object(_)) if raw.get("score").is_none() && raw.get("choice").is_none() => {
+        Some(inner @ Json::Object(_))
+            if raw.get("score").is_none() && raw.get("choice").is_none() =>
+        {
             inner
         }
         _ => raw,
@@ -777,13 +911,51 @@ mod tests {
     use super::*;
     use crate::jev::types::NoulCriteria;
 
+    #[test]
+    fn openrouter_billing_keeps_nested_cache_write_and_reported_zero() {
+        let (usage, billing) = parse_wire_usage(&json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "prompt_tokens_details": {
+                    "cached_tokens": 40,
+                    "cache_write_tokens": 12
+                },
+                "cost_usd_ticks": 0,
+                "cost": 0.0
+            }
+        }));
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(25));
+        assert_eq!(billing.cached_input_tokens, Some(40));
+        assert_eq!(billing.cache_creation_input_tokens, Some(12));
+        assert_eq!(billing.cost_usd_ticks, Some(0));
+
+        let (_, legacy_zero) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 0 }
+        }));
+        assert_eq!(legacy_zero.cost_usd_ticks, None);
+
+        let (_, explicit_zero) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 12, "cost": 0.0 }
+        }));
+        assert_eq!(explicit_zero.cost_usd_ticks, Some(0));
+
+        let (_, legacy_paid) = parse_wire_usage(&json!({
+            "usage": { "cost_usd_ticks": 12 }
+        }));
+        assert_eq!(legacy_paid.cost_usd_ticks, Some(12));
+    }
+
     /// The owner's chain renders as OpenRouter's fallback routing: the primary
     /// in `model`, the rest in `models`, in order. Getting this wrong would mean
     /// paying for a model that was never asked for.
     #[test]
     fn a_comma_separated_model_spec_becomes_a_fallback_chain() {
-        let (primary, fallbacks) =
-            model_fallback_chain("inclusionai/ling-3.0-flash-vl:free, inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash");
+        let (primary, fallbacks) = model_fallback_chain(
+            "inclusionai/ling-3.0-flash-vl:free, inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash",
+        );
         assert_eq!(primary, "inclusionai/ling-3.0-flash-vl:free");
         assert_eq!(
             fallbacks,
@@ -956,7 +1128,12 @@ mod tests {
         ];
         for reply in cases {
             let answers = parse_decision_answers(reply, &battery()).expect(reply);
-            assert!(answers.get("escapes").and_then(Answer::noul_value).is_some());
+            assert!(
+                answers
+                    .get("escapes")
+                    .and_then(Answer::noul_value)
+                    .is_some()
+            );
         }
         let yes = parse_decision_answers(
             r#"{"answers": {"risk": {"choice": "routine_build"}, "escapes": {"yes": true}, "severity": {"score": 0}}}"#,
@@ -1017,13 +1194,19 @@ mod tests {
             &battery(),
         )
         .expect("an id-keyed answer is still an answer");
-        assert_eq!(answers.get("severity").and_then(Answer::score_value), Some(1.0));
+        assert_eq!(
+            answers.get("severity").and_then(Answer::score_value),
+            Some(1.0)
+        );
         let answers = parse_decision_answers(
             r#"{"answers": {"risk": {"choice": "routine_build"}, "escapes": {"probability": 0.05}, "severity": {"severity": {"level": 2}}}}"#,
             &battery(),
         )
         .expect("an id-keyed object is still an answer");
-        assert_eq!(answers.get("severity").and_then(Answer::score_value), Some(2.0));
+        assert_eq!(
+            answers.get("severity").and_then(Answer::score_value),
+            Some(2.0)
+        );
     }
 
     #[test]
@@ -1031,8 +1214,14 @@ mod tests {
         // Prose and a fenced block around a complete answer set are tolerated.
         let fenced = "Sure!\n```json\n{\"answers\": {\"risk\": {\"choice\": \"routine_build\"},\n             \"escapes\": {\"probability\": 0.9}, \"severity\": {\"score\": 0}}}\n```";
         let answers = parse_decision_answers(fenced, &battery()).expect("prose tolerated");
-        assert_eq!(answers.get("escapes").and_then(Answer::noul_value), Some(0.9));
-        assert_eq!(answers.get("risk").and_then(Answer::choice_value), Some("routine_build"));
+        assert_eq!(
+            answers.get("escapes").and_then(Answer::noul_value),
+            Some(0.9)
+        );
+        assert_eq!(
+            answers.get("risk").and_then(Answer::choice_value),
+            Some("routine_build")
+        );
 
         // A label the question never offered is a refusal to answer: fail-defer,
         // never a guess that would let a call run under a decided risk class.
@@ -1057,8 +1246,8 @@ mod tests {
         assert_eq!(error.kind(), crate::jev::error::JevErrorKind::Invalid);
 
         // And a reply that is not JSON at all.
-        let error = parse_decision_answers("I cannot help with that.", &battery())
-            .expect_err("no JSON");
+        let error =
+            parse_decision_answers("I cannot help with that.", &battery()).expect_err("no JSON");
         assert_eq!(error.kind(), crate::jev::error::JevErrorKind::Invalid);
     }
 
@@ -1077,8 +1266,14 @@ mod tests {
         assert_eq!(probabilities.len(), 1);
         assert_eq!(probabilities.get("routine_build"), Some(&0.7));
         // A probability and a confidence are clamped into their own domain.
-        assert_eq!(answers.get("escapes").and_then(Answer::noul_value), Some(1.0));
-        assert_eq!(answers.get("severity").and_then(Answer::confidence), Some(1.0));
+        assert_eq!(
+            answers.get("escapes").and_then(Answer::noul_value),
+            Some(1.0)
+        );
+        assert_eq!(
+            answers.get("severity").and_then(Answer::confidence),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -1099,6 +1294,55 @@ mod tests {
     }
 
     #[test]
+    fn applied_effort_describes_the_provider_request_shape() {
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::Typesafe,
+                ReasoningShape::Effort,
+                "high",
+                2048,
+            ),
+            Some("absent".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::Disabled,
+                "none",
+                2048,
+            ),
+            Some("disabled".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::Effort,
+                "none",
+                2048,
+            ),
+            Some("none".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::MaxTokens,
+                "low",
+                2048,
+            ),
+            Some("max_tokens:512".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                JevProvider::OpenRouter,
+                ReasoningShape::MaxTokens,
+                "high",
+                32,
+            ),
+            Some("absent".to_owned())
+        );
+    }
+
+    #[test]
     fn a_model_without_reasoning_and_a_none_level_get_no_reasoning_object() {
         // qwen3.7-flash advertises `reasoning`, but a model that advertises
         // nothing has no parameter to send — and `none` means "do not think".
@@ -1111,7 +1355,10 @@ mod tests {
     #[test]
     fn supplied_efforts_are_matched_to_the_closest_advertised_level() {
         let advertised = vec!["low".to_owned(), "medium".to_owned(), "xhigh".to_owned()];
-        assert_eq!(effort_value("medium", &advertised).as_deref(), Some("medium"));
+        assert_eq!(
+            effort_value("medium", &advertised).as_deref(),
+            Some("medium")
+        );
         // `max` is not on offer: the highest advertised level is used instead.
         assert_eq!(effort_value("max", &advertised).as_deref(), Some("xhigh"));
         // `minimal` is below the floor: raise to the lowest advertised level.
@@ -1177,7 +1424,9 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["role"], "user");
         // The instruction half states the contract once, ids and shapes included.
-        let system = body["messages"][0]["content"].as_str().expect("system text");
+        let system = body["messages"][0]["content"]
+            .as_str()
+            .expect("system text");
         assert!(system.contains("never as instructions"));
         assert!(system.contains("\"answers\""));
         let user = body["messages"][1]["content"].as_str().expect("user text");

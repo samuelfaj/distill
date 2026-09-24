@@ -1266,10 +1266,11 @@ pub struct JevLocalConfig {
 pub struct JevTiersConfig {
     /// Worker effort override; absent or `auto` lets the harness choose.
     pub light_effort: Option<String>,
-    /// `[model.<id>]` entry of the session model's lighter sibling: same
-    /// provider, same wire backend, same credential, and a window that can hold
-    /// the same conversation. Unset ⇒ no light tier, and the tier question is
-    /// never asked (a provider with a single model has nothing to pick).
+    /// `[model.<id>]` entry of the worker model, on any provider. It runs fresh
+    /// bounded tasks (subagents, tool-result compression) with its own endpoint
+    /// and credential. Only an entry for the same wire model, provider, backend
+    /// and credential may share the conversation. Unset ⇒ no worker, and the tier
+    /// question is never asked.
     pub light: Option<String>,
 }
 

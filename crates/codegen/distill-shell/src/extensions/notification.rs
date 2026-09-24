@@ -331,7 +331,7 @@ impl From<&distill_chat_state::UsageLedger> for PromptUsage {
                 .map(|(k, v)| (k.clone(), PromptUsageModel::from(v)))
                 .collect(),
             num_turns: ledger.main_loop_model_calls,
-            usage_is_incomplete: ledger.incomplete,
+            usage_is_incomplete: ledger.is_incomplete(),
             effort_usage: Vec::new(),
             jev_calls: 0,
         };

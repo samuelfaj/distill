@@ -52,6 +52,27 @@ const DEFAULT_CLIENT_IDENTIFIER: &str = "grok-shell";
 const AGENT_PRODUCT: &str = "grok-shell";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
 
+/// Return the output reservation applied by the conversation adapters before
+/// dispatch. Chat/Responses leave an unset provider default unknown; Messages
+/// has the concrete Anthropic fallback. The canonical ChatGPT Responses
+/// adapter strips `max_output_tokens` before dispatch, so its actual output is
+/// unknown here even when the request/config carries a catalogue ceiling.
+pub fn effective_conversation_output_tokens(
+    config: &SamplerConfig,
+    request: &ConversationRequest,
+) -> Option<u32> {
+    if config.api_backend == ApiBackend::Responses && is_codex_base_url(&config.base_url) {
+        return None;
+    }
+    request
+        .max_output_tokens
+        .or(config.max_completion_tokens)
+        .or_else(|| match config.api_backend {
+            ApiBackend::Messages => Some(ANTHROPIC_DEFAULT_MAX_TOKENS),
+            ApiBackend::ChatCompletions | ApiBackend::Responses => None,
+        })
+}
+
 fn is_codex_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
@@ -62,6 +83,15 @@ fn is_codex_base_url(base_url: &str) -> bool {
             url.path().trim_end_matches('/'),
             "/backend-api/codex" | "/backend-api"
         )
+}
+
+fn is_openrouter_base_url(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| {
+                host == "openrouter.ai" || host.ends_with(".openrouter.ai")
+            })
+    })
 }
 
 /// The ChatGPT Codex endpoint accepts instruction messages as `developer`,
@@ -94,6 +124,7 @@ struct GrokRequestHeaders<'a> {
     req_id: &'a str,
     model_id: &'a str,
     session_id: &'a str,
+    openrouter: bool,
     turn_idx: Option<&'a str>,
     /// Turn-level resubmit attempt; the proxy counts retry traffic by it.
     transient_retry: Option<&'a str>,
@@ -110,6 +141,9 @@ impl GrokRequestHeaders<'_> {
             .header("x-grok-model-override", self.model_id)
             .header("x-grok-session-id", self.session_id)
             .header("x-grok-agent-id", self.agent_id);
+        if self.openrouter && !self.session_id.is_empty() {
+            b = b.header("x-session-id", self.session_id);
+        }
         if let Some(idx) = self.turn_idx {
             b = b.header("x-grok-turn-idx", idx);
         }
@@ -207,12 +241,25 @@ fn apply_terminal_event_overrides(event: &mut rs::ResponseStreamEvent, data: &st
     let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
         return;
     };
-    // Stash cost ticks in metadata for stream_responses.
-    if let Some(ticks) = distill_sampling_types::reported_cost_ticks(
-        value
-            .pointer("/response/usage/cost_in_usd_ticks")
-            .and_then(|v| v.as_i64()),
-    ) {
+    // Stash normalized cost ticks in metadata for stream_responses. OpenRouter's
+    // authoritative USD field takes precedence over the legacy Grok backfill.
+    let cost_ticks = value.pointer("/response/usage").and_then(|usage| {
+        let cost_usd = usage.get("cost").and_then(|cost| match cost {
+            serde_json::Value::Number(number) => number.as_f64(),
+            serde_json::Value::String(cost) => cost.parse::<f64>().ok(),
+            _ => None,
+        });
+        cost_usd
+            .and_then(distill_sampling_types::usd_cost_to_ticks)
+            .or_else(|| {
+                distill_sampling_types::reported_cost_ticks(
+                    usage
+                        .get("cost_in_usd_ticks")
+                        .and_then(|value| value.as_i64()),
+                )
+            })
+    });
+    if let Some(ticks) = cost_ticks {
         response
             .metadata
             .get_or_insert_with(Default::default)
@@ -759,6 +806,33 @@ impl SamplingClient {
         self.defaults.api_backend.clone()
     }
 
+    /// The exact endpoint template used by the corresponding conversation
+    /// request, including configured query parameters.
+    pub fn attribution_endpoint(&self) -> String {
+        let path = match self.defaults.api_backend {
+            ApiBackend::ChatCompletions => "chat/completions",
+            ApiBackend::Responses => "responses",
+            ApiBackend::Messages => "messages",
+        };
+        self.endpoint(path)
+    }
+
+    /// The effort mapping after the client fills its model defaults and applies
+    /// the configured wire shape.
+    pub fn attribution_applied_effort(
+        &self,
+        requested: Option<distill_sampling_types::ReasoningEffort>,
+        max_tokens: Option<u32>,
+    ) -> Option<String> {
+        let requested = requested.or(self.defaults.reasoning_effort);
+        distill_sampling_types::transmitted_reasoning_effort(
+            self.defaults.api_backend.clone(),
+            self.defaults.reasoning_shape,
+            requested,
+            max_tokens.or(self.defaults.max_completion_tokens),
+        )
+    }
+
     /// Give the bearer resolver its pre-send hook before [`Self::post`] reads it.
     /// Awaited separately because `post` is sync (its callers hand the builder straight to `send()`).
     async fn prepare_bearer(&self) {
@@ -949,6 +1023,11 @@ impl SamplingClient {
         self.endpoint.url_for_path(path)
     }
 
+    fn should_set_openrouter_session_header(&self) -> bool {
+        is_openrouter_base_url(&self.base_url)
+            && !self.default_headers.contains_key("x-session-id")
+    }
+
     fn apply_defaults(&self, mut request: ChatCompletionRequest) -> Result<ChatCompletionRequest> {
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
@@ -1055,6 +1134,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             transient_retry: payload.x_grok_transient_retry.as_deref(),
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1193,6 +1273,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             transient_retry: payload.x_grok_transient_retry.as_deref(),
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1413,6 +1494,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1559,6 +1641,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1801,6 +1884,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -1927,6 +2011,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
@@ -2296,31 +2381,56 @@ impl SamplingClient {
         request: ConversationRequest,
         idle_timeout: std::time::Duration,
     ) -> Result<ConversationResponse> {
+        self.conversation_collect_with_idle_timeout_and_rejection(request, idle_timeout)
+            .await
+            .0
+    }
+
+    /// Collect a response and retain it when the existing length gate rejects
+    /// it. The normal error stays unchanged; the side channel lets billing
+    /// consumers keep provider usage, cost, and response identity for a paid
+    /// truncation instead of turning it into an unknown failed call.
+    pub async fn conversation_collect_with_idle_timeout_and_rejection(
+        &self,
+        request: ConversationRequest,
+        idle_timeout: std::time::Duration,
+    ) -> (Result<ConversationResponse>, Option<ConversationResponse>) {
         let request_id = crate::types::RequestId::random();
         let length_policy = request.length_policy;
         let result = match self.api_backend() {
             ApiBackend::ChatCompletions => {
-                let (raw, meta) = self.conversation_stream(request).await?;
+                let (raw, meta) = match self.conversation_stream(request).await {
+                    Ok(value) => value,
+                    Err(error) => return (Err(error), None),
+                };
                 let events =
                     crate::stream::stream_chat_completions(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
             ApiBackend::Responses => {
-                let (raw, meta, doom_loop) = self.conversation_stream_responses(request).await?;
+                let (raw, meta, doom_loop) = match self.conversation_stream_responses(request).await
+                {
+                    Ok(value) => value,
+                    Err(error) => return (Err(error), None),
+                };
                 let events =
                     crate::stream::stream_responses(raw, meta, request_id, idle_timeout, doom_loop);
                 crate::stream::collect_response(events).await
             }
             ApiBackend::Messages => {
-                let (raw, meta) = self.conversation_stream_messages(request).await?;
+                let (raw, meta) = match self.conversation_stream_messages(request).await {
+                    Ok(value) => value,
+                    Err(error) => return (Err(error), None),
+                };
                 let events = crate::stream::stream_messages(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
         };
-        let response = result
-            .map(|(response, _metrics)| response)
-            .map_err(stream_collect_error)?;
-        apply_length_policy(length_policy, response)
+        let response = match result {
+            Ok((response, _metrics)) => response,
+            Err(error) => return (Err(stream_collect_error(error)), None),
+        };
+        apply_length_policy_with_rejection(length_policy, response)
     }
 }
 
@@ -2331,10 +2441,20 @@ pub(crate) fn apply_length_policy(
     policy: distill_sampling_types::LengthPolicy,
     response: distill_sampling_types::ConversationResponse,
 ) -> Result<distill_sampling_types::ConversationResponse> {
+    apply_length_policy_with_rejection(policy, response).0
+}
+
+fn apply_length_policy_with_rejection(
+    policy: distill_sampling_types::LengthPolicy,
+    response: distill_sampling_types::ConversationResponse,
+) -> (
+    Result<distill_sampling_types::ConversationResponse>,
+    Option<distill_sampling_types::ConversationResponse>,
+) {
     use distill_sampling_types::LengthVerdict;
     match policy.verdict(&response) {
-        LengthVerdict::Pass => Ok(response),
-        LengthVerdict::Fail => Err(SamplingError::MaxTokensTruncation),
+        LengthVerdict::Pass => (Ok(response), None),
+        LengthVerdict::Fail => (Err(SamplingError::MaxTokensTruncation), Some(response)),
         LengthVerdict::Salvage => {
             // Breadcrumb for "why did the user get half an answer".
             tracing::info!(
@@ -2342,7 +2462,7 @@ pub(crate) fn apply_length_policy(
                 completion_tokens = response.usage.as_ref().map(|u| u.completion_tokens),
                 "salvaging Length-truncated response per LengthPolicy::CompletePartial"
             );
-            Ok(response)
+            (Ok(response), None)
         }
         LengthVerdict::SalvageToolCalls => {
             // Breadcrumb for counting turns rescued from max_tokens_truncation.
@@ -2352,7 +2472,7 @@ pub(crate) fn apply_length_policy(
                 completion_tokens = response.usage.as_ref().map(|u| u.completion_tokens),
                 "completing Length-truncated response with completed tool calls"
             );
-            Ok(response)
+            (Ok(response), None)
         }
     }
 }
@@ -2374,6 +2494,50 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn openrouter_receives_session_affinity_without_leaking_it_to_other_providers() {
+        use super::*;
+
+        let client = reqwest::Client::new();
+        let request_for = |base_url: &str, session_id: &str| {
+            GrokRequestHeaders {
+                conv_id: "conversation",
+                req_id: "request",
+                model_id: "model",
+                session_id,
+                openrouter: is_openrouter_base_url(base_url),
+                turn_idx: None,
+                transient_retry: None,
+                agent_id: "agent",
+                deployment_id: None,
+                user_id: None,
+            }
+            .apply(client.post("https://example.com/responses"))
+            .build()
+            .expect("request builds")
+        };
+
+        let openrouter = request_for("https://openrouter.ai/api/v1", "session-1");
+        assert_eq!(openrouter.headers()["x-session-id"], "session-1");
+        assert_eq!(openrouter.headers()["x-grok-session-id"], "session-1");
+        assert!(!request_for("https://api.x.ai/v1", "session-1")
+            .headers()
+            .contains_key("x-session-id"));
+        assert!(!request_for("https://openrouter.ai/api/v1", "")
+            .headers()
+            .contains_key("x-session-id"));
+        assert!(!is_openrouter_base_url("https://openrouter.ai.evil.test/api/v1"));
+
+        let configured = SamplingClient::new(SamplerConfig {
+            base_url: "https://openrouter.ai/api/v1".into(),
+            extra_headers: IndexMap::from([("x-session-id".into(), "custom".into())]),
+            ..minimal_config()
+        })
+        .expect("client builds");
+        assert!(!configured.should_set_openrouter_session_header());
+        assert_eq!(configured.default_headers["x-session-id"], "custom");
+    }
 
     /// A production-shaped `response.created` whose effort the SDK enum does not
     /// carry: without the rewrite the first SSE frame kills the turn.
@@ -2502,6 +2666,42 @@ mod tests {
                 Some(ApiErrorCode::InvalidImage)
             ),
         );
+    }
+
+    #[test]
+    fn rejected_length_response_retains_paid_metadata_for_billing() {
+        let response = ConversationResponse {
+            items: vec![distill_sampling_types::ConversationItem::assistant("partial")],
+            stop_reason: Some(distill_sampling_types::StopReason::Length),
+            usage: Some(distill_sampling_types::TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 7,
+                total_tokens: 18,
+                ..Default::default()
+            }),
+            cost_usd_ticks: Some(1234),
+            message_chunks_emitted: 1,
+            doom_loop_signals: Vec::new(),
+            stop_message: None,
+            message_id: Some("msg-paid".to_string()),
+            raw_stop_reason: None,
+            stop_sequence: None,
+        };
+
+        let (result, rejected) =
+            apply_length_policy_with_rejection(distill_sampling_types::LengthPolicy::Fail, response);
+
+        assert!(matches!(
+            result,
+            Err(SamplingError::MaxTokensTruncation)
+        ));
+        let rejected = rejected.expect("the rejected response remains available to billing");
+        assert_eq!(
+            rejected.usage.map(|usage| usage.total_tokens),
+            Some(18)
+        );
+        assert_eq!(rejected.cost_usd_ticks, Some(1234));
+        assert_eq!(rejected.message_id.as_deref(), Some("msg-paid"));
     }
 
     fn minimal_config() -> SamplerConfig {
@@ -2736,6 +2936,91 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn responses_stream_preserves_openrouter_cost_and_model_identity() {
+        let terminal = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_openrouter",
+                "object": "response",
+                "created_at": 0,
+                "model": "openrouter/provider-model",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_openrouter",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "ok",
+                        "annotations": []
+                    }]
+                }],
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 5,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 15,
+                    "cost": 0.00012345
+                }
+            }
+        });
+        // No context_details: cost must still survive the existing total-token override path.
+        let wire = format!("data: {terminal}\n\n");
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move || {
+                let wire = wire.clone();
+                async move {
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(wire))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        })
+        .unwrap();
+        let request = CreateResponseWrapper::new(rs::CreateResponse {
+            input: rs::InputParam::Text("hello".into()),
+            ..Default::default()
+        });
+        let (raw, metadata, _) = client.create_response_stream(request).await.unwrap();
+        let events: Vec<_> = crate::stream::responses::stream_responses(
+            raw,
+            metadata,
+            crate::types::RequestId::from("openrouter-cost"),
+            std::time::Duration::from_secs(5),
+            None,
+        )
+        .collect()
+        .await;
+
+        let Some(SamplingEvent::Completed { response, .. }) = events.last() else {
+            panic!("stream did not complete: {events:?}");
+        };
+        assert_eq!(response.cost_usd_ticks, Some(1_234_500));
+        assert_eq!(response.message_id.as_deref(), Some("resp_openrouter"));
+        assert_eq!(response.assistant_text(), "ok");
+        assert_eq!(
+            response
+                .assistant()
+                .and_then(|assistant| assistant.model_id.as_deref()),
+            Some("openrouter/provider-model")
+        );
+        server.abort();
+    }
+
     #[test]
     fn codex_request_preserves_instructions_and_other_providers() {
         let original = serde_json::json!({
@@ -2758,6 +3043,33 @@ mod tests {
             expected.as_object_mut().unwrap().remove(field);
         }
         assert_eq!(codex, expected);
+
+        let codex_config = SamplerConfig {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            api_backend: ApiBackend::Responses,
+            max_completion_tokens: Some(131_072),
+            ..minimal_config()
+        };
+        let codex_request = ConversationRequest {
+            max_output_tokens: Some(32_768),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::effective_conversation_output_tokens(&codex_config, &codex_request),
+            None,
+            "Codex strips max_output_tokens before the request reaches the wire"
+        );
+        let chat_completions_config = SamplerConfig {
+            base_url: codex_config.base_url.clone(),
+            api_backend: ApiBackend::ChatCompletions,
+            max_completion_tokens: Some(131_072),
+            ..minimal_config()
+        };
+        assert_eq!(
+            super::effective_conversation_output_tokens(&chat_completions_config, &codex_request),
+            Some(32_768),
+            "a non-Responses backend on the same host keeps its output pin"
+        );
 
         let mut grok = original.clone();
         patch_codex_response_request("https://api.x.ai/v1", &mut grok);
@@ -3691,46 +4003,59 @@ mod tests {
 
     #[test]
     fn deserialize_response_event_stashes_cost_in_metadata() {
-        let make = |ticks: i64| {
-            format!(
-                r#"{{
+        let make = |cost: Option<serde_json::Value>, legacy_ticks: Option<i64>| {
+            let mut usage = serde_json::json!({
+                "input_tokens": 10,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 5,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 15
+            });
+            if let Some(cost) = cost {
+                usage["cost"] = cost;
+            }
+            if let Some(ticks) = legacy_ticks {
+                usage["cost_in_usd_ticks"] = serde_json::json!(ticks);
+            }
+            serde_json::json!({
                 "type": "response.completed",
                 "sequence_number": 0,
-                "response": {{
+                "response": {
                     "id": "resp_1", "object": "response", "created_at": 0,
                     "model": "distill", "status": "completed", "output": [],
-                    "usage": {{
-                        "input_tokens": 10,
-                        "input_tokens_details": {{ "cached_tokens": 0 }},
-                        "output_tokens": 5,
-                        "output_tokens_details": {{ "reasoning_tokens": 0 }},
-                        "total_tokens": 15,
-                        "cost_in_usd_ticks": {ticks}
-                    }}
-                }}
-            }}"#
-            )
+                    "usage": usage
+                }
+            })
+            .to_string()
         };
-
-        let event = deserialize_response_event(&make(78)).expect("parse");
-        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
-            panic!("expected ResponseCompleted");
-        };
-        assert_eq!(
+        let metadata_cost = |sse: String| {
+            let event = deserialize_response_event(&sse).expect("parse");
+            let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+                panic!("expected ResponseCompleted");
+            };
             e.response
                 .metadata
-                .as_ref()
-                .and_then(|m| m.get(COST_USD_TICKS_METADATA_KEY))
-                .map(String::as_str),
-            Some("78")
-        );
-
-        // The REST mapper backfills 0 for unbilled requests: no stash.
-        let event = deserialize_response_event(&make(0)).expect("parse");
-        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
-            panic!("expected ResponseCompleted");
+                .and_then(|metadata| metadata.get(COST_USD_TICKS_METADATA_KEY).cloned())
         };
-        assert!(e.response.metadata.is_none());
+
+        assert_eq!(
+            metadata_cost(make(Some(serde_json::json!(0.00012345)), None)).as_deref(),
+            Some("1234500")
+        );
+        // An authoritative USD zero is a known free call, not an unknown cost.
+        assert_eq!(
+            metadata_cost(make(Some(serde_json::json!(0.0)), None)).as_deref(),
+            Some("0")
+        );
+        // Missing and malformed USD costs remain unknown.
+        assert_eq!(metadata_cost(make(None, None)), None);
+        assert_eq!(
+            metadata_cost(make(Some(serde_json::json!("not-a-cost")), None)),
+            None
+        );
+        // Legacy ticks still work, while the REST mapper's zero backfill is unknown.
+        assert_eq!(metadata_cost(make(None, Some(78))).as_deref(), Some("78"));
+        assert_eq!(metadata_cost(make(None, Some(0))), None);
     }
 
     #[test]

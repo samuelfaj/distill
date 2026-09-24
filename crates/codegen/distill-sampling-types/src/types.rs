@@ -622,12 +622,45 @@ pub struct Usage {
     /// The REST mapper backfills `0` for unbilled requests; capture sites normalize `0` to "unreported" (see `stream/chat_completions.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_in_usd_ticks: Option<i64>,
+    /// OpenRouter's authoritative total amount charged for this request, in USD.
+    /// Unlike the legacy Grok ticks field, an explicit `0.0` is a reported free call.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_cost"
+    )]
+    pub cost: Option<f64>,
+}
+
+fn deserialize_optional_cost<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(value) => value.parse::<f64>().ok(),
+        _ => None,
+    }))
+}
+
+impl Usage {
+    /// Normalize the authoritative USD cost when present, otherwise preserve
+    /// the legacy Grok ticks semantics (`0` means unreported).
+    pub fn normalized_cost_ticks(&self) -> Option<i64> {
+        match self.cost {
+            Some(cost) => crate::usd_cost_to_ticks(cost),
+            None => crate::reported_cost_ticks(self.cost_in_usd_ticks),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PromptTokensDetails {
     #[serde(default)]
     pub cached_tokens: u32,
+    #[serde(default)]
+    pub cache_write_tokens: u32,
     #[serde(default)]
     pub audio_tokens: u32,
 }
@@ -963,6 +996,50 @@ pub fn reasoning_budget_tokens(level: ReasoningEffort) -> u32 {
         ReasoningEffort::High => 2_048,
         ReasoningEffort::Xhigh => 4_096,
         ReasoningEffort::Max | ReasoningEffort::Ultra => 8_192,
+    }
+}
+
+/// Describe the reasoning setting that the current request builder actually
+/// puts on the wire. This is based on the selected backend and shape, not on a
+/// model-name capability guess. `"absent"`, `"disabled"`, and `"none"` are
+/// distinct known outcomes; `None` means the mapping was not captured.
+pub fn transmitted_reasoning_effort(
+    backend: ApiBackend,
+    shape: ReasoningShape,
+    requested: Option<ReasoningEffort>,
+    max_tokens: Option<u32>,
+) -> Option<String> {
+    let absent = || Some("absent".to_owned());
+    match backend {
+            ApiBackend::ChatCompletions => match shape {
+                ReasoningShape::Disabled => Some("disabled".to_owned()),
+                ReasoningShape::MaxTokens => {
+                let Some(effort) = requested else {
+                    return absent();
+                };
+                let budget = reasoning_budget_tokens(effort)
+                    .min(max_tokens.unwrap_or(u32::MAX).saturating_sub(64));
+                if budget > 0 {
+                    Some(format!("max_tokens:{budget}"))
+                } else {
+                    absent()
+                }
+            }
+            ReasoningShape::Effort | ReasoningShape::None => match requested {
+                None => absent(),
+                Some(ReasoningEffort::None) => Some("none".to_owned()),
+                Some(effort) => Some(format!("effort:{effort}")),
+            },
+        },
+        ApiBackend::Responses => match requested {
+            None => absent(),
+            Some(ReasoningEffort::None) => Some("none".to_owned()),
+            Some(effort) => Some(format!("effort:{effort}")),
+        },
+        ApiBackend::Messages => requested
+            .and_then(ReasoningEffort::to_messages_api)
+            .map(|effort| format!("effort:{effort}"))
+            .or_else(absent),
     }
 }
 
@@ -1503,6 +1580,7 @@ impl From<crate::messages::MessagesRequest> for MessagesRequestWrapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TokenUsage;
     use serde_json::json;
 
     #[test]
@@ -1525,6 +1603,54 @@ mod tests {
         let body = request.body().unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
         assert_eq!(body["input"], "hello");
+    }
+
+    #[test]
+    fn openrouter_usage_keeps_cost_and_cache_write_metadata() {
+        let usage: Usage = serde_json::from_str(
+            r#"{
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "total_tokens": 125,
+                "prompt_tokens_details": {
+                    "cached_tokens": 40,
+                    "cache_write_tokens": 12
+                },
+                "cost": 0.00012345
+            }"#,
+        )
+        .expect("OpenRouter usage shape deserializes");
+
+        assert_eq!(usage.normalized_cost_ticks(), Some(1_234_500));
+        let normalized = TokenUsage::from(usage);
+        assert_eq!(normalized.cached_prompt_tokens, 40);
+        assert_eq!(normalized.cache_creation_prompt_tokens, 12);
+    }
+
+    #[test]
+    fn authoritative_zero_and_invalid_costs_are_distinct_from_legacy_zero() {
+        let explicit_zero: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"cost":0.0}"#,
+        )
+        .expect("explicit zero usage deserializes");
+        assert_eq!(explicit_zero.normalized_cost_ticks(), Some(0));
+
+        let invalid: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"cost":"not-a-cost"}"#,
+        )
+        .expect("invalid cost remains an unknown usage cost");
+        assert_eq!(invalid.normalized_cost_ticks(), None);
+
+        let legacy_zero = Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+            cost_in_usd_ticks: Some(0),
+            cost: None,
+        };
+        assert_eq!(legacy_zero.normalized_cost_ticks(), None);
     }
 
     /// The auto-effort flag is opt-in: only an explicit boolean `true` turns it
@@ -1944,6 +2070,46 @@ mod tests {
         request.apply_reasoning_shape(ReasoningShape::Effort);
         assert_eq!(request.reasoning_effort, Some(ReasoningEffort::Medium));
         assert!(request.reasoning.is_none());
+    }
+
+    #[test]
+    fn transmitted_effort_keeps_absent_disabled_and_none_distinct() {
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::ChatCompletions,
+                ReasoningShape::None,
+                None,
+                None,
+            ),
+            Some("absent".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::ChatCompletions,
+                ReasoningShape::Disabled,
+                Some(ReasoningEffort::None),
+                Some(2048),
+            ),
+            Some("disabled".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::Responses,
+                ReasoningShape::None,
+                Some(ReasoningEffort::None),
+                None,
+            ),
+            Some("none".to_owned())
+        );
+        assert_eq!(
+            transmitted_reasoning_effort(
+                ApiBackend::Messages,
+                ReasoningShape::None,
+                Some(ReasoningEffort::Minimal),
+                None,
+            ),
+            Some("absent".to_owned())
+        );
     }
 
     /// Verify that cloning a `ChatCompletionRequest` with a trace does not recurse.

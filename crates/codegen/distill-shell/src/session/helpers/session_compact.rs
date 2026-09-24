@@ -5,8 +5,13 @@ use crate::sampling::{
     ToolDefinition, ToolSpec, conversation_to_chat_messages,
 };
 use agent_client_protocol as acp;
-use async_openai::types::responses::ResponseStreamEvent;
+use async_openai::types::responses::{Response, ResponseStreamEvent};
 use distill_sampler::SamplerConfig as SamplingConfig;
+use distill_sampling_types::TokenUsage;
+use distill_workspace::jev::types::UsageBilling;
+use distill_workspace::jev::types::{
+    AttemptGuard, AttemptObserver, AttemptStatus, Usage as JevUsage,
+};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 
@@ -248,6 +253,10 @@ pub(crate) struct CompactOutput {
     pub stream_ms: Option<u64>,
     pub delta_count: u64,
     pub itl_max_ms: Option<u64>,
+    pub usage: Option<TokenUsage>,
+    pub cost_usd_ticks: Option<i64>,
+    pub request_id: Option<String>,
+    pub response_model: Option<String>,
 }
 
 impl CompactOutput {
@@ -333,6 +342,106 @@ impl StreamTiming {
     }
 }
 
+fn jev_usage_from_tokens(usage: &TokenUsage) -> JevUsage {
+    JevUsage {
+        input_tokens: Some(u64::from(usage.prompt_tokens)),
+        output_tokens: Some(u64::from(usage.completion_tokens)),
+    }
+}
+
+fn jev_billing_from_tokens(usage: &TokenUsage, cost_usd_ticks: Option<i64>) -> UsageBilling {
+    UsageBilling {
+        cached_input_tokens: Some(u64::from(usage.cached_prompt_tokens)),
+        cache_creation_input_tokens: Some(u64::from(usage.cache_creation_prompt_tokens)),
+        reasoning_tokens: Some(u64::from(usage.reasoning_tokens)),
+        cost_usd_ticks,
+    }
+}
+
+fn merge_normalized_cost(
+    previous: Option<i64>,
+    usage: &distill_sampling_types::Usage,
+) -> Option<i64> {
+    match (previous, usage.normalized_cost_ticks()) {
+        (_, Some(cost)) => Some(cost),
+        (previous, None) => previous,
+    }
+}
+
+fn responses_usage(response: &Response) -> Option<TokenUsage> {
+    response.usage.as_ref().map(|usage| TokenUsage {
+        prompt_tokens: usage.input_tokens,
+        completion_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
+        cached_prompt_tokens: usage.input_tokens_details.cached_tokens,
+        cache_creation_prompt_tokens: 0,
+    })
+}
+
+fn responses_cost(response: &Response) -> Option<i64> {
+    response
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("xai.cost_usd_ticks"))
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|&value| value >= 0)
+}
+
+fn retain_nonempty_identity(previous: &mut Option<String>, candidate: &str) {
+    if !candidate.is_empty() {
+        *previous = Some(candidate.to_owned());
+    }
+}
+
+fn update_response_attempt(
+    guard: &mut Option<AttemptGuard>,
+    response: &Response,
+    usage: &mut Option<TokenUsage>,
+    cost_usd_ticks: &mut Option<i64>,
+    response_id: &mut Option<String>,
+    response_model: &mut Option<String>,
+) {
+    retain_nonempty_identity(response_id, &response.id);
+    retain_nonempty_identity(response_model, &response.model);
+    if let Some(value) = responses_usage(response) {
+        *usage = Some(value);
+    }
+    if let Some(value) = responses_cost(response) {
+        *cost_usd_ticks = Some(value);
+    }
+    if let Some(guard) = guard.as_mut() {
+        guard.set_response(
+            response_id.clone(),
+            response_model.clone(),
+            usage.as_ref().map(jev_usage_from_tokens),
+        );
+        if let Some(value) = usage.as_ref() {
+            guard.set_billing(jev_billing_from_tokens(value, *cost_usd_ticks));
+        }
+    }
+}
+
+fn messages_usage(usage: &distill_sampling_types::messages::MessagesUsage) -> TokenUsage {
+    let cached = usage.cache_read_input_tokens;
+    let cache_creation = usage.cache_creation_input_tokens;
+    TokenUsage {
+        prompt_tokens: usage
+            .input_tokens
+            .saturating_add(cached)
+            .saturating_add(cache_creation),
+        completion_tokens: usage.output_tokens,
+        total_tokens: usage
+            .input_tokens
+            .saturating_add(cached)
+            .saturating_add(cache_creation)
+            .saturating_add(usage.output_tokens),
+        reasoning_tokens: 0,
+        cached_prompt_tokens: cached,
+        cache_creation_prompt_tokens: cache_creation,
+    }
+}
+
 enum StreamStep<T> {
     Item(T),
     Ended,
@@ -395,6 +504,39 @@ pub(crate) async fn generate_session_compact(
     tool_choice: crate::util::config::CompactionToolChoice,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<CompactOutput, CompactFailure> {
+    generate_session_compact_with_observer(
+        chat_history,
+        compaction_tool_tokens,
+        tools,
+        hosted_tools,
+        client,
+        session_id,
+        sampling_config,
+        idle_timeout,
+        wall_clock_budget_secs,
+        tool_choice,
+        cancel,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn generate_session_compact_with_observer(
+    chat_history: impl Into<
+        crate::session::helpers::prepared_compaction_history::CompactionHistoryInput,
+    >,
+    compaction_tool_tokens: u64,
+    tools: Vec<ToolSpec>,
+    hosted_tools: Vec<HostedTool>,
+    client: OaiCompatClient,
+    session_id: acp::SessionId,
+    sampling_config: &SamplingConfig,
+    idle_timeout: std::time::Duration,
+    wall_clock_budget_secs: u64,
+    tool_choice: crate::util::config::CompactionToolChoice,
+    cancel: &tokio_util::sync::CancellationToken,
+    observer: Option<&AttemptObserver>,
+) -> Result<CompactOutput, CompactFailure> {
     if cancel.is_cancelled() {
         return Err(CompactFailure::Cancelled);
     }
@@ -443,8 +585,9 @@ pub(crate) async fn generate_session_compact(
             }
 
             let sid = session_id.to_string();
+            let request_id = format!("distill-compact-{}", uuid::Uuid::new_v4());
             message.x_grok_conv_id = Some(sid.clone());
-            message.x_grok_req_id = Some(format!("distill-compact-{}", uuid::Uuid::new_v4()));
+            message.x_grok_req_id = Some(request_id.clone());
             message.x_grok_session_id = Some(sid);
             message.x_grok_agent_id = Some(distill_telemetry::id::agent_id());
 
@@ -453,27 +596,66 @@ pub(crate) async fn generate_session_compact(
                 num_messages = num_messages,
                 "Sending compact request (streaming)"
             );
-            let stream_result =
-                await_unless_cancelled(cancel, client.chat_completion_stream(message)).await?;
+            let mut attempt_guard = AttemptGuard::new(
+                observer,
+                sampling_config.model.clone(),
+                format!(
+                    "{}/chat/completions",
+                    sampling_config.base_url.trim_end_matches('/')
+                ),
+                sampling_config
+                    .reasoning_effort
+                    .as_ref()
+                    .map(|effort| effort.as_ref().to_owned()),
+            );
+            if let Some(guard) = attempt_guard.as_mut() {
+                guard.set_response(Some(request_id.clone()), None, None);
+            }
+            let stream_result = match await_unless_cancelled(
+                cancel,
+                client.chat_completion_stream(message),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => return Err(error),
+            };
 
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
+                Err(e) => {
+                    if let Some(guard) = attempt_guard.take() {
+                        guard.finish(AttemptStatus::Failed);
+                    }
+                    return Err(classify_sampling_error(e));
+                }
             };
             // Collect the streamed response
             let mut timing = StreamTiming::new();
             let mut truncated = false;
             let mut stop_reason: Option<String> = None;
             let mut content = String::new();
+            let mut usage: Option<TokenUsage> = None;
+            let mut cost_usd_ticks = None;
+            let mut response_model = None;
+            let mut response_id = Some(request_id);
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
-                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
-                    .await?
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel).await
                 {
-                    StreamStep::Item(item) => item,
-                    StreamStep::Ended => break,
-                    StreamStep::IdleTimeout => {
+                    Err(error) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
+                        return Err(error);
+                    }
+                    Ok(StreamStep::Item(item)) => item,
+                    Ok(StreamStep::Ended) => break,
+                    Ok(StreamStep::IdleTimeout) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
                                 "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
@@ -492,6 +674,22 @@ pub(crate) async fn generate_session_compact(
                 }
                 match chunk_result {
                     Ok(chunk) => {
+                        retain_nonempty_identity(&mut response_id, &chunk.id);
+                        retain_nonempty_identity(&mut response_model, &chunk.model);
+                        if let Some(wire_usage) = chunk.usage.as_ref() {
+                            usage = Some(TokenUsage::from(wire_usage.clone()));
+                            cost_usd_ticks = merge_normalized_cost(cost_usd_ticks, wire_usage);
+                        }
+                        if let Some(guard) = attempt_guard.as_mut() {
+                            guard.set_response(
+                                response_id.clone(),
+                                response_model.clone(),
+                                usage.as_ref().map(|value| jev_usage_from_tokens(value)),
+                            );
+                            if let Some(value) = usage.as_ref() {
+                                guard.set_billing(jev_billing_from_tokens(value, cost_usd_ticks));
+                            }
+                        }
                         if let Some(choice) = chunk.choices.first() {
                             let delta = &choice.delta;
                             if choice.finish_reason.is_some()
@@ -516,10 +714,15 @@ pub(crate) async fn generate_session_compact(
                             }
                         }
                     }
-                    Err(e) => return Err(classify_sampling_error(e)),
+                    Err(e) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
+                        return Err(classify_sampling_error(e));
+                    }
                 }
             }
-            CompactOutput {
+            let output = CompactOutput {
                 content,
                 stop_reason,
                 truncated,
@@ -527,7 +730,19 @@ pub(crate) async fn generate_session_compact(
                 stream_ms: timing.stream_ms(),
                 delta_count: timing.count,
                 itl_max_ms: timing.itl_max_ms(),
+                usage,
+                cost_usd_ticks,
+                request_id: response_id,
+                response_model,
+            };
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(if output.truncated || output.content.is_empty() {
+                    AttemptStatus::Rejected
+                } else {
+                    AttemptStatus::Completed
+                });
             }
+            output
         }
         ApiBackend::Responses => {
             // Send `ConversationItem`s directly; this preserves encrypted reasoning
@@ -544,26 +759,63 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
                 ..Default::default()
             };
+            let request_id = request.x_grok_req_id.clone().unwrap_or_default();
+            let mut attempt_guard = AttemptGuard::new(
+                observer,
+                sampling_config.model.clone(),
+                format!(
+                    "{}/responses",
+                    sampling_config.base_url.trim_end_matches('/')
+                ),
+                sampling_config
+                    .reasoning_effort
+                    .as_ref()
+                    .map(|effort| effort.as_ref().to_owned()),
+            );
+            if let Some(guard) = attempt_guard.as_mut() {
+                guard.set_response(Some(request_id.clone()), None, None);
+            }
             let stream_result =
-                await_unless_cancelled(cancel, client.conversation_stream_responses(request))
-                    .await?;
+                match await_unless_cancelled(cancel, client.conversation_stream_responses(request))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => return Err(error),
+                };
             let mut stream = match stream_result {
                 Ok((s, _metadata, _doom_loop)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
+                Err(e) => {
+                    if let Some(guard) = attempt_guard.take() {
+                        guard.finish(AttemptStatus::Failed);
+                    }
+                    return Err(classify_sampling_error(e));
+                }
             };
             let mut timing = StreamTiming::new();
             let mut truncated = false;
             let mut stop_reason: Option<String> = None;
             let mut content = String::new();
+            let mut usage: Option<TokenUsage> = None;
+            let mut cost_usd_ticks = None;
+            let mut response_id = Some(request_id);
+            let mut response_model = None;
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
-                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
-                    .await?
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel).await
                 {
-                    StreamStep::Item(item) => item,
-                    StreamStep::Ended => break,
-                    StreamStep::IdleTimeout => {
+                    Err(error) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
+                        return Err(error);
+                    }
+                    Ok(StreamStep::Item(item)) => item,
+                    Ok(StreamStep::Ended) => break,
+                    Ok(StreamStep::IdleTimeout) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
                                 "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
@@ -582,6 +834,59 @@ pub(crate) async fn generate_session_compact(
                 }
                 match chunk_result {
                     Ok(chunk) => {
+                        match &chunk {
+                            ResponseStreamEvent::ResponseCreated(event) => {
+                                update_response_attempt(
+                                    &mut attempt_guard,
+                                    &event.response,
+                                    &mut usage,
+                                    &mut cost_usd_ticks,
+                                    &mut response_id,
+                                    &mut response_model,
+                                );
+                            }
+                            ResponseStreamEvent::ResponseInProgress(event) => {
+                                update_response_attempt(
+                                    &mut attempt_guard,
+                                    &event.response,
+                                    &mut usage,
+                                    &mut cost_usd_ticks,
+                                    &mut response_id,
+                                    &mut response_model,
+                                );
+                            }
+                            ResponseStreamEvent::ResponseCompleted(event) => {
+                                update_response_attempt(
+                                    &mut attempt_guard,
+                                    &event.response,
+                                    &mut usage,
+                                    &mut cost_usd_ticks,
+                                    &mut response_id,
+                                    &mut response_model,
+                                );
+                            }
+                            ResponseStreamEvent::ResponseFailed(event) => {
+                                update_response_attempt(
+                                    &mut attempt_guard,
+                                    &event.response,
+                                    &mut usage,
+                                    &mut cost_usd_ticks,
+                                    &mut response_id,
+                                    &mut response_model,
+                                );
+                            }
+                            ResponseStreamEvent::ResponseIncomplete(event) => {
+                                update_response_attempt(
+                                    &mut attempt_guard,
+                                    &event.response,
+                                    &mut usage,
+                                    &mut cost_usd_ticks,
+                                    &mut response_id,
+                                    &mut response_model,
+                                );
+                            }
+                            _ => {}
+                        }
                         if !matches!(
                             &chunk,
                             ResponseStreamEvent::ResponseCreated(_)
@@ -607,6 +912,9 @@ pub(crate) async fn generate_session_compact(
                                     status = ?failed_event.response.status,
                                     "compact: response.failed event"
                                 );
+                                if let Some(guard) = attempt_guard.take() {
+                                    guard.finish(AttemptStatus::Failed);
+                                }
                                 return Err(classify_response_event_error(code, message));
                             }
                             ResponseStreamEvent::ResponseError(error_event) => {
@@ -616,6 +924,9 @@ pub(crate) async fn generate_session_compact(
                                     message = %error_event.message,
                                     "compact: stream error event"
                                 );
+                                if let Some(guard) = attempt_guard.take() {
+                                    guard.finish(AttemptStatus::Failed);
+                                }
                                 return Err(classify_response_event_error(
                                     code,
                                     &error_event.message,
@@ -638,10 +949,15 @@ pub(crate) async fn generate_session_compact(
                             _ => {}
                         }
                     }
-                    Err(e) => return Err(classify_sampling_error(e)),
+                    Err(e) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
+                        return Err(classify_sampling_error(e));
+                    }
                 }
             }
-            CompactOutput {
+            let output = CompactOutput {
                 content,
                 // No incomplete event on a normal completion: treat as a clean stop.
                 stop_reason: stop_reason.or_else(|| Some("stop".to_string())),
@@ -650,7 +966,19 @@ pub(crate) async fn generate_session_compact(
                 stream_ms: timing.stream_ms(),
                 delta_count: timing.count,
                 itl_max_ms: timing.itl_max_ms(),
+                usage,
+                cost_usd_ticks,
+                request_id: response_id,
+                response_model,
+            };
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(if output.truncated || output.content.is_empty() {
+                    AttemptStatus::Rejected
+                } else {
+                    AttemptStatus::Completed
+                });
             }
+            output
         }
         ApiBackend::Messages => {
             // Messages API uses similar streaming to Responses.
@@ -667,27 +995,63 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
                 ..Default::default()
             };
+            let request_id = request.x_grok_req_id.clone().unwrap_or_default();
+            let mut attempt_guard = AttemptGuard::new(
+                observer,
+                sampling_config.model.clone(),
+                format!(
+                    "{}/messages",
+                    sampling_config.base_url.trim_end_matches('/')
+                ),
+                sampling_config
+                    .reasoning_effort
+                    .as_ref()
+                    .map(|effort| effort.as_ref().to_owned()),
+            );
+            if let Some(guard) = attempt_guard.as_mut() {
+                guard.set_response(Some(request_id.clone()), None, None);
+            }
             let stream_result =
-                await_unless_cancelled(cancel, client.conversation_stream_messages(request))
-                    .await?;
+                match await_unless_cancelled(cancel, client.conversation_stream_messages(request))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => return Err(error),
+                };
             let mut stream = match stream_result {
                 Ok((s, _metadata)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
+                Err(e) => {
+                    if let Some(guard) = attempt_guard.take() {
+                        guard.finish(AttemptStatus::Failed);
+                    }
+                    return Err(classify_sampling_error(e));
+                }
             };
             // Collect the streamed response (Messages API event types)
             let mut timing = StreamTiming::new();
             let mut truncated = false;
             let mut stop_reason: Option<String> = None;
             let mut content = String::new();
+            let mut usage: Option<TokenUsage> = None;
+            let mut response_id = Some(request_id);
+            let mut response_model = None;
             let mut last_progress_at = std::time::Instant::now();
             loop {
                 let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
-                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
-                    .await?
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel).await
                 {
-                    StreamStep::Item(item) => item,
-                    StreamStep::Ended => break,
-                    StreamStep::IdleTimeout => {
+                    Err(error) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
+                        return Err(error);
+                    }
+                    Ok(StreamStep::Item(item)) => item,
+                    Ok(StreamStep::Ended) => break,
+                    Ok(StreamStep::IdleTimeout) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
                         return Err(CompactFailure::Transient(
                             acp::Error::internal_error().data(format!(
                                 "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
@@ -706,6 +1070,41 @@ pub(crate) async fn generate_session_compact(
                 }
                 match chunk_result {
                     Ok(event) => {
+                        match &event {
+                            distill_sampling_types::messages::MessageStreamEvent::MessageStart {
+                                message,
+                            } => {
+                                response_id = Some(message.id.clone());
+                                response_model = Some(message.model.clone());
+                                usage = Some(messages_usage(&message.usage));
+                            }
+                            distill_sampling_types::messages::MessageStreamEvent::MessageDelta {
+                                usage: delta_usage,
+                                ..
+                            } => {
+                                usage = Some(messages_usage(&distill_sampling_types::messages::MessagesUsage {
+                                    input_tokens: delta_usage.input_tokens.unwrap_or(0),
+                                    output_tokens: delta_usage.output_tokens,
+                                    cache_creation_input_tokens: delta_usage
+                                        .cache_creation_input_tokens
+                                        .unwrap_or(0),
+                                    cache_read_input_tokens: delta_usage
+                                        .cache_read_input_tokens
+                                        .unwrap_or(0),
+                                }));
+                            }
+                            _ => {}
+                        }
+                        if let Some(guard) = attempt_guard.as_mut() {
+                            guard.set_response(
+                                response_id.clone(),
+                                response_model.clone(),
+                                usage.as_ref().map(jev_usage_from_tokens),
+                            );
+                            if let Some(value) = usage.as_ref() {
+                                guard.set_billing(jev_billing_from_tokens(value, None));
+                            }
+                        }
                         if !matches!(
                             &event,
                             distill_sampling_types::messages::MessageStreamEvent::Ping
@@ -733,10 +1132,15 @@ pub(crate) async fn generate_session_compact(
                         _ => {}
                         }
                     }
-                    Err(e) => return Err(classify_sampling_error(e)),
+                    Err(e) => {
+                        if let Some(guard) = attempt_guard.take() {
+                            guard.finish(AttemptStatus::Failed);
+                        }
+                        return Err(classify_sampling_error(e));
+                    }
                 }
             }
-            CompactOutput {
+            let output = CompactOutput {
                 content,
                 stop_reason,
                 truncated,
@@ -744,7 +1148,19 @@ pub(crate) async fn generate_session_compact(
                 stream_ms: timing.stream_ms(),
                 delta_count: timing.count,
                 itl_max_ms: timing.itl_max_ms(),
+                usage,
+                cost_usd_ticks: None,
+                request_id: response_id,
+                response_model,
+            };
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(if output.truncated || output.content.is_empty() {
+                    AttemptStatus::Rejected
+                } else {
+                    AttemptStatus::Completed
+                });
             }
+            output
         }
     };
 

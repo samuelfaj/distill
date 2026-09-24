@@ -357,32 +357,23 @@ pub struct PromptInfo<'a> {
     pub usage_warning: Option<&'a str>,
     /// When true the warning uses the yellow warning color (5% or less left); when false it uses dim grey text (5-10% left).
     pub usage_warning_critical: bool,
-    /// The reasoning/worker model summary shown before the `change` action.
+    /// The main/secondary model summary shown before the `change` action.
     pub model_tiers: Option<&'a PromptModelTiers>,
 }
 
 /// Model tiers rendered in the prompt footer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptModelTiers {
-    pub reasoning: String,
-    pub worker: Option<String>,
+    pub primary: String,
+    pub reasoning: Option<String>,
 }
 
 impl PromptModelTiers {
     pub fn from_model_state(models: &crate::acp::ModelState) -> Option<Self> {
-        let reasoning = models.current_model_name()?;
-        let worker = models.current_model_id_str().and_then(|model_id| {
-            match distill_shell::jev::light_tier_status(model_id) {
-                distill_shell::jev::LightTierStatus::Ready { name, effort, .. } => {
-                    Some(format!("{name} ({effort})"))
-                }
-                distill_shell::jev::LightTierStatus::Unset
-                | distill_shell::jev::LightTierStatus::Refused(_) => None,
-            }
-        });
+        let primary = models.current_model_name()?;
         Some(Self {
-            reasoning: models.effort_label(&reasoning),
-            worker,
+            primary: models.effort_label(&primary),
+            reasoning: models.reasoning_model_name(),
         })
     }
 }
@@ -3532,16 +3523,14 @@ impl PromptWidget {
         let mut change_start = None;
         let mut change_end = None;
         if let Some(tiers) = info.model_tiers {
+            let primary_style = Style::default().fg(theme.accent_skill).bg(bg);
             let reasoning_style = Style::default().fg(theme.accent_success).bg(bg);
-            let worker_style = Style::default().fg(theme.accent_skill).bg(bg);
-            if let Some(worker) = &tiers.worker {
-                left_spans.push(Span::styled("Reasoning: ", reasoning_style));
-                left_spans.push(Span::styled(tiers.reasoning.as_str(), reasoning_style));
+            left_spans.push(Span::styled("Main: ", primary_style));
+            left_spans.push(Span::styled(tiers.primary.as_str(), primary_style));
+            if let Some(reasoning) = &tiers.reasoning {
                 left_spans.push(Span::styled(" | ", sep_style));
-                left_spans.push(Span::styled("Worker: ", worker_style));
-                left_spans.push(Span::styled(worker.as_str(), worker_style));
-            } else {
-                left_spans.push(Span::styled(tiers.reasoning.as_str(), reasoning_style));
+                left_spans.push(Span::styled("Reasoning: ", reasoning_style));
+                left_spans.push(Span::styled(reasoning.as_str(), reasoning_style));
             }
             left_spans.push(Span::styled(" | ", sep_style));
             change_start = Some(Line::from(left_spans.clone()).width() as u16);

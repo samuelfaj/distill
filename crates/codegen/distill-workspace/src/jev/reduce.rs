@@ -121,6 +121,13 @@ pub fn classify_payload(text: &str) -> PayloadClass {
         // A test runner's own vocabulary: the banners it prints around failures.
         if trimmed.starts_with("FAILED ")
             || trimmed.starts_with("PASSED ")
+            || trimmed.starts_with('✓')
+            || trimmed.starts_with('✗')
+            || trimmed.starts_with("pass")
+            || trimmed.starts_with("fail")
+            || trimmed.starts_with("skip")
+            || trimmed.starts_with("todo")
+            || trimmed.starts_with("Ran ")
             || trimmed.contains("=== FAILURES ===")
             || trimmed.contains("=== short test summary")
             || trimmed.starts_with("Test Case '-[")
@@ -578,11 +585,44 @@ pub fn literals(text: &str) -> BTreeSet<String> {
     // lowercase word, which is every test report. One entry per word, the first
     // spelling the payload uses.
     let lowered = text.to_ascii_lowercase();
-    for word in ["error", "panic", "failed", "failure", "traceback", "not found"] {
+    for word in [
+        "error",
+        "panic",
+        "failed",
+        "failure",
+        "traceback",
+        "not found",
+        "passed",
+        "pass",
+        "skipped",
+        "skip",
+        "todo",
+        "incomplete",
+        "not run",
+    ] {
         if let Some(index) = lowered.find(word)
             && let Some(span) = text.get(index..index + word.len())
         {
             found.insert(span.to_owned());
+        }
+    }
+    // Test-runner counters are evidence, not prose. Keep their complete line
+    // so a guarded compression cannot turn `0 skipped` or `12 passed` into an
+    // unqualified success claim.
+    for line in text.lines() {
+        let lowered = line.trim().to_ascii_lowercase();
+        if (lowered.contains(" pass")
+            || lowered.starts_with("pass")
+            || lowered.contains(" fail")
+            || lowered.starts_with("fail")
+            || lowered.contains(" skip")
+            || lowered.starts_with("skip")
+            || lowered.contains(" todo")
+            || lowered.starts_with("todo")
+            || lowered.starts_with("ran "))
+            && lowered.chars().any(|ch| ch.is_ascii_digit())
+        {
+            found.insert(line.trim().to_owned());
         }
     }
     found

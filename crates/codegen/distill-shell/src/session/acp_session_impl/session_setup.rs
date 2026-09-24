@@ -159,7 +159,67 @@ impl SessionActor {
                 }
             }
         };
+        // The deferred prefix was rendered before the human request existed,
+        // so apply the request-aware model projection at the last safe point
+        // before it enters the conversation. The full catalog remains owned by
+        // SkillManager and continues to back slash commands/discovery.
+        let model_skill_projection = self.jev_model_skill_projection().await;
+        let trusted_skill_listing = if model_skill_projection.is_some() {
+            self.tool_bridge_handle()
+                .skill_listing_snapshot()
+                .await
+        } else {
+            None
+        };
+        let is_templated_user_message = {
+            use distill_agent::prompt::user_message::UserMessageTemplate;
+            matches!(
+                &self.agent.borrow().definition().user_message_template,
+                UserMessageTemplate::Custom(_)
+            )
+        };
+        let prefix = match model_skill_projection.as_ref() {
+            Some(projection) if is_templated_user_message => {
+                // Custom templates own the surrounding envelope and receive
+                // only the exact rows their renderer substitutes.
+                self.build_user_message_prefix_with_skill_rows(Some(&projection.rows))
+                    .await
+            }
+            Some(projection) => trusted_skill_listing
+                .as_ref()
+                .and_then(|original| {
+                    distill_agent::prompt::context::replace_skill_projection(
+                        &prefix,
+                        original,
+                        &projection.envelope,
+                    )
+                })
+                .unwrap_or(prefix),
+            None => prefix,
+        };
         let mut conversation = self.chat_state_handle.get_conversation().await;
+        if let (Some(projection), Some(original)) = (
+            model_skill_projection.as_ref(),
+            trusted_skill_listing.as_ref(),
+        ) {
+            for item in &mut conversation {
+                if matches!(
+                    item,
+                    ConversationItem::User(user)
+                        if user.synthetic_reason
+                            == distill_sampling_types::SyntheticReason::SystemReminder
+                    ) {
+                        let existing = item.text_content();
+                        if let Some(narrowed) =
+                            distill_agent::prompt::context::replace_skill_projection(
+                                &existing, original, &projection.envelope,
+                            )
+                        {
+                            *item = ConversationItem::system_reminder(narrowed);
+                        }
+                    }
+                }
+            }
         let insert_at = conversation.len().min(1);
         conversation.insert(insert_at, ConversationItem::user(prefix));
         if !self.startup_hints.preserve_inherited_system

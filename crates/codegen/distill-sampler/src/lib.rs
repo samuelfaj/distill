@@ -38,7 +38,9 @@ pub use actor::request_task::CompletionResult;
 pub use attribution::{
     Auth401AttributionCallback, BEARER_SUFFIX_LEN, SamplingConsumer, SharedAttributionCallback,
 };
-pub use client::{ApiBackend, SamplingClient, user_agent_string_for};
+pub use client::{
+    ApiBackend, SamplingClient, effective_conversation_output_tokens, user_agent_string_for,
+};
 pub use config::{
     AuthScheme, BearerResolver, HeaderInjector, OriginClientInfo, RequestCompression, RetryPolicy,
     SamplerConfig, SharedBearerResolver, SharedHeaderInjector,

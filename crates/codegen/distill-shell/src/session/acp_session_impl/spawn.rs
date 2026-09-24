@@ -598,6 +598,13 @@ pub(crate) async fn spawn_session_actor(
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
+    // Register before the first await and before this function returns control
+    // to prompt delivery. Child sessions use this same shared spawn path.
+    let _ = persistence
+        .tx
+        .send(PersistenceMsg::RegisterInitialTitleUsageRecorder(
+            chat_state_handle.downgrade(),
+        ));
     drop(chat_state_guard);
     async {
         if (!initial_prompt_texts.is_empty()
@@ -1811,6 +1818,7 @@ pub(crate) async fn spawn_session_actor(
             compaction_mode,
             verbatim_input: compaction_verbatim_input,
             tool_choice: compaction_tool_choice,
+            route_context_caps: Default::default(),
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
             cancel: Default::default(),

@@ -569,9 +569,7 @@ pub enum Action {
     SetAutoDarkTheme(String),
     /// Commit the theme used when the OS is in light mode.
     SetAutoLightTheme(String),
-    /// Commit the user's default model. Payload is a resolved `ModelId` (NOT a free-form string).
-    /// The dispatcher switches the active session and persists via `Effect::PersistSetting`.
-    /// Does not carry effort; use `Action::SwitchModel` for that.
+    /// Save the secondary reasoning model without switching the active worker.
     SetDefaultModel(acp::ModelId),
     /// Clear the persisted default model (`cfg.models.default = None`).
     /// Active session's model is unchanged; next session resolves via the shell's default-resolution chain.
@@ -589,8 +587,8 @@ pub enum Action {
     /// `[jev.local].model`. Empty string clears the pick.
     /// Published after the config write succeeds.
     SetCheapModel(String, Option<ReasoningEffort>),
-    /// Commit the session model's lighter sibling, persisted to
-    /// `[jev.tiers].light`. Empty string removes the tier.
+    /// Save the primary worker to `[jev.tiers].light` and select it for this session.
+    /// Empty string removes the tier for future sessions.
     /// Published after the config write succeeds.
     SetTierLight(String, Option<ReasoningEffort>),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.

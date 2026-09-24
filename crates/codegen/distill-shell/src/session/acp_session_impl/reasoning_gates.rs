@@ -15,8 +15,13 @@
 //!
 //! A per-request budget and a cooldown bound the cost. Everything here is pure
 //! over the facts the session records, so each rule is testable on its own.
+//!
+//! The consults of one request share a [`ReasoningThread`]: each one resends
+//! the thread unchanged and appends only the work since the last reply, so the
+//! reasoning model sees every piece of work once and its provider can serve
+//! the repeated prefix from the prompt cache.
 
-use distill_sampling_types::ReasoningEffort;
+use distill_sampling_types::ConversationItem;
 use distill_tools::types::output::{ApplyPatchOutput, SearchReplaceOutput, ToolOutput};
 
 /// Recovery consults (struggle signals and flagged edits) per request.
@@ -45,6 +50,12 @@ const MAX_EVENTS: usize = 400;
 const CHANGE_DIFF_BYTES: usize = 8_000;
 /// Characters of a check's output kept as evidence.
 const TEST_EXCERPT_CHARS: usize = 2_000;
+/// Characters of a work item's first line in its one-line summary.
+const SUMMARY_CHARS: usize = 160;
+/// Characters of a tool call's arguments naming the result it produced.
+const SOURCE_ARGS_CHARS: usize = 120;
+/// Source of a work item the main model wrote itself.
+const MAIN_MODEL_SOURCE: &str = "main model";
 
 /// One finished tool call, as the struggle signals read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,7 +190,6 @@ pub(crate) struct ReasoningGates {
     last_test: Option<TestEvidence>,
     plan: PlanGate,
     complexity: Option<f64>,
-    effort: Option<ReasoningEffort>,
     recoveries: u32,
     reviewed: bool,
     last_consult_round: Option<u32>,
@@ -188,6 +198,7 @@ pub(crate) struct ReasoningGates {
     consults: Vec<ConsultKind>,
     /// Gates already logged as blocked, so a lasting signal is logged once.
     blocked: std::collections::HashSet<String>,
+    thread: ReasoningThread,
 }
 
 impl ReasoningGates {
@@ -242,19 +253,14 @@ impl ReasoningGates {
         !self.events.is_empty()
     }
 
-    /// Jev's reading of the request at the plan gate, reused by later consults.
-    pub(crate) fn note_assessment(
-        &mut self,
-        complexity: Option<f64>,
-        effort: Option<ReasoningEffort>,
-    ) {
+    /// How complex Jev judged the request at the plan gate.
+    pub(crate) fn note_assessment(&mut self, complexity: Option<f64>) {
         self.complexity = complexity;
-        self.effort = effort;
     }
 
-    /// The reasoning effort Jev picked at the plan gate, if any.
-    pub(crate) fn effort(&self) -> Option<ReasoningEffort> {
-        self.effort
+    /// The reasoning model's side of this request.
+    pub(crate) fn thread(&mut self) -> &mut ReasoningThread {
+        &mut self.thread
     }
 
     /// The first sign, since the last consult, that the main model is stuck.
@@ -419,6 +425,127 @@ impl ReasoningGates {
                 .map_or_else(|| "unknown".to_owned(), |c| format!("{c:.2}")),
             consults.join(", ")
         )
+    }
+}
+
+/// One thing the main model did or saw since the user's request: its own
+/// message, or a tool result under the call that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkEntry {
+    pub(crate) source: String,
+    pub(crate) text: String,
+}
+
+impl WorkEntry {
+    /// The item in one line, for when the reasoning model does not need it whole.
+    pub(crate) fn summary(&self) -> String {
+        let line = self
+            .text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default();
+        let line: String = line.chars().take(SUMMARY_CHARS).collect();
+        format!("{} ({} bytes): {line}", self.source, self.text.len())
+    }
+
+    pub(crate) fn from_main_model(&self) -> bool {
+        self.source == MAIN_MODEL_SOURCE
+    }
+}
+
+/// The main model's work since the user's last request, oldest first.
+pub(crate) fn work_since_request(items: &[ConversationItem]) -> Vec<WorkEntry> {
+    let start = items
+        .iter()
+        .rposition(distill_chat_state::compaction_utils::is_real_user_turn)
+        .map_or(0, |index| index + 1);
+    let mut calls: std::collections::HashMap<&str, String> = Default::default();
+    let mut work = Vec::new();
+    for item in items.get(start..).unwrap_or_default() {
+        match item {
+            ConversationItem::Assistant(assistant) => {
+                for call in &assistant.tool_calls {
+                    let args: String = call.arguments.chars().take(SOURCE_ARGS_CHARS).collect();
+                    calls.insert(call.id.as_ref(), format!("{} {args}", call.name));
+                }
+                let text = assistant.content.trim();
+                if !text.is_empty() {
+                    work.push(WorkEntry {
+                        source: MAIN_MODEL_SOURCE.to_owned(),
+                        text: text.to_owned(),
+                    });
+                }
+            }
+            ConversationItem::ToolResult(result) if !result.content.trim().is_empty() => {
+                work.push(WorkEntry {
+                    source: calls
+                        .get(result.tool_call_id.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_owned()),
+                    text: result.content.to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    work
+}
+
+/// The reasoning model's side of one request: its instructions, then each
+/// answered consult's message and the advice it gave, exactly as sent.
+#[derive(Debug, Default)]
+pub(crate) struct ReasoningThread {
+    /// The prompt cache key every consult of this request shares.
+    key: Option<String>,
+    items: Vec<ConversationItem>,
+    /// Work items the thread already carries.
+    sent: usize,
+}
+
+impl ReasoningThread {
+    pub(crate) fn cache_key(&mut self) -> String {
+        self.key
+            .get_or_insert_with(|| format!("jev-reasoning-{}", uuid::Uuid::new_v4()))
+            .clone()
+    }
+
+    /// Starts a consult over `work` items: a thread whose instructions changed
+    /// (another main model) starts over, and work that shrank (a compaction
+    /// rewrote it) is sent again. Returns where the unsent work begins.
+    pub(crate) fn begin(&mut self, system: &str, work: usize) -> usize {
+        if self
+            .items
+            .first()
+            .is_none_or(|first| first.text_content() != system)
+        {
+            self.items = vec![ConversationItem::system(system)];
+            self.sent = 0;
+        }
+        if work < self.sent {
+            self.sent = 0;
+        }
+        self.sent
+    }
+
+    /// Whether no consult has been answered yet, so the request goes along.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.items.len() <= 1
+    }
+
+    /// What one consult sends: the whole thread, then its own message.
+    pub(crate) fn with(&self, message: &str) -> Vec<ConversationItem> {
+        let mut items = self.items.clone();
+        items.push(ConversationItem::user(message));
+        items
+    }
+
+    /// Books an answered consult: its message and advice join the thread, and
+    /// the work before `sent` counts as carried.
+    pub(crate) fn record(&mut self, message: &str, advice: &str, sent: usize) {
+        self.items.push(ConversationItem::user(message));
+        self.items.push(ConversationItem::assistant(advice));
+        self.sent = sent;
     }
 }
 
@@ -771,7 +898,7 @@ mod tests {
             changes: vec![change("a.rs", "x", "y")],
             ..Default::default()
         };
-        complex.note_assessment(Some(0.67), None);
+        complex.note_assessment(Some(0.67));
         assert_eq!(complex.delivery_review_need(), ReviewNeed::Review);
 
         let mut large = ReasoningGates {
@@ -841,6 +968,96 @@ mod tests {
                 .count(),
             SIGNATURE_CHARS
         );
+    }
+
+    fn call(id: &str, name: &str, arguments: &str) -> distill_sampling_types::ToolCall {
+        distill_sampling_types::ToolCall {
+            id: id.into(),
+            name: name.to_owned(),
+            arguments: arguments.into(),
+        }
+    }
+
+    /// The reasoning model reads the work of this request only, each result
+    /// under the call that produced it, or it could not tell what a result
+    /// answers; an earlier request's work is not its business.
+    #[test]
+    fn work_since_request_names_each_result_by_its_call() {
+        let mut first = ConversationItem::assistant_tool_calls(vec![call(
+            "c1",
+            "read_file",
+            r#"{"path":"parser.rs"}"#,
+        )]);
+        if let ConversationItem::Assistant(assistant) = &mut first {
+            assistant.content = "Reading the parser.".into();
+        }
+        let items = vec![
+            ConversationItem::user("Old request"),
+            ConversationItem::assistant("old work"),
+            ConversationItem::user("Fix the parser"),
+            first,
+            ConversationItem::tool_result("c1", "fn parse() {}"),
+            ConversationItem::tool_result("unknown", "orphan output"),
+            ConversationItem::system_reminder("advice"),
+        ];
+        let work = work_since_request(&items);
+        assert_eq!(
+            work,
+            vec![
+                WorkEntry {
+                    source: MAIN_MODEL_SOURCE.to_owned(),
+                    text: "Reading the parser.".to_owned(),
+                },
+                WorkEntry {
+                    source: r#"read_file {"path":"parser.rs"}"#.to_owned(),
+                    text: "fn parse() {}".to_owned(),
+                },
+                WorkEntry {
+                    source: "tool".to_owned(),
+                    text: "orphan output".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            work[1].summary(),
+            r#"read_file {"path":"parser.rs"} (13 bytes): fn parse() {}"#
+        );
+    }
+
+    /// Each consult resends the thread unchanged and adds only new work, so
+    /// the provider can reuse the cached prefix and nothing is paid for twice;
+    /// a failed consult carries nothing, and a thread whose instructions
+    /// changed starts over rather than mixing two main models.
+    #[test]
+    fn the_thread_resends_its_prefix_and_carries_only_new_work() {
+        let mut thread = ReasoningThread::default();
+        let key = thread.cache_key();
+        assert_eq!(thread.begin("system A", 3), 0);
+        assert!(thread.is_fresh());
+        let first = thread.with("request + work 0..3 + Task: plan");
+        assert_eq!(first.len(), 2);
+        thread.record("request + work 0..3 + Task: plan", "the plan", 3);
+
+        assert_eq!(thread.begin("system A", 5), 3, "only work 3..5 is new");
+        assert!(!thread.is_fresh());
+        let second = thread.with("work 3..5 + Task: recover");
+        assert_eq!(second.len(), 4);
+        assert_eq!(
+            second[..2]
+                .iter()
+                .map(ConversationItem::text_content)
+                .collect::<Vec<_>>(),
+            ["system A", "request + work 0..3 + Task: plan"],
+            "the prefix is sent exactly as before"
+        );
+        assert_eq!(second[2].text_content(), "the plan");
+        // Not answered: nothing recorded, the same work is still unsent.
+        assert_eq!(thread.begin("system A", 5), 3);
+
+        assert_eq!(thread.begin("system A", 2), 0, "work that shrank is sent again");
+        assert_eq!(thread.cache_key(), key, "one key for the whole request");
+        assert_eq!(thread.begin("system B", 5), 0);
+        assert!(thread.is_fresh(), "new instructions start a new thread");
     }
 
     /// Only commands that check the work count as test evidence.

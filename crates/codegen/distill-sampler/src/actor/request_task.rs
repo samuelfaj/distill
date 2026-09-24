@@ -23,7 +23,7 @@ use distill_sampling_types::{
 use crate::actor::request_metadata::{
     CompletionState, SamplingResultWithMetrics, merge_signal_labels,
 };
-use crate::client::{ApiBackend, SamplingClient};
+use crate::client::{ApiBackend, CodexTurnAffinity, SamplingClient};
 use crate::config::{RetryPolicy, SamplerConfig};
 use crate::doom_loop_recovery::{FailedResponseCapture, append_recovery_context};
 use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent, StripReason};
@@ -76,6 +76,7 @@ enum AttemptOutcome {
 /// Run a single sampling request to completion (or final failure).
 ///
 /// Returns the request id so the actor can clean it up from `active_requests` via [`tokio::task::JoinSet::join_next`].
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_request_task(
     request_id: RequestId,
     request: ConversationRequest,
@@ -84,6 +85,7 @@ pub(crate) async fn run_request_task(
     event_tx: mpsc::UnboundedSender<SamplingEvent>,
     cancel_token: CancellationToken,
     completion: Option<oneshot::Sender<CollectedSamplingResult>>,
+    codex_turn_affinity: CodexTurnAffinity,
 ) -> RequestId {
     let mut completion = CompletionState::new(completion);
     let idle_timeout = Duration::from_secs(
@@ -101,7 +103,10 @@ pub(crate) async fn run_request_task(
     // Build the initial client
     // Configuration errors here are fatal (no point retrying with the same broken config)
     let mut client = match SamplingClient::new(config.clone()) {
-        Ok(c) => c,
+        Ok(mut c) => {
+            c.codex_turn_affinity = Some(codex_turn_affinity);
+            c
+        }
         Err(err) => {
             let terminal_event_queued = emit_failed(&event_tx, &request_id, &err);
             send_completion(&mut completion, Err(err), terminal_event_queued);
@@ -449,7 +454,8 @@ async fn apply_retry_decision(
             let mut http1_config = config.clone();
             http1_config.force_http1 = true;
             match SamplingClient::new(http1_config) {
-                Ok(fresh) => {
+                Ok(mut fresh) => {
+                    fresh.codex_turn_affinity = client.codex_turn_affinity.take();
                     *client = fresh;
                     tracing::info!("rebuilt sampling client with HTTP/1.1 fallback for retry");
                 }

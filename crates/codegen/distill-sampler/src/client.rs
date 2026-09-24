@@ -85,6 +85,47 @@ fn is_codex_base_url(base_url: &str) -> bool {
         )
 }
 
+/// Codex's sticky-routing contract: the first response of a turn carries this
+/// header, and every later request of that turn sends it back so the backend
+/// keeps the turn on the replica that holds its cached prefix.
+const CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+
+/// The turn a Codex turn state was issued for. A state is echoed only inside
+/// that turn and on that model, never into the next turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CodexTurnKey {
+    session: String,
+    turn: String,
+    model: String,
+}
+
+/// One session's Codex turn state, shared by every request its sampler actor
+/// runs (each request builds a fresh client, so the client cannot hold it).
+#[derive(Clone, Default)]
+pub(crate) struct CodexTurnAffinity(Arc<std::sync::Mutex<Option<(CodexTurnKey, String)>>>);
+
+impl CodexTurnAffinity {
+    fn state_for(&self, key: &CodexTurnKey) -> Option<String> {
+        let guard = self.0.lock().ok()?;
+        guard
+            .as_ref()
+            .filter(|(issued_for, _)| issued_for == key)
+            .map(|(_, state)| state.clone())
+    }
+
+    /// A turn keeps the first state it was given, as the Codex client does; a
+    /// new turn replaces it.
+    fn remember(&self, key: CodexTurnKey, state: String) {
+        if let Ok(mut guard) = self.0.lock()
+            && guard
+                .as_ref()
+                .is_none_or(|(issued_for, _)| *issued_for != key)
+        {
+            *guard = Some((key, state));
+        }
+    }
+}
+
 fn is_openrouter_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).is_ok_and(|url| {
         url.scheme() == "https"
@@ -442,6 +483,8 @@ pub struct SamplingClient {
     /// Endpoint URL builder, resolved once from `base_url` and `query_params`.
     endpoint: EndpointTemplate,
     first_use_noted: Arc<AtomicBool>,
+    /// Set only by the session's sampler actor, so Codex turns stay sticky.
+    pub(crate) codex_turn_affinity: Option<CodexTurnAffinity>,
 }
 
 impl std::fmt::Debug for SamplingClient {
@@ -799,6 +842,22 @@ impl SamplingClient {
             header_injector: config.header_injector,
             endpoint,
             first_use_noted: Arc::new(AtomicBool::new(false)),
+            codex_turn_affinity: None,
+        })
+    }
+
+    /// The turn this Codex request belongs to, when it takes part in sticky
+    /// routing: a request without a session or turn index has no turn to stick to.
+    fn codex_turn_key(&self, request: &CreateResponseWrapper, model: &str) -> Option<CodexTurnKey> {
+        if self.codex_turn_affinity.is_none() || !is_codex_base_url(&self.base_url) {
+            return None;
+        }
+        let session = request.x_grok_session_id.as_deref().filter(|id| !id.is_empty())?;
+        let turn = request.x_grok_turn_idx.as_deref().filter(|idx| !idx.is_empty())?;
+        Some(CodexTurnKey {
+            session: session.to_owned(),
+            turn: turn.to_owned(),
+            model: model.to_owned(),
         })
     }
 
@@ -1626,6 +1685,7 @@ impl SamplingClient {
         let x_grok_conv_id = request.x_grok_conv_id.as_deref().unwrap_or_default();
         let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone().unwrap_or_default();
+        let codex_turn = self.codex_turn_key(&request, &model_id);
 
         // Drop process-local trace data (see note in `create_response`).
         request.trace.take();
@@ -1680,6 +1740,13 @@ impl SamplingClient {
         let mut http_request = grok_headers
             .apply(builder)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        if let Some(state) = codex_turn.as_ref().and_then(|key| {
+            self.codex_turn_affinity
+                .as_ref()
+                .and_then(|affinity| affinity.state_for(key))
+        }) {
+            http_request = http_request.header(CODEX_TURN_STATE_HEADER, state);
+        }
         if let Some(policy) = self.defaults.doom_loop_recovery {
             http_request = http_request
                 .header(DOOM_LOOP_CHECK_HEADER, policy.window_tokens.to_string())
@@ -1744,6 +1811,14 @@ impl SamplingClient {
         }
 
         let model_metadata = extract_model_metadata(response.headers());
+        if let (Some(affinity), Some(key)) = (self.codex_turn_affinity.as_ref(), codex_turn)
+            && let Some(state) = response
+                .headers()
+                .get(CODEX_TURN_STATE_HEADER)
+                .and_then(|value| value.to_str().ok())
+        {
+            affinity.remember(key, state.to_owned());
+        }
 
         // Strip UTF-8 BOM if present
         const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
@@ -2846,6 +2921,92 @@ mod tests {
                 "must reject {data}"
             );
         }
+    }
+
+    /// Codex keeps a turn's rounds on the replica holding its cached prefix
+    /// only when each later request of the turn echoes the state the turn's
+    /// first response issued. Echoing it into the next turn would break the
+    /// contract, and a client outside the session actor has no turn to join.
+    #[tokio::test]
+    async fn codex_turn_state_is_echoed_only_within_its_turn() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let recorded = seen.clone();
+        let wire = format!(
+            "data: {}\n\n",
+            serde_json::json!({"type":"response.completed","sequence_number":0,
+                "response": serde_json::from_str::<serde_json::Value>(EMPTY_RESPONSE_JSON).unwrap()})
+        );
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move |headers: axum::http::HeaderMap| {
+                let wire = wire.clone();
+                let recorded = recorded.clone();
+                async move {
+                    let mut seen = recorded.lock().unwrap();
+                    seen.push(
+                        headers
+                            .get(CODEX_TURN_STATE_HEADER)
+                            .map(|value| value.to_str().unwrap().to_owned()),
+                    );
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .header(CODEX_TURN_STATE_HEADER, format!("issued-{}", seen.len()))
+                        .body(axum::body::Body::from(wire))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let codex_client = || {
+            let mut client = SamplingClient::new(SamplerConfig {
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                api_backend: ApiBackend::Responses,
+                ..minimal_config()
+            })
+            .unwrap();
+            client.endpoint =
+                EndpointTemplate::new(&format!("http://{addr}/v1"), &IndexMap::new());
+            client
+        };
+        let affinity = CodexTurnAffinity::default();
+        let send = |client: SamplingClient, turn: &str| {
+            let mut request = CreateResponseWrapper::new(rs::CreateResponse {
+                input: rs::InputParam::Text("continue".into()),
+                model: Some("gpt-codex".into()),
+                ..Default::default()
+            });
+            request.x_grok_session_id = Some("session-1".into());
+            request.x_grok_turn_idx = Some(turn.into());
+            async move {
+                let (raw, _, _) = client.create_response_stream(request).await.unwrap();
+                raw.collect::<Vec<_>>().await;
+            }
+        };
+        // Each request builds a fresh client, as the sampler actor does.
+        for turn in ["1", "1", "1", "2", "2"] {
+            let mut client = codex_client();
+            client.codex_turn_affinity = Some(affinity.clone());
+            send(client, turn).await;
+        }
+        // Outside the actor there is no session turn to stick to.
+        send(codex_client(), "2").await;
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                None,
+                Some("issued-1".to_owned()),
+                // The turn keeps its first state even though the server issued another.
+                Some("issued-1".to_owned()),
+                // A new turn starts without one and keeps what its first round was given.
+                None,
+                Some("issued-4".to_owned()),
+                None,
+            ]
+        );
+        server.abort();
     }
 
     #[tokio::test]

@@ -112,6 +112,7 @@ impl SamplerActor {
                     event_tx,
                     cancel_token,
                     completion_tx,
+                    self.state.codex_turn_affinity.clone(),
                 ));
             }
             SamplerCommand::Cancel { request_id } => {

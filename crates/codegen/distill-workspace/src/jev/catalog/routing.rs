@@ -15,7 +15,10 @@ use crate::jev::types::{JevAnswerSet, Json, MAX_CHOICE_OPTIONS, Question, Questi
 /// Local alias so the family battery reads the same as the other packs.
 use crate::jev::types::Question as JevAnswerSetQuestion;
 
-use super::{INTENT_MIN_CONFIDENCE, MODEL_TIER_MIN_CONFIDENCE, Pick, pick_one};
+use super::{
+    INTENT_MIN_CONFIDENCE, MODEL_TIER_MIN_CONFIDENCE, Pick, Ranked, pick_one, rank_by_noul,
+    rank_questions,
+};
 
 /// B1 — intent labels.
 pub const INTENT_QUESTION: &str = "intent";
@@ -500,6 +503,42 @@ pub fn reasoning_consult_pick(answers: &JevAnswerSet) -> Option<bool> {
         .map(|choice| choice == CONSULT_REASONING_LABEL)
 }
 
+/// B2 — floor for sending one piece of work to the reasoning model in full.
+pub const REASONING_BRIEF_FULL_FLOOR: f64 = 0.50;
+
+/// B2: one `noul` per piece of work the reasoning model has not seen yet —
+/// does THIS consult need it in full, or does its one-line summary do? `work`
+/// pairs each id with that summary; `consult` says what the consult is for.
+pub fn reasoning_brief_questions(
+    consult: &str,
+    work: &[(String, String)],
+) -> Result<BTreeMap<QuestionId, Question>, JevError> {
+    let ids: Vec<String> = work.iter().map(|(id, _)| id.clone()).collect();
+    let summaries: BTreeMap<&str, &str> = work
+        .iter()
+        .map(|(id, summary)| (id.as_str(), summary.as_str()))
+        .collect();
+    rank_questions(
+        &ids,
+        |id| {
+            format!(
+                "The reasoning model is consulted to {consult}. Does it need work item `{id}` in \
+                 full, or is its one-line summary enough? Summary: {}",
+                summaries.get(id).copied().unwrap_or("(none)")
+            )
+        },
+        "This consult needs the item's full text",
+        "The one-line summary is enough for this consult",
+    )
+}
+
+/// B2: the work items the reasoning model gets in full. A missing answer
+/// defers, and a deferral sends every item in full: a partial answer must not
+/// hide evidence from the consult.
+pub fn compose_reasoning_brief(answers: &JevAnswerSet, ids: &[String]) -> Ranked {
+    rank_by_noul(answers, ids, REASONING_BRIEF_FULL_FLOOR, false)
+}
+
 /// B2: the effort to use for this call, or `None` to keep the session's.
 pub fn compose_micro_effort(answers: &JevAnswerSet, offered: &[EffortChoice]) -> Option<String> {
     compose_micro_effort_for(answers, offered, MICRO_EFFORT_QUESTION)
@@ -727,6 +766,41 @@ pub fn keep_tools(names: &[String], answers: &JevAnswerSet) -> Option<Vec<String
 mod tests {
     use super::*;
     use crate::jev::catalog::test_support::{answers, choice, noul, score};
+
+    /// The reasoning model gets in full only what its consult needs, and the
+    /// rest as a line it can still ask about. A missing answer must not hide
+    /// evidence, so it sends everything in full; a confident "summary is
+    /// enough" for every item sends none in full.
+    #[test]
+    fn b2_brief_sends_in_full_only_what_the_consult_needs() {
+        let work = vec![
+            ("w1".to_owned(), "bash cargo test (4000 bytes): test parser ... FAILED".to_owned()),
+            ("w2".to_owned(), "read_file README.md (900 bytes): # Distill".to_owned()),
+        ];
+        let questions =
+            reasoning_brief_questions("diagnose why the main model is stuck", &work)
+                .expect("battery builds");
+        let about_w1 = format!("{:?}", questions.get("rank_w1").expect("one question per item"));
+        assert!(about_w1.contains("diagnose why") && about_w1.contains("FAILED"), "{about_w1}");
+        let ids: Vec<String> = work.iter().map(|(id, _)| id.clone()).collect();
+
+        let picked = compose_reasoning_brief(
+            &answers(vec![("rank_w1", noul(0.9)), ("rank_w2", noul(0.1))]),
+            &ids,
+        );
+        assert_eq!(picked.keep, ["w1"]);
+        assert!(!picked.is_deferred());
+
+        let partial = compose_reasoning_brief(&answers(vec![("rank_w1", noul(0.9))]), &ids);
+        assert!(partial.is_deferred());
+        assert_eq!(partial.keep, ids, "on doubt every item goes in full");
+
+        let none = compose_reasoning_brief(
+            &answers(vec![("rank_w1", noul(0.2)), ("rank_w2", noul(0.1))]),
+            &ids,
+        );
+        assert!(none.keep.is_empty() && !none.is_deferred());
+    }
 
     #[test]
     fn b1_reads_intent_and_complexity_and_defers_when_unsure() {

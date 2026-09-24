@@ -37,10 +37,27 @@ three kinds of decision points, and its advice joins the conversation as
 | Review | Before delivery | When the main model finishes a request that changed files, the reasoning model reviews the diff, the final message and the last test or build. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. A change of at most six lines, with nothing failing after it, on a request Jev did not judge complex, is delivered without a review. |
 
 Each request allows one plan, two recoveries and one review; a recovery waits at
-least two rounds after the previous consult. The plan gate also picks the
-reasoning model's effort from its own menu, and later consults reuse it.
-Without a reasoning model, or when Jev is unavailable, the main model works
-alone.
+least two rounds after the previous consult. Without a reasoning model, or when
+Jev is unavailable, the main model works alone.
+
+The consults of one request are one conversation with the reasoning model. The
+instructions are the same for every consult, and each consult resends the
+earlier messages and advice unchanged, then adds one message: the work the main
+model did since the last reply, the consult's own material (the struggle, the
+flagged change, or the diffs, last check and final message of a review) and the
+task last. Work already sent is never sent again, and every consult of the
+request shares one `prompt_cache_key`, so the provider can serve the repeated
+prefix from its prompt cache.
+
+Jev decides each consult in one question battery: for every piece of work the
+reasoning model has not seen, whether it needs it in full or only as a one-line
+summary; and, with `/effort auto` (`b2_micro_effort`), the effort this consult
+thinks with, from the reasoning model's own menu. Nothing carries over between
+consults: without an answer every item goes in full and the model keeps its
+configured effort. When a consult still does not fit the reasoning model's
+window, the largest items are cut to verified quotes from the utility model
+(`cite_spans`, each quote checked against the item), then to their summaries;
+a consult that does not fit even then is skipped and logged.
 
 While the reasoning model works, the status row names it (for example
 `reasoning review gpt-6-sol high`). The turn report lists its tokens like any
@@ -130,6 +147,10 @@ when switching models. Benchmark and price hints do not override the configured
 candidate set, context guard, explicit effort, or permission policy.
 For direct OpenRouter requests, the sampler sends the existing session ID as
 `x-session-id` for provider affinity unless the user configured that header.
+Responses requests carry the session ID as `prompt_cache_key`. On ChatGPT
+(Codex), the first response of a turn also issues an `x-codex-turn-state`, which
+the session's later rounds of that turn send back so the backend keeps the turn
+on the replica that holds its cached prefix; a new turn starts without one.
 This does not guarantee a cache hit; compare cache-read tokens and total cost
 before changing cache TTL or context-pruning behavior.
 

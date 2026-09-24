@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::client::CodexTurnAffinity;
 use crate::config::{RetryPolicy, SamplerConfig};
 use crate::types::RequestId;
 
@@ -17,6 +18,8 @@ pub(crate) struct ActorState {
     pub(crate) active_requests: HashMap<RequestId, ActiveRequest>,
     pub(crate) config: SamplerConfig,
     pub(crate) retry_policy: RetryPolicy,
+    /// Outlives each request so the rounds of one Codex turn share a replica.
+    pub(crate) codex_turn_affinity: CodexTurnAffinity,
 }
 
 impl ActorState {
@@ -25,6 +28,7 @@ impl ActorState {
             active_requests: HashMap::new(),
             config,
             retry_policy,
+            codex_turn_affinity: CodexTurnAffinity::default(),
         }
     }
 

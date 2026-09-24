@@ -2343,26 +2343,21 @@ impl AppView {
             .collect()
     }
 
-    fn onboarding_worker_options(&self) -> Vec<(String, String)> {
-        let Some(reasoning) = self.models.reasoning_model.as_ref().map(|id| id.0.as_ref())
-            .or_else(|| self.models.current_model_id_str()) else {
-            return Vec::new();
-        };
-        let current_worker = distill_shell::jev::tiers_cached().light;
+    /// Reasoning candidates: every other model in the catalog. The reasoning
+    /// model only receives bounded, tool-free requests, so any provider works.
+    fn onboarding_reasoning_options(&self) -> Vec<(String, String)> {
+        let main = self.models.current_model_id_str();
+        let current = self.models.reasoning_model.as_ref().map(|id| id.0.as_ref());
         self.models
             .available
             .iter()
-            .filter(|(id, _)| id.0.as_ref() != reasoning)
-            .filter(|(id, _)| current_worker.as_deref() != Some(id.0.as_ref()))
-            .filter(|(id, _)| {
-                distill_shell::jev::validate_light_tier_candidate(reasoning, id.0.as_ref()).is_ok()
-            })
+            .filter(|(id, _)| Some(id.0.as_ref()) != main && Some(id.0.as_ref()) != current)
             .map(|(id, info)| (id.0.to_string(), info.name.clone()))
             .collect()
     }
 
-    fn onboarding_current_worker(&self) -> Option<String> {
-        distill_shell::jev::tiers_cached().light
+    fn onboarding_current_reasoning(&self) -> Option<String> {
+        self.models.reasoning_model_name()
     }
 
     /// Open onboarding only after the normal interactive startup gates are settled. Resume,
@@ -2398,11 +2393,11 @@ impl AppView {
 
     fn handle_onboarding_input(&mut self, ev: &Event) -> InputOutcome {
         let model_ids: Vec<acp::ModelId> = self.models.available.keys().cloned().collect();
-        let worker_options = self.onboarding_worker_options();
+        let reasoning_options = self.onboarding_reasoning_options();
         let command = self
             .onboarding
             .as_mut()
-            .and_then(|state| state.handle_input(ev, model_ids.len(), worker_options.len()));
+            .and_then(|state| state.handle_input(ev, model_ids.len(), reasoning_options.len()));
         let Some(command) = command else {
             return InputOutcome::Changed;
         };
@@ -2418,7 +2413,7 @@ impl AppView {
                     if let Some(state) = self.onboarding.as_mut() {
                         state.set_auth_result(
                             true,
-                            "Grok is already connected. Choose a primary model below.",
+                            "Grok is already connected. Choose the main model below.",
                         );
                     }
                     InputOutcome::Changed
@@ -2436,7 +2431,7 @@ impl AppView {
                         state.set_auth_result(
                             true,
                             format!(
-                                "{} is already connected. Choose a primary model below.",
+                                "{} is already connected. Choose the main model below.",
                                 provider.name()
                             ),
                         );
@@ -2458,11 +2453,11 @@ impl AppView {
                 };
                 InputOutcome::Action(Action::SetDefaultModel(id))
             }
-            crate::views::onboarding::OnboardingCommand::SelectWorker(index) => {
-                let Some((id, _)) = worker_options.get(index) else {
+            crate::views::onboarding::OnboardingCommand::SelectReasoning(index) => {
+                let Some((id, _)) = reasoning_options.get(index) else {
                     return InputOutcome::Changed;
                 };
-                InputOutcome::Action(Action::SetTierLight(id.clone(), None))
+                InputOutcome::Action(Action::SetReasoningModel(acp::ModelId::new(id.as_str())))
             }
             crate::views::onboarding::OnboardingCommand::OpenX => {
                 InputOutcome::Action(Action::OpenUrl(crate::views::onboarding::X_URL.to_owned()))
@@ -2482,8 +2477,8 @@ impl AppView {
         onboarding: &mut Option<crate::views::onboarding::OnboardingState>,
         compact: bool,
         models: &[(String, String)],
-        workers: &[(String, String)],
-        current_worker: Option<&str>,
+        reasoning_options: &[(String, String)],
+        current_reasoning: Option<&str>,
         provider_auth: Option<ProviderAuthState>,
     ) {
         // Grok onboarding temporarily reuses Welcome's existing auth controls below.
@@ -2496,8 +2491,8 @@ impl AppView {
                 state,
                 compact,
                 models,
-                workers,
-                current_worker,
+                reasoning_options,
+                current_reasoning,
                 provider_auth,
             );
         }
@@ -3429,12 +3424,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 }
                 return match editor.handle_key(key) {
                     crate::views::tier_editor::TierEditorOutcome::Submitted {
+                        main,
                         reasoning,
-                        worker,
                         utility,
                     } => InputOutcome::Action(Action::SetTierEditor {
+                        main,
                         reasoning,
-                        worker,
                         utility,
                     }),
                     crate::views::tier_editor::TierEditorOutcome::Cancelled => {
@@ -4672,8 +4667,8 @@ impl AppView {
         let agent_mouse_pos = self.last_mouse_pos;
         let status_line_frame = self.status_line_frame();
         let onboarding_models = self.onboarding_model_options();
-        let onboarding_workers = self.onboarding_worker_options();
-        let onboarding_current_worker = self.onboarding_current_worker();
+        let onboarding_reasoning = self.onboarding_reasoning_options();
+        let onboarding_current_reasoning = self.onboarding_current_reasoning();
         let onboarding_provider_auth = self.provider_auth;
         let welcome_mode = self.home_session().map(|home| {
             (
@@ -5001,8 +4996,8 @@ impl AppView {
                                     &mut self.onboarding,
                                     compact,
                                     &onboarding_models,
-                                    &onboarding_workers,
-                                    onboarding_current_worker.as_deref(),
+                                    &onboarding_reasoning,
+                                    onboarding_current_reasoning.as_deref(),
                                     onboarding_provider_auth,
                                 );
                             }
@@ -5167,8 +5162,8 @@ impl AppView {
                                         &mut self.onboarding,
                                         compact,
                                         &onboarding_models,
-                                        &onboarding_workers,
-                                        onboarding_current_worker.as_deref(),
+                                        &onboarding_reasoning,
+                                        onboarding_current_reasoning.as_deref(),
                                         onboarding_provider_auth,
                                     );
                                 }
@@ -5322,8 +5317,8 @@ impl AppView {
                                         &mut self.onboarding,
                                         compact,
                                         &onboarding_models,
-                                        &onboarding_workers,
-                                        onboarding_current_worker.as_deref(),
+                                        &onboarding_reasoning,
+                                        onboarding_current_reasoning.as_deref(),
                                         onboarding_provider_auth,
                                     );
                                 }

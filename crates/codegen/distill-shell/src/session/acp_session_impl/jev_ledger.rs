@@ -57,6 +57,8 @@ pub(crate) struct JevTurnLedger {
     review_escalated: bool,
     /// C4 asked for an independent reasoning review of the last executed edit.
     reasoning_review_pending: Option<String>,
+    /// The reasoning model already advised the main model during this turn.
+    reasoning_consulted: bool,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// Stable schemas within a turn; invalidate when the request or available names change.
     pub(crate) tool_selection: Option<(String, Vec<String>)>,
@@ -178,6 +180,14 @@ impl JevTurnLedger {
         std::mem::take(&mut self.reasoning_review_pending)
     }
 
+    pub(crate) fn note_reasoning_consulted(&mut self) {
+        self.reasoning_consulted = true;
+    }
+
+    pub(crate) fn reasoning_consulted(&self) -> bool {
+        self.reasoning_consulted
+    }
+
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()
@@ -226,6 +236,7 @@ impl JevTurnLedger {
         self.effort_floor = None;
         self.review_escalated = false;
         self.reasoning_review_pending = None;
+        self.reasoning_consulted = false;
         self.last_execution = None;
         self.tool_selection = None;
         rows.sort_by(|a, b| {

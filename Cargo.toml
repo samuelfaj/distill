@@ -389,6 +389,13 @@ zstd = "0.13"
 incremental = true
 panic = "abort"
 
+# Apple's linker (ld-1267, Xcode 26) rejects distill-shell's incremental release
+# objects: `fixup error (kind=arm64_adrp_lo12) ... does not have address` on a
+# ThinLTO-promoted `_anon.*.llvm.*` symbol, even from a clean build. This one
+# crate builds non-incrementally; the rest of the workspace stays incremental.
+[profile.release.package.distill-shell]
+incremental = false
+
 # Hardened release profile for shipping to end users (alpha + stable).
 # Use `cargo build --profile release-dist` for distribution builds.
 # Not used by default `--release` to avoid slowing down local dev builds (~2.2x).

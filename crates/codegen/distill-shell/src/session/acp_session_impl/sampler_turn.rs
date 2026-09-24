@@ -1139,9 +1139,9 @@ impl SessionActor {
             session_id, turn_id, round_id, requested_model = sampler_config.model,
             requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
             "model round before Jev routing");
-        // Choose this call's executor independently of each model's effort policy.
-        // Explicit efforts stay fixed; auto efforts use that candidate's own menu.
-        self.jev_choose_model_and_effort(&mut sampler_config).await;
+        // The main model runs this call; auto effort picks from its own menu and
+        // an explicit effort stays fixed.
+        self.jev_choose_effort(&mut sampler_config).await;
         // B2 (money lever): a routine turn may run at a cheaper setting; the
         // pass can only lower effort, and it is off until its gate passes.
         self.jev_apply_model_tier(&mut sampler_config).await;

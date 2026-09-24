@@ -817,19 +817,13 @@ pub(crate) async fn run_shell_child(
     if request.fork_context && !explicit_model_override {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
     }
-    let configured_worker_model = configured_worker_model_for(&request, resume_source.as_ref());
-    let (mut effective_sampling_config, mut effective_model_id, configured_worker_effort) =
-        resolve_effective_model_config(
-            effective_runtime.model.as_deref(),
-            &request.subagent_type,
-            &definition.model,
-            configured_worker_model.as_deref(),
-            &ctx,
-        )
-        .await;
-    if effective_runtime.reasoning_effort.is_none() {
-        effective_runtime.reasoning_effort = configured_worker_effort.clone();
-    }
+    let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
+        effective_runtime.model.as_deref(),
+        &request.subagent_type,
+        &definition.model,
+        &ctx,
+    )
+    .await;
     let subagent_max_turns = resolve_subagent_max_turns(definition.max_turns, ctx.parent_max_turns);
     {
         let model_str = &effective_sampling_config.model;

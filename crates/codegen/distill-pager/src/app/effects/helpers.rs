@@ -1367,11 +1367,11 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
-        "tier_light" => {
+        "reasoning_model" => {
             let SettingValue::String(s) = value else {
-                return Err(kind_mismatch("tier_light", "String", &value));
+                return Err(kind_mismatch("reasoning_model", "String", &value));
             };
-            distill_shell::util::config::set_jev_tier_light(s)
+            distill_shell::util::config::set_reasoning_model(s)
                 .await
                 .map_err(|e| e.to_string())
         }

@@ -1833,7 +1833,7 @@ fn onboarding_selection_status_tracks_persisted_results() {
     app.onboarding
         .as_mut()
         .expect("onboarding opened")
-        .set_primary_model_pending();
+        .set_main_model_pending();
     dispatch(
         Action::TaskComplete(TaskResult::SettingPersisted {
             key: "default_model",
@@ -1845,10 +1845,11 @@ fn onboarding_selection_status_tracks_persisted_results() {
     assert!(!state.status_is_error);
     assert!(state.status.as_deref().unwrap().contains("saved"));
 
-    app.onboarding.as_mut().unwrap().set_worker_model_pending();
+    app.onboarding.as_mut().unwrap().set_reasoning_model_pending();
     dispatch(
-        Action::TaskComplete(TaskResult::SettingPersistFailedBestEffort {
-            key: "tier_light",
+        Action::TaskComplete(TaskResult::SettingPersistFailed {
+            key: "reasoning_model",
+            rollback_value: crate::settings::SettingValue::String(String::new()),
             error: "disk full".to_owned(),
         }),
         &mut app,

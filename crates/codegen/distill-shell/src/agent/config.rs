@@ -960,8 +960,13 @@ pub struct DiagnosticsConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
+    /// The main model: owns every session and runs every step (`/model`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// The optional reasoning model (`/reasoning-model`). The main model
+    /// consults it for planning and review when a step is beyond it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     /// The pre-campaign `models.default` (merged user/managed/requirements), captured when a campaign is overriding the default.
     /// Model resolution recovers to it if the campaign points at a model missing from the catalog.
     /// `None` when there is nothing to recover to. Runtime-only; never serialized.
@@ -1196,8 +1201,6 @@ pub struct JevConfig {
     /// micro-action is the point of the routing, and `/effort <level>` still
     /// overrides it for the session.
     pub effort_auto: Option<bool>,
-    /// The model tiers the decision layer may pick between.
-    pub tiers: JevTiersConfig,
     /// Deadline for one catalogue item call, in milliseconds.
     ///
     /// Unset ⇒ a per-provider default: the System One service answers in well
@@ -1256,24 +1259,6 @@ pub struct JevLocalConfig {
     pub min_capability: Option<f64>,
 }
 
-/// The model tiers the decision layer may pick between.
-///
-/// The **hard** tier is the session's own model — the one `/model` switches, and
-/// the one a call runs on unless something cheaper is chosen — and the **cheap**
-/// tier is `[jev.local] model`. Only the middle one needs a key of its own.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct JevTiersConfig {
-    /// Worker effort override; absent or `auto` lets the harness choose.
-    pub light_effort: Option<String>,
-    /// `[model.<id>]` entry of the worker model, on any provider. It runs fresh
-    /// bounded tasks (subagents, tool-result compression) with its own endpoint
-    /// and credential. Only an entry for the same wire model, provider, backend
-    /// and credential may share the conversation. Unset ⇒ no worker, and the tier
-    /// question is never asked.
-    pub light: Option<String>,
-}
-
 /// Tokens reserved in the local model's window when the config does not say.
 pub const DEFAULT_LOCAL_CONTEXT_RESERVE: u64 = 8_192;
 /// Per-lever switches for the Jev ladder; every field defaults to false so a
@@ -1326,9 +1311,10 @@ pub struct JevLadderConfig {
     /// B2 (local): route a model call to the configured local model when it can
     /// fully do it (free), falling back to the cloud model otherwise.
     pub b2_local_model: Option<bool>,
-    /// B2 (tiers): the session model's lighter sibling takes a call it can
-    /// fully do. Off means every call stays on the session's model.
-    pub b2_light_model: Option<bool>,
+    /// B2 (reasoning): the main model consults the reasoning model for a step
+    /// it cannot do alone. Off means the main model always works alone.
+    #[serde(default, alias = "b2_light_model")]
+    pub b2_reasoning_model: Option<bool>,
     /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
     #[serde(default, alias = "b2_micro_effort")]
     pub b2_micro_effort: Option<bool>,

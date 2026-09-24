@@ -12,25 +12,25 @@ use ratatui::widgets::Widget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TierField {
+    Main,
     Reasoning,
-    Worker,
     Utility,
 }
 
 impl TierField {
     fn next(self) -> Self {
         match self {
-            Self::Reasoning => Self::Worker,
-            Self::Worker => Self::Utility,
-            Self::Utility => Self::Reasoning,
+            Self::Main => Self::Reasoning,
+            Self::Reasoning => Self::Utility,
+            Self::Utility => Self::Main,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Reasoning => Self::Utility,
-            Self::Worker => Self::Reasoning,
-            Self::Utility => Self::Worker,
+            Self::Main => Self::Utility,
+            Self::Reasoning => Self::Main,
+            Self::Utility => Self::Reasoning,
         }
     }
 }
@@ -38,8 +38,8 @@ impl TierField {
 #[derive(Debug, PartialEq, Eq)]
 pub enum TierEditorOutcome {
     Submitted {
+        main: String,
         reasoning: String,
-        worker: String,
         utility: String,
     },
     Cancelled,
@@ -49,8 +49,8 @@ pub enum TierEditorOutcome {
 
 #[derive(Debug)]
 pub struct TierEditorState {
+    pub main: LineEditor,
     pub reasoning: LineEditor,
-    pub worker: LineEditor,
     pub utility: LineEditor,
     pub focus: TierField,
 }
@@ -58,20 +58,17 @@ pub struct TierEditorState {
 impl TierEditorState {
     pub fn from_models(models: &ModelState) -> Self {
         let mut state = Self {
+            main: LineEditor::default(),
             reasoning: LineEditor::default(),
-            worker: LineEditor::default(),
             utility: LineEditor::default(),
-            focus: TierField::Reasoning,
+            focus: TierField::Main,
         };
+        state
+            .main
+            .set_text(models.current_model_id_str().unwrap_or_default());
         state
             .reasoning
             .set_text(models.reasoning_model.as_ref().map_or("", |id| id.0.as_ref()));
-        state.worker.set_text(
-            distill_shell::jev::tiers_cached()
-                .light
-                .as_deref()
-                .unwrap_or_default(),
-        );
         state.utility.set_text(
             distill_shell::jev::local_config_cached()
                 .model
@@ -83,8 +80,8 @@ impl TierEditorState {
 
     pub fn active_editor_mut(&mut self) -> &mut LineEditor {
         match self.focus {
+            TierField::Main => &mut self.main,
             TierField::Reasoning => &mut self.reasoning,
-            TierField::Worker => &mut self.worker,
             TierField::Utility => &mut self.utility,
         }
     }
@@ -118,8 +115,8 @@ impl TierEditorState {
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
                 return TierEditorOutcome::Submitted {
+                    main: self.main.text().trim().to_owned(),
                     reasoning: self.reasoning.text().trim().to_owned(),
-                    worker: self.worker.text().trim().to_owned(),
                     utility: self.utility.text().trim().to_owned(),
                 };
             }
@@ -189,7 +186,7 @@ pub fn render_tier_editor_overlay(
         buf,
         content.content,
         y,
-        "Choose models for deep reasoning, routine work, and utility tasks.",
+        "Choose the main, reasoning, and utility models.",
         Style::default().fg(theme.text_primary),
     );
     y = y.saturating_add(1);
@@ -197,7 +194,7 @@ pub fn render_tier_editor_overlay(
         buf,
         content.content,
         y,
-        "The worker keeps the conversation; reasoning runs bounded tasks.",
+        "The main model runs every step; reasoning plans and reviews when it is needed.",
         Style::default().fg(theme.gray_bright),
     );
     y = y.saturating_add(2);
@@ -207,10 +204,10 @@ pub fn render_tier_editor_overlay(
         content.content,
         y,
         content.content.width,
-        "Reasoning model",
-        "Secondary model for planning and review. Use a configured model id.",
-        &mut state.reasoning,
-        state.focus == TierField::Reasoning,
+        "Main model",
+        "Required. Runs every session and step. Use a configured model id.",
+        &mut state.main,
+        state.focus == TierField::Main,
         theme,
     );
     y = y.saturating_add(3);
@@ -219,10 +216,10 @@ pub fn render_tier_editor_overlay(
         content.content,
         y,
         content.content.width,
-        "Worker model",
-        "A same-family model for routine steps. OpenRouter models can share this tier with other OpenRouter models.",
-        &mut state.worker,
-        state.focus == TierField::Worker,
+        "Reasoning model",
+        "Optional. Plans and reviews steps the main model cannot do alone. Leave empty to work without it.",
+        &mut state.reasoning,
+        state.focus == TierField::Reasoning,
         theme,
     );
     y = y.saturating_add(3);
@@ -327,24 +324,24 @@ mod tests {
     #[test]
     fn fields_cycle_and_submit_trimmed_values() {
         let mut state = TierEditorState {
+            main: Default::default(),
             reasoning: Default::default(),
-            worker: Default::default(),
             utility: Default::default(),
-            focus: TierField::Reasoning,
+            focus: TierField::Main,
         };
-        state.reasoning.set_text("  reasoning  ");
-        state.worker.set_text("worker");
+        state.main.set_text("  main  ");
+        state.reasoning.set_text("reasoning");
         state.utility.set_text("one/two,three/four");
         assert_eq!(
             state.handle_key(&key(KeyCode::Tab, KeyModifiers::NONE)),
             TierEditorOutcome::Changed
         );
-        assert_eq!(state.focus, TierField::Worker);
+        assert_eq!(state.focus, TierField::Reasoning);
         assert_eq!(
             state.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE)),
             TierEditorOutcome::Submitted {
+                main: "main".to_owned(),
                 reasoning: "reasoning".to_owned(),
-                worker: "worker".to_owned(),
                 utility: "one/two,three/four".to_owned(),
             }
         );
@@ -353,10 +350,10 @@ mod tests {
     #[test]
     fn escape_cancels_without_submitting() {
         let mut state = TierEditorState {
+            main: Default::default(),
             reasoning: Default::default(),
-            worker: Default::default(),
             utility: Default::default(),
-            focus: TierField::Reasoning,
+            focus: TierField::Main,
         };
         assert_eq!(
             state.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE)),

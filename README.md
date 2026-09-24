@@ -51,8 +51,8 @@ model, or enter `/tiers`. You can edit each tier in that screen.
 
 | Tier | Purpose | Picker |
 |---|---|---|
-| Worker model | Main model for the session and routine work. | `/model` or `/tiers worker` |
-| Reasoning model | Handles difficult planning and review through bounded tasks; owns the session when no Worker is configured. | `/reasoning-model` or `/tiers reasoning` |
+| Main model | Required. Runs every session and every step. | `/model` or `/tiers main` |
+| Reasoning model | Optional. Plans and reviews the steps the main model cannot do alone. | `/reasoning-model` or `/tiers reasoning` |
 | Utility model | Handles bounded tasks such as extraction, summaries, and compression. | `/utility-model` or `/tiers utility` |
 
 The main model picker also lets you set effort; `auto` is the default. You can

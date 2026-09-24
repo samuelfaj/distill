@@ -1912,7 +1912,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                     };
                     agent.scrollback.push_block(RenderBlock::system(msg));
                 }
-                if unchanged || agent.session.models.reasoning_model.as_ref() != Some(&model_id) {
+                if unchanged {
                     vec![]
                 } else {
                     vec![Effect::PersistPreferredModel {

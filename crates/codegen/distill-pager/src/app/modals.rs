@@ -281,12 +281,12 @@ impl AgentView {
             }
             return match editor.handle_key(key) {
                 crate::views::tier_editor::TierEditorOutcome::Submitted {
+                    main,
                     reasoning,
-                    worker,
                     utility,
                 } => InputOutcome::Action(Action::SetTierEditor {
+                    main,
                     reasoning,
-                    worker,
                     utility,
                 }),
                 crate::views::tier_editor::TierEditorOutcome::Cancelled => {

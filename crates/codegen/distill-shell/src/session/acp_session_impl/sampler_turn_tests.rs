@@ -369,7 +369,7 @@ async fn sampler_preparation_keeps_one_million_parent_when_utility_is_confident(
 
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -387,7 +387,7 @@ async fn route_preflight_keeps_mid_salvage_terminal_without_rewrite_or_usage() {
         .run_until(async {
             crate::jev::set_test_decision_answers([]);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_reasoning_model(None);
 
             let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -457,7 +457,7 @@ async fn route_preflight_keeps_mid_salvage_terminal_without_rewrite_or_usage() {
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -475,7 +475,7 @@ async fn route_preflight_keeps_budgeted_children_local_without_compaction_or_usa
         .run_until(async {
             crate::jev::set_test_decision_answers([]);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_reasoning_model(None);
 
             for (task_output_budget, retry_only_before_output) in [(true, false), (false, true)] {
                 let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -533,7 +533,7 @@ async fn route_preflight_keeps_budgeted_children_local_without_compaction_or_usa
 
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -560,7 +560,7 @@ fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
             LocalSet::new().block_on(&runtime, async {
                 crate::jev::set_test_decision_answers([]);
                 crate::jev::set_test_local_config(Default::default());
-                crate::jev::set_test_tier_config(Default::default());
+                crate::jev::set_test_reasoning_model(None);
 
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("test").with_api_backend("responses"),
@@ -773,7 +773,7 @@ fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
                 );
                 crate::jev::clear_test_decision_answers();
                 crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
+                crate::jev::clear_test_reasoning_model();
             });
         })
         .expect("spawn large-stack test thread")
@@ -808,7 +808,7 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
             // an exhausted test queue returns None without a provider call.
             crate::jev::set_test_decision_answers([]);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_reasoning_model(None);
 
             let server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test").with_api_backend("responses"),
@@ -1207,7 +1207,7 @@ fn deepinfra_overflow_compacts_rebuilds_once_and_allows_later_growth() {
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
             });
         })
         .expect("spawn large-stack test thread")

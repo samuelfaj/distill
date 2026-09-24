@@ -373,7 +373,7 @@ mod tests {
             other => panic!("expected QueueCommand, got {other:?}"),
         }
     }
-    /// `/model` selects the primary worker by display name or id.
+    /// `/model` selects the main model by display name or id.
     #[test]
     fn model_resolves_by_display_name() {
         let models = sample_models();
@@ -381,10 +381,10 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "Grok 4.5");
         match result {
-            CommandResult::Action(Action::SetTierLight(id, None)) => {
-                assert_eq!(id, "grok-4.5");
+            CommandResult::Action(Action::SetDefaultModel(id)) => {
+                assert_eq!(id.0.as_ref(), "grok-4.5");
             }
-            other => panic!("expected worker selection, got {other:?}"),
+            other => panic!("expected SetDefaultModel (main model), got {other:?}"),
         }
     }
     #[test]
@@ -394,10 +394,10 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "grok-4.3");
         match result {
-            CommandResult::Action(Action::SetTierLight(id, None)) => {
-                assert_eq!(id, "grok-4.3");
+            CommandResult::Action(Action::SetDefaultModel(id)) => {
+                assert_eq!(id.0.as_ref(), "grok-4.3");
             }
-            other => panic!("expected worker selection, got {other:?}"),
+            other => panic!("expected SetDefaultModel (main model), got {other:?}"),
         }
     }
     #[test]
@@ -407,10 +407,10 @@ mod tests {
         let cmd = model::ModelCommand;
         let result = cmd.run(&mut ctx, "grok 4.5");
         match result {
-            CommandResult::Action(Action::SetTierLight(id, None)) => {
-                assert_eq!(id, "grok-4.5");
+            CommandResult::Action(Action::SetDefaultModel(id)) => {
+                assert_eq!(id.0.as_ref(), "grok-4.5");
             }
-            other => panic!("expected worker selection, got {other:?}"),
+            other => panic!("expected SetDefaultModel (main model), got {other:?}"),
         }
     }
     #[test]
@@ -462,7 +462,8 @@ mod tests {
         };
         let cmd = model::ModelCommand;
         let items = cmd.suggest_args(&ctx, "").expect("should have suggestions");
-        assert_eq!(items.len(), 3);
+        // One row per model and no `clear`: the main model is required.
+        assert_eq!(items.len(), 2);
         assert!(
             items
                 .iter()

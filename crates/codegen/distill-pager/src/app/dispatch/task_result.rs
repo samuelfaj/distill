@@ -2408,12 +2408,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     "default_model" => state.finish_setting_persistence(
                         key,
                         true,
-                        "Reasoning model saved for planning and review.",
+                        "Main model saved. Continue when ready.",
                     ),
-                    "tier_light" => state.finish_setting_persistence(
+                    "reasoning_model" => state.finish_setting_persistence(
                         key,
                         true,
-                        "Worker model saved as the main session model.",
+                        "Reasoning model saved for planning and review.",
                     ),
                     _ => {}
                 }
@@ -2443,12 +2443,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                     "default_model" => state.finish_setting_persistence(
                         key,
                         false,
-                        format!("Primary model was not saved: {scrubbed}. Try again."),
+                        format!("Main model was not saved: {scrubbed}. Try again."),
                     ),
-                    "tier_light" => state.finish_setting_persistence(
+                    "reasoning_model" => state.finish_setting_persistence(
                         key,
                         false,
-                        format!("Worker model was not saved: {scrubbed}. Try again."),
+                        format!("Reasoning model was not saved: {scrubbed}. Try again."),
                     ),
                     _ => {}
                 }
@@ -2463,15 +2463,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 "setting persist failed (best-effort); in-memory state stays at optimistic value",
             );
             let scrubbed = scrub_error_for_toast(&error);
-            if key == "tier_light"
-                && let Some(state) = app.onboarding.as_mut()
-            {
-                state.finish_setting_persistence(
-                    key,
-                    false,
-                    format!("Worker model was not saved: {scrubbed}. Try again."),
-                );
-            }
             app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
             vec![]
         }

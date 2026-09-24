@@ -241,7 +241,7 @@ fn cancel_before_first_activity_resets_state_and_discards_orphan_response() {
     assert_eq!(expect_agent(&app, id).scrollback.len(), 0);
 }
 #[test]
-fn reasoning_model_does_not_change_chat_session() {
+fn set_default_model_allowed_when_agent_chat_kind() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("auto"));
@@ -257,8 +257,14 @@ fn reasoning_model_does_not_change_chat_session() {
         );
     app.agents.get_mut(&id).unwrap().chat_kind = true;
     let effects = dispatch(Action::SetDefaultModel(model_id.clone()), &mut app);
-    assert!(effects.is_empty());
-    assert!(!expect_agent(&app, id).session.model_switch_pending);
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SwitchModel { model_id: mid, .. } if mid == &model_id
+        )),
+        "chat_kind must still emit SwitchModel for live chat mode switches"
+    );
+    assert!(expect_agent(&app, id).session.model_switch_pending);
 }
 
 #[test]
@@ -285,7 +291,7 @@ fn onboarding_model_dispatch_marks_saving_only_when_default_write_is_emitted() {
     app.agents.get_mut(&id).unwrap().session.models.effort_auto = false;
     app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
 
-    let effects = dispatch(Action::SetDefaultModel(model_id.clone()), &mut app);
+    let effects = dispatch(Action::SetDefaultModel(model_id), &mut app);
     assert!(effects.iter().any(|effect| matches!(
         effect,
         Effect::PersistSetting {
@@ -297,12 +303,12 @@ fn onboarding_model_dispatch_marks_saving_only_when_default_write_is_emitted() {
         app.onboarding
             .as_ref()
             .and_then(|state| state.status.as_deref())
-            .is_some_and(|status| status.to_lowercase().contains("saving"))
+            .is_some_and(|status| status.contains("saving"))
     );
 }
 
 #[test]
-fn onboarding_chat_session_does_not_save_reasoning_model() {
+fn onboarding_chat_session_reports_runtime_model_without_waiting_for_save() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-chat"));
@@ -327,11 +333,16 @@ fn onboarding_chat_session_does_not_save_reasoning_model() {
             ..
         }
     )));
-    assert!(!expect_agent(&app, id).session.model_switch_pending);
+    assert!(
+        app.onboarding
+            .as_ref()
+            .and_then(|state| state.status.as_deref())
+            .is_some_and(|status| status.contains("no saved default"))
+    );
 }
 
 #[test]
-fn onboarding_reasoning_selection_does_not_replace_cli_worker_override() {
+fn onboarding_cli_override_does_not_claim_runtime_model_is_saved() {
     let mut app = test_app();
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-cli"));
     app.models.available.insert(
@@ -343,14 +354,18 @@ fn onboarding_reasoning_selection_does_not_replace_cli_worker_override() {
     app.cli_model_override = Some(model_id.clone());
     app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
 
-    let effects = dispatch(Action::SetDefaultModel(model_id.clone()), &mut app);
-    assert!(matches!(effects.as_slice(), [Effect::PersistSetting { key: "default_model", .. }]));
-    assert_eq!(app.cli_model_override, Some(model_id));
+    let effects = dispatch(Action::SetDefaultModel(model_id), &mut app);
+    assert!(effects.is_empty());
+    assert!(app
+        .onboarding
+        .as_ref()
+        .and_then(|state| state.status.as_deref())
+        .is_some_and(|status| status.contains("CLI override") && status.contains("not changed")));
 }
 
-/// `/model <name>` saves the worker and switches the active session.
+/// `/model <name>` dispatches `SetDefaultModel` which routes through both `PersistSetting` and `SwitchModel`.
 #[test]
-fn slash_model_selects_worker_with_switch_and_persist() {
+fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
@@ -368,14 +383,17 @@ fn slash_model_selects_worker_with_switch_and_persist() {
     assert_eq!(
         effects.len(),
         2,
-        "expected PersistTierModel + SwitchModel effects, got {effects:?}",
+        "expected PersistSetting + SwitchModel effects, got {effects:?}",
     );
     assert!(
         matches!(
             effects.first(),
-            Some(Effect::PersistTierModel { worker: true, model, .. }) if model == "grok-4.5"
+            Some(Effect::PersistSetting {
+                key: "default_model",
+                ..
+            })
         ),
-        "first effect must save the worker, got {:?}",
+        "first effect must be PersistSetting(default_model), got {:?}",
         effects.first(),
     );
     assert!(
@@ -385,29 +403,88 @@ fn slash_model_selects_worker_with_switch_and_persist() {
     );
     assert!(expect_agent(&app, id).session.model_switch_pending);
 }
-
+/// The reasoning model is a separate, optional preference: choosing it saves
+/// `[models].reasoning` and must never switch the session off its main model.
 #[test]
-fn slash_reasoning_model_keeps_worker_session_active() {
+fn slash_reasoning_model_saves_reasoning_and_keeps_main_session() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
-    let worker = acp::ModelId::new("chatgpt/gpt-6-luna");
-    app.agents.get_mut(&agent_id).unwrap().session.models.available.insert(
-        worker.clone(),
-        acp::ModelInfo::new(worker.clone(), "GPT-6-Luna"),
-    );
-    app.agents.get_mut(&agent_id).unwrap().session.models.set_current(worker.clone(), None);
+    let main = acp::ModelId::new("chatgpt/gpt-6-luna");
     let reasoning = acp::ModelId::new("reasoning-test-sol");
-    app.agents.get_mut(&agent_id).unwrap().session.models.available.insert(
-        reasoning.clone(),
-        acp::ModelInfo::new(reasoning.clone(), "Reasoning Test Sol"),
+    {
+        let models = &mut app.agents.get_mut(&agent_id).unwrap().session.models;
+        models
+            .available
+            .insert(main.clone(), acp::ModelInfo::new(main.clone(), "GPT-6-Luna"));
+        models.available.insert(
+            reasoning.clone(),
+            acp::ModelInfo::new(reasoning.clone(), "Reasoning Test Sol"),
+        );
+        models.set_current(main.clone(), None);
+    }
+
+    let effects = dispatch(
+        Action::SendPrompt("/reasoning-model Reasoning Test Sol".into()),
+        &mut app,
     );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "reasoning_model",
+            value: crate::settings::SettingValue::String(saved),
+            ..
+        }] if saved == "reasoning-test-sol"
+    ));
+    let agent = expect_agent(&app, agent_id);
+    assert_eq!(agent.session.models.current, Some(main.clone()));
+    assert_eq!(agent.session.models.reasoning_model, Some(reasoning));
+    assert!(!agent.session.model_switch_pending);
 
-    let effects = dispatch(Action::SendPrompt("/reasoning-model Reasoning Test Sol".into()), &mut app);
-
-    assert!(matches!(effects.as_slice(), [Effect::PersistSetting { key: "default_model", .. }]));
-    assert_eq!(expect_agent(&app, agent_id).session.models.current, Some(worker));
-    assert_eq!(expect_agent(&app, agent_id).session.models.reasoning_model, Some(reasoning));
+    let effects = dispatch(Action::SendPrompt("/reasoning-model clear".into()), &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::PersistSetting {
+            key: "reasoning_model",
+            value: crate::settings::SettingValue::String(saved),
+            ..
+        }] if saved.is_empty()
+    ));
+    let agent = expect_agent(&app, agent_id);
+    assert_eq!(agent.session.models.reasoning_model, None);
+    assert_eq!(agent.session.models.current, Some(main));
 }
+
+/// A failed reasoning write restores the previous reasoning mirror and leaves
+/// the main model alone.
+#[test]
+fn reasoning_model_rollback_restores_only_the_reasoning_mirror() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let main = acp::ModelId::new("main-model");
+    app.agents
+        .get_mut(&agent_id)
+        .unwrap()
+        .session
+        .models
+        .set_current(main.clone(), None);
+    app.models.reasoning_model = Some(acp::ModelId::new("new-reasoning"));
+    apply_setting_rollback(
+        &mut app,
+        "reasoning_model",
+        &crate::settings::SettingValue::String("old-reasoning".to_owned()),
+    );
+    assert_eq!(
+        app.models.reasoning_model,
+        Some(acp::ModelId::new("old-reasoning"))
+    );
+    let agent = expect_agent(&app, agent_id);
+    assert_eq!(
+        agent.session.models.reasoning_model,
+        Some(acp::ModelId::new("old-reasoning"))
+    );
+    assert_eq!(agent.session.models.current, Some(main));
+}
+
 #[test]
 fn model_switch_pending_resets_correctly_across_success_and_failure() {
     let mut app = test_app_with_agent();
@@ -1449,7 +1526,8 @@ fn clear_default_model_persists_but_keeps_live_current() {
         "clear_default_model must NOT mutate live agent.session.models.current",
     );
 }
-/// Setting a reasoning model updates only the secondary selection.
+/// `Action::SetDefaultModel(<known id>)` resolves the id against the live catalog, mutates current, and emits PersistSetting and SwitchModel effects.
+/// This is the dispatch-level analog of `slash_model_valid_dispatches_set_default_model_with_switch_and_persist`.
 #[test]
 fn set_default_model_resolves_known_name() {
     use agent_client_protocol as acp;
@@ -1466,15 +1544,20 @@ fn set_default_model_resolves_known_name() {
         .available
         .insert(id.clone(), info);
     let effects = dispatch(Action::SetDefaultModel(id.clone()), &mut app);
-    assert_eq!(effects.len(), 1);
+    assert_eq!(effects.len(), 2);
     assert!(matches!(effects.first(), Some(Effect::PersistSetting {
             key: "default_model",
             value: crate::settings::SettingValue::String(s),
             .. }) if s == "grok-4.5"));
-    assert_eq!(expect_agent(&app, agent_id).session.models.reasoning_model, Some(id));
-    assert!(!expect_agent(&app, agent_id).session.model_switch_pending);
+    assert!(
+        matches!(effects.get(1), Some(Effect::SwitchModel { model_id: mid, .. }) if mid == &id)
+    );
+    assert_eq!(
+        expect_agent(&app, agent_id).session.models.current,
+        Some(id)
+    );
 }
-/// Re-dispatching the same reasoning id is idempotent and leaves worker effort alone.
+/// Re-dispatching the same model id is idempotent: no PersistSetting, no SwitchModel, no reasoning_effort reset.
 #[test]
 fn set_default_model_idempotent_when_already_current() {
     use agent_client_protocol as acp;
@@ -1503,8 +1586,12 @@ fn set_default_model_idempotent_when_already_current() {
         .models
         .effort_auto = false;
     let effects = dispatch(Action::SetDefaultModel(id.clone()), &mut app);
-    assert!(matches!(effects.as_slice(), [Effect::PersistSetting { key: "default_model", .. }]));
-    assert!(!expect_agent(&app, agent_id).session.models.effort_auto);
+    assert!(expect_agent(&app, agent_id).session.models.effort_auto);
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::SwitchModel { effort: None, .. }))
+    );
     let effects = dispatch(Action::SetDefaultModel(id), &mut app);
     assert!(
         effects.is_empty(),
@@ -3660,7 +3747,7 @@ fn set_plan_mode_refreshes_open_modal_pager_snapshot() {
     );
 }
 #[test]
-fn new_session_inherits_reasoning_selection_without_switching_worker() {
+fn new_session_inherits_switched_default_model_for_welcome() {
     use crate::acp::model_state::ModelState;
     use std::sync::Arc;
     let mut app = test_app_with_agent();
@@ -3676,19 +3763,19 @@ fn new_session_inherits_reasoning_selection_without_switching_worker() {
     models.current = Some(id_a.clone());
     app.models = models.clone();
     app.agents.get_mut(&AgentId(0)).unwrap().session.models = models;
-    let effects = dispatch(Action::SetDefaultModel(id_b.clone()), &mut app);
-    assert!(matches!(effects.as_slice(), [Effect::PersistSetting { key: "default_model", .. }]));
+    assert!(set_default_model_inner(&mut app, &id_b));
     assert_eq!(
         app.models.current.as_ref(),
-        Some(&id_a),
-        "reasoning selection must not replace the main worker"
+        Some(&id_b),
+        "the switch must update the app-level default new sessions clone"
     );
     let _ = dispatch(Action::NewSession, &mut app);
     let new_agent = app.agents.get(&AgentId(1)).expect("new session created");
     assert_eq!(
-        new_agent.session.models.reasoning_model_name().as_deref(),
+        new_agent.session.models.current_model_name().as_deref(),
         Some("Model B"),
-        "the new session must inherit the configured secondary reasoning model"
+        "the new session — and its committed welcome card — must show the \
+             switched model, not the previous default"
     );
 }
 /// Without config, the action is unregistered: Ctrl+R on scrollback does nothing for mouse reporting (Ctrl+R is unbound on the prompt).

@@ -1558,7 +1558,7 @@ fn pick_over_cli_seed_keeps_display_as_rollback_target() {
     );
 }
 #[test]
-fn deferred_worker_switch_updates_display_without_replacing_reasoning() {
+fn deferred_switch_updates_display_and_persists() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let model_id = acp::ModelId::new(std::sync::Arc::from("model-b"));
@@ -1589,7 +1589,13 @@ fn deferred_worker_switch_updates_display_without_replacing_reasoning() {
         !agent.session.model_switch_pending,
         "nothing is in flight yet — the queue must not be blocked"
     );
-    assert!(effects.is_empty(), "the worker switch must not persist the reasoning model");
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::PersistPreferredModel { model_id: m, .. }] if m == &model_id
+        ),
+        "expected a single PersistPreferredModel effect, got {effects:?}"
+    );
     let effects = dispatch(
         Action::SwitchModel {
             model_id: model_id.clone(),

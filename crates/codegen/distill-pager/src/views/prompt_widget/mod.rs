@@ -357,22 +357,22 @@ pub struct PromptInfo<'a> {
     pub usage_warning: Option<&'a str>,
     /// When true the warning uses the yellow warning color (5% or less left); when false it uses dim grey text (5-10% left).
     pub usage_warning_critical: bool,
-    /// The main/secondary model summary shown before the `change` action.
+    /// The main/reasoning model summary shown before the `change` action.
     pub model_tiers: Option<&'a PromptModelTiers>,
 }
 
 /// Model tiers rendered in the prompt footer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptModelTiers {
-    pub primary: String,
+    pub main: String,
     pub reasoning: Option<String>,
 }
 
 impl PromptModelTiers {
     pub fn from_model_state(models: &crate::acp::ModelState) -> Option<Self> {
-        let primary = models.current_model_name()?;
+        let main = models.current_model_name()?;
         Some(Self {
-            primary: models.effort_label(&primary),
+            main: models.effort_label(&main),
             reasoning: models.reasoning_model_name(),
         })
     }
@@ -3526,7 +3526,7 @@ impl PromptWidget {
             let primary_style = Style::default().fg(theme.accent_skill).bg(bg);
             let reasoning_style = Style::default().fg(theme.accent_success).bg(bg);
             left_spans.push(Span::styled("Main: ", primary_style));
-            left_spans.push(Span::styled(tiers.primary.as_str(), primary_style));
+            left_spans.push(Span::styled(tiers.main.as_str(), primary_style));
             if let Some(reasoning) = &tiers.reasoning {
                 left_spans.push(Span::styled(" | ", sep_style));
                 left_spans.push(Span::styled("Reasoning: ", reasoning_style));

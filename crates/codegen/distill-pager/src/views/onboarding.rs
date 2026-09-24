@@ -1,7 +1,7 @@
 //! Four-step first-run onboarding for the Distill TUI.
 //!
 //! The state is deliberately independent from authentication and model storage. The host
-//! translates the small commands below into the existing login, `/model`, worker, persistence,
+//! translates the small commands below into the existing login, `/model`, `/reasoning-model`, persistence,
 //! and browser actions, so closing this overlay never creates a second account or model path.
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
@@ -21,7 +21,7 @@ pub const X_URL: &str = "https://x.com/samfajreldines/";
 pub enum OnboardingStep {
     Budget,
     Connect,
-    Worker,
+    Reasoning,
     Community,
 }
 
@@ -30,7 +30,7 @@ impl OnboardingStep {
         match self {
             Self::Budget => 0,
             Self::Connect => 1,
-            Self::Worker => 2,
+            Self::Reasoning => 2,
             Self::Community => 3,
         }
     }
@@ -39,7 +39,7 @@ impl OnboardingStep {
         match index.min(STEP_COUNT - 1) {
             0 => Self::Budget,
             1 => Self::Connect,
-            2 => Self::Worker,
+            2 => Self::Reasoning,
             _ => Self::Community,
         }
     }
@@ -48,7 +48,7 @@ impl OnboardingStep {
         match self {
             Self::Budget => "Make your AI budget go further",
             Self::Connect => "Connect your AI",
-            Self::Worker => "Choose a worker model",
+            Self::Reasoning => "Choose a reasoning model (optional)",
             Self::Community => "Stay in the loop",
         }
     }
@@ -64,7 +64,7 @@ pub enum OnboardingCommand {
     CancelGrokLogin,
     CancelProviderLogin(LoginProvider),
     SelectModel(usize),
-    SelectWorker(usize),
+    SelectReasoning(usize),
     OpenX,
     Complete,
 }
@@ -88,8 +88,8 @@ pub struct OnboardingState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingSetting {
-    PrimaryModel,
-    WorkerModel,
+    MainModel,
+    ReasoningModel,
 }
 
 impl Default for OnboardingState {
@@ -168,15 +168,15 @@ impl OnboardingState {
         self.status_is_error = true;
     }
 
-    pub fn set_primary_model_pending(&mut self) {
-        self.setting_pending = Some(PendingSetting::PrimaryModel);
-        self.status = Some("Saving the secondary reasoning model…".to_owned());
+    pub fn set_main_model_pending(&mut self) {
+        self.setting_pending = Some(PendingSetting::MainModel);
+        self.status = Some("Main model updated; saving it…".to_owned());
         self.status_is_error = false;
     }
 
-    pub fn set_worker_model_pending(&mut self) {
-        self.setting_pending = Some(PendingSetting::WorkerModel);
-        self.status = Some("Saving the worker model…".to_owned());
+    pub fn set_reasoning_model_pending(&mut self) {
+        self.setting_pending = Some(PendingSetting::ReasoningModel);
+        self.status = Some("Saving the reasoning model…".to_owned());
         self.status_is_error = false;
     }
 
@@ -187,8 +187,8 @@ impl OnboardingState {
         message: impl Into<String>,
     ) {
         let expected = match key {
-            "default_model" => PendingSetting::PrimaryModel,
-            "tier_light" => PendingSetting::WorkerModel,
+            "default_model" => PendingSetting::MainModel,
+            "reasoning_model" => PendingSetting::ReasoningModel,
             _ => return,
         };
         if self.setting_pending != Some(expected) {
@@ -217,16 +217,16 @@ impl OnboardingState {
         self.status_is_error = false;
     }
 
-    fn item_count(&self, model_count: usize, worker_count: usize) -> usize {
+    fn item_count(&self, model_count: usize, reasoning_count: usize) -> usize {
         match self.step {
             OnboardingStep::Budget => 1,
             OnboardingStep::Connect => 4 + model_count,
-            OnboardingStep::Worker => worker_count + 2,
+            OnboardingStep::Reasoning => reasoning_count + 2,
             OnboardingStep::Community => 2,
         }
     }
 
-    fn activate(&mut self, model_count: usize, worker_count: usize) -> Option<OnboardingCommand> {
+    fn activate(&mut self, model_count: usize, reasoning_count: usize) -> Option<OnboardingCommand> {
         match self.step {
             OnboardingStep::Budget => {
                 self.set_step(OnboardingStep::Connect);
@@ -249,14 +249,14 @@ impl OnboardingState {
                     Some(OnboardingCommand::SelectModel(selected - 3))
                 }
                 _ => {
-                    self.set_step(OnboardingStep::Worker);
+                    self.set_step(OnboardingStep::Reasoning);
                     Some(OnboardingCommand::Continue)
                 }
             },
-            OnboardingStep::Worker => {
-                if self.selected < worker_count {
-                    Some(OnboardingCommand::SelectWorker(self.selected))
-                } else if self.selected == worker_count {
+            OnboardingStep::Reasoning => {
+                if self.selected < reasoning_count {
+                    Some(OnboardingCommand::SelectReasoning(self.selected))
+                } else if self.selected == reasoning_count {
                     self.set_step(OnboardingStep::Community);
                     Some(OnboardingCommand::Continue)
                 } else {
@@ -279,7 +279,7 @@ impl OnboardingState {
         &mut self,
         ev: &Event,
         model_count: usize,
-        worker_count: usize,
+        reasoning_count: usize,
     ) -> Option<OnboardingCommand> {
         if self.completion_pending || self.setting_pending.is_some() {
             return None;
@@ -312,7 +312,7 @@ impl OnboardingState {
             {
                 self.selected = *index;
                 self.follow_selection = true;
-                return self.activate(model_count, worker_count);
+                return self.activate(model_count, reasoning_count);
             }
             return None;
         }
@@ -337,7 +337,7 @@ impl OnboardingState {
         }
         match key.code {
             KeyCode::Up => {
-                let count = self.item_count(model_count, worker_count);
+                let count = self.item_count(model_count, reasoning_count);
                 self.selected = if self.selected == 0 {
                     count.saturating_sub(1)
                 } else {
@@ -347,7 +347,7 @@ impl OnboardingState {
                 None
             }
             KeyCode::Down | KeyCode::Tab => {
-                let count = self.item_count(model_count, worker_count).max(1);
+                let count = self.item_count(model_count, reasoning_count).max(1);
                 self.selected = (self.selected + 1) % count;
                 self.follow_selection = true;
                 None
@@ -369,7 +369,7 @@ impl OnboardingState {
                 None
             }
             KeyCode::End => {
-                self.selected = self.item_count(model_count, worker_count).saturating_sub(1);
+                self.selected = self.item_count(model_count, reasoning_count).saturating_sub(1);
                 self.follow_selection = true;
                 None
             }
@@ -379,13 +379,13 @@ impl OnboardingState {
                 }
                 None
             }
-            KeyCode::Right | KeyCode::Enter => self.activate(model_count, worker_count),
+            KeyCode::Right | KeyCode::Enter => self.activate(model_count, reasoning_count),
             KeyCode::Char('s') => match self.step {
                 OnboardingStep::Budget | OnboardingStep::Connect => {
                     self.set_step(OnboardingStep::from_index(self.step.index() + 1));
                     Some(OnboardingCommand::Continue)
                 }
-                OnboardingStep::Worker => {
+                OnboardingStep::Reasoning => {
                     self.set_step(OnboardingStep::Community);
                     Some(OnboardingCommand::Continue)
                 }
@@ -445,8 +445,8 @@ pub fn render_onboarding(
     state: &mut OnboardingState,
     compact: bool,
     models: &[(String, String)],
-    workers: &[(String, String)],
-    current_worker: Option<&str>,
+    reasoning_options: &[(String, String)],
+    current_reasoning: Option<&str>,
     provider_auth: Option<crate::app::actions::ProviderAuthState>,
 ) {
     state.pulse = state.pulse.wrapping_add(1);
@@ -503,7 +503,7 @@ pub fn render_onboarding(
         }
         OnboardingStep::Connect => {
             lines.push(Line::from(
-                "Reuse an existing account, then choose a reasoning model for planning and review.",
+                "Reuse an existing account, then choose the main model that runs every session.",
             ));
             lines.push(Line::from("Logins return here after success, error, or cancellation; account status updates here before you choose a model."));
             lines.push(Line::from(""));
@@ -555,7 +555,7 @@ pub fn render_onboarding(
                     &mut row_lines,
                     index + 3,
                     state.selected,
-                    format!("Reasoning model: {name} [{id}]"),
+                    format!("Main model: {name} [{id}]"),
                     &theme,
                 );
             }
@@ -564,30 +564,29 @@ pub fn render_onboarding(
                 &mut row_lines,
                 3 + models.len(),
                 state.selected,
-                "Continue without changing the reasoning model",
+                "Continue without changing the main model",
                 &theme,
             );
         }
-        OnboardingStep::Worker => {
+        OnboardingStep::Reasoning => {
             lines.push(Line::from(
-                "The worker owns the session; the reasoning model handles bounded planning and review.",
+                "The main model runs every step. An optional reasoning model plans and reviews the steps the main model cannot do alone.",
             ));
-            lines.push(Line::from("Automatic routing requires effort set to auto. A worker must also share a compatible backend, connection, and credentials."));
-            if let Some(current) = current_worker.filter(|value| !value.is_empty()) {
+            if let Some(current) = current_reasoning.filter(|value| !value.is_empty()) {
                 lines.push(Line::from(format!(
-                    "Current worker: {current} (Skip keeps it)"
+                    "Current reasoning model: {current} (Skip keeps it)"
                 )));
             }
-            if workers.is_empty() {
-                lines.push(Line::from("No compatible worker is available in the current catalog. Skip keeps the existing configuration."));
+            if reasoning_options.is_empty() {
+                lines.push(Line::from("No other model is available in the current catalog. Skip keeps the existing configuration."));
             } else {
-                for (index, (id, name)) in workers.iter().enumerate() {
+                for (index, (id, name)) in reasoning_options.iter().enumerate() {
                     push_choice_row(
                         &mut lines,
                         &mut row_lines,
                         index,
                         state.selected,
-                        format!("{name} [{id}] · effort auto"),
+                        format!("Reasoning model: {name} [{id}]"),
                         &theme,
                     );
                 }
@@ -595,15 +594,15 @@ pub fn render_onboarding(
             push_choice_row(
                 &mut lines,
                 &mut row_lines,
-                workers.len(),
+                reasoning_options.len(),
                 state.selected,
-                "Skip and keep the current worker",
+                "Skip and keep the current reasoning model",
                 &theme,
             );
             push_choice_row(
                 &mut lines,
                 &mut row_lines,
-                workers.len() + 1,
+                reasoning_options.len() + 1,
                 state.selected,
                 "Continue",
                 &theme,
@@ -803,23 +802,23 @@ mod tests {
     }
 
     #[test]
-    fn model_and_worker_messages_wait_for_persistence_results() {
+    fn main_and_reasoning_messages_wait_for_persistence_results() {
         let mut state = OnboardingState::new();
-        state.set_primary_model_pending();
+        state.set_main_model_pending();
         assert!(state.status.as_deref().unwrap().to_lowercase().contains("saving"));
         state.finish_setting_persistence(
             "default_model",
             true,
-            "Reasoning model saved for planning and review.",
+            "Main model saved. Continue when ready.",
         );
         assert!(!state.status_is_error);
         assert!(state.status.as_deref().unwrap().contains("saved"));
 
-        state.set_worker_model_pending();
+        state.set_reasoning_model_pending();
         state.finish_setting_persistence(
-            "tier_light",
+            "reasoning_model",
             false,
-            "Worker model was not saved: disk full. Try again.",
+            "Reasoning model was not saved: disk full. Try again.",
         );
         assert!(state.status_is_error);
         assert!(state.status.as_deref().unwrap().contains("not saved"));
@@ -908,7 +907,7 @@ mod tests {
 
         let wide_area = Rect::new(0, 0, 80, 24);
         let mut wide_buffer = Buffer::empty(wide_area);
-        state.set_step(OnboardingStep::Worker);
+        state.set_step(OnboardingStep::Reasoning);
         render_onboarding(
             &mut wide_buffer,
             wide_area,

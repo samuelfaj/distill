@@ -827,7 +827,7 @@ fn grok_onboarding_auth_returns_to_connect_after_success_error_or_cancel() {
         let state = app
             .onboarding
             .get_or_insert_with(crate::views::onboarding::OnboardingState::new);
-        state.step = crate::views::onboarding::OnboardingStep::Worker;
+        state.step = crate::views::onboarding::OnboardingStep::Reasoning;
         state.set_auth_started(None);
         app.auth_state = AuthState::Authenticating {
             request_seq: 1,

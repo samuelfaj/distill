@@ -1,7 +1,7 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 use super::super::load::load_config_from_toml;
 use super::super::mcp::{
-    JevLocalPersistConfig, JevPersistConfig, JevTiersPersistConfig, McpConfig,
+    JevLocalPersistConfig, JevPersistConfig, McpConfig,
     parse_mcp_config_with_oauth,
 };
 use super::*;
@@ -1642,10 +1642,6 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
                 model: Some("openrouter-qwen37".into()),
                 effort: Some("auto".into()),
             }),
-            tiers: Some(JevTiersPersistConfig {
-                light: Some("codex-luna".into()),
-                light_effort: Some("high".into()),
-            }),
         },
     );
 
@@ -1654,7 +1650,6 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
         .and_then(|v| v.as_table())
         .expect("the `[jev]` table survives the write");
     assert_eq!(jev["local"]["effort"].as_str(), Some("auto"));
-    assert_eq!(jev["tiers"]["light_effort"].as_str(), Some("high"));
     assert_eq!(
         jev.get("provider").and_then(|v| v.as_str()),
         Some("openrouter_decisions"),
@@ -1675,13 +1670,5 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
             .and_then(|v| v.as_str()),
         Some("openrouter-qwen37"),
         "the cheap-lane pick is the one thing this write changes"
-    );
-    assert_eq!(
-        jev.get("tiers")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("light"))
-            .and_then(|v| v.as_str()),
-        Some("codex-luna"),
-        "the light sibling rides in the same `[jev]` table and survives too"
     );
 }

@@ -228,8 +228,8 @@ the skills listing and the MCP announcements cost in estimated tokens.
 
 The `b2_*` levers route a call to a weaker or local model:
 
-- `b2_light_model` lets the session model's lighter sibling take a call it can
-  fully do, when the conversation fits that model's window.
+- `b2_reasoning_model` lets the main model consult the reasoning model for a
+  step it cannot do alone, so the step is right the first time.
 - `b2_local_model` prefers your configured local model for calls it can finish.
 - `b2_micro_effort` picks the effort level per call, when you set `/effort auto`.
 

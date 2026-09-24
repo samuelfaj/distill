@@ -5,7 +5,7 @@ use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
     set_auto_light_theme_inner, set_auto_update_inner, set_collapsed_edit_blocks_inner,
     set_combine_queued_prompts_inner, set_compact_mode, set_compact_mode_inner,
-    set_confirm_before_rewind_inner, set_contextual_hint_inner,
+    set_confirm_before_rewind_inner, set_contextual_hint_inner, set_default_model_inner,
     set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
     set_follow_up_behavior_inner, set_fork_secondary_model_inner, set_group_tool_verbs_inner,
     set_hunk_tracker_mode_inner, set_invert_scroll_inner, set_keep_text_selection_inner,
@@ -72,7 +72,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 multiline_mode: agent.multiline_mode,
                 yolo_mode: agent.session.is_yolo(),
                 auto_mode: agent.session.is_auto(),
-                current_model_name: agent.session.models.reasoning_model_name(),
+                current_model_name: agent.session.models.current_model_name(),
                 available_models: agent
                     .session
                     .models
@@ -217,7 +217,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         multiline_mode: agent.multiline_mode,
         yolo_mode: agent.session.is_yolo(),
         auto_mode: agent.session.is_auto(),
-        current_model_name: agent.session.models.reasoning_model_name(),
+        current_model_name: agent.session.models.current_model_name(),
         available_models: agent
             .session
             .models
@@ -911,8 +911,64 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             // Other rollback arms must not clobber it from the global canonical
             sync_active_auto_flag(app);
         }
-        // Restore only the secondary-model mirror; the active worker never changed.
+        // default_model: best-effort rollback. If the prior model no longer resolves, leave the optimistic value and log.
         ("default_model", SettingValue::String(s)) => {
+            if s.is_empty() {
+                tracing::warn!(
+                    target: "settings",
+                    key = "default_model",
+                    "rollback to empty string requested but no \
+                     'clear current model' API exists — leaving live \
+                     state at optimistic value (next session reload \
+                     will resolve via shell default-resolution chain)",
+                );
+            } else {
+                // Resolve the prior model ID back to a ModelId and call the typed inner
+                // If resolution fails (the catalog changed mid-flight), log and leave the optimistic value
+                let (resolved, session_id) = if let ActiveView::Agent(aid) = app.active_view
+                    && let Some(agent) = app.agents.get(&aid)
+                {
+                    (
+                        agent.session.models.resolve_by_name_or_id(s),
+                        agent.session.session_id.clone(),
+                    )
+                } else {
+                    (None, None)
+                };
+                match resolved {
+                    Some(id) => {
+                        let _ = set_default_model_inner(app, &id);
+                        // Emit a reverse SwitchModel so the ACP session matches the rolled-back pager mirror
+                        if let ActiveView::Agent(aid) = app.active_view
+                            && let Some(sid) = session_id
+                        {
+                            if let Some(agent) = app.agents.get_mut(&aid) {
+                                agent.session.model_switch_pending = true;
+                            }
+                            companion_effects.push(Effect::SwitchModel {
+                                agent_id: aid,
+                                session_id: sid,
+                                model_id: id,
+                                effort: None,
+                                prev_model_id: None,
+                            });
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "settings",
+                            key = "default_model",
+                            value = %s,
+                            "rollback model id no longer resolves in catalog — \
+                             in-memory state stays at optimistic value; ACP session \
+                             may diverge from pager mirror until next setter dispatch",
+                        );
+                    }
+                }
+            }
+        }
+        // reasoning_model: restore only the mirror; the main model never changed.
+        ("reasoning_model", SettingValue::String(s)) => {
             let previous = if s.is_empty() { None } else { Some(acp::ModelId::new(s.clone())) };
             app.models.reasoning_model = previous.clone();
             for agent in app.agents.values_mut() {
@@ -1022,11 +1078,10 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             };
             set_fork_secondary_model_inner(app, restored);
         }
-        // cheap_model / tier_light: no pager-side mirror to roll back. Both live
-        // in the config file the jev lanes resolve at startup, so the failure
-        // toast is the whole story.
+        // cheap_model: no pager-side mirror to roll back. It lives in the
+        // config file the jev lanes resolve at startup, so the failure toast is
+        // the whole story.
         ("cheap_model", SettingValue::String(_)) => {}
-        ("tier_light", SettingValue::String(_)) => {}
 
         _ => {
             tracing::error!(

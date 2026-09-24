@@ -62,18 +62,6 @@ pub struct Config {
 pub struct JevPersistConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local: Option<JevLocalPersistConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tiers: Option<JevTiersPersistConfig>,
-}
-
-/// The `[jev.tiers]` slice the pager is allowed to write back: which model is
-/// the session model's lighter sibling.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct JevTiersPersistConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub light_effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub light: Option<String>,
 }
 
 /// The `[jev.local]` slice the pager is allowed to write back: which model entry

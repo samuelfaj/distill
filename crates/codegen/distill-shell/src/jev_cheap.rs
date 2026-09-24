@@ -182,7 +182,7 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
                 ),
                 (
                     "reject",
-                    serde_json::json!("keep the configured worker or original content"),
+                    serde_json::json!("keep the main model or original content"),
                 ),
                 (
                     "defer",
@@ -199,7 +199,7 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
                 ),
                 (
                     "reject",
-                    serde_json::json!("keep the configured worker or original content"),
+                    serde_json::json!("keep the main model or original content"),
                 ),
                 (
                     "defer",
@@ -481,7 +481,7 @@ impl CheapLane {
     pub fn from_sampler_config(cfg: &distill_sampler::SamplerConfig) -> Option<Self> {
         // CheapClient is a closed Chat Completions transport with bearer auth.
         // Defer catalog entries that require another wire backend or auth
-        // scheme so the configured worker path can keep its actual pins.
+        // scheme so the main model path can keep its actual pins.
         if cfg.api_backend != distill_sampling_types::ApiBackend::ChatCompletions
             || cfg.auth_scheme != distill_sampler::AuthScheme::Bearer
         {
@@ -852,10 +852,10 @@ impl CheapLane {
     }
 }
 
-/// The configured `[jev.tiers].light` worker. Unlike [`CheapLane`], this keeps
-/// the resolved sampler backend, endpoint, auth and effort intact; it is not a
+/// The main model as an auxiliary lane. Unlike [`CheapLane`], this keeps the
+/// resolved sampler backend, endpoint, auth and effort intact; it is not a
 /// Chat Completions wrapper around the local utility model.
-pub struct WorkerLane {
+pub struct MainLane {
     client: distill_sampler::SamplingClient,
     model: String,
     context_window: u64,
@@ -866,23 +866,13 @@ pub struct WorkerLane {
     idle_timeout: Duration,
 }
 
-impl WorkerLane {
-    /// Build one worker from the catalog-resolved sampler config. Only the
-    /// explicit light-tier effort may override the resolved model default.
-    pub fn from_sampler_config(
-        mut cfg: distill_sampler::SamplerConfig,
-        configured_effort: Option<&str>,
-    ) -> Option<Self> {
+impl MainLane {
+    /// Build the lane from the catalog-resolved sampler config, keeping the
+    /// model's own default effort.
+    pub fn from_sampler_config(cfg: distill_sampler::SamplerConfig) -> Option<Self> {
         let model = cfg.model.trim().to_owned();
         if model.is_empty() || cfg.base_url.trim().is_empty() || cfg.context_window == 0 {
             return None;
-        }
-        if let Some(raw_effort) = configured_effort
-            .map(str::trim)
-            .filter(|effort| !effort.is_empty() && !effort.eq_ignore_ascii_case("auto"))
-        {
-            let effort = raw_effort.parse::<ReasoningEffort>().ok()?;
-            cfg.reasoning_effort = Some(effort);
         }
         let reasoning_effort = cfg.reasoning_effort;
         let max_output_tokens = cfg
@@ -915,7 +905,7 @@ impl WorkerLane {
         &self.model
     }
 
-    /// Conservative payload budget derived from this worker's own context
+    /// Conservative payload budget derived from this main model's own context
     /// window, including its task prompt and the reserved answer budget.
     pub fn max_payload_bytes(&self) -> usize {
         let input_budget = self
@@ -928,7 +918,7 @@ impl WorkerLane {
     }
 
     /// Build one tool-free, extractive task request. The request is rejected
-    /// before transport when the rendered task does not fit this worker's own
+    /// before transport when the rendered task does not fit this main model's own
     /// context plus its reserved output.
     pub fn task_request(
         &self,
@@ -1394,32 +1384,30 @@ mod tests {
     }
 
     #[test]
-    fn configured_worker_keeps_backend_effort_and_own_context_budget() {
-        let lane = WorkerLane::from_sampler_config(
-            distill_sampler::SamplerConfig {
-                api_key: Some("test-key".to_owned()),
-                base_url: "https://worker.example/v1".to_owned(),
-                model: "catalog-light".to_owned(),
-                context_window: 16_384,
-                max_completion_tokens: Some(8_192),
-                api_backend: ApiBackend::Responses,
-                ..Default::default()
-            },
-            Some("high"),
-        )
-        .expect("resolved worker config builds");
+    fn main_lane_keeps_backend_effort_and_own_context_budget() {
+        let lane = MainLane::from_sampler_config(distill_sampler::SamplerConfig {
+            api_key: Some("test-key".to_owned()),
+            base_url: "https://main.example/v1".to_owned(),
+            model: "catalog-main".to_owned(),
+            context_window: 16_384,
+            max_completion_tokens: Some(8_192),
+            api_backend: ApiBackend::Responses,
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        })
+        .expect("resolved main config builds");
 
         assert_eq!(lane.client.api_backend(), ApiBackend::Responses);
         assert_eq!(
             lane.client.attribution_endpoint(),
-            "https://worker.example/v1/responses"
+            "https://main.example/v1/responses"
         );
         assert_eq!(lane.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(lane.max_output_tokens, 1_024);
         let request = lane
             .task_request("cite_spans", "error: failed at src/lib.rs:7", "status")
             .expect("extractive task fits");
-        assert_eq!(request.model.as_deref(), Some("catalog-light"));
+        assert_eq!(request.model.as_deref(), Some("catalog-main"));
         assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(request.length_policy, LengthPolicy::Fail);
         assert!(lane.max_payload_bytes() < 16_384);
@@ -1430,32 +1418,14 @@ mod tests {
             "UTF-8 bytes must not be admitted using a bytes/4 estimate"
         );
 
-        let narrow = WorkerLane::from_sampler_config(
-            distill_sampler::SamplerConfig {
-                api_key: Some("test-key".to_owned()),
-                base_url: "https://worker.example/v1".to_owned(),
-                model: "catalog-light".to_owned(),
-                context_window: 256,
-                ..Default::default()
-            },
-            None,
-        )
-        .expect("narrow worker config still builds");
+        let narrow = MainLane::from_sampler_config(distill_sampler::SamplerConfig {
+            api_key: Some("test-key".to_owned()),
+            base_url: "https://main.example/v1".to_owned(),
+            model: "catalog-main".to_owned(),
+            context_window: 256,
+            ..Default::default()
+        })
+        .expect("narrow main config still builds");
         assert!(narrow.task_request("cite_spans", "error", "status").is_none());
-
-        assert!(
-            WorkerLane::from_sampler_config(
-                distill_sampler::SamplerConfig {
-                    api_key: Some("test-key".to_owned()),
-                    base_url: "https://worker.example/v1".to_owned(),
-                    model: "catalog-light".to_owned(),
-                    context_window: 16_384,
-                    ..Default::default()
-                },
-                Some("not-a-real-effort"),
-            )
-            .is_none(),
-            "an invalid configured effort must defer rather than disappear into the default"
-        );
     }
 }

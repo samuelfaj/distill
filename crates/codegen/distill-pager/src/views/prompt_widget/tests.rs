@@ -3866,12 +3866,12 @@
     }
 
     #[test]
-    fn model_tier_footer_shows_main_worker_and_secondary_reasoning() {
+    fn model_tier_footer_shows_main_and_reasoning() {
         let _guard = crate::theme::cache::pin_theme();
         crate::theme::cache::set(crate::theme::ThemeKind::GrokNight);
         let area = Rect::new(0, 0, 120, 3);
         let tiers = PromptModelTiers {
-            primary: "gpt-6-luna (auto)".to_owned(),
+            main: "gpt-6-luna (auto)".to_owned(),
             reasoning: Some("gpt-6-sol".to_owned()),
         };
         let info = PromptInfo {
@@ -3913,24 +3913,24 @@
     }
 
     #[test]
-    fn model_tier_summary_reads_secondary_separately_from_main_session_model() {
+    fn model_tier_summary_reads_reasoning_separately_from_main_model() {
         let mut models = crate::acp::ModelState::default();
-        let worker = agent_client_protocol::ModelId::new("chatgpt/gpt-6-luna");
+        let main = agent_client_protocol::ModelId::new("chatgpt/gpt-6-luna");
         let reasoning = agent_client_protocol::ModelId::new("chatgpt/gpt-6-sol");
         models.available.insert(
-            worker.clone(),
-            agent_client_protocol::ModelInfo::new(worker.clone(), "GPT-6-Luna"),
+            main.clone(),
+            agent_client_protocol::ModelInfo::new(main.clone(), "GPT-6-Luna"),
         );
         models.available.insert(
             reasoning.clone(),
             agent_client_protocol::ModelInfo::new(reasoning.clone(), "GPT-6-Sol"),
         );
-        models.current = Some(worker);
+        models.current = Some(main);
         models.reasoning_model = Some(reasoning);
         models.effort_auto = true;
 
         let summary = PromptModelTiers::from_model_state(&models).expect("main model");
-        assert_eq!(summary.primary, "GPT-6-Luna (auto)");
+        assert_eq!(summary.main, "GPT-6-Luna (auto)");
         assert_eq!(summary.reasoning.as_deref(), Some("GPT-6-Sol"));
     }
 
@@ -3938,7 +3938,7 @@
     fn model_tier_footer_omits_reasoning_when_unconfigured() {
         let area = Rect::new(0, 0, 80, 3);
         let tiers = PromptModelTiers {
-            primary: "gpt-6-astra (auto)".to_owned(),
+            main: "gpt-6-astra (auto)".to_owned(),
             reasoning: None,
         };
         let info = PromptInfo {

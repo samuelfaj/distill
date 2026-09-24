@@ -104,70 +104,36 @@ pub fn cheap_lane_status() -> String {
     out
 }
 
-/// The session model and configured auxiliary models.
+/// The main, reasoning and utility models.
 ///
-/// `session_model` is the session's own model id, which only the caller knows. The
-/// worker's usability comes from the shell, which is where the rule is enforced.
-/// A tier the harness would refuse must not read as ready here.
+/// `session_model` is the session's own model id, which only the caller knows:
+/// it is the main model, which runs every step.
 pub fn tier_status(session_model: Option<&str>) -> String {
-    let session = session_model.unwrap_or("(no session model yet)");
-    let mut out = format!("Main session model: {session}");
+    let main = session_model.unwrap_or("(no session model yet)");
+    let mut out = format!("Main model: {main}");
     out.push_str(
-        "\n  Handles the full conversation. Set the worker with `/model <name-or-id>`. \
+        "\n  Required. Runs every session and every step. Set it with `/model <name-or-id>`. \
          A configured OpenRouter model can also be entered as `vendor/model`.",
     );
-    if let Some(reasoning) = crate::acp::ModelState::configured_reasoning_model() {
-        out.push_str(&format!("\n\nReasoning model: {}\n  Secondary model for planning and review. Set it with `/reasoning-model <name-or-id>`. ", reasoning.0));
-    }
-    match session_model.map(distill_shell::jev::light_tier_status) {
-        Some(distill_shell::jev::LightTierStatus::Ready {
-            id,
-            name,
-            window,
-            shares_conversation,
-            ..
-        }) => {
-            out.push_str(&format!(
-                "\n\nWorker model: {name} ({window} tokens of context)\n  \
-                 {}",
-                if Some(id.as_str()) == session_model {
-                    "Owns this session; bounded tasks can inherit it."
-                } else {
-                    "Handles routine bounded tasks."
-                }
-            ));
-            out.push_str(if Some(id.as_str()) == session_model {
-                " Use the configured reasoning model for difficult bounded tasks and review."
-            } else if shares_conversation {
-                " It shares the provider, so it can also take a round of the conversation."
-            } else {
-                " It runs on another provider, so it only takes bounded tasks that start from \
-                 their own context (subagents, tool-result compression); the conversation stays \
-                 on the reasoning model instead of being sent twice."
-            });
-        }
-        Some(distill_shell::jev::LightTierStatus::Refused(reason)) => {
-            out.push_str(&format!(
-                "\n\nWorker model: unavailable: {reason}\n  \
-                 Choose a model from the model catalog."
-            ));
-        }
-        Some(distill_shell::jev::LightTierStatus::Unset) | None => {
-            out.push_str(
-                "\n\nWorker model: (not set)\n  \
-                 A worker model handles new build sessions and routine tasks. Set it with \
-                 `/model <model-id>`; a configured OpenRouter model may use `vendor/model`. \
-                 It may run on another provider.",
-            );
-        }
+    match crate::acp::ModelState::configured_reasoning_model() {
+        Some(reasoning) => out.push_str(&format!(
+            "\n\nReasoning model: {}\n  Optional. The main model consults it to plan or \
+             review a step it cannot do alone. Set it with `/reasoning-model <name-or-id>`; \
+             `/reasoning-model clear` removes it.",
+            reasoning.0
+        )),
+        None => out.push_str(
+            "\n\nReasoning model: (not set)\n  Optional. Without it the main model works alone. \
+             Set it with `/reasoning-model <name-or-id>`.",
+        ),
     }
     out.push_str("\n\n");
     out.push_str(&cheap_lane_status());
     out.push_str(
         "\n  Handles short, repetitive, or fallback work at lower cost. Set it with \
          `/utility-model <entry>` or `/utility-model <id>,<id>`.\n\n\
-         You can edit all three fields in the Model tiers screen, or use `/tiers reasoning`, \
-         `/tiers worker`, and `/tiers utility`.",
+         You can edit all three fields in the Model tiers screen, or use `/tiers main`, \
+         `/tiers reasoning`, and `/tiers utility`.",
     );
     out
 }
@@ -235,26 +201,16 @@ mod tests {
         }
     }
 
-    /// The status lists the session and both auxiliary models, and a tier the
-    /// shell refuses must not read as ready.
+    /// The status names the main model first, then the optional reasoning and
+    /// the utility models, each with the command that sets it.
     #[test]
-    fn the_tier_status_names_session_and_auxiliary_models() {
+    fn the_tier_status_names_main_reasoning_and_utility_models() {
         let text = tier_status(Some("grok-4.6"));
-        let hard = text.find("Session model").expect("session model named");
-        let light = text.find("Worker model").expect("worker tier named");
-        let cheap = text.find("Utility model:").expect("utility tier named");
-        assert!(hard < light && light < cheap, "{text}");
-        assert!(text.contains("grok-4.6"), "{text}");
-        // Whatever the machine's config says, the three surfaces agree with the
-        // shell: a refused tier carries its reason instead of a model name.
-        if let Ok(light_id) = std::env::var("PROBE_TIER_LIGHT")
-            && !light_id.trim().is_empty()
-        {
-            assert!(
-                text.contains("refused") || text.contains(&light_id),
-                "{text}"
-            );
-        }
+        let main = text.find("Main model: grok-4.6").expect("main model named");
+        let reasoning = text.find("Reasoning model:").expect("reasoning tier named");
+        let utility = text.find("Utility model:").expect("utility tier named");
+        assert!(main < reasoning && reasoning < utility, "{text}");
+        assert!(text.contains("/model") && text.contains("/reasoning-model"), "{text}");
     }
 
     #[test]

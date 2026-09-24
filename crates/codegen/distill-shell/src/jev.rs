@@ -15,7 +15,7 @@ use distill_workspace::jev::flags::{JevFlags, JevLadderOverlay};
 
 pub use distill_workspace::jev::flags::JevStatus;
 
-use crate::agent::config::{JevConfig, JevLocalConfig, JevTiersConfig};
+use crate::agent::config::{JevConfig, JevLocalConfig};
 
 /// Reads `[jev]` from the merged, overlay-free config layers.
 pub fn resolve_config_from_disk() -> JevConfig {
@@ -77,7 +77,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b2_model_tier: cfg.ladder.b2_model_tier,
             b2_micro_effort: cfg.ladder.b2_micro_effort,
             b2_local_model: cfg.ladder.b2_local_model,
-            b2_light_model: cfg.ladder.b2_light_model,
+            b2_reasoning_model: cfg.ladder.b2_reasoning_model,
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,
@@ -699,12 +699,15 @@ pub struct JevTurnActivity {
     /// Routing of the call that is running now, as the row shows it:
     /// `local low`, `high`, `local`, … (`None` when the round is untouched).
     pub route: Option<String>,
+    /// The reasoning model planning or reviewing this step **right now**, as
+    /// `gpt-6-sol high` (`None` while the main model works alone).
+    pub reasoning: Option<String>,
 }
 
 impl JevTurnActivity {
     /// Nothing to show: no decision in the window and nothing in flight.
     pub const fn is_quiet(&self) -> bool {
-        self.decisions == 0 && self.in_flight == 0
+        self.decisions == 0 && self.in_flight == 0 && self.reasoning.is_none()
     }
 
     /// The chip text, e.g. `jev…`, `jev 0.4s`, `jev ×3`. A final route is
@@ -719,13 +722,18 @@ impl JevTurnActivity {
         }
         // The current micro-action's routing when the decision set one, else the
         // turn's own local marker.
-        let suffix = match &self.route {
-            Some(route) => format!(" ·{route}"),
-            None if self.local_runs > 0 => " ·local".to_owned(),
-            None => String::new(),
+        // While the reasoning model advises, the row names it instead of the
+        // main model's route: that call is the one the turn is waiting on.
+        let suffix = match (&self.reasoning, &self.route) {
+            (Some(reasoning), _) => format!(" ·reasoning {reasoning}"),
+            (None, Some(route)) => format!(" ·{route}"),
+            (None, None) if self.local_runs > 0 => " ·local".to_owned(),
+            (None, None) => String::new(),
         };
         match self.decisions {
-            0 if self.route.is_some() => Some(format!("model{suffix}")),
+            0 if self.route.is_some() || self.reasoning.is_some() => {
+                Some(format!("model{suffix}"))
+            }
             0 if self.in_flight > 0 => Some("jev…".to_owned()),
             0 => None,
             1 => Some(format!(
@@ -914,6 +922,7 @@ struct SessionActivityState {
     ring: std::collections::VecDeque<JevActivity>,
     in_flight: u32,
     route: Option<String>,
+    reasoning: Option<String>,
 }
 
 fn activity_state() -> &'static std::sync::Mutex<ActivityState> {
@@ -1033,6 +1042,7 @@ pub fn turn_activity_for_session(
     let mut activity = JevTurnActivity {
         in_flight: session.in_flight,
         route: session.route.clone(),
+        reasoning: session.reasoning.clone(),
         ..Default::default()
     };
     for entry in session.ring.iter().rev() {
@@ -1060,6 +1070,33 @@ pub fn turn_activity_for_session(
 pub fn reset_activity_for_test() {
     if let Ok(mut state) = activity_state().lock() {
         state.sessions.clear();
+    }
+}
+
+/// Shows the reasoning model on the row for as long as it advises the main
+/// model, and clears it on every exit (answer, error, or a cancelled turn).
+pub struct ReasoningInFlight {
+    session: String,
+}
+
+impl ReasoningInFlight {
+    /// `label` is what the row shows after `reasoning`, e.g. `gpt-6-sol high`.
+    pub fn begin(label: String) -> Self {
+        let session = active_session_id();
+        if let Ok(mut state) = activity_state().lock() {
+            state.sessions.entry(session.clone()).or_default().reasoning = Some(label);
+        }
+        Self { session }
+    }
+}
+
+impl Drop for ReasoningInFlight {
+    fn drop(&mut self) {
+        if let Ok(mut state) = activity_state().lock()
+            && let Some(session) = state.sessions.get_mut(&self.session)
+        {
+            session.reasoning = None;
+        }
     }
 }
 
@@ -1103,7 +1140,6 @@ impl distill_workspace::jev::policy::DecisionSink for ActivitySink {
 }
 
 static LOCAL_MODEL_CONFIG: OnceLock<parking_lot::RwLock<JevLocalConfig>> = OnceLock::new();
-static MODEL_TIERS: OnceLock<parking_lot::RwLock<JevTiersConfig>> = OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -1111,7 +1147,8 @@ thread_local! {
     /// production still reads the process cache below.
     static TEST_LOCAL_MODEL_CONFIG: std::cell::RefCell<Option<JevLocalConfig>> =
         const { std::cell::RefCell::new(None) };
-    static TEST_MODEL_TIERS: std::cell::RefCell<Option<JevTiersConfig>> =
+    /// `Some(None)` pins "no reasoning model" regardless of the disk config.
+    static TEST_REASONING_MODEL: std::cell::RefCell<Option<Option<String>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1127,33 +1164,31 @@ pub fn local_config_cached() -> JevLocalConfig {
         .clone()
 }
 
-/// Snapshot the worker selection used by both the TUI and the next model call.
-pub fn tiers_cached() -> JevTiersConfig {
+/// The configured reasoning model (`[models].reasoning`), or `None` when the
+/// main model works alone. Read from the effective config on every call, so a
+/// `/reasoning-model` pick in the pager reaches the session process at once.
+pub fn reasoning_model() -> Option<String> {
     #[cfg(test)]
-    if let Some(config) = TEST_MODEL_TIERS.with(|config| config.borrow().clone()) {
-        return config;
+    if let Some(model) = TEST_REASONING_MODEL.with(|model| model.borrow().clone()) {
+        return model;
     }
-    MODEL_TIERS
-        .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().tiers))
-        .read()
-        .clone()
+    crate::config::load_effective_config()
+        .ok()?
+        .get("models")?
+        .get("reasoning")?
+        .as_str()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
 }
 
-/// Publish a selection only after its atomic config write succeeds.
-pub(crate) fn update_tier_model_cache(worker: bool, model: String, effort: String) {
-    if worker {
-        let mut config = MODEL_TIERS
-            .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().tiers))
-            .write();
-        config.light = Some(model);
-        config.light_effort = Some(effort);
-    } else {
-        let mut config = LOCAL_MODEL_CONFIG
-            .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().local))
-            .write();
-        config.model = Some(model);
-        config.effort = Some(effort);
-    }
+/// Publish a utility selection only after its atomic config write succeeds.
+pub(crate) fn update_local_model_cache(model: String, effort: String) {
+    let mut config = LOCAL_MODEL_CONFIG
+        .get_or_init(|| parking_lot::RwLock::new(resolve_config_from_disk().local))
+        .write();
+    config.model = Some(model);
+    config.effort = Some(effort);
 }
 
 #[cfg(test)]
@@ -1167,157 +1202,13 @@ pub(crate) fn clear_test_local_config() {
 }
 
 #[cfg(test)]
-pub(crate) fn set_test_tier_config(config: JevTiersConfig) {
-    TEST_MODEL_TIERS.with(|current| *current.borrow_mut() = Some(config));
+pub(crate) fn set_test_reasoning_model(model: Option<String>) {
+    TEST_REASONING_MODEL.with(|current| *current.borrow_mut() = Some(model));
 }
 
 #[cfg(test)]
-pub(crate) fn clear_test_tier_config() {
-    TEST_MODEL_TIERS.with(|current| *current.borrow_mut() = None);
-}
-
-/// What the `[jev.tiers]` block resolves to, for the surfaces that report it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LightTierStatus {
-    /// No light sibling configured: the tier question is never asked.
-    Unset,
-    /// Configured, but unusable, with the reason.
-    Refused(String),
-    /// Configured and usable.
-    Ready {
-        id: String,
-        name: String,
-        effort: String,
-        window: u64,
-        /// Same wire model and transport as the session ([`same_family`]), so
-        /// it may share a round. A different model runs bounded fresh-context
-        /// work (task subagents, tool-result compression) instead.
-        shares_conversation: bool,
-    },
-}
-
-/// Whether two models can stand in for each other for one round.
-///
-/// A full-conversation round can move only between entries for the same wire
-/// model, provider, backend and credential. Another model may accept the
-/// history but cannot reuse this model's cached prompt prefix.
-pub fn same_family(
-    hard: &crate::agent::config::ModelInfo,
-    light: &crate::agent::config::ModelInfo,
-) -> Result<(), String> {
-    if light.base_url != hard.base_url {
-        return Err(format!(
-            "`{}` runs on {} while the session model runs on {}: not the same provider",
-            light.model,
-            light.base_url.trim_end_matches('/'),
-            hard.base_url.trim_end_matches('/'),
-        ));
-    }
-    if light.api_backend != hard.api_backend {
-        return Err(format!(
-            "`{}` speaks {:?} while the session model speaks {:?}",
-            light.model, light.api_backend, hard.api_backend
-        ));
-    }
-    if light.auth_scheme != hard.auth_scheme {
-        return Err(format!(
-            "`{}` and the session model sign in differently; one credential must cover both",
-            light.model
-        ));
-    }
-    if light.model != hard.model {
-        return Err(format!(
-            "`{}` and `{}` are different models; use a fresh bounded worker task instead of replaying the conversation",
-            light.model, hard.model
-        ));
-    }
-    Ok(())
-}
-
-/// Catalog keys that can serve as the worker for `reasoning`: any other entry,
-/// on any provider. Whether it may also share the conversation is
-/// [`same_family`]'s answer, reported by [`light_tier_status`].
-pub fn worker_candidates(reasoning: &str) -> Vec<String> {
-    let Ok(raw) = crate::config::load_effective_config() else {
-        return Vec::new();
-    };
-    let Ok(cfg) = crate::agent::config::Config::new_from_toml_cfg(&raw) else {
-        return Vec::new();
-    };
-    let models = crate::agent::config::resolve_model_list(&cfg, None);
-    if crate::agent::config::find_model_by_id(&models, reasoning).is_none() {
-        return Vec::new();
-    }
-    models
-        .keys()
-        .filter(|id| id.as_str() != reasoning)
-        .cloned()
-        .collect()
-}
-
-/// Validate a worker candidate against the currently selected reasoning model.
-/// Both entries must exist in the resolved model catalog, so the worker has its
-/// own endpoint, backend and credential. A different wire model only takes
-/// bounded fresh-context work and never a round of the session's conversation
-/// (see [`LightTierStatus::Ready::shares_conversation`]).
-pub fn validate_light_tier_candidate(hard_model: &str, light_model: &str) -> Result<(), String> {
-    let raw = crate::config::load_effective_config()
-        .map_err(|_| "the model catalog could not be read".to_owned())?;
-    let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw)
-        .map_err(|_| "the model catalog could not be read".to_owned())?;
-    let models = crate::agent::config::resolve_model_list(&cfg, None);
-    crate::agent::config::find_model_by_id(&models, hard_model)
-        .ok_or_else(|| format!("`{hard_model}` is not in the model catalog"))?;
-    crate::agent::config::find_model_by_id(&models, light_model)
-        .ok_or_else(|| format!("`{light_model}` is not in the model catalog"))?;
-    Ok(())
-}
-
-/// The light tier against the on-disk catalog, for the surfaces that report it.
-///
-/// `hard_model` is the session's own model, which only the caller knows. The
-/// session itself resolves the same rule against the live catalog.
-pub fn light_tier_status(hard_model: &str) -> LightTierStatus {
-    let Some(id) = tiers_cached()
-        .light
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-    else {
-        return LightTierStatus::Unset;
-    };
-    let catalog = || {
-        let raw = crate::config::load_effective_config().ok()?;
-        let cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).ok()?;
-        Some(crate::agent::config::resolve_model_list(&cfg, None))
-    };
-    let Some(models) = catalog() else {
-        return LightTierStatus::Refused("the config could not be read".to_owned());
-    };
-    let Some(hard) = crate::agent::config::find_model_by_id(&models, hard_model) else {
-        return LightTierStatus::Refused(format!("`{hard_model}` is not in the catalog"));
-    };
-    let Some(light) = crate::agent::config::find_model_by_id(&models, &id) else {
-        return LightTierStatus::Refused(format!(
-            "`{id}` is not a catalog entry: add a [model.{id}] block so the harness knows its \
-             endpoint and window"
-        ));
-    };
-    let shares_conversation = same_family(&hard.info, &light.info).is_ok();
-    LightTierStatus::Ready {
-        id,
-        name: light
-            .info
-            .name
-            .clone()
-            .unwrap_or_else(|| light.info.model.clone()),
-        effort: tiers_cached()
-            .light_effort
-            .unwrap_or_else(|| "auto".to_owned()),
-        window: light.info.context_window.get(),
-        shares_conversation,
-    }
+pub(crate) fn clear_test_reasoning_model() {
+    TEST_REASONING_MODEL.with(|current| *current.borrow_mut() = None);
 }
 
 /// Whether a session starts in auto effort: the decision layer picks the effort
@@ -1586,7 +1477,7 @@ mod catalogue_helper_tests {
         reset_activity_for_test();
         let before = std::time::Instant::now();
         note_decision("p1_tool_family", "defer", 410);
-        note_decision("b2_light_model", "refused", 380);
+        note_decision("b2_reasoning_model", "refused", 380);
         note_decision(LOCAL_LEVER, LOCAL_DECISION, 1200);
         // A window that opens *after* the two decisions, offset past any clock
         // granularity, so "was it in this turn?" cannot depend on timer detail.
@@ -1647,6 +1538,32 @@ mod catalogue_helper_tests {
             turn.label().as_deref(),
             Some("jev ×80"),
             "the chip names the real count, not a ring size"
+        );
+        reset_activity_for_test();
+    }
+
+    /// While the reasoning model advises, the row must say so: the turn is
+    /// waiting on that call, not on the main model. Once it answers (or the
+    /// call fails), the row goes back to the main model's route.
+    #[serial_test::serial]
+    #[test]
+    fn the_row_names_the_reasoning_model_only_while_it_advises() {
+        reset_activity_for_test();
+        note_decision("b2_reasoning_model", "consult", 300);
+        note_route(Some("gpt-6-luna"), Some("medium"));
+        assert_eq!(
+            turn_activity(None).label().as_deref(),
+            Some("jev 0.3s ·gpt-6-luna medium")
+        );
+        let advising = ReasoningInFlight::begin("gpt-6-sol high".to_owned());
+        assert_eq!(
+            turn_activity(None).label().as_deref(),
+            Some("jev 0.3s ·reasoning gpt-6-sol high")
+        );
+        drop(advising);
+        assert_eq!(
+            turn_activity(None).label().as_deref(),
+            Some("jev 0.3s ·gpt-6-luna medium")
         );
         reset_activity_for_test();
     }
@@ -1785,64 +1702,5 @@ mod catalogue_helper_tests {
         assert_eq!(child.route.as_deref(), Some("child-model medium"));
         assert!(turn_activity_for_session("other", None).is_quiet());
         reset_activity_for_test();
-    }
-}
-
-#[cfg(test)]
-mod tier_rule_tests {
-    use super::*;
-    use crate::agent::config::ModelInfo;
-    use std::num::NonZeroU64;
-
-    fn model(slug: &str, base_url: &str) -> ModelInfo {
-        ModelInfo {
-            model: slug.to_owned(),
-            base_url: base_url.to_owned(),
-            context_window: NonZeroU64::new(272_000).unwrap(),
-            ..ModelInfo::default()
-        }
-    }
-
-    /// A different model does not share a cached conversation prefix, even on
-    /// the same provider. An alias for the exact same wire model can share it.
-    #[test]
-    fn the_same_family_rule_keeps_different_models_out_of_the_conversation() {
-        let hard = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
-        let same_model = model("gpt-6-astra", "https://chatgpt.com/backend-api/codex");
-        same_family(&hard, &same_model).expect("same wire model and transport");
-        let sibling = model("gpt-5.6-luna", "https://chatgpt.com/backend-api/codex");
-        let reason = same_family(&hard, &sibling).expect_err("different model loses cache");
-        assert!(reason.contains("different models"), "{reason}");
-
-        let other_provider = model("grok-4.6", "https://api.x.ai/v1");
-        let reason = same_family(&hard, &other_provider).expect_err("a stranger is refused");
-        assert!(reason.contains("not the same provider"), "{reason}");
-
-        let mut other_backend = sibling.clone();
-        other_backend.api_backend = Default::default();
-        if other_backend.api_backend != hard.api_backend {
-            let reason = same_family(&hard, &other_backend)
-                .expect_err("a different wire backend is refused");
-            assert!(reason.contains("speaks"), "{reason}");
-        }
-
-        let mut other_scheme = sibling.clone();
-        other_scheme.auth_scheme = Default::default();
-        if other_scheme.auth_scheme != hard.auth_scheme {
-            let reason =
-                same_family(&hard, &other_scheme).expect_err("a different sign-in is refused");
-            assert!(reason.contains("sign in"), "{reason}");
-        }
-    }
-
-    /// The trailing slash is not a family difference: endpoints are compared as
-    /// configured, and the harness already normalises the ones it sends to.
-    #[test]
-    fn the_rule_reads_the_host_it_will_actually_call() {
-        let hard = model("a", "https://host/v1");
-        let light = model("b", "https://host/v1/");
-        let reason =
-            same_family(&hard, &light).expect_err("a trailing slash is a different string");
-        assert!(reason.contains("not the same provider"), "{reason}");
     }
 }

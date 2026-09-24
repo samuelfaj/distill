@@ -264,27 +264,21 @@ pub async fn set_jev_local_model(value: String) -> Result<()> {
     .await
 }
 
-/// Persist `[jev.tiers].light`: the worker model.
+/// Persist `[models].reasoning`: the optional reasoning model the main model
+/// consults for planning and review.
 ///
-/// A `[model.<id>]` entry id on any provider, or empty to remove the tier. A
-/// worker that is not the same provider, wire backend and credential scheme as
-/// the session model only takes bounded fresh-context work, never a round of
-/// the session's conversation; `/tiers` reports which one it is.
-pub async fn set_jev_tier_light(value: String) -> Result<()> {
+/// Empty string clears the pick — the file keeps `reasoning = ""`, which
+/// [`crate::jev::reasoning_model`] reads as unset, because the merge never
+/// deletes keys. Caller validates `value` against the model catalog first.
+pub async fn set_reasoning_model(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {
         anyhow::bail!(
-            "jev tier light name too long ({} > {} bytes)",
+            "reasoning model name too long ({} > {} bytes)",
             value.len(),
             MAX_DEFAULT_MODEL_LEN
         );
     }
-    update_config(|cfg| {
-        cfg.jev.tiers = Some(super::mcp::JevTiersPersistConfig {
-            light: Some(value),
-            ..Default::default()
-        });
-    })
-    .await
+    update_config(|cfg| cfg.models.reasoning = Some(value)).await
 }
 
 /// Bounds for [`set_max_thoughts_width`].
@@ -448,9 +442,8 @@ pub async fn set_auto_update(value: bool) -> Result<()> {
 #[path = "settings_writes_tests.rs"]
 mod tests;
 
-/// Save the auxiliary model and its effort together, preserving other settings.
-pub async fn set_jev_tier_model(
-    worker: bool,
+/// Save the utility model and its effort together, preserving other settings.
+pub async fn set_utility_model(
     model: String,
     effort: Option<crate::sampling::types::ReasoningEffort>,
 ) -> Result<()> {
@@ -459,19 +452,12 @@ pub async fn set_jev_tier_model(
         .map(|level| level.to_string())
         .unwrap_or_else(|| "auto".into());
     update_config(|cfg| {
-        if worker {
-            cfg.jev.tiers = Some(super::mcp::JevTiersPersistConfig {
-                light: Some(model.clone()),
-                light_effort: Some(effort.clone()),
-            });
-        } else {
-            cfg.jev.local = Some(super::mcp::JevLocalPersistConfig {
-                model: Some(model.clone()),
-                effort: Some(effort.clone()),
-            });
-        }
+        cfg.jev.local = Some(super::mcp::JevLocalPersistConfig {
+            model: Some(model.clone()),
+            effort: Some(effort.clone()),
+        });
     })
     .await?;
-    crate::jev::update_tier_model_cache(worker, model, effort);
+    crate::jev::update_local_model_cache(model, effort);
     Ok(())
 }

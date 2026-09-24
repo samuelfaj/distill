@@ -319,7 +319,7 @@ pub(crate) struct SideCallSetup {
 }
 
 /// Run one bounded display task utility-first, then on the configured light
-/// worker. Both lanes use the same source-span contract; no parent/session
+/// main model. Both lanes use the same source-span contract; no parent/session
 /// model or tool catalog is sent to this display-only call.
 pub(crate) async fn run_display_task(
     actor: &SessionActor,
@@ -371,30 +371,30 @@ pub(crate) async fn run_display_task(
         }
     }
 
-    let worker = actor.tool_result_worker().await?;
-    let request = worker.task_request(task_id, payload, question)?;
-    let applied_effort = worker
+    let main_lane = actor.tool_result_main_lane().await?;
+    let request = main_lane.task_request(task_id, payload, question)?;
+    let applied_effort = main_lane
         .client()
         .attribution_applied_effort(request.reasoning_effort, request.max_output_tokens);
-    let worker_key = crate::jev_cheap::optional_compression_key(
-        &worker.client().attribution_endpoint(),
-        worker.model(),
+    let main_key = crate::jev_cheap::optional_compression_key(
+        &main_lane.client().attribution_endpoint(),
+        main_lane.model(),
         task_id,
         applied_effort.as_deref().unwrap_or("provider_default"),
     );
-    if !crate::jev_cheap::optional_compression_allowed(&worker_key) {
+    if !crate::jev_cheap::optional_compression_allowed(&main_key) {
         return None;
     }
 
-    let attempt = auxiliary_attempt(worker.client(), &request);
-    let mut cancellation_guard = super::jev_tool_result::WorkerAttemptCancellationGuard::new(
+    let attempt = auxiliary_attempt(main_lane.client(), &request);
+    let mut cancellation_guard = super::jev_tool_result::MainAttemptCancellationGuard::new(
         actor,
         attempt.clone(),
-        Some(worker_key.clone()),
+        Some(main_key.clone()),
     );
     cancellation_guard.mark_dispatched();
     let call_started = std::time::Instant::now();
-    let (response_result, rejected_response) = worker.collect(request).await;
+    let (response_result, rejected_response) = main_lane.collect(request).await;
     match response_result {
         Ok(response) => {
             let candidate =
@@ -405,27 +405,27 @@ pub(crate) async fn run_display_task(
             if let Some(display) = candidate {
                 record_auxiliary_response(
                     actor,
-                    "display_auxiliary_worker",
-                    worker.model(),
+                    "display_auxiliary_main",
+                    main_lane.model(),
                     &attempt,
                     &response,
                     api_duration_ms,
                     false,
                 );
                 crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                crate::jev_cheap::note_optional_compression_success(&worker_key);
+                crate::jev_cheap::note_optional_compression_success(&main_key);
                 cancellation_guard.complete();
                 log_prompt_cache_usage(
-                    "display_auxiliary_worker",
-                    worker.client().api_backend(),
+                    "display_auxiliary_main",
+                    main_lane.client().api_backend(),
                     &response,
                 );
                 Some(display)
             } else {
                 record_auxiliary_rejected_response(
                     actor,
-                    "display_auxiliary_worker",
-                    worker.model(),
+                    "display_auxiliary_main",
+                    main_lane.model(),
                     &attempt,
                     &response,
                     api_duration_ms,
@@ -433,11 +433,11 @@ pub(crate) async fn run_display_task(
                 );
                 crate::jev_cheap::note_success(JevLever::ECheapCompress);
                 crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
-                crate::jev_cheap::note_optional_compression_failure(&worker_key);
+                crate::jev_cheap::note_optional_compression_failure(&main_key);
                 cancellation_guard.complete();
                 log_prompt_cache_usage(
-                    "display_auxiliary_worker",
-                    worker.client().api_backend(),
+                    "display_auxiliary_main",
+                    main_lane.client().api_backend(),
                     &response,
                 );
                 None
@@ -447,8 +447,8 @@ pub(crate) async fn run_display_task(
             if let Some(response) = rejected_response {
                 record_auxiliary_rejected_response(
                     actor,
-                    "display_auxiliary_worker",
-                    worker.model(),
+                    "display_auxiliary_main",
+                    main_lane.model(),
                     &attempt,
                     &response,
                     None,
@@ -458,9 +458,9 @@ pub(crate) async fn run_display_task(
                 record_auxiliary_failures(actor, std::slice::from_ref(&attempt), false);
             }
             crate::jev_cheap::note_failure(JevLever::ECheapCompress);
-            crate::jev_cheap::note_optional_compression_failure(&worker_key);
+            crate::jev_cheap::note_optional_compression_failure(&main_key);
             cancellation_guard.complete();
-            tracing::debug!(error = %error, "display auxiliary worker failed");
+            tracing::debug!(error = %error, "display auxiliary main-model call failed");
             None
         }
     }

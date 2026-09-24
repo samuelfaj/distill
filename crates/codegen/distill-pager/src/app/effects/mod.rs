@@ -2427,10 +2427,10 @@ pub(crate) fn execute(
                     ),
                 );
         }
-        Effect::PersistTierModel { worker, model, effort } => {
+        Effect::PersistUtilityModel { model, effort } => {
             tasks.spawn(async move {
-                let key = if worker { "tier_light" } else { "cheap_model" };
-                match distill_shell::util::config::set_jev_tier_model(worker, model.clone(), effort).await {
+                let key = "cheap_model";
+                match distill_shell::util::config::set_utility_model(model.clone(), effort).await {
                     Ok(()) => TaskResult::SettingPersisted { key, value: crate::settings::SettingValue::String(model) },
                     Err(error) => TaskResult::SettingPersistFailedBestEffort { key, error: error.to_string() },
                 }

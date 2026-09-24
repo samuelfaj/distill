@@ -2026,6 +2026,11 @@ fn main() {
         );
         std::process::exit(2);
     }
+    // Before anything reads the model roles: the legacy worker becomes the
+    // main model and the legacy default the reasoning model.
+    if let Err(error) = distill_shell::util::config::migrate_model_roles() {
+        tracing::warn!(%error, "model role migration skipped");
+    }
     let _sentry_guard = distill_telemetry::sentry::init(distill_telemetry::sentry::Config {
         client: "distill",
         client_version: PAGER_CLIENT_VERSION,

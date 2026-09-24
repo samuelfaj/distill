@@ -5045,20 +5045,19 @@ fn new_session_registers_root_identity() {
     });
 }
 
+/// The main model owns every session; a configured reasoning model is only
+/// consulted for planning and review, so it must never become the session model.
 #[test]
-fn new_session_uses_configured_worker_as_its_model() {
+fn new_session_runs_on_the_main_model_even_with_a_reasoning_model() {
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
-        let worker = crate::agent::config::ModelEntry::fallback(
-            "session-worker",
+        let reasoning = crate::agent::config::ModelEntry::fallback(
+            "session-reasoning",
             &crate::agent::config::EndpointsConfig::default(),
         );
-        agent.models_manager.insert_test_entry("session-worker", worker);
-        let reasoning = agent.models_manager.current_model_id();
-        crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-            light: Some("session-worker".to_owned()),
-            ..Default::default()
-        });
+        agent.models_manager.insert_test_entry("session-reasoning", reasoning);
+        let main = agent.models_manager.current_model_id();
+        crate::jev::set_test_reasoning_model(Some("session-reasoning".to_owned()));
         let cwd = tempfile::tempdir().unwrap();
         agent.set_auth_method(acp::AuthMethodId::new("cached_token"));
         let init = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
@@ -5073,27 +5072,14 @@ fn new_session_uses_configured_worker_as_its_model() {
             .expect("session/new succeeds")
             .session_id;
         let handle = agent.resident_handle(&sid).expect("new session is resident");
-        assert_eq!(handle.model_id.0.as_ref(), "session-worker");
-        assert_eq!(
+        assert_eq!(handle.model_id, main);
+        assert_ne!(
             handle.chat_state_handle.get_sampling_config().await.unwrap().model,
-            "session-worker"
+            "session-reasoning",
+            "the session's rounds are sampled on the main model"
         );
-        assert_eq!(agent.models_manager.current_model_id(), reasoning);
         agent.remove_session(&sid);
-        let meta = serde_json::json!({"modelId": reasoning.0.as_ref()})
-            .as_object()
-            .cloned();
-        let explicit = agent
-            .new_session_inner(acp::NewSessionRequest::new(cwd.path().to_path_buf()).meta(meta))
-            .await
-            .expect("explicit model session/new succeeds")
-            .session_id;
-        assert_eq!(
-            agent.resident_handle(&explicit).unwrap().model_id.0.as_ref(),
-            reasoning.0.as_ref()
-        );
-        agent.remove_session(&explicit);
-        crate::jev::clear_test_tier_config();
+        crate::jev::clear_test_reasoning_model();
     });
 }
 #[test]

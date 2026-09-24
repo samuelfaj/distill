@@ -1307,6 +1307,20 @@ mod tests {
             "local runs are visible on the row: {local:?}"
         );
 
+        // While the reasoning model advises, the row names it instead of the
+        // main model: that is the call the turn is waiting on.
+        let advising = render_running_with_jev(JevTurnActivity {
+            decisions: 5,
+            route: Some("gpt-6-luna medium".to_owned()),
+            reasoning: Some("gpt-6-sol high".to_owned()),
+            ..Default::default()
+        });
+        assert!(
+            advising.contains("jev ×5 ·reasoning gpt-6-sol high")
+                && !advising.contains("gpt-6-luna"),
+            "the reasoning model is visible while it advises: {advising:?}"
+        );
+
         // The chip shares the row: the running tool and the timer survive it.
         assert!(one.contains("read_file"), "the tool label stays: {one:?}");
         assert!(one.contains("19s"), "the turn timer stays: {one:?}");

@@ -76,7 +76,7 @@ use super::session::load::{
 };
 use super::session::modal::{dispatch_rename_session, dispatch_reset_session_title};
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, preview_auto_dark_theme,
+    clear_default_model, clear_fork_secondary_model, clear_reasoning_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_cheap_model,
     set_collapsed_edit_blocks, set_combine_queued_prompts, set_compact_mode,
@@ -89,7 +89,7 @@ use super::settings::setters::{
     set_page_flip_on_send, set_prompt_suggestions, set_remember_tool_approvals, set_render_mermaid,
     set_respect_manual_folds, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
     set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_tier_editor,
-    set_tier_light, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
+    set_reasoning_model, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
     set_voice_keybind_enabled, set_voice_stt_language,
 };
 use super::settings::ui::{
@@ -974,11 +974,15 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::SwitchModel { model_id, effort } => {
             if matches!(app.active_view, ActiveView::Welcome) {
+                let mut effects = set_default_model(app, model_id.clone());
                 app.models.set_current(model_id.clone(), effort);
                 app.models.effort_auto = effort.is_none();
-                app.cli_model_override = Some(model_id);
                 app.cli_effort_token = effort.map(|level| level.to_string());
-                return vec![];
+                effects.push(Effect::PersistPreferredModel {
+                    model_id,
+                    reasoning_effort: effort,
+                });
+                return effects;
             }
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
@@ -1007,7 +1011,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         effort,
                         prev_model_id: rollback_prev,
                     });
-                return if unchanged || agent.session.models.reasoning_model.as_ref() != Some(&model_id) {
+                return if unchanged {
                     vec![]
                 } else {
                     vec![Effect::PersistPreferredModel {
@@ -1185,14 +1189,15 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetAutoLightTheme(v) => set_auto_light_theme(app, v),
         Action::SetDefaultModel(v) => set_default_model(app, v),
         Action::ClearDefaultModel => clear_default_model(app),
+        Action::SetReasoningModel(v) => set_reasoning_model(app, v),
+        Action::ClearReasoningModel => clear_reasoning_model(app),
         Action::SetForkSecondaryModel(v) => set_fork_secondary_model(app, v),
         Action::SetCheapModel(v, effort) => set_cheap_model(app, v, effort),
-        Action::SetTierLight(v, effort) => set_tier_light(app, v, effort),
         Action::SetTierEditor {
+            main,
             reasoning,
-            worker,
             utility,
-        } => set_tier_editor(app, reasoning, worker, utility),
+        } => set_tier_editor(app, main, reasoning, utility),
         Action::ClearForkSecondaryModel => clear_fork_secondary_model(app),
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),

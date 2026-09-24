@@ -569,11 +569,15 @@ pub enum Action {
     SetAutoDarkTheme(String),
     /// Commit the theme used when the OS is in light mode.
     SetAutoLightTheme(String),
-    /// Save the secondary reasoning model without switching the active worker.
+    /// Select the main model: switch the active session and persist `[models].default`.
     SetDefaultModel(acp::ModelId),
     /// Clear the persisted default model (`cfg.models.default = None`).
     /// Active session's model is unchanged; next session resolves via the shell's default-resolution chain.
     ClearDefaultModel,
+    /// Save the optional reasoning model (`[models].reasoning`) without switching the main model.
+    SetReasoningModel(acp::ModelId),
+    /// Remove the reasoning model: the main model works alone.
+    ClearReasoningModel,
     /// Commit the max-thoughts-width (column budget for the thoughts panel).
     /// Payload is `i64`; clamped to `u16` at the shell helper boundary.
     SetMaxThoughtsWidth(i64),
@@ -587,10 +591,6 @@ pub enum Action {
     /// `[jev.local].model`. Empty string clears the pick.
     /// Published after the config write succeeds.
     SetCheapModel(String, Option<ReasoningEffort>),
-    /// Save the primary worker to `[jev.tiers].light` and select it for this session.
-    /// Empty string removes the tier for future sessions.
-    /// Published after the config write succeeds.
-    SetTierLight(String, Option<ReasoningEffort>),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required: tips are resolved once at startup.
     SetShowTips(bool),
@@ -691,12 +691,12 @@ pub enum Action {
         title: String,
         content: String,
     },
-    /// Open the editable reasoning, worker, and utility model form.
+    /// Open the editable main, reasoning, and utility model form.
     ShowTierEditor,
     /// Save all three model tier fields from the tier editor.
     SetTierEditor {
+        main: String,
         reasoning: String,
-        worker: String,
         utility: String,
     },
     /// Rename the current session's title/summary.
@@ -1739,9 +1739,8 @@ pub enum Effect {
         session_id: Option<acp::SessionId>,
         persist: PermissionModePersist,
     },
-    /// Persist an auxiliary model and effort together, then publish the selection.
-    PersistTierModel {
-        worker: bool,
+    /// Persist the utility model and effort together, then publish the selection.
+    PersistUtilityModel {
         model: String,
         effort: Option<ReasoningEffort>,
     },

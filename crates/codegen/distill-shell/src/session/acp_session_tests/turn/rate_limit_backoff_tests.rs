@@ -186,25 +186,8 @@ pub(super) async fn pump_local_tasks() {
     }
 }
 
-fn controlled_effort_answer(choice: &str) -> distill_workspace::jev::JevAnswerSet {
-    controlled_route_answer(None, choice)
-}
-
-fn controlled_route_answer(
-    tier: Option<&str>,
-    effort: &str,
-) -> distill_workspace::jev::JevAnswerSet {
+fn controlled_effort_answer(effort: &str) -> distill_workspace::jev::JevAnswerSet {
     let mut answers = std::collections::BTreeMap::new();
-    if let Some(tier) = tier {
-        answers.insert(
-            distill_workspace::jev::catalog::routing::MICRO_TIER_QUESTION.to_owned(),
-            distill_workspace::jev::Answer::Choice {
-                choice: tier.to_owned(),
-                probabilities: std::collections::BTreeMap::new(),
-                confidence: Some(1.0),
-            },
-        );
-    }
     answers.insert(
         distill_workspace::jev::catalog::routing::MICRO_EFFORT_QUESTION.to_owned(),
         distill_workspace::jev::Answer::Choice {
@@ -288,36 +271,17 @@ fn routing_entry_with_window(
 }
 
 fn install_wire_routing_catalog(actor: &SessionActor, base_url: &str) {
-    install_wire_routing_catalog_with_worker_efforts(
-        actor,
-        base_url,
-        vec![distill_sampling_types::ReasoningEffortOption {
-            id: "low".to_owned(),
-            value: distill_sampling_types::ReasoningEffort::Low,
-            label: "Low".to_owned(),
-            description: Some("short routine call".to_owned()),
-            default: true,
-        }],
-    );
+    install_wire_routing_catalog_with_window(actor, base_url, 128_000);
 }
 
-fn install_wire_routing_catalog_with_worker_efforts(
+/// The main model with a two-level menu, so auto effort has a real choice.
+fn install_wire_routing_catalog_with_window(
     actor: &SessionActor,
     base_url: &str,
-    worker_efforts: Vec<distill_sampling_types::ReasoningEffortOption>,
+    main_context_window: u64,
 ) {
-    install_wire_routing_catalog_with_windows(actor, base_url, worker_efforts, 128_000, 128_000);
-}
-
-fn install_wire_routing_catalog_with_windows(
-    actor: &SessionActor,
-    base_url: &str,
-    worker_efforts: Vec<distill_sampling_types::ReasoningEffortOption>,
-    hard_context_window: u64,
-    worker_context_window: u64,
-) {
-    let hard = routing_entry_with_window(
-        "reasoning-model",
+    let main = routing_entry_with_window(
+        "main-model",
         base_url,
         vec![
             distill_sampling_types::ReasoningEffortOption {
@@ -335,20 +299,9 @@ fn install_wire_routing_catalog_with_windows(
                 default: true,
             },
         ],
-        hard_context_window,
+        main_context_window,
     );
-    let light = routing_entry_with_window(
-        "worker-model",
-        base_url,
-        worker_efforts,
-        worker_context_window,
-    );
-    actor
-        .models_manager
-        .insert_test_entry("reasoning-model", hard);
-    actor
-        .models_manager
-        .insert_test_entry("worker-model", light);
+    actor.models_manager.insert_test_entry("main-model", main);
 }
 
 fn install_single_effort_catalog(actor: &SessionActor) {
@@ -370,6 +323,9 @@ fn install_single_effort_catalog(actor: &SessionActor) {
         .insert_test_entry("single-model", entry);
 }
 
+/// Every round runs on the main model; auto effort and a pinned effort decide
+/// only its intensity. The request on the wire must carry the chooser's final
+/// model and effort, not only the ledger's view of them.
 #[tokio::test(flavor = "current_thread")]
 async fn controlled_routes_are_captured_on_the_wire() {
     let local = tokio::task::LocalSet::new();
@@ -377,8 +333,7 @@ async fn controlled_routes_are_captured_on_the_wire() {
         .run_until(async {
             let server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
-                MockModelEntry::new("reasoning-model"),
-                MockModelEntry::new("worker-model"),
+                MockModelEntry::new("main-model"),
             ])
             .await
             .expect("mock inference server");
@@ -391,72 +346,33 @@ async fn controlled_routes_are_captured_on_the_wire() {
 
             let (actor, _retries) =
                 actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
-            actor
-                .jev_effort_auto
-                .store(true, std::sync::atomic::Ordering::Relaxed);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                light: Some("worker-model".to_owned()),
-                light_effort: Some("auto".to_owned()),
-            });
-            install_wire_routing_catalog_with_windows(
-                &actor,
-                &server.url(),
-                vec![distill_sampling_types::ReasoningEffortOption {
-                    id: "high".to_owned(),
-                    value: distill_sampling_types::ReasoningEffort::High,
-                    label: "High".to_owned(), description: None, default: true,
-                }, distill_sampling_types::ReasoningEffortOption {
-                    id: "low".to_owned(),
-                    value: distill_sampling_types::ReasoningEffort::Low,
-                    label: "Low".to_owned(),
-                    description: Some("short routine call".to_owned()),
-                    default: false,
-                }],
-                128_000,
-                272_000,
-            );
+            crate::jev::set_test_reasoning_model(None);
+            install_wire_routing_catalog_with_window(&actor, &server.url(), 272_000);
             let mut initial = actor
                 .chat_state_handle
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            initial.model = "reasoning-model".to_owned();
-            initial.context_window = std::num::NonZeroU64::new(128_000).unwrap();
+            initial.model = "main-model".to_owned();
+            initial.context_window = std::num::NonZeroU64::new(272_000).unwrap();
             initial.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             actor.chat_state_handle.update_sampling_config(initial);
             crate::jev::set_test_decision_answers([
-                Some(controlled_route_answer(
-                    Some(distill_workspace::jev::catalog::routing::TIER_HARD_LABEL),
-                    "high",
-                )),
-                Some({
-                    let mut answer = controlled_route_answer(
-                        Some(distill_workspace::jev::catalog::routing::TIER_LIGHT_LABEL), "high",
-                    );
-                    answer.answers.insert(
-                        distill_workspace::jev::catalog::routing::WORKER_EFFORT_QUESTION.to_owned(),
-                        distill_workspace::jev::Answer::Choice {
-                            choice: "low".to_owned(), probabilities: Default::default(), confidence: Some(1.0),
-                        },
-                    );
-                    answer
-                }),
-                Some(controlled_route_answer(
-                    Some(distill_workspace::jev::catalog::routing::TIER_HARD_LABEL),
-                    "high",
-                )),
+                Some(controlled_effort_answer("high")),
+                Some(controlled_effort_answer("low")),
             ]);
 
-            for (expected_model, expected_effort, auto) in [
-                ("reasoning-model", Some("high"), true),
-                ("worker-model", Some("low"), false),
-                ("reasoning-model", Some("high"), false),
-            ] {
-                // A pinned reasoning effort still permits the worker's own auto effort.
+            for (expected_effort, auto) in [(Some("high"), true), (Some("low"), true), (Some("high"), false)] {
                 actor.jev_effort_auto.store(auto, std::sync::atomic::Ordering::Relaxed);
-                if expected_model == "worker-model" {
-                    actor.jev_ledger.borrow_mut().raise_effort_floor("high", distill_sampling_types::ReasoningEffort::High);
+                if !auto {
+                    let mut pinned = actor
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .expect("test actor has sampling config");
+                    pinned.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+                    actor.chat_state_handle.update_sampling_config(pinned);
                 }
                 // This is the production per-round preparation path. The
                 // request is parked only after preparation so no ledger state
@@ -467,27 +383,18 @@ async fn controlled_routes_are_captured_on_the_wire() {
                     .snapshot()
                     .await
                     .expect("signals actor should be alive");
-                assert_eq!(signals.active_model_id.as_deref(), Some(expected_model));
+                assert_eq!(signals.active_model_id.as_deref(), Some("main-model"));
                 assert_eq!(signals.active_reasoning_effort.as_deref(), expected_effort);
-                let expected_window = match expected_model {
-                    "worker-model" => 272_000,
-                    _ => 128_000,
-                };
                 assert_eq!(
                     signals.active_context_window_tokens,
-                    Some(expected_window),
-                    "progress source must publish the final routed model window"
+                    Some(272_000),
+                    "progress source must publish the main model's window"
                 );
                 let status = actor.build_status_context().await;
                 assert_eq!(
                     status.context_window.context_window_size,
-                    Some(expected_window),
-                    "main status context must consume the final routed window"
-                );
-                assert_eq!(
-                    actor.jev_ledger.borrow().pending_route_model().as_deref(),
-                    Some(expected_model),
-                    "session status and the pending request must name the same final route"
+                    Some(272_000),
+                    "main status context must consume the main model's window"
                 );
                 let request = conversation_request(&actor).await;
                 let mut budget = actor.rate_limit_wait_budget(None);
@@ -505,15 +412,14 @@ async fn controlled_routes_are_captured_on_the_wire() {
                 }
                 actor.signals_handle().clear_active_dispatch();
             }
-            tokio::task::yield_now().await;
-            let usage = _retries.lock().unwrap().usage.clone();
-            assert!(
-                usage.iter().any(|&(_, size)| size == 272_000),
-                "effective routed context must arrive as ACP UsageUpdate without status-line capability"
+            assert_eq!(
+                crate::jev::test_decision_answers_remaining(),
+                0,
+                "a pinned effort must not pay for a chooser request"
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
 
             let responses: Vec<_> = server
                 .request_bodies()
@@ -539,9 +445,9 @@ async fn controlled_routes_are_captured_on_the_wire() {
             assert_eq!(
                 actual,
                 vec![
-                    ("reasoning-model".to_string(), Some("high".to_string())),
-                    ("worker-model".to_string(), Some("low".to_string())),
-                    ("reasoning-model".to_string(), Some("high".to_string())),
+                    ("main-model".to_string(), Some("high".to_string())),
+                    ("main-model".to_string(), Some("low".to_string())),
+                    ("main-model".to_string(), Some("high".to_string())),
                 ],
                 "the sampler must send the chooser's final model and effort, not only ledger state"
             );
@@ -567,7 +473,7 @@ async fn zero_or_single_effort_menus_do_not_invoke_auto_routing() {
                 .jev_effort_auto
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_reasoning_model(None);
             crate::jev::set_test_decision_answers([Some(controlled_effort_answer("low"))]);
 
             // The test actor's default catalog has no effort menu: preparation
@@ -618,119 +524,7 @@ async fn zero_or_single_effort_menus_do_not_invoke_auto_routing() {
             assert_eq!(signals.active_reasoning_effort, None);
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn eligible_worker_with_zero_or_single_effort_menu_uses_real_chooser() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            for worker_efforts in [
-                Vec::new(),
-                vec![distill_sampling_types::ReasoningEffortOption {
-                    id: "low".to_owned(),
-                    value: distill_sampling_types::ReasoningEffort::Low,
-                    label: "Low".to_owned(),
-                    description: Some("short routine call".to_owned()),
-                    default: true,
-                }],
-            ] {
-                let expected_effort = if worker_efforts.is_empty() {
-                    None
-                } else {
-                    Some("low")
-                };
-                let server = MockInferenceServer::start_with_models(vec![
-                    MockModelEntry::new("test"),
-                    MockModelEntry::new("reasoning-model"),
-                    MockModelEntry::new("worker-model"),
-                ])
-                .await
-                .expect("mock inference server");
-                server.enqueue_response(
-                    "/v1/responses",
-                    ScriptedResponse::sse(responses_api_script_exact("done", "worker-model")),
-                );
-                let (actor, _retries) = actor_under_test(
-                    &server,
-                    SessionKind::Subagent,
-                    sampler_surfaces_429(),
-                    false,
-                )
-                .await;
-                actor
-                    .jev_effort_auto
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                crate::jev::set_test_local_config(Default::default());
-                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                    light: Some("worker-model".to_owned()),
-                    light_effort: Some("low".to_owned()),
-                });
-                install_wire_routing_catalog_with_worker_efforts(
-                    &actor,
-                    &server.url(),
-                    worker_efforts,
-                );
-                let mut config = actor
-                    .chat_state_handle
-                    .get_sampling_config()
-                    .await
-                    .expect("test actor has sampling config");
-                config.model = "reasoning-model".to_owned();
-                config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
-                actor.chat_state_handle.update_sampling_config(config);
-                crate::jev::set_test_decision_answers([Some(controlled_route_answer(
-                    Some(distill_workspace::jev::catalog::routing::TIER_LIGHT_LABEL),
-                    "low",
-                ))]);
-
-                actor.prepare_sampler_for_turn().await;
-                let signals = actor
-                    .signals_handle()
-                    .snapshot()
-                    .await
-                    .expect("signals actor should be alive");
-                assert_eq!(signals.active_model_id.as_deref(), Some("worker-model"));
-                assert_eq!(signals.active_reasoning_effort.as_deref(), expected_effort);
-                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
-                assert!(
-                    !actor.model_routing_locked.get(),
-                    "auto effort selection must not invent a model pin"
-                );
-                let request = conversation_request(&actor).await;
-                let mut budget = actor.rate_limit_wait_budget(None);
-                let outcome = actor
-                    .run_turn_via_sampler(
-                        request,
-                        &mut budget,
-                        transient_state(0, false),
-                        false,
-                        TurnParkState::Parked,
-                    )
-                    .await;
-                if let Err(error) = outcome {
-                    panic!("eligible worker route must complete: {error}");
-                }
-                let requests: Vec<_> = server
-                    .request_bodies()
-                    .into_iter()
-                    .filter(|body| body.get("model").is_some())
-                    .collect();
-                assert_eq!(requests.len(), 1);
-                assert_eq!(requests[0]["model"], "worker-model");
-                assert_eq!(
-                    requests[0]
-                        .pointer("/reasoning/effort")
-                        .and_then(|value| value.as_str()),
-                    expected_effort,
-                );
-                crate::jev::clear_test_decision_answers();
-                crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
-            }
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -742,7 +536,7 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
         .run_until(async {
             let base_server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
-                MockModelEntry::new("reasoning-model"),
+                MockModelEntry::new("main-model"),
             ])
             .await
             .expect("base mock inference server");
@@ -756,7 +550,7 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
             );
             base_server.enqueue_response(
                 "/v1/responses",
-                ScriptedResponse::sse(responses_api_script_exact("done", "reasoning-model")),
+                ScriptedResponse::sse(responses_api_script_exact("done", "main-model")),
             );
             let (actor, _retries) = actor_under_test(
                 &base_server,
@@ -777,14 +571,14 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 max_context_tokens: Some(256_000),
                 ..Default::default()
             });
-            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_reasoning_model(None);
             crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
             let mut config = actor
                 .chat_state_handle
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            config.model = "reasoning-model".to_owned();
+            config.model = "main-model".to_owned();
             config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             config.context_window = std::num::NonZeroU64::new(128_000).unwrap();
             actor.chat_state_handle.update_sampling_config(config);
@@ -825,13 +619,13 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
             assert_eq!(local_requests.len(), 1);
             assert_eq!(local_requests[0]["model"], "local-model");
             assert_eq!(base_requests.len(), 1);
-            assert_eq!(base_requests[0]["model"], "reasoning-model");
+            assert_eq!(base_requests[0]["model"], "main-model");
             let signals = actor
                 .signals_handle()
                 .snapshot()
                 .await
                 .expect("signals actor should be alive");
-            assert_eq!(signals.active_model_id.as_deref(), Some("reasoning-model"));
+            assert_eq!(signals.active_model_id.as_deref(), Some("main-model"));
             assert_eq!(signals.active_reasoning_effort.as_deref(), Some("high"));
             assert_eq!(signals.active_context_window_tokens, Some(128_000));
             let status = actor.build_status_context().await;
@@ -843,11 +637,11 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
             let rows = actor.jev_ledger.borrow_mut().take_rows();
             assert!(rows.iter().any(|row| row.model == "local-model"));
             assert!(rows.iter().any(|row| {
-                row.model == "reasoning-model" && row.effort.as_deref() == Some("high")
+                row.model == "main-model" && row.effort.as_deref() == Some("high")
             }));
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -863,7 +657,7 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
             const REASONING_TEXT: &str = "thinking-must-be-passed-back";
             let base_server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
-                MockModelEntry::new("reasoning-model"),
+                MockModelEntry::new("main-model"),
             ])
             .await
             .expect("base mock inference server");
@@ -880,7 +674,7 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
             );
             base_server.enqueue_response(
                 "/v1/responses",
-                ScriptedResponse::sse(responses_api_script_exact("done", "reasoning-model")),
+                ScriptedResponse::sse(responses_api_script_exact("done", "main-model")),
             );
             let (actor, _retries) = actor_under_test(
                 &base_server,
@@ -901,14 +695,14 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
                 max_context_tokens: Some(256_000),
                 ..Default::default()
             });
-            crate::jev::set_test_tier_config(Default::default());
+            crate::jev::set_test_reasoning_model(None);
             crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
             let mut config = actor
                 .chat_state_handle
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            config.model = "reasoning-model".to_owned();
+            config.model = "main-model".to_owned();
             config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             config.context_window = std::num::NonZeroU64::new(128_000).unwrap();
             actor.chat_state_handle.update_sampling_config(config);
@@ -975,7 +769,7 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -991,8 +785,8 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
         .run_until(async {
             let server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
-                MockModelEntry::new("reasoning-model"),
-                MockModelEntry::new("worker-model"),
+                MockModelEntry::new("main-model"),
+                MockModelEntry::new("other-model"),
             ])
             .await
             .expect("mock inference server");
@@ -1009,10 +803,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
             )
             .await;
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                light: Some("worker-model".to_owned()),
-                light_effort: Some("low".to_owned()),
-            });
+            crate::jev::set_test_reasoning_model(None);
             install_wire_routing_catalog(&actor, &server.url());
             actor
                 .jev_effort_auto
@@ -1022,13 +813,10 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            config.model = "reasoning-model".to_owned();
+            config.model = "main-model".to_owned();
             config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             actor.chat_state_handle.update_sampling_config(config);
-            crate::jev::set_test_decision_answers([Some(controlled_route_answer(
-                Some(distill_workspace::jev::catalog::routing::TIER_LIGHT_LABEL),
-                "low",
-            ))]);
+            crate::jev::set_test_decision_answers([Some(controlled_effort_answer("low"))]);
 
             actor.prepare_sampler_for_turn().await;
             let signals = actor
@@ -1036,7 +824,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
                 .snapshot()
                 .await
                 .expect("signals actor should be alive");
-            assert_eq!(signals.active_model_id.as_deref(), Some("reasoning-model"));
+            assert_eq!(signals.active_model_id.as_deref(), Some("main-model"));
             assert_eq!(signals.active_reasoning_effort.as_deref(), Some("high"));
             assert_eq!(
                 crate::jev::test_decision_answers_remaining(),
@@ -1045,7 +833,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
             );
             assert_eq!(
                 actor.jev_ledger.borrow().pending_route_model().as_deref(),
-                Some("reasoning-model")
+                Some("main-model")
             );
             let request = conversation_request(&actor).await;
             let mut budget = actor.rate_limit_wait_budget(None);
@@ -1067,7 +855,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
                 .filter(|body| body.get("model").is_some())
                 .collect();
             assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0]["model"], "reasoning-model");
+            assert_eq!(requests[0]["model"], "main-model");
             assert_eq!(
                 requests[0]
                     .pointer("/reasoning/effort")
@@ -1077,7 +865,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
 
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -1089,8 +877,8 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
         .run_until(async {
             let server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
-                MockModelEntry::new("reasoning-model"),
-                MockModelEntry::new("worker-model"),
+                MockModelEntry::new("main-model"),
+                MockModelEntry::new("other-model"),
             ])
             .await
             .expect("mock inference server");
@@ -1110,20 +898,17 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 .jev_effort_auto
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                light: Some("worker-model".to_owned()),
-                light_effort: Some("low".to_owned()),
-            });
+            crate::jev::set_test_reasoning_model(None);
             install_wire_routing_catalog(&actor, &server.url());
             let mut config = actor
                 .chat_state_handle
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            config.model = "reasoning-model".to_owned();
+            config.model = "main-model".to_owned();
             config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             actor.chat_state_handle.update_sampling_config(config);
-            crate::jev::set_test_decision_answers([Some(controlled_route_answer(None, "low"))]);
+            crate::jev::set_test_decision_answers([Some(controlled_effort_answer("low"))]);
 
             actor.prepare_sampler_for_turn().await;
             let signals = actor
@@ -1131,12 +916,12 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 .snapshot()
                 .await
                 .expect("signals actor should be alive");
-            assert_eq!(signals.active_model_id.as_deref(), Some("reasoning-model"));
+            assert_eq!(signals.active_model_id.as_deref(), Some("main-model"));
             assert_eq!(signals.active_reasoning_effort.as_deref(), Some("low"));
             assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
             assert_eq!(
                 actor.jev_ledger.borrow().pending_route_model().as_deref(),
-                Some("reasoning-model")
+                Some("main-model")
             );
 
             let request = conversation_request(&actor).await;
@@ -1159,7 +944,7 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 .filter(|body| body.get("model").is_some())
                 .collect();
             assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0]["model"], "reasoning-model");
+            assert_eq!(requests[0]["model"], "main-model");
             assert_eq!(
                 requests[0]
                     .pointer("/reasoning/effort")
@@ -1168,7 +953,7 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
+            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -1180,8 +965,8 @@ async fn retry_sends_updated_final_model_and_effort() {
         .run_until(async {
             let server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("test"),
-                MockModelEntry::new("worker-model"),
-                MockModelEntry::new("reasoning-model"),
+                MockModelEntry::new("other-model"),
+                MockModelEntry::new("main-model"),
             ])
             .await
             .expect("mock inference server");
@@ -1202,7 +987,7 @@ async fn retry_sends_updated_final_model_and_effort() {
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            initial.model = "worker-model".to_string();
+            initial.model = "other-model".to_string();
             initial.reasoning_effort = None;
             actor.chat_state_handle.update_sampling_config(initial);
 
@@ -1227,7 +1012,7 @@ async fn retry_sends_updated_final_model_and_effort() {
                 .get_sampling_config()
                 .await
                 .expect("test actor has sampling config");
-            retry_config.model = "reasoning-model".to_string();
+            retry_config.model = "main-model".to_string();
             retry_config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
             actor.chat_state_handle.update_sampling_config(retry_config);
             tokio::time::advance(Duration::from_secs(31)).await;
@@ -1242,9 +1027,9 @@ async fn retry_sends_updated_final_model_and_effort() {
                 .filter(|body| body.get("model").is_some())
                 .collect();
             assert_eq!(responses.len(), 2, "initial request plus one retry");
-            assert_eq!(responses[0]["model"], "worker-model");
+            assert_eq!(responses[0]["model"], "other-model");
             assert!(responses[0].pointer("/reasoning/effort").is_none());
-            assert_eq!(responses[1]["model"], "reasoning-model");
+            assert_eq!(responses[1]["model"], "main-model");
             assert_eq!(
                 responses[1]
                     .pointer("/reasoning/effort")

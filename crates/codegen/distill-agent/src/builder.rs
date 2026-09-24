@@ -1372,8 +1372,8 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
     if model_slugs.is_empty() {
         return format!(
             "\n\nNo explicit model slugs are currently available. \
-             Omit `{TASK_MODEL_PARAM}` for a fresh bounded task to use the session model \
-             when available; plan and code-reviewer may use the configured reasoning model unless pinned in \
+             Omit `{TASK_MODEL_PARAM}`: a subagent runs on the main model, and plan and \
+             code-reviewer run on the configured reasoning model unless pinned in \
              [subagents.models]. Explicit model pins remain \
              authoritative, and resumed or full-context forked children retain their existing \
              model/context semantics."
@@ -1385,13 +1385,12 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "\n\nIf the user explicitly asks for the model of a subagent/task, or difficult \
-         diagnosis, architecture, failure recovery, or review needs the configured reasoning \
-         model, you may ONLY use model slugs from this list:\n\
+        "\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use \
+         model slugs from this list:\n\
          {model_list}\n\n\
-         Otherwise omit `{TASK_MODEL_PARAM}`. For a fresh bounded task this uses the session \
-         model when available; plan and code-reviewer may use the configured reasoning model unless \
-         pinned in [subagents.models]. Explicit model pins remain \
+         Otherwise omit `{TASK_MODEL_PARAM}`: a subagent runs on the main model, and plan and \
+         code-reviewer run on the configured reasoning model unless pinned in \
+         [subagents.models]. Explicit model pins remain \
          authoritative, and resumed or full-context \
          forked children retain their existing model/context semantics."
     )
@@ -1880,7 +1879,7 @@ mod tests {
         );
         assert!(desc.contains("- alpha\n- zeta"));
         assert!(desc.contains("${{ params.task.model }}"));
-        assert!(desc.contains("session model"));
+        assert!(desc.contains("runs on the main model"));
     }
     #[test]
     fn build_task_description_handles_empty_model_catalog() {
@@ -1892,7 +1891,7 @@ mod tests {
         let desc = build_task_description(&subagents, &[], &ChildToolNames::new());
         assert!(desc.contains("${{ params.task.model }}"));
         assert!(!desc.contains("- alpha"));
-        assert!(desc.contains("session model"));
+        assert!(desc.contains("runs on the main model"));
     }
     #[test]
     fn task_model_guidance_resolves_model_param_override() {

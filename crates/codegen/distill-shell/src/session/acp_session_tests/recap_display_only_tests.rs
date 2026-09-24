@@ -40,36 +40,36 @@ fn install_display_catalog(
         .models_manager
         .insert_test_entry("display-utility", utility);
 
-    let mut worker = crate::agent::config::ModelEntry::fallback(
-        "display-worker",
+    let mut main_entry = crate::agent::config::ModelEntry::fallback(
+        "display-main",
         &crate::agent::config::EndpointsConfig::default(),
     );
-    worker.info.base_url = server.url();
-    worker.info.context_window = std::num::NonZeroU64::new(128_000).expect("worker window");
-    worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-    worker.info.max_retries = Some(0);
-    worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-    worker.info.supports_reasoning_effort = true;
-    worker.info.reasoning_efforts = vec![distill_sampling_types::ReasoningEffortOption {
+    main_entry.info.base_url = server.url();
+    main_entry.info.context_window = std::num::NonZeroU64::new(128_000).expect("main window");
+    main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+    main_entry.info.max_retries = Some(0);
+    main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+    main_entry.info.supports_reasoning_effort = true;
+    main_entry.info.reasoning_efforts = vec![distill_sampling_types::ReasoningEffortOption {
         id: "low".to_owned(),
         value: distill_sampling_types::ReasoningEffort::Low,
         label: "Low".to_owned(),
-        description: Some("bounded display worker".to_owned()),
+        description: Some("bounded display main model".to_owned()),
         default: true,
     }];
-    worker.api_key = Some("display-worker-key".to_owned());
+    main_entry.api_key = Some("display-main-key".to_owned());
     actor
         .models_manager
-        .insert_test_entry("display-worker", worker);
+        .insert_test_entry("display-main", main_entry);
 
     crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
         model: Some("display-utility".to_owned()),
         ..Default::default()
     });
-    crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-        light: Some("display-worker".to_owned()),
-        light_effort: Some("low".to_owned()),
-    });
+    // The main model is the display fallback after the utility model.
+    actor
+        .models_manager
+        .set_current_model_id(agent_client_protocol::ModelId::new("display-main"));
 }
 
 fn set_utility_review_choices(choices: &[&str]) {
@@ -1205,7 +1205,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
 
             let server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("display-utility").with_api_backend("chat_completions"),
-                MockModelEntry::new("display-worker").with_api_backend("responses"),
+                MockModelEntry::new("display-main").with_api_backend("responses"),
             ])
             .await
             .expect("start display inference stub");
@@ -1228,7 +1228,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 "/v1/responses",
                 ScriptedResponse::sse(responses_api_script_exact(
                     "`patched the race and re-ran the suite`",
-                    "display-worker",
+                    "display-main",
                 )),
             );
             let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
@@ -1311,10 +1311,10 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 .iter()
                 .find(|request| request.path == "/v1/chat/completions")
                 .expect("utility display request");
-            let worker_request = requests
+            let main_request = requests
                 .iter()
                 .find(|request| request.path == "/v1/responses")
-                .expect("configured worker display request");
+                .expect("main-model display request");
             assert_eq!(j(
                 utility_request.body.as_ref().expect("utility body"),
                 "model"
@@ -1324,21 +1324,21 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 Some("Bearer display-utility-key")
             );
             assert_eq!(j(
-                worker_request.body.as_ref().expect("worker body"),
+                main_request.body.as_ref().expect("main-model body"),
                 "model"
-            ), "display-worker");
+            ), "display-main");
             assert_eq!(
-                worker_request.authorization.as_deref(),
-                Some("Bearer display-worker-key")
+                main_request.authorization.as_deref(),
+                Some("Bearer display-main-key")
             );
             assert!(
-                worker_request
+                main_request
                     .body
                     .as_ref()
-                    .expect("worker body")
+                    .expect("main-model body")
                     .to_string()
                     .contains("low"),
-                "configured worker effort must reach the request"
+                "the main model's own effort must reach the request"
             );
             let display_requests = serde_json::to_string(&server.request_bodies())
                 .expect("serialize display requests");
@@ -1368,7 +1368,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
             }));
             assert!(display_rows.iter().any(|row| {
                 row.role == "auxiliary"
-                    && row.model_id == "display-worker"
+                    && row.model_id == "display-main"
                     && row.status == distill_chat_state::UsageCallStatus::Completed
             }));
 
@@ -1382,7 +1382,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 .flat_map(|ledger| ledger.attributions)
                 .filter(|row| {
                     (row.role == "utility" || row.role == "auxiliary")
-                        && (row.model_id == "display-utility" || row.model_id == "display-worker")
+                        && (row.model_id == "display-utility" || row.model_id == "display-main")
                 })
                 .collect();
             assert!(
@@ -1392,7 +1392,6 @@ async fn turn_summary_generate_persists_and_broadcasts() {
 
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
         })
         .await;
 }
@@ -1674,7 +1673,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
 
             let display_server = MockInferenceServer::start_with_models(vec![
                 MockModelEntry::new("display-utility").with_api_backend("chat_completions"),
-                MockModelEntry::new("display-worker").with_api_backend("responses"),
+                MockModelEntry::new("display-main").with_api_backend("responses"),
             ])
             .await
             .expect("start display inference stub");
@@ -1795,7 +1794,6 @@ async fn messages_side_calls_preserve_completed_reasoning() {
 
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_tier_config();
         })
         .await;
 }
@@ -1841,7 +1839,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
 
                 let display_server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("display-utility").with_api_backend("chat_completions"),
-                    MockModelEntry::new("display-worker").with_api_backend("responses"),
+                    MockModelEntry::new("display-main").with_api_backend("responses"),
                 ])
                 .await
                 .expect("start display inference stub");
@@ -1941,7 +1939,6 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
 
                 crate::jev::clear_test_decision_answers();
                 crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
             }
         })
         .await;

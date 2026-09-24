@@ -1040,17 +1040,6 @@ async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn(
                 RunShellChildHarnessConfig::new(meta_dir.clone(), InitialAttemptBehavior::Normal),
             );
             ctx.parent_cwd = temp.path().to_path_buf();
-            ctx.parent_effort_auto = true;
-            let mut worker = test_model_entry("muse-model");
-            worker.info.base_url = server.url();
-            worker.info.api_backend = crate::sampling::ApiBackend::Responses;
-            worker.info.context_window = std::num::NonZeroU64::new(1_000_000).unwrap();
-            worker.info.supports_reasoning_effort = true;
-            worker.info.reasoning_effort =
-                Some(distill_sampling_types::ReasoningEffort::High);
-            ctx.models_manager
-                .insert_test_entry("muse-model", worker.clone());
-            ctx.available_models.insert("muse-model".to_owned(), worker);
             let parent_chat = spawn_test_parent_chat_state("test-model");
             parent_chat.replace_conversation(vec![
                 distill_sampling_types::conversation::ConversationItem::system(
@@ -1061,11 +1050,6 @@ async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn(
                 ),
             ]);
             ctx.parent_chat_state = Some(parent_chat);
-            crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                light: Some("muse-model".to_owned()),
-                light_effort: Some("low".to_owned()),
-                ..Default::default()
-            });
             let workspace_ops = ctx.workspace_ops.clone();
             let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
             ctx.parent_cmd_tx = Some(parent_cmd_tx);
@@ -1112,7 +1096,7 @@ async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn(
             server.release_agent_completions();
             let result = spawned.await.expect("spawn task").expect("ordinary spawn");
             assert!(result.success);
-            let worker_request = server
+            let child_request = server
                 .requests()
                 .into_iter()
                 .find_map(|request| {
@@ -1121,30 +1105,20 @@ async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn(
                         .is_some_and(|value| !value.is_empty());
                     let body = request.body?;
                     (is_foreground
-                        && body.get("model") == Some(&serde_json::json!("muse-model"))
                         && serde_json::to_string(&body)
-                            .is_ok_and(|text| text.contains("OBJECTIVE"))
-                    )
+                            .is_ok_and(|text| text.contains("OBJECTIVE")))
                     .then_some(body)
                 })
-                .expect("fresh child request should use configured worker");
-            let worker_request_text =
-                serde_json::to_string(&worker_request).expect("serialize child request");
+                .expect("the fresh child's request reaches the model");
+            let child_request_text =
+                serde_json::to_string(&child_request).expect("serialize child request");
             for marker in ["OBJECTIVE", "INSTRUCTIONS", "EVIDENCE", "PATH_HANDLE"] {
                 assert!(
-                    worker_request_text.contains(marker),
+                    child_request_text.contains(marker),
                     "child request missing supplied handoff marker {marker}"
                 );
             }
-            assert!(!worker_request_text.contains("UNRELATED_PARENT_HISTORY_MARKER"));
-            assert_eq!(
-                worker_request
-                    .pointer("/reasoning/effort")
-                    .and_then(serde_json::Value::as_str),
-                Some("low"),
-                "configured worker effort must reach the child request"
-            );
-            crate::jev::clear_test_tier_config();
+            assert!(!child_request_text.contains("UNRELATED_PARENT_HISTORY_MARKER"));
             assert!(
                 workspace.session(&id).is_none(),
                 "teardown releases the child's binding"

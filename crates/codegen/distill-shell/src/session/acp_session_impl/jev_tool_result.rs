@@ -220,34 +220,34 @@ fn compression_evidence_question(
     )
 }
 
-async fn jev_wants_worker_compression(
-    worker: &crate::jev_cheap::WorkerLane,
+async fn jev_wants_main_compression(
+    main_lane: &crate::jev_cheap::MainLane,
     original: &str,
     evidence: &str,
     question: &str,
 ) -> bool {
     let criteria = [
-        ("allow".to_owned(), serde_json::json!("one worker call is likely to save total cost and preserve required evidence")),
+        ("allow".to_owned(), serde_json::json!("one main-model call is likely to save total cost and preserve required evidence")),
         ("reject".to_owned(), serde_json::json!("pass the original through")),
         ("defer".to_owned(), serde_json::json!("savings or answer quality are uncertain")),
     ]
     .into_iter()
     .collect();
     let Ok(question_pack) = distill_workspace::jev::types::Question::choice(
-        "The direct utility compression did not produce an accepted answer. Decide whether one bounded, source-backed call to the configured worker is still worthwhile. Include its call cost, the expected reduction in future context, and the risk of omitting evidence. Choose reject or defer unless net savings and task adequacy are likely.",
+        "The direct utility compression did not produce an accepted answer. Decide whether one bounded, source-backed call to the main model is still worthwhile. Include its call cost, the expected reduction in future context, and the risk of omitting evidence. Choose reject or defer unless net savings and task adequacy are likely.",
         criteria,
     ) else {
         return false;
     };
-    let endpoint = worker.client().attribution_endpoint();
+    let endpoint = main_lane.client().attribution_endpoint();
     let state = serde_json::json!({
         "original_bytes": original.len(),
         "bounded_source_bytes": evidence.len(),
         "source_excerpt": distill_sampling_types::truncate_bytes(evidence, 600),
         "task_question": question,
-        "worker_model": worker.model(),
+        "main_model": main_lane.model(),
         "candidate_facts": crate::jev_model_facts::model_facts(&[(
-            worker.model(),
+            main_lane.model(),
             endpoint.as_str(),
         )]),
     });
@@ -260,8 +260,8 @@ async fn jev_wants_worker_compression(
     let allow = answers.as_ref().is_some_and(|answer| answer.choice("decision") == Some("allow"));
     crate::jev::record_item(
         JevLever::ECheapCompress,
-        if allow { "worker:allow" } else { "worker:defer" },
-        "Jev assessed worker fallback after utility compression",
+        if allow { "main:allow" } else { "main:defer" },
+        "Jev assessed main-model fallback after utility compression",
         answers.as_ref().and_then(|answer| answer.confidence("decision")),
         answers.as_ref(),
     );
@@ -547,19 +547,19 @@ fn typed_tool_metadata(
     }
 }
 
-/// A worker request is accounted as cancelled if the surrounding session task
+/// A main model request is accounted as cancelled if the surrounding session task
 /// is dropped after the request has been handed to the transport. The existing
 /// side-call recorder owns the ledger row; this guard only makes the existing
 /// cancellation seam run on the dropped-future path as well as on explicit
 /// failures.
-pub(super) struct WorkerAttemptCancellationGuard<'a> {
+pub(super) struct MainAttemptCancellationGuard<'a> {
     actor: &'a SessionActor,
     attempt: Option<super::side_call::AuxiliaryAttempt>,
     optional_key: Option<crate::jev_cheap::OptionalCompressionKey>,
     dispatched: bool,
 }
 
-impl<'a> WorkerAttemptCancellationGuard<'a> {
+impl<'a> MainAttemptCancellationGuard<'a> {
     pub(super) fn new(
         actor: &'a SessionActor,
         attempt: super::side_call::AuxiliaryAttempt,
@@ -582,7 +582,7 @@ impl<'a> WorkerAttemptCancellationGuard<'a> {
     }
 }
 
-impl Drop for WorkerAttemptCancellationGuard<'_> {
+impl Drop for MainAttemptCancellationGuard<'_> {
     fn drop(&mut self) {
         if self.dispatched
             && let Some(attempt) = self.attempt.as_ref()
@@ -710,84 +710,42 @@ impl SessionActor {
         }
     }
 
-    /// Resolve the configured light-tier worker through the catalog. A missing
-    /// or unknown tier is a clean defer; it must never fall back to the local
-    /// utility chain or to the parent/session model.
-    pub(super) async fn tool_result_worker(&self) -> Option<crate::jev_cheap::WorkerLane> {
+    /// The main model as the fallback compression lane, resolved through the
+    /// catalog from the session's own model with its own endpoint and
+    /// credential. A missing entry is a clean defer; it never falls back to the
+    /// local utility chain.
+    pub(super) async fn tool_result_main_lane(&self) -> Option<crate::jev_cheap::MainLane> {
         if !crate::jev::lever_active(JevLever::ECheapCompress) {
             return None;
         }
-        let tiers = crate::jev::tiers_cached();
-        let worker_id = tiers
-            .light
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)?;
-        let known = crate::agent::config::find_model_by_id(
-            &self.models_manager.models(),
-            &worker_id,
-        )
-        .is_some();
-        if !known {
+        let main_id = self.models_manager.current_model_id().0.to_string();
+        if crate::agent::config::find_model_by_id(&self.models_manager.models(), &main_id).is_none()
+        {
             crate::jev::record_item(
                 JevLever::ECheapCompress,
-                "defer:worker-catalog",
-                &format!("configured light worker `{worker_id}` is not in the catalog"),
+                "defer:main-catalog",
+                &format!("main model `{main_id}` is not in the catalog"),
                 None,
                 None,
             );
             return None;
         }
-        if let Some(raw_effort) = tiers
-            .light_effort
-            .as_deref()
-            .map(str::trim)
-            .filter(|effort| !effort.is_empty() && !effort.eq_ignore_ascii_case("auto"))
-        {
-            let Ok(effort) = raw_effort.parse::<distill_sampling_types::ReasoningEffort>() else {
-                crate::jev::record_item(
-                    JevLever::ECheapCompress,
-                    "defer:worker-effort",
-                    &format!("configured effort `{raw_effort}` is not a supported reasoning level"),
-                    None,
-                    None,
-                );
-                return None;
-            };
-            if !self
-                .models_manager
-                .model_supports_reasoning_effort_value(&worker_id, effort)
-            {
-                crate::jev::record_item(
-                    JevLever::ECheapCompress,
-                    "defer:worker-effort",
-                    &format!("configured effort `{raw_effort}` is not in the catalog menu for `{worker_id}`"),
-                    None,
-                    None,
-                );
-                return None;
-            }
-        }
-        let Some(cfg) = self.resolve_aux_sampler_config(&worker_id).await else {
+        let Some(cfg) = self.resolve_aux_sampler_config(&main_id).await else {
             crate::jev::record_item(
                 JevLever::ECheapCompress,
-                "defer:worker-auth",
-                &format!("configured light worker `{worker_id}` has no usable sampler config"),
+                "defer:main-auth",
+                &format!("main model `{main_id}` has no usable sampler config"),
                 None,
                 None,
             );
             return None;
         };
-        let lane = crate::jev_cheap::WorkerLane::from_sampler_config(
-            cfg,
-            tiers.light_effort.as_deref(),
-        );
+        let lane = crate::jev_cheap::MainLane::from_sampler_config(cfg);
         if lane.is_none() {
             crate::jev::record_item(
                 JevLever::ECheapCompress,
-                "defer:worker-config",
-                &format!("configured light worker `{worker_id}` could not build a sampler"),
+                "defer:main-config",
+                &format!("main model `{main_id}` could not build a sampler"),
                 None,
                 None,
             );
@@ -858,7 +816,7 @@ impl SessionActor {
 
         // A typed, complete Bun test result is already a closed status answer.
         // Store the source before replacing it so the reasoning model and any
-        // later worker can recover the exact tool result without rerunning it.
+        // later main model can recover the exact tool result without rerunning it.
         if crate::jev::lever_active(JevLever::ECheapCompress)
             && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
             && !distill_workspace::jev::retention::looks_structured(lane_command, &body)
@@ -1037,7 +995,7 @@ impl SessionActor {
 
         // ---- utility-first extractive compression ----
         //
-        // The utility and the configured light worker share one source-backed
+        // The utility and the main model share one source-backed
         // contract. The utility is attempted once first; a rejected answer may
         // trigger exactly one real light-tier request. Neither lane receives an
         // unbounded payload, and the original remains at the recovery handle.
@@ -1085,7 +1043,7 @@ impl SessionActor {
             let typed_metadata = typed_tool_metadata(output);
             let mut replacement: Option<(String, JevLever)> = None;
             if let Some(handle) = source_handle.as_deref() {
-                // Each lane is bounded independently.  The optional worker's
+                // Each lane is bounded independently.  The optional main model's
                 // smaller window must never make an otherwise eligible utility
                 // call disappear before the utility gets its first attempt.
                 let utility_budget = utility.as_ref().map(|utility| {
@@ -1159,55 +1117,55 @@ impl SessionActor {
                     );
                 }
 
-                // The configured light worker is a fallback, not a second
+                // The main model is a fallback, not a second
                 // utility attempt.  It gets its own source selection only
                 // after the utility has failed or deferred.
                 if replacement.is_none()
                     && crate::jev::lever_active(JevLever::ECheapCompress)
-                    && let Some(worker) = self.tool_result_worker().await
+                    && let Some(main_lane) = self.tool_result_main_lane().await
                 {
-                    let worker_budget = worker
+                    let main_budget = main_lane
                         .max_payload_bytes()
                         .saturating_sub(evidence_question.len().saturating_add(512));
-                    if let Some(evidence) = compression_source_for_lane(output, &body, worker_budget).await
-                        && let Some(worker_request) = worker.task_request(
+                    if let Some(evidence) = compression_source_for_lane(output, &body, main_budget).await
+                        && let Some(main_request) = main_lane.task_request(
                         EXTRACTIVE_TASK,
                         &evidence,
                         &evidence_question,
                     ) {
-                        let effort = worker.client().attribution_applied_effort(
-                            worker_request.reasoning_effort,
-                            worker_request.max_output_tokens,
+                        let effort = main_lane.client().attribution_applied_effort(
+                            main_request.reasoning_effort,
+                            main_request.max_output_tokens,
                         );
-                        let worker_key = crate::jev_cheap::optional_compression_key(
-                            &worker.client().attribution_endpoint(),
-                            worker.model(),
+                        let main_key = crate::jev_cheap::optional_compression_key(
+                            &main_lane.client().attribution_endpoint(),
+                            main_lane.model(),
                             EXTRACTIVE_TASK,
                             effort.as_deref().unwrap_or("provider_default"),
                         );
-                        let worker_allowed = crate::jev_cheap::optional_compression_allowed(&worker_key);
-                        if worker_allowed
-                            && jev_wants_worker_compression(
-                                &worker,
+                        let main_allowed = crate::jev_cheap::optional_compression_allowed(&main_key);
+                        if main_allowed
+                            && jev_wants_main_compression(
+                                &main_lane,
                                 &body,
                                 &evidence,
                                 &evidence_question,
                             ).await
                         {
                             let attempt = super::side_call::auxiliary_attempt(
-                                worker.client(),
-                                &worker_request,
+                                main_lane.client(),
+                                &main_request,
                             );
                             let mut cancellation_guard =
-                                WorkerAttemptCancellationGuard::new(
+                                MainAttemptCancellationGuard::new(
                                     self,
                                     attempt.clone(),
-                                    Some(worker_key.clone()),
+                                    Some(main_key.clone()),
                                 );
                             let call_started = std::time::Instant::now();
                             cancellation_guard.mark_dispatched();
                             let (response_result, rejected_response) =
-                                worker.collect(worker_request).await;
+                                main_lane.collect(main_request).await;
                             match response_result {
                                 Ok(response) => {
                                     let answer = response.assistant_text();
@@ -1217,7 +1175,7 @@ impl SessionActor {
                                         &evidence,
                                         &answer,
                                         handle,
-                                        "configured light worker",
+                                        "main model",
                                         typed_metadata.as_deref(),
                                     );
                                     let api_duration_ms =
@@ -1225,8 +1183,8 @@ impl SessionActor {
                                     if candidate.is_some() {
                                         super::side_call::record_auxiliary_response(
                                             self,
-                                            "jev_tool_result_worker",
-                                            worker.model(),
+                                            "jev_tool_result_main",
+                                            main_lane.model(),
                                             &attempt,
                                             &response,
                                             api_duration_ms,
@@ -1235,8 +1193,8 @@ impl SessionActor {
                                     } else {
                                         super::side_call::record_auxiliary_rejected_response(
                                             self,
-                                            "jev_tool_result_worker",
-                                            worker.model(),
+                                            "jev_tool_result_main",
+                                            main_lane.model(),
                                             &attempt,
                                             &response,
                                             api_duration_ms,
@@ -1245,19 +1203,19 @@ impl SessionActor {
                                     }
                                     cancellation_guard.complete();
                                     super::side_call::log_prompt_cache_usage(
-                                        "jev_tool_result_worker",
-                                        worker.client().api_backend(),
+                                        "jev_tool_result_main",
+                                        main_lane.client().api_backend(),
                                         &response,
                                     );
                                     if let Some(candidate) = candidate {
                                         crate::jev_cheap::note_success(JevLever::ECheapCompress);
                                         crate::jev_cheap::note_optional_compression_success(
-                                            &worker_key,
+                                            &main_key,
                                         );
                                         crate::jev::record_item(
                                             JevLever::ECheapCompress,
                                             "verify:accept",
-                                            "worker extractive source-span contract",
+                                            "main-model extractive source-span contract",
                                             None,
                                             None,
                                         );
@@ -1266,12 +1224,12 @@ impl SessionActor {
                                         crate::jev_cheap::note_success(JevLever::ECheapCompress);
                                         crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
                                         crate::jev_cheap::note_optional_compression_failure(
-                                            &worker_key,
+                                            &main_key,
                                         );
                                         crate::jev::record_item(
                                             JevLever::ECheapCompress,
                                             "verify:reject",
-                                            "worker answer did not retain required source evidence",
+                                            "main-model answer did not retain required source evidence",
                                             None,
                                             None,
                                         );
@@ -1281,8 +1239,8 @@ impl SessionActor {
                                     if let Some(response) = rejected_response {
                                         super::side_call::record_auxiliary_rejected_response(
                                             self,
-                                            "jev_tool_result_worker",
-                                            worker.model(),
+                                            "jev_tool_result_main",
+                                            main_lane.model(),
                                             &attempt,
                                             &response,
                                             None,
@@ -1298,22 +1256,22 @@ impl SessionActor {
                                     cancellation_guard.complete();
                                     crate::jev_cheap::note_failure(JevLever::ECheapCompress);
                                     crate::jev_cheap::note_optional_compression_failure(
-                                        &worker_key,
+                                        &main_key,
                                     );
                                     crate::jev::record_item(
                                         JevLever::ECheapCompress,
-                                        "worker:failure",
-                                        "configured light worker failed or was rejected; original retained",
+                                        "main:failure",
+                                        "main model failed or was rejected; original retained",
                                         None,
                                         None,
                                     );
                                 }
                             }
-                        } else if !worker_allowed {
+                        } else if !main_allowed {
                             crate::jev::record_item(
                                 JevLever::ECheapCompress,
-                                "defer:worker-failure-bound",
-                                "configured light worker reached the optional compression failure bound",
+                                "defer:main-failure-bound",
+                                "main model reached the optional compression failure bound",
                                 None,
                                 None,
                             );
@@ -1321,8 +1279,8 @@ impl SessionActor {
                     } else {
                         crate::jev::record_item(
                             JevLever::ECheapCompress,
-                            "defer:worker-budget",
-                            "bounded extractive task did not fit the configured light worker",
+                            "defer:main-budget",
+                            "bounded extractive task did not fit the main model",
                             None,
                             None,
                         );
@@ -1346,7 +1304,7 @@ impl SessionActor {
                         body.len(),
                         candidate.len(),
                         if lever == JevLever::ECheapCompress {
-                            "configured worker"
+                            "main model"
                         } else {
                             "utility"
                         },
@@ -1359,7 +1317,7 @@ impl SessionActor {
                 crate::jev::record_item(
                     Lever::ECheapCompress,
                     "rejected",
-                    "utility and configured worker produced no verified extractive replacement; original retained",
+                    "utility and main model produced no verified extractive replacement; original retained",
                     None,
                     None,
                 );
@@ -1941,22 +1899,20 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
-    async fn worker_compression_fallback_requires_jev_approval() {
-        let worker = crate::jev_cheap::WorkerLane::from_sampler_config(
-            distill_sampler::SamplerConfig {
-                model: "worker-model".to_owned(),
+    async fn main_compression_fallback_requires_jev_approval() {
+        let main_lane =
+            crate::jev_cheap::MainLane::from_sampler_config(distill_sampler::SamplerConfig {
+                model: "main-model".to_owned(),
                 base_url: "http://127.0.0.1:1/v1".to_owned(),
                 context_window: 32_000,
                 api_key: Some("test-key".to_owned()),
                 ..Default::default()
-            },
-            None,
-        )
-        .expect("worker lane");
+            })
+            .expect("main lane");
         set_utility_review_choices(&["reject"]);
         let allowed = crate::jev::with_session_scope(
-            "worker-compression-rejected",
-            jev_wants_worker_compression(&worker, "source text", "source text", "summarize"),
+            "main-compression-rejected",
+            jev_wants_main_compression(&main_lane, "source text", "source text", "summarize"),
         )
         .await;
         assert!(!allowed);
@@ -2107,7 +2063,7 @@ mod tests {
             evidence,
             "`test src/client.test.ts ... FAILED`\n`1 failed, 0 passed`",
             "/tmp/output",
-            "configured light worker",
+            "main model",
             None,
         )
         .is_some());
@@ -2164,7 +2120,7 @@ mod tests {
             &evidence,
             "`8 passing (20ms)`\n`1 pending`",
             "/tmp/mocha-output",
-            "configured light worker",
+            "main model",
             None,
         )
         .expect("complete Mocha status summary");
@@ -2291,30 +2247,30 @@ mod tests {
                         .models_manager
                         .insert_test_entry("utility-model", utility);
 
-                    let mut worker = crate::agent::config::ModelEntry::fallback(
-                        "worker-model",
+                    let mut main_entry = crate::agent::config::ModelEntry::fallback(
+                        "main-model",
                         &crate::agent::config::EndpointsConfig::default(),
                     );
-                    worker.info.base_url = server.url();
-                    worker.info.context_window =
-                        std::num::NonZeroU64::new(128_000).expect("worker window");
-                    worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                    worker.info.max_retries = Some(0);
-                    worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-                    worker.info.supports_reasoning_effort = true;
-                    worker.info.reasoning_efforts = vec![
+                    main_entry.info.base_url = server.url();
+                    main_entry.info.context_window =
+                        std::num::NonZeroU64::new(128_000).expect("main window");
+                    main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                    main_entry.info.max_retries = Some(0);
+                    main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+                    main_entry.info.supports_reasoning_effort = true;
+                    main_entry.info.reasoning_efforts = vec![
                         distill_sampling_types::ReasoningEffortOption {
                             id: "low".to_owned(),
                             value: distill_sampling_types::ReasoningEffort::Low,
                             label: "Low".to_owned(),
-                            description: Some("bounded test worker".to_owned()),
+                            description: Some("bounded test main model".to_owned()),
                             default: true,
                         },
                     ];
-                    worker.api_key = Some("worker-test-key".to_owned());
+                    main_entry.api_key = Some("main-test-key".to_owned());
                     actor
                         .models_manager
-                        .insert_test_entry("worker-model", worker);
+                        .insert_test_entry("main-model", main_entry);
                 };
 
                 let source = format!(
@@ -2342,7 +2298,7 @@ mod tests {
 
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                    MockModelEntry::new("main-model").with_api_backend("responses"),
                 ])
                 .await
                 .expect("start first local inference stub");
@@ -2365,7 +2321,7 @@ mod tests {
                     "/v1/responses",
                     ScriptedResponse::sse(responses_api_script_exact(
                         "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`",
-                        "worker-model",
+                        "main-model",
                     )),
                 );
 
@@ -2375,10 +2331,9 @@ mod tests {
                     model: Some("utility-model".to_owned()),
                     ..Default::default()
                 });
-                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                    light: Some("worker-model".to_owned()),
-                    light_effort: Some("low".to_owned()),
-                });
+                actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
                 assert!(crate::jev::lever_active(JevLever::ECheapCompress));
                 assert!(!crate::jev::lever_active(JevLever::ECheapTask));
 
@@ -2395,7 +2350,7 @@ mod tests {
                     ),
                 )
                 .await;
-                assert!(accepted.contains("compressed by verified configured light worker"));
+                assert!(accepted.contains("compressed by verified main model"));
                 assert!(accepted.contains("full output stored at"));
                 assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
                 assert_eq!(server.request_count_for("/v1/responses"), 1);
@@ -2410,7 +2365,7 @@ mod tests {
                     })
                     .collect();
                 assert!(request_models.iter().any(|model| model == "utility-model"));
-                assert!(request_models.iter().any(|model| model == "worker-model"));
+                assert!(request_models.iter().any(|model| model == "main-model"));
                 let ledger = actor
                     .chat_state_handle
                     .try_get_session_usage()
@@ -2421,29 +2376,29 @@ mod tests {
                     .iter()
                     .filter(|row| row.role == "utility")
                     .collect();
-                let worker_rows: Vec<_> = ledger
+                let main_rows: Vec<_> = ledger
                     .attributions
                     .iter()
                     .filter(|row| row.role == "auxiliary")
                     .collect();
                 assert_eq!(utility_rows.len(), 1);
-                assert_eq!(worker_rows.len(), 1);
+                assert_eq!(main_rows.len(), 1);
                 assert_eq!(utility_rows[0].model_id, "utility-model");
                 assert_eq!(utility_rows[0].status, distill_chat_state::UsageCallStatus::Rejected);
                 assert!(utility_rows[0]
                     .endpoint
                     .as_deref()
                     .is_some_and(|endpoint| endpoint.ends_with("/chat/completions")));
-                assert_eq!(worker_rows[0].model_id, "worker-model");
-                assert_eq!(worker_rows[0].status, distill_chat_state::UsageCallStatus::Completed);
-                assert!(worker_rows[0]
+                assert_eq!(main_rows[0].model_id, "main-model");
+                assert_eq!(main_rows[0].status, distill_chat_state::UsageCallStatus::Completed);
+                assert!(main_rows[0]
                     .endpoint
                     .as_deref()
                     .is_some_and(|endpoint| endpoint.ends_with("/responses")));
 
                 let rejected_server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                    MockModelEntry::new("main-model").with_api_backend("responses"),
                 ])
                 .await
                 .expect("start second local inference stub");
@@ -2590,7 +2545,6 @@ mod tests {
                 );
 
                 crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
                 });
             })
             .expect("spawn compression-bound test thread")
@@ -2600,7 +2554,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
-    async fn production_web_search_uses_utility_then_worker_with_source_units() {
+    async fn production_web_search_uses_utility_then_main_with_source_units() {
         use distill_test_support::sse::responses_api_script_exact;
         use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
         use distill_tools::types::output::{ToolOutput, WebSearchOutput};
@@ -2626,13 +2580,13 @@ mod tests {
                 let utility_answer = format!(
                     "`Web search results for: \"{query}\"`\n`Rust async cancellation is free of leaks`"
                 );
-                let worker_answer = format!(
+                let main_answer = format!(
                     "`Web search results for: \"{query}\"`\n`{alpha}`\n`{beta}`"
                 );
 
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                    MockModelEntry::new("main-model").with_api_backend("responses"),
                 ])
                 .await
                 .expect("start web-search inference stub");
@@ -2654,8 +2608,8 @@ mod tests {
                 server.enqueue_response(
                     "/v1/responses",
                     ScriptedResponse::sse(responses_api_script_exact(
-                        &worker_answer,
-                        "worker-model",
+                        &main_answer,
+                        "main-model",
                     )),
                 );
 
@@ -2673,39 +2627,38 @@ mod tests {
                     .models_manager
                     .insert_test_entry("utility-model", utility);
 
-                let mut worker = crate::agent::config::ModelEntry::fallback(
-                    "worker-model",
+                let mut main_entry = crate::agent::config::ModelEntry::fallback(
+                    "main-model",
                     &crate::agent::config::EndpointsConfig::default(),
                 );
-                worker.info.base_url = server.url();
-                worker.info.context_window =
-                    std::num::NonZeroU64::new(128_000).expect("worker window");
-                worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                worker.info.max_retries = Some(0);
-                worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-                worker.info.supports_reasoning_effort = true;
-                worker.info.reasoning_efforts = vec![
+                main_entry.info.base_url = server.url();
+                main_entry.info.context_window =
+                    std::num::NonZeroU64::new(128_000).expect("main window");
+                main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                main_entry.info.max_retries = Some(0);
+                main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+                main_entry.info.supports_reasoning_effort = true;
+                main_entry.info.reasoning_efforts = vec![
                     distill_sampling_types::ReasoningEffortOption {
                         id: "low".to_owned(),
                         value: distill_sampling_types::ReasoningEffort::Low,
                         label: "Low".to_owned(),
-                        description: Some("bounded test worker".to_owned()),
+                        description: Some("bounded test main model".to_owned()),
                         default: true,
                     },
                 ];
-                worker.api_key = Some("worker-test-key".to_owned());
+                main_entry.api_key = Some("main-test-key".to_owned());
                 actor
                     .models_manager
-                    .insert_test_entry("worker-model", worker);
+                    .insert_test_entry("main-model", main_entry);
 
                 crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
                     model: Some("utility-model".to_owned()),
                     ..Default::default()
                 });
-                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                    light: Some("worker-model".to_owned()),
-                    light_effort: Some("low".to_owned()),
-                });
+                actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
 
                 set_utility_review_choices(&["allow", "allow"]);
                 let output = ToolOutput::WebSearch(WebSearchOutput {
@@ -2721,7 +2674,7 @@ mod tests {
                 let rendered = output.to_prompt_format();
                 assert!(rendered.len() >= context::BIG_OUTPUT_BYTES);
                 let compressed = crate::jev::with_session_scope_and_recorder(
-                    "e3-web-search-utility-worker",
+                    "e3-web-search-utility-main",
                     Some(actor.chat_state_handle.clone()),
                     actor.jev_post_process_tool_result(
                         "web_search",
@@ -2734,8 +2687,8 @@ mod tests {
                 .await;
 
                 assert!(
-                    compressed.contains("compressed by verified configured light worker"),
-                    "expected worker fallback: {compressed}"
+                    compressed.contains("compressed by verified main model"),
+                    "expected main-model fallback: {compressed}"
                 );
                 assert!(compressed.contains("full output stored at"));
                 assert!(compressed.contains(&format!("header: Web search results for: \"{query}\"")));
@@ -2760,41 +2713,40 @@ mod tests {
                     .iter()
                     .filter(|row| row.role == "utility")
                     .collect();
-                let worker_rows: Vec<_> = ledger
+                let main_rows: Vec<_> = ledger
                     .attributions
                     .iter()
                     .filter(|row| row.role == "auxiliary")
                     .collect();
                 assert_eq!(utility_rows.len(), 1);
-                assert_eq!(worker_rows.len(), 1);
+                assert_eq!(main_rows.len(), 1);
                 assert_eq!(utility_rows[0].model_id, "utility-model");
                 assert_eq!(
                     utility_rows[0].status,
                     distill_chat_state::UsageCallStatus::Rejected
                 );
-                assert_eq!(worker_rows[0].model_id, "worker-model");
+                assert_eq!(main_rows[0].model_id, "main-model");
                 assert_eq!(
-                    worker_rows[0].status,
+                    main_rows[0].status,
                     distill_chat_state::UsageCallStatus::Completed
                 );
                 assert!(utility_rows[0]
                     .endpoint
                     .as_deref()
                     .is_some_and(|endpoint| endpoint.ends_with("/chat/completions")));
-                assert!(worker_rows[0]
+                assert!(main_rows[0]
                     .endpoint
                     .as_deref()
                     .is_some_and(|endpoint| endpoint.ends_with("/responses")));
 
                 crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
             })
             .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
-    async fn production_web_fetch_uses_utility_then_worker_with_bounded_artifact() {
+    async fn production_web_fetch_uses_utility_then_main_with_bounded_artifact() {
         use distill_test_support::sse::responses_api_script_exact;
         use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
         use distill_tools::types::output::{
@@ -2816,7 +2768,7 @@ mod tests {
                 let alpha =
                     "The page states alpha: bounded utility compression preserves the source.";
                 let beta =
-                    "The page states beta: a configured worker may retain a second paragraph.";
+                    "The page states beta: a main model may retain a second paragraph.";
                 let source_content = format!(
                     "{alpha}\n\n{beta}\n\n{}",
                     "supporting page context\n".repeat(300)
@@ -2830,11 +2782,11 @@ mod tests {
                     source_content.len()
                 );
                 let utility_answer = "`The page states alpha`";
-                let worker_answer = format!("`{alpha}`\n`{beta}`");
+                let main_answer = format!("`{alpha}`\n`{beta}`");
 
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                    MockModelEntry::new("main-model").with_api_backend("responses"),
                 ])
                 .await
                 .expect("start web-fetch inference stub");
@@ -2856,8 +2808,8 @@ mod tests {
                 server.enqueue_response(
                     "/v1/responses",
                     ScriptedResponse::sse(responses_api_script_exact(
-                        &worker_answer,
-                        "worker-model",
+                        &main_answer,
+                        "main-model",
                     )),
                 );
 
@@ -2875,39 +2827,38 @@ mod tests {
                     .models_manager
                     .insert_test_entry("utility-model", utility);
 
-                let mut worker = crate::agent::config::ModelEntry::fallback(
-                    "worker-model",
+                let mut main_entry = crate::agent::config::ModelEntry::fallback(
+                    "main-model",
                     &crate::agent::config::EndpointsConfig::default(),
                 );
-                worker.info.base_url = server.url();
-                worker.info.context_window =
-                    std::num::NonZeroU64::new(128_000).expect("worker window");
-                worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                worker.info.max_retries = Some(0);
-                worker.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-                worker.info.supports_reasoning_effort = true;
-                worker.info.reasoning_efforts = vec![
+                main_entry.info.base_url = server.url();
+                main_entry.info.context_window =
+                    std::num::NonZeroU64::new(128_000).expect("main window");
+                main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                main_entry.info.max_retries = Some(0);
+                main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+                main_entry.info.supports_reasoning_effort = true;
+                main_entry.info.reasoning_efforts = vec![
                     distill_sampling_types::ReasoningEffortOption {
                         id: "low".to_owned(),
                         value: distill_sampling_types::ReasoningEffort::Low,
                         label: "Low".to_owned(),
-                        description: Some("bounded test worker".to_owned()),
+                        description: Some("bounded test main model".to_owned()),
                         default: true,
                     },
                 ];
-                worker.api_key = Some("worker-test-key".to_owned());
+                main_entry.api_key = Some("main-test-key".to_owned());
                 actor
                     .models_manager
-                    .insert_test_entry("worker-model", worker);
+                    .insert_test_entry("main-model", main_entry);
 
                 crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
                     model: Some("utility-model".to_owned()),
                     ..Default::default()
                 });
-                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                    light: Some("worker-model".to_owned()),
-                    light_effort: Some("low".to_owned()),
-                });
+                actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
 
                 set_utility_review_choices(&["allow", "allow"]);
                 let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
@@ -2925,7 +2876,7 @@ mod tests {
                 let rendered = output.to_prompt_format();
                 assert!(rendered.len() >= context::BIG_OUTPUT_BYTES);
                 let compressed = crate::jev::with_session_scope_and_recorder(
-                    "e3-web-fetch-utility-worker",
+                    "e3-web-fetch-utility-main",
                     Some(actor.chat_state_handle.clone()),
                     actor.jev_post_process_tool_result(
                         "web_fetch",
@@ -2938,8 +2889,8 @@ mod tests {
                 .await;
 
                 assert!(
-                    compressed.contains("compressed by verified configured light worker"),
-                    "expected worker fallback: {compressed}"
+                    compressed.contains("compressed by verified main model"),
+                    "expected main-model fallback: {compressed}"
                 );
                 assert!(compressed.contains(artifact_path.to_string_lossy().as_ref()));
                 assert!(compressed.contains(&format!("url: {url}")));
@@ -2961,31 +2912,30 @@ mod tests {
                     .iter()
                     .filter(|row| row.role == "utility")
                     .collect();
-                let worker_rows: Vec<_> = ledger
+                let main_rows: Vec<_> = ledger
                     .attributions
                     .iter()
                     .filter(|row| row.role == "auxiliary")
                     .collect();
                 assert_eq!(utility_rows.len(), 1);
-                assert_eq!(worker_rows.len(), 1);
+                assert_eq!(main_rows.len(), 1);
                 assert_eq!(
                     utility_rows[0].status,
                     distill_chat_state::UsageCallStatus::Rejected
                 );
                 assert_eq!(
-                    worker_rows[0].status,
+                    main_rows[0].status,
                     distill_chat_state::UsageCallStatus::Completed
                 );
 
                 crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
             })
             .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
-    async fn production_task_output_uses_utility_then_worker_with_typed_status() {
+    async fn production_task_output_uses_utility_then_main_with_typed_status() {
         use distill_test_support::sse::responses_api_script_exact;
         use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
         use distill_tools::computer::types::{TaskKind, TerminalBackend, TerminalRunRequest};
@@ -3007,7 +2957,7 @@ mod tests {
 
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("worker-model").with_api_backend("responses"),
+                    MockModelEntry::new("main-model").with_api_backend("responses"),
                 ])
                 .await
                 .expect("start task-output inference stub");
@@ -3030,7 +2980,7 @@ mod tests {
                     "/v1/responses",
                     ScriptedResponse::sse(responses_api_script_exact(
                         "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`",
-                        "worker-model",
+                        "main-model",
                     )),
                 );
 
@@ -3085,40 +3035,39 @@ mod tests {
                     .models_manager
                     .insert_test_entry("utility-model", utility);
 
-                let mut worker = crate::agent::config::ModelEntry::fallback(
-                    "worker-model",
+                let mut main_entry = crate::agent::config::ModelEntry::fallback(
+                    "main-model",
                     &crate::agent::config::EndpointsConfig::default(),
                 );
-                worker.info.base_url = server.url();
-                worker.info.context_window =
-                    std::num::NonZeroU64::new(128_000).expect("worker window");
-                worker.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                worker.info.max_retries = Some(0);
-                worker.info.reasoning_effort =
+                main_entry.info.base_url = server.url();
+                main_entry.info.context_window =
+                    std::num::NonZeroU64::new(128_000).expect("main window");
+                main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+                main_entry.info.max_retries = Some(0);
+                main_entry.info.reasoning_effort =
                     Some(distill_sampling_types::ReasoningEffort::Low);
-                worker.info.supports_reasoning_effort = true;
-                worker.info.reasoning_efforts = vec![
+                main_entry.info.supports_reasoning_effort = true;
+                main_entry.info.reasoning_efforts = vec![
                     distill_sampling_types::ReasoningEffortOption {
                         id: "low".to_owned(),
                         value: distill_sampling_types::ReasoningEffort::Low,
                         label: "Low".to_owned(),
-                        description: Some("bounded test worker".to_owned()),
+                        description: Some("bounded test main model".to_owned()),
                         default: true,
                     },
                 ];
-                worker.api_key = Some("worker-test-key".to_owned());
+                main_entry.api_key = Some("main-test-key".to_owned());
                 actor
                     .models_manager
-                    .insert_test_entry("worker-model", worker);
+                    .insert_test_entry("main-model", main_entry);
 
                 crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
                     model: Some("utility-model".to_owned()),
                     ..Default::default()
                 });
-                crate::jev::set_test_tier_config(crate::agent::config::JevTiersConfig {
-                    light: Some("worker-model".to_owned()),
-                    light_effort: Some("low".to_owned()),
-                });
+                actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
 
                 set_utility_review_choices(&["allow", "allow"]);
                 let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(
@@ -3143,7 +3092,7 @@ mod tests {
                 ));
                 let rendered = output.to_prompt_format();
                 let compressed = crate::jev::with_session_scope_and_recorder(
-                    "e3-task-output-utility-worker",
+                    "e3-task-output-utility-main",
                     Some(actor.chat_state_handle.clone()),
                     actor.jev_post_process_tool_result(
                         "get_task_output",
@@ -3156,12 +3105,12 @@ mod tests {
                 .await;
 
                 let activity = crate::jev::turn_activity_for_session(
-                    "e3-task-output-utility-worker",
+                    "e3-task-output-utility-main",
                     None,
                 );
                 assert!(
-                    compressed.contains("compressed by verified configured light worker"),
-                    "expected configured worker fallback; utility_requests={}, worker_requests={}, activity={activity:?}",
+                    compressed.contains("compressed by verified main model"),
+                    "expected main model fallback; utility_requests={}, main_requests={}, activity={activity:?}",
                     server.request_count_for("/v1/chat/completions"),
                     server.request_count_for("/v1/responses"),
                 );
@@ -3179,7 +3128,6 @@ mod tests {
                 assert_eq!(server.request_count_for("/v1/responses"), 1);
 
                 crate::jev::clear_test_local_config();
-                crate::jev::clear_test_tier_config();
             })
             .await;
     }

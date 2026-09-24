@@ -2985,7 +2985,10 @@ fn dashboard_slash_model_stages_pending_model() {
     seed_model(&mut app, "grok-4.5", "Grok 4.5");
     open_dashboard(&mut app);
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/model grok-4.5".into());
-    assert!(matches!(effects.as_slice(), [Effect::PersistTierModel { worker: true, model, effort: None }] if model == "grok-4.5"));
+    assert!(
+        effects.is_empty(),
+        "staging a model must not spawn a session"
+    );
     assert!(app.agents.is_empty(), "no session should be created");
     let pending = app
         .dashboard
@@ -3009,14 +3012,15 @@ fn dashboard_slash_model_stages_pending_model() {
         "staging must update the snapshot's current selection",
     );
 }
-
+/// On the dashboard the reasoning model is a saved preference: it persists
+/// `[models].reasoning`, keeps the main model and stages nothing for the next agent.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
-fn dashboard_reasoning_model_keeps_worker_selection() {
+fn dashboard_reasoning_model_keeps_main_selection() {
     let mut app = test_app();
-    seed_model(&mut app, "worker", "Worker");
+    seed_model(&mut app, "main", "Main");
     seed_model(&mut app, "reasoning", "Reasoning");
-    app.models.set_current(acp::ModelId::new("worker"), None);
+    app.models.set_current(acp::ModelId::new("main"), None);
     open_dashboard(&mut app);
 
     let effects =
@@ -3025,11 +3029,11 @@ fn dashboard_reasoning_model_keeps_worker_selection() {
     assert!(matches!(
         effects.as_slice(),
         [Effect::PersistSetting {
-            key: "default_model",
+            key: "reasoning_model",
             ..
         }]
     ));
-    assert_eq!(app.models.current_model_id_str(), Some("worker"));
+    assert_eq!(app.models.current_model_id_str(), Some("main"));
     assert_eq!(
         app.models
             .reasoning_model
@@ -3037,7 +3041,13 @@ fn dashboard_reasoning_model_keeps_worker_selection() {
             .map(|id| id.0.as_ref()),
         Some("reasoning")
     );
-    assert!(app.dashboard.as_ref().unwrap().pending_model.is_none());
+    let dashboard = app.dashboard.as_ref().unwrap();
+    assert!(dashboard.pending_model.is_none());
+    assert_eq!(
+        dashboard.models.reasoning_model.as_ref().map(|id| id.0.as_ref()),
+        Some("reasoning"),
+        "the dashboard snapshot shows the saved reasoning model"
+    );
 }
 /// A tier-restricted command typed into the dashboard dispatch input must upsell via the feedback toast, not execute, and not fall through the unknown-command path, which would spawn a session whose first prompt is the raw slash text.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]

@@ -331,11 +331,10 @@ pub struct EffortChoice {
 /// the session's own effort.
 pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.40;
 
-/// The tier pick's floor. Two real options plus "keep" put chance at 0.33, and a
-/// downgrade that the decision is unsure about is a quality loss on the step, so
-/// this one sits higher than the effort floor: below it the session's model runs
-/// the call.
-pub const MICRO_TIER_MIN_CONFIDENCE: f64 = 0.55;
+/// The reasoning-consult floor. Two options put chance at 0.5, so an answer is
+/// taken only clearly above it; below it [`compose_reasoning_consult`] falls back
+/// to whether the request already has the reasoning model's advice.
+pub const REASONING_CONSULT_MIN_CONFIDENCE: f64 = 0.55;
 
 /// B2 (auto): one `choice` over the efforts **this model** offers for a single
 /// model call. The model's own name is part of the question: "how much thinking
@@ -393,7 +392,7 @@ pub fn micro_effort_questions_for(
 pub const MICRO_EFFORT_FALLBACK_LABEL: &str = "keep_session_effort";
 /// Question id of the auto-effort choice.
 pub const MICRO_EFFORT_QUESTION: &str = "micro_effort";
-pub const WORKER_EFFORT_QUESTION: &str = "worker_effort";
+pub const REASONING_EFFORT_QUESTION: &str = "reasoning_effort";
 pub const UTILITY_EFFORT_QUESTION: &str = "utility_effort";
 
 /// What the decision is told about one tier's model. Facts only: what it is
@@ -410,28 +409,24 @@ pub struct TierProfile {
     pub notes: String,
 }
 
-/// Question id of the tier choice (which model runs this call).
-pub const MICRO_TIER_QUESTION: &str = "micro_tier";
-/// Label used for "keep whatever the session runs".
-pub const MICRO_TIER_KEEP_LABEL: &str = "keep_session_model";
-/// Tier labels the decision picks between. The ids are these labels, never the
-/// catalog ids: the question reads as a choice of roles, and the caller maps the
-/// role back to the model it holds.
-pub const TIER_HARD_LABEL: &str = "hard";
-/// The lighter sibling of the hard model.
-pub const TIER_LIGHT_LABEL: &str = "light";
+/// Question id of the reasoning consult: can the main model do this step alone?
+pub const REASONING_CONSULT_QUESTION: &str = "reasoning_consult";
+/// The main model does this step on its own.
+pub const MAIN_ALONE_LABEL: &str = "main_alone";
+/// The reasoning model plans or reviews this step for the main model first.
+pub const CONSULT_REASONING_LABEL: &str = "consult_reasoning";
 
-/// B2: which tier runs this call — the session's model, or its lighter sibling.
+/// B2: does the main model need the reasoning model to get THIS step right?
 ///
-/// Only asked when a light sibling is configured; a provider with a single model
-/// (Grok, today) has nothing to choose, and a question with one real answer
-/// would only cost a decision.
-pub fn micro_tier_questions(
-    hard: &TierProfile,
-    light: &TierProfile,
+/// The main model always runs the step; the answer only decides whether the
+/// reasoning model plans or reviews it first. Only asked when a reasoning model
+/// is configured and differs from the main model.
+pub fn reasoning_consult_questions(
+    main: &TierProfile,
+    reasoning: &TierProfile,
 ) -> Result<BTreeMap<QuestionId, Question>, JevError> {
-    if hard.id == light.id {
-        return Err(JevError::invalid("the light tier is the hard model"));
+    if main.id == reasoning.id {
+        return Err(JevError::invalid("the reasoning model is the main model"));
     }
     let describe = |role: &str, profile: &TierProfile| {
         let notes = if profile.notes.trim().is_empty() {
@@ -446,41 +441,41 @@ pub fn micro_tier_questions(
     };
     let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
     criteria.insert(
-        TIER_HARD_LABEL.to_owned(),
+        MAIN_ALONE_LABEL.to_owned(),
         Json::String(describe(
-            "The reasoning model: reserve for planning, architecture, ambiguous decisions, review, interpreting evidence, and recovery from failures",
-            hard,
+            "The main model does this step correctly and completely on its own: the next action is \
+             routine, already decided, or follows the plan it was given",
+            main,
         )),
     );
     criteria.insert(
-        TIER_LIGHT_LABEL.to_owned(),
+        CONSULT_REASONING_LABEL.to_owned(),
         Json::String(describe(
-            "The worker model: execute an already-decided action, mechanical edits, a specified search or test, and bounded implementation with clear acceptance criteria",
-            light,
+            "The reasoning model plans or reviews this step for the main model first: a new \
+             non-trivial request, architecture or design, ambiguous requirements, interpreting \
+             evidence, recovering from a failure, or reviewing a change the main model may get wrong",
+            reasoning,
         )),
-    );
-    criteria.insert(
-        MICRO_TIER_KEEP_LABEL.to_owned(),
-        Json::String("Use the reasoning model when the worker's adequacy is uncertain".to_owned()),
     );
     let mut questions = BTreeMap::new();
     questions.insert(
-        MICRO_TIER_QUESTION.to_owned(),
+        REASONING_CONSULT_QUESTION.to_owned(),
         Question::choice(
             format!(
-                "The next single model call is described in `micro_action`. Choose the role for THIS \
-                 call, without considering the whole task. Prefer the worker when the next action is already decided and bounded. \
-                 A tool call, search, or implementation can still require deep reasoning; classify the \
-                 decision needed, not the tool name. Use the \
-                 reasoning model for planning, architecture, ambiguous decisions, review, interpreting evidence, \
-                 or recovery from a failure. When the role is unclear, keep the reasoning model. The \
-                 harness already provides both models; choose only between these offered roles. \
-                 Minimize total task cost including retries and recovery. Compare benchmarks only within \
-                 the same source and metric; missing scores are unknown, never zero. Pricing and endpoint \
-                 metrics describe OpenRouter only, not subscriptions or other providers. Prefer continuity \
-                 when both choices are adequate and savings are marginal: switching can lose prompt cache. The \
-                 configured reasoning model is `{}`.",
-                hard.name
+                "The next single model call is described in `micro_action`; \
+                 `reasoning_advice_given` says whether the reasoning model already advised the \
+                 main model on this request. The main model `{}` runs this call either way. \
+                 Decide whether it can do THIS step correctly and completely the first time on its \
+                 own, or needs the reasoning model `{}` to plan or review it first. Consult the \
+                 reasoning model only when the main model would likely get the step wrong, leave \
+                 it incomplete, or need retries; when the step follows advice already given, the \
+                 main model continues alone. Classify the decision the step needs, not the tool \
+                 name. Minimize total task cost including retries and recovery: a wrong or \
+                 incomplete step costs more than one consult, and a needless consult costs a \
+                 reasoning-model call. Compare benchmarks only within the same source and metric; \
+                 missing scores are unknown, never zero. Pricing and endpoint metrics describe \
+                 OpenRouter only, not subscriptions or other providers.",
+                main.name, reasoning.name
             ),
             criteria,
         )?,
@@ -488,19 +483,23 @@ pub fn micro_tier_questions(
     Ok(questions)
 }
 
-/// B2: the tier the decision picked, or `None` to keep the session's model.
+/// B2: whether this step consults the reasoning model.
 ///
-/// Unknown labels and low confidence both read as "keep": the session's model is
-/// the safe answer, and a wrong downgrade costs quality on the step.
-pub fn compose_micro_tier(answers: &JevAnswerSet) -> Option<String> {
-    let allowed = [TIER_HARD_LABEL, TIER_LIGHT_LABEL, MICRO_TIER_KEEP_LABEL];
+/// A confident answer decides. An unsure one depends on the request: before
+/// any advice a wrong first step costs more than one consult, so the reasoning
+/// model plans it; once advice was given, the main model keeps following it.
+pub fn compose_reasoning_consult(answers: &JevAnswerSet, advice_given: bool) -> bool {
     let pick = pick_one(
         answers,
-        MICRO_TIER_QUESTION,
-        &allowed,
-        MICRO_TIER_MIN_CONFIDENCE,
+        REASONING_CONSULT_QUESTION,
+        &[MAIN_ALONE_LABEL, CONSULT_REASONING_LABEL],
+        REASONING_CONSULT_MIN_CONFIDENCE,
     );
-    pick.choice.filter(|choice| choice != MICRO_TIER_KEEP_LABEL)
+    match pick.choice.as_deref() {
+        Some(CONSULT_REASONING_LABEL) => true,
+        Some(_) => false,
+        None => !advice_given,
+    }
 }
 
 /// B2: the effort to use for this call, or `None` to keep the session's.
@@ -986,7 +985,7 @@ mod tests {
 
     #[test]
     fn candidate_efforts_are_independent_in_one_battery() {
-        let reasoning = vec![
+        let main = vec![
             EffortChoice {
                 id: "low".into(),
                 description: String::new(),
@@ -996,7 +995,7 @@ mod tests {
                 description: String::new(),
             },
         ];
-        let worker = vec![
+        let reasoning = vec![
             EffortChoice {
                 id: "medium".into(),
                 description: String::new(),
@@ -1006,23 +1005,23 @@ mod tests {
                 description: String::new(),
             },
         ];
-        let mut battery = micro_effort_questions("Reasoning", &reasoning).unwrap();
+        let mut battery = micro_effort_questions("Main", &main).unwrap();
         battery
-            .extend(micro_effort_questions_for("Worker", &worker, WORKER_EFFORT_QUESTION).unwrap());
+            .extend(micro_effort_questions_for("Reasoning", &reasoning, REASONING_EFFORT_QUESTION).unwrap());
         assert_eq!(battery.len(), 2);
         let answers = answers(vec![
             (MICRO_EFFORT_QUESTION, choice("low", 0.9, &[("low", 0.9)])),
-            (WORKER_EFFORT_QUESTION, choice("max", 0.9, &[("max", 0.9)])),
+            (REASONING_EFFORT_QUESTION, choice("max", 0.9, &[("max", 0.9)])),
         ]);
         assert_eq!(
-            compose_micro_effort(&answers, &reasoning).as_deref(),
+            compose_micro_effort(&answers, &main).as_deref(),
             Some("low")
         );
         assert_eq!(
-            compose_micro_effort_for(&answers, &worker, WORKER_EFFORT_QUESTION).as_deref(),
+            compose_micro_effort_for(&answers, &reasoning, REASONING_EFFORT_QUESTION).as_deref(),
             Some("max")
         );
-        assert!(compose_micro_effort_for(&answers, &worker, MICRO_EFFORT_QUESTION).is_none());
+        assert!(compose_micro_effort_for(&answers, &reasoning, MICRO_EFFORT_QUESTION).is_none());
     }
 
     /// The menu handed to the battery is the model's own, cheapest first.
@@ -1137,79 +1136,63 @@ mod tests {
         );
     }
 
-    /// The tier question offers the two models and a way to abstain, and never a
-    /// third answer: a decision between models that the caller cannot map back
-    /// would be a silent no-op.
-    #[test]
-    fn the_tier_question_offers_both_models_and_a_keep() {
-        let hard = TierProfile {
-            id: "codex-astra".to_owned(),
-            name: "gpt-6-astra".to_owned(),
+    fn profile(id: &str, name: &str) -> TierProfile {
+        TierProfile {
+            id: id.to_owned(),
+            name: name.to_owned(),
             context_window: 272_000,
             notes: String::new(),
-        };
-        let light = TierProfile {
-            id: "codex-luna".to_owned(),
-            name: "gpt-5.6-luna".to_owned(),
-            context_window: 128_000,
-            notes: "The owner's note".to_owned(),
-        };
-        let questions = micro_tier_questions(&hard, &light).expect("a pair of distinct models");
-        let question = questions.get(MICRO_TIER_QUESTION).expect("tier question");
-        let criteria: Vec<&str> = match question {
-            Question::Choice { criteria, .. } => criteria.keys().map(String::as_str).collect(),
-            other => panic!("expected a choice, got {other:?}"),
-        };
-        assert_eq!(
-            criteria,
-            [TIER_HARD_LABEL, MICRO_TIER_KEEP_LABEL, TIER_LIGHT_LABEL]
-        );
+        }
+    }
+
+    /// The consult question offers exactly the two roles the caller can act on
+    /// and names both models, so the decision knows who runs and who advises.
+    #[test]
+    fn the_consult_question_offers_main_alone_or_consulting_reasoning() {
+        let main = profile("codex-luna", "gpt-6-luna");
+        let reasoning = profile("codex-sol", "gpt-6-sol");
+        let questions = reasoning_consult_questions(&main, &reasoning).expect("distinct models");
         let Question::Choice {
             instructions,
             criteria,
-        } = question
+        } = questions
+            .get(REASONING_CONSULT_QUESTION)
+            .expect("consult question")
         else {
-            unreachable!();
+            panic!("expected a choice");
         };
+        assert_eq!(
+            criteria.keys().map(String::as_str).collect::<Vec<_>>(),
+            [CONSULT_REASONING_LABEL, MAIN_ALONE_LABEL]
+        );
         let instructions = instructions.as_str().expect("text instructions");
-        assert!(instructions.contains("Prefer the worker"));
-        assert!(instructions.contains("planning"));
+        assert!(instructions.contains("gpt-6-luna") && instructions.contains("gpt-6-sol"));
+        assert!(instructions.contains("reasoning_advice_given"));
         assert!(
-            criteria[TIER_HARD_LABEL]
+            criteria[CONSULT_REASONING_LABEL]
                 .as_str()
-                .expect("reasoning description")
-                .contains("reasoning model")
-        );
-        assert!(
-            criteria[TIER_LIGHT_LABEL]
-                .as_str()
-                .expect("worker description")
-                .contains("worker model")
+                .expect("consult description")
+                .contains("plans or reviews")
         );
     }
 
-    /// The same model twice is not a choice: asking would cost a decision and
-    /// could only answer itself.
+    /// The same model in both roles would consult itself: refuse the question.
     #[test]
-    fn the_tier_question_refuses_a_pair_of_the_same_model() {
-        let one = TierProfile {
-            id: "codex-astra".to_owned(),
-            name: "gpt-6-astra".to_owned(),
-            context_window: 272_000,
-            notes: String::new(),
-        };
-        assert!(micro_tier_questions(&one, &one).is_err());
+    fn the_consult_question_refuses_the_same_model_twice() {
+        let one = profile("codex-sol", "gpt-6-sol");
+        assert!(reasoning_consult_questions(&one, &one).is_err());
     }
 
-    /// Low confidence and "keep" both read as "the session's model runs this
-    /// call": a wrong downgrade costs quality on the step, so unsure means no
-    /// change.
+    /// A confident answer decides. An unsure one plans a request that has no
+    /// advice yet (a wrong first step costs more than a consult) and keeps the
+    /// main model on a plan it already has (a consult per round would waste the
+    /// reasoning model on work that is already decided).
     #[test]
-    fn the_tier_pick_defers_when_unsure_or_abstaining() {
+    fn an_unsure_consult_plans_new_requests_and_keeps_existing_plans() {
         let answers = |choice: &str, confidence: f64| JevAnswerSet {
             model: "test".to_owned(),
             answers: [(
-                MICRO_TIER_QUESTION.to_owned(),
+                REASONING_CONSULT_QUESTION.to_owned(),
                 crate::jev::types::Answer::Choice {
                     choice: choice.to_owned(),
                     probabilities: std::collections::BTreeMap::new(),
@@ -1222,25 +1205,27 @@ mod tests {
             request_id: None,
             latency_ms: 0,
         };
-        assert_eq!(
-            compose_micro_tier(&answers(TIER_LIGHT_LABEL, 0.9)).as_deref(),
-            Some(TIER_LIGHT_LABEL),
-            "a confident light pick is applied"
+        for advice_given in [false, true] {
+            assert!(compose_reasoning_consult(
+                &answers(CONSULT_REASONING_LABEL, 0.9),
+                advice_given
+            ));
+            assert!(!compose_reasoning_consult(
+                &answers(MAIN_ALONE_LABEL, 0.9),
+                advice_given
+            ));
+        }
+        assert!(
+            compose_reasoning_consult(&answers(MAIN_ALONE_LABEL, 0.3), false),
+            "an unsure `main_alone` on a fresh request still gets a plan"
         );
-        assert_eq!(
-            compose_micro_tier(&answers(TIER_LIGHT_LABEL, 0.2)),
-            None,
-            "below the floor the session's model runs"
+        assert!(
+            !compose_reasoning_consult(&answers(CONSULT_REASONING_LABEL, 0.3), true),
+            "an unsure consult does not repeat advice already given"
         );
-        assert_eq!(
-            compose_micro_tier(&answers(MICRO_TIER_KEEP_LABEL, 0.9)),
-            None,
-            "keep_session_model means no swap"
-        );
-        assert_eq!(
-            compose_micro_tier(&answers("something-else", 0.99)),
-            None,
-            "an unknown label is not a model"
+        assert!(
+            compose_reasoning_consult(&answers("something-else", 0.99), false),
+            "an unknown label is unsure, not an answer"
         );
     }
 }

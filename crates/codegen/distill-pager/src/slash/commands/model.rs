@@ -1,5 +1,5 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
-//! `/model` (alias `/m`): select the worker that owns the session.
+//! `/model` (alias `/m`): choose the main model and optionally its reasoning effort.
 //! Chained autocomplete: after picking a reasoning-supported model, the trailing space re-opens the dropdown into a `low|medium|high|xhigh` sub-menu.
 
 use agent_client_protocol as acp;
@@ -11,19 +11,20 @@ use crate::slash::command::{
 };
 use crate::slash::commands::effort_levels::{build_effort_arg_items, effort_auto_arg_item};
 
-/// Select the primary worker model (and optionally its reasoning effort).
+/// Choose the main model (and optionally its reasoning effort).
+/// The main model is required and runs every step; `/reasoning-model` sets the optional one.
 pub struct ModelCommand;
 
 impl SlashCommand for ModelCommand {
     slash_meta! {
         name: "model",
         aliases: ["m"],
-        description: "Choose the main worker model",
+        description: "Choose the main model",
         usage: "/model <name> [effort]",
         takes_args: true,
         args_required: true,
         session_scoped: true,
-        // The dashboard stages this choice for the next spawned agent.
+        // The dashboard offers `/model` to pick the model for the next spawned agent (intercepted in `dispatch_dashboard_dispatch_slash`).
         offered_when_session_less: true,
         arg_placeholder: "<model> [effort]",
     }
@@ -37,14 +38,7 @@ impl SlashCommand for ModelCommand {
         if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
             return Some(build_effort_items(ctx.models, &model_id));
         }
-        let mut items = build_model_items(ctx.models);
-        items.push(ArgItem {
-            display: "clear".into(),
-            match_text: "clear".into(),
-            insert_text: "clear".into(),
-            description: "Remove the worker model".into(),
-        });
-        Some(items)
+        Some(build_model_items(ctx.models))
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -52,27 +46,27 @@ impl SlashCommand for ModelCommand {
         if trimmed.is_empty() {
             return CommandResult::Error("Usage: /model <name> [effort]".into());
         }
-        if trimmed.eq_ignore_ascii_case("clear") {
-            return CommandResult::Action(Action::SetTierLight(String::new(), None));
-        }
 
         // Prefer an exact full-string catalog match first. Model display names often contain spaces ("Grok 4.5").
         // If we split on the last token first, a shorter catalog entry ("Grok") would steal the prefix and treat "4.5" as an effort level
         if let Some(id) = ctx.models.resolve_by_name_or_id(trimmed) {
-            return CommandResult::Action(Action::SetTierLight(id.0.to_string(), None));
+            return CommandResult::Action(Action::SetDefaultModel(id));
         }
 
-        // A trailing effort token is saved with the worker selection.
+        // A trailing effort token on a reasoning model makes a session-scoped switch (not persisted as default)
         // Resolve via the shared gate so a rejected level (e.g. `none` on grok-4.5) reports the effort error with the model's offered ids.
         // Without it the fall-through reports "Unknown model: … none"
         if let Some((prefix, token)) = split_trailing_token(trimmed)
             && let Some(id) = resolve_model(ctx.models, prefix)
         {
             if token.eq_ignore_ascii_case("auto") {
-                return CommandResult::Action(Action::SetTierLight(id.0.to_string(), None));
+                return CommandResult::Action(Action::SetDefaultModel(id));
             }
             return match ctx.models.resolve_effort_for_model(&id, token) {
-                Ok(effort) => CommandResult::Action(Action::SetTierLight(id.0.to_string(), Some(effort))),
+                Ok(effort) => CommandResult::Action(Action::SwitchModel {
+                    model_id: id,
+                    effort: Some(effort),
+                }),
                 Err(err) => CommandResult::Error(err.message()),
             };
         }
@@ -334,7 +328,7 @@ mod tests {
             current_title: None,
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();
-        assert_eq!(items.len(), 3, "model phase: one row per model plus clear");
+        assert_eq!(items.len(), 2, "model phase: one row per logical model");
 
         // A reasoning model has a trailing space in insert_text
         // The prompt widget reads it to keep the dropdown open after Enter so the effort sub-menu can render
@@ -432,7 +426,7 @@ mod tests {
         };
         // No trailing space: the user is still typing the model name
         let items = cmd.suggest_args(&ctx, "Reason").unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 1);
         assert_eq!(
             items.first().map(|item| item.insert_text.as_str()),
             Some("Reasoning X ")
@@ -447,11 +441,11 @@ mod tests {
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Reasoning X xhigh");
         match result {
-            CommandResult::Action(Action::SetTierLight(model_id, effort)) => {
-                assert_eq!(model_id, "reasoning-x");
+            CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
+                assert_eq!(model_id.0.as_ref(), "reasoning-x");
                 assert_eq!(effort, Some(ReasoningEffort::Xhigh));
             }
-            other => panic!("expected worker selection with effort, got {other:?}"),
+            other => panic!("expected SwitchModel with effort, got {other:?}"),
         }
     }
 
@@ -499,10 +493,10 @@ mod tests {
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Grok 4.5");
         match result {
-            CommandResult::Action(Action::SetTierLight(resolved_id, None)) => {
-                assert_eq!(resolved_id, long_id.0.as_ref());
+            CommandResult::Action(Action::SetDefaultModel(resolved_id)) => {
+                assert_eq!(resolved_id, long_id);
             }
-            other => panic!("expected SetTierLight(Grok 4.5), got {other:?}"),
+            other => panic!("expected SetDefaultModel(Grok 4.5), got {other:?}"),
         }
     }
 
@@ -517,35 +511,37 @@ mod tests {
         assert!(matches!(result, CommandResult::Error(_)));
     }
 
-    /// The bare `/model <name>` form selects the primary worker.
+    /// The bare `/model <name>` form dispatches `Action::SetDefaultModel(<ModelId>)` instead of the legacy `Action::SwitchModel { effort: None }`.
+    /// The dispatcher routes it through both `Effect::SwitchModel` (session mutation) and `Effect::PersistSetting` (next-session default).
+    /// The payload is the typed `acp::ModelId` (resolved at the slash boundary), not a String.
     #[test]
-    fn run_bare_model_name_dispatches_worker() {
+    fn run_bare_model_name_dispatches_set_default_model() {
         let mut state = ModelState::default();
         let (id, info) = plain_model("grok-4.5", "Grok 4.5");
         state.available.insert(id.clone(), info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "Grok 4.5");
         match result {
-            CommandResult::Action(Action::SetTierLight(resolved_id, None)) => {
-                assert_eq!(resolved_id, id.0.as_ref());
+            CommandResult::Action(Action::SetDefaultModel(resolved_id)) => {
+                assert_eq!(resolved_id, id);
             }
-            other => panic!("expected Action::SetTierLight(<id>), got {other:?}"),
+            other => panic!("expected Action::SetDefaultModel(<id>), got {other:?}"),
         }
     }
 
     /// Case-insensitive matching against the catalog: `/model grok 4.5` resolves to the same `ModelId` as `/model Grok 4.5`.
     #[test]
-    fn run_worker_resolves_case_insensitively() {
+    fn run_set_default_model_resolves_case_insensitively() {
         let mut state = ModelState::default();
         let (id, info) = plain_model("grok-4.5", "Grok 4.5");
         state.available.insert(id.clone(), info);
         let mut ctx = dummy_exec_ctx(&state);
         let result = ModelCommand.run(&mut ctx, "grok 4.5");
         match result {
-            CommandResult::Action(Action::SetTierLight(resolved_id, None)) => {
-                assert_eq!(resolved_id, id.0.as_ref());
+            CommandResult::Action(Action::SetDefaultModel(resolved_id)) => {
+                assert_eq!(resolved_id, id);
             }
-            other => panic!("expected Action::SetTierLight(<id>), got {other:?}"),
+            other => panic!("expected Action::SetDefaultModel(<id>), got {other:?}"),
         }
     }
     #[test]
@@ -558,7 +554,7 @@ mod tests {
         assert_eq!(items[0].insert_text, "Plain Model auto");
         for input in ["Plain Model auto", "plain AUTO", "plain"] {
             assert!(
-                matches!(ModelCommand.run(&mut dummy_exec_ctx(&state), input), CommandResult::Action(Action::SetTierLight(selected, None)) if selected == id.0.as_ref())
+                matches!(ModelCommand.run(&mut dummy_exec_ctx(&state), input), CommandResult::Action(Action::SetDefaultModel(selected)) if selected == id)
             );
             assert_eq!(
                 parse_tier_selection(&state, input).unwrap(),
@@ -566,24 +562,5 @@ mod tests {
             );
         }
         assert_eq!(detect_effort_phase(&state, "plain "), Some(id));
-    }
-
-    #[test]
-    fn worker_selection_resolves_display_names_and_validates_effort() {
-        let mut state = ModelState::default();
-        let (id, info) = model_with_reasoning("luna", "Luna (ChatGPT)");
-        state.available.insert(id, info);
-        let cmd = ModelCommand;
-        assert!(
-            matches!(cmd.run(&mut dummy_exec_ctx(&state), "Luna (ChatGPT) high"), CommandResult::Action(Action::SetTierLight(model, Some(ReasoningEffort::High))) if model == "luna")
-        );
-        assert!(matches!(
-            cmd.run(&mut dummy_exec_ctx(&state), "luna"),
-            CommandResult::Action(Action::SetTierLight(_, None))
-        ));
-        assert!(matches!(
-            cmd.run(&mut dummy_exec_ctx(&state), "luna turbo"),
-            CommandResult::Error(_)
-        ));
     }
 }

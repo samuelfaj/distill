@@ -633,38 +633,14 @@ impl SubagentPresentation {
         Arc::clone(&self.is_turn_active)
     }
 }
-fn configured_worker_model_for(
-    request: &SubagentRequest,
-    resume_source: Option<&ResumeSourceData>,
-) -> Option<String> {
-    // The configured Jev worker is only the default for fresh, bounded,
-    // model-facing TaskTool delegation. Explicit pins, resumed state, and
-    // forked full-context children retain their existing semantics.
-    if request.runtime_overrides.model.is_some()
-        || request.subagent_type == "code-reviewer"
-        || request.runtime_overrides.model_override_provenance != ModelOverrideProvenance::Tool
-        || request.resume_from.is_some()
-        || request.fork_context
-        || resume_source.is_some()
-    {
-        return None;
-    }
-
-    crate::jev::tiers_cached()
-        .light
-        .map(|model| model.trim().to_owned())
-        .filter(|model| !model.is_empty())
-}
-
-/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > configured Jev worker for fresh bounded TaskTool children > the parent session's live sampling config.
+/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the reasoning model for `plan` and `code-reviewer` > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_subagent_sampling_config(
     agent_name: &str,
     agent_model: &distill_agent::config::ModelOverride,
-    default_worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
-) -> (distill_sampler::SamplerConfig, acp::ModelId, Option<String>) {
+) -> (distill_sampler::SamplerConfig, acp::ModelId) {
     let (parent_config, parent_mid) = read_parent_sampling_config(ctx).await;
     let try_pin = |model_id: &str, source: &'static str, unknown_msg: &'static str| {
         match resolve_model_override_to_config(model_id, ctx) {
@@ -691,7 +667,7 @@ async fn resolve_subagent_sampling_config(
             "Subagent model override references unknown model, falling through to inherit",
         )
     {
-        return (resolved.0, resolved.1, None);
+        return resolved;
     }
     if let ModelOverride::Override(model_id) = agent_model
         && let Some(resolved) = try_pin(
@@ -700,37 +676,20 @@ async fn resolve_subagent_sampling_config(
             "Agent definition model references unknown model, falling through to inherit",
         )
     {
-        return (resolved.0, resolved.1, None);
+        return resolved;
     }
-    // Bounded planning and review use the configured secondary model unless
-    // explicitly pinned, even when the worker was selected in this session.
-    if matches!(agent_name, "plan" | "code-reviewer") {
-        let reasoning = ctx
-            .agent_config
-            .as_ref()
-            .and_then(|cfg| cfg.models.default.as_deref())
-            .filter(|id| *id != parent_mid.0.as_ref())
-            .map(str::to_owned)
-            .unwrap_or_else(|| ctx.models_manager.current_model_id().0.to_string());
-        if reasoning.as_str() != parent_mid.0.as_ref()
-            && let Some(resolved) = try_pin(
-                &reasoning,
-                "reasoning_reviewer",
-                "Reasoning model unavailable for review, falling through to parent",
-            )
-        {
-            return (resolved.0, resolved.1, None);
-        }
-    }
-    if let Some(model_id) = default_worker_model
+    // Planning and review are the reasoning model's job. Without one, or when
+    // the parent already runs on it, the child inherits the parent's model.
+    if matches!(agent_name, "plan" | "code-reviewer")
+        && let Some(reasoning) = crate::jev::reasoning_model()
+        && reasoning.as_str() != parent_mid.0.as_ref()
         && let Some(resolved) = try_pin(
-            model_id,
-            "jev_worker",
-            "Configured Jev worker references unknown model, falling through to inherit",
+            &reasoning,
+            "reasoning_model",
+            "Reasoning model unavailable for planning or review, falling through to parent",
         )
     {
-        let worker_effort = crate::jev::tiers_cached().light_effort;
-        return (resolved.0, resolved.1, worker_effort);
+        return resolved;
     }
     log_subagent_model_resolution(
         agent_name,
@@ -739,7 +698,7 @@ async fn resolve_subagent_sampling_config(
         &parent_mid,
         &parent_config,
     );
-    (parent_config, parent_mid, None)
+    (parent_config, parent_mid)
 }
 /// Resolve a subagent's effective sampling config and model id, honoring the model-resolution precedence.
 /// An explicit `runtime_override_model` is the goal role model or a persona override carried on `effective_runtime.model`.
@@ -749,25 +708,18 @@ async fn resolve_effective_model_config(
     runtime_override_model: Option<&str>,
     subagent_type: &str,
     definition_model: &distill_agent::config::ModelOverride,
-    default_worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
-) -> (distill_sampler::SamplerConfig, acp::ModelId, Option<String>) {
+) -> (distill_sampler::SamplerConfig, acp::ModelId) {
     if let Some(model_id) = runtime_override_model {
         if let Some(resolved) = resolve_model_override_to_config(model_id, ctx) {
-            return (resolved.0, resolved.1, None);
+            return resolved;
         }
         tracing::warn!(
             model_id,
             "Runtime model override references unknown model, falling through"
         );
     }
-    resolve_subagent_sampling_config(
-        subagent_type,
-        definition_model,
-        default_worker_model,
-        ctx,
-    )
-    .await
+    resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
 }
 /// Truncate an API key to a safe prefix for logging.
 /// Counts characters, not bytes: a configured key with a multi-byte character would panic a byte slice, and this only ever runs to build a log line.

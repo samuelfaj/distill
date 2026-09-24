@@ -4,20 +4,18 @@ Jev is Distill's decision layer. It answers structured questions about a small
 state assembled by the harness: which model should handle a call, how much
 effort it needs, or which parts of a tool result are worth keeping.
 
-Of the three tiers set in [Choose your models](../README.md#choose-your-models),
-a configured Worker model owns new build sessions by default. An explicitly
-selected model still wins. Without a Worker, the selected Reasoning model owns
-the session. Utility tasks receive a bounded
+Of the tiers set in [Choose your models](../README.md#choose-your-models), the
+**main** model is required and runs every session and every step. The optional
+**reasoning** model never takes over the session: the main model consults it to
+plan or review a step it cannot do alone. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
 ```text
-   Worker session (when configured)
-      |           |             |
-  conversation   |       bounded Reasoning task
-                  |
-             Utility task
-           bounded payload
+   Main model: owns the session, runs every step
+      |                  |                     |
+  conversation   reasoning advice       Utility task
+                 (plan or review)      bounded payload
 ```
 
 Jev chooses among candidates supplied by code. It does not invent candidates
@@ -26,63 +24,76 @@ permission policies; Jev cannot approve, veto, or hold a tool call for
 confirmation. If a Jev decision fails, times out, or lacks enough confidence,
 the harness keeps its normal execution path.
 
-## Reasoning and Worker
+## Main and reasoning
 
-The Worker keeps the conversation when configured for a new build session.
-Fresh bounded tasks inherit it. Difficult diagnosis, architecture, failure
-recovery, and material review can use the Reasoning model through an explicit
-model selection on a bounded subagent. The built-in `plan` and `code-reviewer` use the
-Reasoning model by default when its parent session runs on the Worker. An
-explicit subagent model pin still wins. A different wire model does not reuse
-the Worker's prompt cache or receive its full conversation automatically.
+Before each step, Jev decides whether the main model can do it correctly and
+completely on its own. When it can, the main model continues alone. When it
+cannot (a new non-trivial request, architecture or design, ambiguous
+requirements, interpreting evidence, recovering from a failure, or reviewing a
+change), the reasoning model receives a bounded, tool-free view of the work and
+returns a plan or review. The advice joins the conversation as
+`<reasoning_advice>`, so the main model keeps following it on later rounds of
+the same request.
 
-`/effort auto` chooses the current session model's effort; a fixed effort pins
-that model's intensity. `/model <model> [effort]` selects the main Worker;
-`/reasoning-model <model>` sets the secondary Reasoning model. The Worker's
-effort defaults to `auto`. Explicit
-subagent model and effort policies remain pinned.
+A confident answer decides. An unsure answer depends on the request: a request
+with no advice yet still gets a plan, because a wrong first step costs more
+than one consult; once advice was given, the main model keeps following it and
+only a confident answer (usually after a failure) consults again. When the
+change review asks for an independent review, the reasoning model reviews the
+edit without a second question. The same decision picks the reasoning model's
+effort from its own menu. Without a reasoning model, or when Jev is unavailable,
+the main model works alone.
+
+The built-in `plan` and `code-reviewer` subagents run on the reasoning model;
+every other subagent runs on the main model. An explicit subagent model pin
+still wins. Without a reasoning model, `plan` and `code-reviewer` use the main
+model.
+
+`/effort auto` chooses the main model's effort per call; a fixed effort pins
+that model's intensity. `/model <model> [effort]` selects the main model;
+`/reasoning-model <model>` sets the reasoning model and
+`/reasoning-model clear` removes it. Explicit subagent model and effort
+policies remain pinned.
 
 Jev chooses effort from each model's supported menu. An uncertain answer keeps
 that model's configured default. A redo can raise effort when the previous
 attempt lacked reasoning; the next independent step can return to auto.
 Delegation is useful for a coherent task with clear acceptance criteria and
-small relevant context. A trivial step stays with the main agent; a fresh Worker
+small relevant context. A trivial step stays with the main agent; a fresh
 subagent returns its result and verification rather than its full transcript.
 
-Effort selection uses a confidence floor of 0.40. A fixed effort, selected in a picker or with `/effort <level>`,
+Effort selection uses a confidence floor of 0.40, and the reasoning consult a
+floor of 0.55. A fixed effort, selected in a picker or with `/effort <level>`,
 takes precedence over automatic effort selection.
 
-The configuration keys keep their internal names, so the Worker is `light` and
-the Utility model is `local`:
-
 ```toml
+[models]
+default = "chatgpt/gpt-6-luna"    # main model (required)
+reasoning = "chatgpt/gpt-6-sol"   # reasoning model (optional)
+
 [jev]
 effort_auto = true
-
-[jev.tiers]
-light = "codex-luna"
-
 ```
 
-`light` names a configured model entry. Leave it unset to run without a Worker.
-`b2_light_model` controls only the full-conversation tier choice for entries
-that resolve to the same wire model; it does not disable bounded Worker tasks.
+`b2_reasoning_model` (formerly `b2_light_model`, still accepted) turns the
+reasoning consult on or off. Older configs with `[jev.tiers] light` are migrated
+at startup: the worker becomes `[models].default` and the old default becomes
+`[models].reasoning`.
 
 The built-in `code-reviewer` subagent inspects a substantive code checkpoint
-using a fresh, read-only context. With a Worker parent, it uses the configured
-Reasoning model unless pinned through `[subagents.models]`. Give it the
-diff, acceptance criteria and test evidence. Routine or unchanged checkpoints
-do not need a separate review. Jev's change-risk decision can request a second
-opinion, while the agent chooses a reviewer at meaningful checkpoints and before
-final code handoff. Goal completion still uses its existing verifier.
+using a fresh, read-only context on the reasoning model, unless pinned through
+`[subagents.models]`. Give it the diff, acceptance criteria and test evidence.
+Routine or unchanged checkpoints do not need a separate review. Jev's
+change-risk decision can request a second opinion, while the agent chooses a
+reviewer at meaningful checkpoints and before final code handoff. Goal
+completion still uses its existing verifier.
 
 ```toml
 [subagents.models]
 code-reviewer = "reviewer-catalog-entry"
 ```
 
-The value must name an existing model catalog entry. With a Worker parent,
-omitting it sends a fresh review to the configured Reasoning model.
+The value must name an existing model catalog entry.
 
 ## Optional model facts and cache
 
@@ -167,7 +178,7 @@ timeout_ms = 20000
 effort_auto = true
 
 [jev.ladder]
-b2_light_model = true
+b2_reasoning_model = true
 b2_local_model = true
 e_retention = true
 ```

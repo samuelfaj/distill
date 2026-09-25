@@ -6,10 +6,12 @@
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Alignment, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
+
+use distill_pager_render::render::color::blend_color;
 
 use crate::app::actions::LoginProvider;
 use crate::theme::Theme;
@@ -456,33 +458,54 @@ impl OnboardingState {
 }
 
 fn popup_area(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(2).min(84);
-    let height = area.height.saturating_sub(2).min(26);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
+    area.inner(Margin::new(if area.width >= 80 { 2 } else { 1 }, 1))
+}
+
+fn selection_style(theme: &Theme) -> Style {
+    let background = blend_color(theme.bg_base, theme.accent_system, 0.18)
+        .map(crate::theme::quantize)
+        .unwrap_or(theme.bg_highlight);
+    Style::default().fg(theme.text_primary).bg(background)
+}
+
+fn model_label(name: &str, id: &str, width: u16, theme: &Theme) -> Line<'static> {
+    let name = Span::raw(name.to_owned());
+    let tag = Span::styled(
+        format!(" {id} "),
+        Style::default().fg(theme.text_secondary).bg(theme.bg_light),
+    );
+    let gap = usize::from(width)
+        .saturating_sub(name.width() + tag.width())
+        .max(2);
+    Line::from(vec![name, Span::raw(" ".repeat(gap)), tag])
 }
 
 fn row_line(
     index: usize,
     selected: usize,
-    label: impl Into<String>,
+    label: impl Into<Line<'static>>,
     theme: &Theme,
 ) -> Line<'static> {
     let label = label.into();
     let marker = if index == selected { "◉ " } else { "○ " };
     let style = if index == selected {
-        Style::default()
-            .fg(theme.text_primary)
-            .bg(theme.bg_highlight)
-            .add_modifier(Modifier::BOLD)
+        selection_style(theme)
     } else {
-        Style::default().fg(theme.text_secondary)
+        Style::default().fg(theme.text_primary)
     };
-    Line::from(Span::styled(format!("{marker}{label}"), style))
+    let mut spans = vec![
+        Span::styled(
+            marker,
+            Style::default().fg(if index == selected {
+                theme.accent_system
+            } else {
+                theme.text_secondary
+            }),
+        ),
+        Span::raw(" "),
+    ];
+    spans.extend(label.spans);
+    Line::from(spans).style(style)
 }
 
 fn push_choice_row(
@@ -490,7 +513,7 @@ fn push_choice_row(
     row_lines: &mut Vec<(usize, usize)>,
     index: usize,
     selected: usize,
-    label: impl Into<String>,
+    label: impl Into<Line<'static>>,
     theme: &Theme,
 ) {
     let line_index = lines.len();
@@ -521,68 +544,64 @@ pub fn render_onboarding(
     }
 
     let theme = Theme::current();
-    Clear.render(popup, buf);
+    Clear.render(area, buf);
+    buf.set_style(area, Style::default().bg(theme.bg_base));
     let title = Line::from(vec![
         Span::styled(
             " DISTILL ",
             Style::default()
-                .fg(theme.accent_user)
+                .fg(theme.running)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("·", Style::default().fg(theme.gray_dim)),
         Span::styled(
             format!(" {}/{} ", state.step_number(), STEP_COUNT),
-            Style::default().fg(theme.accent_user),
+            Style::default().fg(theme.running),
         ),
         Span::styled("·", Style::default().fg(theme.gray_dim)),
         Span::styled(
             format!(" {} ", state.step.title()),
-            Style::default().fg(theme.text_primary),
+            Style::default().fg(theme.text_secondary),
         ),
     ]);
-    let block = Block::default()
+    let tagline = " Smarter agents. Fewer tokens. ";
+    let show_tagline = popup.width as usize > title.width() + tagline.len() + 5;
+    let mut block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.gray_dim))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.prompt_border))
         .style(Style::default().bg(theme.bg_base));
+    if show_tagline {
+        block = block.title(
+            Line::from(tagline)
+                .style(Style::default().fg(theme.gray_bright))
+                .alignment(Alignment::Right),
+        );
+    }
     let inner = block.inner(popup);
     block.render(popup, buf);
+    let top_padding = u16::from(inner.height >= 20);
+    let content = Rect {
+        x: inner.x + 1,
+        y: inner.y + top_padding,
+        width: inner.width.saturating_sub(2),
+        height: inner.height.saturating_sub(top_padding + 1),
+    };
+    let model_label_width = content.width.saturating_sub(9);
 
     let mut intro_lines = Vec::new();
     let mut option_lines = Vec::new();
     let mut row_lines = Vec::new();
     intro_lines.push(Line::from(Span::styled(
-        format!(
-            "{}  {}",
-            if (state.pulse / 6).is_multiple_of(2) {
-                "◆"
-            } else {
-                "◇"
-            },
-            state.step.title()
-        ),
+        state.step.subtitle(),
         Style::default()
-            .fg(theme.accent_user)
+            .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
     )));
-    intro_lines
-        .push(Line::from(state.step.subtitle()).style(Style::default().fg(theme.text_secondary)));
     match state.step {
         OnboardingStep::Budget => {
-            let mark = if (state.pulse / 6).is_multiple_of(2) {
-                "✦"
-            } else {
-                "·"
-            };
-            intro_lines.push(Line::from(Span::styled(
-                format!("{mark} One workspace for your AI models."),
-                Style::default()
-                    .fg(theme.accent_success)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            intro_lines.push(Line::from("Choose the models and providers you already use. You can change these settings anytime."));
-            intro_lines.push(Line::from("OpenRouter adds provider and pricing choices; it does not automatically reduce token usage."));
-            intro_lines.push(Line::from(""));
+            intro_lines.push(Line::from("One workspace for your AI models. Connect an account, choose your main model, and add optional help for planning and review."));
             push_choice_row(
                 &mut option_lines,
                 &mut row_lines,
@@ -596,9 +615,9 @@ pub fn render_onboarding(
             intro_lines.push(Line::from(
                 "Choose a provider to sign in, then select the model Distill should use by default.",
             ));
-            intro_lines.push(Line::from("On a VPS: `distill login --device-auth` for Grok, `distill login --chatgpt --device-auth` for ChatGPT, or `OPENROUTER_API_KEY` for OpenRouter."));
-            intro_lines.push(Line::from("Provider sign-in returns here; your current model stays unchanged until you select one."));
-            intro_lines.push(Line::from(""));
+            intro_lines.push(Line::from(
+                "Your current model stays active until you select another.",
+            ));
             let auth = provider_auth.unwrap_or_default();
             push_choice_row(
                 &mut option_lines,
@@ -647,7 +666,7 @@ pub fn render_onboarding(
                     &mut row_lines,
                     index + 3,
                     state.selected,
-                    format!("Main model: {name} [{id}]"),
+                    model_label(name, id, model_label_width, &theme),
                     &theme,
                 );
             }
@@ -664,7 +683,9 @@ pub fn render_onboarding(
             intro_lines.push(Line::from(
                 "The main model runs every step. An optional reasoning model plans and reviews the steps the main model cannot do alone.",
             ));
-            if let Some(current) = current_reasoning.filter(|value| !value.is_empty()) {
+            if let Some(current) = current_reasoning.filter(|value| !value.is_empty())
+                && content.width < 100
+            {
                 intro_lines.push(Line::from(format!(
                     "Current reasoning model: {current} (Skip keeps it)"
                 )));
@@ -678,7 +699,7 @@ pub fn render_onboarding(
                         &mut row_lines,
                         index,
                         state.selected,
-                        format!("{name}  [{id}]"),
+                        model_label(name, id, model_label_width, &theme),
                         &theme,
                     );
                 }
@@ -702,8 +723,6 @@ pub fn render_onboarding(
         }
         OnboardingStep::Community => {
             intro_lines.push(Line::from("Follow @samfajreldines for Distill updates."));
-            intro_lines.push(Line::from("You can finish setup after the page opens."));
-            intro_lines.push(Line::from(""));
             push_choice_row(
                 &mut option_lines,
                 &mut row_lines,
@@ -712,15 +731,9 @@ pub fn render_onboarding(
                 "Finish",
                 &theme,
             );
-            intro_lines.push(Line::from(X_URL).style(Style::default().fg(theme.accent_user)));
+            intro_lines.push(Line::from(X_URL).style(Style::default().fg(theme.running)));
         }
     }
-    let content = Rect {
-        x: inner.x + 1,
-        y: inner.y,
-        width: inner.width.saturating_sub(2),
-        height: inner.height.saturating_sub(1),
-    };
     let key_style = Style::default()
         .fg(theme.text_primary)
         .bg(theme.bg_highlight)
@@ -738,36 +751,68 @@ pub fn render_onboarding(
             Span::styled("Esc", key_style),
             Span::raw(" Cancel"),
         ])
-    } else if compact {
+    } else if compact || content.width < 68 {
         Line::from(vec![
             Span::styled(" ↑↓ ", key_style),
-            Span::raw(" Navigate   "),
-            Span::styled("Enter", key_style),
-            Span::raw(" Select   "),
-            Span::styled("Esc", key_style),
-            Span::raw(" Close"),
+            Span::raw(" Move  "),
+            Span::styled(" Enter ", key_style),
+            Span::raw(" Select  "),
+            Span::styled(" Esc ", key_style),
+            Span::raw(" Close  "),
+            Span::styled(" s ", key_style),
+            Span::raw(" Skip"),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" ↑↓ ", key_style),
-            Span::raw(" Navigate   "),
-            Span::styled("Enter", key_style),
-            Span::raw(" Select   "),
-            Span::styled("←", key_style),
-            Span::raw(" Back   "),
-            Span::styled("Esc", key_style),
-            Span::raw(" Close   "),
-            Span::styled("s", key_style),
+            Span::styled(" ↑ ", key_style),
+            Span::raw(" "),
+            Span::styled(" ↓ ", key_style),
+            Span::raw(" Navigate  "),
+            Span::styled(" Enter ", key_style),
+            Span::raw(" Select  "),
+            Span::styled(" ← ", key_style),
+            Span::raw(" Back  "),
+            Span::styled(" Esc ", key_style),
+            Span::raw(" Close  "),
+            Span::styled(" s ", key_style),
             Span::raw(" Skip"),
         ])
     };
+    let footer_height = if content.height >= 16 { 3 } else { 1 };
     let footer_area = Rect {
         x: content.x,
-        y: content.bottom().saturating_sub(1),
+        y: content.bottom().saturating_sub(footer_height),
         width: content.width,
-        height: 1,
+        height: footer_height,
     };
-    Paragraph::new(footer_line).render(footer_area, buf);
+    if footer_height > 1 {
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme.prompt_border))
+            .render(footer_area, buf);
+    }
+    let keys_area = Rect {
+        y: footer_area.y + u16::from(footer_height > 1),
+        height: 1,
+        ..footer_area
+    };
+    let footer_hint = "You can change this later in the config.";
+    let show_footer_hint = !state.auth_pending
+        && keys_area.width as usize > footer_line.width() + footer_hint.len() + 3;
+    Paragraph::new(footer_line)
+        .style(Style::default().fg(theme.text_secondary))
+        .render(keys_area, buf);
+    if show_footer_hint {
+        let hint_area = Rect {
+            x: keys_area.right().saturating_sub(footer_hint.len() as u16),
+            width: footer_hint.len() as u16,
+            ..keys_area
+        };
+        Paragraph::new(footer_hint)
+            .style(Style::default().fg(theme.gray_bright))
+            .alignment(Alignment::Right)
+            .render(hint_area, buf);
+    }
 
     let mut status_lines = Vec::new();
     if let Some(status) = &state.status {
@@ -834,12 +879,19 @@ pub fn render_onboarding(
     } else {
         intro_lines
     };
-    let intro_width = main_area.width.saturating_sub(4).max(1);
-    let intro_paragraph = Paragraph::new(intro_lines).wrap(Wrap { trim: true });
+    let show_icon = !compact_intro;
+    let intro_padding = u16::from(show_icon);
+    let intro_width = main_area
+        .width
+        .saturating_sub(if show_icon { 12 } else { 4 })
+        .max(1);
+    let intro_paragraph = Paragraph::new(intro_lines)
+        .style(Style::default().fg(theme.text_secondary))
+        .wrap(Wrap { trim: true });
     let intro_height = intro_paragraph
         .line_count(intro_width)
-        .saturating_add(2)
-        .clamp(3, 8)
+        .saturating_add(2 + usize::from(intro_padding) * 2)
+        .clamp(if show_icon { 7 } else { 3 }, 10)
         .min(main_area.height.saturating_sub(5).max(3) as usize) as u16;
     let intro_area = Rect {
         x: main_area.x,
@@ -849,11 +901,43 @@ pub fn render_onboarding(
     };
     let intro_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.gray_dim))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.prompt_border))
         .style(Style::default().bg(theme.bg_base));
-    let intro_inner = intro_block.inner(intro_area);
+    let intro_inner = intro_block
+        .inner(intro_area)
+        .inner(Margin::new(1, intro_padding));
     intro_block.render(intro_area, buf);
-    intro_paragraph.render(intro_inner, buf);
+    let text_area = if show_icon {
+        let icon_area = Rect::new(intro_inner.x, intro_inner.y, 5, 3);
+        let icon = match state.step {
+            OnboardingStep::Budget => "✦",
+            OnboardingStep::Connect => "⇄",
+            OnboardingStep::Reasoning => "◈",
+            OnboardingStep::Community => "✓",
+        };
+        let icon_bg = blend_color(theme.bg_base, theme.accent_thinking, 0.12)
+            .map(crate::theme::quantize)
+            .unwrap_or(theme.bg_highlight);
+        Paragraph::new(icon)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.accent_thinking).bg(icon_bg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.accent_thinking)),
+            )
+            .render(icon_area, buf);
+        Rect {
+            x: intro_inner.x + 8,
+            width: intro_inner.width.saturating_sub(8),
+            ..intro_inner
+        }
+    } else {
+        intro_inner
+    };
+    intro_paragraph.render(text_area, buf);
 
     let choices_area = Rect {
         x: main_area.x,
@@ -869,14 +953,55 @@ pub fn render_onboarding(
         OnboardingStep::Reasoning => "Select a reasoning model",
         OnboardingStep::Community => "Finish setup",
     };
-    let choices_block = Block::default()
-        .title(choices_title)
+    let panel_header = choices_area.width >= 48 && choices_area.height >= 8;
+    let mut choices_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent_user))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.prompt_border))
         .style(Style::default().bg(theme.bg_base));
-    let choices_inner = choices_block.inner(choices_area);
+    if !panel_header {
+        choices_block = choices_block
+            .title(Line::from(choices_title).style(Style::default().fg(theme.running)));
+    }
+    let mut choices_inner = choices_block.inner(choices_area).inner(Margin::new(1, 0));
     choices_block.render(choices_area, buf);
+    if panel_header {
+        let heading_area = Rect {
+            height: 1,
+            ..choices_inner
+        };
+        Paragraph::new(choices_title)
+            .style(
+                Style::default()
+                    .fg(theme.running)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .render(heading_area, buf);
+        if state.step == OnboardingStep::Reasoning
+            && content.width >= 100
+            && let Some(current) = current_reasoning.filter(|value| !value.is_empty())
+        {
+            let current_area = Rect {
+                x: heading_area.x + choices_title.len() as u16 + 2,
+                width: heading_area
+                    .width
+                    .saturating_sub(choices_title.len() as u16 + 2),
+                ..heading_area
+            };
+            Paragraph::new(format!("Current: {current} (Skip keeps it)"))
+                .style(Style::default().fg(theme.text_secondary))
+                .alignment(Alignment::Right)
+                .render(current_area, buf);
+        }
+        choices_inner.y += 2;
+        choices_inner.height = choices_inner.height.saturating_sub(2);
+    }
 
+    let row_text_area = Rect {
+        x: choices_inner.x + 1,
+        width: choices_inner.width.saturating_sub(1),
+        ..choices_inner
+    };
     let wrap = Wrap { trim: true };
     let paragraph = Paragraph::new(option_lines.clone()).wrap(wrap);
     let mut line_starts = Vec::with_capacity(option_lines.len());
@@ -886,7 +1011,7 @@ pub fn render_onboarding(
         line_starts.push(total_height);
         let height = Paragraph::new(line.clone())
             .wrap(wrap)
-            .line_count(choices_inner.width)
+            .line_count(row_text_area.width)
             .max(1);
         line_heights.push(height);
         total_height = total_height.saturating_add(height);
@@ -909,10 +1034,6 @@ pub fn render_onboarding(
         }
     }
     state.scroll = scroll;
-    paragraph
-        .scroll((scroll.min(u16::MAX as usize) as u16, 0))
-        .render(choices_inner, buf);
-
     // Hit regions use the same wrapped-line heights and scroll offset as the rendered list.
     for (index, line_index) in row_lines {
         let row_start = line_starts[line_index];
@@ -922,15 +1043,28 @@ pub fn render_onboarding(
             .saturating_sub(scroll)
             .min(choices_inner.height as usize);
         if visible_start < visible_end {
-            state.hit_rows.push((
-                Rect {
-                    x: choices_inner.x,
-                    y: choices_inner.y + visible_start as u16,
-                    width: choices_inner.width,
-                    height: (visible_end - visible_start) as u16,
-                },
-                index,
-            ));
+            let row_area = Rect {
+                x: choices_inner.x,
+                y: choices_inner.y + visible_start as u16,
+                width: choices_inner.width,
+                height: (visible_end - visible_start) as u16,
+            };
+            if index == state.selected {
+                buf.set_style(row_area, selection_style(&theme));
+            }
+            state.hit_rows.push((row_area, index));
+        }
+    }
+    paragraph
+        .scroll((scroll.min(u16::MAX as usize) as u16, 0))
+        .render(row_text_area, buf);
+    if let Some((row, _)) = state
+        .hit_rows
+        .iter()
+        .find(|(_, index)| *index == state.selected)
+    {
+        for y in row.y..row.bottom() {
+            buf[(row.x, y)].set_symbol("▏").set_fg(theme.accent_system);
         }
     }
 }
@@ -1203,6 +1337,57 @@ mod tests {
                 rendered.contains(expected_copy[index].1),
                 "choice panel missing for {step:?}: {rendered}"
             );
+        }
+    }
+
+    #[test]
+    fn all_steps_fill_the_terminal_and_highlight_the_entire_choice_row() {
+        let area = Rect::new(0, 0, 140, 40);
+        let models = vec![("example-model".to_owned(), "Example model".to_owned())];
+        for step in [
+            OnboardingStep::Budget,
+            OnboardingStep::Connect,
+            OnboardingStep::Reasoning,
+            OnboardingStep::Community,
+        ] {
+            let mut state = OnboardingState::new();
+            state.set_step(step);
+            let mut buffer = Buffer::empty(area);
+            render_onboarding(
+                &mut buffer,
+                area,
+                &mut state,
+                false,
+                &models,
+                &models,
+                Some("Example model"),
+                None,
+            );
+            let rendered = buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(rendered.contains(step.subtitle()), "{step:?}");
+            assert!(rendered.contains("Smarter agents. Fewer tokens."));
+            assert!(rendered.contains("You can change this later in the config."));
+            let (row, _) = state.hit_rows.first().expect("visible choice");
+            assert!(
+                row.width > 120,
+                "choices should use the available terminal width"
+            );
+            assert_eq!(
+                buffer[(row.right() - 1, row.y)].bg,
+                selection_style(&Theme::current()).bg.unwrap(),
+                "selection must extend across the row for {step:?}"
+            );
+            if step == OnboardingStep::Reasoning {
+                let text = (row.x..row.right())
+                    .map(|x| buffer[(x, row.y)].symbol())
+                    .collect::<String>();
+                assert!(text.trim_end().ends_with("example-model"));
+                assert!(rendered.contains("Current: Example model (Skip keeps it)"));
+            }
         }
     }
 

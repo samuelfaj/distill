@@ -2569,11 +2569,8 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             "an unknown override falls through to the pin",
         );
 }
-/// Execution stays on the main model; planning and review are the reasoning
-/// model's job. A fresh TaskTool child inherits the main (parent) model even
-/// when a reasoning model is configured, `plan` and `code-reviewer` run on the
-/// reasoning model with its own transport and credential, and without one they
-/// fall back to the main model instead of failing.
+/// Ordinary execution stays on the main model; planning, review, and a bounded
+/// stall handoff default to the reasoning model. Explicit role pins still win.
 #[tokio::test]
 async fn plan_and_review_use_the_reasoning_model_and_other_tasks_stay_on_main() {
     use distill_agent::config::ModelOverride;
@@ -2601,13 +2598,21 @@ async fn plan_and_review_use_the_reasoning_model_and_other_tasks_stay_on_main() 
     assert_eq!(task_model.0.as_ref(), "main-model");
     assert_eq!(task_config.model, "main-model");
 
-    for agent in ["plan", "code-reviewer"] {
+    for agent in ["plan", "code-reviewer", "reasoning-executor"] {
         let (config, model) =
             resolve_effective_model_config(None, agent, &ModelOverride::Inherit, &ctx).await;
         assert_eq!(model.0.as_ref(), "reasoning-model", "{agent}");
         assert_eq!(config.base_url, "https://reasoning.example/v1", "{agent}");
         assert_eq!(config.api_key.as_deref(), Some("reasoning-key"), "{agent}");
     }
+
+    ctx.subagent_model_overrides.insert(
+        "reasoning-executor".to_owned(), "main-model".to_owned(),
+    );
+    let (_, pinned) = resolve_effective_model_config(
+        None, "reasoning-executor", &ModelOverride::Inherit, &ctx,
+    ).await;
+    assert_eq!(pinned.0.as_ref(), "main-model", "explicit role pin wins");
 
     crate::jev::set_test_reasoning_model(None);
     let (_, review_model) =

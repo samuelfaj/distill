@@ -5,17 +5,20 @@ state assembled by the harness: which model should handle a call, how much
 effort it needs, or which parts of a tool result are worth keeping.
 
 Of the tiers set in [Choose your models](../README.md#choose-your-models), the
-**main** model is required and runs every session and every step. The optional
-**reasoning** model never takes over the session: Jev selects it for planning,
-recovery, or review when the task warrants an independent pass. Utility tasks receive a bounded
+**main** model is required and owns every session. The optional
+**reasoning** model advises on planning, recovery, and review when the task
+warrants an independent pass. After a diagnosed stall persists, one bounded
+`reasoning-executor` child may work on the blocker while the main model waits.
+Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
 ```text
-   Main model: owns the session, runs every step
+   Main model: owns the session and normal execution
       |                  |                     |
   conversation   reasoning advice       Utility task
                  (plan or review)      bounded payload
+  persistent stall -> one executor -> main verifies
 ```
 
 Jev chooses among candidates supplied by code. It does not invent candidates
@@ -37,9 +40,18 @@ main model keeps following it on later rounds:
 | Review | Before delivery, while there is work no review has attempted | Whether the reasoning model reviews the work: recorded edits, the current Git diff (including shell edits), recent checks, failures, the request's complexity, earlier consults and verdicts, and the start of the final message. A fresh read-only `code-reviewer` subagent can inspect changed files; the inline reasoning consult remains the fallback. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. |
 
 An edit the change review (C4) flags for another model's opinion is itself a
-Jev decision and is reviewed as it comes. There is no fixed budget, cooldown or
-size threshold: the only rules left are facts (nothing new since the last
-consult or review attempt leaves nothing to decide). An unsure or missing plan
+Jev decision and is reviewed as it comes. Normal consults have no fixed budget
+or cooldown. A persistent stall has a deterministic guard: after six Worker
+rounds with the same failed call repeated or an edit undone, or eight rounds
+with only the same non-polling call repeated and no edits, the reasoning model
+diagnoses it even if Jev did not request advice. If the same signal recurs over
+three more rounds, one foreground `reasoning-executor` child gets at most five
+turns to make a focused correction and report its check. The Worker then inspects
+the actual change and verifies the behavior. A failed diagnosis or child stops
+further escalation for that request and tells the Worker to report the blocker.
+The same stop instruction applies when the configured Reasoning route is unavailable.
+Repeated background polling and elapsed rounds alone do not trigger this path.
+An unsure or missing plan
 decision leaves the main model to proceed. An unsure or missing delivery decision
 still requests review when changes are visible or the final check failed. A
 failed or unclear review is reported to the main model rather than counted as
@@ -77,12 +89,14 @@ each decision and a per-request summary (rounds, failures, changes,
 complexity, consults, review verdicts) are logged under `b2_reasoning_model`,
 which is what the questions should be tuned from.
 
-The built-in `plan` and `code-reviewer` subagents run on the reasoning model;
-every other subagent runs on the main model. An explicit subagent model pin
+The built-in `plan`, `code-reviewer`, and harness-only `reasoning-executor`
+subagents default to the reasoning model; other subagents run on the main model.
+An explicit subagent model pin
 still wins. Without a reasoning model, `plan` and `code-reviewer` use the main
 model. Jev starts these roles with fresh context, so a full-context fork cannot
 pin them to the Worker's model. They receive the user request and relevant
-evidence, follow project instructions, and use read-only tools. The final review
+evidence and follow project instructions. The planner and reviewer are read-only;
+the executor can edit under the normal child permissions. The final review
 may include pre-existing workspace changes; its prompt identifies that limit.
 
 `/effort auto` chooses the main model's effort per call; a fixed effort pins

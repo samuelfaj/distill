@@ -22,8 +22,8 @@ use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::ladder;
 
 use super::reasoning_gates::{
-    ConsultKind, PlanGate, ReviewVerdict, RoundQuestion, StepFacts, WorkEntry, review_verdict,
-    work_since_request,
+    ConsultKind, PlanGate, ReviewVerdict, RoundQuestion, StallAction, StepFacts, WorkEntry,
+    review_verdict, work_since_request,
 };
 use super::*;
 
@@ -640,12 +640,13 @@ impl SessionActor {
         ))
     }
 
-    /// The main model owns the conversation and runs every step. Before a round
+    /// The main model owns the conversation and runs normal steps. Before a round
     /// Jev decides whether the reasoning model advises it first (see
     /// [`super::reasoning_gates`]): the plan at the start of the request, then,
     /// each round with new work, whether the main model is stuck. An edit C4
-    /// flagged is reviewed as it comes. The advice joins the conversation, so
-    /// the main model keeps following it on later rounds.
+    /// flagged is reviewed as it comes. A persistent stall can also trigger one
+    /// bounded execution child after diagnosis. Advice and child results join
+    /// the conversation for the main model to verify.
     pub(super) async fn jev_reasoning_step(
         &self,
         request: &mut ConversationRequest,
@@ -660,6 +661,17 @@ impl SessionActor {
             (question, shared)
         };
         let Some((reasoner, main_profile)) = self.resolve_reasoner(main).await else {
+            let stalled = self.jev_ledger.borrow().reasoning.stall_action().is_some();
+            if stalled {
+                self.jev_ledger
+                    .borrow_mut()
+                    .reasoning
+                    .finish_stall_escalation();
+                self.append_stall_note(
+                    request,
+                    "The Worker repeated the same action without progress, and a reasoning handoff is unavailable in this session. Stop repeating it; report the blocker and the checks attempted.",
+                );
+            }
             return;
         };
         let Some(human_request) = last_real_request(&request.items) else {
@@ -694,6 +706,67 @@ impl SessionActor {
                 self.plan_with_reader(request, &human_request).await;
             }
             return;
+        }
+        let stall_action = self.jev_ledger.borrow().reasoning.stall_action();
+        match stall_action {
+            Some(StallAction::Diagnose) => {
+                let facts = self.jev_ledger.borrow().reasoning.step_facts();
+                crate::jev::record_gate("stall:diagnose", &facts.describe());
+                if !self
+                    .consult_reasoning(
+                        request,
+                        main,
+                        &main_profile,
+                        &reasoner,
+                        &human_request,
+                        Consult::Recover(facts),
+                    )
+                    .await
+                {
+                    self.jev_ledger
+                        .borrow_mut()
+                        .reasoning
+                        .finish_stall_escalation();
+                    self.append_stall_note(
+                        request,
+                        "The persistent failure could not be diagnosed by the reasoning model. Stop repeating the same action; report the blocker and the checks attempted.",
+                    );
+                }
+                return;
+            }
+            Some(StallAction::Handoff) => {
+                self.jev_ledger
+                    .borrow_mut()
+                    .reasoning
+                    .finish_stall_escalation();
+                let (facts, checks) = {
+                    let ledger = self.jev_ledger.borrow();
+                    (ledger.reasoning.step_facts(), ledger.reasoning.review_checks())
+                };
+                let diagnosis = request
+                    .items
+                    .iter()
+                    .rev()
+                    .map(ConversationItem::text_content)
+                    .find(|text| text.contains("kind=\"recover\""))
+                    .map(|text| text.chars().take(4_000).collect::<String>())
+                    .unwrap_or_default();
+                let prompt = format!(
+                    "The Worker is still blocked after a reasoning diagnosis. Take one focused execution task in this workspace.\n\nUser request:\n{human_request}\n\nReasoning diagnosis:\n{diagnosis}\n\nRepeated blocker: {}.\nLatest calls:\n{}\n\nRecent checks:\n{checks}\n\nInspect the relevant source and project instructions. Correct the smallest root cause and run the relevant check. Do not delegate or broaden the task. Report the exact files changed, check result, and any remaining blocker. You have at most five turns.",
+                    facts.describe(),
+                    facts.recent_calls.join("\n"),
+                );
+                crate::jev::record_gate("stall:handoff", &facts.describe());
+                let note = match self.reasoning_role("reasoning-executor", prompt).await {
+                    Some(result) => format!(
+                        "A bounded executor worked on the repeated blocker:\n{result}\n\nInspect its actual changes and independently verify the requested behavior before delivery. If no fix is verified, stop repeating the failed action and report the blocker."
+                    ),
+                    None => "The bounded executor could not resolve the repeated blocker. Stop repeating the same action; report the blocker, attempted checks, and remaining uncertainty.".to_owned(),
+                };
+                self.append_stall_note(request, &note);
+                return;
+            }
+            None => {}
         }
         let Some(question) = question else {
             return;
@@ -882,7 +955,7 @@ impl SessionActor {
         reasoner: &Reasoner,
         human_request: &str,
         consult: Consult,
-    ) {
+    ) -> bool {
         let kind = consult.kind();
         let estimate = distill_chat_state::estimate_conversation_tokens(&request.items);
         let main_reserve = u64::from(request.max_output_tokens.unwrap_or(REASONING_OUTPUT_TOKENS));
@@ -898,7 +971,7 @@ impl SessionActor {
             if kind == ConsultKind::Plan {
                 self.notify_plan_unavailable(request);
             }
-            return;
+            return false;
         }
         let (brief, follow) = match consult {
             Consult::Plan => (
@@ -965,10 +1038,17 @@ impl SessionActor {
             if kind == ConsultKind::Plan {
                 self.notify_plan_unavailable(request);
             }
-            return;
+            return false;
         };
         self.jev_ledger.borrow_mut().reasoning.note_consult(kind);
         self.append_reasoning_advice(request, Some(&reasoner.cfg.model), kind, &advice, &follow);
+        true
+    }
+
+    fn append_stall_note(&self, request: &mut ConversationRequest, text: &str) {
+        let note = ConversationItem::system_reminder(distill_tools::reminders::wrap_reminder(text));
+        self.chat_state_handle.push_user_message(note.clone());
+        request.items.push(note);
     }
 
     fn notify_plan_unavailable(&self, request: &mut ConversationRequest) {
@@ -2488,6 +2568,91 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
+    async fn repeated_failure_escalates_from_diagnosis_to_one_bounded_executor() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+        use distill_tools::implementations::distill::task::types::{SubagentEvent, SubagentResult};
+
+        tokio::task::LocalSet::new().run_until(async {
+            let (_home, _guard) = reasoning_home();
+            let server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("reasoner").with_api_backend("chat_completions"),
+                MockModelEntry::new("main").with_api_backend("responses"),
+            ]).await.expect("start inference stub");
+            reasoner_says(&server, "The fixture path is wrong; inspect the test setup.");
+            let (mut actor, main) = reasoning_actor(&server).await;
+            actor.chat_state_handle.push_user_message_and_ack(
+                ConversationItem::user("Fix the parser failure")
+            ).await.expect("record request");
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            actor.tool_context.subagent_event_tx = Some(tx);
+            let responder = tokio::task::spawn_local(async move {
+                let Some(SubagentEvent::Spawn(spawn)) = rx.recv().await else {
+                    panic!("executor spawn missing");
+                };
+                assert_eq!(spawn.subagent_type, "reasoning-executor");
+                assert!(!spawn.fork_context);
+                assert_eq!(spawn.runtime_overrides.model, None, "role model pins must win");
+                assert!(spawn.prompt.contains("fixture path is wrong"));
+                assert!(spawn.prompt.contains("cargo test parser"));
+                spawn.respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("Changed parser.rs; cargo test parser passed."),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                }).expect("send executor result");
+            });
+            crate::jev::with_session_scope_and_recorder(
+                "reasoning-stall-handoff-test",
+                Some(actor.chat_state_handle.clone()),
+                async {
+                    {
+                        let mut ledger = actor.jev_ledger.borrow_mut();
+                        ledger.reasoning.set_plan(PlanGate::Done);
+                        for _ in 0..6 { ledger.reasoning.note_round(); }
+                        for _ in 0..2 {
+                            ledger.reasoning.note_tool_result(
+                                "run_terminal_command",
+                                &serde_json::json!({"command": "cargo test parser"}),
+                                &failed(),
+                            );
+                        }
+                    }
+                    let mut diagnosis = ConversationRequest {
+                        items: vec![ConversationItem::user("Fix the parser failure")],
+                        ..Default::default()
+                    };
+                    actor.jev_reasoning_step(&mut diagnosis, &main).await;
+                    assert!(diagnosis.items.last().unwrap().text_content().contains("fixture path is wrong"));
+                    assert_eq!(actor.jev_ledger.borrow().reasoning.consults(), &[ConsultKind::Recover]);
+
+                    {
+                        let mut ledger = actor.jev_ledger.borrow_mut();
+                        for _ in 0..3 { ledger.reasoning.note_round(); }
+                        for _ in 0..2 {
+                            ledger.reasoning.note_tool_result(
+                                "run_terminal_command",
+                                &serde_json::json!({"command": "cargo test parser"}),
+                                &failed(),
+                            );
+                        }
+                    }
+                    let mut handoff = ConversationRequest {
+                        items: actor.chat_state_handle.get_conversation().await,
+                        ..Default::default()
+                    };
+                    actor.jev_reasoning_step(&mut handoff, &main).await;
+                    assert!(handoff.items.last().unwrap().text_content().contains("independently verify"));
+                    assert!(actor.jev_ledger.borrow().reasoning.stall_action().is_none());
+                },
+            ).await;
+            responder.await.expect("executor responder");
+            assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
     async fn delivery_reviewer_receives_shell_edits_from_the_git_diff() {
         use distill_test_support::{MockInferenceServer, MockModelEntry};
         use distill_tools::implementations::distill::task::types::{SubagentEvent, SubagentResult};
@@ -2746,6 +2911,21 @@ mod tests {
                 actor.jev_reasoning_step(&mut request, &main).await;
                 assert_eq!(request.items.len(), 1);
                 assert_eq!(crate::jev::test_decision_answers_remaining(), 1);
+                {
+                    let mut ledger = actor.jev_ledger.borrow_mut();
+                    ledger.reasoning.set_plan(PlanGate::Done);
+                    for _ in 0..6 { ledger.reasoning.note_round(); }
+                    for _ in 0..2 {
+                        ledger.reasoning.note_tool_result(
+                            "run_terminal_command",
+                            &serde_json::json!({"command": "cargo test parser"}),
+                            &failed(),
+                        );
+                    }
+                }
+                actor.jev_reasoning_step(&mut request, &main).await;
+                assert!(request.items.last().unwrap().text_content().contains("report the blocker"));
+                assert!(actor.jev_ledger.borrow().reasoning.stall_action().is_none());
                 crate::jev::clear_test_decision_answers();
                 crate::jev::clear_test_reasoning_model();
             })

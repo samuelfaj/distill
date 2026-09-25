@@ -633,7 +633,7 @@ impl SubagentPresentation {
         Arc::clone(&self.is_turn_active)
     }
 }
-/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the reasoning model for `plan` and `code-reviewer` > the parent session's live sampling config (the main model).
+/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the reasoning model for `plan`, `code-reviewer`, and `reasoning-executor` > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_subagent_sampling_config(
@@ -680,13 +680,13 @@ async fn resolve_subagent_sampling_config(
     }
     // Planning and review are the reasoning model's job. Without one, or when
     // the parent already runs on it, the child inherits the parent's model.
-    if matches!(agent_name, "plan" | "code-reviewer")
+    if matches!(agent_name, "plan" | "code-reviewer" | "reasoning-executor")
         && let Some(reasoning) = crate::jev::reasoning_model()
         && reasoning.as_str() != parent_mid.0.as_ref()
         && let Some(resolved) = try_pin(
             &reasoning,
             "reasoning_model",
-            "Reasoning model unavailable for planning or review, falling through to parent",
+            "Reasoning model unavailable for planning, review, or execution, falling through to parent",
         )
     {
         return resolved;

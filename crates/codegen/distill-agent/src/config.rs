@@ -665,6 +665,7 @@ pub enum BuiltinAgentName {
     Explore,
     Plan,
     CodeReviewer,
+    ReasoningExecutor,
     BrowserUse,
     #[strum(
         to_string = "distill-orchestrator",
@@ -695,6 +696,7 @@ impl BuiltinAgentName {
             Self::Explore => AgentDefinition::explore(),
             Self::Plan => AgentDefinition::plan(),
             Self::CodeReviewer => AgentDefinition::code_reviewer(),
+            Self::ReasoningExecutor => AgentDefinition::reasoning_executor(),
             Self::BrowserUse => AgentDefinition::browser_use(),
             Self::DistillOrchestrator => AgentDefinition::distill_orchestrator(),
         }
@@ -1565,6 +1567,21 @@ impl AgentDefinition {
             ..Self::base(BuiltinAgentName::CodeReviewer, "")
         }
     }
+    /// Harness-only execution handoff after the main model repeats a diagnosed failure.
+    pub fn reasoning_executor() -> Self {
+        let mut tool_config = general_purpose_toolset();
+        tool_config.tools.retain(|tool| {
+            tool.kind != Some(distill_tools::types::tool::ToolKind::Task)
+        });
+        Self {
+            description: "Resolve one diagnosed blocker and report the verification.".to_string(),
+            tool_config,
+            prompt_body: Some("Resolve the supplied blocker with the smallest correct change. Follow project instructions, run the relevant check, and report the actual diff and result. Stop and report the blocker if it cannot be resolved within your turn limit.".to_string()),
+            inject_default_tools: false,
+            max_turns: Some(5),
+            ..Self::base(BuiltinAgentName::ReasoningExecutor, "")
+        }
+    }
     pub fn browser_use() -> Self {
         Self {
             prompt_mode: PromptMode::Full,
@@ -1722,6 +1739,7 @@ mod tests {
                 | BuiltinAgentName::Explore
                 | BuiltinAgentName::Plan
                 | BuiltinAgentName::CodeReviewer
+                | BuiltinAgentName::ReasoningExecutor
                 | BuiltinAgentName::BrowserUse
                 | BuiltinAgentName::DistillOrchestrator => false,
             };
@@ -1877,6 +1895,7 @@ mod tests {
             | BuiltinAgentName::Explore
             | BuiltinAgentName::Plan
             | BuiltinAgentName::CodeReviewer
+            | BuiltinAgentName::ReasoningExecutor
             | BuiltinAgentName::Opencode
             | BuiltinAgentName::BrowserUse => false,
         }
@@ -2579,6 +2598,19 @@ description: Test default tool config
         assert!(variants.contains(&BuiltinAgentName::Explore));
         assert!(variants.contains(&BuiltinAgentName::Plan));
         assert!(variants.contains(&BuiltinAgentName::CodeReviewer));
+    }
+    #[test]
+    fn reasoning_executor_is_bounded_and_cannot_delegate() {
+        let cwd = tempfile::tempdir().unwrap();
+        let role = crate::discovery::by_name_in_cwd("reasoning-executor", cwd.path()).unwrap();
+        assert_eq!(role.max_turns, Some(5));
+        assert!(role.tool_config.tools.iter().any(|tool| {
+            tool.kind == Some(distill_tools::types::tool::ToolKind::Edit)
+        }));
+        assert!(!role.tool_config.tools.iter().any(|tool| {
+            tool.kind == Some(distill_tools::types::tool::ToolKind::Task)
+        }));
+        assert!(!BuiltinAgentName::subagent_variants().contains(&BuiltinAgentName::ReasoningExecutor));
     }
     #[test]
     fn code_reviewer_has_read_only_tools_and_independent_prompt() {

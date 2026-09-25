@@ -9,13 +9,13 @@
 //! * **step**: each round with work the reasoning model has not weighed yet,
 //!   whether the main model is stuck and needs advice before the next round.
 //!   Repeated failures, loops, undone edits and rounds since the last advice
-//!   are facts Jev reads, not triggers.
+//!   are facts Jev reads. A persistent, diagnosed stall also triggers one
+//!   bounded execution handoff.
 //! * **review**: before delivery, whether the reasoning model reviews the work.
 //!
 //! An edit the change review (C4) flags is Jev's decision already and is
-//! reviewed as it comes. Nothing here counts toward a fixed budget: the only
-//! rules left are facts (nothing new since the last consult or review means
-//! there is nothing to decide).
+//! reviewed as it comes. Routine consults have no fixed budget; the persistent
+//! stall handoff is limited to one attempt per request.
 //!
 //! The consults of one request share a [`ReasoningThread`]: each one resends
 //! the thread unchanged and appends only the work since the last reply, so the
@@ -95,6 +95,19 @@ pub(crate) enum PlanGate {
 pub(crate) enum RoundQuestion {
     Plan,
     Step,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StallSignal {
+    FailedCall(String),
+    UndoneEdit(String),
+    RepeatedCall(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StallAction {
+    Diagnose,
+    Handoff,
 }
 
 /// Why the reasoning model was consulted.
@@ -192,6 +205,8 @@ pub(crate) struct ReasoningGates {
     events_at_last_consult: usize,
     changes_at_last_consult: usize,
     consults: Vec<ConsultKind>,
+    diagnosed_stall: Option<StallSignal>,
+    stall_escalation_finished: bool,
     /// Tool results and changes the last review attempted to inspect.
     review_attempted_upto: Option<(usize, usize)>,
     verdicts: Vec<&'static str>,
@@ -379,6 +394,72 @@ impl ReasoningGates {
         }
     }
 
+    fn stall_signal(&self) -> Option<StallSignal> {
+        let facts = self.step_facts();
+        let events = self.events.get(self.events_at_last_consult..).unwrap_or_default();
+        let last_call = events.iter().rev().find(|event| !event.polling);
+        let changes = self.changes.get(self.changes_at_last_consult..).unwrap_or_default();
+        let undone_edit = changes.last().and_then(|last| {
+            let (old, new) = last.replaced.as_ref()?;
+            changes[..changes.len() - 1].iter().any(|earlier| {
+                earlier.path == last.path
+                    && earlier.replaced.as_ref().is_some_and(|(before, after)| {
+                        before == new && after == old
+                    })
+            }).then(|| StallSignal::UndoneEdit(last.path.clone()))
+        });
+        let repeated_call = facts
+            .repeated_call
+            .as_ref()
+            .filter(|call| {
+                call.times >= 3
+                    && call.times == facts.tool_calls
+                    && events.iter().all(|event| !event.failed)
+                    && self.changes.len() == self.changes_at_last_consult
+            })
+            .map(|call| StallSignal::RepeatedCall(call.call.clone()));
+        facts
+            .repeated_failure
+            .filter(|call| {
+                call.times >= 2
+                    && last_call.is_some_and(|latest| {
+                        latest.failed && latest.signature == call.call
+                    })
+            })
+            .map(|call| StallSignal::FailedCall(call.call))
+            .or(undone_edit)
+            .or(repeated_call)
+    }
+
+    /// Require elapsed rounds and a repeated action or reversed edit.
+    /// A diagnosis must see the same signal again before the one execution handoff.
+    pub(crate) fn stall_action(&self) -> Option<StallAction> {
+        if self.stall_escalation_finished {
+            return None;
+        }
+        let signal = self.stall_signal()?;
+        let rounds_since_advice = self.step_facts().rounds_since_advice;
+        if self.diagnosed_stall.as_ref() == Some(&signal)
+            && self.rounds >= 6
+            && rounds_since_advice >= 3
+        {
+            Some(StallAction::Handoff)
+        } else if rounds_since_advice
+            >= match signal {
+                StallSignal::RepeatedCall(_) => 8,
+                _ => 6,
+            }
+        {
+            Some(StallAction::Diagnose)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn finish_stall_escalation(&mut self) {
+        self.stall_escalation_finished = true;
+    }
+
     /// What a step decision reads besides the round's own step.
     pub(crate) fn step_state(&self) -> serde_json::Value {
         serde_json::json!({
@@ -393,6 +474,9 @@ impl ReasoningGates {
     /// advice before delivery also settles the plan: the reasoning model has
     /// already oriented the request.
     pub(crate) fn note_consult(&mut self, kind: ConsultKind) {
+        if kind == ConsultKind::Recover {
+            self.diagnosed_stall = self.stall_signal();
+        }
         self.consults.push(kind);
         self.last_consult_round = Some(self.rounds);
         self.events_at_last_consult = self.events.len();
@@ -898,6 +982,72 @@ mod tests {
         let after = gates.step_facts();
         assert_eq!((after.tool_calls, after.rounds_since_advice), (0, 0));
         assert!(after.undone_edits.is_empty() && after.repeated_call.is_none());
+    }
+
+    #[test]
+    fn a_persistent_stall_gets_one_diagnosis_then_one_handoff() {
+        let mut gates = ReasoningGates::default();
+        gates.set_plan(PlanGate::Done);
+        for _ in 0..6 {
+            gates.note_round();
+        }
+        gates.events.extend([
+            event("cargo test parser", true),
+            event("cargo test parser", true),
+        ]);
+        assert_eq!(gates.stall_action(), Some(StallAction::Diagnose));
+        gates.note_consult(ConsultKind::Recover);
+        assert_eq!(gates.stall_action(), None);
+
+        for _ in 0..3 {
+            gates.note_round();
+        }
+        gates.events.extend([
+            event("cargo test parser", true),
+            event("cargo test parser", true),
+        ]);
+        assert_eq!(gates.stall_action(), Some(StallAction::Handoff));
+        gates.finish_stall_escalation();
+        assert_eq!(gates.stall_action(), None);
+    }
+
+    #[test]
+    fn polling_and_one_failure_are_safe_but_repeated_calls_and_undone_edits_trigger() {
+        let mut gates = ReasoningGates::default();
+        gates.set_plan(PlanGate::Done);
+        for _ in 0..9 {
+            gates.note_round();
+        }
+        gates.events.extend((0..9).map(|_| ToolEvent {
+            signature: "task_output job".to_owned(),
+            failed: false,
+            polling: true,
+        }));
+        gates.events.push(event("read_file parser.rs", false));
+        assert_eq!(gates.stall_action(), None);
+
+        gates.events.push(event("cargo test parser", true));
+        assert_eq!(gates.stall_action(), None, "one failed check is not a loop");
+        gates.events.push(event("cargo test parser", true));
+        gates.events.push(event("read_file parser.rs", false));
+        assert_eq!(gates.stall_action(), None, "a fresh investigation is progress");
+
+        let mut repeated = ReasoningGates::default();
+        repeated.set_plan(PlanGate::Done);
+        for _ in 0..8 { repeated.note_round(); }
+        repeated.events.extend((0..3).map(|_| event("read_file parser.rs", false)));
+        assert_eq!(repeated.stall_action(), Some(StallAction::Diagnose));
+
+        let mut undone = ReasoningGates::default();
+        undone.set_plan(PlanGate::Done);
+        for _ in 0..6 { undone.note_round(); }
+        undone.changes.extend([
+            change("parser.rs", "old", "new"),
+            change("parser.rs", "new", "old"),
+        ]);
+        assert_eq!(undone.stall_action(), Some(StallAction::Diagnose));
+        undone.changes.push(change("parser.rs", "old", "fixed"));
+        assert_eq!(undone.stall_action(), None, "a later correction supersedes the undo");
     }
 
     /// Answers a shared battery gave are for one round and one question: a

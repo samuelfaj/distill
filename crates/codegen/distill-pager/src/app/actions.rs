@@ -825,6 +825,8 @@ pub enum Action {
     MemoryToggle {
         enabled: bool,
     },
+    /// Copy an onboarding provider URL to the configured clipboard route.
+    CopyOnboardingAuthUrl(String),
     /// Copy text from the `/memory` modal; the outcome is shown in the modal's status line.
     MemoryCopy {
         text: String,

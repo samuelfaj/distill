@@ -2406,8 +2406,21 @@ impl AppView {
                 self.onboarding_resume = self.onboarding.take();
                 InputOutcome::Changed
             }
-            crate::views::onboarding::OnboardingCommand::Back
-            | crate::views::onboarding::OnboardingCommand::Continue => InputOutcome::Changed,
+            crate::views::onboarding::OnboardingCommand::Back => InputOutcome::Changed,
+            crate::views::onboarding::OnboardingCommand::Continue => {
+                let open_x = self
+                    .onboarding
+                    .as_mut()
+                    .and_then(|state| state.enter_community())
+                    .is_some();
+                if open_x {
+                    InputOutcome::Action(Action::OpenUrl(
+                        crate::views::onboarding::X_URL.to_owned(),
+                    ))
+                } else {
+                    InputOutcome::Changed
+                }
+            }
             crate::views::onboarding::OnboardingCommand::LoginGrok => {
                 if self.provider_auth.is_some_and(|auth| auth.grok) {
                     if let Some(state) = self.onboarding.as_mut() {
@@ -2446,6 +2459,9 @@ impl AppView {
             }
             crate::views::onboarding::OnboardingCommand::CancelProviderLogin(provider) => {
                 InputOutcome::Action(Action::CancelOnboardingProviderLogin(provider))
+            }
+            crate::views::onboarding::OnboardingCommand::CopyAuthUrl(url) => {
+                InputOutcome::Action(Action::CopyOnboardingAuthUrl(url))
             }
             crate::views::onboarding::OnboardingCommand::SelectModel(index) => {
                 let Some(id) = model_ids.get(index).cloned() else {

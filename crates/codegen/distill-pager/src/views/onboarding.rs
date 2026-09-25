@@ -46,10 +46,19 @@ impl OnboardingStep {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Budget => "Make your AI budget go further",
-            Self::Connect => "Connect your AI",
-            Self::Reasoning => "Choose a reasoning model (optional)",
-            Self::Community => "Stay in the loop",
+            Self::Budget => "Welcome to Distill",
+            Self::Connect => "Connect a provider",
+            Self::Reasoning => "Add a reasoning model",
+            Self::Community => "You're ready",
+        }
+    }
+
+    fn subtitle(self) -> &'static str {
+        match self {
+            Self::Budget => "A few quick choices. You can change everything later.",
+            Self::Connect => "Sign in, or keep your current model setup.",
+            Self::Reasoning => "Optional: use a second model for planning and review.",
+            Self::Community => "Setup is complete. Follow updates if you'd like.",
         }
     }
 }
@@ -63,6 +72,7 @@ pub enum OnboardingCommand {
     LoginProvider(LoginProvider),
     CancelGrokLogin,
     CancelProviderLogin(LoginProvider),
+    CopyAuthUrl(String),
     SelectModel(usize),
     SelectReasoning(usize),
     OpenX,
@@ -79,9 +89,11 @@ pub struct OnboardingState {
     setting_pending: Option<PendingSetting>,
     pub status: Option<String>,
     pub status_is_error: bool,
+    auth_url: Option<String>,
     pub x_requested: bool,
     pub pulse: u8,
     pub scroll: usize,
+    pub status_scroll: u16,
     follow_selection: bool,
     hit_rows: Vec<(Rect, usize)>,
 }
@@ -109,9 +121,11 @@ impl OnboardingState {
             setting_pending: None,
             status: None,
             status_is_error: false,
+            auth_url: None,
             x_requested: false,
             pulse: 0,
             scroll: 0,
+            status_scroll: 0,
             follow_selection: true,
             hit_rows: Vec::new(),
         }
@@ -124,6 +138,8 @@ impl OnboardingState {
     pub fn set_auth_started(&mut self, provider: Option<LoginProvider>) {
         self.auth_pending = true;
         self.auth_provider = provider;
+        self.auth_url = None;
+        self.status_scroll = 0;
         self.status = Some(match provider {
             Some(provider) => format!(
                 "{} login is waiting for the browser. Esc cancels this onboarding login.",
@@ -143,6 +159,7 @@ impl OnboardingState {
         self.set_step(OnboardingStep::Connect);
         self.auth_pending = false;
         self.auth_provider = None;
+        self.auth_url = None;
         self.status = Some(message.into());
         self.status_is_error = !success;
     }
@@ -153,9 +170,22 @@ impl OnboardingState {
     }
 
     pub fn set_auth_browser_fallback(&mut self, url: &str) {
+        self.auth_url = Some(url.to_owned());
+        let remote_hint = match self.auth_provider {
+            Some(LoginProvider::ChatGpt) => {
+                "For a VPS, cancel, run `distill login --chatgpt --device-auth`, then restart Distill."
+            }
+            Some(LoginProvider::OpenRouter) => {
+                "For a VPS, set OPENROUTER_API_KEY before starting Distill."
+            }
+            None => {
+                "For a VPS, cancel and run `distill login --device-auth` in a shell, then restart Distill."
+            }
+        };
         self.status = Some(format!(
-            "The browser could not open automatically. Use this URL, then return here:\n{url}"
+            "The browser could not open automatically. Press c to copy the full URL, then open it on a device with a browser:\n{url}\n{remote_hint}"
         ));
+        self.status_scroll = 0;
         self.status_is_error = true;
     }
 
@@ -200,6 +230,9 @@ impl OnboardingState {
     }
 
     pub fn set_browser_requested(&mut self) {
+        if self.x_requested {
+            return;
+        }
         self.x_requested = true;
         self.status = Some(
             "Browser opener requested. If it did not open, use the URL below; Finish remains available."
@@ -212,9 +245,22 @@ impl OnboardingState {
         self.step = step;
         self.selected = 0;
         self.scroll = 0;
+        self.status_scroll = 0;
         self.follow_selection = true;
         self.status = None;
         self.status_is_error = false;
+    }
+
+    pub fn enter_community(&mut self) -> Option<OnboardingCommand> {
+        if self.step != OnboardingStep::Community || self.x_requested {
+            return None;
+        }
+        self.set_browser_requested();
+        Some(OnboardingCommand::OpenX)
+    }
+
+    pub fn mark_community_open_requested(&mut self) {
+        self.set_browser_requested();
     }
 
     fn item_count(&self, model_count: usize, reasoning_count: usize) -> usize {
@@ -222,11 +268,15 @@ impl OnboardingState {
             OnboardingStep::Budget => 1,
             OnboardingStep::Connect => 4 + model_count,
             OnboardingStep::Reasoning => reasoning_count + 2,
-            OnboardingStep::Community => 2,
+            OnboardingStep::Community => 1,
         }
     }
 
-    fn activate(&mut self, model_count: usize, reasoning_count: usize) -> Option<OnboardingCommand> {
+    fn activate(
+        &mut self,
+        model_count: usize,
+        reasoning_count: usize,
+    ) -> Option<OnboardingCommand> {
         match self.step {
             OnboardingStep::Budget => {
                 self.set_step(OnboardingStep::Connect);
@@ -256,22 +306,12 @@ impl OnboardingState {
             OnboardingStep::Reasoning => {
                 if self.selected < reasoning_count {
                     Some(OnboardingCommand::SelectReasoning(self.selected))
-                } else if self.selected == reasoning_count {
-                    self.set_step(OnboardingStep::Community);
-                    Some(OnboardingCommand::Continue)
                 } else {
                     self.set_step(OnboardingStep::Community);
-                    Some(OnboardingCommand::Continue)
+                    self.enter_community().or(Some(OnboardingCommand::Continue))
                 }
             }
-            OnboardingStep::Community => {
-                if self.selected == 0 {
-                    self.set_browser_requested();
-                    Some(OnboardingCommand::OpenX)
-                } else {
-                    Some(OnboardingCommand::Complete)
-                }
-            }
+            OnboardingStep::Community => Some(OnboardingCommand::Complete),
         }
     }
 
@@ -285,6 +325,18 @@ impl OnboardingState {
             return None;
         }
         if let Event::Mouse(mouse) = ev {
+            if self.auth_pending {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        self.status_scroll = self.status_scroll.saturating_sub(5);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        self.status_scroll = self.status_scroll.saturating_add(5);
+                    }
+                    _ => {}
+                }
+                return None;
+            }
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.scroll = self.scroll.saturating_sub(3);
@@ -297,9 +349,6 @@ impl OnboardingState {
                     return None;
                 }
                 _ => {}
-            }
-            if self.auth_pending {
-                return None;
             }
             if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 return None;
@@ -333,6 +382,14 @@ impl OnboardingState {
             return Some(OnboardingCommand::Close);
         }
         if self.auth_pending {
+            match key.code {
+                KeyCode::PageUp => self.status_scroll = self.status_scroll.saturating_sub(5),
+                KeyCode::PageDown => self.status_scroll = self.status_scroll.saturating_add(5),
+                KeyCode::Char('c') => {
+                    return self.auth_url.clone().map(OnboardingCommand::CopyAuthUrl);
+                }
+                _ => {}
+            }
             return None;
         }
         match key.code {
@@ -369,7 +426,9 @@ impl OnboardingState {
                 None
             }
             KeyCode::End => {
-                self.selected = self.item_count(model_count, reasoning_count).saturating_sub(1);
+                self.selected = self
+                    .item_count(model_count, reasoning_count)
+                    .saturating_sub(1);
                 self.follow_selection = true;
                 None
             }
@@ -387,7 +446,7 @@ impl OnboardingState {
                 }
                 OnboardingStep::Reasoning => {
                     self.set_step(OnboardingStep::Community);
-                    Some(OnboardingCommand::Continue)
+                    self.enter_community().or(Some(OnboardingCommand::Continue))
                 }
                 OnboardingStep::Community => Some(OnboardingCommand::Complete),
             },
@@ -414,7 +473,7 @@ fn row_line(
     theme: &Theme,
 ) -> Line<'static> {
     let label = label.into();
-    let marker = if index == selected { "› " } else { "  " };
+    let marker = if index == selected { "◉ " } else { "○ " };
     let style = if index == selected {
         Style::default()
             .fg(theme.text_primary)
@@ -463,12 +522,24 @@ pub fn render_onboarding(
 
     let theme = Theme::current();
     Clear.render(popup, buf);
-    let title = format!(
-        "{}  ·  Step {} of {}",
-        state.step.title(),
-        state.step_number(),
-        STEP_COUNT
-    );
+    let title = Line::from(vec![
+        Span::styled(
+            " DISTILL ",
+            Style::default()
+                .fg(theme.accent_user)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("·", Style::default().fg(theme.gray_dim)),
+        Span::styled(
+            format!(" {}/{} ", state.step_number(), STEP_COUNT),
+            Style::default().fg(theme.accent_user),
+        ),
+        Span::styled("·", Style::default().fg(theme.gray_dim)),
+        Span::styled(
+            format!(" {} ", state.step.title()),
+            Style::default().fg(theme.text_primary),
+        ),
+    ]);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -477,23 +548,43 @@ pub fn render_onboarding(
     let inner = block.inner(popup);
     block.render(popup, buf);
 
-    let mut lines = Vec::new();
+    let mut intro_lines = Vec::new();
+    let mut option_lines = Vec::new();
     let mut row_lines = Vec::new();
+    intro_lines.push(Line::from(Span::styled(
+        format!(
+            "{}  {}",
+            if (state.pulse / 6).is_multiple_of(2) {
+                "◆"
+            } else {
+                "◇"
+            },
+            state.step.title()
+        ),
+        Style::default()
+            .fg(theme.accent_user)
+            .add_modifier(Modifier::BOLD),
+    )));
+    intro_lines
+        .push(Line::from(state.step.subtitle()).style(Style::default().fg(theme.text_secondary)));
     match state.step {
         OnboardingStep::Budget => {
-            let mark = if state.pulse % 2 == 0 { "✦" } else { "·" };
-            lines.push(Line::from(Span::styled(
-                format!("{mark} One clear idea for using Distill economically:"),
+            let mark = if (state.pulse / 6).is_multiple_of(2) {
+                "✦"
+            } else {
+                "·"
+            };
+            intro_lines.push(Line::from(Span::styled(
+                format!("{mark} One workspace for your AI models."),
                 Style::default()
                     .fg(theme.accent_success)
                     .add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from("OpenRouter can add model choices and prices. When a suitable less-expensive model handles a task, that may lower cost."));
-            lines.push(Line::from("Distill can route different work to different models. Cost, total tokens, and tokens processed by an expensive model are separate measures."));
-            lines.push(Line::from("OpenRouter alone does not reduce tokens. It changes available models and routing options."));
-            lines.push(Line::from(""));
+            intro_lines.push(Line::from("Choose the models and providers you already use. You can change these settings anytime."));
+            intro_lines.push(Line::from("OpenRouter adds provider and pricing choices; it does not automatically reduce token usage."));
+            intro_lines.push(Line::from(""));
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 0,
                 state.selected,
@@ -502,14 +593,15 @@ pub fn render_onboarding(
             );
         }
         OnboardingStep::Connect => {
-            lines.push(Line::from(
-                "Reuse an existing account, then choose the main model that runs every session.",
+            intro_lines.push(Line::from(
+                "Choose a provider to sign in, then select the model Distill should use by default.",
             ));
-            lines.push(Line::from("Logins return here after success, error, or cancellation; account status updates here before you choose a model."));
-            lines.push(Line::from(""));
+            intro_lines.push(Line::from("On a VPS: `distill login --device-auth` for Grok, `distill login --chatgpt --device-auth` for ChatGPT, or `OPENROUTER_API_KEY` for OpenRouter."));
+            intro_lines.push(Line::from("Provider sign-in returns here; your current model stays unchanged until you select one."));
+            intro_lines.push(Line::from(""));
             let auth = provider_auth.unwrap_or_default();
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 0,
                 state.selected,
@@ -520,7 +612,7 @@ pub fn render_onboarding(
                 &theme,
             );
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 1,
                 state.selected,
@@ -535,7 +627,7 @@ pub fn render_onboarding(
                 &theme,
             );
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 2,
                 state.selected,
@@ -551,7 +643,7 @@ pub fn render_onboarding(
             );
             for (index, (id, name)) in models.iter().enumerate() {
                 push_choice_row(
-                    &mut lines,
+                    &mut option_lines,
                     &mut row_lines,
                     index + 3,
                     state.selected,
@@ -560,7 +652,7 @@ pub fn render_onboarding(
                 );
             }
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 3 + models.len(),
                 state.selected,
@@ -569,30 +661,30 @@ pub fn render_onboarding(
             );
         }
         OnboardingStep::Reasoning => {
-            lines.push(Line::from(
+            intro_lines.push(Line::from(
                 "The main model runs every step. An optional reasoning model plans and reviews the steps the main model cannot do alone.",
             ));
             if let Some(current) = current_reasoning.filter(|value| !value.is_empty()) {
-                lines.push(Line::from(format!(
+                intro_lines.push(Line::from(format!(
                     "Current reasoning model: {current} (Skip keeps it)"
                 )));
             }
             if reasoning_options.is_empty() {
-                lines.push(Line::from("No other model is available in the current catalog. Skip keeps the existing configuration."));
+                intro_lines.push(Line::from("No other model is available in the current catalog. Skip keeps the existing configuration."));
             } else {
                 for (index, (id, name)) in reasoning_options.iter().enumerate() {
                     push_choice_row(
-                        &mut lines,
+                        &mut option_lines,
                         &mut row_lines,
                         index,
                         state.selected,
-                        format!("Reasoning model: {name} [{id}]"),
+                        format!("{name}  [{id}]"),
                         &theme,
                     );
                 }
             }
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 reasoning_options.len(),
                 state.selected,
@@ -600,7 +692,7 @@ pub fn render_onboarding(
                 &theme,
             );
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 reasoning_options.len() + 1,
                 state.selected,
@@ -609,30 +701,18 @@ pub fn render_onboarding(
             );
         }
         OnboardingStep::Community => {
-            lines.push(Line::from("Follow @samfajreldines for Distill updates. Distill will only ask your browser to open the page."));
-            lines.push(Line::from("It will not follow automatically, and this screen does not claim that you followed."));
-            lines.push(Line::from(""));
+            intro_lines.push(Line::from("Follow @samfajreldines for Distill updates."));
+            intro_lines.push(Line::from("You can finish setup after the page opens."));
+            intro_lines.push(Line::from(""));
             push_choice_row(
-                &mut lines,
+                &mut option_lines,
                 &mut row_lines,
                 0,
                 state.selected,
-                "Open X profile",
+                "Finish",
                 &theme,
             );
-            push_choice_row(
-                &mut lines,
-                &mut row_lines,
-                1,
-                state.selected,
-                if state.x_requested {
-                    "Finish"
-                } else {
-                    "Skip and finish"
-                },
-                &theme,
-            );
-            lines.push(Line::from(X_URL).style(Style::default().fg(theme.accent_user)));
+            intro_lines.push(Line::from(X_URL).style(Style::default().fg(theme.accent_user)));
         }
     }
     let content = Rect {
@@ -641,26 +721,66 @@ pub fn render_onboarding(
         width: inner.width.saturating_sub(2),
         height: inner.height.saturating_sub(1),
     };
-    let footer = if content.width < 48 {
-        "↑↓ · PgUp/PgDn · Enter · ← · Esc"
-    } else if content.width < 68 {
-        "↑↓/mouse · PgUp/PgDn · Enter · ← back · Esc"
+    let key_style = Style::default()
+        .fg(theme.text_primary)
+        .bg(theme.bg_highlight)
+        .add_modifier(Modifier::BOLD);
+    let footer_line = if content.width < 36 && state.auth_pending {
+        Line::from("c copy · PgUp/Dn scroll · Esc")
+    } else if content.width < 36 {
+        Line::from("↑↓ move · Enter · Esc")
+    } else if state.auth_pending {
+        Line::from(vec![
+            Span::styled(" c ", key_style),
+            Span::raw(" Copy URL   "),
+            Span::styled("PgUp/PgDn", key_style),
+            Span::raw(" Scroll   "),
+            Span::styled("Esc", key_style),
+            Span::raw(" Cancel"),
+        ])
     } else if compact {
-        "↑/↓ select · PgUp/PgDn scroll · Enter continue · ← back · Esc close"
+        Line::from(vec![
+            Span::styled(" ↑↓ ", key_style),
+            Span::raw(" Navigate   "),
+            Span::styled("Enter", key_style),
+            Span::raw(" Select   "),
+            Span::styled("Esc", key_style),
+            Span::raw(" Close"),
+        ])
     } else {
-        "↑↓/mouse · PgUp/PgDn · Enter · ← back · Esc · s skip"
+        Line::from(vec![
+            Span::styled(" ↑↓ ", key_style),
+            Span::raw(" Navigate   "),
+            Span::styled("Enter", key_style),
+            Span::raw(" Select   "),
+            Span::styled("←", key_style),
+            Span::raw(" Back   "),
+            Span::styled("Esc", key_style),
+            Span::raw(" Close   "),
+            Span::styled("s", key_style),
+            Span::raw(" Skip"),
+        ])
     };
+    let footer_area = Rect {
+        x: content.x,
+        y: content.bottom().saturating_sub(1),
+        width: content.width,
+        height: 1,
+    };
+    Paragraph::new(footer_line).render(footer_area, buf);
 
     let mut status_lines = Vec::new();
     if let Some(status) = &state.status {
-        status_lines.push(Line::from(Span::styled(
-            status.clone(),
-            Style::default().fg(if state.status_is_error {
-                theme.accent_error
-            } else {
-                theme.accent_success
-            }),
-        )));
+        let style = Style::default().fg(if state.status_is_error {
+            theme.accent_error
+        } else {
+            theme.accent_success
+        });
+        status_lines.extend(
+            status
+                .lines()
+                .map(|line| Line::from(Span::styled(line.to_owned(), style))),
+        );
     }
     if state.completion_pending {
         status_lines.push(Line::from(Span::styled(
@@ -672,84 +792,141 @@ pub fn render_onboarding(
     let status_height = if state.status.is_some() || state.completion_pending {
         status_paragraph
             .line_count(content.width)
-            .clamp(1, 3)
-            .min(content.height as usize)
+            .clamp(1, 8)
+            .min((content.height / 3).max(1) as usize)
     } else {
         0
     } as u16;
-    let body = Rect {
+    let max_status_scroll = status_paragraph
+        .line_count(content.width)
+        .saturating_sub(status_height as usize)
+        .min(u16::MAX as usize) as u16;
+    state.status_scroll = state.status_scroll.min(max_status_scroll);
+    if status_height > 0 {
+        let status_area = Rect {
+            x: content.x,
+            y: footer_area.y.saturating_sub(status_height),
+            width: content.width,
+            height: status_height,
+        };
+        status_paragraph
+            .scroll((state.status_scroll, 0))
+            .render(status_area, buf);
+    }
+
+    let main_area = Rect {
         x: content.x,
         y: content.y,
         width: content.width,
-        height: content.height.saturating_sub(status_height),
+        height: footer_area
+            .y
+            .saturating_sub(content.y)
+            .saturating_sub(status_height),
     };
+    let compact_intro = main_area.width < 40 || main_area.height < 12;
+    let intro_lines = if compact_intro {
+        vec![Line::from(match state.step {
+            OnboardingStep::Budget => "Providers and models can be changed later.",
+            OnboardingStep::Connect => "VPS login: use device auth or an API key.",
+            OnboardingStep::Reasoning => "Optional: a second model for planning and review.",
+            OnboardingStep::Community => "Follow updates or finish setup.",
+        })]
+    } else {
+        intro_lines
+    };
+    let intro_width = main_area.width.saturating_sub(4).max(1);
+    let intro_paragraph = Paragraph::new(intro_lines).wrap(Wrap { trim: true });
+    let intro_height = intro_paragraph
+        .line_count(intro_width)
+        .saturating_add(2)
+        .clamp(3, 8)
+        .min(main_area.height.saturating_sub(5).max(3) as usize) as u16;
+    let intro_area = Rect {
+        x: main_area.x,
+        y: main_area.y,
+        width: main_area.width,
+        height: intro_height,
+    };
+    let intro_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.gray_dim))
+        .style(Style::default().bg(theme.bg_base));
+    let intro_inner = intro_block.inner(intro_area);
+    intro_block.render(intro_area, buf);
+    intro_paragraph.render(intro_inner, buf);
+
+    let choices_area = Rect {
+        x: main_area.x,
+        y: intro_area.bottom().saturating_add(1),
+        width: main_area.width,
+        height: main_area
+            .bottom()
+            .saturating_sub(intro_area.bottom().saturating_add(1)),
+    };
+    let choices_title = match state.step {
+        OnboardingStep::Budget => "Get started",
+        OnboardingStep::Connect => "Select a provider or model",
+        OnboardingStep::Reasoning => "Select a reasoning model",
+        OnboardingStep::Community => "Finish setup",
+    };
+    let choices_block = Block::default()
+        .title(choices_title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent_user))
+        .style(Style::default().bg(theme.bg_base));
+    let choices_inner = choices_block.inner(choices_area);
+    choices_block.render(choices_area, buf);
 
     let wrap = Wrap { trim: true };
-    let paragraph = Paragraph::new(lines.clone()).wrap(wrap);
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut line_heights = Vec::with_capacity(lines.len());
+    let paragraph = Paragraph::new(option_lines.clone()).wrap(wrap);
+    let mut line_starts = Vec::with_capacity(option_lines.len());
+    let mut line_heights = Vec::with_capacity(option_lines.len());
     let mut total_height = 0usize;
-    for line in &lines {
+    for line in &option_lines {
         line_starts.push(total_height);
         let height = Paragraph::new(line.clone())
             .wrap(wrap)
-            .line_count(body.width)
+            .line_count(choices_inner.width)
             .max(1);
         line_heights.push(height);
         total_height = total_height.saturating_add(height);
     }
-    let max_scroll = total_height.saturating_sub(body.height as usize);
+    let max_scroll = total_height.saturating_sub(choices_inner.height as usize);
     let mut scroll = state.scroll.min(max_scroll);
     if state.follow_selection {
         if let Some((_, line_index)) = row_lines.iter().find(|(index, _)| *index == state.selected)
         {
             let row_start = line_starts[*line_index];
             let row_end = row_start.saturating_add(line_heights[*line_index]);
-            if row_start < scroll {
+            let viewport_height = choices_inner.height as usize;
+            if row_end.saturating_sub(row_start) > viewport_height {
                 scroll = row_start;
-            } else if row_end > scroll.saturating_add(body.height as usize) {
-                scroll = row_end.saturating_sub(body.height as usize);
+            } else if row_start < scroll {
+                scroll = row_start;
+            } else if row_end > scroll.saturating_add(viewport_height) {
+                scroll = row_end.saturating_sub(viewport_height);
             }
         }
     }
     state.scroll = scroll;
     paragraph
         .scroll((scroll.min(u16::MAX as usize) as u16, 0))
-        .render(body, buf);
+        .render(choices_inner, buf);
 
-    if status_height > 0 {
-        let status_area = Rect {
-            x: content.x,
-            y: content.y + body.height,
-            width: content.width,
-            height: status_height,
-        };
-        status_paragraph.render(status_area, buf);
-    }
-    let footer_area = Rect {
-        x: content.x,
-        y: content.y + content.height,
-        width: content.width,
-        height: inner.height.saturating_sub(content.height),
-    };
-    Paragraph::new(Line::from(Span::styled(
-        footer,
-        Style::default().fg(theme.gray_dim),
-    )))
-    .render(footer_area, buf);
-
-    // Hit regions use the same wrapped-line heights and scroll offset as the rendered body.
+    // Hit regions use the same wrapped-line heights and scroll offset as the rendered list.
     for (index, line_index) in row_lines {
         let row_start = line_starts[line_index];
         let row_end = row_start.saturating_add(line_heights[line_index]);
         let visible_start = row_start.saturating_sub(scroll);
-        let visible_end = row_end.saturating_sub(scroll).min(body.height as usize);
+        let visible_end = row_end
+            .saturating_sub(scroll)
+            .min(choices_inner.height as usize);
         if visible_start < visible_end {
             state.hit_rows.push((
                 Rect {
-                    x: body.x,
-                    y: body.y + visible_start as u16,
-                    width: body.width,
+                    x: choices_inner.x,
+                    y: choices_inner.y + visible_start as u16,
+                    width: choices_inner.width,
                     height: (visible_end - visible_start) as u16,
                 },
                 index,
@@ -767,8 +944,8 @@ mod tests {
         let state = OnboardingState::new();
         assert_eq!(STEP_COUNT, 4);
         assert_eq!(state.step_number(), 1);
-        assert_eq!(state.step.title(), "Make your AI budget go further");
-        assert_eq!(OnboardingStep::Community.title(), "Stay in the loop");
+        assert_eq!(state.step.title(), "Welcome to Distill");
+        assert_eq!(OnboardingStep::Community.title(), "You're ready");
     }
 
     #[test]
@@ -793,6 +970,162 @@ mod tests {
     }
 
     #[test]
+    fn browser_fallback_explains_vps_login_alternatives() {
+        let mut state = OnboardingState::new();
+        state.set_auth_started(Some(LoginProvider::ChatGpt));
+        state.set_auth_browser_fallback("https://example.test/login");
+        assert!(
+            state
+                .status
+                .as_deref()
+                .unwrap()
+                .contains("distill login --chatgpt --device-auth")
+        );
+
+        state.set_auth_started(Some(LoginProvider::OpenRouter));
+        state.set_auth_browser_fallback("https://example.test/login");
+        assert!(
+            state
+                .status
+                .as_deref()
+                .unwrap()
+                .contains("OPENROUTER_API_KEY")
+        );
+
+        state.set_auth_started(None);
+        state.set_auth_browser_fallback("https://example.test/login");
+        assert!(
+            state
+                .status
+                .as_deref()
+                .unwrap()
+                .contains("distill login --device-auth")
+        );
+        assert!(state.status.as_deref().unwrap().contains("Press c to copy"));
+        assert_eq!(
+            state.handle_input(
+                &Event::Key(crossterm::event::KeyEvent::new(
+                    KeyCode::Char('c'),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+                0,
+                0,
+            ),
+            Some(OnboardingCommand::CopyAuthUrl(
+                "https://example.test/login".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn browser_fallback_keeps_the_full_url_visible_in_a_normal_terminal() {
+        let mut state = OnboardingState::new();
+        state.set_step(OnboardingStep::Connect);
+        state.set_auth_started(Some(LoginProvider::ChatGpt));
+        let url = format!("https://example.test/{}-end", "x".repeat(2_000));
+        state.set_auth_browser_fallback(&url);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+        render_onboarding(&mut buffer, area, &mut state, false, &[], &[], None, None);
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("The browser could not open automatically"));
+        assert!(rendered.contains("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+
+        let mut status = String::new();
+        for _ in 0..10 {
+            state.handle_input(
+                &Event::Key(crossterm::event::KeyEvent::new(
+                    KeyCode::PageDown,
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+                0,
+                0,
+            );
+            render_onboarding(&mut buffer, area, &mut state, false, &[], &[], None, None);
+            status.push_str(
+                &buffer
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .replace(' ', ""),
+            );
+        }
+        assert!(status.contains("-end"));
+        assert!(
+            status.contains("distilllogin--chatgpt--device-auth"),
+            "tail render missing remote hint at offset {}: {status}",
+            state.status_scroll
+        );
+
+        state.status_scroll = 0;
+        state.handle_input(
+            &Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 40,
+                row: 12,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            }),
+            0,
+            0,
+        );
+        assert!(
+            state.status_scroll > 0,
+            "mouse wheel should scroll auth details"
+        );
+        render_onboarding(&mut buffer, area, &mut state, false, &[], &[], None, None);
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+    }
+
+    #[test]
+    fn keyboard_flow_reaches_model_selection_and_can_finish_without_browser_actions() {
+        let mut state = OnboardingState::new();
+        let enter = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(
+            state.handle_input(&enter, 1, 1),
+            Some(OnboardingCommand::Continue)
+        );
+        assert_eq!(state.step, OnboardingStep::Connect);
+
+        state.selected = 3;
+        assert_eq!(
+            state.handle_input(&enter, 1, 1),
+            Some(OnboardingCommand::SelectModel(0))
+        );
+        state.set_main_model_pending();
+        state.finish_setting_persistence("default_model", true, "Main model saved.");
+        assert!(!state.status_is_error);
+
+        state.set_step(OnboardingStep::Reasoning);
+        state.selected = 1;
+        assert_eq!(
+            state.handle_input(&enter, 0, 1),
+            Some(OnboardingCommand::OpenX)
+        );
+        assert_eq!(state.step, OnboardingStep::Community);
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.item_count(0, 0), 1);
+        assert_eq!(
+            state.handle_input(&enter, 0, 0),
+            Some(OnboardingCommand::Complete)
+        );
+    }
+
+    #[test]
     fn completion_error_does_not_mark_the_flow_done() {
         let mut state = OnboardingState::new();
         state.completion_pending = true;
@@ -805,7 +1138,14 @@ mod tests {
     fn main_and_reasoning_messages_wait_for_persistence_results() {
         let mut state = OnboardingState::new();
         state.set_main_model_pending();
-        assert!(state.status.as_deref().unwrap().to_lowercase().contains("saving"));
+        assert!(
+            state
+                .status
+                .as_deref()
+                .unwrap()
+                .to_lowercase()
+                .contains("saving")
+        );
         state.finish_setting_persistence(
             "default_model",
             true,
@@ -822,6 +1162,48 @@ mod tests {
         );
         assert!(state.status_is_error);
         assert!(state.status.as_deref().unwrap().contains("not saved"));
+    }
+
+    #[test]
+    fn every_step_keeps_a_compact_card_and_exit_hint_in_a_small_terminal() {
+        let area = Rect::new(0, 0, 34, 14);
+        let expected_copy = [
+            ("Providers and models", "Get started"),
+            ("VPS login", "Select a provider"),
+            ("Optional: a second model", "Select a reasoning"),
+            ("Follow updates", "Finish setup"),
+        ];
+        for (index, step) in [
+            OnboardingStep::Budget,
+            OnboardingStep::Connect,
+            OnboardingStep::Reasoning,
+            OnboardingStep::Community,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut state = OnboardingState::new();
+            state.set_step(step);
+            let mut buffer = Buffer::empty(area);
+            render_onboarding(&mut buffer, area, &mut state, false, &[], &[], None, None);
+            let rendered = buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                rendered.contains(expected_copy[index].0),
+                "step {step:?}: {rendered}"
+            );
+            assert!(
+                rendered.contains("Esc"),
+                "exit hint missing for {step:?}: {rendered}"
+            );
+            assert!(
+                rendered.contains(expected_copy[index].1),
+                "choice panel missing for {step:?}: {rendered}"
+            );
+        }
     }
 
     #[test]
@@ -865,6 +1247,15 @@ mod tests {
         assert!(
             hit.height >= 2,
             "wrapped row should expose its rendered height"
+        );
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains("◉"),
+            "selected radio marker must remain visible"
         );
         let command = state.handle_input(
             &Event::Mouse(crossterm::event::MouseEvent {

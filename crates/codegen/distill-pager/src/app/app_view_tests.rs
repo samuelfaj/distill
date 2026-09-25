@@ -360,6 +360,47 @@ fn onboarding_grok_login_uses_provider_connection_state() {
 }
 
 #[test]
+fn onboarding_opens_x_once_when_entering_community_and_finish_does_not_reopen() {
+    let mut app = test_app();
+    let mut onboarding = crate::views::onboarding::OnboardingState::new();
+    onboarding.step = crate::views::onboarding::OnboardingStep::Reasoning;
+    onboarding.selected = 1;
+    app.onboarding = Some(onboarding);
+
+    let enter_community = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        enter_community,
+        InputOutcome::Action(Action::OpenUrl(url)) if url == crate::views::onboarding::X_URL
+    ));
+    assert_eq!(
+        app.onboarding.as_ref().unwrap().step,
+        crate::views::onboarding::OnboardingStep::Community
+    );
+
+    let finish = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        finish,
+        InputOutcome::Action(Action::CompleteOnboarding)
+    ));
+}
+
+#[test]
+fn onboarding_provider_fallback_copies_the_entire_url_from_keyboard() {
+    let mut app = test_app();
+    app.onboarding = Some(crate::views::onboarding::OnboardingState::new());
+    let onboarding = app.onboarding.as_mut().unwrap();
+    onboarding.set_auth_started(Some(crate::app::actions::LoginProvider::ChatGpt));
+    let url = format!("https://auth.example.test/{}-tail", "x".repeat(1_000));
+    onboarding.set_auth_browser_fallback(&url);
+
+    let copy = app.handle_input(&key_event(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(matches!(
+        copy,
+        InputOutcome::Action(Action::CopyOnboardingAuthUrl(copied)) if copied == url
+    ));
+}
+
+#[test]
 fn onboarding_grok_auth_reuses_welcome_url_and_code_controls() {
     let mut app = test_app();
     app.onboarding = Some(crate::views::onboarding::OnboardingState::new());

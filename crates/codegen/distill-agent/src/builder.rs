@@ -1431,7 +1431,9 @@ pub(crate) fn build_task_description(
              and relevant paths; return the result and verification, not the parent transcript. \
              After a substantive code checkpoint or before final handoff, use code-reviewer when \
              independent review could catch a material defect. Provide the diff, criteria and test \
-             evidence. Skip trivial or unchanged checkpoints and do not repeat review of the same diff.",
+             evidence. Follow existing reasoning_advice or reasoning_review for the same checkpoint \
+             before considering another subagent. Skip trivial or unchanged checkpoints and do \
+             not repeat review of the same diff.",
         );
     }
     description

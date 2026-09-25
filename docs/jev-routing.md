@@ -6,8 +6,8 @@ effort it needs, or which parts of a tool result are worth keeping.
 
 Of the tiers set in [Choose your models](../README.md#choose-your-models), the
 **main** model is required and runs every session and every step. The optional
-**reasoning** model never takes over the session: the main model consults it to
-plan or review a step it cannot do alone. Utility tasks receive a bounded
+**reasoning** model never takes over the session: Jev selects it for planning,
+recovery, or review when the task warrants an independent pass. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
@@ -26,30 +26,34 @@ the harness keeps its normal execution path.
 
 ## Main and reasoning
 
-The main model does all the work. Jev decides every consult of the reasoning
+The main model executes the task and owns the conversation. Jev decides every consult of the reasoning
 model, and the advice joins the conversation as `<reasoning_advice>`, so the
 main model keeps following it on later rounds:
 
 | Decision | When Jev is asked | What it weighs |
 |---|---|---|
-| Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text, such as an explanation or a design), or once the main model has looked at the workspace, so the plan rests on what it found. It also judges the request's complexity, which the later decisions read. |
+| Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text), or after inspecting the workspace. For the last case, a fresh read-only `plan` subagent inspects files before the main model's first action when available; otherwise the main model inspects first and the inline reasoning consult follows. Jev also judges complexity for later decisions. |
 | Step | Every later round in which the main model did something the reasoning model has not weighed | Whether the main model is stuck and needs a diagnosis before its next round. The facts since the last advice are in the question: tool calls and failures, the call that failed most, the call repeated most (waiting on background work aside), failures in a row, edits undone, rounds without advice and the latest calls. |
-| Review | Before delivery, while there is work no review has seen | Whether the reasoning model reviews the work: the files and lines changed, the last test or build, failures, the request's complexity, earlier consults and verdicts, and the start of the final message. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. |
+| Review | Before delivery, while there is work no review has attempted | Whether the reasoning model reviews the work: recorded edits, the current Git diff (including shell edits), recent checks, failures, the request's complexity, earlier consults and verdicts, and the start of the final message. A fresh read-only `code-reviewer` subagent can inspect changed files; the inline reasoning consult remains the fallback. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. |
 
 An edit the change review (C4) flags for another model's opinion is itself a
 Jev decision and is reviewed as it comes. There is no fixed budget, cooldown or
 size threshold: the only rules left are facts (nothing new since the last
-consult or review leaves nothing to decide). An unsure or missing answer spends
-nothing: the main model works on, and the work is delivered as it is. With
+consult or review attempt leaves nothing to decide). An unsure or missing plan
+decision leaves the main model to proceed. An unsure or missing delivery decision
+still requests review when changes are visible or the final check failed. A
+failed or unclear review is reported to the main model rather than counted as
+approval. With
 `/effort auto`, the round's question rides in the same decision request as the
 main model's effort, so a round costs one Jev call. Without a reasoning model,
-or when Jev is unavailable, the main model works alone.
+the main model works alone. If Jev is unavailable, planning and recovery fall
+back to the main model; visible changes can still receive a delivery review.
 
-The consults of one request are one conversation with the reasoning model. The
+Inline consults of one request are one conversation with the reasoning model. The
 instructions are the same for every consult, and each consult resends the
 earlier messages and advice unchanged, then adds one message: the work the main
 model did since the last reply, the consult's own material (the struggle, the
-flagged change, or the diffs, last check and final message of a review) and the
+flagged change, or the diffs, recent checks and final message of a review) and the
 task last. Work already sent is never sent again, and every consult of the
 request shares one `prompt_cache_key`, so the provider can serve the repeated
 prefix from its prompt cache.
@@ -64,9 +68,11 @@ window, the largest items are cut to verified quotes from the utility model
 (`cite_spans`, each quote checked against the item), then to their summaries;
 a consult that does not fit even then is skipped and logged.
 
-While the reasoning model works, the status row names it (for example
-`reasoning review gpt-6-sol high`). The turn report lists its tokens like any
-other model, plus a `Reasoning - Nx (plan, review)` line. With `GROK_LOG_JEV=1`,
+While an inline reasoning consult runs, the status row names it (for example
+`reasoning review gpt-6-sol high`). The turn report lists inline consult
+tokens and a `Reasoning - Nx (plan, review)` count. Completed child usage is
+folded into the parent session's usage accounting; an incomplete fold blocks a
+cost claim, and child usage must not be added twice. With `GROK_LOG_JEV=1`,
 each decision and a per-request summary (rounds, failures, changes,
 complexity, consults, review verdicts) are logged under `b2_reasoning_model`,
 which is what the questions should be tuned from.
@@ -74,7 +80,10 @@ which is what the questions should be tuned from.
 The built-in `plan` and `code-reviewer` subagents run on the reasoning model;
 every other subagent runs on the main model. An explicit subagent model pin
 still wins. Without a reasoning model, `plan` and `code-reviewer` use the main
-model.
+model. Jev starts these roles with fresh context, so a full-context fork cannot
+pin them to the Worker's model. They receive the user request and relevant
+evidence, follow project instructions, and use read-only tools. The final review
+may include pre-existing workspace changes; its prompt identifies that limit.
 
 `/effort auto` chooses the main model's effort per call; a fixed effort pins
 that model's intensity. `/model <model> [effort]` selects the main model;
@@ -121,6 +130,12 @@ code-reviewer = "reviewer-catalog-entry"
 ```
 
 The value must name an existing model catalog entry.
+
+The routing and subagent choices are hypotheses about quality and cost. To
+claim a saving, compare accepted tasks with and without the role handoffs,
+including all main, reasoning, subagent, utility, and retry usage. Test outcomes
+and the delivered behavior must be compared alongside cost; token counts alone
+do not establish a financial saving.
 
 ## Optional model facts and cache
 

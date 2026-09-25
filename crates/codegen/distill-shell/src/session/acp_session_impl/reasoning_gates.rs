@@ -1,17 +1,19 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! When the main model consults the reasoning model.
 //!
-//! The main model runs every step. Jev decides every consult, from the facts
+//! The main model runs every execution step. Jev selects the initial plan; a
+//! selected plan requires a delivery review before approval. Other consults
+//! remain selective, based on the facts
 //! this module keeps about the request:
 //!
-//! * **plan**: once per request, whether the reasoning model plans it, now or
-//!   once the main model has looked at the workspace.
+//! * **plan**: once per request, whether the reasoning model plans it from the
+//!   request or after a read-only planner inspects the workspace.
 //! * **step**: each round with work the reasoning model has not weighed yet,
 //!   whether the main model is stuck and needs advice before the next round.
 //!   Repeated failures, loops, undone edits and rounds since the last advice
 //!   are facts Jev reads. A persistent, diagnosed stall also triggers one
 //!   bounded execution handoff.
-//! * **review**: before delivery, whether the reasoning model reviews the work.
+//! * **review**: before delivery, required after a plan and otherwise selective.
 //!
 //! An edit the change review (C4) flags is Jev's decision already and is
 //! reviewed as it comes. Routine consults have no fixed budget; the persistent
@@ -84,11 +86,39 @@ pub(crate) enum PlanGate {
     /// Not judged yet: the first round of the request asks Jev.
     #[default]
     Undecided,
-    /// A plan is wanted once the main model has tool results to plan on.
+    /// A plan is wanted after workspace evidence is available.
     AfterEvidence,
     /// Planned, or judged unnecessary.
     Done,
 }
+
+/// The selected request's handoff phase. Planning and review are enforced by
+/// the harness; the plan decision itself still belongs to Jev's `PlanGate`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FlowPhase {
+    #[default]
+    Worker,
+    Planning,
+    Executing,
+    Correcting,
+    Approved,
+    Unavailable,
+}
+
+impl FlowPhase {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Worker => "worker",
+            Self::Planning => "planning",
+            Self::Executing => "executing",
+            Self::Correcting => "correcting",
+            Self::Approved => "approved",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+const MAX_FLOW_REVISIONS: u8 = 3;
 
 /// The question Jev answers for this round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +228,9 @@ pub(crate) struct ReasoningGates {
     last_test: Option<TestEvidence>,
     checks: Vec<TestEvidence>,
     plan: PlanGate,
+    flow_phase: FlowPhase,
+    flow_revisions: u8,
+    reviewed_artifact: Option<String>,
     plan_unavailable: bool,
     planner_advice: Option<String>,
     complexity: Option<f64>,
@@ -263,6 +296,33 @@ impl ReasoningGates {
         self.plan
     }
 
+    pub(crate) fn flow_phase(&self) -> FlowPhase {
+        self.flow_phase
+    }
+
+    pub(crate) fn require_plan(&mut self) {
+        self.flow_phase = FlowPhase::Planning;
+    }
+
+    pub(crate) fn flow_requires_review(&self) -> bool {
+        matches!(
+            self.flow_phase,
+            FlowPhase::Executing | FlowPhase::Correcting | FlowPhase::Approved
+        )
+    }
+
+    pub(crate) fn has_new_review_artifact(&self, artifact: &str) -> bool {
+        self.reviewed_artifact.as_deref() != Some(artifact)
+    }
+
+    pub(crate) fn note_review_artifact(&mut self, artifact: String) {
+        self.reviewed_artifact = Some(artifact);
+    }
+
+    pub(crate) fn stop_unresolved_review(&mut self) {
+        self.flow_phase = FlowPhase::Unavailable;
+    }
+
     pub(crate) fn set_plan(&mut self, plan: PlanGate) {
         self.plan = plan;
     }
@@ -270,6 +330,9 @@ impl ReasoningGates {
     pub(crate) fn note_plan_unavailable(&mut self) {
         self.plan = PlanGate::Done;
         self.plan_unavailable = true;
+        if self.flow_phase == FlowPhase::Planning {
+            self.flow_phase = FlowPhase::Unavailable;
+        }
     }
 
     pub(crate) fn note_planner_advice(&mut self, advice: String) {
@@ -283,6 +346,10 @@ impl ReasoningGates {
     /// Whether the main model already has tool results to plan on.
     pub(crate) fn has_evidence(&self) -> bool {
         !self.events.is_empty()
+    }
+
+    pub(crate) fn has_edits(&self) -> bool {
+        !self.changes.is_empty()
     }
 
     /// How complex Jev judged the request when it decided the plan.
@@ -467,6 +534,7 @@ impl ReasoningGates {
             "consults_this_request": self.consult_labels(),
             "rounds_this_request": self.rounds,
             "request_complexity": self.complexity,
+            "flow_phase": self.flow_phase.label(),
         })
     }
 
@@ -486,6 +554,9 @@ impl ReasoningGates {
                 self.plan = PlanGate::Done;
                 if kind == ConsultKind::Plan {
                     self.plan_unavailable = false;
+                    if self.flow_phase == FlowPhase::Planning {
+                        self.flow_phase = FlowPhase::Executing;
+                    }
                 }
             }
             ConsultKind::Review => {
@@ -520,6 +591,9 @@ impl ReasoningGates {
 
     pub(crate) fn note_review_unavailable(&mut self) {
         self.verdicts.push("unavailable");
+        if self.flow_requires_review() {
+            self.flow_phase = FlowPhase::Unavailable;
+        }
     }
 
     pub(crate) fn note_verdict(&mut self, verdict: ReviewVerdict) {
@@ -528,6 +602,18 @@ impl ReasoningGates {
             ReviewVerdict::Revise => "revise",
             ReviewVerdict::Unclear => "unclear",
         });
+        if self.flow_requires_review() {
+            if verdict == ReviewVerdict::Revise {
+                self.flow_revisions = self.flow_revisions.saturating_add(1);
+            }
+            self.flow_phase = match verdict {
+                ReviewVerdict::Approve => FlowPhase::Approved,
+                ReviewVerdict::Revise if self.flow_revisions < MAX_FLOW_REVISIONS => {
+                    FlowPhase::Correcting
+                }
+                ReviewVerdict::Revise | ReviewVerdict::Unclear => FlowPhase::Unavailable,
+            };
+        }
     }
 
     /// What a delivery decision reads.
@@ -618,12 +704,13 @@ impl ReasoningGates {
         });
         format!(
             "rounds={} tools={} failures={failures} changes={} (+{added} -{removed}) \
-             complexity={} plan_unavailable={} consults=[{}] reviews=[{}]",
+             complexity={} phase={} plan_unavailable={} consults=[{}] reviews=[{}]",
             self.rounds,
             self.events.len(),
             self.changes.len(),
             self.complexity
                 .map_or_else(|| "unknown".to_owned(), |c| format!("{c:.2}")),
+            self.flow_phase.label(),
             self.plan_unavailable,
             self.consult_labels().join(", "),
             self.verdicts.join(", ")
@@ -753,14 +840,10 @@ impl ReasoningThread {
 }
 
 /// The verdict on a delivery review's first line (`VERDICT: approve|revise`).
-/// Anything else is unclear, and an unclear review lets the main model deliver.
+/// A revision without a finding is unclear and cannot start a correction loop.
 pub(crate) fn review_verdict(text: &str) -> ReviewVerdict {
-    let first = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default().to_ascii_lowercase();
     let first = first.trim_matches(|c: char| matches!(c, '*' | '#' | '`' | '_' | ' '));
     let Some(verdict) = first.strip_prefix("verdict:") else {
         return ReviewVerdict::Unclear;
@@ -769,7 +852,11 @@ pub(crate) fn review_verdict(text: &str) -> ReviewVerdict {
     if verdict.starts_with("approve") {
         ReviewVerdict::Approve
     } else if verdict.starts_with("revise") {
-        ReviewVerdict::Revise
+        if lines.next().is_some() {
+            ReviewVerdict::Revise
+        } else {
+            ReviewVerdict::Unclear
+        }
     } else {
         ReviewVerdict::Unclear
     }
@@ -1127,6 +1214,28 @@ mod tests {
     }
 
     #[test]
+    fn selected_flow_requires_a_plan_and_stops_after_three_revision_verdicts() {
+        let mut gates = ReasoningGates::default();
+        assert_eq!(gates.flow_phase(), FlowPhase::Worker);
+        gates.require_plan();
+        assert_eq!(gates.flow_phase(), FlowPhase::Planning);
+        assert!(!gates.flow_requires_review());
+        gates.note_consult(ConsultKind::Plan);
+        assert_eq!(gates.flow_phase(), FlowPhase::Executing);
+        assert!(gates.flow_requires_review());
+        gates.note_review_artifact("first diff\nChecks: passed".to_owned());
+        assert!(!gates.has_new_review_artifact("first diff\nChecks: passed"));
+        assert!(gates.has_new_review_artifact("corrected diff\nChecks: passed"));
+        for _ in 0..2 {
+            gates.note_verdict(ReviewVerdict::Revise);
+            assert_eq!(gates.flow_phase(), FlowPhase::Correcting);
+        }
+        gates.note_verdict(ReviewVerdict::Revise);
+        assert_eq!(gates.flow_phase(), FlowPhase::Unavailable);
+        assert!(!gates.flow_requires_review());
+    }
+
+    #[test]
     fn review_keeps_earlier_failed_checks_even_after_a_later_pass() {
         use distill_tools::types::output::BashOutput;
 
@@ -1186,7 +1295,8 @@ mod tests {
     fn the_review_verdict_reads_the_first_line_only() {
         assert_eq!(review_verdict("VERDICT: approve\nLooks right."), ReviewVerdict::Approve);
         assert_eq!(review_verdict("\n**Verdict: revise**\n- fix x"), ReviewVerdict::Revise);
-        assert_eq!(review_verdict("verdict: REVISE."), ReviewVerdict::Revise);
+        assert_eq!(review_verdict("verdict: REVISE."), ReviewVerdict::Unclear);
+        assert_eq!(review_verdict("\nVERDICT: revise"), ReviewVerdict::Unclear);
         assert_eq!(
             review_verdict("Looks fine.\nVERDICT: revise"),
             ReviewVerdict::Unclear,

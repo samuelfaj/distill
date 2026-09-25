@@ -22,7 +22,7 @@ use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::ladder;
 
 use super::reasoning_gates::{
-    ConsultKind, PlanGate, ReviewVerdict, RoundQuestion, StallAction, StepFacts, WorkEntry,
+    ConsultKind, FlowPhase, PlanGate, ReviewVerdict, RoundQuestion, StallAction, StepFacts, WorkEntry,
     review_verdict, work_since_request,
 };
 use super::*;
@@ -262,8 +262,10 @@ impl SessionActor {
                 None,
                 ConsultKind::Plan,
                 &advice,
-                "The reasoning planner inspected the workspace. Follow its plan and re-check it if new evidence changes the task.",
+                "The read-only planner inspected the workspace. Follow its plan and re-check it if new evidence changes the task.",
             );
+        } else {
+            self.notify_plan_unavailable(request);
         }
     }
 
@@ -305,8 +307,9 @@ impl SessionActor {
         let diff = parts.join("\n");
         Some(if diff.len() > 48_000 {
             format!(
-                "{}\n[workspace diff truncated; inspect the files directly]",
-                diff.chars().take(48_000).collect::<String>()
+                "{}\n[workspace diff truncated; inspect the files directly; full diff hash: {}]",
+                diff.chars().take(48_000).collect::<String>(),
+                blake3::hash(diff.as_bytes()).to_hex(),
             )
         } else {
             diff
@@ -661,17 +664,6 @@ impl SessionActor {
             (question, shared)
         };
         let Some((reasoner, main_profile)) = self.resolve_reasoner(main).await else {
-            let stalled = self.jev_ledger.borrow().reasoning.stall_action().is_some();
-            if stalled {
-                self.jev_ledger
-                    .borrow_mut()
-                    .reasoning
-                    .finish_stall_escalation();
-                self.append_stall_note(
-                    request,
-                    "The Worker repeated the same action without progress, and a reasoning handoff is unavailable in this session. Stop repeating it; report the blocker and the checks attempted.",
-                );
-            }
             return;
         };
         let Some(human_request) = last_real_request(&request.items) else {
@@ -691,15 +683,19 @@ impl SessionActor {
             return;
         }
         // Read before deciding: the consults borrow the ledger mutably.
-        let (plan, has_evidence) = {
+        let (plan, has_evidence, has_edits) = {
             let ledger = self.jev_ledger.borrow();
-            (ledger.reasoning.plan(), ledger.reasoning.has_evidence())
+            (
+                ledger.reasoning.plan(),
+                ledger.reasoning.has_evidence(),
+                ledger.reasoning.has_edits(),
+            )
         };
         if plan == PlanGate::AfterEvidence {
-            // A read-only planner can gather the evidence before the Worker
-            // makes its first edit. Without a child, keep the existing
-            // inspect-then-consult path.
-            if has_evidence {
+            // Gather workspace evidence before the Worker can make an edit.
+            if has_edits {
+                self.notify_plan_unavailable(request);
+            } else if has_evidence {
                 self.consult_reasoning(request, main, &main_profile, &reasoner, &human_request, Consult::Plan)
                 .await;
             } else {
@@ -780,7 +776,15 @@ impl SessionActor {
         };
         let consult = match question {
             RoundQuestion::Plan => match self.settle_plan(answers.as_ref(), has_evidence) {
+                routing::PlanTiming::Now if has_edits => {
+                    self.notify_plan_unavailable(request);
+                    None
+                }
                 routing::PlanTiming::Now => Some(Consult::Plan),
+                routing::PlanTiming::AfterEvidence if has_edits => {
+                    self.notify_plan_unavailable(request);
+                    None
+                }
                 routing::PlanTiming::AfterEvidence if has_evidence => Some(Consult::Plan),
                 routing::PlanTiming::AfterEvidence => {
                     self.plan_with_reader(request, &human_request).await;
@@ -918,6 +922,9 @@ impl SessionActor {
         {
             let mut ledger = self.jev_ledger.borrow_mut();
             ledger.reasoning.note_assessment(complexity);
+            if timing != routing::PlanTiming::MainAlone {
+                ledger.reasoning.require_plan();
+            }
             ledger.reasoning.set_plan(match timing {
                 routing::PlanTiming::AfterEvidence if !has_evidence => PlanGate::AfterEvidence,
                 // A plan now is settled by its consult; no plan is settled here.
@@ -1040,7 +1047,13 @@ impl SessionActor {
             }
             return false;
         };
-        self.jev_ledger.borrow_mut().reasoning.note_consult(kind);
+        {
+            let mut ledger = self.jev_ledger.borrow_mut();
+            if kind == ConsultKind::Plan {
+                ledger.reasoning.note_planner_advice(advice.clone());
+            }
+            ledger.reasoning.note_consult(kind);
+        }
         self.append_reasoning_advice(request, Some(&reasoner.cfg.model), kind, &advice, &follow);
         true
     }
@@ -1087,42 +1100,58 @@ impl SessionActor {
         );
     }
 
-    /// Before the main model delivers a request that changed files, the
-    /// reasoning model reviews the work (see [`super::reasoning_gates`]). A
-    /// review asking for changes becomes the feedback the turn continues with;
-    /// `None` lets the turn end.
+    /// Before delivery, a planned request requires a review of its current
+    /// artifact. Other requests keep Jev's optional review. A revision verdict
+    /// becomes feedback for the Worker; `None` lets the turn end.
     pub(super) async fn jev_delivery_review(&self) -> Option<String> {
-        let main = self.reconstruct_full_config().await;
-        let (reasoner, main_profile) = self.resolve_reasoner(&main).await?;
-        if !self
-            .jev_ledger
-            .borrow()
-            .reasoning
-            .has_new_work_since_review()
-        {
+        let phase = self.jev_ledger.borrow().reasoning.flow_phase();
+        if phase == FlowPhase::Unavailable {
+            return None;
+        }
+        if phase == FlowPhase::Planning {
+            self.jev_ledger.borrow_mut().reasoning.note_plan_unavailable();
+            return Some("The required reasoning plan did not complete before delivery. Report that independent planning and review were not completed.".to_owned());
+        }
+        let required = self.jev_ledger.borrow().reasoning.flow_requires_review();
+        let new_work = self.jev_ledger.borrow().reasoning.has_new_work_since_review();
+        if !new_work && !required {
             crate::jev::record_gate("review:nothing-new", "the last review saw all of this work");
             return None;
         }
+        let main = self.reconstruct_full_config().await;
+        let Some((reasoner, main_profile)) = self.resolve_reasoner(&main).await else {
+            if required {
+                self.jev_ledger.borrow_mut().reasoning.note_review_unavailable();
+                return Some("The required reasoning review was unavailable. Report the checks you actually ran and state that independent review was not completed.".to_owned());
+            }
+            return None;
+        };
         let conversation = self.chat_state_handle.get_conversation().await;
-        let human_request = last_real_request(&conversation)?;
+        let Some(human_request) = last_real_request(&conversation) else {
+            if required {
+                self.jev_ledger.borrow_mut().reasoning.note_review_unavailable();
+                return Some("The required reasoning review could not identify the user request. Report that independent review was not completed.".to_owned());
+            }
+            return None;
+        };
         let final_message = self
             .chat_state_handle
             .get_trailing_assistant_report()
             .await
             .unwrap_or_default();
-        let workspace_diff = if self.jev_ledger.borrow().reasoning.has_evidence() {
-            self.workspace_review_diff().await.unwrap_or_default()
+        let workspace_diff = if required || self.jev_ledger.borrow().reasoning.has_evidence() {
+            self.workspace_review_diff().await
         } else {
-            String::new()
+            None
         };
-        if !self
+        if !required && !self
             .jev_wants_delivery_review(
                 &main,
                 &main_profile,
                 &reasoner,
                 &human_request,
                 &final_message,
-                &workspace_diff,
+                workspace_diff.as_deref().unwrap_or_default(),
             )
             .await
         {
@@ -1135,12 +1164,30 @@ impl SessionActor {
                 ledger.reasoning.review_checks(),
             )
         };
-        let changes = if workspace_diff.is_empty() {
-            recorded_changes
-        } else {
-            format!("Current repository diff (may include pre-existing work):\n{workspace_diff}")
+        let changes = match workspace_diff {
+            Some(diff) if diff.is_empty() && required => "Current repository diff is empty.".to_owned(),
+            Some(diff) if !diff.is_empty() => {
+                format!("Current repository diff (may include pre-existing work):\n{diff}")
+            }
+            None if required => format!("Git diff unavailable; recorded tool edits:\n{recorded_changes}"),
+            _ => recorded_changes,
         };
-        self.jev_ledger.borrow_mut().reasoning.note_review_attempt();
+        let final_excerpt: String = final_message.chars().take(REVIEW_MESSAGE_CHARS).collect();
+        let artifact = format!("{changes}\nChecks:\n{checks}\nFinal:\n{final_excerpt}");
+        if required && !self.jev_ledger.borrow().reasoning.has_new_review_artifact(&artifact) {
+            if phase == FlowPhase::Correcting {
+                self.jev_ledger.borrow_mut().reasoning.stop_unresolved_review();
+                return Some("The review requested corrections, but the diff, checks, and final response did not change. Stop the review loop and report the unresolved findings.".to_owned());
+            }
+            return None;
+        }
+        {
+            let mut ledger = self.jev_ledger.borrow_mut();
+            ledger.reasoning.note_review_attempt();
+            if required {
+                ledger.reasoning.note_review_artifact(artifact);
+            }
+        }
         let work = work_since_request(&conversation);
         // The closing message has a section of its own, whole.
         let delivered = work
@@ -1149,7 +1196,6 @@ impl SessionActor {
             .take_while(|entry| entry.from_main_model())
             .count();
         let planner_advice = self.jev_ledger.borrow().reasoning.planner_advice().unwrap_or_default().to_owned();
-        let final_excerpt: String = final_message.chars().take(REVIEW_MESSAGE_CHARS).collect();
         let role_review = if !changes.trim().is_empty() {
             self.reasoning_role(
                 "code-reviewer",
@@ -1215,6 +1261,12 @@ impl SessionActor {
         } else {
             format!("model=\"{}\"", reasoner.cfg.model)
         };
+        let review_label = if from_subagent { "Code review" } else { "Reasoning review" };
+        let reviewer_description = if from_subagent {
+            "the code-reviewer subagent"
+        } else {
+            "the reasoning model"
+        };
         match verdict {
             ReviewVerdict::Revise => {
                 crate::jev::record_gate(
@@ -1222,22 +1274,25 @@ impl SessionActor {
                     "the main model continues with the review",
                 );
                 self.send_hook_annotation(&format!(
-                    "\u{21a9} Reasoning review ({}) asked for changes before delivery, continuing",
-                    reviewer
+                    "\u{21a9} {review_label} ({reviewer}) asked for changes before delivery, continuing"
                 ))
                 .await;
+                let exhausted = required && self.jev_ledger.borrow().reasoning.flow_phase() == FlowPhase::Unavailable;
                 Some(format!(
                     "<reasoning_review {source}>\n{}\n</reasoning_review>\nBefore delivery, \
-                     the reasoning model reviewed your work and found problems. Fix them, verify \
-                     the fixes, then finish.",
-                    review.trim()
+                     {reviewer_description} reviewed your work and found problems. {}",
+                    review.trim(),
+                    if exhausted {
+                        "The review limit was reached. Stop and report the unresolved findings."
+                    } else {
+                        "Fix them, verify the fixes, then finish."
+                    }
                 ))
             }
             ReviewVerdict::Approve => {
                 crate::jev::record_gate("review:approve", "delivered after review");
                 self.send_hook_annotation(&format!(
-                    "\u{2713} Reasoning review ({}) approved the delivery",
-                    reviewer
+                    "\u{2713} {review_label} ({reviewer}) approved the delivery"
                 ))
                 .await;
                 None
@@ -2356,8 +2411,8 @@ mod tests {
     }
 
     /// The main model does the work and the reasoning model is consulted only
-    /// when Jev decides it: a request Jev wants planned after evidence is
-    /// planned once the main model has looked; a round Jev judges routine
+    /// when Jev decides it: a request Jev wants planned now is planned before
+    /// the main model acts; a round Jev judges routine
     /// consults nothing; a round Jev judges stuck gets a diagnosis built on the
     /// facts; an edit C4 flagged is reviewed as it comes; and a round with
     /// nothing new asks nothing. The advice stays in the conversation, or the
@@ -2398,7 +2453,7 @@ mod tests {
                         .note_tool_result(tool, &args, &output);
                 };
                 crate::jev::set_test_decision_answers([
-                    Some(plan_answers((routing::PLAN_AFTER_EVIDENCE_LABEL, 0.9), 2.0)),
+                    Some(plan_answers((routing::PLAN_NOW_LABEL, 0.9), 2.0)),
                     Some(step_answer(false)),
                     Some(step_answer(true)),
                 ]);
@@ -2406,19 +2461,12 @@ mod tests {
                     "reasoning-main-test",
                     Some(actor.chat_state_handle.clone()),
                     async {
-                        // 1. Jev wants the plan after evidence: nothing before it.
+                        // 1. Jev wants the plan before the Worker acts.
                         let mut first = request();
                         actor.jev_reasoning_step(&mut first, &main).await;
-                        assert_eq!(first.items.len(), 1, "no plan before any evidence");
-                        assert_eq!(reasoner_calls(), 0);
-
-                        // 2. The first tool result brings the plan, without a new question.
-                        note("read_file", serde_json::json!({"path": "parser.rs"}), succeeded());
-                        let mut planned = request();
-                        actor.jev_reasoning_step(&mut planned, &main).await;
                         assert!(
-                            planned.items.last().unwrap().text_content().contains("Plan: read the parser"),
-                            "the plan reaches this round"
+                            first.items.last().unwrap().text_content().contains("Plan: read the parser"),
+                            "the plan reaches the first Worker round"
                         );
                         assert_eq!(crate::jev::test_decision_answers_remaining(), 2);
                         let kept = actor.chat_state_handle.get_conversation().await;
@@ -2431,14 +2479,14 @@ mod tests {
                             "the advice is not mistaken for a new user request"
                         );
 
-                        // 3. Jev judges a routine round: no consult.
-                        note("read_file", serde_json::json!({"path": "lexer.rs"}), succeeded());
+                        // 2. Jev judges a routine round: no consult.
+                        note("read_file", serde_json::json!({"path": "parser.rs"}), succeeded());
                         let mut routine = request();
                         actor.jev_reasoning_step(&mut routine, &main).await;
                         assert_eq!(routine.items.len(), 1);
                         assert_eq!(reasoner_calls(), 1);
 
-                        // 4. Jev judges the main model stuck, right away: no cooldown.
+                        // 3. Jev judges the main model stuck, right away: no cooldown.
                         let test = || serde_json::json!({"command": "cargo test parser"});
                         note("run_terminal_command", test(), failed());
                         note("run_terminal_command", test(), failed());
@@ -2451,7 +2499,7 @@ mod tests {
                             .text_content()
                             .contains("fixture path is wrong"));
 
-                        // 5. An edit C4 flagged is reviewed without another question.
+                        // 4. An edit C4 flagged is reviewed without another question.
                         note("search_replace", serde_json::json!({"path": "branch.rs"}), succeeded());
                         actor.jev_ledger.borrow_mut().request_reasoning_review(
                             "diff --git a/branch b/branch\n+review this change".to_owned(),
@@ -2465,7 +2513,7 @@ mod tests {
                             .text_content()
                             .contains("needs a regression test"));
 
-                        // 6. Nothing new since the last consult: nothing to decide.
+                        // 5. Nothing new since the last consult: nothing to decide.
                         let mut quiet = request();
                         actor.jev_reasoning_step(&mut quiet, &main).await;
                         assert_eq!(quiet.items.len(), 1);
@@ -2563,6 +2611,246 @@ mod tests {
             ).await;
             responder.await.expect("planner responder");
             crate::jev::clear_test_decision_answers();
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn selected_flow_plans_before_worker_and_reviews_each_changed_artifact() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+        use distill_tools::implementations::distill::task::types::{SubagentEvent, SubagentResult};
+        use distill_tools::types::output::{BashOutput, ToolOutput};
+
+        tokio::task::LocalSet::new().run_until(async {
+            let (_home, _guard) = reasoning_home();
+            let repo = tempfile::tempdir().expect("temporary repository");
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .arg("-C").arg(repo.path()).args(args).output().expect("run git");
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            };
+            git(&["init", "--quiet"]);
+            let file = repo.path().join("parser.rs");
+            std::fs::write(&file, "old parser\n").expect("baseline file");
+            git(&["add", "parser.rs"]);
+            git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "--quiet", "-m", "baseline"]);
+
+            let server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("reasoner").with_api_backend("chat_completions"),
+                MockModelEntry::new("main").with_api_backend("responses"),
+            ]).await.expect("start inference stub");
+            let (mut actor, main) = reasoning_actor(&server).await;
+            actor.tool_context.cwd = distill_paths::AbsPathBuf::new(repo.path().to_path_buf()).unwrap();
+            let mut config = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            config.model = "main".to_owned();
+            actor.chat_state_handle.update_sampling_config(config);
+            actor.chat_state_handle.push_user_message_and_ack(
+                ConversationItem::user("Fix the parser and verify the parser tests")
+            ).await.expect("record request");
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            actor.tool_context.subagent_event_tx = Some(tx);
+            let responder = tokio::task::spawn_local(async move {
+                for (role, output) in [
+                    ("plan", "Goal: fix the parser. Acceptance: parser tests pass. Change: parser.rs only. Verify: cargo test parser."),
+                    ("code-reviewer", "VERDICT: revise\nThe final report omits the empty-input behavior."),
+                    ("code-reviewer", "VERDICT: revise\nThe new branch still misses empty input."),
+                    ("code-reviewer", "VERDICT: approve\nThe corrected parser and check satisfy the request."),
+                ] {
+                    let Some(SubagentEvent::Spawn(spawn)) = rx.recv().await else {
+                        panic!("{role} spawn missing");
+                    };
+                    assert_eq!(spawn.subagent_type, role);
+                    assert!(!spawn.fork_context);
+                    if role == "plan" {
+                        assert!(spawn.prompt.contains("acceptance criteria"));
+                        assert!(spawn.prompt.contains("Do not edit files"));
+                    } else {
+                        assert!(spawn.prompt.contains("Planner advice"));
+                        assert!(spawn.prompt.contains("cargo test parser"));
+                        assert!(spawn.prompt.contains("+new parser") || spawn.prompt.contains("+fixed parser"));
+                    }
+                    spawn.respond_with(|request| SubagentResult {
+                        success: true,
+                        output: std::sync::Arc::from(output),
+                        subagent_id: request.id.clone(),
+                        child_session_id: request.id.clone(),
+                        ..Default::default()
+                    }).expect("send child result");
+                }
+            });
+            crate::jev::set_test_decision_answers([
+                Some(plan_answers((routing::PLAN_AFTER_EVIDENCE_LABEL, 0.9), 2.0)),
+                Some(review_answer(false)),
+            ]);
+            crate::jev::with_session_scope_and_recorder("selected-flow-test", None, async {
+                let mut request = ConversationRequest {
+                    items: vec![ConversationItem::user("Fix the parser and verify the parser tests")],
+                    ..Default::default()
+                };
+                actor.jev_reasoning_step(&mut request, &main).await;
+                assert_eq!(server.request_count_for("/v1/responses"), 0,
+                    "the Worker must not receive an inference turn before the plan");
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), "old parser\n");
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Executing);
+                assert!(request.items.last().unwrap().text_content().contains("Acceptance: parser tests pass"));
+
+                std::fs::write(&file, "new parser\n").expect("Worker edit");
+                actor.chat_state_handle.push_assistant_response(
+                    ConversationItem::assistant("Done: updated parser and ran tests.")
+                );
+                actor.jev_ledger.borrow_mut().reasoning.note_tool_result(
+                    "run_terminal_command",
+                    &serde_json::json!({"command": "cargo test parser"}),
+                    &ToolOutput::Bash(BashOutput {
+                        output: Vec::new(), output_for_prompt: "1 passed".to_owned(),
+                        exit_code: 0, command: "cargo test parser".to_owned(),
+                        truncated: false, signal: None, timed_out: false, description: None,
+                        current_dir: repo.path().display().to_string(), output_file: String::new(),
+                        total_bytes: 0, output_delta: None, was_bare_echo: false,
+                    }),
+                );
+                let feedback = actor.jev_delivery_review().await.expect("required review must run");
+                assert!(feedback.contains("report omits"));
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Correcting);
+                assert_eq!(crate::jev::test_decision_answers_remaining(), 1,
+                    "the required review cannot be vetoed by a fresh Jev decision");
+
+                actor.chat_state_handle.push_assistant_response(
+                    ConversationItem::assistant("Done: updated parser; empty input is handled.")
+                );
+                let feedback = actor.jev_delivery_review().await.expect("changed final response is new work");
+                assert!(feedback.contains("misses empty input"));
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Correcting);
+
+                std::fs::write(&file, "fixed parser\n").expect("Worker correction");
+                assert!(actor.jev_delivery_review().await.is_none(), "approval permits delivery");
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Approved);
+                assert!(actor.jev_delivery_review().await.is_none(), "unchanged work is not reviewed again");
+            }).await;
+            responder.await.expect("child responder");
+            crate::jev::clear_test_decision_answers();
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn selected_plan_without_reader_is_disclosed_before_worker_runs() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        tokio::task::LocalSet::new().run_until(async {
+            let (_home, _guard) = reasoning_home();
+            let server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("reasoner").with_api_backend("chat_completions"),
+                MockModelEntry::new("main").with_api_backend("responses"),
+            ]).await.expect("start inference stub");
+            let (actor, main) = reasoning_actor(&server).await;
+            crate::jev::set_test_decision_answers([
+                Some(plan_answers((routing::PLAN_AFTER_EVIDENCE_LABEL, 0.9), 2.0)),
+            ]);
+            crate::jev::with_session_scope_and_recorder("missing-reader-test", None, async {
+                let mut request = ConversationRequest {
+                    items: vec![ConversationItem::user("Fix the parser across modules")],
+                    ..Default::default()
+                };
+                actor.jev_reasoning_step(&mut request, &main).await;
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Unavailable);
+                assert!(request.items.last().unwrap().text_content().contains("plan was unavailable"));
+                assert_eq!(server.request_count_for("/v1/responses"), 0);
+                assert!(actor.jev_ledger.borrow().reasoning.consults().is_empty(),
+                    "a missing planner is not recorded as independent planning");
+            }).await;
+            crate::jev::clear_test_decision_answers();
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn planned_request_discloses_a_missing_reasoning_review() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        tokio::task::LocalSet::new().run_until(async {
+            let (_home, _guard) = reasoning_home();
+            let server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("reasoner").with_api_backend("chat_completions"),
+                MockModelEntry::new("main").with_api_backend("responses"),
+            ]).await.expect("start inference stub");
+            reasoner_says(&server, "Goal: fix parser. Acceptance: tests pass. Change: parser.rs. Verify: cargo test parser.");
+            let (actor, main) = reasoning_actor(&server).await;
+            actor.chat_state_handle.push_user_message_and_ack(
+                ConversationItem::user("Fix the parser")
+            ).await.expect("record request");
+            crate::jev::set_test_decision_answers([
+                Some(plan_answers((routing::PLAN_NOW_LABEL, 0.9), 2.0)),
+            ]);
+            crate::jev::with_session_scope_and_recorder("missing-review-test", None, async {
+                let mut request = ConversationRequest {
+                    items: vec![ConversationItem::user("Fix the parser")],
+                    ..Default::default()
+                };
+                actor.jev_reasoning_step(&mut request, &main).await;
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Executing);
+                crate::jev::set_test_reasoning_model(None);
+                let feedback = actor.jev_delivery_review().await.expect("missing review disclosure");
+                assert!(feedback.contains("independent review was not completed"));
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Unavailable);
+                assert!(actor.jev_delivery_review().await.is_none(), "unavailable review is not retried");
+                crate::jev::clear_test_reasoning_model();
+            }).await;
+            crate::jev::clear_test_decision_answers();
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn unchanged_artifact_after_revision_stops_without_another_review() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        tokio::task::LocalSet::new().run_until(async {
+            let (_home, _guard) = reasoning_home();
+            let repo = tempfile::tempdir().expect("temporary repository");
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .arg("-C").arg(repo.path()).args(args).output().expect("run git");
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            };
+            git(&["init", "--quiet"]);
+            std::fs::write(repo.path().join("parser.rs"), "old\n").unwrap();
+            git(&["add", "parser.rs"]);
+            git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "--quiet", "-m", "baseline"]);
+            std::fs::write(repo.path().join("parser.rs"), "broken\n").unwrap();
+
+            let server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("reasoner").with_api_backend("chat_completions"),
+                MockModelEntry::new("main").with_api_backend("responses"),
+            ]).await.expect("start inference stub");
+            reasoner_says(&server, "VERDICT: revise\n- Handle empty input before delivery.");
+            let (mut actor, _) = reasoning_actor(&server).await;
+            actor.tool_context.cwd = distill_paths::AbsPathBuf::new(repo.path().to_path_buf()).unwrap();
+            let mut config = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            config.model = "main".to_owned();
+            actor.chat_state_handle.update_sampling_config(config);
+            actor.chat_state_handle.push_user_message_and_ack(
+                ConversationItem::user("Fix the parser")
+            ).await.expect("record request");
+            actor.chat_state_handle.push_assistant_response(ConversationItem::assistant("Done."));
+            {
+                let mut ledger = actor.jev_ledger.borrow_mut();
+                ledger.reasoning.require_plan();
+                ledger.reasoning.note_planner_advice("Fix parser.rs and verify empty input.".to_owned());
+                ledger.reasoning.note_consult(ConsultKind::Plan);
+            }
+            crate::jev::with_session_scope_and_recorder("unchanged-review-test", None, async {
+                let first = actor.jev_delivery_review().await.expect("review finding");
+                assert!(first.contains("Handle empty input"));
+                let second = actor.jev_delivery_review().await.expect("unresolved finding notice");
+                assert!(second.contains("final response did not change"));
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Unavailable);
+                assert!(actor.jev_delivery_review().await.is_none());
+            }).await;
+            assert_eq!(server.request_count_for("/v1/chat/completions"), 1,
+                "unchanged work must not trigger another model review");
         }).await;
     }
 
@@ -2781,6 +3069,20 @@ mod tests {
                     "the plan once, then one question per round with new work"
                 );
                 crate::jev::clear_test_decision_answers();
+
+                let (no_decision, _) = reasoning_actor(&server).await;
+                crate::jev::set_test_decision_answers([None]);
+                crate::jev::with_session_scope_and_recorder("missing-plan-decision-test", None, async {
+                    let mut request = ConversationRequest {
+                        items: vec![ConversationItem::user("Is mac-use available?")],
+                        ..Default::default()
+                    };
+                    no_decision.jev_reasoning_step(&mut request, &main).await;
+                    assert_eq!(request.items.len(), 1);
+                    assert_eq!(no_decision.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Worker);
+                }).await;
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 0);
+                crate::jev::clear_test_decision_answers();
             })
             .await;
     }
@@ -2924,8 +3226,7 @@ mod tests {
                     }
                 }
                 actor.jev_reasoning_step(&mut request, &main).await;
-                assert!(request.items.last().unwrap().text_content().contains("report the blocker"));
-                assert!(actor.jev_ledger.borrow().reasoning.stall_action().is_none());
+                assert_eq!(request.items.len(), 1, "without Reasoning the Worker owns the task");
                 crate::jev::clear_test_decision_answers();
                 crate::jev::clear_test_reasoning_model();
             })

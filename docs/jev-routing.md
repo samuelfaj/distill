@@ -29,15 +29,18 @@ the harness keeps its normal execution path.
 
 ## Main and reasoning
 
-The main model executes the task and owns the conversation. Jev decides every consult of the reasoning
-model, and the advice joins the conversation as `<reasoning_advice>`, so the
-main model keeps following it on later rounds:
+The main model executes the task and owns the conversation. Jev decides whether
+an up-front plan is needed. When it selects one, the harness records planning,
+execution, correction, and approval phases. A completed plan joins the conversation
+as `<reasoning_advice>` before the Worker's first edit. Delivery then requires
+an independent review without a second Jev decision. Routine requests keep
+Worker execution and the optional review decision.
 
 | Decision | When Jev is asked | What it weighs |
 |---|---|---|
-| Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text), or after inspecting the workspace. For the last case, a fresh read-only `plan` subagent inspects files before the main model's first action when available; otherwise the main model inspects first and the inline reasoning consult follows. Jev also judges complexity for later decisions. |
+| Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text), or after inspecting the workspace. For the last case, a fresh read-only `plan` subagent inspects files before the Worker's first action. If that reader cannot run, the harness records and discloses the missing plan. Jev also judges complexity for later decisions. |
 | Step | Every later round in which the main model did something the reasoning model has not weighed | Whether the main model is stuck and needs a diagnosis before its next round. The facts since the last advice are in the question: tool calls and failures, the call that failed most, the call repeated most (waiting on background work aside), failures in a row, edits undone, rounds without advice and the latest calls. |
-| Review | Before delivery, while there is work no review has attempted | Whether the reasoning model reviews the work: recorded edits, the current Git diff (including shell edits), recent checks, failures, the request's complexity, earlier consults and verdicts, and the start of the final message. A fresh read-only `code-reviewer` subagent can inspect changed files; the inline reasoning consult remains the fallback. `VERDICT: revise` keeps the main model working with the review; `VERDICT: approve` lets it deliver. |
+| Review | Before delivery | A request with a completed reasoning plan requires a review of the current Git diff (including shell edits), recorded checks, plan, acceptance criteria, and final message. If Git is unavailable, the reviewer receives recorded tool edits with that limitation. The read-only `code-reviewer` can inspect files; the inline reasoning consult remains the fallback. `VERDICT: revise` returns concrete findings to the Worker; `VERDICT: approve` permits delivery. Other requests retain Jev's optional review decision. |
 
 An edit the change review (C4) flags for another model's opinion is itself a
 Jev decision and is reviewed as it comes. Normal consults have no fixed budget
@@ -49,17 +52,19 @@ three more rounds, one foreground `reasoning-executor` child gets at most five
 turns to make a focused correction and report its check. The Worker then inspects
 the actual change and verifies the behavior. A failed diagnosis or child stops
 further escalation for that request and tells the Worker to report the blocker.
-The same stop instruction applies when the configured Reasoning route is unavailable.
+If no Reasoning model is configured, the Worker continues to own the task.
 Repeated background polling and elapsed rounds alone do not trigger this path.
 An unsure or missing plan
 decision leaves the main model to proceed. An unsure or missing delivery decision
-still requests review when changes are visible or the final check failed. A
-failed or unclear review is reported to the main model rather than counted as
-approval. With
+still requests optional review when changes are visible or the final check failed.
+For a planned request, an unavailable or unclear review is disclosed rather than
+counted as approval. An unchanged diff, check record, and final response are not reviewed twice;
+after three revision verdicts, the Worker reports unresolved findings. With
 `/effort auto`, the round's question rides in the same decision request as the
 main model's effort, so a round costs one Jev call. Without a reasoning model,
-the main model works alone. If Jev is unavailable, planning and recovery fall
-back to the main model; visible changes can still receive a delivery review.
+the main model works alone. If Jev is unavailable while Reasoning is configured,
+planning and recovery fall back to the main model; visible changes can still
+receive an optional delivery review.
 
 Inline consults of one request are one conversation with the reasoning model. The
 instructions are the same for every consult, and each consult resends the
@@ -86,7 +91,7 @@ tokens and a `Reasoning - Nx (plan, review)` count. Completed child usage is
 folded into the parent session's usage accounting; an incomplete fold blocks a
 cost claim, and child usage must not be added twice. With `GROK_LOG_JEV=1`,
 each decision and a per-request summary (rounds, failures, changes,
-complexity, consults, review verdicts) are logged under `b2_reasoning_model`,
+complexity, phase, consults, review verdicts) are logged under `b2_reasoning_model`,
 which is what the questions should be tuned from.
 
 The built-in `plan`, `code-reviewer`, and harness-only `reasoning-executor`

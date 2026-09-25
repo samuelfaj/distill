@@ -1380,9 +1380,8 @@ impl SessionActor {
                         );
                     }
                 }
-                // The reasoning model reviews a delivery that changed files; a
-                // review asking for changes keeps the main model working. It
-                // runs at most once per request.
+                // A planned request needs a reasoning review before delivery.
+                // Concrete findings return to the Worker for correction.
                 if let Some(review) = self.jev_delivery_review().await {
                     salvage.round_boundary();
                     self.chat_state_handle.push_user_message(ConversationItem::system_reminder(

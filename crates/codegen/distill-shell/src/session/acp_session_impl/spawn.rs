@@ -1751,6 +1751,7 @@ pub(crate) async fn spawn_session_actor(
     let actor_build_span = tracing::info_span!("spawn.actor_build").entered();
     let jev_effort_auto =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(session_jev_effort_auto));
+    let reasoning_model_override = crate::session::handle::new_session_reasoning_model_state();
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         status_wake: Default::default(),
         session_info: session_info.clone(),
@@ -1764,7 +1765,9 @@ pub(crate) async fn spawn_session_actor(
         transient_episode_start: std::cell::Cell::new(None),
         auth_method_id,
         model_auth_memo: std::cell::RefCell::new(None),
-        jev_ledger: std::cell::RefCell::new(Default::default()),
+        jev_ledger: std::cell::RefCell::new(
+            super::jev_ledger::JevTurnLedger::with_session_reasoning_model_override(reasoning_model_override.clone()),
+        ),
         jev_effort_auto: jev_effort_auto.clone(),
         canonical_model_id: std::cell::RefCell::new(session_model_id.clone()),
         model_routing_locked: std::cell::Cell::new(
@@ -2415,6 +2418,7 @@ pub(crate) async fn spawn_session_actor(
         tool_context: tool_context_for_handle,
         model_id: session_model_id,
         reasoning_effort: sampling_config.reasoning_effort,
+        reasoning_model_override: reasoning_model_override.clone(),
         jev_effort_auto,
         yolo_mode: session_yolo_mode,
         origin_client: origin_client.clone(),

@@ -207,6 +207,9 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent session's Jev auto-routing choice, captured per session rather
     /// than rereading the process-wide models manager in the child.
     pub parent_effort_auto: bool,
+    /// Parent conversation's explicit Reasoning selection; `Some(None)` disables it.
+    /// Outer `None` retains the legacy global default for non-RemoteCode clients.
+    pub parent_reasoning_model: Option<Option<String>>,
     pub auth: Option<distill_login::GrokAuth>,
     pub parent_cwd: PathBuf,
     pub parent_session_id: String,
@@ -681,7 +684,10 @@ async fn resolve_subagent_sampling_config(
     // Planning and review are the reasoning model's job. Without one, or when
     // the parent already runs on it, the child inherits the parent's model.
     if matches!(agent_name, "plan" | "code-reviewer" | "reasoning-executor")
-        && let Some(reasoning) = crate::jev::reasoning_model()
+        && let Some(reasoning) = ctx
+            .parent_reasoning_model
+            .clone()
+            .unwrap_or_else(crate::jev::reasoning_model)
         && reasoning.as_str() != parent_mid.0.as_ref()
         && let Some(resolved) = try_pin(
             &reasoning,

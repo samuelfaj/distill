@@ -1192,8 +1192,7 @@ pub fn local_config_cached() -> JevLocalConfig {
 }
 
 /// The configured reasoning model (`[models].reasoning`), or `None` when the
-/// main model works alone. Read from the effective config on every call, so a
-/// `/reasoning-model` pick in the pager reaches the session process at once.
+/// main model works alone. Session actors apply their own override separately.
 pub fn reasoning_model() -> Option<String> {
     #[cfg(test)]
     if let Some(model) = TEST_REASONING_MODEL.with(|model| model.borrow().clone()) {

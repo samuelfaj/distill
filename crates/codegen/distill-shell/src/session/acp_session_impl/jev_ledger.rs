@@ -60,11 +60,34 @@ pub(crate) struct JevTurnLedger {
     /// What the reasoning gates know about this request.
     pub(crate) reasoning: super::reasoning_gates::ReasoningGates,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
+    /// Conversation-owned Reasoning model. The outer option distinguishes an
+    /// unset legacy session from an explicit choice to use no Reasoning model.
+    /// Retained when turn rows are drained so the actor is the durable owner.
+    session_reasoning_model: crate::session::handle::SessionReasoningModelState,
     /// Stable schemas within a turn; invalidate when the request or available names change.
     pub(crate) tool_selection: Option<(String, Vec<String>)>,
 }
 
 impl JevTurnLedger {
+    pub(crate) fn with_session_reasoning_model_override(
+        state: crate::session::handle::SessionReasoningModelState,
+    ) -> Self {
+        Self {
+            session_reasoning_model: state,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn set_session_reasoning_model(&self, model: Option<String>) {
+        *self.session_reasoning_model.write() = Some(model);
+    }
+
+    /// `Some(None)` means the conversation explicitly disabled Reasoning;
+    /// outer `None` means the session retains Distill's legacy default.
+    pub(crate) fn session_reasoning_model(&self) -> Option<Option<String>> {
+        self.session_reasoning_model.read().clone()
+    }
+
     /// Notes the model and effort the next call will run with.
     ///
     /// Re-noting the same pair (a retry) bumps its call count instead of adding
@@ -281,6 +304,22 @@ impl JevTurnLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_reasoning_override_is_actor_owned_and_survives_turn_drain() {
+        let state_a = crate::session::handle::new_session_reasoning_model_state();
+        let state_b = crate::session::handle::new_session_reasoning_model_state();
+        let mut session_a = JevTurnLedger::with_session_reasoning_model_override(state_a);
+        let session_b = JevTurnLedger::with_session_reasoning_model_override(state_b);
+
+        session_a.set_session_reasoning_model(Some("chatgpt/gpt-6-sol".to_owned()));
+        session_b.set_session_reasoning_model(None);
+        session_a.note_round("main", None);
+        let _ = session_a.take_rows();
+
+        assert_eq!(session_a.session_reasoning_model(), Some(Some("chatgpt/gpt-6-sol".to_owned())));
+        assert_eq!(session_b.session_reasoning_model(), Some(None));
+    }
 
     /// The reasoning model's advice is billed on its own row, like the main
     /// model's rounds, and never takes the usage of the round still pending.

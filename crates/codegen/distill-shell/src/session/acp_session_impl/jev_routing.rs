@@ -390,7 +390,7 @@ impl SessionActor {
         // so the thresholds can be tuned from real requests.
         if !self.startup_hints.is_subagent
             && crate::jev::lever_active(JevLever::B2ReasoningModel)
-            && crate::jev::reasoning_model().is_some()
+            && self.reasoning_model().is_some()
         {
             crate::jev::record_gate("request:summary", &summary);
         }
@@ -582,10 +582,42 @@ impl SessionActor {
             .set_pending_effort_label(level.id);
     }
 
-    /// Resolves the configured reasoning model against `main`, the model this
-    /// round runs on. `None` means the main model works alone: no reasoning
-    /// model, the same wire model, a round that is not the session's own model,
-    /// a subagent, or no usable credential.
+    pub(crate) fn set_session_reasoning_model(
+        &self,
+        model_id: Option<String>,
+    ) -> Result<Option<String>, acp::Error> {
+        if self.active_work.load(std::sync::atomic::Ordering::Acquire) > 0 {
+            return Err(acp::Error::invalid_params().data(
+                "Reasoning model can only change between conversation turns",
+            ));
+        }
+        let model_id = model_id
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if let Some(model_id) = &model_id {
+            let models = self.models_manager.models();
+            let Some(model) = crate::agent::config::find_model_by_id(&models, model_id)
+                .filter(|entry| entry.info.user_selectable)
+            else {
+                return Err(acp::Error::invalid_params()
+                    .data(format!("Reasoning model `{model_id}` is not selectable")));
+            };
+            if model.info.model.as_str() == self.canonical_model_id.borrow().0.as_ref() {
+                return Err(acp::Error::invalid_params()
+                    .data("Reasoning model must differ from the Main model"));
+            }
+        }
+        self.jev_ledger.borrow().set_session_reasoning_model(model_id.clone());
+        Ok(model_id)
+    }
+
+    fn reasoning_model(&self) -> Option<String> {
+        self.jev_ledger
+            .borrow()
+            .session_reasoning_model()
+            .unwrap_or_else(crate::jev::reasoning_model)
+    }
+
     async fn resolve_reasoner(
         &self,
         main: &SamplingConfig,
@@ -596,7 +628,7 @@ impl SessionActor {
         {
             return None;
         }
-        let reasoning_id = crate::jev::reasoning_model()?;
+        let reasoning_id = self.reasoning_model()?;
         let models = self.models_manager.models();
         let Some(reasoning_entry) = crate::agent::config::find_model_by_id(&models, &reasoning_id)
         else {

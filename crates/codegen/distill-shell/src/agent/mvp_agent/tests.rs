@@ -1237,6 +1237,7 @@ fn make_test_handle(
         ),
         model_id: acp::ModelId::new(model),
         reasoning_effort: None,
+        reasoning_model_override: crate::session::handle::new_session_reasoning_model_state(),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         yolo_mode: yolo,
         origin_client: client_id.map(|s| crate::http::OriginClientInfo {

@@ -263,6 +263,7 @@ fn wedged_child_handle() -> (
         ),
         model_id: acp::ModelId::new("test-model"),
         reasoning_effort: None,
+        reasoning_model_override: crate::session::handle::new_session_reasoning_model_state(),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         yolo_mode: false,
         origin_client: None,

@@ -1584,6 +1584,7 @@ pub(crate) async fn run_shell_child(
     let session_bootstrap_span = phase_region(SubagentSpawnPhase::SessionBootstrap);
     let spawn_phase_parent = session_bootstrap_span.span().clone();
     let bootstrap_started_at = std::time::Instant::now();
+    let inherited_reasoning_model = ctx.parent_reasoning_model.clone();
     let pins = ctx.compaction_pins_for_child(&definition.user_message_template);
     let spawn_result = session::spawn_session_on_thread(
         child_session_info,
@@ -1784,6 +1785,7 @@ pub(crate) async fn run_shell_child(
         toolset: child_toolset,
         ..
     } = child_init;
+    *child_handle.reasoning_model_override.write() = inherited_reasoning_model;
     session::bind_installed_toolset(
         &ctx.workspace_ops,
         &child_handle.info.id,

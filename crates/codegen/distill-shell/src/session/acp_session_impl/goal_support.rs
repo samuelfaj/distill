@@ -1028,6 +1028,13 @@ pub(crate) fn laziness_injection_active(
 }
 
 impl SessionActor {
+    /// Resolve explicit skills through the same trusted catalog as slash commands.
+    /// Never guess a workspace path or turn an unreadable skill into remembered gates.
+    pub(super) async fn goal_skill_context(&self, objective: &str) -> String {
+        let skills = self.slash_skills_for_resolve().await;
+        crate::session::goal_evaluator::resolved_goal_skills(objective, &skills).await
+    }
+
     pub(super) fn goal_harness_enabled(&self) -> bool {
         self.goal_harness_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -1430,8 +1437,9 @@ impl SessionActor {
             .await
             .map(|c| c.model)
             .unwrap_or_default();
-        // The fork carries the history itself; the fail-open path stays OBJECTIVE-only (no last-assistant CONTEXT)
-        let context = String::new();
+        // Resolve named instructions before planning, including when the parent
+        // has not yet had a chance to read them.
+        let context = self.goal_skill_context(&attempt_objective).await;
 
         let task_tool_name = self.resolve_goal_tool_names().await.task;
         // Tag the planner with the goal-creation turn's prompt id so its `subagent.json` / parent `subagents_spawned` ref link to this turn

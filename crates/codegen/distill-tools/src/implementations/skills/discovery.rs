@@ -101,6 +101,9 @@ pub fn scan_md_files(dir: &Path) -> Vec<PathBuf> {
 /// directory) plus the recursive walk of subdirectories.
 pub fn find_skill_md_paths(dir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    if is_backup_skill_path(dir) {
+        return paths;
+    }
     let self_skill_md = dir.join("SKILL.md");
     if self_skill_md.is_file() {
         paths.push(self_skill_md);
@@ -124,6 +127,9 @@ pub fn walk_for_skill_md(dir: &Path, paths: &mut Vec<PathBuf>, depth: usize) {
             .collect();
         dirs.sort();
         for path in dirs {
+            if is_backup_skill_path(&path) {
+                continue;
+            }
             let skill_md_path = path.join("SKILL.md");
             if skill_md_path.is_file() {
                 paths.push(skill_md_path);
@@ -131,6 +137,11 @@ pub fn walk_for_skill_md(dir: &Path, paths: &mut Vec<PathBuf>, depth: usize) {
             walk_for_skill_md(&path, paths, depth + 1);
         }
     }
+}
+
+fn is_backup_skill_path(path: &Path) -> bool {
+    let archived = |p: &Path| p.components().any(|part| part.as_os_str() == ".backups");
+    archived(path) || path.canonicalize().is_ok_and(|p| archived(&p))
 }
 
 /// Coerce a scalar YAML value to a trimmed, non-empty string. Numbers and bools
@@ -653,6 +664,7 @@ fn extract_lead_block(body: &str, include_headings: bool) -> Option<String> {
 pub fn parse_skill_files(skill_files: Vec<(PathBuf, SkillScope)>) -> Vec<SkillInfo> {
     let mut skills: Vec<SkillInfo> = skill_files
         .into_iter()
+        .filter(|(path, _)| !is_backup_skill_path(path))
         .filter_map(|(path, scope)| {
             let path_str = path.to_string_lossy().to_string();
 
@@ -1567,5 +1579,31 @@ model: test-model
                 "zeta/SKILL.md"
             ]
         );
+    }
+
+    #[test]
+    fn archived_skills_never_enter_the_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let active = tmp.path().join("sam-task/SKILL.md");
+        let backup = tmp.path().join(".backups/sam-task-old/SKILL.md");
+        for path in [&active, &backup] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "---\nname: sam-task\ndescription: task\n---\n").unwrap();
+        }
+        assert_eq!(find_skill_md_paths(tmp.path()), vec![active.clone()]);
+        let mut candidates = vec![
+            (backup.clone(), SkillScope::User),
+            (active.clone(), SkillScope::User),
+        ];
+        #[cfg(unix)]
+        {
+            let alias = tmp.path().join("archived-alias");
+            std::os::unix::fs::symlink(backup.parent().unwrap(), &alias).unwrap();
+            candidates.push((alias.join("SKILL.md"), SkillScope::User));
+            assert_eq!(find_skill_md_paths(tmp.path()), vec![active.clone()]);
+        }
+        let skills = parse_skill_files(candidates);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(Path::new(&skills[0].path), active);
     }
 }

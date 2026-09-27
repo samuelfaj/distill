@@ -254,6 +254,43 @@ pub(crate) struct CapturedChanges {
     pub changed_files: Vec<String>,
 }
 
+/// A proposed delivery target must resolve to its own Git root and contain the
+/// recorded baseline. Never silently capture the enclosing workspace instead.
+pub(crate) async fn validate_verification_target(
+    target: &crate::session::goal_evaluator::GoalVerificationTarget,
+) -> Result<(), String> {
+    let root = tokio::fs::canonicalize(&target.workspace_root)
+        .await
+        .map_err(|e| format!("verification worktree is unavailable: {e}"))?;
+    let mut command = git_command(&root);
+    command.args(["rev-parse", "--show-toplevel"]);
+    let output = tokio::time::timeout(DIFF_COMMAND_TIMEOUT, command.output())
+        .await
+        .map_err(|_| "verification worktree lookup timed out".to_owned())?
+        .map_err(|e| e.to_string())?;
+    let git_root = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || tokio::fs::canonicalize(git_root.trim()).await.ok().as_ref() != Some(&root)
+    {
+        return Err("verification target is not a Git repository/worktree root".into());
+    }
+    let mut command = git_command(&root);
+    command.args([
+        "merge-base",
+        "--is-ancestor",
+        &target.baseline_commit,
+        "HEAD",
+    ]);
+    let output = tokio::time::timeout(DIFF_COMMAND_TIMEOUT, command.output())
+        .await
+        .map_err(|_| "verification baseline lookup timed out".to_owned())?
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("verification baseline is not an ancestor of this worktree's HEAD".into());
+    }
+    Ok(())
+}
+
 /// Recorded baseline. If `baseline_commit` is `Some` (the `setup_goal` capture succeeded at goal-creation), run `git diff <baseline>`.
 /// Common vendor / build dirs are skipped.
 /// The changed-file list comes from the FULL pre-truncation diff (an over-cap diff never drops tail files).
@@ -1419,6 +1456,51 @@ mod tests {
         git(cwd, &["config", "user.email", "test@example.com"]);
         git(cwd, &["config", "user.name", "Test"]);
         git(cwd, &["config", "commit.gpgsign", "false"]);
+    }
+
+    #[tokio::test]
+    async fn delivery_worktree_capture_excludes_enclosing_workspace_changes() {
+        use crate::session::goal_evaluator::GoalVerificationTarget;
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("unrelated.tf"), "enclosing workspace\n").unwrap();
+        let repo = tmp.path().join("api");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("cors.rs"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "baseline"]);
+        let baseline = crate::session::goal_classifier::capture_git_baseline(&repo)
+            .await
+            .unwrap();
+        let worktree = tmp.path().join("delivery");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        std::fs::write(worktree.join("cors.rs"), "after\n").unwrap();
+        git(&worktree, &["commit", "-qam", "fix CORS"]);
+        let mut target = GoalVerificationTarget {
+            workspace_root: worktree.to_string_lossy().into_owned(),
+            baseline_commit: baseline,
+        };
+        validate_verification_target(&target).await.unwrap();
+        let changes = capture_changes_diff(Some(&target.baseline_commit), &worktree, 0)
+            .await
+            .unwrap();
+        assert_eq!(changes.changed_files, ["cors.rs"]);
+        assert!(changes.diff.contains("+after"));
+        target.workspace_root = tmp.path().to_string_lossy().into_owned();
+        assert!(
+            validate_verification_target(&target).await.is_err(),
+            "a nested repo baseline cannot be used in its parent"
+        );
     }
 
     #[tokio::test]

@@ -350,6 +350,7 @@ pub(crate) async fn run_display_task(
                 task_id,
                 payload,
                 question,
+                "display",
                 false,
                 |answer| {
                     distill_workspace::jev::tasks::display_fragment(source, answer)
@@ -381,6 +382,7 @@ pub(crate) async fn run_display_task(
         main_lane.model(),
         task_id,
         applied_effort.as_deref().unwrap_or("provider_default"),
+        "display",
     );
     if !crate::jev_cheap::optional_compression_allowed(&main_key) {
         return None;

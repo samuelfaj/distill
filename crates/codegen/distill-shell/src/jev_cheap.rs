@@ -35,7 +35,6 @@ use distill_sampling_types::{ConversationItem, ConversationRequest, LengthPolicy
 const WORKER_OVERHEAD_TOKENS: u64 = 256;
 const WORKER_FRAMING_BYTES: usize = 4 * 1024;
 const OPTIONAL_COMPRESSION_FAILURE_LIMIT: u8 = 2;
-const OPTIONAL_COMPRESSION_RECOVERY_ROUNDS: u64 = 2;
 /// The direct utility lane is for tiny closed tasks, never whole-agent work.
 const UTILITY_MAX_PAYLOAD_BYTES: usize = 24 * 1024;
 const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
@@ -58,12 +57,17 @@ pub(crate) struct OptionalCompressionKey {
     model: String,
     task_id: String,
     effort: String,
+    source_kind: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct OptionalCompressionHealth {
     failures: u8,
     retry_after_round: u64,
+    accepted: u64,
+    rejected: u64,
+    source_bytes: u64,
+    replacement_bytes: u64,
 }
 
 tokio::task_local! {
@@ -87,6 +91,7 @@ pub(crate) fn optional_compression_key(
     model: &str,
     task_id: &str,
     effort: &str,
+    source_kind: &str,
 ) -> OptionalCompressionKey {
     let (session_id, turn_id, _) = crate::jev::telemetry_context();
     OptionalCompressionKey {
@@ -96,6 +101,7 @@ pub(crate) fn optional_compression_key(
         model: model.to_owned(),
         task_id: task_id.to_owned(),
         effort: effort.to_owned(),
+        source_kind: source_kind.to_owned(),
     }
 }
 
@@ -110,10 +116,7 @@ pub(crate) fn optional_compression_allowed(key: &OptionalCompressionKey) -> bool
             match health {
                 None => true,
                 Some(health) if health.failures < OPTIONAL_COMPRESSION_FAILURE_LIMIT => true,
-                Some(health) if round_id >= health.retry_after_round => {
-                    state.borrow_mut().remove(key);
-                    true
-                }
+                Some(health) if round_id >= health.retry_after_round => true,
                 Some(_) => false,
             }
         })
@@ -125,18 +128,54 @@ pub(crate) fn note_optional_compression_failure(key: &OptionalCompressionKey) {
         let mut state = state.borrow_mut();
         let failures = state.entry(key.clone()).or_default();
         failures.failures = failures.failures.saturating_add(1);
+        failures.rejected = failures.rejected.saturating_add(1);
         if failures.failures >= OPTIONAL_COMPRESSION_FAILURE_LIMIT {
             failures.retry_after_round = crate::jev::telemetry_context()
                 .2
-                .saturating_add(OPTIONAL_COMPRESSION_RECOVERY_ROUNDS);
+                .saturating_add(1u64 << failures.failures.saturating_sub(1).min(6));
         }
     });
 }
 
 pub(crate) fn note_optional_compression_success(key: &OptionalCompressionKey) {
     let _ = OPTIONAL_COMPRESSION_FAILURES.try_with(|state| {
-        state.borrow_mut().remove(key);
+        let mut state = state.borrow_mut();
+        let health = state.entry(key.clone()).or_default();
+        health.failures = 0;
+        health.retry_after_round = 0;
+        health.accepted = health.accepted.saturating_add(1);
     });
+}
+
+pub(crate) fn note_optional_compression_savings(
+    key: &OptionalCompressionKey,
+    source: usize,
+    replacement: usize,
+) {
+    let _ = OPTIONAL_COMPRESSION_FAILURES.try_with(|state| {
+        let mut state = state.borrow_mut();
+        let health = state.entry(key.clone()).or_default();
+        health.source_bytes = health.source_bytes.saturating_add(source as u64);
+        health.replacement_bytes = health.replacement_bytes.saturating_add(replacement as u64);
+    });
+}
+
+pub(crate) fn optional_compression_history(key: &OptionalCompressionKey) -> serde_json::Value {
+    let health = OPTIONAL_COMPRESSION_FAILURES
+        .try_with(|state| state.borrow().get(key).copied())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    serde_json::json!({
+        "source_kind": key.source_kind,
+        "accepted": health.accepted,
+        "rejected": health.rejected,
+        "consecutive_failures": health.failures,
+        "accepted_source_bytes": health.source_bytes,
+        "accepted_replacement_bytes": health.replacement_bytes,
+        "bytes_saved": health.source_bytes.saturating_sub(health.replacement_bytes),
+        "note": "Observed replacements only, including metadata. Bytes are not monetary savings. Prefer opportunities supported by acceptance history; retain original evidence when savings are unlikely."
+    })
 }
 
 fn utility_review_state(
@@ -242,8 +281,9 @@ async fn ask_utility_review(
     utility_model: &str,
     max_completion_tokens: u32,
     candidate: Option<&str>,
+    compression_key: Option<&OptionalCompressionKey>,
 ) -> Option<distill_workspace::jev::types::JevAnswerSet> {
-    let state = utility_review_state(
+    let mut state = utility_review_state(
         phase,
         task_id,
         question,
@@ -252,6 +292,12 @@ async fn ask_utility_review(
         max_completion_tokens,
         candidate,
     )?;
+    if let Some(key) = compression_key {
+        state["compression_history"] = optional_compression_history(key);
+    }
+    if serde_json::to_vec(&state).ok()?.len() > UTILITY_MAX_DECISION_STATE_BYTES {
+        return None;
+    }
     if phase == UTILITY_POST_REVIEW {
         test_post_review_pause_if_configured().await;
     }
@@ -558,8 +604,10 @@ impl CheapLane {
         payload: &str,
         question: &str,
     ) -> Option<tasks::TaskOutcome> {
-        self.run_task_with_acceptance(lever, task_id, payload, question, true, |_| true)
-            .await
+        self.run_task_with_acceptance(lever, task_id, payload, question, "auxiliary", true, |_| {
+            true
+        })
+        .await
     }
 
     /// Runs one task while letting the caller apply its consumer-specific
@@ -572,6 +620,7 @@ impl CheapLane {
         task_id: &str,
         payload: &str,
         question: &str,
+        source_kind: &str,
         attribute_to_prompt: bool,
         accepts: F,
     ) -> Option<tasks::TaskOutcome>
@@ -643,6 +692,7 @@ impl CheapLane {
                 &self.client.config().model,
                 task_id,
                 &self.client.config().reasoning_effort,
+                source_kind,
             )
         });
         // Serialised: one cheap generation at a time across the whole process.
@@ -671,6 +721,7 @@ impl CheapLane {
             &utility_model,
             max_completion_tokens,
             None,
+            optional_key.as_ref(),
         )
         .await
         .is_none()
@@ -760,6 +811,7 @@ impl CheapLane {
                 post_review_model.as_str(),
                 max_completion_tokens,
                 Some(candidate.as_str()),
+                optional_key.as_ref(),
             )
             .await
             .is_none()
@@ -1102,6 +1154,7 @@ mod tests {
                 "utility-model",
                 "cite_spans",
                 "none",
+                "checks",
             );
             assert!(optional_compression_allowed(&key));
             note_optional_compression_failure(&key);
@@ -1114,7 +1167,28 @@ mod tests {
             assert!(optional_compression_allowed(&key));
 
             note_optional_compression_failure(&key);
+            // A failed recovery backs off further; its history is not erased by waiting.
+            for _ in 0..3 {
+                crate::jev::begin_model_round();
+            }
+            assert!(!optional_compression_allowed(&key));
+            crate::jev::begin_model_round();
+            assert!(optional_compression_allowed(&key));
+            let other_source = optional_compression_key(
+                "http://utility.test/chat/completions",
+                "utility-model",
+                "cite_spans",
+                "none",
+                "web_search",
+            );
+            assert!(optional_compression_allowed(&other_source));
+            assert_eq!(optional_compression_history(&other_source)["rejected"], 0);
             note_optional_compression_success(&key);
+            note_optional_compression_savings(&key, 2000, 400);
+            let history = optional_compression_history(&key);
+            assert_eq!(history["rejected"], 3);
+            assert_eq!(history["accepted"], 1);
+            assert_eq!(history["bytes_saved"], 1600);
             assert!(optional_compression_allowed(&key));
 
             let changed_model = optional_compression_key(
@@ -1122,6 +1196,7 @@ mod tests {
                 "utility-model-v2",
                 "cite_spans",
                 "none",
+                "checks",
             );
             assert!(optional_compression_allowed(&changed_model));
         })
@@ -1133,6 +1208,7 @@ mod tests {
                 "utility-model",
                 "cite_spans",
                 "none",
+                "checks",
             );
             assert!(optional_compression_allowed(&key));
         })

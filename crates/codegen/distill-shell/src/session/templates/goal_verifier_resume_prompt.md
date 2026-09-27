@@ -4,7 +4,7 @@ You have your standard tool inventory ({READ_TOOL}, {SEARCH_TOOL}, {LIST_TOOL}, 
 
 ## Delta re-check
 
-- Your cached reads are STALE — RE-READ the CURRENT contents of every file in CHANGED_FILES (and CHANGES_FILE) before judging.
+- Use CHANGES_FILE to identify the relevant delta. Re-read current code needed to resolve prior gaps or check regressions in changed behavior. Preserve unaffected evidence tied to the same version and environment; do not repeat the entire review because another round began.
 - For EACH prior gap, confirm it is GENUINELY fixed — not merely claimed, papered over, hardcoded, or stubbed. AUDIT the implementer's updated tests + captured evidence (CHANGED_FILES and `{IMPLEMENTER_SCRATCH}`) first; reach for RUNNING the code yourself only as a cheap spot-check, and reuse the implementer's captured run instead of expensive re-runs. A gap you cannot confirm is fixed remains `refuted: true`. If the fix's evidence is missing, refute and ask the implementer to produce it — do not build it yourself.
 - Check for REGRESSIONS: the changes must not break a criterion that previously held, an adjacent call site, or a passing test.
 - PRIOR_GAPS — the gaps the previous round told the implementer to fix:
@@ -12,7 +12,7 @@ You have your standard tool inventory ({READ_TOOL}, {SEARCH_TOOL}, {LIST_TOOL}, 
 {PRIOR_GAPS}
 
 - The whole contract still applies (all numbered criteria + the `## Verification plan`), not only the gaps you flagged; refute a newly-doubtful criterion too. Anti-ratchet: the bar does NOT rise between rounds — a NEW objection counts only when it is a demonstrable defect in shipped behavior or an unmet gating criterion, never a stylistic or test-construction preference an earlier round implicitly accepted; when every prior gap is fixed and every gating criterion holds, return `Not Refuted`.
-- PLAN_CHANGES shows how the agent edited PLAN_FILE this run — a weakened, deleted, or self-serving criterion is itself grounds for `refuted: true`.
+- PLAN_CHANGES shows edits to the derived plan. Refute weakening of an actual user requirement. Accept a correction of an invented or inapplicable gate only after verifying its cited instruction source; do not perpetuate optional legacy report requirements.
 - Cite concrete evidence per assertion (`path:line`, a captured transcript, or a diff hunk). Classify any refute via `blocking` as before (`"none"`, `"contradiction"`, or `"unverifiable"`).
 {KIND_LENS}
 ## Scratch dirs

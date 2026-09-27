@@ -55,6 +55,7 @@ const FINAL_MESSAGE_CHARS: usize = 600;
 /// One finished tool call, as the step facts read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolEvent {
+    pub(crate) call_id: String,
     pub(crate) signature: String,
     pub(crate) failed: bool,
     /// Waiting on background work repeats the same call by design.
@@ -76,6 +77,9 @@ pub(crate) struct ChangeRecord {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct TestEvidence {
     pub(crate) command: String,
+    command_hash: String,
+    output_hash: String,
+    pub(crate) cwd: String,
     pub(crate) failed: bool,
     pub(crate) excerpt: String,
 }
@@ -224,6 +228,8 @@ pub(crate) enum ReviewVerdict {
 pub(crate) struct ReasoningGates {
     rounds: u32,
     events: Vec<ToolEvent>,
+    events_discarded: usize,
+    failed_events_discarded: usize,
     changes: Vec<ChangeRecord>,
     last_test: Option<TestEvidence>,
     checks: Vec<TestEvidence>,
@@ -231,6 +237,7 @@ pub(crate) struct ReasoningGates {
     flow_phase: FlowPhase,
     flow_revisions: u8,
     reviewed_artifact: Option<String>,
+    approved_review: Option<(String, String, String)>,
     plan_unavailable: bool,
     planner_advice: Option<String>,
     complexity: Option<f64>,
@@ -257,43 +264,82 @@ impl ReasoningGates {
     /// Records the facts one finished tool call adds to the request.
     pub(crate) fn note_tool_result(
         &mut self,
+        call_id: &str,
         tool: &str,
         args: &serde_json::Value,
         output: &ToolOutput,
     ) {
-        if self.events.len() < MAX_EVENTS {
-            self.events.push(ToolEvent {
-                signature: call_signature(tool, args),
-                failed: output.is_error(),
-                polling: matches!(
-                    output,
-                    ToolOutput::TaskOutput(_)
-                        | ToolOutput::KillTask(_)
-                        | ToolOutput::Monitor(_)
-                        | ToolOutput::Todo(_)
-                        | ToolOutput::SchedulerList(_)
-                ),
-            });
+        if self.events.len() == MAX_EVENTS {
+            self.failed_events_discarded += usize::from(self.events.remove(0).failed);
+            self.events_discarded += 1;
         }
+        self.events.push(ToolEvent {
+            call_id: call_id.to_owned(),
+            signature: call_signature(tool, args),
+            failed: output.is_error()
+                || matches!(output, ToolOutput::Bash(bash) if bash.timed_out || bash.signal.is_some()),
+            polling: matches!(
+                output,
+                ToolOutput::TaskOutput(_)
+                    | ToolOutput::KillTask(_)
+                    | ToolOutput::Monitor(_)
+                    | ToolOutput::Todo(_)
+                    | ToolOutput::SchedulerList(_)
+            ),
+        });
         self.changes.extend(change_records(output));
         if let ToolOutput::Bash(bash) = output
             && looks_like_check_command(&bash.command)
         {
+            let failed = bash.exit_code != 0 || bash.timed_out || bash.signal.is_some();
             let check = TestEvidence {
                 command: bash.command.chars().take(SIGNATURE_CHARS).collect(),
-                failed: bash.exit_code != 0 || bash.timed_out || bash.signal.is_some(),
+                command_hash: blake3::hash(bash.command.as_bytes()).to_hex().to_string(),
+                output_hash: check_output_hash(&bash.output_for_prompt, failed),
+                cwd: bash.current_dir.clone(),
+                failed,
                 excerpt: tail_chars(&bash.output_for_prompt, TEST_EXCERPT_CHARS),
             };
             self.last_test = Some(check.clone());
-            if self.checks.len() == MAX_CHECKS {
-                self.checks.remove(0);
+            if let Some(previous) = self.checks.iter_mut().find(|previous| {
+                previous.command_hash == check.command_hash
+                    && previous.cwd == check.cwd
+                    && previous.failed == check.failed
+                    && (!check.failed || previous.output_hash == check.output_hash)
+            }) {
+                *previous = check;
+            } else {
+                if self.checks.len() == MAX_CHECKS {
+                    self.checks.remove(0);
+                }
+                self.checks.push(check);
             }
-            self.checks.push(check);
         }
     }
 
     pub(crate) fn plan(&self) -> PlanGate {
         self.plan
+    }
+
+    fn event_count(&self) -> usize {
+        self.events_discarded + self.events.len()
+    }
+
+    fn events_since_consult(&self) -> &[ToolEvent] {
+        self.events
+            .get(
+                self.events_at_last_consult
+                    .saturating_sub(self.events_discarded)..,
+            )
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn tool_failed(&self, call_id: &str) -> Option<bool> {
+        self.events
+            .iter()
+            .rev()
+            .find(|event| !call_id.is_empty() && event.call_id == call_id)
+            .map(|event| event.failed)
     }
 
     pub(crate) fn flow_phase(&self) -> FlowPhase {
@@ -317,6 +363,33 @@ impl ReasoningGates {
 
     pub(crate) fn note_review_artifact(&mut self, artifact: String) {
         self.reviewed_artifact = Some(artifact);
+    }
+
+    pub(crate) fn approved_review(&self, artifact: &str) -> Option<(&str, &str)> {
+        self.approved_review
+            .as_ref()
+            .filter(|(key, _, _)| key == artifact)
+            .map(|(_, report, verdict)| (report.as_str(), verdict.as_str()))
+    }
+
+    pub(crate) fn approve_review(&mut self, artifact: String, report: String, verdict: String) {
+        self.approved_review = Some((artifact, report, verdict));
+    }
+
+    pub(crate) fn review_check_identity(&self) -> String {
+        let mut checks = std::collections::BTreeSet::new();
+        for check in &self.checks {
+            // Repeated pass timing is immaterial, but changed counts, skipped
+            // tests, warnings, and failures invalidate the earlier approval.
+            checks.insert(
+                serde_json::json!({
+                    "command": check.command_hash, "cwd": check.cwd, "failed": check.failed,
+                    "result": check.output_hash,
+                })
+                .to_string(),
+            );
+        }
+        checks.into_iter().collect::<Vec<_>>().join("\n")
     }
 
     pub(crate) fn stop_unresolved_review(&mut self) {
@@ -370,7 +443,7 @@ impl ReasoningGates {
         match self.plan {
             PlanGate::Undecided => Some(RoundQuestion::Plan),
             PlanGate::AfterEvidence => None,
-            PlanGate::Done => (self.events.len() > self.events_at_last_consult
+            PlanGate::Done => (self.event_count() > self.events_at_last_consult
                 || self.changes.len() > self.changes_at_last_consult)
                 .then_some(RoundQuestion::Step),
         }
@@ -396,10 +469,7 @@ impl ReasoningGates {
 
     /// What happened since the last consult, or since the request began.
     pub(crate) fn step_facts(&self) -> StepFacts {
-        let events = self
-            .events
-            .get(self.events_at_last_consult..)
-            .unwrap_or_default();
+        let events = self.events_since_consult();
         let most_frequent = |calls: &mut dyn Iterator<Item = &ToolEvent>| {
             let mut counts: Vec<(&str, usize)> = Vec::new();
             for event in calls {
@@ -463,9 +533,12 @@ impl ReasoningGates {
 
     fn stall_signal(&self) -> Option<StallSignal> {
         let facts = self.step_facts();
-        let events = self.events.get(self.events_at_last_consult..).unwrap_or_default();
+        let events = self.events_since_consult();
         let last_call = events.iter().rev().find(|event| !event.polling);
-        let changes = self.changes.get(self.changes_at_last_consult..).unwrap_or_default();
+        let changes = self
+            .changes
+            .get(self.changes_at_last_consult..)
+            .unwrap_or_default();
         let undone_edit = changes.last().and_then(|last| {
             let (old, new) = last.replaced.as_ref()?;
             changes[..changes.len() - 1].iter().any(|earlier| {
@@ -547,7 +620,7 @@ impl ReasoningGates {
         }
         self.consults.push(kind);
         self.last_consult_round = Some(self.rounds);
-        self.events_at_last_consult = self.events.len();
+        self.events_at_last_consult = self.event_count();
         self.changes_at_last_consult = self.changes.len();
         match kind {
             ConsultKind::Plan | ConsultKind::Recover | ConsultKind::EditReview => {
@@ -579,14 +652,14 @@ impl ReasoningGates {
     /// review of the same work would repeat the first.
     pub(crate) fn has_new_work_since_review(&self) -> bool {
         self.review_attempted_upto.is_none_or(|(events, changes)| {
-            self.events.len() > events || self.changes.len() > changes
+            self.event_count() > events || self.changes.len() > changes
         })
     }
 
     /// A failed review must not count as advice, but the same delivery should
     /// not retry an unavailable endpoint indefinitely.
     pub(crate) fn note_review_attempt(&mut self) {
-        self.review_attempted_upto = Some((self.events.len(), self.changes.len()));
+        self.review_attempted_upto = Some((self.event_count(), self.changes.len()));
     }
 
     pub(crate) fn note_review_unavailable(&mut self) {
@@ -603,6 +676,9 @@ impl ReasoningGates {
             ReviewVerdict::Unclear => "unclear",
         });
         if self.flow_requires_review() {
+            if verdict == ReviewVerdict::Approve {
+                self.flow_revisions = 0;
+            }
             if verdict == ReviewVerdict::Revise {
                 self.flow_revisions = self.flow_revisions.saturating_add(1);
             }
@@ -641,8 +717,8 @@ impl ReasoningGates {
                 "failed": check.failed,
             })).collect::<Vec<_>>(),
             "last_tool_failed": self.events.last().is_some_and(|event| event.failed),
-            "tool_calls": self.events.len(),
-            "failed_tool_calls": self.events.iter().filter(|event| event.failed).count(),
+            "tool_calls": self.event_count(),
+            "failed_tool_calls": self.failed_events_discarded + self.events.iter().filter(|event| event.failed).count(),
             "rounds": self.rounds,
             "request_complexity": self.complexity,
             "plan_unavailable": self.plan_unavailable,
@@ -698,15 +774,19 @@ impl ReasoningGates {
 
     /// One line for the decision log at the end of the request.
     pub(crate) fn summary(&self) -> String {
-        let failures = self.events.iter().filter(|event| event.failed).count();
+        let failures =
+            self.failed_events_discarded + self.events.iter().filter(|event| event.failed).count();
         let (added, removed) = self.changes.iter().fold((0u64, 0u64), |(a, r), change| {
-            (a.saturating_add(change.added), r.saturating_add(change.removed))
+            (
+                a.saturating_add(change.added),
+                r.saturating_add(change.removed),
+            )
         });
         format!(
             "rounds={} tools={} failures={failures} changes={} (+{added} -{removed}) \
              complexity={} phase={} plan_unavailable={} consults=[{}] reviews=[{}]",
             self.rounds,
-            self.events.len(),
+            self.event_count(),
             self.changes.len(),
             self.complexity
                 .map_or_else(|| "unknown".to_owned(), |c| format!("{c:.2}")),
@@ -962,6 +1042,25 @@ fn bounded(text: String, limit: usize) -> String {
     format!("{}\n[… {} more bytes]", &text[..end], text.len() - end)
 }
 
+fn check_output_hash(output: &str, failed: bool) -> String {
+    if failed {
+        return blake3::hash(output.as_bytes()).to_hex().to_string();
+    }
+    let mut hash = blake3::Hasher::new();
+    for line in output.lines() {
+        // Cargo/pytest append execution time as "in 0.12s". Keep every
+        // other byte, including evidence outside the displayed tail.
+        let stable = line.rsplit_once(" in ").filter(|(_, duration)| {
+            duration.strip_suffix('s').is_some_and(|seconds| {
+                seconds.parse::<f64>().is_ok_and(|value| value.is_finite() && value >= 0.0)
+            })
+        }).map_or(line, |(prefix, _)| prefix);
+        hash.update(stable.as_bytes());
+        hash.update(b"\n");
+    }
+    hash.finalize().to_hex().to_string()
+}
+
 /// The last `limit` characters of `text`: a check's verdict is at its end.
 fn tail_chars(text: &str, limit: usize) -> String {
     let count = text.chars().count();
@@ -974,6 +1073,7 @@ mod tests {
 
     fn event(signature: &str, failed: bool) -> ToolEvent {
         ToolEvent {
+            call_id: String::new(),
             signature: signature.to_owned(),
             failed,
             polling: false,
@@ -1009,6 +1109,75 @@ mod tests {
         assert_eq!(gates.round_question(), Some(RoundQuestion::Step));
     }
 
+    #[test]
+    fn long_requests_keep_new_failures_and_review_progress_after_eviction() {
+        let mut gates = ReasoningGates::default();
+        gates.set_plan(PlanGate::Done);
+        for i in 0..MAX_EVENTS + 5 {
+            gates.note_tool_result(
+                &i.to_string(),
+                "read_file",
+                &serde_json::json!({"path": i}),
+                &ToolOutput::Text("ok".into()),
+            );
+        }
+        gates.note_consult(ConsultKind::Review);
+        assert!(!gates.has_new_work_since_review());
+        for _ in 0..6 {
+            gates.note_round();
+        }
+        for id in ["failed-1", "failed-2"] {
+            gates.note_tool_result(
+                id,
+                "read_file",
+                &serde_json::json!({"path": "missing"}),
+                &ToolOutput::ReadFile(distill_tools::types::output::ReadFileOutput::FileReadError(
+                    "missing".into(),
+                )),
+            );
+        }
+        assert_eq!(gates.events.len(), MAX_EVENTS);
+        assert_eq!(gates.step_facts().tool_calls, 2);
+        assert_eq!(gates.step_facts().failed_calls, 2);
+        assert_eq!(gates.tool_failed("failed-2"), Some(true));
+        assert!(gates.has_new_work_since_review());
+        assert_eq!(gates.round_question(), Some(RoundQuestion::Step));
+        assert_eq!(gates.stall_action(), Some(StallAction::Diagnose));
+    }
+
+    #[test]
+    fn code_review_identity_ignores_repeated_pass_timing_but_retains_scope_and_failures() {
+        let mut gates = ReasoningGates::default();
+        let mut check = TestEvidence {
+            command: "cargo test parser".into(),
+            command_hash: "parser command".into(),
+            output_hash: check_output_hash("1 passed in 0.1s", false),
+            cwd: "/repo".into(),
+            failed: false,
+            excerpt: "1 passed in 0.1s".into(),
+        };
+        gates.checks.push(check.clone());
+        let original = gates.review_check_identity();
+        check.excerpt = "1 passed in 0.2s".into();
+        check.output_hash = check_output_hash(&check.excerpt, false);
+        gates.checks.push(check.clone());
+        assert_eq!(gates.review_check_identity(), original);
+        let mut skipped = check.clone();
+        skipped.output_hash = check_output_hash("0 passed, 1 skipped in 0.2s", false);
+        gates.checks.push(skipped);
+        assert_ne!(gates.review_check_identity(), original);
+        gates.checks.pop();
+        check.cwd = "/another-repo".into();
+        gates.checks.push(check.clone());
+        assert_ne!(gates.review_check_identity(), original);
+        let scoped = gates.review_check_identity();
+        check.failed = true;
+        check.excerpt = "failed: parser".into();
+        check.output_hash = check_output_hash(&check.excerpt, true);
+        gates.checks.push(check);
+        assert_ne!(gates.review_check_identity(), scoped);
+    }
+
     /// The step decision gets the evidence of trouble as facts, counted since
     /// the last advice: repeated failures, loops (waiting on background work
     /// aside), undone edits and the rounds without advice.
@@ -1024,6 +1193,7 @@ mod tests {
                 event("grep x", false),
                 event("grep x", false),
                 ToolEvent {
+                    call_id: String::new(),
                     signature: "task_output t1".to_owned(),
                     failed: false,
                     polling: true,
@@ -1106,6 +1276,7 @@ mod tests {
             gates.note_round();
         }
         gates.events.extend((0..9).map(|_| ToolEvent {
+            call_id: String::new(),
             signature: "task_output job".to_owned(),
             failed: false,
             polling: true,
@@ -1175,9 +1346,19 @@ mod tests {
     #[test]
     fn a_delivery_is_reviewable_until_a_review_saw_it() {
         let mut gates = ReasoningGates::default();
-        assert!(gates.has_new_work_since_review(), "a plain answer can be reviewed too");
-        gates.changes = vec![change("a.rs", "x", "y"), change("a.rs", "y", "z"), change("b.rs", "p", "q")];
+        assert!(
+            gates.has_new_work_since_review(),
+            "a plain answer can be reviewed too"
+        );
+        gates.changes = vec![
+            change("a.rs", "x", "y"),
+            change("a.rs", "y", "z"),
+            change("b.rs", "p", "q"),
+        ];
         gates.last_test = Some(TestEvidence {
+            command_hash: "cargo test".into(),
+            output_hash: check_output_hash("1 failed", true),
+            cwd: "/workspace".to_owned(),
             command: "cargo test".to_owned(),
             failed: true,
             excerpt: "1 failed".to_owned(),
@@ -1204,8 +1385,12 @@ mod tests {
         gates.note_review_unavailable();
         assert!(gates.consults().is_empty());
         assert!(!gates.has_new_work_since_review());
-        assert_eq!(gates.delivery_state("")["earlier_review_verdicts"], serde_json::json!(["unavailable"]));
+        assert_eq!(
+            gates.delivery_state("")["earlier_review_verdicts"],
+            serde_json::json!(["unavailable"])
+        );
         gates.note_tool_result(
+            "",
             "read_file",
             &serde_json::json!({"path": "src/lib.rs"}),
             &ToolOutput::Text("new evidence".to_owned().into()),
@@ -1239,24 +1424,27 @@ mod tests {
     fn review_keeps_earlier_failed_checks_even_after_a_later_pass() {
         use distill_tools::types::output::BashOutput;
 
-        let check = |command: &str, timed_out| ToolOutput::Bash(BashOutput {
-            output: Vec::new(),
-            output_for_prompt: if timed_out { "timed out" } else { "passed" }.to_owned(),
-            exit_code: 0,
-            command: command.to_owned(),
-            truncated: false,
-            signal: None,
-            timed_out,
-            description: None,
-            current_dir: "/tmp".to_owned(),
-            output_file: String::new(),
-            total_bytes: 0,
-            output_delta: None,
-            was_bare_echo: false,
-        });
+        let check = |command: &str, timed_out| {
+            ToolOutput::Bash(BashOutput {
+                output: Vec::new(),
+                output_for_prompt: if timed_out { "timed out" } else { "passed" }.to_owned(),
+                exit_code: 0,
+                command: command.to_owned(),
+                truncated: false,
+                signal: None,
+                timed_out,
+                description: None,
+                current_dir: "/tmp".to_owned(),
+                output_file: String::new(),
+                total_bytes: 0,
+                output_delta: None,
+                was_bare_echo: false,
+            })
+        };
         let mut gates = ReasoningGates::default();
         for (command, timed_out) in [("cargo test parser", true), ("cargo test lexer", false)] {
             gates.note_tool_result(
+                "",
                 "run_terminal_command",
                 &serde_json::json!({"command": command}),
                 &check(command, timed_out),

@@ -117,6 +117,9 @@ struct WireModel {
     #[serde(default)]
     priority: i64,
     context_window: Option<u64>,
+    max_context_window: Option<u64>,
+    auto_compact_token_limit: Option<u64>,
+    effective_context_window_percent: Option<u8>,
     default_reasoning_level: Option<ReasoningEffort>,
     #[serde(default)]
     supported_reasoning_levels: Vec<WireEffort>,
@@ -178,8 +181,22 @@ fn convert_models(mut response: ModelsResponse, base_url: &str) -> IndexMap<Stri
                 reasoning_summary: model.default_reasoning_summary,
                 ..Default::default()
             };
-            if let Some(window) = model.context_window.and_then(std::num::NonZeroU64::new) {
+            // The account catalog distinguishes the default window from the
+            // maximum supported override. Use the latter without guessing from
+            // a model name or the public API catalog.
+            if let Some(window) = model
+                .max_context_window
+                .and_then(std::num::NonZeroU64::new)
+                .or_else(|| model.context_window.and_then(std::num::NonZeroU64::new))
+            {
                 info.context_window = window;
+                // Codex compacts at at most 90% of the configured window. Honor
+                // a smaller provider threshold and usable-input margin as well.
+                let percent = model.effective_context_window_percent.unwrap_or(95).min(90);
+                info.auto_compact_threshold_percent =
+                    Some(model.auto_compact_token_limit.map_or(percent, |limit| {
+                        (limit.saturating_mul(100) / window.get()).min(u64::from(percent)) as u8
+                    }));
             }
             (
                 key,
@@ -237,5 +254,27 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn account_catalog_uses_supported_maximum_and_codex_compaction_margin() {
+        let response = serde_json::from_value(serde_json::json!({"models": [
+            {"slug":"large", "visibility":"list", "context_window":272000,
+             "max_context_window":872000, "effective_context_window_percent":95},
+            {"slug":"standard", "visibility":"list", "context_window":272000},
+            {"slug":"limited", "visibility":"list", "context_window":400000,
+             "max_context_window":0, "auto_compact_token_limit":320000}
+        ]}))
+        .unwrap();
+        let models = convert_models(response, codex_auth::CODEX_INFERENCE_BASE_URL);
+        for (name, window, threshold) in [
+            ("large", 872_000, 90),
+            ("standard", 272_000, 90),
+            ("limited", 400_000, 80),
+        ] {
+            let info = &models[&format!("chatgpt/{name}")].info;
+            assert_eq!(info.context_window.get(), window);
+            assert_eq!(info.auto_compact_threshold_percent, Some(threshold));
+        }
     }
 }

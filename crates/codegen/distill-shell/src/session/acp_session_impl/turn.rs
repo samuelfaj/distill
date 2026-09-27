@@ -2684,6 +2684,7 @@ impl SessionActor {
         let mut metrics_drop_guard = TurnMetrics::new();
         let mut turn_tools_called: Vec<String> = Vec::new();
         let mut tool_turn_count: usize = 1;
+        let mut last_progress_checkpoint: usize = 1;
         let mut loop_index: u32 = 0;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
@@ -2727,6 +2728,22 @@ impl SessionActor {
             );
         }
         loop {
+            // A long tool loop must not postpone progress evaluation until delivery.
+            // Only completed tool rounds count; retries do not buy extra checkpoints.
+            if tool_turn_count.saturating_sub(last_progress_checkpoint) >= 24
+                && self.goal_harness_enabled()
+                && self.goal_runs_on_workflow_engine()
+                && self.goal_tracker.lock().status()
+                    == Some(crate::session::goal_tracker::GoalStatus::Active)
+            {
+                last_progress_checkpoint = tool_turn_count;
+                if matches!(
+                    self.run_goal_progress_checkpoint().await,
+                    GoalRoundDecision::EndTurn
+                ) {
+                    return Ok(TurnOutcome::StationarityEnded);
+                }
+            }
             self.emit_event(crate::session::events::Event::LoopStarted { loop_index });
             loop_index += 1;
             if identical_tool_calls.run_len >= identical_tool_calls.hard_stop_threshold() {

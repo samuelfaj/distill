@@ -73,17 +73,24 @@ pub(crate) enum GapsUpdate<'a> {
 impl SessionActor {
     async fn evaluate_goal_round(
         &self,
+        checkpoint: bool,
     ) -> Result<crate::session::goal_evaluator::GoalEvaluatorVerdict, String> {
         use crate::session::goal_evaluator::{
             bounded_goal_transcript, build_goal_evaluator_request, parse_goal_evaluator_verdict,
         };
-        let (objective, plan_file) = {
+        let (objective, plan_file, progress, prior_gaps) = {
             let tracker = self.goal_tracker.lock();
             let snapshot = tracker
                 .snapshot()
                 .ok_or_else(|| "goal state disappeared before evaluation".to_string())?;
-            (snapshot.objective.clone(), snapshot.plan_file.clone())
+            (
+                snapshot.objective.clone(),
+                snapshot.plan_file.clone(),
+                snapshot.progress.clone(),
+                snapshot.last_classifier_gaps.clone(),
+            )
         };
+        let resolved_skills = self.goal_skill_context(&objective).await;
         let transcript = bounded_goal_transcript(&self.chat_state_handle.get_conversation().await);
         let plan = match plan_file {
             Some(path) => tokio::fs::read_to_string(path)
@@ -109,16 +116,31 @@ impl SessionActor {
                     continue;
                 }
             };
-            let request = build_goal_evaluator_request(
+            let mut request = build_goal_evaluator_request(
                 &objective,
                 &transcript,
                 plan.as_deref(),
                 active_model.clone(),
                 &session_id,
+                &progress,
+                &resolved_skills,
+                prior_gaps.as_deref(),
             );
+            if checkpoint {
+                request.items.push(ConversationItem::user(
+                    "This is an intermediate progress checkpoint while the Worker is still executing. Assess only material progress and repeated work. Ongoing work is not itself a blocker. Do not request completion or verifier rechecks; return continue or blocked with the next concrete step.",
+                ));
+            }
+            let attempt = super::side_call::auxiliary_attempt(&client, &request);
+            let started = std::time::Instant::now();
             let response = match client.conversation_collect(request).await {
                 Ok(response) => response,
                 Err(error) => {
+                    super::side_call::record_auxiliary_failures(
+                        self,
+                        std::slice::from_ref(&attempt),
+                        true,
+                    );
                     let _ = self
                         .chat_state_handle
                         .mark_usage_incomplete(true, true)
@@ -127,6 +149,19 @@ impl SessionActor {
                     continue;
                 }
             };
+            super::side_call::record_auxiliary_response(
+                self,
+                if checkpoint {
+                    "goal_progress_checkpoint"
+                } else {
+                    "goal_evaluator"
+                },
+                &active_model,
+                &attempt,
+                &response,
+                Some(started.elapsed().as_millis() as u64),
+                true,
+            );
             if response.usage.is_none() {
                 let _ = self
                     .chat_state_handle
@@ -136,7 +171,23 @@ impl SessionActor {
                 continue;
             }
             match parse_goal_evaluator_verdict(&response.assistant_text()) {
-                Ok(verdict) => return Ok(verdict),
+                Ok(verdict) => {
+                    if let Some(target) = &verdict.verification_target {
+                        if let Err(error) =
+                            crate::session::goal_classifier::evidence::validate_verification_target(
+                                target,
+                            )
+                            .await
+                        {
+                            last_error = error;
+                            continue;
+                        }
+                    }
+                    match progress.clone().record(&verdict) {
+                        Ok(()) => return Ok(verdict),
+                        Err(error) => last_error = error,
+                    }
+                }
                 Err(error) => last_error = error.to_string(),
             }
         }
@@ -162,7 +213,7 @@ impl SessionActor {
         tracker.append_history(entry);
     }
 
-    async fn verify_goal_candidate(&self) {
+    pub(super) async fn verify_goal_candidate(&self, recheck_only: bool) {
         use crate::session::goal_classifier::GoalClassifierOutcome;
         let policy = self.resolve_goal_classifier_policy();
         if !policy.enabled {
@@ -193,7 +244,7 @@ impl SessionActor {
                     snapshot.verifying_in_flight = false;
                 }
             });
-            self.run_verification_stage_for_drain(attempt, policy.max_runs)
+            self.run_verification_stage_for_drain(attempt, policy.max_runs, recheck_only)
                 .await
         };
         if self.goal_tracker.lock().status()
@@ -214,6 +265,25 @@ impl SessionActor {
             return;
         }
         let notify = self.goal_notify_sender();
+        if recheck_only {
+            if let GoalClassifierOutcome::Achieved { details_path } = &outcome {
+                let (tokens_used, finished) = self.goal_tokens(current_tokens);
+                let mut tracker = self.goal_tracker.lock();
+                Self::record_verdict_on_orchestration(
+                    &mut tracker,
+                    crate::session::goal_tracker::GoalClassifierVerdict::NotAchieved,
+                    Some(details_path),
+                    GapsUpdate::Clear,
+                );
+                tracker.reset_classifier_stall();
+                tracker.reset_strategist_state();
+                if let Some(goal) = tracker.snapshot_mut() {
+                    goal.progress.no_progress_rounds = 0;
+                }
+                notify.emit_goal_updated(&mut tracker, tokens_used, finished);
+                return;
+            }
+        }
         self.apply_classifier_outcome(&policy, attempt, outcome, &notify)
             .await;
     }
@@ -443,6 +513,7 @@ impl SessionActor {
         &self,
         attempt: u32,
         max_runs: u32,
+        recheck_only: bool,
     ) -> crate::session::goal_classifier::GoalClassifierOutcome {
         use crate::session::events::GoalClassifierFailOpenReason;
         use crate::session::goal_classifier::{
@@ -460,6 +531,7 @@ impl SessionActor {
             prior_gaps,
             first_final_response,
             scratch_dir_ready,
+            verification_target,
         ) = {
             let tracker = self.goal_tracker.lock();
             let Some(o) = tracker.snapshot() else {
@@ -479,10 +551,40 @@ impl SessionActor {
                 o.last_classifier_gaps.clone(),
                 o.first_final_response.clone(),
                 o.scratch_dir_ready,
+                o.progress.verification_target.clone(),
             )
         };
 
-        let (final_response, anchor_to_persist) = {
+        let workspace_root = verification_target
+            .as_ref()
+            .map(|target| std::path::Path::new(&target.workspace_root))
+            .unwrap_or_else(|| self.tool_context.cwd.as_path());
+        let baseline_commit = verification_target
+            .as_ref()
+            .map(|target| target.baseline_commit.as_str())
+            .or(baseline_commit.as_deref());
+        if let Some(target) = &verification_target {
+            if let Err(error) =
+                crate::session::goal_classifier::evidence::validate_verification_target(target)
+                    .await
+            {
+                tracing::warn!(%error, "verification target became unavailable");
+                return GoalClassifierOutcome::FailOpenAchieved {
+                    reason: GoalClassifierFailOpenReason::SamplerError,
+                    details_path: String::new(),
+                };
+            }
+        }
+        let review_objective = if recheck_only {
+            format!(
+                "Independently recheck ONLY the prior findings below against the supplied delivery worktree and current evidence. Report any of those findings that remain unresolved. An all-clear retires these findings only; the harness keeps the overall goal active and will run final verification separately. Do not add unrelated goal criteria to this limited recheck.\n\nPrior findings:\n{}\n\nOriginal goal (context, not a completion claim):\n{objective}",
+                prior_gaps.as_deref().unwrap_or_default(),
+            )
+        } else {
+            objective.clone()
+        };
+
+        let (mut final_response, anchor_to_persist) = {
             let current = {
                 let items = self.chat_state_handle.get_conversation().await;
                 crate::session::goal_classifier::evidence::extract_final_response(&items)
@@ -495,6 +597,17 @@ impl SessionActor {
                 );
             (composed.to_send, composed.to_persist)
         };
+        if let Some(goal) = self.goal_tracker.lock().snapshot() {
+            final_response = format!(
+                "Persisted criteria/evidence references to audit (not proof by themselves):\n{}\n\n{final_response}",
+                serde_json::to_string(&goal.progress.criteria).unwrap_or_default(),
+            );
+        }
+        final_response = format!(
+            "Delivery worktree: {}\nRecorded baseline: {}\nChanged-file paths are relative to this worktree.\n\n{final_response}",
+            workspace_root.display(),
+            baseline_commit.unwrap_or("(not recorded)"),
+        );
 
         let model_id = self
             .chat_state_handle
@@ -517,7 +630,21 @@ impl SessionActor {
             .clone();
         let task_tool_name = self.resolve_goal_tool_names().await.task;
 
-        let n = self.goal_verifier_skeptic_count.clamp(
+        let skeptic_count = if recheck_only {
+            1
+        } else {
+            self.goal_tracker
+                .lock()
+                .snapshot()
+                .map_or(self.goal_verifier_skeptic_count, |goal| {
+                    if !goal.progress.criteria.is_empty() && !goal.progress.needs_review_panel {
+                        1
+                    } else {
+                        self.goal_verifier_skeptic_count
+                    }
+                })
+        };
+        let n = skeptic_count.clamp(
             crate::session::goal_classifier::GOAL_VERIFIER_SKEPTIC_MIN,
             crate::session::goal_classifier::GOAL_VERIFIER_SKEPTIC_MAX,
         );
@@ -582,7 +709,7 @@ impl SessionActor {
                 )),
                 parent_session_id: self.session_id_string(),
                 parent_prompt_id,
-                cwd: Some(self.tool_context.cwd.as_str().to_owned()),
+                cwd: Some(workspace_root.to_string_lossy().into_owned()),
                 trace_sink: Some((self.chat_state_handle.clone(), task_tool_name)),
                 skeptic_overrides,
                 events: Some(self.events.writer()),
@@ -592,21 +719,33 @@ impl SessionActor {
             crate::session::goal_tracker::implementer_scratch_dir(&verifier_id);
 
         let inputs = VerificationStageInputs {
-            objective: &objective,
+            objective: &review_objective,
             final_response: &final_response,
-            baseline_commit: baseline_commit.as_deref(),
-            workspace_root: self.tool_context.cwd.as_path(),
+            baseline_commit,
+            workspace_root,
             verifier_id: &verifier_id,
             attempt,
             model_id: &model_id,
             goal_created_at,
-            plan_file: plan_file.as_deref(),
-            plan_baseline_file: plan_baseline_file.as_deref(),
+            plan_file: if recheck_only {
+                None
+            } else {
+                plan_file.as_deref()
+            },
+            plan_baseline_file: if recheck_only {
+                None
+            } else {
+                plan_baseline_file.as_deref()
+            },
             implementer_scratch_dir: implementer_scratch.as_path(),
             scratch_dir_ready,
-            skeptic_count: self.goal_verifier_skeptic_count,
+            skeptic_count,
             max_runs,
-            prior_skeptic0_session_id: prior_skeptic0.as_deref(),
+            prior_skeptic0_session_id: if recheck_only {
+                None
+            } else {
+                prior_skeptic0.as_deref()
+            },
             prior_gaps: prior_gaps.as_deref(),
             tool_names: &skeptic_tool_names,
             inherit_tool_names: &inherit_tool_names,
@@ -1356,7 +1495,7 @@ impl SessionActor {
         } else {
             render_goal_reverify_block(rounds_since_verify, refuted, self.goal_reverify_after)
         };
-        let directive = if legacy {
+        let mut directive = if legacy {
             render_goal_continuation_directive_legacy(
                 &objective,
                 tokens,
@@ -1388,6 +1527,13 @@ impl SessionActor {
                 scratch_ready,
             )
         };
+        if let Some(goal) = self.goal_tracker.lock().snapshot() {
+            directive.push_str("\nPersisted criteria and evidence (audit these sources; recheck only invalidated proofs):\n");
+            directive.push_str(&serde_json::to_string(&goal.progress).unwrap_or_default());
+            if goal.progress.no_progress_rounds >= 2 {
+                directive.push_str("\nTwo rounds made no material progress. Use a different evidence-backed approach to the unresolved requirement now. Do not repeat unchanged reviews or generate more reports. If no credible route remains, report the exact blocker.\n");
+            }
+        }
         Some(GoalContinuationPlan {
             directive,
             stop_pattern,
@@ -1415,6 +1561,14 @@ impl SessionActor {
     }
 
     pub(super) async fn run_goal_round_end(&self) -> GoalRoundDecision {
+        self.evaluate_goal_progress(false).await
+    }
+
+    pub(super) async fn run_goal_progress_checkpoint(&self) -> GoalRoundDecision {
+        self.evaluate_goal_progress(true).await
+    }
+
+    async fn evaluate_goal_progress(&self, checkpoint: bool) -> GoalRoundDecision {
         use crate::session::goal_evaluator::GoalEvaluatorDecision;
         if !laziness_injection_active(
             self.goal_harness_enabled(),
@@ -1422,10 +1576,12 @@ impl SessionActor {
         ) {
             return GoalRoundDecision::EndTurn;
         }
-        let verdict = match self.evaluate_goal_round().await {
+        let verdict = match self.evaluate_goal_round(checkpoint).await {
             Ok(verdict) => verdict,
             Err(error) => {
-                self.record_goal_round_progress(&error, true);
+                if !checkpoint {
+                    self.record_goal_round_progress(&error, true);
+                }
                 self.auto_pause_goal_if_active_with_message(
                     crate::session::goal_tracker::GoalPauseReason::Infra,
                     format!(
@@ -1442,14 +1598,80 @@ impl SessionActor {
         if self.enforce_goal_token_budget(current_tokens).await {
             return GoalRoundDecision::EndTurn;
         }
+        let progress_result = {
+            let mut tracker = self.goal_tracker.lock();
+            let Some(goal) = tracker.snapshot_mut() else {
+                return GoalRoundDecision::EndTurn;
+            };
+            if goal.status != crate::session::goal_tracker::GoalStatus::Active {
+                return GoalRoundDecision::EndTurn;
+            }
+            let target_changed = verdict
+                .verification_target
+                .as_ref()
+                .is_some_and(|target| Some(target) != goal.progress.verification_target.as_ref());
+            let has_gaps = goal
+                .last_classifier_gaps
+                .as_ref()
+                .is_some_and(|gaps| !gaps.is_empty());
+            let result = goal
+                .progress
+                .record(&verdict)
+                .map(|()| (goal.progress.no_progress_rounds, target_changed, has_gaps));
+            if result.is_ok() && target_changed {
+                // A resumed reviewer would still have the previous worktree as cwd.
+                goal.skeptic0_session_id = None;
+            }
+            self.goal_notify_sender().persist_goal_state(&tracker);
+            result
+        };
+        let (no_progress_rounds, target_changed, has_gaps) = match progress_result {
+            Ok(rounds) => rounds,
+            Err(error) => {
+                self.auto_pause_goal_if_active_with_message(
+                    crate::session::goal_tracker::GoalPauseReason::Infra,
+                    format!("Could not reconcile goal evidence: {error}"),
+                )
+                .await;
+                return GoalRoundDecision::EndTurn;
+            }
+        };
+        let recheck = verdict.decision == GoalEvaluatorDecision::Recheck
+            && has_gaps
+            && (no_progress_rounds == 0 || target_changed);
+        if (checkpoint || verdict.decision != GoalEvaluatorDecision::CandidateComplete)
+            && no_progress_rounds >= 3
+            && (checkpoint || !recheck)
+        {
+            if !checkpoint {
+                self.record_goal_round_progress(&verdict.evidence, false);
+            }
+            self.auto_pause_goal_if_active_with_message(
+                crate::session::goal_tracker::GoalPauseReason::NoProgress,
+                format!("No material progress across {no_progress_rounds} rounds. {}\nNext step: {}\nUse /goal resume after changing the approach or resolving the dependency.", verdict.evidence, verdict.next_step),
+            ).await;
+            return GoalRoundDecision::EndTurn;
+        }
+        if checkpoint {
+            // Checkpoints cannot complete a goal or launch a delivery review.
+            if no_progress_rounds >= 2 {
+                self.chat_state_handle.push_user_message(ConversationItem::system_reminder(
+                    format!("Intermediate goal checkpoint: no material progress in {no_progress_rounds} checks. Stop repeating the same evidence collection. Change approach using this next step, or report the concrete dependency: {}", verdict.next_step),
+                ));
+            }
+            return GoalRoundDecision::Continue(String::new());
+        }
         match verdict.decision {
-            GoalEvaluatorDecision::Continue => {
+            GoalEvaluatorDecision::Continue | GoalEvaluatorDecision::Recheck => {
                 {
                     let mut tracker = self.goal_tracker.lock();
                     tracker.reset_evaluator_blocker();
                     self.goal_notify_sender().persist_goal_state(&tracker);
                 }
                 self.record_goal_round_progress(&verdict.evidence, false);
+                if recheck {
+                    self.verify_goal_candidate(true).await;
+                }
             }
             GoalEvaluatorDecision::CandidateComplete => {
                 {
@@ -1458,7 +1680,7 @@ impl SessionActor {
                     self.goal_notify_sender().persist_goal_state(&tracker);
                 }
                 self.record_goal_round_progress(&verdict.evidence, false);
-                self.verify_goal_candidate().await;
+                self.verify_goal_candidate(false).await;
             }
             GoalEvaluatorDecision::Blocked => {
                 self.record_goal_round_progress(&verdict.evidence, false);
@@ -2027,7 +2249,7 @@ impl SessionActor {
                         o.verifying_in_flight = false;
                     }
                 });
-                self.run_verification_stage_for_drain(attempt, policy.max_runs)
+                self.run_verification_stage_for_drain(attempt, policy.max_runs, false)
                     .await
             };
 

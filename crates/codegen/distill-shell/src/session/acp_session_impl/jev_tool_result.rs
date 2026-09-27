@@ -13,6 +13,7 @@
 //! * annotations are capped and clearly marked, so a steered model cannot turn
 //!   them into a channel that grows the context.
 
+use distill_tools::types::output::ToolOutput;
 use std::collections::BTreeMap;
 
 use distill_workspace::jev::catalog::{Ranked, context, selection, verify};
@@ -225,11 +226,23 @@ async fn jev_wants_main_compression(
     original: &str,
     evidence: &str,
     question: &str,
+    key: &crate::jev_cheap::OptionalCompressionKey,
 ) -> bool {
     let criteria = [
-        ("allow".to_owned(), serde_json::json!("one main-model call is likely to save total cost and preserve required evidence")),
-        ("reject".to_owned(), serde_json::json!("pass the original through")),
-        ("defer".to_owned(), serde_json::json!("savings or answer quality are uncertain")),
+        (
+            "allow".to_owned(),
+            serde_json::json!(
+                "one main-model call is likely to save total cost and preserve required evidence"
+            ),
+        ),
+        (
+            "reject".to_owned(),
+            serde_json::json!("pass the original through"),
+        ),
+        (
+            "defer".to_owned(),
+            serde_json::json!("savings or answer quality are uncertain"),
+        ),
     ]
     .into_iter()
     .collect();
@@ -246,6 +259,7 @@ async fn jev_wants_main_compression(
         "source_excerpt": distill_sampling_types::truncate_bytes(evidence, 600),
         "task_question": question,
         "main_model": main_lane.model(),
+        "compression_history": crate::jev_cheap::optional_compression_history(key),
         "candidate_facts": crate::jev_model_facts::model_facts(&[(
             main_lane.model(),
             endpoint.as_str(),
@@ -1016,6 +1030,17 @@ impl SessionActor {
             && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
+            let source_kind = match output {
+                ToolOutput::Bash(bash)
+                    if super::reasoning_gates::looks_like_check_command(&bash.command) =>
+                {
+                    "checks"
+                }
+                ToolOutput::Bash(_) => "shell",
+                ToolOutput::WebSearch(_) => "web_search",
+                ToolOutput::WebFetch(_) => "web_fetch",
+                _ => "task_output",
+            };
             crate::jev::record_item(
                 Lever::ECheapCompress,
                 "eligible",
@@ -1063,6 +1088,7 @@ impl SessionActor {
                                 EXTRACTIVE_TASK,
                                 &evidence,
                                 &evidence_question,
+                                source_kind,
                                 true,
                                 |answer| {
                                     compression_replacement_for_output(
@@ -1088,6 +1114,18 @@ impl SessionActor {
                             "utility",
                             typed_metadata.as_deref(),
                         ) {
+                            let key = crate::jev_cheap::optional_compression_key(
+                                &utility.client.config().endpoint(),
+                                &utility.client.config().model,
+                                EXTRACTIVE_TASK,
+                                &utility.client.config().reasoning_effort,
+                                source_kind,
+                            );
+                            crate::jev_cheap::note_optional_compression_savings(
+                                &key,
+                                body.len(),
+                                candidate.len(),
+                            );
                             crate::jev::record_item(
                                 JevLever::ECheapCompress,
                                 "verify:accept",
@@ -1142,15 +1180,19 @@ impl SessionActor {
                             main_lane.model(),
                             EXTRACTIVE_TASK,
                             effort.as_deref().unwrap_or("provider_default"),
+                            source_kind,
                         );
-                        let main_allowed = crate::jev_cheap::optional_compression_allowed(&main_key);
+                        let main_allowed =
+                            crate::jev_cheap::optional_compression_allowed(&main_key);
                         if main_allowed
                             && jev_wants_main_compression(
                                 &main_lane,
                                 &body,
                                 &evidence,
                                 &evidence_question,
-                            ).await
+                                &main_key,
+                            )
+                            .await
                         {
                             let attempt = super::side_call::auxiliary_attempt(
                                 main_lane.client(),
@@ -1211,6 +1253,11 @@ impl SessionActor {
                                         crate::jev_cheap::note_success(JevLever::ECheapCompress);
                                         crate::jev_cheap::note_optional_compression_success(
                                             &main_key,
+                                        );
+                                        crate::jev_cheap::note_optional_compression_savings(
+                                            &main_key,
+                                            body.len(),
+                                            candidate.len(),
                                         );
                                         crate::jev::record_item(
                                             JevLever::ECheapCompress,
@@ -1556,7 +1603,10 @@ impl SessionActor {
         // C4 reviews only complete, executed edit evidence associated with this result.
         if let Some((change, prose_only)) = review_evidence {
             let conversation = self.chat_state_handle.get_conversation().await;
-            let action = crate::session::acp_session::describe_micro_action(&conversation);
+            let action = crate::session::acp_session::describe_micro_action(
+                &conversation,
+                &self.jev_ledger.borrow().reasoning,
+            );
             let intent = if action.plan.is_empty() {
                 request.clone()
             } else {
@@ -1912,7 +1962,19 @@ mod tests {
         set_utility_review_choices(&["reject"]);
         let allowed = crate::jev::with_session_scope(
             "main-compression-rejected",
-            jev_wants_main_compression(&main_lane, "source text", "source text", "summarize"),
+            jev_wants_main_compression(
+                &main_lane,
+                "source text",
+                "source text",
+                "summarize",
+                &crate::jev_cheap::optional_compression_key(
+                    "test",
+                    "test",
+                    "cite_spans",
+                    "none",
+                    "checks",
+                ),
+            ),
         )
         .await;
         assert!(!allowed);
@@ -2416,6 +2478,9 @@ mod tests {
                 }
                 let rejected_actor = super::super::support::plain_actor().await;
                 install_catalog(&rejected_actor, &rejected_server);
+                rejected_actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
                 set_utility_review_choices(&["allow"; 12]);
                 let rejected_sources = vec![
                     format!(
@@ -3180,6 +3245,7 @@ mod tests {
                         "cite_spans",
                         "source line",
                         "preserve the source line",
+                        "checks",
                         true,
                         |_| true,
                     ),
@@ -3268,6 +3334,7 @@ mod tests {
                             "cite_spans",
                             "source line",
                             "preserve the source line",
+                            "checks",
                             true,
                             |_| true,
                         )
@@ -3305,7 +3372,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
     async fn utility_post_review_states_and_consumer_rejection_are_bounded() {
-        use distill_workspace::jev::types::Answer;
         use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
 
         let local = tokio::task::LocalSet::new();
@@ -3326,7 +3392,7 @@ mod tests {
                 for id in [
                     "utility-post-reject",
                     "utility-post-missing",
-                    "utility-post-low-confidence",
+                    "utility-post-defer",
                     "utility-consumer-reject",
                 ] {
                     server.enqueue_response(
@@ -3369,6 +3435,7 @@ mod tests {
                         "cite_spans",
                         "source line",
                         "preserve the source line",
+                        "checks",
                         true,
                         |_| true,
                     ),
@@ -3389,6 +3456,7 @@ mod tests {
                         "cite_spans",
                         "source line",
                         "preserve the source line",
+                        "checks",
                         true,
                         |_| true,
                     ),
@@ -3397,15 +3465,9 @@ mod tests {
                 assert!(post_missing.is_none());
                 assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
 
-                let mut low_confidence = crate::jev_cheap::test_utility_review_answer("accept");
-                if let Some(Answer::Choice { confidence, .. }) =
-                    low_confidence.answers.get_mut("decision")
-                {
-                    *confidence = Some(0.5);
-                }
                 crate::jev::set_test_decision_answers([
                     Some(crate::jev_cheap::test_utility_review_answer("allow")),
-                    Some(low_confidence),
+                    Some(crate::jev_cheap::test_utility_review_answer("defer")),
                 ]);
                 let post_uncertain = crate::jev::with_session_scope_and_recorder(
                     "e3-utility-post-uncertain",
@@ -3415,6 +3477,7 @@ mod tests {
                         "cite_spans",
                         "source line",
                         "preserve the source line",
+                        "checks",
                         true,
                         |_| true,
                     ),
@@ -3432,6 +3495,7 @@ mod tests {
                         "cite_spans",
                         "source line",
                         "preserve the source line",
+                        "checks",
                         true,
                         |_| false,
                     ),

@@ -12,6 +12,148 @@ use tempfile::TempDir;
 const DEVICE_TEST_OBJECTIVE: &str = "ssh to root@example.test and test that a genbw meter profile does NOT produce aggregate meter data on dnp3 or modbus";
 const STALE_CODE_REVIEW: &str = "please review the PR for config-json-go";
 
+#[tokio::test(flavor = "current_thread")]
+async fn goal_recheck_retires_resolved_gaps_without_completing_pending_work() {
+    use crate::session::goal_classifier::parse_verdict_path_from_prompt;
+    use crate::session::goal_tracker::GoalStatus;
+    use distill_tools::implementations::distill::task::types::{SubagentEvent, SubagentResult};
+
+    tokio::task::LocalSet::new().run_until(async {
+        let tmp = TempDir::new().unwrap();
+        let delivery = tmp.path().join("delivery");
+        std::fs::create_dir(&delivery).unwrap();
+        std::fs::write(delivery.join("cors.rs"), "before\n").unwrap();
+        for args in [
+            vec!["init", "-q"], vec!["add", "."],
+            vec!["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "baseline"],
+        ] {
+            assert!(std::process::Command::new(crate::util::subprocess::git_bin())
+                .args(args).current_dir(&delivery).output().unwrap().status.success());
+        }
+        let baseline = crate::session::goal_classifier::capture_git_baseline(&delivery).await.unwrap();
+        std::fs::write(delivery.join("cors.rs"), "after\n").unwrap();
+        let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        super::rate_limit_backoff_tests::drain_gateway(gateway_rx);
+        let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+        super::rate_limit_backoff_tests::drain_persistence(persistence_rx);
+        let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+        actor.goal_enabled = true;
+        actor.goal_classifier_enabled = true;
+        actor.goal_use_current_model_only = true;
+        actor.goal_tracker = StdArc::new(parking_lot::Mutex::new(
+            crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf()),
+        ));
+        set_goal_harness_for_tests(&actor);
+        start_device_test_goal(&actor);
+        {
+            let mut tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot_mut().unwrap();
+            goal.last_classifier_gaps = Some("The delivery diff captured the wrong repository".into());
+            goal.progress.no_progress_rounds = 3;
+            goal.progress.verification_target = Some(crate::session::goal_evaluator::GoalVerificationTarget {
+                workspace_root: delivery.to_string_lossy().into_owned(), baseline_commit: baseline,
+            });
+            goal.progress.criteria.push(serde_json::from_value(serde_json::json!({
+                "id":"runtime", "requirement":"verify deployed behavior", "source":"user requirement",
+                "status":"pending", "evidence":"", "scope":"development", "invalidated_by":""
+            })).unwrap());
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SubagentEvent>();
+        actor.tool_context.subagent_event_tx = Some(tx);
+        let coordinator = tokio::task::spawn_local(async move {
+            while let Some(event) = rx.recv().await {
+                if let SubagentEvent::Spawn(req) = event {
+                    assert!(req.prompt.contains("Independently recheck ONLY the prior findings"));
+                    assert_eq!(req.cwd.as_deref(), delivery.to_str());
+                    assert!(req.prompt.contains("- cors.rs"));
+                    let path = parse_verdict_path_from_prompt(&req.prompt).unwrap();
+                    tokio::fs::write(path, r#"{"refuted":false,"evidence":"Git diff matches the delivery worktree","confidence":"high"}"#).await.unwrap();
+                    let result = SubagentResult {
+                        success: true, output: StdArc::from("Not Refuted"),
+                        subagent_id: req.id.clone(), child_session_id: req.id.clone(),
+                        ..Default::default()
+                    };
+                    req.result_tx.send(result).unwrap();
+                    break;
+                }
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), actor.verify_goal_candidate(true)).await.unwrap();
+        coordinator.await.unwrap();
+        let tracker = actor.goal_tracker.lock();
+        let goal = tracker.snapshot().unwrap();
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert!(goal.last_classifier_gaps.is_none());
+        assert_eq!(goal.progress.no_progress_rounds, 0);
+        assert_eq!(goal.progress.criteria[0].status, crate::session::goal_evaluator::GoalCriterionStatus::Pending);
+        assert_eq!(goal.classifier_runs_attempted, 1);
+        drop(tracker);
+        actor.goal_tracker.lock().clear();
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn goal_round_pauses_repeated_continue_without_losing_proof() {
+    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
+    use crate::session::goal_tracker::GoalStatus;
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        let verdict = serde_json::json!({
+            "decision": "continue", "evidence": "unchanged report requirement",
+            "next_step": "resolve the required skill", "blocker_key": "",
+            "progress_evidence": "", "needs_review_panel": false,
+            "observations": [], "verification_target": null,
+            "criteria": [{"id":"ui", "requirement":"post-deploy test",
+                "source":"user: test after deploy", "status":"verified",
+                "evidence":"playwright.log:12 PASS", "scope":"abc / development", "invalidated_by":""}]
+        });
+        for _ in 0..4 {
+            server.enqueue_response("/v1/responses", ScriptedResponse::sse(
+                responses_api_script_exact(&verdict.to_string(), "test"),
+            ));
+        }
+        let (actor, _) = actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+        set_goal_harness_for_tests(&actor);
+        start_device_test_goal(&actor);
+        for round in 0..=3 {
+            if round == 1 {
+                actor.chat_state_handle.replace_conversation_for_compaction(vec![
+                    ConversationItem::system("Compacted conversation"),
+                ]);
+                actor.reseed_active_goal_after_compaction().await;
+                assert!(actor.chat_state_handle.get_conversation().await.iter()
+                    .any(|item| item.text_content().contains("playwright.log:12 PASS")));
+            }
+            let checkpoint = round == 1 || round == 3;
+            let worker_rounds = actor.goal_tracker.lock().snapshot().unwrap().total_worker_rounds;
+            let decision = if checkpoint {
+                actor.run_goal_progress_checkpoint().await
+            } else { actor.run_goal_round_end().await };
+            let tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot().unwrap();
+            assert_eq!(goal.progress.no_progress_rounds, round);
+            assert_eq!(goal.progress.criteria[0].evidence, "playwright.log:12 PASS");
+            if round < 3 {
+                assert!(matches!(decision, GoalRoundDecision::Continue(ref text) if checkpoint || text.contains("playwright.log:12 PASS")));
+            } else {
+                assert!(matches!(decision, GoalRoundDecision::EndTurn));
+                assert_eq!(goal.status, GoalStatus::NoProgressPaused);
+            }
+            if checkpoint {
+                assert_eq!(goal.total_worker_rounds, worker_rounds, "a checkpoint does not finish a worker round");
+                assert_eq!(goal.classifier_runs_attempted, 0, "checkpoints never trigger a verifier");
+            }
+        }
+        assert!(actor.goal_tracker.lock().resume());
+        let tracker = actor.goal_tracker.lock();
+        assert_eq!(tracker.snapshot().unwrap().progress.no_progress_rounds, 0);
+        assert_eq!(tracker.snapshot().unwrap().progress.criteria.len(), 1);
+    }).await;
+}
+
 async fn make_goal_actor() -> (StdArc<SessionActor>, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =

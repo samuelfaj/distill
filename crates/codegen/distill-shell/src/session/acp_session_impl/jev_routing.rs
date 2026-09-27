@@ -271,18 +271,22 @@ impl SessionActor {
 
     /// The current repository diff is independent of which editing tool the
     /// Worker used. Untracked paths are listed so a reviewer can open them.
-    async fn workspace_review_diff(&self) -> Option<String> {
+    async fn workspace_review_diff(&self) -> Option<(String, bool)> {
         let cwd = self.tool_context.cwd.as_str();
+        let mut reusable = self.goal_tracker.lock().snapshot()
+            .and_then(|goal| goal.progress.verification_target.as_ref())
+            .is_none_or(|target| target.workspace_root == cwd);
         let mut parts = Vec::new();
         for args in [
-            &["status", "--short", "--untracked-files=all"][..],
-            &["diff", "--no-ext-diff", "--no-textconv", "--unified=3"][..],
+            &["status", "--short", "--untracked-files=all", "--ignore-submodules=none"][..],
+            &["diff", "--no-ext-diff", "--no-textconv", "--unified=3", "--ignore-submodules=none"][..],
             &[
                 "diff",
                 "--cached",
                 "--no-ext-diff",
                 "--no-textconv",
                 "--unified=3",
+                "--ignore-submodules=none",
             ][..],
         ] {
             let output = tokio::process::Command::new("git")
@@ -296,6 +300,11 @@ impl SessionActor {
                 return None;
             }
             let text = String::from_utf8_lossy(&output.stdout);
+            if (args[0] == "status" && text.lines().any(|line| line.starts_with("?? ")))
+                || text.lines().any(|line| line.contains("Subproject commit") && line.ends_with("-dirty"))
+            {
+                reusable = false;
+            }
             if !text.trim().is_empty() {
                 parts.push(if args[0] == "status" {
                     format!("Changed paths (including untracked files):\n{text}")
@@ -305,7 +314,7 @@ impl SessionActor {
             }
         }
         let diff = parts.join("\n");
-        Some(if diff.len() > 48_000 {
+        let displayed = if diff.len() > 48_000 {
             format!(
                 "{}\n[workspace diff truncated; inspect the files directly; full diff hash: {}]",
                 diff.chars().take(48_000).collect::<String>(),
@@ -313,7 +322,8 @@ impl SessionActor {
             )
         } else {
             diff
-        })
+        };
+        Some((displayed, reusable))
     }
 
     /// A child policy may opt out of Jev's model-changing lanes without
@@ -893,7 +903,7 @@ impl SessionActor {
         let mut state = micro_action_state_json(
             &main_profile.name,
             &main.model,
-            describe_micro_action(&request.items),
+            describe_micro_action(&request.items, &self.jev_ledger.borrow().reasoning),
             request.items.len(),
             &bounded_request(human_request),
             estimate,
@@ -1144,6 +1154,10 @@ impl SessionActor {
         } else {
             None
         };
+        // A truncated report has not been fully covered by the original review.
+        let reusable = workspace_diff.as_ref().is_some_and(|(_, reusable)| *reusable)
+            && final_message.chars().count() <= REVIEW_MESSAGE_CHARS;
+        let workspace_diff = workspace_diff.map(|(diff, _)| diff);
         if !required && !self
             .jev_wants_delivery_review(
                 &main,
@@ -1157,15 +1171,34 @@ impl SessionActor {
         {
             return None;
         }
-        let (recorded_changes, checks) = {
+        let (recorded_changes, checks, check_identity) = {
             let ledger = self.jev_ledger.borrow();
             (
                 ledger.reasoning.review_changes(),
                 ledger.reasoning.review_checks(),
+                ledger.reasoning.review_check_identity(),
             )
         };
+        // A code approval is scoped to the repository revision and complete diff.
+        // Untracked content is not in git diff, so it cannot use this shortcut.
+        let revision = if reusable {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(self.tool_context.cwd.as_str())
+                .args(["rev-parse", "HEAD"])
+                .kill_on_drop(true)
+                .output()
+                .await
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        } else {
+            None
+        };
         let changes = match workspace_diff {
-            Some(diff) if diff.is_empty() && required => "Current repository diff is empty.".to_owned(),
+            Some(diff) if diff.is_empty() && required => {
+                "Current repository diff is empty.".to_owned()
+            }
             Some(diff) if !diff.is_empty() => {
                 format!("Current repository diff (may include pre-existing work):\n{diff}")
             }
@@ -1173,10 +1206,40 @@ impl SessionActor {
             _ => recorded_changes,
         };
         let final_excerpt: String = final_message.chars().take(REVIEW_MESSAGE_CHARS).collect();
-        let artifact = format!("{changes}\nChecks:\n{checks}\nFinal:\n{final_excerpt}");
-        if required && !self.jev_ledger.borrow().reasoning.has_new_review_artifact(&artifact) {
+        let evidence = format!(
+            "{}\n{}\n{changes}\n{check_identity}",
+            self.tool_context.cwd,
+            revision.as_deref().unwrap_or("unknown revision")
+        );
+        let evidence_key = blake3::hash(evidence.as_bytes()).to_hex().to_string();
+        let approved = revision.as_ref().and_then(|_| {
+            self.jev_ledger
+                .borrow()
+                .reasoning
+                .approved_review(&evidence_key)
+                .map(|(report, verdict)| (report.to_owned(), verdict.to_owned()))
+        });
+        let report_only = approved.is_some();
+        let artifact = format!(
+            "{evidence_key}\nFinal:\n{}",
+            final_message
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        if required
+            && !self
+                .jev_ledger
+                .borrow()
+                .reasoning
+                .has_new_review_artifact(&artifact)
+            && (revision.is_some() || !new_work)
+        {
             if phase == FlowPhase::Correcting {
-                self.jev_ledger.borrow_mut().reasoning.stop_unresolved_review();
+                self.jev_ledger
+                    .borrow_mut()
+                    .reasoning
+                    .stop_unresolved_review();
                 return Some("The review requested corrections, but the diff, checks, and final response did not change. Stop the review loop and report the unresolved findings.".to_owned());
             }
             return None;
@@ -1188,15 +1251,25 @@ impl SessionActor {
                 ledger.reasoning.note_review_artifact(artifact);
             }
         }
-        let work = work_since_request(&conversation);
+        let work = if report_only {
+            Vec::new()
+        } else {
+            work_since_request(&conversation)
+        };
         // The closing message has a section of its own, whole.
         let delivered = work
             .iter()
             .rev()
             .take_while(|entry| entry.from_main_model())
             .count();
-        let planner_advice = self.jev_ledger.borrow().reasoning.planner_advice().unwrap_or_default().to_owned();
-        let role_review = if !changes.trim().is_empty() {
+        let planner_advice = self
+            .jev_ledger
+            .borrow()
+            .reasoning
+            .planner_advice()
+            .unwrap_or_default()
+            .to_owned();
+        let role_review = if !report_only && !changes.trim().is_empty() {
             self.reasoning_role(
                 "code-reviewer",
                 format!(
@@ -1212,17 +1285,31 @@ impl SessionActor {
         } else {
             None
         };
-        let brief = ConsultBrief {
-            kind: ConsultKind::Review,
-            purpose: "review the work before the main model delivers it".to_owned(),
-            sections: vec![
-                ("Changes", changes),
-                ("Checks", checks),
-                (
-                    "Main model's final message",
-                    final_message.chars().take(REVIEW_MESSAGE_CHARS).collect(),
-                ),
-            ],
+        let brief = if let Some((previous_report, code_verdict)) = &approved {
+            ConsultBrief {
+                kind: ConsultKind::Review,
+                purpose: "verify only the changed delivery report against the existing independent code approval".to_owned(),
+                sections: vec![
+                    ("Existing code approval", code_verdict.clone()),
+                    ("Previously approved report", previous_report.clone()),
+                    ("Current checks", checks),
+                    ("Changed report", final_message.clone()),
+                    ("Scope", "The repository revision, diff, and check outcomes are unchanged. Reuse the code approval. Check new factual claims and evidence limits in the report; return VERDICT: revise for unsupported claims or newly required verification. Do not claim new tests were run.".to_owned()),
+                ],
+            }
+        } else {
+            ConsultBrief {
+                kind: ConsultKind::Review,
+                purpose: "review the work before the main model delivers it".to_owned(),
+                sections: vec![
+                    ("Changes", changes),
+                    ("Checks", checks),
+                    (
+                        "Main model's final message",
+                        final_message.chars().take(REVIEW_MESSAGE_CHARS).collect(),
+                    ),
+                ],
+            }
         };
         let from_subagent = role_review.is_some();
         let review = if let Some(review) = role_review {
@@ -1290,6 +1377,15 @@ impl SessionActor {
                 ))
             }
             ReviewVerdict::Approve => {
+                if required && revision.is_some() {
+                    let code_verdict =
+                        approved.map_or_else(|| review.clone(), |(_, verdict)| verdict);
+                    self.jev_ledger.borrow_mut().reasoning.approve_review(
+                        evidence_key,
+                        final_message,
+                        code_verdict,
+                    );
+                }
                 crate::jev::record_gate("review:approve", "delivered after review");
                 self.send_hook_annotation(&format!(
                     "\u{2713} {review_label} ({reviewer}) approved the delivery"
@@ -1818,7 +1914,7 @@ impl SessionActor {
     ) -> serde_json::Value {
         let conversation = self.chat_state_handle.get_conversation().await;
         let request = self.jev_last_human_request().await.unwrap_or_default();
-        let action = describe_micro_action(&conversation);
+        let action = describe_micro_action(&conversation, &self.jev_ledger.borrow().reasoning);
         micro_action_state_json(
             model_name,
             &cfg.model,
@@ -2145,12 +2241,27 @@ impl MicroAction {
 }
 
 /// Reads the conversation tail into one bounded step description.
-pub(super) fn describe_micro_action(conversation: &[ConversationItem]) -> MicroAction {
+pub(super) fn describe_micro_action(
+    conversation: &[ConversationItem],
+    facts: &super::reasoning_gates::ReasoningGates,
+) -> MicroAction {
     let mut action = MicroAction {
         step: "first_step",
         ..Default::default()
     };
     let mut call_names: BTreeMap<String, String> = BTreeMap::new();
+    // Results follow calls in the transcript, so index the calls before walking backwards.
+    for item in conversation.iter().rev().take(RECENT_ITEMS) {
+        match item {
+            ConversationItem::Assistant(assistant) => {
+                for call in &assistant.tool_calls {
+                    call_names.insert(call.id.to_string(), call.name.clone());
+                }
+            }
+            ConversationItem::User(_) => break,
+            _ => {}
+        }
+    }
     let mut saw_result = false;
     for item in conversation.iter().rev().take(RECENT_ITEMS) {
         match item {
@@ -2162,10 +2273,10 @@ pub(super) fn describe_micro_action(conversation: &[ConversationItem]) -> MicroA
                         .map(String::as_str)
                         .unwrap_or("tool");
                     let excerpt = first_line(&result.content, STEP_EXCERPT_CHARS);
-                    let kind = if looks_like_failure(&result.content) {
-                        "failure"
-                    } else {
-                        "output"
+                    let kind = match facts.tool_failed(&result.tool_call_id) {
+                        Some(true) => "failure",
+                        Some(false) => "success",
+                        None => "unknown status",
                     };
                     action.last_results.push(format!(
                         "{tool}: {kind}, {} bytes — {excerpt}",
@@ -2175,7 +2286,6 @@ pub(super) fn describe_micro_action(conversation: &[ConversationItem]) -> MicroA
             }
             ConversationItem::Assistant(assistant) => {
                 for call in &assistant.tool_calls {
-                    call_names.insert(call.id.to_string(), call.name.clone());
                     if action.last_calls.len() < MAX_STEP_CALLS {
                         let intent = first_line(&call.arguments, STEP_EXCERPT_CHARS);
                         action.last_calls.push(format!("{} — {intent}", call.name));
@@ -2211,19 +2321,6 @@ fn first_line(text: &str, limit: usize) -> String {
         .unwrap_or("");
     let normalized: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
     normalized.chars().take(limit).collect()
-}
-
-/// Coarse read of a tool result: does the step that follows have a failure to
-/// work through? Deliberately shallow — the decision gets the excerpt too.
-fn looks_like_failure(content: &str) -> bool {
-    let head: String = content
-        .chars()
-        .take(2_000)
-        .collect::<String>()
-        .to_lowercase();
-    ["error", "failed", "panic", "traceback", "cannot find"]
-        .iter()
-        .any(|needle| head.contains(needle))
 }
 
 /// One level of a model's own effort menu.
@@ -2450,7 +2547,7 @@ mod tests {
                         .jev_ledger
                         .borrow_mut()
                         .reasoning
-                        .note_tool_result(tool, &args, &output);
+                        .note_tool_result("", tool, &args, &output);
                 };
                 crate::jev::set_test_decision_answers([
                     Some(plan_answers((routing::PLAN_NOW_LABEL, 0.9), 2.0)),
@@ -2595,7 +2692,7 @@ mod tests {
                     assert!(request.items.last().unwrap().text_content().contains("Inspect parser.rs"));
                     assert_eq!(actor.jev_ledger.borrow().reasoning.consults(), &[ConsultKind::Plan]);
                     assert_eq!(server.request_count_for("/v1/chat/completions"), 0);
-                    actor.jev_ledger.borrow_mut().reasoning.note_tool_result(
+                    actor.jev_ledger.borrow_mut().reasoning.note_tool_result("",
                         "read_file", &serde_json::json!({"path": "parser.rs"}), &succeeded(),
                     );
                     let mut next = ConversationRequest {
@@ -2699,7 +2796,7 @@ mod tests {
                 actor.chat_state_handle.push_assistant_response(
                     ConversationItem::assistant("Done: updated parser and ran tests.")
                 );
-                actor.jev_ledger.borrow_mut().reasoning.note_tool_result(
+                actor.jev_ledger.borrow_mut().reasoning.note_tool_result("",
                     "run_terminal_command",
                     &serde_json::json!({"command": "cargo test parser"}),
                     &ToolOutput::Bash(BashOutput {
@@ -2727,6 +2824,23 @@ mod tests {
                 assert!(actor.jev_delivery_review().await.is_none(), "approval permits delivery");
                 assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Approved);
                 assert!(actor.jev_delivery_review().await.is_none(), "unchanged work is not reviewed again");
+                reasoner_says(&server, "VERDICT: revise\nThe new production deployment claim is unsupported by the approved evidence.");
+                actor.chat_state_handle.push_assistant_response(
+                    ConversationItem::assistant("The parser was fixed, tested, and deployed to production.")
+                );
+                let feedback = actor.jev_delivery_review().await.expect("new claims still need verification");
+                assert!(feedback.contains("deployment claim is unsupported"));
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Correcting);
+                reasoner_says(&server, "VERDICT: approve\nThe report now stays within the existing code and test evidence.");
+                actor.chat_state_handle.push_assistant_response(
+                    ConversationItem::assistant("The parser was fixed and the parser tests passed. Deployment was not performed.")
+                );
+                assert!(actor.jev_delivery_review().await.is_none());
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 2,
+                    "report changes use bounded claim verification, not another code-reviewer");
+                assert!(server.request_bodies().iter().any(|body| body.to_string()
+                    .contains("Check new factual claims and evidence limits in the report")));
+                assert_eq!(actor.jev_ledger.borrow().reasoning.flow_phase(), FlowPhase::Approved);
             }).await;
             responder.await.expect("child responder");
             crate::jev::clear_test_decision_answers();
@@ -2899,7 +3013,7 @@ mod tests {
                         ledger.reasoning.set_plan(PlanGate::Done);
                         for _ in 0..6 { ledger.reasoning.note_round(); }
                         for _ in 0..2 {
-                            ledger.reasoning.note_tool_result(
+                            ledger.reasoning.note_tool_result("",
                                 "run_terminal_command",
                                 &serde_json::json!({"command": "cargo test parser"}),
                                 &failed(),
@@ -2918,7 +3032,7 @@ mod tests {
                         let mut ledger = actor.jev_ledger.borrow_mut();
                         for _ in 0..3 { ledger.reasoning.note_round(); }
                         for _ in 0..2 {
-                            ledger.reasoning.note_tool_result(
+                            ledger.reasoning.note_tool_result("",
                                 "run_terminal_command",
                                 &serde_json::json!({"command": "cargo test parser"}),
                                 &failed(),
@@ -2987,7 +3101,7 @@ mod tests {
             actor.chat_state_handle.push_assistant_response(
                 ConversationItem::assistant("Done: fixed the parser.")
             );
-            actor.jev_ledger.borrow_mut().reasoning.note_tool_result(
+            actor.jev_ledger.borrow_mut().reasoning.note_tool_result("",
                 "run_terminal_command",
                 &serde_json::json!({"command": "printf 'new parser\\n' > feature.rs"}),
                 &succeeded(),
@@ -3058,7 +3172,7 @@ mod tests {
                             .jev_ledger
                             .borrow_mut()
                             .reasoning
-                            .note_tool_result("list_dir", &serde_json::json!({"path": "."}), &succeeded());
+                            .note_tool_result("", "list_dir", &serde_json::json!({"path": "."}), &succeeded());
                     }
                 })
                 .await;
@@ -3125,7 +3239,7 @@ mod tests {
                     }
                 };
                 let edit = |actor: &SessionActor, lines| {
-                    actor.jev_ledger.borrow_mut().reasoning.note_tool_result(
+                    actor.jev_ledger.borrow_mut().reasoning.note_tool_result("",
                         "search_replace",
                         &serde_json::json!({"path": "src/feature.rs"}),
                         &edited(lines),
@@ -3218,7 +3332,7 @@ mod tests {
                     ledger.reasoning.set_plan(PlanGate::Done);
                     for _ in 0..6 { ledger.reasoning.note_round(); }
                     for _ in 0..2 {
-                        ledger.reasoning.note_tool_result(
+                        ledger.reasoning.note_tool_result("",
                             "run_terminal_command",
                             &serde_json::json!({"command": "cargo test parser"}),
                             &failed(),
@@ -3428,7 +3542,7 @@ mod tests {
                         .jev_ledger
                         .borrow_mut()
                         .reasoning
-                        .note_tool_result(tool, &args, &output);
+                        .note_tool_result("", tool, &args, &output);
                 };
                 note("read_file", serde_json::json!({"path": "parser.rs"}), succeeded());
                 crate::jev::set_test_decision_answers([
@@ -3720,7 +3834,9 @@ mod tests {
                 "error[E0308]: mismatched types --> src/components/Board.tsx:12",
             ),
         ];
-        let action = describe_micro_action(&turns);
+        let mut facts = super::super::reasoning_gates::ReasoningGates::default();
+        facts.note_tool_result("call-1", "write_file", &serde_json::json!({}), &failed());
+        let action = describe_micro_action(&turns, &facts);
         assert_eq!(action.step, "after_tool_results");
         assert!(
             action.last_calls[0].starts_with("write_file"),
@@ -3733,15 +3849,28 @@ mod tests {
             action.last_results
         );
         assert!(action.last_results[0].contains("error[E0308]"));
+        assert!(action.last_results[0].starts_with("write_file: failure"));
         assert_eq!(
             action.plan, "",
             "no assistant text yet: the plan stays empty rather than invented"
         );
 
         // A fresh request has no step on the board.
-        let fresh = describe_micro_action(&[ConversationItem::user("faça x")]);
+        let fresh = describe_micro_action(&[ConversationItem::user("faça x")], &Default::default());
         assert_eq!(fresh.step, "first_step");
         assert!(fresh.last_calls.is_empty());
+
+        // Text containing error-related words cannot override a successful tool status.
+        let successful = vec![
+            ConversationItem::user("run tests"),
+            turns[1].clone(),
+            ConversationItem::tool_result("call-1", "src/error.rs: 12 passed; 0 failed"),
+        ];
+        facts.note_tool_result("call-1", "write_file", &serde_json::json!({}), &succeeded());
+        let action = describe_micro_action(&successful, &facts);
+        assert!(action.last_results[0].starts_with("write_file: success"));
+        let unknown = describe_micro_action(&successful, &Default::default());
+        assert!(unknown.last_results[0].starts_with("write_file: unknown status"));
     }
 
     /// Menu levels sort by cost, and two levels may share one value.

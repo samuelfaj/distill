@@ -151,9 +151,10 @@ impl SessionActor {
             .task_wake_suppressed
             .as_ref()
             .is_some_and(|gate| gate.get());
+        let goal_stopped = self.goal_stopped_for_user();
         let mut state = self.state.lock().await;
         let state_suppressed = state.notifications_suppressed;
-        let admitted = !gate_suppressed && !state_suppressed;
+        let admitted = !gate_suppressed && !state_suppressed && !goal_stopped;
         if !admitted {
             Self::push_task_wake_fallback(&mut state, fallback);
             drop(state);
@@ -164,6 +165,7 @@ impl SessionActor {
                     "task_id": task_id,
                     "gate": gate_suppressed,
                     "state": state_suppressed,
+                    "goal_stopped": goal_stopped,
                     "admitted": false,
                 })),
             );
@@ -2120,6 +2122,7 @@ pub(super) async fn run_session(
                             let state_suppressed = session.state.lock().await.notifications_suppressed;
                             let wake_suppressed = state_suppressed
                                 || session.goal_loop_active()
+                                || session.goal_stopped_for_user()
                                 || session
                                     .tool_context
                                     .task_wake_suppressed

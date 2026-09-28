@@ -897,7 +897,7 @@ impl SessionActor {
                 ok_end_turn(0, None)
             }
             // GoalResume is intercepted in handle_prompt (like GoalSet) so a successful resume flows through to inference; see `resume_goal`
-            BuiltinAction::GoalResume => {
+            BuiltinAction::GoalResume { .. } => {
                 unreachable!("GoalResume is intercepted in handle_prompt")
             }
             BuiltinAction::GoalClear => {

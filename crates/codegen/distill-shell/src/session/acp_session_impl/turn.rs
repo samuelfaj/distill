@@ -725,9 +725,9 @@ impl SessionActor {
                             }
                         }
                     }
-                    BuiltinAction::GoalResume => {
+                    BuiltinAction::GoalResume { guidance } => {
                         distill_telemetry::session_ctx::log_event(slash_used);
-                        match self.resume_goal().await {
+                        match self.resume_goal(guidance.as_deref()).await {
                             GoalResumeOutcome::Inference { reminder, user_msg } => {
                                 self.send_slash_command_output(&user_msg).await;
                                 vec![text_block(reminder)]
@@ -1372,6 +1372,11 @@ impl SessionActor {
                             salvage.round_boundary();
                             self.inject_goal_continuation_message(directive).await;
                             continue;
+                        }
+                        // The goal just stopped for the user: no delivery review or
+                        // stop-gate continuation may keep working on it meanwhile.
+                        if self.goal_stopped_for_user() {
+                            break round;
                         }
                     } else {
                         tracing::info!(

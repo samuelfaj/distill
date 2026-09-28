@@ -399,6 +399,18 @@ impl SessionActor {
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
         let tool_calls = self.reject_excess_media_gen_calls(tool_calls).await?;
+        // The commit before this turn's first tool runs, so a delivery review
+        // also sees work the turn committed.
+        if !tool_calls.is_empty() && self.jev_ledger.borrow().reasoning.needs_turn_baseline() {
+            let head = crate::session::goal_classifier::capture_git_baseline(
+                self.tool_context.cwd.as_path(),
+            )
+            .await;
+            self.jev_ledger
+                .borrow_mut()
+                .reasoning
+                .set_turn_baseline(head);
+        }
         if !tool_calls.is_empty() {
             if tool_calls.len() > 1 {
                 let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);

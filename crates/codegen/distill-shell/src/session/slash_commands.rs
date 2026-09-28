@@ -345,10 +345,19 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         workflow_projection: WorkflowProjection::None,
         resolve: |args| {
             let trimmed = args.trim();
+            // `/goal resume <text>` answers a paused goal instead of starting a
+            // new goal named "resume …".
+            if let Some((verb, guidance)) = trimmed.split_once(char::is_whitespace)
+                && verb.eq_ignore_ascii_case("resume")
+            {
+                return BuiltinAction::GoalResume {
+                    guidance: Some(guidance.trim().to_owned()),
+                };
+            }
             match trimmed.to_lowercase().as_str() {
                 "" | "status" => BuiltinAction::GoalStatus,
                 "pause" => BuiltinAction::GoalPause,
-                "resume" => BuiltinAction::GoalResume,
+                "resume" => BuiltinAction::GoalResume { guidance: None },
                 "clear" => BuiltinAction::GoalClear,
                 _ => {
                     let (objective, token_budget) = parse_goal_budget(trimmed);
@@ -1279,7 +1288,10 @@ pub(super) enum BuiltinAction {
     },
     GoalStatus,
     GoalPause,
-    GoalResume,
+    /// `guidance`: the user's decision given with `/goal resume <text>`.
+    GoalResume {
+        guidance: Option<String>,
+    },
     GoalClear,
     DeepResearch {
         query: String,
@@ -1321,7 +1333,7 @@ impl BuiltinAction {
             BuiltinAction::GoalSet { .. }
             | BuiltinAction::GoalStatus
             | BuiltinAction::GoalPause
-            | BuiltinAction::GoalResume
+            | BuiltinAction::GoalResume { .. }
             | BuiltinAction::GoalClear => "goal",
             BuiltinAction::DeepResearch { .. } => "deep-research",
             BuiltinAction::WorkflowManage { .. } => "workflow",
@@ -1353,10 +1365,10 @@ impl BuiltinAction {
             BuiltinAction::Feedback { text } => !text.is_empty(),
             BuiltinAction::MemoryBrowse => false,
             BuiltinAction::GoalSet { .. } => true,
-            BuiltinAction::GoalStatus
-            | BuiltinAction::GoalPause
-            | BuiltinAction::GoalResume
-            | BuiltinAction::GoalClear => false,
+            BuiltinAction::GoalResume { guidance } => guidance.is_some(),
+            BuiltinAction::GoalStatus | BuiltinAction::GoalPause | BuiltinAction::GoalClear => {
+                false
+            }
             BuiltinAction::DeepResearch { .. } => true,
             BuiltinAction::WorkflowManage { .. } => true,
             BuiltinAction::WorkflowLaunch { input, .. } => !input.is_empty(),

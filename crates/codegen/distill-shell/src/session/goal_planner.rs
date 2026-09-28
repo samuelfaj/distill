@@ -279,6 +279,7 @@ impl ChannelSpawner {
         model: Option<String>,
         harness_agent_type: Option<String>,
     ) -> Result<String, SpawnError> {
+        let fork_context = model.is_none();
         let request = SubagentRequest {
             id: id.to_string(),
             prompt,
@@ -298,7 +299,10 @@ impl ChannelSpawner {
             surface_completion: false,
             // Goal roles are never auto-backgrounded: the planner runs until it finishes or the user interrupts.
             await_to_completion: true,
-            fork_context: true,
+            // A verbatim fork reuses the parent's cached prefix on the parent's model; a planner on
+            // another model (the reasoning model) starts from its own prompt instead of a
+            // conversation written for a different provider.
+            fork_context,
             owner: SubagentOwner::Task,
             cancel_token: self.cancel_token.clone(),
             spawn_root: Default::default(),

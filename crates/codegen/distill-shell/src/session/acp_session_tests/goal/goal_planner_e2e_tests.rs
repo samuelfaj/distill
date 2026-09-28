@@ -1160,7 +1160,7 @@ async fn lifecycle_fail_pause_resume_retry_success() {
             }
             assert_eq!(spawn_count.load(SeqOrd::SeqCst), 1);
 
-            let _ = actor.resume_goal().await;
+            let _ = actor.resume_goal(None).await;
 
             let snap = actor.goal_tracker.lock().snapshot().cloned().unwrap();
             assert_eq!(
@@ -1207,7 +1207,7 @@ async fn lifecycle_fail_pause_resume_retry_fail_repauses() {
             actor.maybe_run_goal_planner("do X").await;
             assert!(actor.goal_tracker.lock().status().unwrap().is_paused());
 
-            let outcome = actor.resume_goal().await;
+            let outcome = actor.resume_goal(None).await;
             // The planner re-failed and the goal re-paused, so resume must end the turn (Message), not flow through to inference on a paused goal
             assert!(
                 matches!(outcome, GoalResumeOutcome::Message(_)),
@@ -1249,7 +1249,7 @@ async fn lifecycle_resume_with_plan_does_not_re_fire_planner() {
                 )
                 .await;
 
-            let _ = actor.resume_goal().await;
+            let _ = actor.resume_goal(None).await;
 
             assert_eq!(
                 spawn_count.load(SeqOrd::SeqCst),
@@ -1491,7 +1491,8 @@ async fn goal_resume_reminder_is_plan_aware_when_planner_enabled() {
                 )
                 .await;
 
-            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal().await else {
+            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal(None).await
+            else {
                 panic!("resumed paused goal must flow through to inference");
             };
 
@@ -1576,7 +1577,7 @@ async fn resume_after_planner_failure_refires_planner_and_reports_failure_again(
             actor.maybe_run_goal_planner("do X").await;
             assert!(actor.goal_tracker.lock().status().unwrap().is_paused());
 
-            let GoalResumeOutcome::Message(msg) = actor.resume_goal().await else {
+            let GoalResumeOutcome::Message(msg) = actor.resume_goal(None).await else {
                 panic!("a re-paused resume must end the turn");
             };
 
@@ -1615,7 +1616,8 @@ async fn resume_after_planner_failure_succeeds_without_infra_recap() {
                 Some(crate::session::goal_tracker::GoalStatus::InfraPaused)
             );
 
-            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal().await else {
+            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal(None).await
+            else {
                 panic!("a published plan must flow through to inference");
             };
 
@@ -1649,7 +1651,8 @@ async fn resume_with_planner_disabled_keeps_infra_recap() {
                 )
                 .await;
 
-            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal().await else {
+            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal(None).await
+            else {
                 panic!("an infra resume must flow through to inference");
             };
 

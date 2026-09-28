@@ -164,7 +164,7 @@ impl<F: FnOnce(&mut crate::session::goal_tracker::GoalTracker)> Drop for Tracker
     }
 }
 
-/// Result of [`SessionActor::resume_goal()`] (`/goal resume`).
+/// Result of [`SessionActor::resume_goal`] (`/goal resume`).
 pub(super) enum GoalResumeOutcome {
     /// Resume/nudge succeeded: run an inference turn seeded with `reminder` as the turn content; `user_msg` is the slash-command output.
     Inference { reminder: String, user_msg: String },
@@ -1048,6 +1048,17 @@ impl SessionActor {
                 == Some(crate::session::goal_tracker::GoalStatus::Active)
     }
 
+    /// The harness stopped the goal for the user: background completions wait
+    /// for the user's next turn instead of starting autonomous work.
+    pub(super) fn goal_stopped_for_user(&self) -> bool {
+        self.goal_harness_enabled()
+            && self
+                .goal_tracker
+                .lock()
+                .status()
+                .is_some_and(|status| status.is_stopped_by_harness())
+    }
+
     /// Tag `task_id`s the goal model spawned itself during the goal turn as goal-turn origin (see [`Self::goal_turn_task_ids`]).
     /// No-op when the goal loop isn't active.
     pub(super) fn record_goal_turn_task_ids(&self, task_ids: impl IntoIterator<Item = String>) {
@@ -1449,8 +1460,12 @@ impl SessionActor {
             .lock()
             .expect("current_prompt_id mutex poisoned")
             .clone();
-        // A mirror-child fork copies the parent conversation verbatim, so it must use the parent model to reuse the parent's cached prefix
-        let role_override = crate::session::goal_planner::RoleSpawnOverride::default();
+        // Planning is the goal's judgment, so it runs on the reasoning model when one is configured.
+        // Without one, a mirror-child fork copies the parent conversation verbatim on the parent model to reuse its cached prefix.
+        let role_override = crate::session::goal_planner::RoleSpawnOverride {
+            model: self.goal_reasoning_model().await.map(|(id, _)| id),
+            agent_type: None,
+        };
         if !matches!(
             self.goal_role_models.planner,
             crate::agent::config::GoalRoleModelChoice::InheritCurrent
@@ -1461,6 +1476,7 @@ impl SessionActor {
         }
         let tool_names = self.resolve_inherit_role_tool_names().await;
         let inherit_tool_names = tool_names.clone();
+        let role_override_model = role_override.model.clone();
         let spawner: std::sync::Arc<dyn crate::session::goal_planner::GoalPlannerSpawner> =
             std::sync::Arc::new(crate::session::goal_planner::ChannelSpawner {
                 event_tx,
@@ -1486,7 +1502,10 @@ impl SessionActor {
                 context: &context,
                 plan_file: &attempt_plan_file,
                 attempt,
-                model_id: crate::session::goal_planner::effective_role_model_id(None, &model_id),
+                model_id: crate::session::goal_planner::effective_role_model_id(
+                    role_override_model.as_deref(),
+                    &model_id,
+                ),
                 tool_names: &tool_names,
                 inherit_tool_names: &inherit_tool_names,
             },

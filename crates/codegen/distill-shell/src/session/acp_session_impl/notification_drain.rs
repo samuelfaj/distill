@@ -517,6 +517,12 @@ impl SessionActor {
             self.reconcile_live_orphaned_subagents().await;
         }
 
+        // A goal the harness stopped for the user holds its notifications: they
+        // reach the user's next turn instead of starting autonomous work.
+        if self.goal_stopped_for_user() {
+            return;
+        }
+
         // Auto-wake notification turns are DROPPED both while the goal loop is active AND after the goal completes.
         // While active, a task or monitor completion turn would pull a weak model off the goal continuation.
         // After the goal completes the autonomous run is over; late dev-server completions should leave the session idle, not spawn post-goal turns.

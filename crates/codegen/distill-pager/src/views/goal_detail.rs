@@ -262,6 +262,11 @@ fn humanize_goal_event(event: &str, detail: Option<&str>) -> String {
             Some(d) => format!("Stopped early: {d}"),
             None => "Stopped early".into(),
         },
+        "escalated_to_reasoning" => match phrase(detail) {
+            Some(d) => format!("Reasoning model took over: {d}"),
+            None => "Reasoning model took over".into(),
+        },
+        "escalation_resolved" => "Progress restored; Worker continues".into(),
         other => {
             let mut s = strip_control_chars(&other.replace('_', " "), false);
             if let Some(c) = s.get_mut(0..1) {

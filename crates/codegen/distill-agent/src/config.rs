@@ -1557,7 +1557,10 @@ impl AgentDefinition {
             permission_mode: PermissionMode::Plan,
             prompt_body: Some(
                 "Review the supplied change independently against its goal and acceptance criteria. \
-                 Inspect relevant files and test evidence. Report only concrete defects with a path, \
+                 Where the user's request explicitly overrides a project instruction, judge by the \
+                 request. Inspect relevant files and test evidence. Checks you receive were captured \
+                 from real runs; being unable to rerun or view one is an evidence limit to report, \
+                 not a defect. Report only concrete defects with a path, \
                  location, impact and how to verify them. Distinguish verified defects from uncertainty. \
                  Do not edit files or claim checks you did not run. If no defect is supported, say so \
                  and state the limits of the review."
@@ -1576,7 +1579,7 @@ impl AgentDefinition {
         Self {
             description: "Resolve one diagnosed blocker and report the verification.".to_string(),
             tool_config,
-            prompt_body: Some("Resolve the supplied blocker with the smallest correct change. Follow project instructions, run the relevant check, and report the actual diff and result. Stop and report the blocker if it cannot be resolved within your turn limit.".to_string()),
+            prompt_body: Some("Resolve the supplied blocker with the smallest correct change. Follow the user's request and project instructions; the request wins where it explicitly overrides one. Run the relevant check, and report the actual diff and result. Stop and report the blocker if it cannot be resolved within your turn limit.".to_string()),
             inject_default_tools: false,
             max_turns: Some(5),
             ..Self::base(BuiltinAgentName::ReasoningExecutor, "")
@@ -2623,7 +2626,11 @@ description: Test default tool config
             .map(|tool| tool.id.as_str())
             .collect();
         assert!(!ids.iter().any(|id| id.contains("bash") || id.contains("edit")));
-        assert!(definition.prompt_body.unwrap().contains("concrete defects"));
+        let prompt = definition.prompt_body.unwrap();
+        assert!(prompt.contains("concrete defects"));
+        // A reviewer holding a repository rule over the user's explicit request
+        // kept rejecting the delivery the user asked for.
+        assert!(prompt.contains("explicitly overrides a project instruction, judge by the"));
     }
     #[test]
     fn test_all_builtins_have_inherit_model() {

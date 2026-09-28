@@ -291,6 +291,76 @@ pub(crate) async fn validate_verification_target(
     Ok(())
 }
 
+/// One git command of a worktree fingerprint. The goal's progress check runs
+/// every few tool rounds, so it must not wait as long as a full diff capture;
+/// a slow repository just loses the fingerprint signal for that evaluation.
+const FINGERPRINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Untracked files whose size and modification time join the fingerprint.
+const FINGERPRINT_UNTRACKED_MAX: usize = 5_000;
+
+/// A delivery worktree's state as the goal's progress check sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceState {
+    /// Changes with a commit, any edit to a tracked file, or a new, edited or
+    /// removed untracked file; repeated reads of the same state keep it.
+    pub fingerprint: String,
+    /// Paths that differ from HEAD, then untracked paths.
+    pub changed_files: Vec<String>,
+}
+
+/// `None` outside a Git worktree or when git does not answer in time.
+pub(crate) async fn workspace_state(root: &Path) -> Option<WorkspaceState> {
+    async fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+        let mut command = git_command(root);
+        command.args(args);
+        let output = tokio::time::timeout(FINGERPRINT_COMMAND_TIMEOUT, command.output())
+            .await
+            .ok()?
+            .ok()?;
+        output.status.success().then_some(output.stdout)
+    }
+    const DIFF: [&str; 4] = ["diff", "--no-ext-diff", "--no-textconv", "--binary"];
+    let head = git_stdout(root, &["rev-parse", "HEAD"]).await;
+    let diff = if head.is_some() {
+        git_stdout(root, &[DIFF[0], "HEAD", DIFF[1], DIFF[2], DIFF[3]]).await?
+    } else {
+        // Before the first commit: unstaged, then staged changes.
+        let mut diff = git_stdout(root, &DIFF).await?;
+        diff.extend(git_stdout(root, &[DIFF[0], "--cached", DIFF[1], DIFF[2], DIFF[3]]).await?);
+        diff
+    };
+    let untracked = git_stdout(root, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(head.as_deref().unwrap_or_default());
+    hasher.update(b"\0");
+    hasher.update(&diff);
+    let mut changed_files = extract_changed_files(&String::from_utf8_lossy(&diff));
+    for path in untracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .take(FINGERPRINT_UNTRACKED_MAX)
+    {
+        let path = String::from_utf8_lossy(path).into_owned();
+        hasher.update(b"\0");
+        hasher.update(path.as_bytes());
+        if let Ok(metadata) = tokio::fs::metadata(root.join(&path)).await {
+            hasher.update(&metadata.len().to_le_bytes());
+            if let Some(modified) = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            {
+                hasher.update(&modified.as_nanos().to_le_bytes());
+            }
+        }
+        changed_files.push(path);
+    }
+    Some(WorkspaceState {
+        fingerprint: hasher.finalize().to_hex().to_string(),
+        changed_files,
+    })
+}
+
 /// Recorded baseline. If `baseline_commit` is `Some` (the `setup_goal` capture succeeded at goal-creation), run `git diff <baseline>`.
 /// Common vendor / build dirs are skipped.
 /// The changed-file list comes from the FULL pre-truncation diff (an over-cap diff never drops tail files).
@@ -1456,6 +1526,60 @@ mod tests {
         git(cwd, &["config", "user.email", "test@example.com"]);
         git(cwd, &["config", "user.name", "Test"]);
         git(cwd, &["config", "commit.gpgsign", "false"]);
+    }
+
+    /// The goal counts a new worktree state as progress, so the fingerprint must
+    /// move with every edit, commit or new file and stay put across re-reads.
+    #[tokio::test]
+    async fn workspace_fingerprint_moves_with_work_but_not_with_rereads() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            workspace_state(tmp.path()).await,
+            None,
+            "not a Git worktree"
+        );
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("app.rs"), "one\n").unwrap();
+        let before_commit = workspace_state(tmp.path()).await.unwrap();
+        assert_eq!(before_commit.changed_files, vec!["app.rs".to_owned()]);
+        git(tmp.path(), &["add", "app.rs"]);
+        git(tmp.path(), &["commit", "-q", "-m", "init"]);
+        let clean = workspace_state(tmp.path()).await.unwrap();
+        assert!(clean.changed_files.is_empty());
+        assert_eq!(
+            workspace_state(tmp.path()).await.unwrap(),
+            clean,
+            "re-reading is not new work"
+        );
+
+        std::fs::write(tmp.path().join("app.rs"), "two\n").unwrap();
+        let edited = workspace_state(tmp.path()).await.unwrap();
+        assert_ne!(edited.fingerprint, clean.fingerprint);
+        assert_eq!(edited.changed_files, vec!["app.rs".to_owned()]);
+        std::fs::write(tmp.path().join("app.rs"), "three\n").unwrap();
+        let edited_again = workspace_state(tmp.path()).await.unwrap();
+        assert_ne!(
+            edited_again.fingerprint, edited.fingerprint,
+            "a second edit is new work too"
+        );
+
+        std::fs::write(tmp.path().join("new.spec.ts"), "test\n").unwrap();
+        let with_new_file = workspace_state(tmp.path()).await.unwrap();
+        assert_ne!(with_new_file.fingerprint, edited_again.fingerprint);
+        assert!(
+            with_new_file
+                .changed_files
+                .contains(&"new.spec.ts".to_owned())
+        );
+
+        git(tmp.path(), &["add", "-A"]);
+        git(tmp.path(), &["commit", "-q", "-m", "work"]);
+        let committed = workspace_state(tmp.path()).await.unwrap();
+        assert_ne!(
+            committed.fingerprint, clean.fingerprint,
+            "a commit is new work"
+        );
+        assert!(committed.changed_files.is_empty());
     }
 
     #[tokio::test]

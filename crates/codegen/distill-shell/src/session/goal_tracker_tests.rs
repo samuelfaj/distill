@@ -2239,3 +2239,25 @@ fn create_goal_plumbs_baseline_commit_into_orchestration() {
     );
     assert!(t2.snapshot().unwrap().changes_baseline_commit.is_none());
 }
+
+/// Only a stop the harness chose holds the goal's background work for the
+/// user; a user pause or a finished goal leaves wakes as they were.
+#[test]
+fn only_harness_stops_hold_the_goal_for_the_user() {
+    for status in [
+        GoalStatus::BackOffPaused,
+        GoalStatus::NoProgressPaused,
+        GoalStatus::InfraPaused,
+        GoalStatus::Blocked,
+        GoalStatus::BudgetLimited,
+    ] {
+        assert!(status.is_stopped_by_harness(), "{status:?}");
+    }
+    for status in [
+        GoalStatus::Active,
+        GoalStatus::UserPaused,
+        GoalStatus::Complete,
+    ] {
+        assert!(!status.is_stopped_by_harness(), "{status:?}");
+    }
+}

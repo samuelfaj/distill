@@ -40,7 +40,7 @@ Worker execution and the optional review decision.
 |---|---|---|
 | Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text), or after inspecting the workspace. For the last case, a fresh read-only `plan` subagent inspects files before the Worker's first action. If that reader cannot run, the harness records and discloses the missing plan. Jev also judges complexity for later decisions. |
 | Step | Every later round in which the main model did something the reasoning model has not weighed | Whether the main model is stuck and needs a diagnosis before its next round. The facts since the last advice are in the question: tool calls and failures, the call that failed most, the call repeated most (waiting on background work aside), failures in a row, edits undone, rounds without advice and the latest calls. |
-| Review | Before delivery | A request with a completed reasoning plan requires a review of the current Git diff (including shell edits), recorded checks, plan, acceptance criteria, and final message. If Git is unavailable, the reviewer receives recorded tool edits with that limitation. The read-only `code-reviewer` can inspect files; the inline reasoning consult remains the fallback. `VERDICT: revise` returns concrete findings to the Worker; `VERDICT: approve` permits delivery. Other requests retain Jev's optional review decision. |
+| Review | Before delivery | A request with a completed reasoning plan requires a review of the current Git diff (including shell edits), recorded checks, plan, acceptance criteria, and final message. The diff comes from the delivery worktree (an unfinished goal's verified worktree, else the session directory) and includes commits made since the goal's or the turn's starting commit; the reviewer runs in that worktree. If Git is unavailable, the reviewer receives recorded tool edits with that limitation. The read-only `code-reviewer` can inspect files; the inline reasoning consult remains the fallback. `VERDICT: revise` returns concrete findings to the Worker; `VERDICT: approve` permits delivery. Other requests retain Jev's optional review decision. |
 
 An edit the change review (C4) flags for another model's opinion is itself a
 Jev decision and is reviewed as it comes. Normal consults have no fixed budget
@@ -53,13 +53,15 @@ turns to make a focused correction and report its check. The Worker then inspect
 the actual change and verifies the behavior. A failed diagnosis or child stops
 further escalation for that request and tells the Worker to report the blocker.
 If no Reasoning model is configured, the Worker continues to own the task.
+While a stalled goal's own reasoning executor owns the work, this handoff is skipped.
 Repeated background polling and elapsed rounds alone do not trigger this path.
 An unsure or missing plan
 decision leaves the main model to proceed. An unsure or missing delivery decision
 still requests optional review when changes are visible or the final check failed.
 For a planned request, an unavailable or unclear review is disclosed rather than
 counted as approval. An unchanged diff, check record, and final response are not reviewed twice;
-after three revision verdicts, the Worker reports unresolved findings. With
+after three revision verdicts in a turn, whether the review was required or chosen by Jev, the
+Worker reports unresolved findings. With
 `/effort auto`, the round's question rides in the same decision request as the
 main model's effort, so a round costs one Jev call. Without a reasoning model,
 the main model works alone. If Jev is unavailable while Reasoning is configured,
@@ -99,8 +101,9 @@ subagents default to the reasoning model; other subagents run on the main model.
 An explicit subagent model pin
 still wins. Without a reasoning model, `plan` and `code-reviewer` use the main
 model. Jev starts these roles with fresh context, so a full-context fork cannot
-pin them to the Worker's model. They receive the user request and relevant
-evidence and follow project instructions. The planner and reviewer are read-only;
+pin them to the Worker's model. They receive the user request (a goal's objective
+while the goal runs) and relevant evidence, and follow project instructions except
+where the user's request explicitly overrides one. The planner and reviewer are read-only;
 the executor can edit under the normal child permissions. The final review
 may include pre-existing workspace changes; its prompt identifies that limit.
 
@@ -141,7 +144,9 @@ using a fresh, read-only context on the reasoning model, unless pinned through
 Routine or unchanged checkpoints do not need a separate review. Jev's
 change-risk decision can request a second opinion, while the agent chooses a
 reviewer at meaningful checkpoints and before final code handoff. Goal
-completion still uses its existing verifier.
+completion still uses its existing verifier. A goal's planner and its progress
+evaluator run on the reasoning model when one is configured; without one, or when
+that call fails, they fall back to the main model.
 
 ```toml
 [subagents.models]

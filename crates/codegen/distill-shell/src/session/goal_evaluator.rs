@@ -9,18 +9,20 @@ const SYSTEM_PROMPT: &str = r#"You are the hidden completion evaluator for an au
 You are not the coding agent. Evaluate only the supplied goal and transcript evidence.
 
 Return exactly one JSON object matching the required schema:
-- continue: meaningful work remains. Name concrete evidence and the single best next step. Set blocker_key to an empty string.
-- recheck: supplied evidence resolves a prior_verifier_gaps finding, but other goal criteria remain pending. Request an independent recheck of those findings, not goal completion. Set blocker_key to an empty string. Do not request another recheck without a new observation or a corrected verification target.
-- candidate_complete: the requested deliverable appears complete enough to send to an adversarial verification panel. Cite concrete completion evidence. Set blocker_key to an empty string.
-- blocked: progress requires user action or an unavailable external prerequisite after reasonable attempts. State the blocker evidence and the exact user action needed. Set blocker_key to a stable lowercase snake_case identifier for the specific missing prerequisite and affected system or resource. Reuse the same key if that blocker remains unchanged.
+- continue: meaningful work remains. Name concrete evidence and the single best next step. Set blocker_key and blocker_kind to empty strings.
+- recheck: supplied evidence resolves a prior_verifier_gaps finding, but other goal criteria remain pending. Request an independent recheck of those findings, not goal completion. Set blocker_key and blocker_kind to empty strings. Do not request another recheck without a new observation or a corrected verification target.
+- candidate_complete: the requested deliverable appears complete enough to send to an adversarial verification panel. Cite concrete completion evidence. Set blocker_key and blocker_kind to empty strings.
+- blocked: progress requires user action or an unavailable external prerequisite after reasonable attempts. State the blocker evidence and the exact user action needed. Set blocker_key to a stable lowercase snake_case identifier for the specific missing prerequisite and affected system or resource. Reuse the same key if that blocker remains unchanged. Set blocker_kind to requires_user when only the user can clear it: an explicit human gate or approval requirement, a decision only the user can make, access or credentials only the user can grant, or an open dependency owned by someone else. Otherwise set it to transient. For requires_user, next_step names the exact user action, then lists "Options:" with one to three concrete ways forward consistent with the objective, such as the next eligible item when the objective selects one from a list.
 
 Be conservative. A confident-sounding final response is not proof. Pending tasks, missing verification, untested behavior, placeholders, handoffs, or merely described work require continue. Do not mark candidate_complete merely because the agent says it is done. Do not use blocked for an ordinary error that the agent can investigate or retry.
 
 Evaluate progress against previous_progress, not activity or optimistic narration. progress_evidence is explanatory prose only; it cannot reset the no-progress counter. Record observations only for pending criteria: criterion_id, artifact (stable subject such as repo/test, deployment/environment, or external prerequisite, never a new receipt filename), revision (the exact tested commit, content hash or observed external version, never a retry number or timestamp), and outcome (passed, failed, or unavailable). Copy identities from the evidence and reuse them unchanged. Repeated reads, unchanged reviews, rewritten reports, and tests repeated on the same state are not progress. Return an empty observations array when there is no new result. A different hypothesis counts only after new evidence tests it.
 
+harness_observed is captured by the harness, not narrated by the Worker: the delivery root, whether its Git state (commits, tracked edits, untracked files) changed since the last evaluation, the files that differ from HEAD, and checks that finished since then with their outcome and output tail. Treat it as observed evidence. Record an observation for each pending criterion a new check outcome proves or disproves; when the tested work is not committed, use harness_observed.workspace_fingerprint as its revision.
+
 For code delivery, set verification_target to the actual Git repository/worktree root and its recorded pre-change baseline_commit, as evidenced by tool output. The session may have started in an enclosing workspace or another checkout; that is not the delivered diff. Use an absolute workspace_root and a full commit hash. Keep the target unchanged across rounds unless delivery moves. Return null to retain the current target when no new target is established; never invent a baseline. Non-code goals need no Git target.
 
-Return criteria updates with stable ids. Each source must quote the user's requirement, a successfully read applicable instruction with its path, or explain a concrete correctness dependency. Plans, TODOs, old summaries and optional legacy report schemas cannot create requirements. Consult resolved_skills before treating a skill's steps as mandatory; a missing skill must be resolved, never reconstructed from memory. Do not require videos, councils or phase reports merely because a skill was named. Correct unsupported gates instead of repeating them.
+Return criteria updates with stable ids. Each source must quote the user's requirement, a successfully read applicable instruction with its path, or explain a concrete correctness dependency. Plans, TODOs, old summaries and optional legacy report schemas cannot create requirements. The objective's explicit instructions override conflicting repository instructions: never scope an objective requirement to satisfy one, and do not treat following the objective as a defect. Consult resolved_skills before treating a skill's steps as mandatory; a missing skill must be resolved, never reconstructed from memory. Do not require videos, councils or phase reports merely because a skill was named. Correct unsupported gates instead of repeating them.
 
 Keep verified evidence tied to its version and environment in scope. Omitted criteria are retained by the harness. Change a verified criterion to pending only with an explicit invalidated_by reason identifying the relevant changed code, environment or contrary evidence. Compaction, a new reviewer or missing prose in the recent transcript do not invalidate proof. For an unsupported criterion, explain its source correction in invalidated_by and mark it not_required; never discard an actual user requirement or call an unperformed check verified. candidate_complete requires all applicable criteria to be verified, and still goes through independent verification.
 
@@ -62,6 +64,149 @@ impl Default for GoalProgress {
             no_progress_rounds: 0,
             needs_review_panel: true,
         }
+    }
+}
+
+/// What the harness itself observed about the delivery at one evaluation,
+/// independent of what the evaluator writes down.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GoalWorkSignals {
+    pub delivery_root: String,
+    /// `None` outside a Git worktree.
+    pub workspace: Option<crate::session::goal_classifier::evidence::WorkspaceState>,
+    pub checks: Vec<GoalCheckOutcome>,
+}
+
+/// A finished build, test or lint. Its key includes the worktree state it was
+/// seen against, so repeating it on the same state is not new evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GoalCheckOutcome {
+    pub key: String,
+    pub command: String,
+    pub passed: bool,
+    pub output_tail: String,
+}
+
+impl GoalCheckOutcome {
+    pub(crate) fn new(
+        command: &str,
+        command_hash: &str,
+        cwd: &str,
+        failed: bool,
+        output_tail: &str,
+        fingerprint: Option<&str>,
+    ) -> Self {
+        let key = blake3::hash(
+            format!(
+                "{command_hash}\0{cwd}\0{failed}\0{}",
+                fingerprint.unwrap_or_default()
+            )
+            .as_bytes(),
+        );
+        Self {
+            key: key.to_hex().to_string(),
+            command: command.to_owned(),
+            passed: !failed,
+            output_tail: output_tail.to_owned(),
+        }
+    }
+}
+
+const SEEN_FINGERPRINTS_MAX: usize = 64;
+const SEEN_CHECKS_MAX: usize = 256;
+const OBSERVED_FILES_MAX: usize = 30;
+const OBSERVED_OUTPUT_CHARS: usize = 600;
+
+/// Harness observations the progress evaluator already weighed. A worktree
+/// state or check outcome not in here is new work, even when the evaluator
+/// records no observation for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GoalSeenWork {
+    #[serde(default)]
+    pub fingerprints: Vec<String>,
+    #[serde(default)]
+    pub checks: Vec<String>,
+}
+
+impl GoalSeenWork {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.fingerprints.is_empty() && self.checks.is_empty()
+    }
+
+    fn is_new_state(&self, signals: &GoalWorkSignals) -> bool {
+        signals
+            .workspace
+            .as_ref()
+            .is_some_and(|state| !self.fingerprints.contains(&state.fingerprint))
+    }
+
+    fn new_checks<'a>(
+        &'a self,
+        signals: &'a GoalWorkSignals,
+    ) -> impl Iterator<Item = &'a GoalCheckOutcome> + 'a {
+        signals
+            .checks
+            .iter()
+            .filter(|check| !self.checks.contains(&check.key))
+    }
+
+    /// Whether `signals` carry a worktree state or check outcome not seen before.
+    pub(crate) fn has_new_work(&self, signals: &GoalWorkSignals) -> bool {
+        self.is_new_state(signals) || self.new_checks(signals).next().is_some()
+    }
+
+    /// Remembers `signals`; the oldest entries go first.
+    pub(crate) fn observe(&mut self, signals: &GoalWorkSignals) {
+        fn push_bounded(seen: &mut Vec<String>, value: &str, max: usize) {
+            if seen.iter().any(|known| known == value) {
+                return;
+            }
+            if seen.len() == max {
+                seen.remove(0);
+            }
+            seen.push(value.to_owned());
+        }
+        if let Some(state) = &signals.workspace {
+            push_bounded(
+                &mut self.fingerprints,
+                &state.fingerprint,
+                SEEN_FINGERPRINTS_MAX,
+            );
+        }
+        for check in &signals.checks {
+            push_bounded(&mut self.checks, &check.key, SEEN_CHECKS_MAX);
+        }
+    }
+
+    /// The part of `signals` the evaluator has not weighed yet.
+    pub(crate) fn harness_observed(&self, signals: &GoalWorkSignals) -> serde_json::Value {
+        let workspace = signals.workspace.as_ref();
+        let new_checks: Vec<_> = self
+            .new_checks(signals)
+            .map(|check| {
+                let count = check.output_tail.chars().count();
+                serde_json::json!({
+                    "command": check.command,
+                    "passed": check.passed,
+                    "output_tail": check
+                        .output_tail
+                        .chars()
+                        .skip(count.saturating_sub(OBSERVED_OUTPUT_CHARS))
+                        .collect::<String>(),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "delivery_root": signals.delivery_root,
+            "git_worktree": workspace.is_some(),
+            "workspace_changed_since_last_evaluation": self.is_new_state(signals),
+            "workspace_fingerprint": workspace
+                .map(|state| state.fingerprint.chars().take(12).collect::<String>()),
+            "files_differing_from_head": workspace
+                .map(|state| state.changed_files.iter().take(OBSERVED_FILES_MAX).collect::<Vec<_>>())
+                .unwrap_or_default(),
+            "new_check_outcomes": new_checks,
+        })
     }
 }
 
@@ -129,7 +274,16 @@ pub(crate) enum GoalCriterionStatus {
 
 impl GoalProgress {
     /// Merge updates atomically; omission cannot erase a completed check.
-    pub(crate) fn record(&mut self, verdict: &GoalEvaluatorVerdict) -> Result<(), String> {
+    /// `harness_progress` is new work the harness itself observed (a new
+    /// worktree state or check outcome); it counts even when the evaluator
+    /// records no observation for it.
+    pub(crate) fn record(
+        &mut self,
+        verdict: &GoalEvaluatorVerdict,
+        harness_progress: bool,
+    ) -> Result<(), String> {
+        // The first evaluation that sets up the criteria is the baseline, not a stalled round.
+        let first_criteria = self.criteria.is_empty() && !verdict.criteria.is_empty();
         let mut criteria = self.criteria.clone();
         let mut new_proof = false;
         for update in &verdict.criteria {
@@ -173,11 +327,17 @@ impl GoalProgress {
                 observations.push(observation.clone());
             }
         }
-        if !new_proof && observations.len() == self.seen_observations.len() {
+        if !new_proof
+            && !harness_progress
+            && !first_criteria
+            && observations.len() == self.seen_observations.len()
+        {
             self.no_progress_rounds = self.no_progress_rounds.saturating_add(1);
         } else {
             self.no_progress_rounds = 0;
-            self.last_progress_evidence = verdict.progress_evidence.clone();
+            if !verdict.progress_evidence.trim().is_empty() {
+                self.last_progress_evidence = verdict.progress_evidence.clone();
+            }
         }
         self.seen_observations = observations;
         if let Some(target) = &verdict.verification_target {
@@ -189,7 +349,7 @@ impl GoalProgress {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GoalEvaluatorDecision {
     Continue,
@@ -205,6 +365,10 @@ pub(crate) struct GoalEvaluatorVerdict {
     pub evidence: String,
     pub next_step: String,
     pub blocker_key: String,
+    /// `requires_user` or `transient` for a blocked decision, empty otherwise.
+    /// An evaluator that omits it gets the conservative `transient` treatment.
+    #[serde(default)]
+    pub blocker_kind: String,
     pub progress_evidence: String,
     pub observations: Vec<GoalObservation>,
     pub verification_target: Option<GoalVerificationTarget>,
@@ -266,13 +430,27 @@ impl GoalEvaluatorVerdict {
             GoalEvaluatorDecision::Continue
             | GoalEvaluatorDecision::Recheck
             | GoalEvaluatorDecision::CandidateComplete
-                if !key.is_empty() =>
+                if !key.is_empty() || !self.blocker_kind.is_empty() =>
             {
                 return Err(GoalEvaluatorParseError::UnexpectedBlockerKey);
+            }
+            GoalEvaluatorDecision::Blocked
+                if !matches!(
+                    self.blocker_kind.as_str(),
+                    "" | "transient" | "requires_user"
+                ) =>
+            {
+                return Err(GoalEvaluatorParseError::InvalidBlockerKind);
             }
             _ => {}
         }
         Ok(self)
+    }
+
+    /// A blocker only the user can clear: retrying cannot help, so the goal
+    /// pauses at the first evaluation that confirms it.
+    pub(crate) fn requires_user(&self) -> bool {
+        self.decision == GoalEvaluatorDecision::Blocked && self.blocker_kind == "requires_user"
     }
 }
 
@@ -284,8 +462,10 @@ pub(crate) enum GoalEvaluatorParseError {
     EmptyField(&'static str),
     #[error("goal evaluator blocker_key must use lowercase snake_case")]
     InvalidBlockerKey,
-    #[error("goal evaluator blocker_key must be empty unless decision is blocked")]
+    #[error("goal evaluator blocker_key and blocker_kind must be empty unless decision is blocked")]
     UnexpectedBlockerKey,
+    #[error("goal evaluator blocker_kind must be requires_user or transient")]
+    InvalidBlockerKind,
     #[error("criteria need unique ids, requirements, sources, and scoped evidence when verified")]
     InvalidCriterion,
     #[error("progress observations need a criterion, stable artifact and observed revision")]
@@ -306,7 +486,7 @@ pub(crate) fn goal_evaluator_json_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["decision", "evidence", "next_step", "blocker_key", "progress_evidence", "observations", "verification_target", "criteria", "needs_review_panel"],
+        "required": ["decision", "evidence", "next_step", "blocker_key", "blocker_kind", "progress_evidence", "observations", "verification_target", "criteria", "needs_review_panel"],
         "properties": {
             "progress_evidence": {"type": "string"},
             "observations": {
@@ -364,6 +544,11 @@ pub(crate) fn goal_evaluator_json_schema() -> serde_json::Value {
             "blocker_key": {
                 "type": "string",
                 "description": "Stable lowercase snake_case blocker identity for blocked; empty otherwise"
+            },
+            "blocker_kind": {
+                "type": "string",
+                "enum": ["", "transient", "requires_user"],
+                "description": "For blocked: requires_user when only the user can clear it, else transient; empty otherwise"
             }
         }
     })
@@ -422,6 +607,7 @@ pub(crate) fn build_goal_evaluator_request(
     progress: &GoalProgress,
     resolved_skills: &str,
     prior_verifier_gaps: Option<&str>,
+    harness_observed: &serde_json::Value,
 ) -> ConversationRequest {
     let input = serde_json::json!({
         "objective": objective,
@@ -430,6 +616,7 @@ pub(crate) fn build_goal_evaluator_request(
         "previous_progress": progress,
         "resolved_skills": resolved_skills,
         "prior_verifier_gaps": prior_verifier_gaps,
+        "harness_observed": harness_observed,
     });
     ConversationRequest {
         items: vec![
@@ -492,19 +679,19 @@ mod tests {
             outcome: GoalObservationOutcome::Unavailable,
         });
         verdict.progress_evidence = "CI run 42 passed at revision abc".into();
-        progress.record(&verdict).unwrap();
+        progress.record(&verdict, false).unwrap();
         for rounds in 1..=3 {
             verdict.progress_evidence = format!("Reworded report and fresh receipt {rounds}");
-            progress.record(&verdict).unwrap();
+            progress.record(&verdict, false).unwrap();
             assert_eq!(progress.no_progress_rounds, rounds);
         }
         progress = serde_json::from_str(&serde_json::to_string(&progress).unwrap()).unwrap();
         verdict.progress_evidence = "deployment 43 now serves revision abc in development".into();
         verdict.observations[0].outcome = GoalObservationOutcome::Passed;
-        progress.record(&verdict).unwrap();
+        progress.record(&verdict, false).unwrap();
         assert_eq!(progress.no_progress_rounds, 0);
         verdict.observations[0].outcome = GoalObservationOutcome::Unavailable;
-        progress.record(&verdict).unwrap();
+        progress.record(&verdict, false).unwrap();
         assert_eq!(
             progress.no_progress_rounds, 1,
             "an older result is not new progress"
@@ -524,28 +711,118 @@ mod tests {
             scope: "abc / development".into(),
             invalidated_by: String::new(),
         });
-        progress.record(&verdict).unwrap();
+        progress.record(&verdict, false).unwrap();
         assert_eq!(progress.no_progress_rounds, 0);
         verdict.criteria[0].evidence = "rewritten report: UI passed".into();
         verdict.criteria[0].scope = "development / abc".into();
-        progress.record(&verdict).unwrap();
+        progress.record(&verdict, false).unwrap();
         assert_eq!(
             progress.no_progress_rounds, 1,
             "reworded proof cannot reset the counter"
         );
         let serialized = serde_json::to_string(&progress).unwrap();
         let mut restored: GoalProgress = serde_json::from_str(&serialized).unwrap();
-        restored.record(&round()).unwrap();
+        restored.record(&round(), false).unwrap();
         assert_eq!(restored.criteria, progress.criteria);
         verdict.criteria[0].status = GoalCriterionStatus::Pending;
-        assert!(restored.record(&verdict).is_err());
+        assert!(restored.record(&verdict, false).is_err());
         assert_eq!(restored.criteria[0].status, GoalCriterionStatus::Verified);
         verdict.criteria[0].invalidated_by = "deployment def changed the tested UI".into();
-        restored.record(&verdict).unwrap();
+        restored.record(&verdict, false).unwrap();
         verdict.criteria.clear();
         verdict.decision = GoalEvaluatorDecision::CandidateComplete;
-        assert!(restored.record(&verdict).is_err());
+        assert!(restored.record(&verdict, false).is_err());
         assert_eq!(restored.criteria[0].status, GoalCriterionStatus::Pending);
+    }
+
+    fn pending(id: &str) -> GoalCriterion {
+        GoalCriterion {
+            id: id.into(),
+            requirement: "register a new user through the UI".into(),
+            source: "user: prove a new user can register".into(),
+            status: GoalCriterionStatus::Pending,
+            evidence: String::new(),
+            scope: String::new(),
+            invalidated_by: String::new(),
+        }
+    }
+
+    /// Setting up the criteria is the baseline, and work the harness saw (an
+    /// edit, a finished check) is progress even when the evaluator writes no
+    /// observation for it: that omission paused goals mid-work.
+    #[test]
+    fn harness_observed_work_and_the_first_criteria_are_progress() {
+        let mut progress = GoalProgress::default();
+        let mut verdict = round();
+        verdict.criteria.push(pending("registration"));
+        progress.record(&verdict, false).unwrap();
+        assert_eq!(
+            progress.no_progress_rounds, 0,
+            "the first criteria are the baseline"
+        );
+        progress.record(&verdict, false).unwrap();
+        assert_eq!(progress.no_progress_rounds, 1);
+        progress.record(&verdict, true).unwrap();
+        assert_eq!(
+            progress.no_progress_rounds, 0,
+            "a new worktree state or check outcome"
+        );
+    }
+
+    fn signals(fingerprint: &str, checks: &[(&str, bool)]) -> GoalWorkSignals {
+        GoalWorkSignals {
+            delivery_root: "/repo".into(),
+            workspace: Some(crate::session::goal_classifier::evidence::WorkspaceState {
+                fingerprint: fingerprint.into(),
+                changed_files: vec!["e2e/register.spec.ts".into()],
+            }),
+            checks: checks
+                .iter()
+                .map(|(command, failed)| {
+                    GoalCheckOutcome::new(
+                        command,
+                        command,
+                        "/repo",
+                        *failed,
+                        "1 passed",
+                        Some(fingerprint),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Re-reading a worktree or re-running a check on the same state is not new
+    /// work; the evaluator only hears about outcomes it has not weighed yet.
+    #[test]
+    fn seen_work_counts_each_state_and_check_outcome_once() {
+        let mut seen = GoalSeenWork::default();
+        let first = signals("aaa", &[("npx playwright test", false)]);
+        assert!(seen.has_new_work(&first));
+        let observed = seen.harness_observed(&first);
+        assert_eq!(observed["workspace_changed_since_last_evaluation"], true);
+        assert_eq!(observed["new_check_outcomes"][0]["passed"], true);
+        seen.observe(&first);
+        assert!(!seen.has_new_work(&first), "same state, same check");
+        let observed = seen.harness_observed(&first);
+        assert_eq!(observed["workspace_changed_since_last_evaluation"], false);
+        assert_eq!(observed["new_check_outcomes"], serde_json::json!([]));
+
+        let failing = signals("aaa", &[("npx playwright test", true)]);
+        assert!(
+            seen.has_new_work(&failing),
+            "a new outcome on the same state"
+        );
+        let edited = signals("bbb", &[("npx playwright test", false)]);
+        assert!(
+            seen.has_new_work(&edited),
+            "the same check against a new state"
+        );
+
+        let restored: GoalSeenWork =
+            serde_json::from_str(&serde_json::to_string(&seen).unwrap()).unwrap();
+        assert_eq!(restored, seen);
+        assert!(GoalSeenWork::default().is_empty());
     }
 
     #[tokio::test]
@@ -608,6 +885,70 @@ mod tests {
         }
     }
 
+    /// The user's explicit goal instructions outrank repository instructions
+    /// wherever the goal is planned, worked, evaluated and verified. A
+    /// repository rule silently winning made a requested deliverable impossible.
+    #[test]
+    fn goal_texts_put_the_objective_above_repository_instructions() {
+        for (name, text) in [
+            ("rules", include_str!("templates/goal_rules.md")),
+            (
+                "legacy rules",
+                include_str!("templates/goal_rules_legacy.md"),
+            ),
+            ("planner", include_str!("templates/goal_planner_prompt.md")),
+            (
+                "verifier",
+                include_str!("templates/goal_verifier_prompt.md"),
+            ),
+            ("evaluator", SYSTEM_PROMPT),
+        ] {
+            assert!(
+                text.contains("explicit instructions override conflicting repository instructions"),
+                "{name} lacks the precedence rule"
+            );
+        }
+    }
+
+    /// Only a blocker the user alone can clear pauses at once; an evaluator
+    /// that does not say which kind it is gets the patient, retrying path.
+    #[test]
+    fn requires_user_blockers_are_told_apart_from_transient_ones() {
+        let parse = |decision: &str, key: &str, kind: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(&with_progress_fields(&format!(
+                r#"{{"decision":"{decision}","evidence":"DEV-4662 is labeled HUMAN GATE","next_step":"Authorize DEV-4662. Options: take DEV-3275 instead","blocker_key":"{key}"}}"#
+            )))
+            .unwrap();
+            if !kind.is_empty() {
+                value["blocker_kind"] = serde_json::json!(kind);
+            }
+            parse_goal_evaluator_verdict(&value.to_string())
+        };
+        assert!(
+            parse("blocked", "dev_4662_human_gate", "requires_user")
+                .unwrap()
+                .requires_user()
+        );
+        assert!(
+            !parse("blocked", "dev_4662_human_gate", "transient")
+                .unwrap()
+                .requires_user()
+        );
+        assert!(
+            !parse("blocked", "dev_4662_human_gate", "")
+                .unwrap()
+                .requires_user()
+        );
+        assert_eq!(
+            parse("blocked", "dev_4662_human_gate", "someday").unwrap_err(),
+            GoalEvaluatorParseError::InvalidBlockerKind
+        );
+        assert_eq!(
+            parse("continue", "", "requires_user").unwrap_err(),
+            GoalEvaluatorParseError::UnexpectedBlockerKey
+        );
+    }
+
     #[test]
     fn rejects_unknown_decision_extra_fields_and_empty_guidance() {
         for raw in [
@@ -664,10 +1005,17 @@ mod tests {
             &GoalProgress::default(),
             "[]",
             None,
+            &serde_json::json!({"workspace_changed_since_last_evaluation": true}),
         );
         assert!(request.tools.is_empty());
         assert!(request.hosted_tools.is_empty());
         assert!(request.json_schema.is_some());
         assert_eq!(request.model.as_deref(), Some("small"));
+        let input: serde_json::Value =
+            serde_json::from_str(&request.items[1].text_content()).unwrap();
+        assert_eq!(
+            input["harness_observed"]["workspace_changed_since_last_evaluation"], true,
+            "the evaluator sees what the harness observed"
+        );
     }
 }

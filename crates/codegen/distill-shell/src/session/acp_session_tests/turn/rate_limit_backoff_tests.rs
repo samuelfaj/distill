@@ -102,8 +102,29 @@ pub(super) async fn actor_under_test(
         retry_policy,
         transient_retry_enabled,
         false,
+        None,
     )
     .await
+}
+
+/// Like [`actor_under_test`], with subagent spawns sent to `subagents` so the
+/// test can answer them.
+pub(super) async fn actor_under_test_with_subagents(
+    server: &MockInferenceServer,
+    subagents: tokio::sync::mpsc::UnboundedSender<
+        distill_tools::implementations::distill::task::types::SubagentEvent,
+    >,
+) -> Arc<SessionActor> {
+    actor_under_test_with_startup_policy(
+        server,
+        SessionKind::Main,
+        sampler_surfaces_429(),
+        false,
+        false,
+        Some(subagents),
+    )
+    .await
+    .0
 }
 
 async fn actor_under_test_with_startup_policy(
@@ -112,6 +133,11 @@ async fn actor_under_test_with_startup_policy(
     retry_policy: distill_sampler::RetryPolicy,
     transient_retry_enabled: bool,
     explicit_model_override: bool,
+    subagents: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            distill_tools::implementations::distill::task::types::SubagentEvent,
+        >,
+    >,
 ) -> (Arc<SessionActor>, CapturedRetries) {
     let sampler_max_retries = retry_policy.max_retries;
     let sampling_cfg = distill_sampler::SamplerConfig {
@@ -137,6 +163,9 @@ async fn actor_under_test_with_startup_policy(
     actor.sampler_handle = sampler_handle;
     actor.startup_hints.is_subagent = matches!(session, SessionKind::Subagent);
     actor.startup_hints.explicit_model_override = explicit_model_override;
+    if subagents.is_some() {
+        actor.tool_context.subagent_event_tx = subagents;
+    }
     actor.transient_retry_enabled = transient_retry_enabled;
     // The per-turn config push carries the shell's max_retries; mirror the policy.
     actor.max_retries = sampler_max_retries;
@@ -800,6 +829,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
                 sampler_surfaces_429(),
                 false,
                 true,
+                None,
             )
             .await;
             crate::jev::set_test_local_config(Default::default());
@@ -892,6 +922,7 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 sampler_surfaces_429(),
                 false,
                 true,
+                None,
             )
             .await;
             actor

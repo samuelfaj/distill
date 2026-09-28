@@ -2035,7 +2035,30 @@ fn goal_pause_resolves_to_pause() {
 
 #[test]
 fn goal_resume_resolves_to_resume() {
-    assert!(matches!(resolve_goal("resume"), BuiltinAction::GoalResume));
+    assert!(matches!(
+        resolve_goal("resume"),
+        BuiltinAction::GoalResume { guidance: None }
+    ));
+}
+
+/// A paused goal takes the user's decision with the resume. Before, the text
+/// silently started a new goal named "resume …" and dropped the paused one.
+#[test]
+fn goal_resume_with_text_carries_the_users_decision() {
+    match resolve_goal("resume  take the next Todo: DEV-3275 ") {
+        BuiltinAction::GoalResume { guidance } => {
+            assert_eq!(guidance.as_deref(), Some("take the next Todo: DEV-3275"));
+        }
+        other => panic!("expected a resume, got {other:?}"),
+    }
+    assert!(matches!(
+        resolve_goal("Resume use production directly"),
+        BuiltinAction::GoalResume { guidance: Some(_) }
+    ));
+    assert!(matches!(
+        resolve_goal("resumes are hard"),
+        BuiltinAction::GoalSet { .. }
+    ));
 }
 
 #[test]
@@ -2134,7 +2157,10 @@ fn goal_set_malformed_budget_stays_in_objective() {
 fn goal_command_name_is_goal() {
     assert_eq!(BuiltinAction::GoalStatus.command_name(), "goal");
     assert_eq!(BuiltinAction::GoalPause.command_name(), "goal");
-    assert_eq!(BuiltinAction::GoalResume.command_name(), "goal");
+    assert_eq!(
+        BuiltinAction::GoalResume { guidance: None }.command_name(),
+        "goal"
+    );
     assert_eq!(BuiltinAction::GoalClear.command_name(), "goal");
     assert_eq!(
         BuiltinAction::GoalSet {
@@ -2157,7 +2183,13 @@ fn goal_args_provided() {
     );
     assert!(!BuiltinAction::GoalStatus.args_provided());
     assert!(!BuiltinAction::GoalPause.args_provided());
-    assert!(!BuiltinAction::GoalResume.args_provided());
+    assert!(!BuiltinAction::GoalResume { guidance: None }.args_provided());
+    assert!(
+        BuiltinAction::GoalResume {
+            guidance: Some("option 2".into())
+        }
+        .args_provided()
+    );
     assert!(!BuiltinAction::GoalClear.args_provided());
 }
 

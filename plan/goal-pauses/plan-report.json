@@ -1,0 +1,2148 @@
+{
+  "schema_version": 1,
+  "workflow": "plan",
+  "status": "READY_TO_EXECUTE",
+  "depth": "deep",
+  "case_type": "BUG",
+  "complexity_rationale": "Causas independentes em três subsistemas (loop de goal, roteamento e review do Jev, fila de wakes), comprovadas pela forense de 3 sessões reais, com mudanças de prompt, do schema do avaliador e do estado persistido do goal.",
+  "risk_flags": [],
+  "risk_flag_dismissals": [
+    {
+      "flag": "auth_boundary",
+      "reason": "Falso positivo de palavra-chave: 'session' aparece nos caminhos do módulo de sessão de chat (crates/codegen/distill-shell/src/session). O plano não altera login, papéis, permissões nem identidade; a autorização de comandos e os modos de permissão ficam fora das superfícies.",
+      "evidence_ids": [
+        "E-064",
+        "E-065"
+      ]
+    }
+  ],
+  "study": {
+    "tools_used": [
+      "Bash (grep, sed, git log -S, git show)",
+      "rustc (compilação isolada de looks_like_check_command)",
+      "Agent general-purpose x3 (forense read-only das sessões macos-app, lacco, empath)",
+      "Agent Explore (mapa da infraestrutura de testes)",
+      "AskUserQuestion (decisões D1-D4)"
+    ],
+    "surfaces_mapped": [
+      "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/turn.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/jev_ledger.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/run_loop.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/notification_drain.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/sampler_turn.rs",
+      "crates/codegen/distill-shell/src/session/acp_session_impl/goal_support.rs",
+      "crates/codegen/distill-shell/src/session/goal_evaluator.rs",
+      "crates/codegen/distill-shell/src/session/goal_tracker.rs",
+      "crates/codegen/distill-shell/src/session/goal_classifier/evidence.rs",
+      "crates/codegen/distill-shell/src/session/slash_commands.rs",
+      "crates/codegen/distill-shell/src/session/templates",
+      "crates/codegen/distill-chat-state/src/compaction_utils.rs",
+      "crates/codegen/distill-agent/src/config.rs",
+      "crates/common/distill-tool-types/src/task.rs",
+      "docs/jev-routing.md",
+      "~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fremote-code%2Fmacos-app/01a0e08f-ef1b-7a20-a6d0-f061fa4bce95",
+      "~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Flacco%2Freact-native/01a0e4d7-d4f7-7ab1-a7cc-281ce8af3b38",
+      "~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fempath/01a0e5fe-c293-7092-936f-632ec6ffaa02"
+    ],
+    "prompt_ambiguities": [
+      "'consertar tudo 100%' foi interpretado como eliminar as pausas prematuras e os loops que impedem a conclusão, mantendo as pausas legítimas (bloqueio do usuário, infraestrutura, cap do verificador); as decisões de política D1-D4 são do usuário."
+    ],
+    "repo_root": "/Users/samuelfajreldines/dev/jev-build"
+  },
+  "frozen": {
+    "prompt_hash": "68796c849db69f80ecc03bb8a697290ef562dd9015ea50ddb4cdbf1ee3f3f48e",
+    "prompt_summary": "Diagnosticar por que todos os goals param antes de concluir e planejar a correção completa do harness Distill, com base em 3 execuções reais (macos-app, lacco, empath).",
+    "goal": "Fazer os goals do Distill avançarem até a conclusão: sem pausas por falta de progresso, com o reasoning model assumindo quando o trabalho trava, pausas só para bloqueios que dependem do usuário, Jev e reviews alinhados ao objetivo e à entrega reais, e nenhum trabalho autônomo com o goal pausado.",
+    "non_goals": [
+      "Mudar o cap de 10 rejeições do verificador (pausa BackOff).",
+      "Corrigir a contabilização de tokens do goal.",
+      "Mudar o effort padrão do usuário ou a política de effort do Jev.",
+      "Dar shell ao code-reviewer.",
+      "Pular automaticamente tasks com human gate.",
+      "Commit, push ou release sem pedido."
+    ],
+    "success_criteria": [
+      "Nenhum caminho automático pausa um goal por falta de progresso (checkpoint, fim de rodada ou stall do verificador).",
+      "Com 2 avaliações seguidas sem progresso, um reasoning-executor roda no workspace de entrega e se repete até surgir progresso, quando o main model volta a conduzir sozinho.",
+      "Progresso inclui sinais determinísticos: fingerprint novo do workspace, resultado novo de check (inclusive Playwright, xcodebuild, npm run e2e e tarefas em background) ou evidência nova do avaliador.",
+      "Um bloqueio requires_user pausa na primeira avaliação que o confirma, com opções, e '/goal resume <instrução>' retoma o mesmo goal com a instrução.",
+      "Instruções explícitas do objetivo do goal prevalecem sobre instruções do repositório em planner, worker, avaliador, verificador e reviewers.",
+      "Planos, conselhos, hints e reviews do Jev usam o objetivo do goal como pedido atual.",
+      "O review de entrega analisa a raiz e o baseline reais da entrega, incluindo commits, e roda nessa raiz.",
+      "Reviews de entrega têm no máximo 3 veredictos 'revise' por turno e não repetem review com evidência inalterada.",
+      "Com o goal pausado automaticamente, o turno termina e nenhum wake de background inicia trabalho até o usuário agir.",
+      "Cada avaliação do goal e cada execução de escalonamento fica registrada em goal/evaluations.jsonl.",
+      "As suítes afetadas, a suíte lib do distill-shell, os testes do distill-agent e o clippy passam."
+    ],
+    "invariants": [
+      "Estado de goal gravado por versões anteriores continua carregando.",
+      "Bloqueios que dependem do usuário, falhas de infraestrutura, pausa manual e o cap do verificador continuam pausando.",
+      "O code-reviewer continua read-only.",
+      "A semântica de compactação (is_real_user_turn) não muda.",
+      "Permissões, sandbox e modos de aprovação não mudam."
+    ],
+    "constraints": [
+      "Seguir o estilo do repo (Rust, testes no módulo e em acp_session_tests).",
+      "Rodar testes com GROK_HOME temporário, RUST_MIN_STACK=16777216 e --test-threads=1.",
+      "Build local e aceite ao vivo só com autorização do usuário."
+    ],
+    "no_go": [
+      "Reverter o commit 398b161a inteiro.",
+      "Resolver só aumentando limiares.",
+      "Conceder shell ao reviewer."
+    ]
+  },
+  "output": {
+    "plan_dir": "/Users/samuelfajreldines/dev/jev-build/plan/goal-pauses",
+    "html_files": [
+      "00-visao-objetivo.html",
+      "02-evidencia-estado.html",
+      "03-tese.html",
+      "04-passos.html",
+      "05-riscos-decisoes.html",
+      "06-verificacao.html"
+    ],
+    "agent_file": "agent-plan.md",
+    "artifact_sha256": {
+      "00-visao-objetivo.html": "00a0602e55526a707aa026a3171f56699e43b68dd82a080b1eb757c63b60bf6d",
+      "02-evidencia-estado.html": "5efaf617afab0bfe328f52de575ca00daf257879cf619661c46374878f25ecfb",
+      "03-tese.html": "df9ad7bb5ff89eb062dd2731e0c62b301f239df21e3ea7b3b64f536a03be7be8",
+      "04-passos.html": "607ca45603576c0f5320810871180c799d59d490612dbee73f6fb655a1b389ba",
+      "05-riscos-decisoes.html": "08cc9a64e481fac38ca6f3e88b11e418ac3d936a61343eaffa09c64324101dc8",
+      "06-verificacao.html": "e4a66eccdd4af426bc5828d34a705b9619e24ae6104cc60276b5dac270d46715",
+      "agent-plan.md": "5cd3eec7df88d071a874c27bb8e0820b5dded4942aa1f6cd6745c4fc22e186e2"
+    },
+    "rendered_report_sha256": "9ae5dbaf53296fbc2f42fa044f762f8d628d29b58454a32276f86b0f6b0b4e4a"
+  },
+  "evidence": [
+    {
+      "id": "E-001",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O checkpoint intermediário do goal dispara a cada 24 tool rounds concluídos e, se a avaliação devolver EndTurn, encerra o turno com StationarityEnded.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/turn.rs:2733"
+    },
+    {
+      "id": "E-002",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "evaluate_goal_progress pausa o goal com GoalPauseReason::NoProgress quando no_progress_rounds >= 3, tanto em checkpoints quanto em fins de rodada que não sejam candidate_complete.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs:1643"
+    },
+    {
+      "id": "E-003",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "GoalProgress::record incrementa no_progress_rounds sempre que nenhum critério passa a verified e nenhuma observação nova é aceita; não existe sinal do harness (diff, checks) nesse cálculo.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_evaluator.rs:177"
+    },
+    {
+      "id": "E-004",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O prompt do avaliador declara que progress_evidence é só prosa e não pode zerar o contador; progresso depende de observações estruturadas com revision exata.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_evaluator.rs:19"
+    },
+    {
+      "id": "E-005",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O avaliador recebe apenas os últimos 32 KiB do transcript, com no máximo 4 KiB por item.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_evaluator.rs:5"
+    },
+    {
+      "id": "E-006",
+      "kind": "GIT",
+      "classification": "FACT",
+      "claim": "A lógica de checkpoint, o contador no_progress_rounds e a pausa por no-progress entraram no commit 398b161a (2026-09-26 23:20, 'Improve long-running harness efficiency').",
+      "locator": "command: git log -S'no_progress_rounds >= 3' -- crates/codegen/distill-shell/src"
+    },
+    {
+      "id": "E-007",
+      "kind": "RUNTIME",
+      "classification": "FACT",
+      "claim": "O binário instalado 2.0.16+local.efficiency.1 (build de 2026-09-26 21:25) contém as strings 'Intermediate goal checkpoint' e 'No material progress across', ou seja, as sessões rodaram essa lógica.",
+      "locator": "command: LC_ALL=C grep -c -a -F 'Intermediate goal checkpoint' ~/.local/share/distill/local-builds/2.0.16+local.efficiency.1/bin/distill"
+    },
+    {
+      "id": "E-008",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Checkpoints retornam antes do tratamento de 'blocked', então um bloqueio visto em checkpoint nunca conta para o streak.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs:1656"
+    },
+    {
+      "id": "E-009",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "A pausa por bloqueio exige o mesmo blocker_key 3 vezes seguidas em fins de rodada.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs:1693"
+    },
+    {
+      "id": "E-010",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O stall do verificador pausa na 2ª rejeição com o mesmo fingerprint de gaps, e essa checagem roda antes do strategist.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_tracker.rs:13"
+    },
+    {
+      "id": "E-011",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O strategist dispara a cada max(1, cap/2) rejeições; com o cap padrão 10, isso só acontece na 5ª, depois de o stall já ter pausado na 2ª.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session.rs:1012"
+    },
+    {
+      "id": "E-012",
+      "kind": "TEST",
+      "classification": "FACT",
+      "claim": "O teste goal_round_pauses_repeated_continue_without_losing_proof codifica o comportamento atual: checkpoints contam para o contador e o goal pausa num checkpoint.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_tests/goal/goal_compaction_reseed_tests.rs:96"
+    },
+    {
+      "id": "E-013",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "macos-app: o goal ficou no_progress_paused após 1 rodada de worker (23,8 min), com classifier_runs_attempted 0. A contagem '3 rounds' foi 2 checkpoints + 1 fim de rodada, e a mensagem de pausa trazia um próximo passo acionável.",
+      "locator": "command: python3 -c \"import json;print(json.load(open('~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fremote-code%2Fmacos-app/01a0e08f-ef1b-7a20-a6d0-f061fa4bce95/goal/state.json'))['pause_message'])\""
+    },
+    {
+      "id": "E-014",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "macos-app: em 52 loops e 69 tool calls o worker só leu código e criou o worktree (sem edições, builds ou testes) e terminou a rodada perguntando ao usuário 'Você autoriza ampliar o escopo…?'; os veredictos brutos do avaliador não ficam persistidos em nenhum arquivo.",
+      "locator": "command: forense read-only de ~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fremote-code%2Fmacos-app/01a0e08f-ef1b-7a20-a6d0-f061fa4bce95/updates.jsonl L3448-L3675 e usage.json attributions[2883,2951,2963]"
+    },
+    {
+      "id": "E-015",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "macos-app: depois da pausa, o review do Jev manteve o turno 6 rodando até 23:24Z (269M tokens), e wakes de tarefas antigas abriram mais 5 turnos (turno 7 com 312M tokens). Em 6 reviews, todos 'revise', o code-reviewer rodou no checkout primário e recebeu 'Current repository diff is empty.'.",
+      "locator": "command: forense read-only de ~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fremote-code%2Fmacos-app/01a0e08f-ef1b-7a20-a6d0-f061fa4bce95/updates.jsonl L5483, L8343 e subagents/*/meta.json"
+    },
+    {
+      "id": "E-016",
+      "kind": "REPO",
+      "classification": "FACT",
+      "claim": "A regra do macos-app diz 'Isolated sandbox (mandatory)' e declara o RemoteCode em execução off-limits; o objetivo do goal pedia 'Trabalhe direto em … e em production'.",
+      "locator": "command: sed -n 27,31p /Users/samuelfajreldines/dev/remote-code/macos-app/AGENTS.md"
+    },
+    {
+      "id": "E-017",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "lacco goal 1: as 3 avaliações foram checkpoints e o goal pausou (no_progress) com total_worker_rounds 0, cerca de 10 min após o início do turno.",
+      "locator": "command: sed -n 766p ~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Flacco%2Freact-native/01a0e4d7-d4f7-7ab1-a7cc-281ce8af3b38/events.jsonl"
+    },
+    {
+      "id": "E-018",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "lacco goal 2: a pausa aconteceu no checkpoint C4 (03:31:57Z) enquanto o worker escrevia zz-goal-register.spec.ts. O zz-goal-proof que passou foi citado na mensagem de pausa como 'material forward step', mas não virou observação.",
+      "locator": "command: python3 -c \"import json;print(json.load(open('~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Flacco%2Freact-native/01a0e4d7-d4f7-7ab1-a7cc-281ce8af3b38/goal/state.json'))['progress'])\""
+    },
+    {
+      "id": "E-019",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "lacco turno 3: 14 reviews do code-reviewer, todos 'revise', com o goal pausado. O turno começou pelo wake de max_runtime do servidor Expo, e o 'User request' de todos os reviews era 'por que pausou?'.",
+      "locator": "command: sed -n 474p ~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Flacco%2Freact-native/01a0e4d7-d4f7-7ab1-a7cc-281ce8af3b38/chat_history.jsonl"
+    },
+    {
+      "id": "E-020",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "O prompt de kickoff do goal é '<user_query> <system-reminder> A goal has been set: …' — o objetivo fica inteiro dentro de um system-reminder.",
+      "locator": "command: sed -n 5p ~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Flacco%2Freact-native/01a0e4d7-d4f7-7ab1-a7cc-281ce8af3b38/chat_history.jsonl"
+    },
+    {
+      "id": "E-021",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "empath: o planner viu o HUMAN GATE da DEV-4662 51 s após criar o goal e o worker tinha o bloqueio completo em 5 min; depois disso foram 25,4 min e 20,41M dos 23,24M tokens até a pausa blocked (streak 3).",
+      "locator": "command: forense read-only de ~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fempath/01a0e5fe-c293-7092-936f-632ec6ffaa02/events.jsonl:287 e usage.json"
+    },
+    {
+      "id": "E-022",
+      "kind": "SESSION",
+      "classification": "FACT",
+      "claim": "empath: o objetivo não autoriza pegar outra task; a pausa ofereceu um único caminho, mesmo com DEV-3275 sendo a próxima Todo sem gate.",
+      "locator": "command: python3 -c \"import json;print(json.load(open('~/.grok/sessions/%2FUsers%2Fsamuelfajreldines%2Fdev%2Fempath/01a0e5fe-c293-7092-936f-632ec6ffaa02/goal/state.json'))['objective'])\""
+    },
+    {
+      "id": "E-023",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "extract_user_query remove as tags de sistema antes de extrair o <user_query>, então um kickoff de goal vira texto vazio.",
+      "locator": "crates/codegen/distill-chat-state/src/compaction_utils.rs:294"
+    },
+    {
+      "id": "E-024",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "is_real_user_turn descarta itens cujo texto extraído fica vazio (is_synthetic_extracted_query).",
+      "locator": "crates/codegen/distill-chat-state/src/compaction_utils.rs:342"
+    },
+    {
+      "id": "E-025",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O pedido que o Jev usa em planos, consultas e review de entrega vem de last_real_request, que se baseia em is_real_user_turn.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:106"
+    },
+    {
+      "id": "E-026",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Os hints de edição do Jev usam jev_latest_real_human_request, que tem a mesma limitação.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:2167"
+    },
+    {
+      "id": "E-027",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "work_since_request começa a janela de trabalho no último is_real_user_turn.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs:831"
+    },
+    {
+      "id": "E-028",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "workspace_review_diff roda git status/diff no tool_context.cwd; o verification_target só desliga o reuso da aprovação.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:274"
+    },
+    {
+      "id": "E-029",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O subagente de review (reasoning_role) é criado com cwd = tool_context.cwd.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:197"
+    },
+    {
+      "id": "E-030",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Em review obrigatório com diff vazio, o texto 'Current repository diff is empty.' substitui as edições registradas.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:1199"
+    },
+    {
+      "id": "E-031",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "review_changes inclui as edições em ordem até REVIEW_DIFF_BYTES, e as edições mais novas são as que caem em '[diff omitted…]'.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs:733"
+    },
+    {
+      "id": "E-032",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "looks_like_check_command não reconhece npx/pnpm playwright test, xcodebuild, npm run e2e, npm run test:e2e, detox ou maestro (verificado compilando a função isolada com rustc).",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs:959"
+    },
+    {
+      "id": "E-033",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Checks só são registrados a partir de ToolOutput::Bash; execuções em background (TaskOutput) nunca viram checks.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs:291"
+    },
+    {
+      "id": "E-034",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "TaskOutputResult traz command, status, exit_code e output das tarefas em background.",
+      "locator": "crates/common/distill-tool-types/src/task.rs:649"
+    },
+    {
+      "id": "E-035",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "flow_revisions só incrementa quando flow_requires_review; reviews opcionais (fase Worker) não têm limite de 'revise'.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs:678"
+    },
+    {
+      "id": "E-036",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Qualquer tool result novo conta como 'new work', o que libera um novo review.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs:653"
+    },
+    {
+      "id": "E-037",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Um check final com falha força review mesmo sem decisão do Jev.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:1425"
+    },
+    {
+      "id": "E-038",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O code-reviewer só tem read_file/list_dir/grep e o prompt proíbe afirmar checks que não rodou.",
+      "locator": "crates/codegen/distill-agent/src/config.rs:1553"
+    },
+    {
+      "id": "E-039",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Não existe shell read-only: a ferramenta bash declara is_read_only: false.",
+      "locator": "crates/codegen/distill-tools/src/implementations/distill/bash/mod.rs:76"
+    },
+    {
+      "id": "E-040",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O prompt do code-reviewer manda revisar 'against the applicable project instructions', sem regra de precedência do pedido.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:1276"
+    },
+    {
+      "id": "E-041",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O prompt de sistema do reasoning manda seguir 'the user's requirements and applicable project instructions', sem desempate.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:133"
+    },
+    {
+      "id": "E-042",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "goal_rules.md trata requisitos do usuário e instruções aplicáveis como gates, sem regra para conflito entre eles.",
+      "locator": "crates/codegen/distill-shell/src/session/templates/goal_rules.md:5"
+    },
+    {
+      "id": "E-043",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "No fim de rodada, o round-end do goal roda antes do review de entrega; se o goal acabou de pausar, o review 'revise' ainda continua o turno.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/turn.rs:1385"
+    },
+    {
+      "id": "E-044",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "admit_task_completion_wake admite wakes de tarefas concluídas sem olhar o status do goal.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/run_loop.rs:137"
+    },
+    {
+      "id": "E-045",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O drain de notificações só suprime wakes com goal Active ou Complete; goal pausado não suprime.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/notification_drain.rs:523"
+    },
+    {
+      "id": "E-046",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "Notificações pendentes são entregues no início do próximo turno do usuário (consume_deferred_completions).",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/notification_drain.rs:55"
+    },
+    {
+      "id": "E-047",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "'/goal resume' só casa o texto exato 'resume'; '/goal resume <texto>' vira um NOVO goal com objetivo 'resume <texto>'.",
+      "locator": "crates/codegen/distill-shell/src/session/slash_commands.rs:351"
+    },
+    {
+      "id": "E-048",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "GoalResume é interceptado no handle_prompt de turn.rs.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/turn.rs:728"
+    },
+    {
+      "id": "E-049",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O reasoning-executor já existe: tem no máximo 5 turns e é criado por reasoning_role no handoff de stall do Jev.",
+      "locator": "crates/codegen/distill-agent/src/config.rs:1581"
+    },
+    {
+      "id": "E-050",
+      "kind": "TEST",
+      "classification": "FACT",
+      "claim": "Há teste do handoff para o reasoning-executor com responder de subagente falso.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs:2973"
+    },
+    {
+      "id": "E-051",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "capture_changes_diff gera o diff contra o baseline (commits + não commitados) e lista os arquivos não rastreados.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_classifier/evidence.rs:297"
+    },
+    {
+      "id": "E-052",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "validate_verification_target confirma que o worktree é raiz Git e contém o baseline.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_classifier/evidence.rs:259"
+    },
+    {
+      "id": "E-053",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "O estado de raciocínio do Jev (ReasoningGates) é zerado ao fim de cada turno.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_impl/jev_ledger.rs:268"
+    },
+    {
+      "id": "E-054",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "GoalProgress é serializado com campos serde(default) e sem deny_unknown_fields, então aceita campos novos opcionais sem migração.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_evaluator.rs:36"
+    },
+    {
+      "id": "E-055",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "resume() zera os contadores de auto-pausa do goal.",
+      "locator": "crates/codegen/distill-shell/src/session/goal_tracker.rs:914"
+    },
+    {
+      "id": "E-056",
+      "kind": "TEST",
+      "classification": "FACT",
+      "claim": "Os testes do loop de goal usam MockInferenceServer com veredictos roteirizados em /v1/responses.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_tests/goal/goal_compaction_reseed_tests.rs:114"
+    },
+    {
+      "id": "E-057",
+      "kind": "TEST",
+      "classification": "FACT",
+      "claim": "O ator de teste liga background_workflows_enabled=false, então nenhum teste atual exercita o gatilho de checkpoint dentro do turno.",
+      "locator": "crates/codegen/distill-shell/src/session/acp_session_tests/support.rs:472"
+    },
+    {
+      "id": "E-058",
+      "kind": "DOC",
+      "classification": "FACT",
+      "claim": "A execução validada das suítes usou GROK_HOME isolado, stack de 16 MiB e uma thread.",
+      "locator": "goal/GATES.md:66"
+    },
+    {
+      "id": "E-059",
+      "kind": "DOC",
+      "classification": "FACT",
+      "claim": "O planner de goal já determina que as palavras explícitas do OBJECTIVE vencem, mas só para escopo.",
+      "locator": "crates/codegen/distill-shell/src/session/templates/goal_planner_prompt.md:17"
+    },
+    {
+      "id": "E-060",
+      "kind": "DECISION",
+      "classification": "FACT",
+      "claim": "D1: instrução explícita do goal sempre vence regras do repositório (AGENTS.md etc.), sem perguntar.",
+      "locator": "user decision: Conflito = 'Goal sempre vence' (2026-09-28)"
+    },
+    {
+      "id": "E-061",
+      "kind": "DECISION",
+      "classification": "FACT",
+      "claim": "D2: human gate e bloqueios que dependem do usuário pausam cedo, na primeira avaliação que confirma o bloqueio, com opções e '/goal resume <instrução>'.",
+      "locator": "user decision: Human gate = 'Pausar cedo com opções' (2026-09-28)"
+    },
+    {
+      "id": "E-062",
+      "kind": "DECISION",
+      "classification": "FACT",
+      "claim": "D3: falta de progresso nunca pausa; o harness passa a usar o reasoning model até desbloquear e voltar a ter progresso.",
+      "locator": "user decision: No-progress = 'Nunca pausa, somente passa a usar o reasoning model até desbloquear e ter progresso' (2026-09-28)"
+    },
+    {
+      "id": "E-064",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "A autorização de comandos fica em distill-workspace/src/permission (ALWAYS_SAFE_COMMANDS) e nenhum passo do plano toca esse módulo; 'session' nos caminhos do plano é o módulo de sessão de chat (distill-shell/src/session), não login.",
+      "locator": "crates/codegen/distill-workspace/src/permission/grants.rs:295"
+    },
+    {
+      "id": "E-065",
+      "kind": "CODE",
+      "classification": "FACT",
+      "claim": "PermissionMode (modos de permissão dos agentes) fica fora das superfícies do plano; o reviewer segue read-only pelo toolset.",
+      "locator": "crates/codegen/distill-agent/src/config.rs:935"
+    },
+    {
+      "id": "E-063",
+      "kind": "DECISION",
+      "classification": "FACT",
+      "claim": "D4: com o goal pausado automaticamente, tudo para até o usuário: o turno termina sem review 'revise' e wakes de background só ficam registrados.",
+      "locator": "user decision: Goal pausado = 'Parar até o usuário' (2026-09-28)"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A-001",
+      "claim": "Criado pelo loop de goal, o reasoning-executor roda no reasoning model configurado pelo mesmo caminho do handoff de stall do Jev (papel com default no reasoning model e max_turns 5).",
+      "state": "VERIFIED",
+      "evidence_ids": [
+        "E-049",
+        "E-050"
+      ],
+      "decision_reason": "Mesmo papel e mesmo spawn (reasoning_role) já exercitados por teste; o passo S-003 só muda quem dispara e o cwd."
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "U-001",
+      "claim": "Tempo total da suíte lib completa do distill-shell com uma thread.",
+      "material": false,
+      "probe": "Medir no passo S-011.",
+      "why_immaterial": "Os passos usam filtros por módulo primeiro; a duração não muda passos nem riscos."
+    },
+    {
+      "id": "U-002",
+      "claim": "Se o wake do Expo no lacco entrou por admit_task_completion_wake ou pelo drain de notificações.",
+      "material": false,
+      "probe": "Log shell.task_wake.actor_admission no unified.jsonl.",
+      "why_immaterial": "O passo S-009 fecha as duas entradas (admissão de wake e drain), então o resultado não muda o plano."
+    }
+  ],
+  "thesis": {
+    "id": "T-001",
+    "summary": "Os goals param por dois defeitos combinados. Primeiro, o detector de no-progress do commit 398b161a conta checkpoints e depende só de observações emitidas pelo modelo. Segundo, o resto do harness trabalha contra o goal: o Jev perde o objetivo, o review não vê a entrega real e o trabalho continua sem supervisão depois da pausa. A correção troca a pausa por escalonamento para o reasoning model com sinais determinísticos, alinha Jev e review ao objetivo e à entrega reais, pausa cedo só quando o bloqueio depende do usuário e congela o trabalho autônomo com o goal pausado.",
+    "approach": "1) Checks e sinais determinísticos (fingerprint do workspace e resultados novos de checks, inclusive em background) passam a contar como progresso. 2) Nenhum caminho pausa por falta de progresso: após 2 avaliações sem progresso, o goal chama o reasoning-executor no workspace de entrega, repetindo até surgir progresso, com o strategist a cada 3 execuções sem avanço. 3) O avaliador ganha blocker_kind: bloqueio 'requires_user' pausa na primeira confirmação, até em checkpoint, com opções, e '/goal resume <instrução>' leva a resposta ao worker. 4) A instrução explícita do goal vence regras do repositório em todos os prompts. 5) O Jev ancora no objetivo do goal. 6) O review usa a raiz e o baseline reais da entrega, tem limite de 3 'revise' por turno e não repete review com evidência inalterada. 7) Com o goal pausado, o turno acaba e wakes ficam pendentes. 8) Cada avaliação fica registrada em goal/evaluations.jsonl.",
+    "rejected_alternatives": [
+      "Reverter o commit 398b161a: perde a verificação no worktree, o recheck-only, o dimensionamento do painel e a evidência persistida, e não corrige os bugs de review/Jev, que são anteriores ao commit.",
+      "Só aumentar os limiares (checkpoint a cada 48, pausa em 6): a pausa fica menos frequente, mas o sinal continua frágil (o lacco pausou com um spec passando) e contradiz D3.",
+      "Trocar o modelo do loop principal pelo reasoning model por rodada: reenviaria todo o contexto do worker (média de ~180k tokens por chamada no empath) ao modelo mais caro e exigiria converter a conversa entre provedores. O reasoning-executor já existe, é testado e recebe contexto focado.",
+      "Dar shell 'read-only' ao code-reviewer: esse shell não existe (bash is_read_only=false) e reexecutar e2e exige backend e tempo. Checks capturados pelo harness resolvem o problema com menos permissão.",
+      "Pular automaticamente tasks com human gate: descartado pela decisão D2 (pausar cedo com opções)."
+    ]
+  },
+  "steps": [
+    {
+      "id": "S-001",
+      "title": "Reconhecer checks reais (Playwright, xcodebuild, e2e e tarefas em background)",
+      "why": "Os 19 runs Playwright do lacco e os builds xcodebuild ficaram invisíveis para reviewers e para o sinal de progresso (E-032, E-033).",
+      "how": [
+        "Em looks_like_check_command (reasoning_gates.rs:959), adicionar npx/pnpx/bunx como runners e reconhecer 'playwright test', 'xcodebuild' com build|test|build-for-testing|test-without-building, 'detox test', 'maestro test', 'cypress run' e scripts 'e2e', 'test:*' ou '*:test' depois de npm|pnpm|yarn|bun run.",
+        "Manter como não-check: 'npx playwright install', 'npm run dev', 'npx expo start', 'xcodebuild -list', 'npm install'.",
+        "Em note_tool_result (reasoning_gates.rs:291), registrar também ToolOutput::TaskOutput(Result) com exit_code Some e comando de check (failed = exit_code != 0), com a mesma deduplicação dos checks Bash.",
+        "Estender o teste check_commands_are_tests_builds_type_checks_and_lints com os casos positivos e negativos acima e criar um teste para o caminho TaskOutput."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs"
+      ],
+      "dod": [
+        "Os comandos listados são reconhecidos e os negativos continuam falsos.",
+        "Um TaskOutput concluído com 'npx playwright test' aparece em review_checks()."
+      ],
+      "proof_ids": [
+        "V-001"
+      ],
+      "preconditions": [
+        "E-032",
+        "E-033",
+        "E-034"
+      ],
+      "simpler_rejected": "Lista hardcoded só com 'playwright': não cobre xcodebuild nem os runs em background, que foram as falhas observadas.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-002",
+      "title": "Sinais determinísticos de progresso no loop de goal",
+      "why": "Hoje só observações emitidas pelo avaliador contam como progresso. Trabalho não commitado não tem revision, e o lacco pausou com um spec passando (E-003, E-004, E-018).",
+      "how": [
+        "Pré-requisito: concluir S-001 antes deste passo.",
+        "Em goal_classifier/evidence.rs, criar workspace_fingerprint(root): blake3 de 'rev-parse HEAD', 'diff HEAD --binary' e hash dos não rastreados via 'git hash-object --stdin-paths', reusando git_command e DIFF_COMMAND_TIMEOUT. Retorna None se a raiz não for Git.",
+        "Raiz de entrega = verification_target validado (validate_verification_target) ou, na falta dele, o cwd da sessão.",
+        "Em GoalProgress (goal_evaluator.rs:36), adicionar seen_workspace_fingerprints (máx. 64) e seen_check_outcomes (máx. 256, chave blake3(command_hash|cwd|failed|fingerprint)) com serde(default). Manter no_progress_rounds, agora contando avaliações sem progresso.",
+        "Fazer record() receber os sinais: há progresso quando um critério passa a verified, há observação nova, o fingerprint é inédito ou há resultado de check inédito. Atualizar as duas chamadas em goal.rs (validação em evaluate_goal_round e merge em evaluate_goal_progress).",
+        "Enviar harness_observed ao avaliador (workspace_changed, raiz, até 30 arquivos alterados, checks novos com comando, status e 600 chars finais) e instruir no SYSTEM_PROMPT que esses são fatos capturados, usando o fingerprint como revision de trabalho não commitado.",
+        "Testes em goal_evaluator.rs: mudança de workspace zera o contador; o mesmo check no mesmo estado não conta; check novo que passa conta; estado de goal gravado pela 2.0.16 continua deserializando."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/goal_evaluator.rs",
+        "crates/codegen/distill-shell/src/session/goal_classifier/evidence.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs"
+      ],
+      "dod": [
+        "O contador não sobe quando o workspace mudou ou há check novo.",
+        "Repetir um check no mesmo estado não conta como progresso.",
+        "Estado antigo carrega sem erro."
+      ],
+      "proof_ids": [
+        "V-002"
+      ],
+      "preconditions": [
+        "E-003",
+        "E-051",
+        "E-052",
+        "E-054"
+      ],
+      "simpler_rejected": "Contar qualquer tool call como progresso: premiaria leituras em loop, que é o que o detector existe para pegar.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-003",
+      "title": "Nunca pausar por falta de progresso: escalar para o reasoning model",
+      "why": "Decisão D3. As pausas no_progress do macos-app e do lacco (E-013, E-017, E-018) e o stall do verificador (E-010, E-011) passam a acionar o reasoning model em vez de parar.",
+      "how": [
+        "Pré-requisito: concluir S-002 antes deste passo.",
+        "Em evaluate_goal_progress (goal.rs:1643), remover a auto-pausa NoProgress de checkpoints e fins de rodada. Com no_progress_rounds >= 2, rodar o reasoning-executor e injetar o resultado como system reminder (mesmo formato de append_stall_note), repetindo a cada nova avaliação sem progresso.",
+        "Dar a reasoning_role (jev_routing.rs:186) um parâmetro cwd, preenchido com a raiz de entrega do S-002. O prompt do executor leva objetivo, critérios pendentes, next_step do avaliador, harness_observed e checks recentes.",
+        "A cada 3 execuções do executor sem progresso, rodar o strategist uma vez (maybe_run_goal_strategist) e colocar a nota dele no próximo prompt do executor. Adaptar goal_strategist_prompt.md para o gatilho 'sem progresso', além do 'rejeição do verificador'.",
+        "Na primeira avaliação com progresso, zerar o escalonamento e registrar um evento no histórico. Enquanto o escalonamento do goal estiver ativo, pular o handoff de stall do Jev (jev_routing.rs:743) para não haver dois executores ao mesmo tempo.",
+        "No stall do verificador (goal.rs:348 e caminho legado goal.rs:2455), trocar auto_pause_for_classifier_stall por strategist mais executor, sem pausar. Manter o enum NoProgressPaused para compatibilidade, mas nunca mais produzi-lo automaticamente.",
+        "Sem reasoning model configurado, rodar o executor no main model com reasoning_effort 'high' via SubagentRuntimeOverrides.",
+        "Reescrever o teste goal_round_pauses_repeated_continue_without_losing_proof para 'escala sem perder prova' (status Active, spawn do reasoning-executor com cwd na raiz, prova mantida após compactação) e testar a volta ao normal quando há progresso. Atualizar o trecho de goal_rules.md sobre 'bounded no-progress'."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/goal_support.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs",
+        "crates/codegen/distill-shell/src/session/goal_tracker.rs",
+        "crates/codegen/distill-shell/src/session/templates/goal_rules.md",
+        "crates/codegen/distill-shell/src/session/templates/goal_strategist_prompt.md",
+        "crates/codegen/distill-shell/src/session/acp_session_tests/goal/goal_compaction_reseed_tests.rs"
+      ],
+      "dod": [
+        "Nenhum caminho automático grava NoProgressPaused.",
+        "2 avaliações sem progresso criam um reasoning-executor com cwd na raiz de entrega.",
+        "Progresso encerra o escalonamento.",
+        "Sem reasoning model, o executor roda no main model."
+      ],
+      "proof_ids": [
+        "V-003"
+      ],
+      "preconditions": [
+        "E-062",
+        "A-001"
+      ],
+      "simpler_rejected": "Só trocar pausa por lembrete: repetiria o que já falhou (o lembrete com >=2 já existia) e não atende 'passa a usar o reasoning model'.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-004",
+      "title": "Bloqueio que depende do usuário pausa cedo, com opções e '/goal resume <instrução>'",
+      "why": "Decisão D2. O empath gastou 25 min e 20M tokens depois de o gate já ser conhecido (E-021), a pausa ofereceu um único caminho (E-022) e '/goal resume <texto>' cria um goal novo (E-047).",
+      "how": [
+        "Pré-requisito: concluir S-002 antes deste passo.",
+        "Em GoalEvaluatorVerdict e no schema, adicionar blocker_kind ('' | 'transient' | 'requires_user'), obrigatório e não vazio só em blocked (mesma validação de blocker_key).",
+        "No SYSTEM_PROMPT, definir requires_user (label de human gate ou aprovação, decisão só do usuário, acesso que só ele concede, dependência aberta de outra pessoa) e exigir no next_step 'Opções:' com 1 a 3 caminhos compatíveis com o objetivo, como a próxima task elegível.",
+        "Em evaluate_goal_progress, tratar requires_user antes do retorno de checkpoint (goal.rs:1656) e pausar na hora com evidência, opções e a dica '/goal resume <instrução>'. 'transient' mantém o streak de 3 em fim de rodada.",
+        "Em slash_commands.rs:351, fazer 'resume <texto>' virar GoalResume com guidance; atualizar os matches em turn.rs:728 e slash_exec.rs:900.",
+        "No resume, gravar a guidance como mensagem do usuário marcada com <goal_resume_guidance> antes de retomar a continuação.",
+        "Testes: requires_user num checkpoint pausa na hora com opções; transient continua exigindo 3; '/goal resume pegue a próxima' retoma o mesmo goal com a guidance."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/goal_evaluator.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/goal_support.rs",
+        "crates/codegen/distill-shell/src/session/slash_commands.rs",
+        "crates/codegen/distill-shell/src/session/slash_commands_tests.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/turn.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/slash_exec.rs"
+      ],
+      "dod": [
+        "requires_user pausa na primeira confirmação, inclusive em checkpoint.",
+        "A mensagem de pausa traz opções e a dica de resume.",
+        "'/goal resume <texto>' não cria goal novo."
+      ],
+      "proof_ids": [
+        "V-004"
+      ],
+      "preconditions": [
+        "E-008",
+        "E-009",
+        "E-047",
+        "E-048",
+        "E-061"
+      ],
+      "simpler_rejected": "Baixar o streak de 3 para 1 para qualquer blocked: pausaria em erros transitórios, criando novas pausas prematuras.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-005",
+      "title": "Instrução explícita do goal vence regras do repositório",
+      "why": "Decisão D1. No macos-app, planner, avaliador, worker e reviewers seguiram o AGENTS.md contra o pedido 'trabalhe direto em production' e deixaram o critério impossível (E-015, E-016, E-040, E-041, E-042).",
+      "how": [
+        "Pré-requisito: concluir S-004 antes deste passo.",
+        "goal_rules.md e goal_rules_legacy.md: instruções explícitas do objetivo prevalecem sobre AGENTS.md, CLAUDE.md, regras e skills do repositório quando conflitam; siga o objetivo, informe a sobreposição no relatório e nunca troque local ou entregável.",
+        "goal_planner_prompt.md: nunca reescrever instrução explícita do OBJECTIVE para cumprir instrução do repositório; registrar a sobreposição em Risks/Contradictions como resolvida a favor do OBJECTIVE.",
+        "SYSTEM_PROMPT do avaliador (goal_evaluator.rs) e goal_verifier_prompt.md: requisito do OBJECTIVE não é dispensado nem reescopado por instrução conflitante do repositório, e cumpri-lo não é defeito.",
+        "Prompts do Jev (jev_routing.rs:133, plano em :249 e code-reviewer em :1276) e code_reviewer em distill-agent/src/config.rs:1553: quando o pedido do usuário sobrepõe explicitamente uma instrução do projeto, seguir e julgar pelo pedido.",
+        "Adicionar asserts de conteúdo nos testes de template/prompt existentes, ou testes unitários via include_str!, garantindo a cláusula nos 7 textos."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/templates/goal_rules.md",
+        "crates/codegen/distill-shell/src/session/templates/goal_rules_legacy.md",
+        "crates/codegen/distill-shell/src/session/templates/goal_planner_prompt.md",
+        "crates/codegen/distill-shell/src/session/templates/goal_verifier_prompt.md",
+        "crates/codegen/distill-shell/src/session/goal_evaluator.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs",
+        "crates/codegen/distill-agent/src/config.rs"
+      ],
+      "dod": [
+        "Todos os 7 textos contêm a regra de precedência.",
+        "Os testes de conteúdo passam."
+      ],
+      "proof_ids": [
+        "V-005",
+        "V-012"
+      ],
+      "preconditions": [
+        "E-060",
+        "E-059"
+      ],
+      "simpler_rejected": "Mudar só goal_rules.md: o avaliador e os reviewers continuariam cobrando o AGENTS.md (E-015).",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-006",
+      "title": "Jev ancorado no objetivo do goal",
+      "why": "O kickoff do goal some para o Jev (E-020, E-023, E-024). Planos, conselhos, hints e reviews julgaram tudo contra 'por que pausou?' e mandaram o worker parar o cadastro real (E-019, E-025, E-026, E-027).",
+      "how": [
+        "Pré-requisito: concluir S-004 antes deste passo.",
+        "Criar em jev_routing.rs um helper request_anchor(items, goal): o último turno humano real ou, se houver kickoff de goal mais recente (marcador 'A goal has been set:' de goal_rules.md:1), o objetivo do goal_tracker somado às mensagens <goal_resume_guidance> posteriores.",
+        "Usar request_anchor em last_real_request (:106, chamado em :679 e :1140), em jev_latest_real_human_request (:2167, que alimenta os hints de jev_tool_result.rs:819) e no início de work_since_request (reasoning_gates.rs:831).",
+        "Não mudar compaction_utils::is_real_user_turn, que segue definindo a semântica de compactação.",
+        "Testes: a conversa [humano 'por que pausou?', kickoff do goal] ancora no objetivo; plano, review e hint recebem o objetivo; work_since_request começa depois do kickoff."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/jev_tool_result.rs"
+      ],
+      "dod": [
+        "Durante um goal, 'User request' dos consults do Jev é o objetivo.",
+        "A compactação não muda de comportamento."
+      ],
+      "proof_ids": [
+        "V-006"
+      ],
+      "preconditions": [
+        "E-020",
+        "E-023",
+        "E-024",
+        "E-025"
+      ],
+      "simpler_rejected": "Mudar is_real_user_turn globalmente: altera fronteiras de compactação e prompts de resumo fora do Jev.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-007",
+      "title": "Review de entrega enxerga a entrega real (raiz, baseline, commits)",
+      "why": "No macos-app, 6 reviews receberam diff vazio do checkout errado; no lacco, o trabalho commitado ficou invisível; as edições mais novas somem depois do teto (E-015, E-028, E-029, E-030, E-031).",
+      "how": [
+        "Pré-requisito: concluir S-003 antes deste passo.",
+        "Criar review_target() em jev_routing.rs: verification_target validado do goal (qualquer status) → changes_baseline_commit do goal no cwd → HEAD do turno, capturado na primeira prepare_sampler_for_turn do turno e guardado em ReasoningGates (zera por turno, jev_ledger.rs:268).",
+        "Com baseline, montar 'Changes' com capture_changes_diff(baseline, raiz, created_at) (commits, não commitados e lista de não rastreados), revision via 'git -C raiz rev-parse HEAD' e reviewer com cwd = raiz (parâmetro do S-003).",
+        "Nunca trocar edições registradas por 'Current repository diff is empty.' (jev_routing.rs:1199); com diff vazio e ledger com mudanças, enviar as duas fontes com a origem.",
+        "Em review_changes (reasoning_gates.rs:733), priorizar as edições mais novas quando passar de REVIEW_DIFF_BYTES.",
+        "Abrir o prompt de review com 'Delivery worktree: <raiz>; baseline <sha>'.",
+        "Testes com repo temporário no padrão de delivery_reviewer_receives_shell_edits_from_the_git_diff: worktree ≠ cwd, commit depois do baseline e cwd do spawn = raiz."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/sampler_turn.rs"
+      ],
+      "dod": [
+        "O review de um goal em worktree mostra o diff do worktree.",
+        "Commits feitos no turno aparecem no review.",
+        "O spawn do reviewer usa a raiz de entrega."
+      ],
+      "proof_ids": [
+        "V-007"
+      ],
+      "preconditions": [
+        "E-028",
+        "E-029",
+        "E-030",
+        "E-051",
+        "E-053"
+      ],
+      "simpler_rejected": "Só trocar cwd por verification_target: ainda perderia commits e o caso sem goal.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-008",
+      "title": "Loop de review limitado e com contrato de evidência",
+      "why": "No lacco foram 14 'revise' na fase Worker, sem teto; no macos-app, só reescrever o relatório disparou novo review; reviewers pediam revise por não poderem rodar testes (E-019, E-035, E-036, E-037, E-038).",
+      "how": [
+        "Pré-requisito: concluir S-001, S-007 antes deste passo.",
+        "Em note_verdict (reasoning_gates.rs:672), contar 'revise' de todo review de entrega do turno; ao atingir MAX_FLOW_REVISIONS (3), instruir uma vez 'reporte os achados não resolvidos' e parar de revisar no turno, incluindo o review forçado por check com falha (jev_routing.rs:1425).",
+        "Guardar a evidence key (diff + identidade dos checks) do último 'revise' e não revisar de novo se ela não mudou; só o texto do relatório mudar não gera review.",
+        "Nos prompts de review (jev_routing.rs:1276, reasoning_system_prompt e code_reviewer em config.rs:1553), dizer que Checks são execuções capturadas pelo harness e que não conseguir rodar ou ver evidência é limite a declarar no approve. Revise só para defeito concreto e corrigível, com arquivo/linha ou evidência.",
+        "Testes: o loop opcional para após 3 'revise'; evidência inalterada com relatório reescrito não gera review novo."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/reasoning_gates.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/jev_routing.rs",
+        "crates/codegen/distill-agent/src/config.rs"
+      ],
+      "dod": [
+        "No máximo 3 'revise' por turno em qualquer fase.",
+        "Sem review repetido com evidência igual."
+      ],
+      "proof_ids": [
+        "V-008"
+      ],
+      "preconditions": [
+        "E-035",
+        "E-036",
+        "E-037",
+        "E-038",
+        "E-039"
+      ],
+      "simpler_rejected": "Desligar o review opcional: perderia os defeitos reais que os reviews do lacco acharam a cada rodada.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-009",
+      "title": "Goal pausado: tudo para até o usuário",
+      "why": "Decisão D4. O macos-app seguiu por cerca de 3 h com review 'revise' e 5 turnos de wake (269M + 312M tokens); o turno de wake do lacco gastou 72M (E-015, E-019, E-043, E-044, E-045).",
+      "how": [
+        "Pré-requisito: concluir S-004 antes deste passo.",
+        "Em turn.rs (≈1346-1390), guardar se o goal estava Active antes do round-end; se ele pausou nessa avaliação, sair do loop antes de jev_delivery_review e das continuações do stop gate.",
+        "Em admit_task_completion_wake (run_loop.rs:137), recusar a admissão com goal em qualquer status pausado (push_task_wake_fallback para pendentes).",
+        "Em maybe_drain_notifications (notification_drain.rs:523), retornar sem drenar enquanto pausado; as notificações ficam pendentes e são entregues no próximo turno do usuário ou resume (consume_deferred_completions, :55). O descarte em Active/Complete fica como está.",
+        "Aplicar a mesma regra de pausado à supressão de wake de workflow (run_loop.rs:2116).",
+        "Testes: goal pausado + tarefa concluída não abre turno e a notificação fica retida; no próximo turno do usuário ela é entregue; auto-pausa em fim de rodada não cria reviewer."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/turn.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/run_loop.rs",
+        "crates/codegen/distill-shell/src/session/acp_session_impl/notification_drain.rs"
+      ],
+      "dod": [
+        "Nenhum turno começa por wake com goal pausado.",
+        "A auto-pausa encerra o turno sem review.",
+        "Notificações são entregues depois."
+      ],
+      "proof_ids": [
+        "V-009"
+      ],
+      "preconditions": [
+        "E-043",
+        "E-044",
+        "E-045",
+        "E-046",
+        "E-063"
+      ],
+      "simpler_rejected": "Descartar as notificações como já acontece em Active/Complete: o usuário perderia o resultado das tarefas ao voltar.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-010",
+      "title": "Registrar cada avaliação do goal",
+      "why": "Os veredictos brutos não ficam em lugar nenhum (E-014), sem isso não dá para provar nem ajustar o escalonamento.",
+      "how": [
+        "Pré-requisito: concluir S-003, S-004 antes deste passo.",
+        "Anexar uma linha JSON por avaliação em <sessão>/goal/evaluations.jsonl (helper de caminho ao lado de plan_path/strategy_path no goal_tracker) com ts, goal_id, tipo (checkpoint|round_end), modelo, decisão, next_step, blocker_key/blocker_kind, observações novas, delta de critérios, harness_observed, no_progress_rounds e ação (continue|nudge|escalate|deescalate|pause_blocked|pause_infra).",
+        "Registrar também cada execução do reasoning-executor/strategist do escalonamento (início, fim, resultado resumido).",
+        "Adicionar ao histórico do goal os eventos de escalonamento e desescalonamento, sem mudar os enums de telemetria.",
+        "Teste: sequência roteirizada gera as linhas esperadas com todos os campos."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session/acp_session_impl/goal.rs",
+        "crates/codegen/distill-shell/src/session/goal_tracker.rs"
+      ],
+      "dod": [
+        "evaluations.jsonl tem uma linha por avaliação e por execução de escalonamento."
+      ],
+      "proof_ids": [
+        "V-010"
+      ],
+      "preconditions": [
+        "E-014"
+      ],
+      "simpler_rejected": "Log só em tracing::debug: é o que existe hoje e sumiu nas 3 sessões.",
+      "out_of_acceptance": ""
+    },
+    {
+      "id": "S-011",
+      "title": "Verificação completa, build local e aceite ao vivo",
+      "why": "Provar que as mudanças juntas eliminam as pausas prematuras sem regressões e repetir os 3 cenários reais.",
+      "how": [
+        "Pré-requisito: concluir S-001, S-002, S-003, S-004, S-005, S-006, S-007, S-008, S-009, S-010 antes deste passo.",
+        "Rodar os filtros afetados com GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 <filtro> para goal_evaluator, goal_tracker, goal_classifier, goal_compaction_reseed_tests, jev_routing, reasoning_gates, notification_drain e slash_commands.",
+        "Rodar a suíte lib completa do distill-shell, cargo test -p distill-agent e cargo clippy no padrão do repo.",
+        "Com OK do usuário, gerar build local no padrão ~/.local/share/distill/local-builds/2.0.16+local.<nome>/ sem publicar release.",
+        "Com autorização, reexecutar 3 goals no formato das sessões (lacco onboarding, macos-app seletores, empath Todo) e auditar evaluations.jsonl: zero pausas no_progress, pares escalate→deescalate, empath pausando na 1ª confirmação do gate com a opção DEV-3275 e nenhum turno de wake com goal pausado."
+      ],
+      "depends_on": [],
+      "surfaces": [
+        "crates/codegen/distill-shell/src/session",
+        "crates/codegen/distill-agent/src/config.rs",
+        "goal/GATES.md"
+      ],
+      "dod": [
+        "Todas as suítes e o clippy passam.",
+        "O aceite ao vivo cumpre as 4 condições."
+      ],
+      "proof_ids": [
+        "V-011",
+        "V-012"
+      ],
+      "preconditions": [
+        "E-058"
+      ],
+      "simpler_rejected": null,
+      "out_of_acceptance": ""
+    }
+  ],
+  "risks": [
+    {
+      "id": "R-001",
+      "claim": "Nunca pausar por falta de progresso pode queimar tokens num goal realmente travado que o avaliador não classifica como blocked.",
+      "severity": "high",
+      "mitigation": "Escalonamento com executor limitado (5 turns por execução), strategist a cada 3 execuções sem avanço, pausa cedo para requires_user, token budget opcional (/goal --budget) e visibilidade em evaluations.jsonl. É o custo aceito ao optar por D3.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-002",
+      "claim": "A pausa cedo em requires_user pode criar pausas falsas se o avaliador classificar mal um erro comum.",
+      "severity": "medium",
+      "mitigation": "requires_user exige evidência concreta (label, estado da dependência, pedido de decisão); o padrão é transient com streak 3; há testes com veredictos roteirizados e aceite ao vivo.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-003",
+      "claim": "Com D1, um goal pode sobrepor regras protetivas do repositório (ex.: o RemoteCode em execução é off-limits) e afetar um checkout em uso.",
+      "severity": "medium",
+      "mitigation": "Decisão explícita do dono (D1); a sobreposição é declarada no relatório do worker e registrada nas Risks do plano do goal.",
+      "status": "ACCEPTED"
+    },
+    {
+      "id": "R-004",
+      "claim": "O escalonamento aumenta o custo com chamadas ao reasoning model.",
+      "severity": "medium",
+      "mitigation": "Executor com contexto focado, 5 turns por execução, desescalonamento no primeiro progresso e sinais determinísticos que reduzem falsos 'sem progresso'.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-005",
+      "claim": "O campo obrigatório novo (blocker_kind) no schema do avaliador pode aumentar falhas de parse e pausas por infraestrutura.",
+      "severity": "medium",
+      "mitigation": "Mesma validação já usada para blocker_key, json_schema estrito enviado ao provedor, 2 tentativas por avaliação e testes com respostas roteirizadas.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-006",
+      "claim": "Reconhecer mais comandos como checks pode gerar falsos positivos (ex.: servidores de dev).",
+      "severity": "low",
+      "mitigation": "Exigir subcomando de check (test/build/run) e casos negativos explícitos nos testes.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-007",
+      "claim": "Contar mudanças no workspace como progresso deixa sem escalonamento um churn de edições que nunca converge.",
+      "severity": "medium",
+      "mitigation": "O painel do verificador, o cap de 10 rejeições e o token budget continuam limitando; registrado como residual.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-008",
+      "claim": "Reter wakes com goal pausado atrasa informação para o usuário.",
+      "severity": "low",
+      "mitigation": "As notificações ficam pendentes e são entregues no próximo turno do usuário ou no resume, e as tarefas continuam listadas na UI.",
+      "status": "MITIGATED"
+    },
+    {
+      "id": "R-009",
+      "claim": "Campos novos no estado persistido do goal podem quebrar sessões antigas.",
+      "severity": "low",
+      "mitigation": "serde(default) nos campos novos (GoalProgress não usa deny_unknown_fields) e teste carregando um state.json da 2.0.16.",
+      "status": "MITIGATED"
+    }
+  ],
+  "verifications": [
+    {
+      "id": "V-000",
+      "proof": "Forense read-only das 3 sessões (3 agentes) e compilação isolada de looks_like_check_command com rustc.",
+      "reason": "Diagnóstico comprovado antes do plano.",
+      "claim_ids": [
+        "E-013",
+        "E-014",
+        "E-015",
+        "E-017",
+        "E-018",
+        "E-019",
+        "E-021",
+        "E-032"
+      ],
+      "status": "PASS"
+    },
+    {
+      "id": "V-001",
+      "proof": "Testes de detecção de checks e do caminho TaskOutput.",
+      "reason": "Depois de S-001: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 reasoning_gates::tests",
+      "claim_ids": [
+        "E-032",
+        "E-033"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-002",
+      "proof": "Testes de sinais de progresso e de compatibilidade de estado.",
+      "reason": "Depois de S-002: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 goal_evaluator::tests",
+      "claim_ids": [
+        "E-003",
+        "E-054"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-003",
+      "proof": "Testes de ator: sem pausa NoProgress, spawn do reasoning-executor com cwd na raiz, desescalonamento com progresso e stall do verificador escalando.",
+      "reason": "Depois de S-003: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 goal_compaction_reseed_tests goal_tracker::tests",
+      "claim_ids": [
+        "E-002",
+        "E-010",
+        "E-012"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-004",
+      "proof": "Testes: requires_user pausa em checkpoint com opções; transient mantém o streak; '/goal resume <texto>' retoma com guidance.",
+      "reason": "Depois de S-004: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 goal_compaction_reseed_tests slash_commands",
+      "claim_ids": [
+        "E-008",
+        "E-047"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-005",
+      "proof": "Asserts de conteúdo da regra de precedência nos 7 textos.",
+      "reason": "Depois de S-005: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 goal_evaluator jev_routing e cargo test -p distill-agent code_reviewer",
+      "claim_ids": [
+        "E-040",
+        "E-041",
+        "E-042"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-006",
+      "proof": "Testes do request_anchor com kickoff de goal e guidance.",
+      "reason": "Depois de S-006: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 jev_routing::tests reasoning_gates::tests",
+      "claim_ids": [
+        "E-023",
+        "E-025",
+        "E-027"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-007",
+      "proof": "Testes com repo temporário: worktree ≠ cwd, commit depois do baseline e cwd do spawn.",
+      "reason": "Depois de S-007: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 jev_routing::tests",
+      "claim_ids": [
+        "E-028",
+        "E-029",
+        "E-030",
+        "E-031"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-008",
+      "proof": "Testes do teto de 3 'revise' e de review não repetido com evidência inalterada.",
+      "reason": "Depois de S-008: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 jev_routing::tests reasoning_gates::tests",
+      "claim_ids": [
+        "E-035",
+        "E-036"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-009",
+      "proof": "Testes de wake retido com goal pausado e de auto-pausa sem reviewer.",
+      "reason": "Depois de S-009: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 notification_drain prompt_queue_actor_tests",
+      "claim_ids": [
+        "E-043",
+        "E-044",
+        "E-045"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-010",
+      "proof": "Teste de evaluations.jsonl com sequência roteirizada.",
+      "reason": "Depois de S-010: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 goal_compaction_reseed_tests",
+      "claim_ids": [
+        "E-014"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-011",
+      "proof": "Suíte lib completa do distill-shell, distill-agent e clippy.",
+      "reason": "Depois de S-001..S-010: GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1; cargo test -p distill-agent; cargo clippy",
+      "claim_ids": [
+        "E-058"
+      ],
+      "status": "PLANNED"
+    },
+    {
+      "id": "V-012",
+      "proof": "Aceite ao vivo com 3 goals no formato das sessões, auditando evaluations.jsonl.",
+      "reason": "Depois do build local e com autorização do usuário: rodar os 3 goals e checar zero pausas no_progress, escalate→deescalate, pausa cedo com opção no empath e nenhum wake com goal pausado.",
+      "claim_ids": [
+        "E-013",
+        "E-018",
+        "E-021",
+        "E-015"
+      ],
+      "status": "PLANNED"
+    }
+  ],
+  "acceptance_trace": [
+    {
+      "criterion": "Nenhum caminho automático pausa um goal por falta de progresso (checkpoint, fim de rodada ou stall do verificador).",
+      "step_ids": [
+        "S-003"
+      ],
+      "proof_ids": [
+        "V-003",
+        "V-012"
+      ]
+    },
+    {
+      "criterion": "Com 2 avaliações seguidas sem progresso, um reasoning-executor roda no workspace de entrega e se repete até surgir progresso, quando o main model volta a conduzir sozinho.",
+      "step_ids": [
+        "S-003"
+      ],
+      "proof_ids": [
+        "V-003",
+        "V-012"
+      ]
+    },
+    {
+      "criterion": "Progresso inclui sinais determinísticos: fingerprint novo do workspace, resultado novo de check (inclusive Playwright, xcodebuild, npm run e2e e tarefas em background) ou evidência nova do avaliador.",
+      "step_ids": [
+        "S-001",
+        "S-002"
+      ],
+      "proof_ids": [
+        "V-001",
+        "V-002"
+      ]
+    },
+    {
+      "criterion": "Um bloqueio requires_user pausa na primeira avaliação que o confirma, com opções, e '/goal resume <instrução>' retoma o mesmo goal com a instrução.",
+      "step_ids": [
+        "S-004"
+      ],
+      "proof_ids": [
+        "V-004",
+        "V-012"
+      ]
+    },
+    {
+      "criterion": "Instruções explícitas do objetivo do goal prevalecem sobre instruções do repositório em planner, worker, avaliador, verificador e reviewers.",
+      "step_ids": [
+        "S-005"
+      ],
+      "proof_ids": [
+        "V-005",
+        "V-012"
+      ]
+    },
+    {
+      "criterion": "Planos, conselhos, hints e reviews do Jev usam o objetivo do goal como pedido atual.",
+      "step_ids": [
+        "S-006"
+      ],
+      "proof_ids": [
+        "V-006"
+      ]
+    },
+    {
+      "criterion": "O review de entrega analisa a raiz e o baseline reais da entrega, incluindo commits, e roda nessa raiz.",
+      "step_ids": [
+        "S-007"
+      ],
+      "proof_ids": [
+        "V-007"
+      ]
+    },
+    {
+      "criterion": "Reviews de entrega têm no máximo 3 veredictos 'revise' por turno e não repetem review com evidência inalterada.",
+      "step_ids": [
+        "S-008"
+      ],
+      "proof_ids": [
+        "V-008"
+      ]
+    },
+    {
+      "criterion": "Com o goal pausado automaticamente, o turno termina e nenhum wake de background inicia trabalho até o usuário agir.",
+      "step_ids": [
+        "S-009"
+      ],
+      "proof_ids": [
+        "V-009",
+        "V-012"
+      ]
+    },
+    {
+      "criterion": "Cada avaliação do goal e cada execução de escalonamento fica registrada em goal/evaluations.jsonl.",
+      "step_ids": [
+        "S-010"
+      ],
+      "proof_ids": [
+        "V-010"
+      ]
+    },
+    {
+      "criterion": "As suítes afetadas, a suíte lib do distill-shell, os testes do distill-agent e o clippy passam.",
+      "step_ids": [
+        "S-011"
+      ],
+      "proof_ids": [
+        "V-011"
+      ]
+    }
+  ],
+  "council": {
+    "required": false,
+    "skip_reason": "Nenhum flag de risco se aplica. Nenhum segredo, auth, pagamento ou migração de dados: os campos novos do estado usam serde(default) e são compatíveis. Nenhum contrato público e nenhuma operação irreversível: tudo é código e prompt locais, versionados. Não há incerteza material aberta: as 3 hipóteses centrais foram confirmadas por forense e código, as políticas foram decididas pelo usuário (D1-D4) e o mecanismo de escalonamento reusa um caminho já testado (E-049, E-050). O passe autocrítico levantou custo (R-001, R-004) e pausas falsas por requires_user (R-002), tratados com mitigação e provas planejadas.",
+    "runs": []
+  },
+  "simplicity": {
+    "cuts": [
+      "Opções de bloqueio vão no next_step, sem campo novo no schema.",
+      "Reuso do reasoning-executor em vez de um papel novo de subagente.",
+      "Sem mudança de UI no pager nem nos enums de telemetria.",
+      "Sem semear fingerprint na criação do goal.",
+      "Cap do verificador e contabilização de tokens ficam fora (residuais)."
+    ],
+    "retained_complexity_justifications": [
+      "Dois sinais determinísticos (fingerprint e resultados de check): só o fingerprint não vê diagnósticos sem edição; só os checks não veem edições sem teste. Os dois casos aparecem nas sessões.",
+      "blocker_kind no schema do avaliador: sem ele não dá para aplicar D2 (pausa cedo) sem transformar erros transitórios em pausas."
+    ]
+  },
+  "chapters": [
+    {
+      "id": "00",
+      "slug": "visao-objetivo",
+      "title": "Visão e objetivo",
+      "summary": "Por que os goals param antes de concluir e o que muda para eles chegarem ao fim.",
+      "sections": [
+        {
+          "heading": "O problema",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Três goals reais pararam antes do fim. No macos-app e no lacco o motivo foi 'Paused (no progress)'; no empath, 'Paused (verification blocked)'. A forense das sessões mostra que em nenhum deles o verificador de conclusão chegou a rodar. Duas pausas vieram de um detector de falta de progresso criado em 26/09 (commit 398b161a), e uma veio de um bloqueio legítimo que o harness demorou 25 minutos para aceitar."
+            },
+            {
+              "type": "callout",
+              "text": "As pausas no_progress aconteceram na primeira rodada de trabalho: macos-app em 23 min, lacco em 10 e 17 min. No lacco a pausa veio no meio do turno, enquanto o worker executava exatamente o próximo passo que o próprio avaliador tinha pedido.",
+              "tone": "danger"
+            }
+          ]
+        },
+        {
+          "heading": "O que muda",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "Falta de progresso deixa de pausar. O reasoning model assume a execução, via reasoning-executor, até o trabalho voltar a avançar (sua decisão D3).",
+                "Progresso passa a ser medido por fatos do harness (workspace mudou, check novo rodou), não só pelo que o modelo avaliador lembra de anotar.",
+                "Bloqueios que dependem de você pausam na hora, com opções, e você responde com '/goal resume <instrução>' (D2).",
+                "O que você pede no goal vence o AGENTS.md (D1).",
+                "Jev e reviews passam a enxergar o objetivo do goal e a entrega real.",
+                "Com o goal pausado, nada roda sozinho até você voltar (D4)."
+              ],
+              "ordered": false
+            }
+          ]
+        },
+        {
+          "heading": "Como saberemos que deu certo",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "Nenhum caminho automático pausa um goal por falta de progresso (checkpoint, fim de rodada ou stall do verificador).",
+                "Com 2 avaliações seguidas sem progresso, um reasoning-executor roda no workspace de entrega e se repete até surgir progresso, quando o main model volta a conduzir sozinho.",
+                "Progresso inclui sinais determinísticos: fingerprint novo do workspace, resultado novo de check (inclusive Playwright, xcodebuild, npm run e2e e tarefas em background) ou evidência nova do avaliador.",
+                "Um bloqueio requires_user pausa na primeira avaliação que o confirma, com opções, e '/goal resume <instrução>' retoma o mesmo goal com a instrução.",
+                "Instruções explícitas do objetivo do goal prevalecem sobre instruções do repositório em planner, worker, avaliador, verificador e reviewers.",
+                "Planos, conselhos, hints e reviews do Jev usam o objetivo do goal como pedido atual.",
+                "O review de entrega analisa a raiz e o baseline reais da entrega, incluindo commits, e roda nessa raiz.",
+                "Reviews de entrega têm no máximo 3 veredictos 'revise' por turno e não repetem review com evidência inalterada.",
+                "Com o goal pausado automaticamente, o turno termina e nenhum wake de background inicia trabalho até o usuário agir.",
+                "Cada avaliação do goal e cada execução de escalonamento fica registrada em goal/evaluations.jsonl.",
+                "As suítes afetadas, a suíte lib do distill-shell, os testes do distill-agent e o clippy passam."
+              ],
+              "ordered": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "02",
+      "slug": "evidencia-estado",
+      "title": "Diagnóstico com evidência",
+      "summary": "O que aconteceu em cada sessão e em que ponto do código.",
+      "sections": [
+        {
+          "heading": "Causas raiz",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "Causa",
+                "Onde",
+                "Efeito observado"
+              ],
+              "rows": [
+                [
+                  "Checkpoint a cada 24 tool rounds conta como 'rodada' e pausa em 3",
+                  "turn.rs:2733, goal.rs:1643",
+                  "lacco pausou com 0 rodadas completas; macos-app com 1"
+                ],
+                [
+                  "Progresso só com observação estruturada do avaliador",
+                  "goal_evaluator.rs:177, :19",
+                  "lacco: spec passando não virou observação"
+                ],
+                [
+                  "Kickoff do goal fica dentro de <system-reminder> e some para o Jev",
+                  "compaction_utils.rs:294, :342; jev_routing.rs:106",
+                  "Jev julgou tudo contra 'por que pausou?' e mandou parar o cadastro real"
+                ],
+                [
+                  "Review diffa o cwd, não o worktree, e ignora commits",
+                  "jev_routing.rs:274, :197, :1199",
+                  "macos-app: 6 reviews com 'diff is empty'"
+                ],
+                [
+                  "Detector de checks não vê Playwright, xcodebuild nem runs em background",
+                  "reasoning_gates.rs:959, :291",
+                  "19 runs Playwright invisíveis no lacco"
+                ],
+                [
+                  "Review opcional sem teto de 'revise'",
+                  "reasoning_gates.rs:678, :653",
+                  "lacco: 14 'revise' seguidos"
+                ],
+                [
+                  "Pausa não para o trabalho: review continua o turno e wakes abrem turnos",
+                  "turn.rs:1385; run_loop.rs:137; notification_drain.rs:523",
+                  "macos-app: turnos de 269M e 312M tokens com goal pausado"
+                ],
+                [
+                  "Blocked em checkpoint não conta e exige 3 rodadas",
+                  "goal.rs:1656, :1693",
+                  "empath: 25 min e 20M tokens depois de o gate estar claro"
+                ],
+                [
+                  "Instrução do goal x AGENTS.md sem desempate",
+                  "goal_rules.md:5; jev_routing.rs:133, :1276",
+                  "macos-app: critério 'production' impossível"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Linha do tempo das sessões",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "macos-app (20:08→20:31Z): planner, 52 loops só lendo código e criando o worktree, 2 checkpoints sem progresso e fim de rodada com uma pergunta de autorização para você. A pausa no_progress engoliu a pergunta. Depois disso vieram cerca de 3 h de review 'revise' e 5 turnos de wake, sem avaliação do goal.",
+                "lacco goal 1 (21:51→22:01Z): 3 checkpoints e pausa sem nenhuma rodada completa.",
+                "lacco goal 2 (03:15→03:31Z): o checkpoint C2 registrou progresso via API; no C4 veio a pausa enquanto o worker escrevia zz-goal-register.spec.ts. Depois, 14 reviews no turno aberto pelo wake do Expo.",
+                "empath (03:11→03:42Z): o gate estava visível aos 51 s e o bloqueio completo aos 5 min; o 1º blocked veio só no fim da rodada 1 (03:36Z) e a pausa após 3 rodadas."
+              ],
+              "ordered": false
+            },
+            {
+              "type": "callout",
+              "text": "Os veredictos brutos do avaliador não ficam salvos em nenhum arquivo, e isso também é um achado (passo S-010).",
+              "tone": "warn"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "03",
+      "slug": "tese",
+      "title": "Tese e alternativas",
+      "summary": "Abordagem escolhida, suas decisões e o que foi descartado.",
+      "sections": [
+        {
+          "heading": "Abordagem",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Os goals param por dois defeitos combinados. Primeiro, o detector de no-progress do commit 398b161a conta checkpoints e depende só de observações emitidas pelo modelo. Segundo, o resto do harness trabalha contra o goal: o Jev perde o objetivo, o review não vê a entrega real e o trabalho continua sem supervisão depois da pausa. A correção troca a pausa por escalonamento para o reasoning model com sinais determinísticos, alinha Jev e review ao objetivo e à entrega reais, pausa cedo só quando o bloqueio depende do usuário e congela o trabalho autônomo com o goal pausado."
+            },
+            {
+              "type": "paragraph",
+              "text": "1) Checks e sinais determinísticos (fingerprint do workspace e resultados novos de checks, inclusive em background) passam a contar como progresso. 2) Nenhum caminho pausa por falta de progresso: após 2 avaliações sem progresso, o goal chama o reasoning-executor no workspace de entrega, repetindo até surgir progresso, com o strategist a cada 3 execuções sem avanço. 3) O avaliador ganha blocker_kind: bloqueio 'requires_user' pausa na primeira confirmação, até em checkpoint, com opções, e '/goal resume <instrução>' leva a resposta ao worker. 4) A instrução explícita do goal vence regras do repositório em todos os prompts. 5) O Jev ancora no objetivo do goal. 6) O review usa a raiz e o baseline reais da entrega, tem limite de 3 'revise' por turno e não repete review com evidência inalterada. 7) Com o goal pausado, o turno acaba e wakes ficam pendentes. 8) Cada avaliação fica registrada em goal/evaluations.jsonl."
+            }
+          ]
+        },
+        {
+          "heading": "Suas decisões (28/09/2026)",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "#",
+                "Tema",
+                "Decisão"
+              ],
+              "rows": [
+                [
+                  "D1",
+                  "Goal x AGENTS.md",
+                  "A instrução explícita do goal sempre vence, sem perguntar"
+                ],
+                [
+                  "D2",
+                  "Human gate",
+                  "Pausar cedo com opções e '/goal resume <instrução>'"
+                ],
+                [
+                  "D3",
+                  "Sem progresso",
+                  "Nunca pausar; usar o reasoning model até desbloquear e ter progresso"
+                ],
+                [
+                  "D4",
+                  "Goal pausado",
+                  "Parar tudo até o usuário (sem review 'revise' nem wakes)"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Alternativas rejeitadas",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "Reverter o commit 398b161a: perde a verificação no worktree, o recheck-only, o dimensionamento do painel e a evidência persistida, e não corrige os bugs de review/Jev, que são anteriores ao commit.",
+                "Só aumentar os limiares (checkpoint a cada 48, pausa em 6): a pausa fica menos frequente, mas o sinal continua frágil (o lacco pausou com um spec passando) e contradiz D3.",
+                "Trocar o modelo do loop principal pelo reasoning model por rodada: reenviaria todo o contexto do worker (média de ~180k tokens por chamada no empath) ao modelo mais caro e exigiria converter a conversa entre provedores. O reasoning-executor já existe, é testado e recebe contexto focado.",
+                "Dar shell 'read-only' ao code-reviewer: esse shell não existe (bash is_read_only=false) e reexecutar e2e exige backend e tempo. Checks capturados pelo harness resolvem o problema com menos permissão.",
+                "Pular automaticamente tasks com human gate: descartado pela decisão D2 (pausar cedo com opções)."
+              ],
+              "ordered": false
+            }
+          ]
+        },
+        {
+          "heading": "Simplicidade",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "Sem campo novo de opções no schema: as opções vão no next_step e o harness acrescenta a dica do resume.",
+                "Sem papel de subagente novo: reusa o reasoning-executor, repetido enquanto não houver progresso.",
+                "Sem mudar a UI do pager nem os enums de telemetria: histórico do goal e evaluations.jsonl bastam.",
+                "Sem sementes de fingerprint na criação do goal: a primeira avaliação vira a linha de base."
+              ],
+              "ordered": false
+            },
+            {
+              "type": "callout",
+              "text": "Complexidade mantida: são 2 sinais (fingerprint e resultados de check), porque só o fingerprint não vê diagnósticos sem edição e só os checks não veem edições sem teste. O schema também ganha blocker_kind, porque sem ele não dá para separar pausa cedo de erro transitório.",
+              "tone": "warn"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "04",
+      "slug": "passos",
+      "title": "Passos de execução",
+      "summary": "Ordem, dependências e definição de pronto.",
+      "sections": [
+        {
+          "heading": "Sequência",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "Passo",
+                "O quê",
+                "Depende de"
+              ],
+              "rows": [
+                [
+                  "S-001",
+                  "Reconhecer checks reais (Playwright, xcodebuild, e2e e tarefas em background)",
+                  "—"
+                ],
+                [
+                  "S-002",
+                  "Sinais determinísticos de progresso no loop de goal",
+                  "S-001"
+                ],
+                [
+                  "S-003",
+                  "Nunca pausar por falta de progresso: escalar para o reasoning model",
+                  "S-002"
+                ],
+                [
+                  "S-004",
+                  "Bloqueio que depende do usuário pausa cedo, com opções e '/goal resume <instrução>'",
+                  "S-002"
+                ],
+                [
+                  "S-005",
+                  "Instrução explícita do goal vence regras do repositório",
+                  "S-004"
+                ],
+                [
+                  "S-006",
+                  "Jev ancorado no objetivo do goal",
+                  "S-004"
+                ],
+                [
+                  "S-007",
+                  "Review de entrega enxerga a entrega real (raiz, baseline, commits)",
+                  "S-003"
+                ],
+                [
+                  "S-008",
+                  "Loop de review limitado e com contrato de evidência",
+                  "S-001, S-007"
+                ],
+                [
+                  "S-009",
+                  "Goal pausado: tudo para até o usuário",
+                  "S-004"
+                ],
+                [
+                  "S-010",
+                  "Registrar cada avaliação do goal",
+                  "S-003, S-004"
+                ],
+                [
+                  "S-011",
+                  "Verificação completa, build local e aceite ao vivo",
+                  "S-001, S-002, S-003, S-004, S-005, S-006, S-007, S-008, S-009, S-010"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "text": "S-001 a S-003 resolvem as pausas no_progress; S-004 resolve o empath; S-005 e S-006 fazem o goal e o Jev puxarem para o mesmo lado; S-007 e S-008 acabam com os loops de review; S-009 congela o trabalho com o goal pausado; S-010 dá visibilidade; S-011 prova tudo.",
+              "tone": "info"
+            }
+          ]
+        },
+        {
+          "heading": "S-001 — Reconhecer checks reais (Playwright, xcodebuild, e2e e tarefas em background)",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Os 19 runs Playwright do lacco e os builds xcodebuild ficaram invisíveis para reviewers e para o sinal de progresso (E-032, E-033)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Em looks_like_check_command (reasoning_gates.rs:959), adicionar npx/pnpx/bunx como runners e reconhecer 'playwright test', 'xcodebuild' com build|test|build-for-testing|test-without-building, 'detox test', 'maestro test', 'cypress run' e scripts 'e2e', 'test:*' ou '*:test' depois de npm|pnpm|yarn|bun run.",
+                "Manter como não-check: 'npx playwright install', 'npm run dev', 'npx expo start', 'xcodebuild -list', 'npm install'.",
+                "Em note_tool_result (reasoning_gates.rs:291), registrar também ToolOutput::TaskOutput(Result) com exit_code Some e comando de check (failed = exit_code != 0), com a mesma deduplicação dos checks Bash.",
+                "Estender o teste check_commands_are_tests_builds_type_checks_and_lints com os casos positivos e negativos acima e criar um teste para o caminho TaskOutput."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: Os comandos listados são reconhecidos e os negativos continuam falsos. Um TaskOutput concluído com 'npx playwright test' aparece em review_checks().",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-002 — Sinais determinísticos de progresso no loop de goal",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Hoje só observações emitidas pelo avaliador contam como progresso. Trabalho não commitado não tem revision, e o lacco pausou com um spec passando (E-003, E-004, E-018)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Em goal_classifier/evidence.rs, criar workspace_fingerprint(root): blake3 de 'rev-parse HEAD', 'diff HEAD --binary' e hash dos não rastreados via 'git hash-object --stdin-paths', reusando git_command e DIFF_COMMAND_TIMEOUT. Retorna None se a raiz não for Git.",
+                "Raiz de entrega = verification_target validado (validate_verification_target) ou, na falta dele, o cwd da sessão.",
+                "Em GoalProgress (goal_evaluator.rs:36), adicionar seen_workspace_fingerprints (máx. 64) e seen_check_outcomes (máx. 256, chave blake3(command_hash|cwd|failed|fingerprint)) com serde(default). Manter no_progress_rounds, agora contando avaliações sem progresso.",
+                "Fazer record() receber os sinais: há progresso quando um critério passa a verified, há observação nova, o fingerprint é inédito ou há resultado de check inédito. Atualizar as duas chamadas em goal.rs (validação em evaluate_goal_round e merge em evaluate_goal_progress).",
+                "Enviar harness_observed ao avaliador (workspace_changed, raiz, até 30 arquivos alterados, checks novos com comando, status e 600 chars finais) e instruir no SYSTEM_PROMPT que esses são fatos capturados, usando o fingerprint como revision de trabalho não commitado.",
+                "Testes em goal_evaluator.rs: mudança de workspace zera o contador; o mesmo check no mesmo estado não conta; check novo que passa conta; estado de goal gravado pela 2.0.16 continua deserializando."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: O contador não sobe quando o workspace mudou ou há check novo. Repetir um check no mesmo estado não conta como progresso. Estado antigo carrega sem erro.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-003 — Nunca pausar por falta de progresso: escalar para o reasoning model",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Decisão D3. As pausas no_progress do macos-app e do lacco (E-013, E-017, E-018) e o stall do verificador (E-010, E-011) passam a acionar o reasoning model em vez de parar."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Em evaluate_goal_progress (goal.rs:1643), remover a auto-pausa NoProgress de checkpoints e fins de rodada. Com no_progress_rounds >= 2, rodar o reasoning-executor e injetar o resultado como system reminder (mesmo formato de append_stall_note), repetindo a cada nova avaliação sem progresso.",
+                "Dar a reasoning_role (jev_routing.rs:186) um parâmetro cwd, preenchido com a raiz de entrega do S-002. O prompt do executor leva objetivo, critérios pendentes, next_step do avaliador, harness_observed e checks recentes.",
+                "A cada 3 execuções do executor sem progresso, rodar o strategist uma vez (maybe_run_goal_strategist) e colocar a nota dele no próximo prompt do executor. Adaptar goal_strategist_prompt.md para o gatilho 'sem progresso', além do 'rejeição do verificador'.",
+                "Na primeira avaliação com progresso, zerar o escalonamento e registrar um evento no histórico. Enquanto o escalonamento do goal estiver ativo, pular o handoff de stall do Jev (jev_routing.rs:743) para não haver dois executores ao mesmo tempo.",
+                "No stall do verificador (goal.rs:348 e caminho legado goal.rs:2455), trocar auto_pause_for_classifier_stall por strategist mais executor, sem pausar. Manter o enum NoProgressPaused para compatibilidade, mas nunca mais produzi-lo automaticamente.",
+                "Sem reasoning model configurado, rodar o executor no main model com reasoning_effort 'high' via SubagentRuntimeOverrides.",
+                "Reescrever o teste goal_round_pauses_repeated_continue_without_losing_proof para 'escala sem perder prova' (status Active, spawn do reasoning-executor com cwd na raiz, prova mantida após compactação) e testar a volta ao normal quando há progresso. Atualizar o trecho de goal_rules.md sobre 'bounded no-progress'."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: Nenhum caminho automático grava NoProgressPaused. 2 avaliações sem progresso criam um reasoning-executor com cwd na raiz de entrega. Progresso encerra o escalonamento. Sem reasoning model, o executor roda no main model.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-004 — Bloqueio que depende do usuário pausa cedo, com opções e '/goal resume <instrução>'",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Decisão D2. O empath gastou 25 min e 20M tokens depois de o gate já ser conhecido (E-021), a pausa ofereceu um único caminho (E-022) e '/goal resume <texto>' cria um goal novo (E-047)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Em GoalEvaluatorVerdict e no schema, adicionar blocker_kind ('' | 'transient' | 'requires_user'), obrigatório e não vazio só em blocked (mesma validação de blocker_key).",
+                "No SYSTEM_PROMPT, definir requires_user (label de human gate ou aprovação, decisão só do usuário, acesso que só ele concede, dependência aberta de outra pessoa) e exigir no next_step 'Opções:' com 1 a 3 caminhos compatíveis com o objetivo, como a próxima task elegível.",
+                "Em evaluate_goal_progress, tratar requires_user antes do retorno de checkpoint (goal.rs:1656) e pausar na hora com evidência, opções e a dica '/goal resume <instrução>'. 'transient' mantém o streak de 3 em fim de rodada.",
+                "Em slash_commands.rs:351, fazer 'resume <texto>' virar GoalResume com guidance; atualizar os matches em turn.rs:728 e slash_exec.rs:900.",
+                "No resume, gravar a guidance como mensagem do usuário marcada com <goal_resume_guidance> antes de retomar a continuação.",
+                "Testes: requires_user num checkpoint pausa na hora com opções; transient continua exigindo 3; '/goal resume pegue a próxima' retoma o mesmo goal com a guidance."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: requires_user pausa na primeira confirmação, inclusive em checkpoint. A mensagem de pausa traz opções e a dica de resume. '/goal resume <texto>' não cria goal novo.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-005 — Instrução explícita do goal vence regras do repositório",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Decisão D1. No macos-app, planner, avaliador, worker e reviewers seguiram o AGENTS.md contra o pedido 'trabalhe direto em production' e deixaram o critério impossível (E-015, E-016, E-040, E-041, E-042)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "goal_rules.md e goal_rules_legacy.md: instruções explícitas do objetivo prevalecem sobre AGENTS.md, CLAUDE.md, regras e skills do repositório quando conflitam; siga o objetivo, informe a sobreposição no relatório e nunca troque local ou entregável.",
+                "goal_planner_prompt.md: nunca reescrever instrução explícita do OBJECTIVE para cumprir instrução do repositório; registrar a sobreposição em Risks/Contradictions como resolvida a favor do OBJECTIVE.",
+                "SYSTEM_PROMPT do avaliador (goal_evaluator.rs) e goal_verifier_prompt.md: requisito do OBJECTIVE não é dispensado nem reescopado por instrução conflitante do repositório, e cumpri-lo não é defeito.",
+                "Prompts do Jev (jev_routing.rs:133, plano em :249 e code-reviewer em :1276) e code_reviewer em distill-agent/src/config.rs:1553: quando o pedido do usuário sobrepõe explicitamente uma instrução do projeto, seguir e julgar pelo pedido.",
+                "Adicionar asserts de conteúdo nos testes de template/prompt existentes, ou testes unitários via include_str!, garantindo a cláusula nos 7 textos."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: Todos os 7 textos contêm a regra de precedência. Os testes de conteúdo passam.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-006 — Jev ancorado no objetivo do goal",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "O kickoff do goal some para o Jev (E-020, E-023, E-024). Planos, conselhos, hints e reviews julgaram tudo contra 'por que pausou?' e mandaram o worker parar o cadastro real (E-019, E-025, E-026, E-027)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Criar em jev_routing.rs um helper request_anchor(items, goal): o último turno humano real ou, se houver kickoff de goal mais recente (marcador 'A goal has been set:' de goal_rules.md:1), o objetivo do goal_tracker somado às mensagens <goal_resume_guidance> posteriores.",
+                "Usar request_anchor em last_real_request (:106, chamado em :679 e :1140), em jev_latest_real_human_request (:2167, que alimenta os hints de jev_tool_result.rs:819) e no início de work_since_request (reasoning_gates.rs:831).",
+                "Não mudar compaction_utils::is_real_user_turn, que segue definindo a semântica de compactação.",
+                "Testes: a conversa [humano 'por que pausou?', kickoff do goal] ancora no objetivo; plano, review e hint recebem o objetivo; work_since_request começa depois do kickoff."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: Durante um goal, 'User request' dos consults do Jev é o objetivo. A compactação não muda de comportamento.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-007 — Review de entrega enxerga a entrega real (raiz, baseline, commits)",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "No macos-app, 6 reviews receberam diff vazio do checkout errado; no lacco, o trabalho commitado ficou invisível; as edições mais novas somem depois do teto (E-015, E-028, E-029, E-030, E-031)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Criar review_target() em jev_routing.rs: verification_target validado do goal (qualquer status) → changes_baseline_commit do goal no cwd → HEAD do turno, capturado na primeira prepare_sampler_for_turn do turno e guardado em ReasoningGates (zera por turno, jev_ledger.rs:268).",
+                "Com baseline, montar 'Changes' com capture_changes_diff(baseline, raiz, created_at) (commits, não commitados e lista de não rastreados), revision via 'git -C raiz rev-parse HEAD' e reviewer com cwd = raiz (parâmetro do S-003).",
+                "Nunca trocar edições registradas por 'Current repository diff is empty.' (jev_routing.rs:1199); com diff vazio e ledger com mudanças, enviar as duas fontes com a origem.",
+                "Em review_changes (reasoning_gates.rs:733), priorizar as edições mais novas quando passar de REVIEW_DIFF_BYTES.",
+                "Abrir o prompt de review com 'Delivery worktree: <raiz>; baseline <sha>'.",
+                "Testes com repo temporário no padrão de delivery_reviewer_receives_shell_edits_from_the_git_diff: worktree ≠ cwd, commit depois do baseline e cwd do spawn = raiz."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: O review de um goal em worktree mostra o diff do worktree. Commits feitos no turno aparecem no review. O spawn do reviewer usa a raiz de entrega.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-008 — Loop de review limitado e com contrato de evidência",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "No lacco foram 14 'revise' na fase Worker, sem teto; no macos-app, só reescrever o relatório disparou novo review; reviewers pediam revise por não poderem rodar testes (E-019, E-035, E-036, E-037, E-038)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Em note_verdict (reasoning_gates.rs:672), contar 'revise' de todo review de entrega do turno; ao atingir MAX_FLOW_REVISIONS (3), instruir uma vez 'reporte os achados não resolvidos' e parar de revisar no turno, incluindo o review forçado por check com falha (jev_routing.rs:1425).",
+                "Guardar a evidence key (diff + identidade dos checks) do último 'revise' e não revisar de novo se ela não mudou; só o texto do relatório mudar não gera review.",
+                "Nos prompts de review (jev_routing.rs:1276, reasoning_system_prompt e code_reviewer em config.rs:1553), dizer que Checks são execuções capturadas pelo harness e que não conseguir rodar ou ver evidência é limite a declarar no approve. Revise só para defeito concreto e corrigível, com arquivo/linha ou evidência.",
+                "Testes: o loop opcional para após 3 'revise'; evidência inalterada com relatório reescrito não gera review novo."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: No máximo 3 'revise' por turno em qualquer fase. Sem review repetido com evidência igual.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-009 — Goal pausado: tudo para até o usuário",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Decisão D4. O macos-app seguiu por cerca de 3 h com review 'revise' e 5 turnos de wake (269M + 312M tokens); o turno de wake do lacco gastou 72M (E-015, E-019, E-043, E-044, E-045)."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Em turn.rs (≈1346-1390), guardar se o goal estava Active antes do round-end; se ele pausou nessa avaliação, sair do loop antes de jev_delivery_review e das continuações do stop gate.",
+                "Em admit_task_completion_wake (run_loop.rs:137), recusar a admissão com goal em qualquer status pausado (push_task_wake_fallback para pendentes).",
+                "Em maybe_drain_notifications (notification_drain.rs:523), retornar sem drenar enquanto pausado; as notificações ficam pendentes e são entregues no próximo turno do usuário ou resume (consume_deferred_completions, :55). O descarte em Active/Complete fica como está.",
+                "Aplicar a mesma regra de pausado à supressão de wake de workflow (run_loop.rs:2116).",
+                "Testes: goal pausado + tarefa concluída não abre turno e a notificação fica retida; no próximo turno do usuário ela é entregue; auto-pausa em fim de rodada não cria reviewer."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: Nenhum turno começa por wake com goal pausado. A auto-pausa encerra o turno sem review. Notificações são entregues depois.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-010 — Registrar cada avaliação do goal",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Os veredictos brutos não ficam em lugar nenhum (E-014), sem isso não dá para provar nem ajustar o escalonamento."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Anexar uma linha JSON por avaliação em <sessão>/goal/evaluations.jsonl (helper de caminho ao lado de plan_path/strategy_path no goal_tracker) com ts, goal_id, tipo (checkpoint|round_end), modelo, decisão, next_step, blocker_key/blocker_kind, observações novas, delta de critérios, harness_observed, no_progress_rounds e ação (continue|nudge|escalate|deescalate|pause_blocked|pause_infra).",
+                "Registrar também cada execução do reasoning-executor/strategist do escalonamento (início, fim, resultado resumido).",
+                "Adicionar ao histórico do goal os eventos de escalonamento e desescalonamento, sem mudar os enums de telemetria.",
+                "Teste: sequência roteirizada gera as linhas esperadas com todos os campos."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: evaluations.jsonl tem uma linha por avaliação e por execução de escalonamento.",
+              "tone": "ok"
+            }
+          ]
+        },
+        {
+          "heading": "S-011 — Verificação completa, build local e aceite ao vivo",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Provar que as mudanças juntas eliminam as pausas prematuras sem regressões e repetir os 3 cenários reais."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Rodar os filtros afetados com GROK_HOME=$(mktemp -d) RUST_MIN_STACK=16777216 cargo test -p distill-shell --lib -- --test-threads=1 <filtro> para goal_evaluator, goal_tracker, goal_classifier, goal_compaction_reseed_tests, jev_routing, reasoning_gates, notification_drain e slash_commands.",
+                "Rodar a suíte lib completa do distill-shell, cargo test -p distill-agent e cargo clippy no padrão do repo.",
+                "Com OK do usuário, gerar build local no padrão ~/.local/share/distill/local-builds/2.0.16+local.<nome>/ sem publicar release.",
+                "Com autorização, reexecutar 3 goals no formato das sessões (lacco onboarding, macos-app seletores, empath Todo) e auditar evaluations.jsonl: zero pausas no_progress, pares escalate→deescalate, empath pausando na 1ª confirmação do gate com a opção DEV-3275 e nenhum turno de wake com goal pausado."
+              ],
+              "ordered": true
+            },
+            {
+              "type": "callout",
+              "text": "Pronto quando: Todas as suítes e o clippy passam. O aceite ao vivo cumpre as 4 condições.",
+              "tone": "ok"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "05",
+      "slug": "riscos-decisoes",
+      "title": "Riscos e residuais",
+      "summary": "O que pode dar errado, como está coberto e o que fica de fora.",
+      "sections": [
+        {
+          "heading": "Riscos",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "Risco",
+                "Severidade",
+                "Tratamento",
+                "Status"
+              ],
+              "rows": [
+                [
+                  "Nunca pausar por falta de progresso pode queimar tokens num goal realmente travado que o avaliador não classifica como blocked.",
+                  "high",
+                  "Escalonamento com executor limitado (5 turns por execução), strategist a cada 3 execuções sem avanço, pausa cedo para requires_user, token budget opcional (/goal --budget) e visibilidade em evaluations.jsonl. É o custo aceito ao optar por D3.",
+                  "MITIGATED"
+                ],
+                [
+                  "A pausa cedo em requires_user pode criar pausas falsas se o avaliador classificar mal um erro comum.",
+                  "medium",
+                  "requires_user exige evidência concreta (label, estado da dependência, pedido de decisão); o padrão é transient com streak 3; há testes com veredictos roteirizados e aceite ao vivo.",
+                  "MITIGATED"
+                ],
+                [
+                  "Com D1, um goal pode sobrepor regras protetivas do repositório (ex.: o RemoteCode em execução é off-limits) e afetar um checkout em uso.",
+                  "medium",
+                  "Decisão explícita do dono (D1); a sobreposição é declarada no relatório do worker e registrada nas Risks do plano do goal.",
+                  "ACCEPTED"
+                ],
+                [
+                  "O escalonamento aumenta o custo com chamadas ao reasoning model.",
+                  "medium",
+                  "Executor com contexto focado, 5 turns por execução, desescalonamento no primeiro progresso e sinais determinísticos que reduzem falsos 'sem progresso'.",
+                  "MITIGATED"
+                ],
+                [
+                  "O campo obrigatório novo (blocker_kind) no schema do avaliador pode aumentar falhas de parse e pausas por infraestrutura.",
+                  "medium",
+                  "Mesma validação já usada para blocker_key, json_schema estrito enviado ao provedor, 2 tentativas por avaliação e testes com respostas roteirizadas.",
+                  "MITIGATED"
+                ],
+                [
+                  "Reconhecer mais comandos como checks pode gerar falsos positivos (ex.: servidores de dev).",
+                  "low",
+                  "Exigir subcomando de check (test/build/run) e casos negativos explícitos nos testes.",
+                  "MITIGATED"
+                ],
+                [
+                  "Contar mudanças no workspace como progresso deixa sem escalonamento um churn de edições que nunca converge.",
+                  "medium",
+                  "O painel do verificador, o cap de 10 rejeições e o token budget continuam limitando; registrado como residual.",
+                  "MITIGATED"
+                ],
+                [
+                  "Reter wakes com goal pausado atrasa informação para o usuário.",
+                  "low",
+                  "As notificações ficam pendentes e são entregues no próximo turno do usuário ou no resume, e as tarefas continuam listadas na UI.",
+                  "MITIGATED"
+                ],
+                [
+                  "Campos novos no estado persistido do goal podem quebrar sessões antigas.",
+                  "low",
+                  "serde(default) nos campos novos (GoalProgress não usa deny_unknown_fields) e teste carregando um state.json da 2.0.16.",
+                  "MITIGATED"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Fora de escopo (residuais)",
+          "blocks": [
+            {
+              "type": "list",
+              "items": [
+                "O cap de 10 rejeições do verificador (BackOff) continua pausando; falta decidir se também vira escalonamento.",
+                "O contador de tokens do goal mostra o tamanho do contexto, não o gasto acumulado (empath: 391k exibidos contra 23,24M reais), e continua subindo com o goal pausado.",
+                "O effort padrão 'max' do config do usuário e a política de effort do Jev (só 27 de 120 chamadas reduzidas no empath) afetam custo, não pausas.",
+                "Ao substituir um goal, o scratch do goal anterior é apagado (o lacco perdeu drive-rerun3.log).",
+                "O nudge 'Next step', tirado do primeiro checkbox do plano, pode redirecionar para trabalho já feito (empath, rodada 2).",
+                "Churn de edições sem critérios verificados não escala nem pausa (efeito de D3); para goals sem supervisão, usar --budget."
+              ],
+              "ordered": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "06",
+      "slug": "verificacao",
+      "title": "Verificação",
+      "summary": "Como cada critério será provado.",
+      "sections": [
+        {
+          "heading": "Mapa de provas",
+          "blocks": [
+            {
+              "type": "table",
+              "headers": [
+                "Prova",
+                "O que prova",
+                "Status"
+              ],
+              "rows": [
+                [
+                  "V-000",
+                  "Forense read-only das 3 sessões (3 agentes) e compilação isolada de looks_like_check_command com rustc.",
+                  "PASS"
+                ],
+                [
+                  "V-001",
+                  "Testes de detecção de checks e do caminho TaskOutput.",
+                  "PLANNED"
+                ],
+                [
+                  "V-002",
+                  "Testes de sinais de progresso e de compatibilidade de estado.",
+                  "PLANNED"
+                ],
+                [
+                  "V-003",
+                  "Testes de ator: sem pausa NoProgress, spawn do reasoning-executor com cwd na raiz, desescalonamento com progresso e stall do verificador escalando.",
+                  "PLANNED"
+                ],
+                [
+                  "V-004",
+                  "Testes: requires_user pausa em checkpoint com opções; transient mantém o streak; '/goal resume <texto>' retoma com guidance.",
+                  "PLANNED"
+                ],
+                [
+                  "V-005",
+                  "Asserts de conteúdo da regra de precedência nos 7 textos.",
+                  "PLANNED"
+                ],
+                [
+                  "V-006",
+                  "Testes do request_anchor com kickoff de goal e guidance.",
+                  "PLANNED"
+                ],
+                [
+                  "V-007",
+                  "Testes com repo temporário: worktree ≠ cwd, commit depois do baseline e cwd do spawn.",
+                  "PLANNED"
+                ],
+                [
+                  "V-008",
+                  "Testes do teto de 3 'revise' e de review não repetido com evidência inalterada.",
+                  "PLANNED"
+                ],
+                [
+                  "V-009",
+                  "Testes de wake retido com goal pausado e de auto-pausa sem reviewer.",
+                  "PLANNED"
+                ],
+                [
+                  "V-010",
+                  "Teste de evaluations.jsonl com sequência roteirizada.",
+                  "PLANNED"
+                ],
+                [
+                  "V-011",
+                  "Suíte lib completa do distill-shell, distill-agent e clippy.",
+                  "PLANNED"
+                ],
+                [
+                  "V-012",
+                  "Aceite ao vivo com 3 goals no formato das sessões, auditando evaluations.jsonl.",
+                  "PLANNED"
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "heading": "Aceite ao vivo",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Depois do build local, e só com sua autorização, rodar 3 goals no formato das sessões e auditar goal/evaluations.jsonl."
+            },
+            {
+              "type": "list",
+              "items": [
+                "Zero pausas no_progress.",
+                "Pelo menos um par escalate→deescalate quando o main model travar.",
+                "empath: pausa na 1ª confirmação do gate, com a opção DEV-3275.",
+                "Nenhum turno de wake com goal pausado."
+              ],
+              "ordered": false
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "residuals": [
+    "O cap de 10 rejeições do verificador (BackOff) continua pausando; falta decidir se também vira escalonamento.",
+    "O contador de tokens do goal mostra o tamanho do contexto, não o gasto acumulado (empath: 391k exibidos contra 23,24M reais), e continua subindo com o goal pausado.",
+    "O effort padrão 'max' do config do usuário e a política de effort do Jev (só 27 de 120 chamadas reduzidas no empath) afetam custo, não pausas.",
+    "Ao substituir um goal, o scratch do goal anterior é apagado (o lacco perdeu drive-rerun3.log).",
+    "O nudge 'Next step', tirado do primeiro checkbox do plano, pode redirecionar para trabalho já feito (empath, rodada 2).",
+    "Churn de edições sem critérios verificados não escala nem pausa (efeito de D3); para goals sem supervisão, usar --budget."
+  ],
+  "blockers": []
+}

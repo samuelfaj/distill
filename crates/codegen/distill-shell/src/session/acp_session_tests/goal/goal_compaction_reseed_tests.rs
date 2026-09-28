@@ -92,12 +92,17 @@ async fn goal_recheck_retires_resolved_gaps_without_completing_pending_work() {
     }).await;
 }
 
+/// A goal that stops making progress is never paused for it. From the second
+/// evaluation without progress the reasoning model takes over through a
+/// bounded executor in the delivery root; each run sees the previous report,
+/// and the persisted proof survives compaction throughout.
 #[tokio::test(flavor = "current_thread")]
-async fn goal_round_pauses_repeated_continue_without_losing_proof() {
-    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
-    use crate::session::goal_tracker::GoalStatus;
+async fn goal_round_escalates_repeated_continue_without_losing_proof() {
+    use super::rate_limit_backoff_tests::actor_under_test_with_subagents;
+    use crate::session::goal_tracker::{GoalEvent, GoalStatus};
     use distill_test_support::sse::responses_api_script_exact;
     use distill_test_support::{MockInferenceServer, ScriptedResponse};
+    use distill_tools::implementations::distill::task::types::{SubagentEvent, SubagentResult};
 
     tokio::task::LocalSet::new().run_until(async {
         let server = MockInferenceServer::start().await.unwrap();
@@ -115,7 +120,25 @@ async fn goal_round_pauses_repeated_continue_without_losing_proof() {
                 responses_api_script_exact(&verdict.to_string(), "test"),
             ));
         }
-        let (actor, _) = actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SubagentEvent>();
+        let spawns = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(String, Option<String>)>::new()));
+        let seen = spawns.clone();
+        let coordinator = tokio::task::spawn_local(async move {
+            while let Some(event) = rx.recv().await {
+                let SubagentEvent::Spawn(spawn) = event else { continue };
+                assert_eq!(spawn.subagent_type, "reasoning-executor");
+                seen.borrow_mut().push((spawn.prompt.clone(), spawn.cwd.clone()));
+                let run = seen.borrow().len();
+                spawn.respond_with(|request| SubagentResult {
+                    success: true,
+                    output: StdArc::from(format!("executor run {run}: tried approach {run}")),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                }).unwrap();
+            }
+        });
+        let actor = actor_under_test_with_subagents(&server, tx).await;
         set_goal_harness_for_tests(&actor);
         start_device_test_goal(&actor);
         for round in 0..=3 {
@@ -132,26 +155,300 @@ async fn goal_round_pauses_repeated_continue_without_losing_proof() {
             let decision = if checkpoint {
                 actor.run_goal_progress_checkpoint().await
             } else { actor.run_goal_round_end().await };
+            assert!(matches!(decision, GoalRoundDecision::Continue(_)), "round {round} must not pause");
             let tracker = actor.goal_tracker.lock();
             let goal = tracker.snapshot().unwrap();
+            assert_eq!(goal.status, GoalStatus::Active);
             assert_eq!(goal.progress.no_progress_rounds, round);
             assert_eq!(goal.progress.criteria[0].evidence, "playwright.log:12 PASS");
-            if round < 3 {
-                assert!(matches!(decision, GoalRoundDecision::Continue(ref text) if checkpoint || text.contains("playwright.log:12 PASS")));
-            } else {
-                assert!(matches!(decision, GoalRoundDecision::EndTurn));
-                assert_eq!(goal.status, GoalStatus::NoProgressPaused);
-            }
+            assert_eq!(
+                goal.escalation_runs,
+                round.saturating_sub(1),
+                "the reasoning model takes over from the second evaluation without progress"
+            );
             if checkpoint {
                 assert_eq!(goal.total_worker_rounds, worker_rounds, "a checkpoint does not finish a worker round");
                 assert_eq!(goal.classifier_runs_attempted, 0, "checkpoints never trigger a verifier");
             }
         }
-        assert!(actor.goal_tracker.lock().resume());
-        let tracker = actor.goal_tracker.lock();
-        assert_eq!(tracker.snapshot().unwrap().progress.no_progress_rounds, 0);
-        assert_eq!(tracker.snapshot().unwrap().progress.criteria.len(), 1);
+        {
+            let spawns = spawns.borrow();
+            assert_eq!(spawns.len(), 2);
+            assert_eq!(spawns[0].1.as_deref(), Some("/tmp"), "the executor works in the delivery root");
+            assert!(spawns[0].0.contains(DEVICE_TEST_OBJECTIVE));
+            assert!(
+                spawns[1].0.contains("executor run 1: tried approach 1"),
+                "the next run knows what the previous one tried"
+            );
+        }
+        assert!(actor.chat_state_handle.get_conversation().await.iter()
+            .any(|item| item.text_content().contains("executor run 2: tried approach 2")));
+        {
+            let tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot().unwrap();
+            assert!(goal.history.iter().any(|entry| matches!(entry.event, GoalEvent::EscalatedToReasoning)));
+        }
+        coordinator.abort();
     }).await;
+}
+
+/// Progress after an escalation hands the goal back to the Worker.
+#[tokio::test(flavor = "current_thread")]
+async fn observed_progress_ends_the_reasoning_escalation() {
+    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
+    use crate::session::goal_tracker::GoalEvent;
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let server = MockInferenceServer::start().await.unwrap();
+            let verdict = |observations: serde_json::Value| {
+                serde_json::json!({
+                    "decision": "continue", "evidence": "registration not proven yet",
+                    "next_step": "drive the registration spec", "blocker_key": "",
+                    "progress_evidence": "", "needs_review_panel": false,
+                    "observations": observations, "verification_target": null,
+                    "criteria": [{"id":"register", "requirement":"register a new user",
+                        "source":"user: prove registration", "status":"pending",
+                        "evidence":"", "scope":"", "invalidated_by":""}]
+                })
+            };
+            let passed = serde_json::json!([{"criterion_id":"register", "artifact":"e2e/register",
+            "revision":"abc", "outcome":"passed"}]);
+            for response in [
+                verdict(serde_json::json!([])),
+                verdict(serde_json::json!([])),
+                verdict(serde_json::json!([])),
+                verdict(passed),
+            ] {
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact(
+                        &response.to_string(),
+                        "test",
+                    )),
+                );
+            }
+            let (actor, _) =
+                actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+            set_goal_harness_for_tests(&actor);
+            start_device_test_goal(&actor);
+            for _ in 0..3 {
+                actor.run_goal_round_end().await;
+            }
+            assert_eq!(
+                actor
+                    .goal_tracker
+                    .lock()
+                    .snapshot()
+                    .unwrap()
+                    .escalation_runs,
+                1
+            );
+            assert!(actor.goal_tracker.lock().escalation_active());
+            actor.run_goal_round_end().await;
+            let tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot().unwrap();
+            assert_eq!(goal.progress.no_progress_rounds, 0);
+            assert_eq!(goal.escalation_runs, 0);
+            assert!(goal.last_escalation_report.is_none());
+            assert!(
+                goal.history
+                    .iter()
+                    .any(|entry| matches!(entry.event, GoalEvent::EscalationResolved))
+            );
+        })
+        .await;
+}
+
+/// The verifier rejecting completion with the same gaps again used to pause the
+/// goal on the second rejection. It now restructures and hands the gaps to
+/// the reasoning model; only the configured rejection cap still pauses.
+#[tokio::test(flavor = "current_thread")]
+async fn repeated_verifier_gaps_escalate_instead_of_pausing() {
+    use crate::session::goal_classifier::GoalClassifierOutcome;
+    use crate::session::goal_tracker::{GoalEvent, GoalStatus};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, _tmp) = make_goal_actor().await;
+            start_device_test_goal(&actor);
+            let policy = super::goal_support::GoalClassifierPolicy {
+                enabled: true,
+                max_runs: 10,
+            };
+            let notify = actor.goal_notify_sender();
+            for attempt in 1..=4 {
+                actor
+                    .apply_classifier_outcome(
+                        &policy,
+                        attempt,
+                        GoalClassifierOutcome::NotAchieved {
+                            details_path: String::new(),
+                            gaps_summary: "meter data still aggregated on dnp3".into(),
+                            pause_summary: "meter data still aggregated on dnp3".into(),
+                            gap_fingerprint: "dnp3-aggregate".into(),
+                        },
+                        &notify,
+                    )
+                    .await;
+                assert_eq!(
+                    actor.goal_tracker.lock().status(),
+                    Some(GoalStatus::Active),
+                    "attempt {attempt}"
+                );
+            }
+            let tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot().unwrap();
+            assert!(
+                goal.escalation_runs >= 1,
+                "the reasoning model took over the repeated gaps"
+            );
+            assert!(
+                goal.history
+                    .iter()
+                    .any(|entry| matches!(entry.event, GoalEvent::EscalatedToReasoning))
+            );
+        })
+        .await;
+}
+
+/// A human gate is confirmed at the first checkpoint that sees it: the goal
+/// pauses there with the user's options instead of working 25 more minutes and
+/// three rounds to re-confirm it. A transient blocker keeps working.
+#[tokio::test(flavor = "current_thread")]
+async fn a_blocker_only_the_user_can_clear_pauses_at_the_first_checkpoint() {
+    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
+    use crate::session::goal_tracker::GoalStatus;
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        let blocked = |kind: &str| serde_json::json!({
+            "decision": "blocked", "evidence": "DEV-4662 is labeled HUMAN GATE and DEV-4658 is In Progress",
+            "next_step": "Authorize DEV-4662 or finish DEV-4658. Options: 1) take the next eligible Todo DEV-3275",
+            "blocker_key": "dev_4662_human_gate", "blocker_kind": kind,
+            "progress_evidence": "", "needs_review_panel": false,
+            "observations": [], "verification_target": null, "criteria": []
+        });
+        for kind in ["transient", "requires_user"] {
+            server.enqueue_response("/v1/responses", ScriptedResponse::sse(
+                responses_api_script_exact(&blocked(kind).to_string(), "test"),
+            ));
+        }
+        let (actor, _) = actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+        set_goal_harness_for_tests(&actor);
+        start_device_test_goal(&actor);
+        assert!(matches!(actor.run_goal_progress_checkpoint().await, GoalRoundDecision::Continue(_)));
+        assert_eq!(actor.goal_tracker.lock().status(), Some(GoalStatus::Active), "a transient blocker keeps working");
+        assert!(matches!(actor.run_goal_progress_checkpoint().await, GoalRoundDecision::EndTurn));
+        let tracker = actor.goal_tracker.lock();
+        let goal = tracker.snapshot().unwrap();
+        assert_eq!(goal.status, GoalStatus::Blocked);
+        let message = goal.pause_message.as_deref().unwrap();
+        assert!(message.contains("DEV-3275"), "the pause names the user's options: {message}");
+        assert_eq!(goal.total_worker_rounds, 0, "paused mid-round, before re-confirming the gate");
+    }).await;
+}
+
+/// `/goal resume <text>` hands the user's decision to the resumed goal.
+#[tokio::test(flavor = "current_thread")]
+async fn resume_guidance_reaches_the_resumed_turn() {
+    use crate::session::goal_tracker::GoalPauseReason;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, _tmp) = make_goal_actor().await;
+            start_device_test_goal(&actor);
+            assert!(
+                actor
+                    .goal_tracker
+                    .lock()
+                    .pause(GoalPauseReason::Verification)
+            );
+            let GoalResumeOutcome::Inference { reminder, .. } = actor
+                .resume_goal(Some("  take the next Todo: DEV-3275 "))
+                .await
+            else {
+                panic!("a paused goal resumes into a turn");
+            };
+            assert!(reminder.contains(
+                "<goal_resume_guidance>\ntake the next Todo: DEV-3275\n</goal_resume_guidance>"
+            ));
+            assert!(reminder.contains("A goal has been set:"));
+        })
+        .await;
+}
+
+/// Every evaluation leaves a record of why the goal continued, escalated or
+/// paused. The verdicts that paused the three failing sessions were lost.
+#[tokio::test(flavor = "current_thread")]
+async fn each_goal_evaluation_and_escalation_is_recorded() {
+    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let server = MockInferenceServer::start().await.unwrap();
+            let verdict = serde_json::json!({
+                "decision": "continue", "evidence": "registration not proven yet",
+                "next_step": "drive the registration spec", "blocker_key": "", "blocker_kind": "",
+                "progress_evidence": "", "needs_review_panel": false,
+                "observations": [], "verification_target": null,
+                "criteria": [{"id":"register", "requirement":"register a new user",
+                    "source":"user: prove registration", "status":"pending",
+                    "evidence":"", "scope":"", "invalidated_by":""}]
+            });
+            for _ in 0..3 {
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact(&verdict.to_string(), "test")),
+                );
+            }
+            let (actor, _) =
+                actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+            let tmp = TempDir::new().unwrap();
+            *actor.goal_tracker.lock() =
+                crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf());
+            set_goal_harness_for_tests(&actor);
+            start_device_test_goal(&actor);
+            actor.run_goal_progress_checkpoint().await;
+            actor.run_goal_round_end().await;
+            actor.run_goal_round_end().await;
+            let log = std::fs::read_to_string(tmp.path().join("goal/evaluations.jsonl")).unwrap();
+            let records: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let summary: Vec<(&str, &str)> = records
+                .iter()
+                .map(|record| {
+                    (
+                        record["kind"].as_str().unwrap(),
+                        record["action"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                summary,
+                [
+                    ("checkpoint", "continue"),
+                    ("round_end", "continue"),
+                    ("round_end", "escalate"),
+                    ("escalation", "executor_unavailable"),
+                ]
+            );
+            assert_eq!(records[2]["no_progress_rounds"], 2);
+            assert_eq!(records[2]["next_step"], "drive the registration spec");
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record["goal_id"] == "g-device-test" && record["ts"].is_string())
+            );
+        })
+        .await;
 }
 
 async fn make_goal_actor() -> (StdArc<SessionActor>, TempDir) {

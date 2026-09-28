@@ -264,6 +264,63 @@ async fn drain_batches_monitor_notifications_into_formatted_block() {
         })
         .await;
 }
+/// A goal the harness stopped for the user holds finished background tasks:
+/// no wake turn runs until the user acts, and each completion is kept for the
+/// user's next turn. Stale dev-server completions used to open turns that ran
+/// for hours with nobody present.
+#[tokio::test(flavor = "current_thread")]
+async fn a_goal_stopped_for_the_user_holds_background_wakes() {
+    use crate::session::goal_tracker::GoalPauseReason;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = std::sync::Arc::new(
+                create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await,
+            );
+            set_goal_harness_for_tests(&actor);
+            {
+                let mut tracker = actor.goal_tracker.lock();
+                tracker.create_goal(
+                    "g-stopped".into(),
+                    "prove a new user can register".into(),
+                    None,
+                    0,
+                    "2026-09-28T00:00:00Z".into(),
+                    None,
+                );
+                assert!(tracker.pause(GoalPauseReason::Verification));
+            }
+            let origin = crate::session::PromptOrigin::TaskCompleted {
+                task_id: "expo-dev".to_string(),
+            };
+            let (admission, response_rx) = task_wake_admission(
+                "expo-dev",
+                NotificationSource::BashTaskCompleted {
+                    task_id: "expo-dev".to_string(),
+                },
+            );
+            assert!(
+                actor
+                    .admit_task_completion_wake(&origin, admission)
+                    .await
+                    .is_none()
+            );
+            assert_eq!(response_rx.await, Ok(false), "the wake is refused");
+            let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+            SessionActor::maybe_drain_notifications(actor.clone(), completion_tx).await;
+            let state = actor.state.lock().await;
+            assert!(state.pending_inputs.is_empty(), "no autonomous turn");
+            assert_eq!(
+                state.pending_notifications.len(),
+                1,
+                "the completion waits for the user's next turn"
+            );
+        })
+        .await;
+}
 #[tokio::test(flavor = "current_thread")]
 async fn closed_admission_ack_stores_fallback_before_prompt_rejection() {
     let local = tokio::task::LocalSet::new();

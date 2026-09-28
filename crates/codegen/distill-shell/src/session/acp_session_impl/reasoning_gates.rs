@@ -25,6 +25,7 @@
 //! the repeated prefix from the prompt cache.
 
 use distill_sampling_types::ConversationItem;
+use distill_tool_types::{TaskOutputOutput, TaskOutputResult};
 use distill_tools::types::output::{ApplyPatchOutput, SearchReplaceOutput, ToolOutput};
 use distill_workspace::jev::JevAnswerSet;
 
@@ -77,7 +78,7 @@ pub(crate) struct ChangeRecord {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct TestEvidence {
     pub(crate) command: String,
-    command_hash: String,
+    pub(crate) command_hash: String,
     output_hash: String,
     pub(crate) cwd: String,
     pub(crate) failed: bool,
@@ -236,6 +237,8 @@ pub(crate) struct ReasoningGates {
     plan: PlanGate,
     flow_phase: FlowPhase,
     flow_revisions: u8,
+    /// Revision verdicts of reviews Jev chose (no required flow) this turn.
+    optional_revisions: u8,
     reviewed_artifact: Option<String>,
     approved_review: Option<(String, String, String)>,
     plan_unavailable: bool,
@@ -253,6 +256,9 @@ pub(crate) struct ReasoningGates {
     /// Answers a battery shared with another decision gave for this round.
     round_answers: Option<(RoundQuestion, JevAnswerSet)>,
     thread: ReasoningThread,
+    /// The session directory's commit when this turn began (`Some(None)`
+    /// outside Git), so a review can see work committed during the turn.
+    turn_baseline: Option<Option<String>>,
 }
 
 impl ReasoningGates {
@@ -288,32 +294,57 @@ impl ReasoningGates {
             ),
         });
         self.changes.extend(change_records(output));
-        if let ToolOutput::Bash(bash) = output
-            && looks_like_check_command(&bash.command)
-        {
-            let failed = bash.exit_code != 0 || bash.timed_out || bash.signal.is_some();
-            let check = TestEvidence {
-                command: bash.command.chars().take(SIGNATURE_CHARS).collect(),
-                command_hash: blake3::hash(bash.command.as_bytes()).to_hex().to_string(),
-                output_hash: check_output_hash(&bash.output_for_prompt, failed),
-                cwd: bash.current_dir.clone(),
-                failed,
-                excerpt: tail_chars(&bash.output_for_prompt, TEST_EXCERPT_CHARS),
-            };
-            self.last_test = Some(check.clone());
-            if let Some(previous) = self.checks.iter_mut().find(|previous| {
-                previous.command_hash == check.command_hash
-                    && previous.cwd == check.cwd
-                    && previous.failed == check.failed
-                    && (!check.failed || previous.output_hash == check.output_hash)
-            }) {
-                *previous = check;
-            } else {
-                if self.checks.len() == MAX_CHECKS {
-                    self.checks.remove(0);
-                }
-                self.checks.push(check);
+        match output {
+            ToolOutput::Bash(bash) if looks_like_check_command(&bash.command) => {
+                let failed = bash.exit_code != 0 || bash.timed_out || bash.signal.is_some();
+                self.note_check(
+                    &bash.command,
+                    bash.current_dir.clone(),
+                    failed,
+                    &bash.output_for_prompt,
+                );
             }
+            // A check run in the background reports its outcome when its task
+            // output is read after it finishes.
+            ToolOutput::TaskOutput(TaskOutputOutput::Result(task)) => self.note_task_check(task),
+            ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(multi)) => {
+                for task in &multi.results {
+                    self.note_task_check(task);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn note_task_check(&mut self, task: &TaskOutputResult) {
+        if task.is_terminal() && looks_like_check_command(&task.command) {
+            let failed = task.status != "completed" || task.exit_code != Some(0);
+            self.note_check(&task.command, String::new(), failed, &task.output);
+        }
+    }
+
+    fn note_check(&mut self, command: &str, cwd: String, failed: bool, output: &str) {
+        let check = TestEvidence {
+            command: command.chars().take(SIGNATURE_CHARS).collect(),
+            command_hash: blake3::hash(command.as_bytes()).to_hex().to_string(),
+            output_hash: check_output_hash(output, failed),
+            cwd,
+            failed,
+            excerpt: tail_chars(output, TEST_EXCERPT_CHARS),
+        };
+        self.last_test = Some(check.clone());
+        if let Some(previous) = self.checks.iter_mut().find(|previous| {
+            previous.command_hash == check.command_hash
+                && previous.cwd == check.cwd
+                && previous.failed == check.failed
+                && (!check.failed || previous.output_hash == check.output_hash)
+        }) {
+            *previous = check;
+        } else {
+            if self.checks.len() == MAX_CHECKS {
+                self.checks.remove(0);
+            }
+            self.checks.push(check);
         }
     }
 
@@ -689,6 +720,12 @@ impl ReasoningGates {
                 }
                 ReviewVerdict::Revise | ReviewVerdict::Unclear => FlowPhase::Unavailable,
             };
+        } else if verdict == ReviewVerdict::Revise {
+            // Reviews Jev chose had no limit: fourteen revisions in a row.
+            self.optional_revisions = self.optional_revisions.saturating_add(1);
+            if self.optional_revisions >= MAX_FLOW_REVISIONS {
+                self.flow_phase = FlowPhase::Unavailable;
+            }
         }
     }
 
@@ -730,21 +767,30 @@ impl ReasoningGates {
 
     /// The request's changes for a reviewer: diffs up to the byte budget, then
     /// the remaining files by name and size.
+    /// Recorded edits within [`REVIEW_DIFF_BYTES`], oldest first. When they do
+    /// not all fit, the newest win: they hold the fixes a re-review checks.
     pub(crate) fn review_changes(&self) -> String {
-        let mut out = String::new();
+        let mut used = 0usize;
+        let mut kept = Vec::new();
         let mut omitted = Vec::new();
-        for change in &self.changes {
+        for change in self.changes.iter().rev() {
             let block = format!(
                 "--- {} (+{} -{})\n{}\n",
                 change.path, change.added, change.removed, change.diff
             );
-            if out.len().saturating_add(block.len()) <= REVIEW_DIFF_BYTES {
-                out.push_str(&block);
+            if used.saturating_add(block.len()) <= REVIEW_DIFF_BYTES {
+                used += block.len();
+                kept.push(block);
             } else {
-                omitted.push(format!("{} (+{} -{})", change.path, change.added, change.removed));
+                omitted.push(format!(
+                    "{} (+{} -{})",
+                    change.path, change.added, change.removed
+                ));
             }
         }
+        let mut out: String = kept.into_iter().rev().collect();
         if !omitted.is_empty() {
+            omitted.reverse();
             out.push_str(&format!("[diff omitted for: {}]\n", omitted.join(", ")));
         }
         out
@@ -752,6 +798,23 @@ impl ReasoningGates {
 
     pub(crate) fn last_test(&self) -> Option<&TestEvidence> {
         self.last_test.as_ref()
+    }
+
+    /// The build, test and lint outcomes this request recorded.
+    pub(crate) fn recorded_checks(&self) -> &[TestEvidence] {
+        &self.checks
+    }
+
+    pub(crate) fn needs_turn_baseline(&self) -> bool {
+        self.turn_baseline.is_none()
+    }
+
+    pub(crate) fn set_turn_baseline(&mut self, head: Option<String>) {
+        self.turn_baseline.get_or_insert(head);
+    }
+
+    pub(crate) fn turn_baseline(&self) -> Option<&str> {
+        self.turn_baseline.as_ref().and_then(Option::as_deref)
     }
 
     pub(crate) fn review_checks(&self) -> String {
@@ -825,10 +888,18 @@ impl WorkEntry {
 }
 
 /// The main model's work since the user's last request, oldest first.
-pub(crate) fn work_since_request(items: &[ConversationItem]) -> Vec<WorkEntry> {
-    let start = items
-        .iter()
-        .rposition(distill_chat_state::compaction_utils::is_real_user_turn)
+/// `anchor` is the index of the item the request started at (a goal kickoff
+/// is one); without it, the last real user turn.
+pub(crate) fn work_since_request(
+    items: &[ConversationItem],
+    anchor: Option<usize>,
+) -> Vec<WorkEntry> {
+    let start = anchor
+        .or_else(|| {
+            items
+                .iter()
+                .rposition(distill_chat_state::compaction_utils::is_real_user_turn)
+        })
         .map_or(0, |index| index + 1);
     let mut calls: std::collections::HashMap<&str, String> = Default::default();
     let mut work = Vec::new();
@@ -961,6 +1032,17 @@ pub(crate) fn looks_like_check_command(command: &str) -> bool {
         "pytest", "jest", "vitest", "mocha", "rspec", "phpunit", "ctest", "tox", "nox", "tsc",
         "eslint", "ruff", "mypy", "pyright", "clippy",
     ];
+    // These check only through one subcommand: `playwright install` or
+    // `cypress open` do not.
+    const CHECK_SUBCOMMANDS: &[(&str, &str)] = &[
+        ("playwright", "test"),
+        ("cypress", "run"),
+        ("detox", "test"),
+        ("maestro", "test"),
+    ];
+    // `xcodebuild -list` or `-showBuildSettings` name no action.
+    const XCODEBUILD_ACTIONS: &[&str] =
+        &["build", "test", "build-for-testing", "test-without-building", "analyze"];
     const RUNNERS: &[&str] = &[
         "cargo", "npm", "pnpm", "yarn", "bun", "go", "make", "mix", "dotnet", "deno", "swift",
         "flutter", "gradle", "./gradlew", "mvn", "uv", "poetry",
@@ -968,6 +1050,9 @@ pub(crate) fn looks_like_check_command(command: &str) -> bool {
     const VERBS: &[&str] = &[
         "test", "tests", "check", "build", "lint", "typecheck", "vet", "clippy", "nextest",
     ];
+    // A package script such as `e2e`, `test:e2e` or `ios:build`.
+    let is_check_script =
+        |word: &str| word.split(':').any(|part| part == "e2e" || VERBS.contains(&part));
     let lowered = command.to_ascii_lowercase();
     let words: Vec<&str> = lowered
         .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
@@ -978,6 +1063,16 @@ pub(crate) fn looks_like_check_command(command: &str) -> bool {
         if CHECK_TOOLS.contains(&name) || name == "unittest" {
             return true;
         }
+        if let Some((_, subcommand)) = CHECK_SUBCOMMANDS.iter().find(|(tool, _)| *tool == name) {
+            return words.get(index + 1) == Some(subcommand);
+        }
+        if name == "xcodebuild" {
+            return words
+                .get(index + 1..)
+                .unwrap_or_default()
+                .iter()
+                .any(|arg| XCODEBUILD_ACTIONS.contains(arg));
+        }
         if !RUNNERS.contains(word) {
             return false;
         }
@@ -986,7 +1081,7 @@ pub(crate) fn looks_like_check_command(command: &str) -> bool {
             .get(index + 1..(index + 3).min(words.len()))
             .unwrap_or_default()
             .iter()
-            .any(|next| VERBS.contains(next) || CHECK_TOOLS.contains(next))
+            .any(|next| is_check_script(next) || CHECK_TOOLS.contains(next))
     })
 }
 
@@ -1420,6 +1515,20 @@ mod tests {
         assert!(!gates.flow_requires_review());
     }
 
+    /// Reviews Jev chose had no limit, so one turn sent the Worker back
+    /// fourteen times; they now stop at the three revisions a planned request
+    /// allows.
+    #[test]
+    fn reviews_jev_chose_stop_after_three_revision_verdicts() {
+        let mut gates = ReasoningGates::default();
+        for _ in 0..2 {
+            gates.note_verdict(ReviewVerdict::Revise);
+            assert_eq!(gates.flow_phase(), FlowPhase::Worker);
+        }
+        gates.note_verdict(ReviewVerdict::Revise);
+        assert_eq!(gates.flow_phase(), FlowPhase::Unavailable);
+    }
+
     #[test]
     fn review_keeps_earlier_failed_checks_even_after_a_later_pass() {
         use distill_tools::types::output::BashOutput;
@@ -1459,17 +1568,18 @@ mod tests {
     }
 
     /// The reviewer sees whole diffs while they fit, then names what it could
-    /// not see instead of silently dropping it.
+    /// not see instead of silently dropping it. The newest edits win the room:
+    /// a re-review that could not see the fix kept asking for it.
     #[test]
     fn review_changes_lists_what_does_not_fit() {
         let gates = ReasoningGates {
             changes: vec![
+                change("small.rs", "a", "b"),
                 ChangeRecord {
-                    // Fits alone (header + diff), but leaves no room for the next file.
+                    // Fits alone (header + diff), but leaves no room for the older file.
                     diff: "x".repeat(REVIEW_DIFF_BYTES - 30),
                     ..change("big.rs", "a", "b")
                 },
-                change("small.rs", "a", "b"),
             ],
             ..Default::default()
         };
@@ -1477,6 +1587,17 @@ mod tests {
         assert!(text.starts_with("--- big.rs (+1 -1)"), "{}", &text[..40]);
         assert!(text.contains("[diff omitted for: small.rs (+1 -1)]"));
         assert!(text.len() <= REVIEW_DIFF_BYTES + 100);
+        let newest_last = ReasoningGates {
+            changes: vec![gates.changes[1].clone(), gates.changes[0].clone()],
+            ..Default::default()
+        };
+        let text = newest_last.review_changes();
+        assert!(
+            text.starts_with("--- small.rs (+1 -1)"),
+            "the newest edit is kept: {}",
+            &text[..40]
+        );
+        assert!(text.contains("[diff omitted for: big.rs (+1 -1)]"));
     }
 
     #[test]
@@ -1545,7 +1666,7 @@ mod tests {
             ConversationItem::tool_result("unknown", "orphan output"),
             ConversationItem::system_reminder("advice"),
         ];
-        let work = work_since_request(&items);
+        let work = work_since_request(&items, None);
         assert_eq!(
             work,
             vec![
@@ -1618,11 +1739,81 @@ mod tests {
             "go vet ./...",
             "cd api && make test",
             "python -m unittest",
+            // Browser, device and native runs are the evidence reviewers kept
+            // asking for; missing them made every delivery look unchecked.
+            "npx playwright test e2e/web/onboarding.spec.ts",
+            "pnpm exec playwright test",
+            "npm run e2e",
+            "npm run test:e2e",
+            "yarn e2e",
+            "npx detox test -c ios.sim.debug",
+            "maestro test flows/onboarding.yaml",
+            "npx cypress run",
+            "xcodebuild -scheme App -destination 'platform=macOS' build",
+            "xcodebuild test -scheme App",
         ] {
             assert!(looks_like_check_command(command), "{command}");
         }
-        for command in ["ls -la", "cat Cargo.toml", "git status", "test -f a.txt", "npm install"] {
+        for command in [
+            "ls -la",
+            "cat Cargo.toml",
+            "git status",
+            "test -f a.txt",
+            "npm install",
+            "npx playwright install chromium",
+            "npx cypress open",
+            "npm run dev",
+            "npx expo start --web",
+            "xcodebuild -list",
+        ] {
             assert!(!looks_like_check_command(command), "{command}");
         }
+    }
+
+    /// A suite started in the background is evidence once it finishes: its
+    /// result arrives through the task output, not a shell result.
+    #[test]
+    fn a_finished_background_check_is_recorded_but_a_running_one_is_not() {
+        let task = |status: &str, exit_code| {
+            ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
+                task_id: "bg-1".to_owned(),
+                command: "npx playwright test e2e/web/zz-goal-proof.spec.ts".to_owned(),
+                status: status.to_owned(),
+                exit_code,
+                output: "1 passed (14.1s)".to_owned(),
+                ..Default::default()
+            }))
+        };
+        let mut gates = ReasoningGates::default();
+        gates.note_tool_result(
+            "",
+            "get_task_output",
+            &serde_json::json!({}),
+            &task("running", None),
+        );
+        assert_eq!(
+            gates.review_checks(),
+            "No build, test or lint check was recorded."
+        );
+        gates.note_tool_result(
+            "",
+            "get_task_output",
+            &serde_json::json!({}),
+            &task("completed", Some(0)),
+        );
+        assert!(
+            gates
+                .review_checks()
+                .contains("`npx playwright test e2e/web/zz-goal-proof.spec.ts` passed"),
+            "{}",
+            gates.review_checks()
+        );
+        gates.note_tool_result(
+            "",
+            "get_task_output",
+            &serde_json::json!({}),
+            &task("completed", Some(1)),
+        );
+        assert!(gates.last_test().is_some_and(|check| check.failed));
     }
 }

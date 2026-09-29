@@ -1728,6 +1728,9 @@ pub struct AgentSelectionConfig {
     /// Global system-prompt identity label. Per-model override wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_label: Option<String>,
+    /// Terse output level for the agent's prose: `off|lite|full|ultra`. Unset means `full`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caveman: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]

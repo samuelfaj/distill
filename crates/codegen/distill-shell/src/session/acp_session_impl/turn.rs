@@ -1982,6 +1982,8 @@ impl SessionActor {
                      Use /goal resume to retry or /goal clear to abandon."
                 ))
                 .await;
+            } else if self.end_goal_reasoning_takeover().await {
+                self.maybe_queue_goal_continuation().await;
             }
         }
     }

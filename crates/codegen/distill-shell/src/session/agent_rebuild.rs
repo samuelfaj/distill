@@ -331,6 +331,7 @@ impl AgentRebuildSpec {
         .with_prompt_audience(*prompt_audience)
         .with_role_instructions(role_instructions.clone())
         .with_persona_instructions(persona_instructions.clone())
+        .with_output_style(crate::util::config::resolve_caveman_level().instructions())
         .with_skills_config(skills_config.clone())
         .with_compat_config(*compat)
         .with_paths_config(paths_config.clone())

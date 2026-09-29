@@ -877,6 +877,7 @@ fn resolve_agent_definition_agent_profile_with_model_override() {
         name: Some("test-architect".to_string()),
         definition: None,
         system_prompt_label: None,
+        caveman: None,
     };
     let def = MvpAgent::resolve_agent_definition(tmp.path(), None, &agent_config, None, None);
     assert_eq!(def.name, "test-architect");

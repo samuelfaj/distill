@@ -615,6 +615,7 @@ fn available_commands_orders_builtins_first() {
         [
             "compact",
             "always-approve",
+            "caveman",
             "flush",
             "dream",
             "memory",

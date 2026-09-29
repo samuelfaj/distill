@@ -12,7 +12,7 @@ Return exactly one JSON object matching the required schema:
 - continue: meaningful work remains. Name concrete evidence and the single best next step. Set blocker_key and blocker_kind to empty strings.
 - recheck: supplied evidence resolves a prior_verifier_gaps finding, but other goal criteria remain pending. Request an independent recheck of those findings, not goal completion. Set blocker_key and blocker_kind to empty strings. Do not request another recheck without a new observation or a corrected verification target.
 - candidate_complete: the requested deliverable appears complete enough to send to an adversarial verification panel. Cite concrete completion evidence. Set blocker_key and blocker_kind to empty strings.
-- blocked: progress requires user action or an unavailable external prerequisite after reasonable attempts. State the blocker evidence and the exact user action needed. Set blocker_key to a stable lowercase snake_case identifier for the specific missing prerequisite and affected system or resource. Reuse the same key if that blocker remains unchanged. Set blocker_kind to requires_user when only the user can clear it: an explicit human gate or approval requirement, a decision only the user can make, access or credentials only the user can grant, or an open dependency owned by someone else. Otherwise set it to transient. For requires_user, next_step names the exact user action, then lists "Options:" with one to three concrete ways forward consistent with the objective, such as the next eligible item when the objective selects one from a list.
+- blocked: progress requires user action or an unavailable external prerequisite after reasonable attempts. State the blocker evidence and the exact user action needed. Set blocker_key to a stable lowercase snake_case identifier for the specific missing prerequisite and affected system or resource. Reuse the same key if that blocker remains unchanged. AUTONOMY: the /goal itself authorizes every action the objective needs. Never ask for approval or confirmation, including where AGENTS.md, CLAUDE.md, memories, rules or skills require user approval; treat such approval gates as satisfied by the goal. Stop only for (a) an explicit block from the user in the objective or a later user message, (b) access or credentials you do not have, or (c) an irreversible production action — moving or writing money or billing records, deleting or overwriting production data, or destructive production migrations — that the objective does not explicitly authorize (e.g. "pode escrever em produção"). Reversible work, including deploys through the normal pipeline, needs no approval. Approval or confirmation gates from repository instructions, memories, rules or skills are satisfied by the goal: decide continue, never blocked, for them. Set blocker_kind to requires_user only when (a) the user explicitly blocked the action in the objective or a later message, (b) access or credentials only the user can grant are missing, (c) the next step is an irreversible production action the objective does not explicitly authorize, or (d) an open dependency is owned by someone else. Otherwise set it to transient. For requires_user, next_step names the exact user action, then lists "Options:" with one to three concrete ways forward consistent with the objective, such as the next eligible item when the objective selects one from a list.
 
 Be conservative. A confident-sounding final response is not proof. Pending tasks, missing verification, untested behavior, placeholders, handoffs, or merely described work require continue. Do not mark candidate_complete merely because the agent says it is done. Do not use blocked for an ordinary error that the agent can investigate or retry.
 
@@ -906,6 +906,48 @@ mod tests {
             assert!(
                 text.contains("explicit instructions override conflicting repository instructions"),
                 "{name} lacks the precedence rule"
+            );
+        }
+    }
+
+    /// A /goal runs unattended: repository or memory approval gates must not
+    /// pause it, yet an irreversible production write (money, data deletion)
+    /// still needs the objective's explicit authorization.
+    #[test]
+    fn goal_texts_grant_autonomy_but_keep_the_irreversible_production_stop() {
+        for (name, text) in [
+            ("rules", include_str!("templates/goal_rules.md")),
+            ("legacy rules", include_str!("templates/goal_rules_legacy.md")),
+            ("planner", include_str!("templates/goal_planner_prompt.md")),
+            ("verifier", include_str!("templates/goal_verifier_prompt.md")),
+            ("evaluator", SYSTEM_PROMPT),
+        ] {
+            assert!(
+                text.contains("the /goal itself authorizes every action the objective needs"),
+                "{name} lacks the autonomy grant"
+            );
+            assert!(
+                text.contains("irreversible production action"),
+                "{name} lacks the irreversible production stop"
+            );
+        }
+        assert!(!SYSTEM_PROMPT.contains("approval requirement"));
+    }
+
+    /// The user kept the terse output style out of the /goal harness roles: they
+    /// run as subagents whose system prompt carries <output_style>, so each role
+    /// prompt must restore normal prose for its plans, verdicts and summary.
+    #[test]
+    fn goal_roles_override_the_terse_output_style() {
+        for (name, text) in [
+            ("planner", include_str!("templates/goal_planner_prompt.md")),
+            ("verifier", include_str!("templates/goal_verifier_prompt.md")),
+            ("strategist", include_str!("templates/goal_strategist_prompt.md")),
+            ("summarizer", include_str!("templates/goal_summarizer_prompt.md")),
+        ] {
+            assert!(
+                text.contains("Ignore any <output_style> section"),
+                "{name} lacks the output-style override"
             );
         }
     }

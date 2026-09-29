@@ -121,6 +121,9 @@ pub struct PromptContext {
     /// Persona instructions to include in the system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona_instructions: Option<String>,
+    /// Terse-prose rules rendered as `<output_style>`; `None` keeps the prompt unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_style: Option<String>,
     /// OS name for the `<user_info>` system prompt block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_name: Option<String>,
@@ -177,6 +180,7 @@ impl Default for PromptContext {
             memory_workspace_path: None,
             role_instructions: None,
             persona_instructions: None,
+            output_style: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -226,6 +230,7 @@ impl PromptContext {
             "memory_workspace_path": self.memory_workspace_path.as_deref().unwrap_or(""),
             "role_instructions": self.role_instructions.as_deref().unwrap_or(""),
             "persona_instructions": self.persona_instructions.as_deref().unwrap_or(""),
+            "output_style": self.output_style.as_deref().unwrap_or(""),
             "os_name": self.os_name.as_deref().unwrap_or(""),
             "shell_path": self.shell_path.as_deref().unwrap_or(""),
             "working_directory": self.working_directory.as_deref().unwrap_or(""),
@@ -372,6 +377,7 @@ mod tests {
             memory_workspace_path: None,
             role_instructions: None,
             persona_instructions: None,
+            output_style: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -783,6 +789,7 @@ mod tests {
             memory_workspace_path: None,
             role_instructions: None,
             persona_instructions: None,
+            output_style: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -882,6 +889,35 @@ mod tests {
                     memory_get => "memory_get",
                 }
             },
+        }
+    }
+    /// Terse output must reach both the primary agent and its subagents, and cost nothing when off.
+    #[test]
+    fn output_style_renders_in_primary_and_subagent_prompts_only_when_set() {
+        let rules = crate::prompt::caveman::CavemanLevel::Full
+            .instructions()
+            .unwrap();
+        let render_primary = |ctx: minijinja::Value| {
+            let mut env = minijinja::Environment::new();
+            env.set_syntax(
+                minijinja::syntax::SyntaxConfig::builder()
+                    .block_delimiters("${%", "%}")
+                    .variable_delimiters("${{", "}}")
+                    .comment_delimiters("${#", "#}")
+                    .build()
+                    .unwrap(),
+            );
+            let tmpl = crate::prompt::template::base_template();
+            env.add_template("prompt", &tmpl).unwrap();
+            env.get_template("prompt").unwrap().render(ctx).unwrap()
+        };
+        let with_style = |style: &str| {
+            minijinja::context! { output_style => style, ..base_template_ctx() }
+        };
+        for render in [render_primary, render_subagent_template] {
+            let on = render(with_style(&rules));
+            assert!(on.contains("<output_style>") && on.contains(&rules));
+            assert!(!render(with_style("")).contains("<output_style>"));
         }
     }
     #[test]

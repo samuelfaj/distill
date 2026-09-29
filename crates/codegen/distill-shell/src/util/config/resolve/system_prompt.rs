@@ -50,6 +50,52 @@ pub(crate) fn resolve_system_prompt_label_from_tiers(
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT_LABEL.to_string())
 }
 
+pub const ENV_CAVEMAN: &str = "GROK_CAVEMAN";
+
+/// Terse output level: env `GROK_CAVEMAN` > `[agent] caveman` > `full`. Unparseable values fall through with a warning.
+pub(crate) fn resolve_caveman_level() -> distill_agent::prompt::caveman::CavemanLevel {
+    let config = crate::config::load_effective_config().ok().and_then(|v| {
+        v.get("agent")?
+            .get("caveman")?
+            .as_str()
+            .map(str::to_owned)
+    });
+    resolve_caveman_level_from_tiers(std::env::var(ENV_CAVEMAN).ok(), config)
+}
+
+pub(crate) fn resolve_caveman_level_from_tiers(
+    env: Option<String>,
+    config: Option<String>,
+) -> distill_agent::prompt::caveman::CavemanLevel {
+    use distill_agent::prompt::caveman::CavemanLevel;
+    [env, config]
+        .into_iter()
+        .flatten()
+        .find_map(|raw| {
+            let level = CavemanLevel::parse(&raw);
+            if level.is_none() {
+                tracing::warn!(value = %raw, "ignoring unknown caveman level");
+            }
+            level
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod caveman_level_tests {
+    use super::resolve_caveman_level_from_tiers as r;
+    use distill_agent::prompt::caveman::CavemanLevel;
+
+    /// Terse output is the default so every session saves tokens unless the user opts out.
+    #[test]
+    fn defaults_to_full_and_env_beats_config() {
+        assert_eq!(r(None, None), CavemanLevel::Full);
+        assert_eq!(r(None, Some("off".into())), CavemanLevel::Off);
+        assert_eq!(r(Some("ultra".into()), Some("off".into())), CavemanLevel::Ultra);
+        assert_eq!(r(Some("bogus".into()), Some("lite".into())), CavemanLevel::Lite);
+    }
+}
+
 #[cfg(test)]
 mod system_prompt_label_tests {
     use super::{

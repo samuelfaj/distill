@@ -73,6 +73,17 @@ impl SessionActor {
                 );
                 ok_end_turn(0, None)
             }
+            BuiltinAction::SetCaveman { level } => {
+                let summary = match level {
+                    Some(level) => {
+                        self.push_system_reminder(&caveman_switch_reminder(level));
+                        format!("Caveman output level set to {} for this session.", level.as_str())
+                    }
+                    None => "Unknown caveman level. Use /caveman lite|full|ultra|off.".to_owned(),
+                };
+                self.send_host_turn_slash_command_output(&summary).await;
+                ok_end_turn(0, None)
+            }
             // Prompt-turn path for clients without the pager-local `/flush` and `/dream`;
             // the pager calls `x.ai/memory/flush` and `x.ai/memory/dream` instead.
             BuiltinAction::FlushMemory => {
@@ -1009,4 +1020,29 @@ pub(super) fn slash_feedback_rated_turn(
     super::slash_feedback_last_turn(conversation)
         .map(|n| super::turn_texts_for_feedback(conversation, n))
         .unwrap_or_default()
+}
+
+/// Mid-session switch as a reminder instead of a prompt re-render, so the cached prompt prefix survives.
+fn caveman_switch_reminder(level: distill_agent::prompt::caveman::CavemanLevel) -> String {
+    match level.instructions() {
+        Some(rules) => format!(
+            "The user set the output style to caveman level {}. It replaces any earlier <output_style> level.\n\n{rules}",
+            level.as_str()
+        ),
+        None => "The user turned the caveman output style off. Ignore <output_style>; write normal prose from now on.".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod caveman_switch_tests {
+    use super::caveman_switch_reminder;
+    use distill_agent::prompt::caveman::CavemanLevel;
+
+    /// Off must explicitly cancel the system-prompt section, which stays in the cached prompt.
+    #[test]
+    fn off_cancels_prompt_section_and_levels_carry_rules() {
+        assert!(caveman_switch_reminder(CavemanLevel::Off).contains("Ignore <output_style>"));
+        let ultra = caveman_switch_reminder(CavemanLevel::Ultra);
+        assert!(ultra.contains("level ultra") && ultra.contains("Level ultra"));
+    }
 }

@@ -754,6 +754,24 @@ impl SessionActor {
         Some((reasoner.id, reasoner.cfg))
     }
 
+    /// This round's config on the reasoning model once it has taken over the
+    /// active goal (see `run_goal_escalation`). `None` keeps the round on the
+    /// main model, including when no usable reasoning model resolves.
+    pub(super) async fn goal_takeover_sampler(&self, main: &SamplingConfig) -> Option<SamplingConfig> {
+        if self.goal_use_current_model_only || !self.goal_tracker.lock().reasoning_takeover_active() {
+            return None;
+        }
+        let (reasoner, _) = self.resolve_reasoner(main).await?;
+        let mut cfg = reasoner.cfg;
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut cfg,
+            main,
+            self.client_identifier.clone(),
+            main.max_retries,
+        );
+        Some(cfg)
+    }
+
     async fn resolve_reasoner(
         &self,
         main: &SamplingConfig,
@@ -913,10 +931,10 @@ impl SessionActor {
                     .borrow_mut()
                     .reasoning
                     .finish_stall_escalation();
-                // A stalled goal already hands its work to a reasoning executor;
-                // a second one would work the same blocker in parallel.
-                if self.goal_tracker.lock().escalation_active() {
-                    crate::jev::record_gate("stall:goal-escalated", "the goal's executor owns it");
+                // The reasoning model already runs a stalled goal's rounds; an
+                // executor would work the same blocker in parallel.
+                if self.goal_tracker.lock().reasoning_takeover_active() {
+                    crate::jev::record_gate("stall:goal-escalated", "the reasoning model runs the goal");
                     return;
                 }
                 let (facts, checks) = {

@@ -95,6 +95,18 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         },
     },
     BuiltinCommand {
+        name: "caveman",
+        description: "Set terse output level to save tokens (default full)",
+        argument_hint: Some("lite|full|ultra|off"),
+        aliases: &[],
+        model_authored_eligibility: ModelAuthoredEligibility::Denied,
+        gate: BuiltinGate::AlwaysOn,
+        workflow_projection: WorkflowProjection::None,
+        resolve: |args| BuiltinAction::SetCaveman {
+            level: distill_agent::prompt::caveman::CavemanLevel::parse(args),
+        },
+    },
+    BuiltinCommand {
         name: "flush",
         description: "Flush conversation memory to disk now",
         argument_hint: None,
@@ -1245,6 +1257,10 @@ pub(super) enum BuiltinAction {
     SetYolo {
         enabled: bool,
     },
+    /// `None` when the argument is not a known level.
+    SetCaveman {
+        level: Option<distill_agent::prompt::caveman::CavemanLevel>,
+    },
     FlushMemory,
     Dream,
     ContextInfo,
@@ -1311,6 +1327,7 @@ impl BuiltinAction {
             BuiltinAction::ImportOpenRouterModel { .. } => "openrouter",
             BuiltinAction::Compact { .. } => "compact",
             BuiltinAction::SetYolo { .. } => "yolo",
+            BuiltinAction::SetCaveman { .. } => "caveman",
             BuiltinAction::FlushMemory => "flush",
             BuiltinAction::Dream => "dream",
             BuiltinAction::ContextInfo => "context",
@@ -1345,6 +1362,7 @@ impl BuiltinAction {
             BuiltinAction::ImportOpenRouterModel { model } => !model.is_empty(),
             BuiltinAction::Compact { user_context } => user_context.is_some(),
             BuiltinAction::SetYolo { .. } => true,
+            BuiltinAction::SetCaveman { .. } => true,
             BuiltinAction::FlushMemory => false,
             BuiltinAction::Dream => false,
             BuiltinAction::ContextInfo => false,

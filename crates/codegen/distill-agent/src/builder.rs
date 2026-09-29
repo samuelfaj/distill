@@ -41,6 +41,7 @@ pub struct AgentBuilder {
     prompt_audience: crate::prompt::context::PromptAudience,
     role_instructions: Option<String>,
     persona_instructions: Option<String>,
+    output_style: Option<String>,
     name: Option<String>,
     description: Option<String>,
     prompt_mode: PromptMode,
@@ -177,6 +178,7 @@ impl AgentBuilder {
             prompt_audience: crate::prompt::context::PromptAudience::Primary,
             role_instructions: None,
             persona_instructions: None,
+            output_style: None,
             name: None,
             description: None,
             prompt_mode: PromptMode::Extend,
@@ -264,6 +266,10 @@ impl AgentBuilder {
     }
     pub fn with_role_instructions(mut self, instructions: Option<String>) -> Self {
         self.role_instructions = instructions;
+        self
+    }
+    pub fn with_output_style(mut self, instructions: Option<String>) -> Self {
+        self.output_style = instructions;
         self
     }
     pub fn with_persona_instructions(mut self, instructions: Option<String>) -> Self {
@@ -1266,6 +1272,7 @@ impl AgentBuilder {
             memory_workspace_path: self.memory_workspace_path,
             role_instructions: self.role_instructions,
             persona_instructions: self.persona_instructions,
+            output_style: self.output_style,
             os_name: Some(std::env::consts::OS.to_string()),
             shell_path: Some(resolve_shell_for_prompt()),
             working_directory: Some(display_working_dir),

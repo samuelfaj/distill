@@ -1139,15 +1139,21 @@ impl SessionActor {
             session_id, turn_id, round_id, requested_model = sampler_config.model,
             requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
             "model round before Jev routing");
-        // The main model runs this call; auto effort picks from its own menu and
-        // an explicit effort stays fixed.
-        self.jev_choose_effort(&mut sampler_config).await;
-        // B2 (money lever): a routine turn may run at a cheaper setting; the
-        // pass can only lower effort, and it is off until its gate passes.
-        self.jev_apply_model_tier(&mut sampler_config).await;
-        // A redo the change review asked for runs at the setting it asked for:
-        // the floor wins over anything cheaper chosen above.
-        self.jev_apply_effort_floor(&mut sampler_config).await;
+        if let Some(reasoning) = self.goal_takeover_sampler(&sampler_config).await {
+            // A stalled goal runs on the reasoning model at its own setting;
+            // the effort passes below tune the main model only.
+            sampler_config = reasoning;
+        } else {
+            // The main model runs this call; auto effort picks from its own menu and
+            // an explicit effort stays fixed.
+            self.jev_choose_effort(&mut sampler_config).await;
+            // B2 (money lever): a routine turn may run at a cheaper setting; the
+            // pass can only lower effort, and it is off until its gate passes.
+            self.jev_apply_model_tier(&mut sampler_config).await;
+            // A redo the change review asked for runs at the setting it asked for:
+            // the floor wins over anything cheaper chosen above.
+            self.jev_apply_effort_floor(&mut sampler_config).await;
+        }
         if self.tool_context.task_output_token_budget.is_some()
             || self.tool_context.sampler_retry_only_before_output
         {

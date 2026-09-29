@@ -89,4 +89,9 @@ ${%- if persona_instructions %}
 <persona>
 ${{ persona_instructions }}
 </persona>
+${%- endif %}${%- if output_style %}
+
+<output_style>
+${{ output_style }}
+</output_style>
 ${%- endif %}

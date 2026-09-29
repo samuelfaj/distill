@@ -90,4 +90,9 @@ Verifying means more than confirming that the changed screen renders:
 4. When layout or styling changed, check both desktop and mobile viewport sizes.
 
 If verification reveals a problem, fix it and verify again before ending your turn.
-</browser_verification>${%- endif %}
+</browser_verification>${%- endif %}${%- if output_style %}
+
+<output_style>
+${{ output_style }}
+</output_style>
+${%- endif %}

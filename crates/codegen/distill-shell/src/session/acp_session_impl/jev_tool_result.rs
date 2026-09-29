@@ -29,6 +29,9 @@ use super::SessionActor;
 const READ_REUSE_BYTES: usize = 2_000;
 /// Small outputs normally bypass the post-processing pipeline.
 const MIN_BYTES: usize = 400;
+/// Below this, extractive compression cannot pay for its utility call and Jev
+/// round-trip: the cited spans plus the recovery footer rarely come out shorter.
+const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
 /// At most this many advisory hints are appended, whatever the answers say.
 const MAX_HINTS: usize = 3;
 /// Maximum executed-change payload. Larger changes are not partially reviewed.
@@ -1027,6 +1030,7 @@ impl SessionActor {
         };
         let cheap_eligible = (cheap_source || task_output_source)
             && !is_document
+            && body.len() >= CHEAP_COMPRESS_MIN_BYTES
             && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
@@ -2617,6 +2621,95 @@ mod tests {
             .expect("compression-bound test thread");
     }
 
+    /// A small shell result can never come back shorter after extraction plus the
+    /// recovery footer, so it must reach the model untouched without spending a
+    /// utility call or a main-model fallback.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn small_shell_output_skips_utility_and_main_compression() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+        use distill_tools::types::output::{BashOutput, ToolOutput};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("utility-model"));
+                assert!(crate::jev::lever_active(JevLever::ECheapCompress));
+                set_utility_review_choices(&["allow", "allow"]);
+
+                let source = format!(
+                    "0 failed, 16 passed\n{}",
+                    "progress noise\n".repeat(100)
+                );
+                assert!(source.len() > MIN_BYTES && source.len() < CHEAP_COMPRESS_MIN_BYTES);
+                let output = ToolOutput::Bash(BashOutput {
+                    output: source.as_bytes().to_vec(),
+                    output_for_prompt: source.clone(),
+                    exit_code: 0,
+                    command: "cargo test --lib".to_owned(),
+                    truncated: false,
+                    signal: None,
+                    timed_out: false,
+                    description: None,
+                    current_dir: "/tmp".to_owned(),
+                    output_file: "/tmp/e3-small-output".to_owned(),
+                    total_bytes: source.len(),
+                    output_delta: None,
+                    was_bare_echo: false,
+                });
+                let result = crate::jev::with_session_scope_and_recorder(
+                    "e3-small-output",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "run_terminal_command",
+                        "cargo test --lib",
+                        "call-small",
+                        &output,
+                        source.clone(),
+                    ),
+                )
+                .await;
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                assert!(!result.contains("compressed by verified"), "{result}");
+                assert!(result.starts_with(&source));
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 0);
+            })
+            .await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
     async fn production_web_search_uses_utility_then_main_with_source_units() {
@@ -2640,7 +2733,7 @@ mod tests {
                 let beta = "Result beta: Rust async cancellation requires a bounded worker. https://example.com/cancellation";
                 let source_content = format!(
                     "{alpha}\n\n{beta}\n\n{}",
-                    "supporting search context\n".repeat(300)
+                    (0..300).map(|line| format!("supporting search context {line}\n")).collect::<String>()
                 );
                 let utility_answer = format!(
                     "`Web search results for: \"{query}\"`\n`Rust async cancellation is free of leaks`"
@@ -2836,14 +2929,14 @@ mod tests {
                     "The page states beta: a main model may retain a second paragraph.";
                 let source_content = format!(
                     "{alpha}\n\n{beta}\n\n{}",
-                    "supporting page context\n".repeat(300)
+                    (0..300).map(|line| format!("supporting page context {line}\n")).collect::<String>()
                 );
                 let artifact_dir = tempfile::tempdir().expect("web fetch artifact directory");
                 let artifact_path = artifact_dir.path().join("page.md");
                 std::fs::write(&artifact_path, &source_content).expect("write source artifact");
                 let preview = format!(
                     "{}\n\n[web_fetch content truncated: showing first 6500 of {} bytes.]",
-                    "preview line\n".repeat(500),
+                    (0..500).map(|line| format!("preview line {line}\n")).collect::<String>(),
                     source_content.len()
                 );
                 let utility_answer = "`The page states alpha`";
@@ -3060,7 +3153,7 @@ mod tests {
                         .expect("test tool bridge terminal backend")
                 };
                 let task_dir = tempfile::tempdir().expect("task output directory");
-                let task_command = "printf '0 failed, 16 passed\\n1 skipped: src/skip.test.ts\\n'; i=0; while [ \"$i\" -lt 800 ]; do printf 'progress noise\\n'; i=$((i + 1)); done";
+                let task_command = "printf '0 failed, 16 passed\\n1 skipped: src/skip.test.ts\\n'; i=0; while [ \"$i\" -lt 800 ]; do printf 'progress noise %s\\n' \"$i\"; i=$((i + 1)); done";
                 let task = terminal
                     .run_background(TerminalRunRequest {
                         command: task_command.to_owned(),

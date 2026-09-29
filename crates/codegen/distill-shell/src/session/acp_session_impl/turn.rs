@@ -1777,13 +1777,7 @@ impl SessionActor {
         let drain = self
             .drain_subagent_usage_for_prompt_bounded(prompt_id, max_wait)
             .await;
-        let mut usage = self.finalize_usage_from_outcome(prompt_id, drain).await;
-        // The turn report rides the same payload as the bill: one terminal, one
-        // place to read where the task went.
-        if let Some(usage) = usage.as_mut() {
-            self.attach_turn_distribution(usage);
-        }
-        usage
+        self.finalize_usage_from_outcome(prompt_id, drain).await
     }
     /// Must run on the turn task, not the session actor loop, so folds can land.
     pub(super) async fn drain_subagent_usage_for_prompt_bounded(
@@ -1858,13 +1852,18 @@ impl SessionActor {
         match self.chat_state_handle.try_get_prompt_usage().await {
             Ok(ledger) => {
                 let incomplete = incomplete || ledger.as_ref().is_some_and(|l| l.is_incomplete());
-                crate::extensions::notification::PromptUsage::project_from_ledger(
+                let mut usage = crate::extensions::notification::PromptUsage::project_from_ledger(
                     ledger.as_ref(),
                     incomplete,
-                )
+                )?;
+                self.attach_turn_distribution(&mut usage, ledger.as_ref());
+                Some(usage)
             }
             Err(()) => {
-                crate::extensions::notification::PromptUsage::project_from_ledger(None, true)
+                let mut usage =
+                    crate::extensions::notification::PromptUsage::project_from_ledger(None, true)?;
+                self.attach_turn_distribution(&mut usage, None);
+                Some(usage)
             }
         }
     }

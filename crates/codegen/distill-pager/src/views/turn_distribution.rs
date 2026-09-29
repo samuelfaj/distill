@@ -77,6 +77,7 @@ mod tests {
                 row("Qwen3.8 27B (local oMLX)", None, 1_800_000, 180_000),
                 row("DeepSeek V4.1 Flash", Some("high"), 900_000, 100_000),
                 row("DeepSeek V4.1 Flash", Some("medium"), 480_000, 20_000),
+                row("GPT-6-Luna (ChatGPT)", Some("low"), 120_000, 4_000),
             ],
             41,
         );
@@ -86,6 +87,7 @@ mod tests {
             "Qwen3.8 27B (local oMLX) - 1.98M tokens\n\
              DeepSeek V4.1 Flash high - 1.00M tokens\n\
              DeepSeek V4.1 Flash medium - 500.0k tokens\n\
+             GPT-6-Luna (ChatGPT) low - 124.0k tokens\n\
              Jev - 41x"
         );
     }

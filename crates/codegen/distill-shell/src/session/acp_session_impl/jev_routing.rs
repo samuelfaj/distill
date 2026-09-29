@@ -132,14 +132,74 @@ impl SessionActor {
     pub(super) fn attach_turn_distribution(
         &self,
         usage: &mut crate::extensions::notification::PromptUsage,
+        prompt_ledger: Option<&distill_chat_state::UsageLedger>,
     ) {
-        let (rows, window) = {
+        let (mut rows, window) = {
             let mut ledger = self.jev_ledger.borrow_mut();
             let window = ledger.window_start();
             (ledger.take_rows(), window)
         };
-        if rows.is_empty() {
-            return;
+        if let Some(ledger) = prompt_ledger {
+            // The prompt ledger already folds and deduplicates child attempts,
+            // including nested agents. Project that same bill into the report.
+            let mut remaining = ledger.by_model.clone();
+            let mut by_effort = BTreeMap::<_, super::jev_ledger::LedgerRow>::new();
+            for attribution in &ledger.attributions {
+                let input = attribution
+                    .usage
+                    .as_ref()
+                    .map_or(0, |u| u64::from(u.prompt_tokens));
+                let output = attribution
+                    .usage
+                    .as_ref()
+                    .map_or(0, |u| u64::from(u.completion_tokens));
+                if let Some(total) = remaining.get_mut(&attribution.model_id) {
+                    total.model_calls = total.model_calls.saturating_sub(1);
+                    total.input_tokens = total.input_tokens.saturating_sub(input);
+                    total.output_tokens = total.output_tokens.saturating_sub(output);
+                }
+                // Jev retains its separate decision-count line.
+                if attribution.role == "jev" {
+                    continue;
+                }
+                let effort = attribution.applied_effort.as_deref().and_then(|effort| {
+                    (!matches!(effort, "absent" | "disabled"))
+                        .then(|| effort.strip_prefix("effort:").unwrap_or(effort).to_owned())
+                });
+                let row = by_effort
+                    .entry((attribution.model_id.clone(), effort.clone()))
+                    .or_insert_with(|| super::jev_ledger::LedgerRow {
+                        model: self.model_display_name(&attribution.model_id),
+                        effort,
+                        ..Default::default()
+                    });
+                row.requests = row.requests.saturating_add(1);
+                row.input_tokens = row.input_tokens.saturating_add(input);
+                row.output_tokens = row.output_tokens.saturating_add(output);
+            }
+            // Aggregate-only child folds have no effort metadata. Report the
+            // remainder without inventing an effort or rebilling identity rows.
+            for (model, total) in remaining {
+                if total.model_calls == 0 && total.total_tokens() == 0 {
+                    continue;
+                }
+                let row = by_effort.entry((model.clone(), None)).or_insert_with(|| {
+                    super::jev_ledger::LedgerRow {
+                        model: self.model_display_name(&model),
+                        ..Default::default()
+                    }
+                });
+                row.requests = row.requests.saturating_add(total.model_calls);
+                row.input_tokens = row.input_tokens.saturating_add(total.input_tokens);
+                row.output_tokens = row.output_tokens.saturating_add(total.output_tokens);
+            }
+            rows = by_effort.into_values().collect();
+            rows.sort_by(|a, b| {
+                b.tokens()
+                    .cmp(&a.tokens())
+                    .then_with(|| a.model.cmp(&b.model))
+                    .then_with(|| a.effort.cmp(&b.effort))
+            });
         }
         usage.effort_usage = rows
             .into_iter()

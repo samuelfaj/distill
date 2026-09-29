@@ -47,6 +47,10 @@ async fn subagent_usage_fold_attribution_gate() {
                     .input_tokens,
                 40
             );
+            let report = actor.freeze_prompt_usage("p-1").await.unwrap();
+            assert_eq!(report.effort_usage.len(), 1);
+            assert_eq!(report.effort_usage[0].model, "m");
+            assert_eq!(report.effort_usage[0].input_tokens, 40);
 
             actor.chat_state_handle.increment_prompt_index();
             for (live, stamped) in [
@@ -69,6 +73,7 @@ async fn subagent_usage_fold_attribution_gate() {
                         .flatten()
                         .is_none()
                 );
+                assert!(actor.freeze_prompt_usage("p-2").await.is_none());
             }
             assert_eq!(
                 actor
@@ -79,6 +84,96 @@ async fn subagent_usage_fold_attribution_gate() {
                     .totals
                     .input_tokens,
                 160
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn turn_distribution_includes_nested_subagent_efforts_once() {
+    use distill_chat_state::{UsageAttribution, UsageCallStatus, UsageCostBasis, UsageLedger};
+    use distill_sampling_types::TokenUsage;
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let actor = make_actor().await;
+            *actor.current_prompt_id.lock().unwrap() = Some("p-1".into());
+            let attribution = |id: &str, model: &str, effort: &str, input| UsageAttribution {
+                attempt_id: id.into(),
+                task_id: Some(id.into()),
+                turn_id: None,
+                request_id: None,
+                role: "main".into(),
+                model_id: model.into(),
+                endpoint: None,
+                requested_effort: Some("high".into()),
+                applied_effort: Some(format!("effort:{effort}")),
+                status: UsageCallStatus::Completed,
+                usage: Some(TokenUsage {
+                    prompt_tokens: input,
+                    completion_tokens: 10,
+                    ..Default::default()
+                }),
+                usage_complete: true,
+                api_duration_ms: None,
+                cost_usd_ticks: None,
+                cost_basis: UsageCostBasis::Unknown,
+            };
+            actor
+                .chat_state_handle
+                .record_usage_attribution(attribution("parent", "GPT-6-Sol", "medium", 100), true);
+            actor
+                .jev_ledger
+                .borrow_mut()
+                .note_round("GPT-6-Sol", Some("medium".into()));
+            actor.add_round_usage_for_turn_report(100, 10);
+            let mut jev = attribution("jev", "typesafe/jev", "medium", 5);
+            jev.role = "jev".into();
+            actor.chat_state_handle.record_usage_attribution(jev, true);
+            let mut child = UsageLedger::default();
+            child.record_attribution(attribution("child", "GPT-6-Luna", "low", 200));
+            child.record_subagent_attributions(
+                &[
+                    attribution("nested", "GPT-6-Sol", "medium", 300),
+                    attribution("nested-high", "GPT-6-Sol", "high", 50),
+                ],
+                false,
+            );
+            for _ in 0..2 {
+                actor
+                    .record_subagent_usage_with_attributions(
+                        &[],
+                        &child.attributions,
+                        Some("p-1"),
+                        false,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let usage = actor.freeze_prompt_usage("p-1").await.unwrap();
+            assert_eq!(usage.totals.input_tokens, 655);
+            assert_eq!(usage.totals.output_tokens, 50);
+            assert_eq!(usage.num_turns, 1, "child calls are not parent loop turns");
+            let rows: Vec<_> = usage
+                .effort_usage
+                .iter()
+                .map(|row| {
+                    (
+                        row.model.as_str(),
+                        row.effort.as_deref(),
+                        row.requests,
+                        row.input_tokens,
+                        row.output_tokens,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("GPT-6-Sol", Some("medium"), 2, 400, 20),
+                    ("GPT-6-Luna", Some("low"), 1, 200, 10),
+                    ("GPT-6-Sol", Some("high"), 1, 50, 10),
+                ]
             );
         })
         .await;

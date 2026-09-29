@@ -148,16 +148,11 @@ mod tests {
         assert!(prompt.starts_with("You are Grok 4.7, working within Distill, a coding harness"));
     }
 
-    /// With an output style active, the style section alone decides sentence
-    /// shape; the base prompt must not also demand the opposite.
+    /// The output style is always on, so its section alone decides sentence shape; the base
+    /// prompt must not also demand the opposite.
     #[test]
-    fn communication_defers_to_output_style_when_one_is_set() {
-        let renderer = default_renderer();
-        let plain = render_base(&renderer, &default_placeholders());
-        assert!(plain.contains("no telegraphic fragments"));
-        let mut styled = default_placeholders();
-        jset(&mut styled, "output_style", serde_json::json!("terse"));
-        let prompt = render_base(&renderer, &styled);
+    fn communication_defers_to_the_output_style_section() {
+        let prompt = render_base(&default_renderer(), &default_placeholders());
         assert!(!prompt.contains("no telegraphic fragments"), "{prompt}");
         assert!(prompt.contains("The <output_style> section decides tone"));
     }

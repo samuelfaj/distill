@@ -96,8 +96,8 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     },
     BuiltinCommand {
         name: "caveman",
-        description: "Set terse output level to save tokens (default full)",
-        argument_hint: Some("lite|full|ultra|off"),
+        description: "Set the terse output level (always on, default full)",
+        argument_hint: Some("lite|full|ultra"),
         aliases: &[],
         model_authored_eligibility: ModelAuthoredEligibility::Denied,
         gate: BuiltinGate::AlwaysOn,

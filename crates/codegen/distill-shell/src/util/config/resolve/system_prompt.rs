@@ -52,7 +52,7 @@ pub(crate) fn resolve_system_prompt_label_from_tiers(
 
 pub const ENV_CAVEMAN: &str = "GROK_CAVEMAN";
 
-/// Terse output level: env `GROK_CAVEMAN` > `[agent] caveman` > `full`. Unparseable values fall through with a warning.
+/// Terse output level: env `GROK_CAVEMAN` > `[agent] caveman` > `full`. The style is always on, so `off` spellings are unparseable and fall through with a warning, like any unknown value.
 pub(crate) fn resolve_caveman_level() -> distill_agent::prompt::caveman::CavemanLevel {
     let config = crate::config::load_effective_config().ok().and_then(|v| {
         v.get("agent")?
@@ -86,12 +86,14 @@ mod caveman_level_tests {
     use super::resolve_caveman_level_from_tiers as r;
     use distill_agent::prompt::caveman::CavemanLevel;
 
-    /// Terse output is the default so every session saves tokens unless the user opts out.
+    /// Terse output is always on: env beats config for the level, and an `off` left in either
+    /// source is ignored instead of silencing the style.
     #[test]
-    fn defaults_to_full_and_env_beats_config() {
+    fn defaults_to_full_env_beats_config_and_off_is_ignored() {
         assert_eq!(r(None, None), CavemanLevel::Full);
-        assert_eq!(r(None, Some("off".into())), CavemanLevel::Off);
-        assert_eq!(r(Some("ultra".into()), Some("off".into())), CavemanLevel::Ultra);
+        assert_eq!(r(None, Some("off".into())), CavemanLevel::Full);
+        assert_eq!(r(Some("off".into()), Some("lite".into())), CavemanLevel::Lite);
+        assert_eq!(r(Some("ultra".into()), Some("lite".into())), CavemanLevel::Ultra);
         assert_eq!(r(Some("bogus".into()), Some("lite".into())), CavemanLevel::Lite);
     }
 }

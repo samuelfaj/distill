@@ -4,6 +4,7 @@ pub mod caveman;
 pub mod context;
 pub mod ignore;
 pub mod paths;
+pub mod ponytail;
 pub mod skills;
 pub mod subagent_prompts;
 pub mod template;

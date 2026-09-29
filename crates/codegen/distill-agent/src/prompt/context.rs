@@ -6,6 +6,8 @@
 //! This struct does NOT own a render engine; it provides placeholders and discovered sections.
 use crate::config::PromptMode;
 use crate::prompt::agents_md::{self, AgentConfigFile};
+use crate::prompt::caveman::CavemanLevel;
+use crate::prompt::ponytail;
 use crate::prompt::template::{apply_patch_template, base_template, subagent_template};
 use distill_tools::types::skill_discovery_tracker::SkillListingSnapshot;
 use serde::de;
@@ -121,7 +123,8 @@ pub struct PromptContext {
     /// Persona instructions to include in the system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona_instructions: Option<String>,
-    /// Terse-prose rules rendered as `<output_style>`; `None` keeps the prompt unchanged.
+    /// Terse-prose rules rendered as `<output_style>`. `None` renders the default caveman level:
+    /// no prompt omits the section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_style: Option<String>,
     /// The worker model delegated work runs on; renders the primary prompt's
@@ -235,7 +238,6 @@ impl PromptContext {
             "memory_workspace_path": self.memory_workspace_path.as_deref().unwrap_or(""),
             "role_instructions": self.role_instructions.as_deref().unwrap_or(""),
             "persona_instructions": self.persona_instructions.as_deref().unwrap_or(""),
-            "output_style": self.output_style.as_deref().unwrap_or(""),
             "worker_model": self.worker_model.as_deref().unwrap_or(""),
             "os_name": self.os_name.as_deref().unwrap_or(""),
             "shell_path": self.shell_path.as_deref().unwrap_or(""),
@@ -293,7 +295,19 @@ impl PromptContext {
             }
             PromptMode::Full => render(self.prompt_body.as_deref().unwrap_or(""))?,
         };
-        Some(prompt)
+        Some(prompt + &self.always_on_sections())
+    }
+    /// The sections every prompt carries, appended after the base template and body so a custom
+    /// or codex base, a full-mode body and a host that leaves `output_style` unset all get them.
+    fn always_on_sections(&self) -> String {
+        let style = self
+            .output_style
+            .clone()
+            .unwrap_or_else(|| CavemanLevel::default().instructions());
+        format!(
+            "\n\n<ponytail>\n{}\n</ponytail>\n\n<output_style>\n{style}\n</output_style>",
+            ponytail::instructions(self.audience)
+        )
     }
 }
 
@@ -404,8 +418,13 @@ mod tests {
         let block_start = on
             .find("\n\n<browser_verification>")
             .expect("flagged standard template must render browser verification");
-        assert_eq!(on.get(..block_start), Some(off.as_str()));
-        assert!(on.ends_with("</browser_verification>"));
+        let block_end =
+            on.find("</browser_verification>").unwrap() + "</browser_verification>".len();
+        assert_eq!(
+            format!("{}{}", &on[..block_start], &on[block_end..]),
+            off,
+            "the flag adds the block and changes nothing else"
+        );
         assert!(!off.contains("<browser_verification>"));
     }
     #[test]
@@ -417,7 +436,9 @@ mod tests {
             include_browser_verification: true,
             ..test_context()
         };
-        assert_eq!(ctx.render_with_renderer(&renderer).as_deref(), Some("base"));
+        let prompt = ctx.render_with_renderer(&renderer).unwrap();
+        assert!(prompt.starts_with("base"));
+        assert!(!prompt.contains("<browser_verification>"));
     }
     #[test]
     fn test_json_round_trip() {
@@ -899,34 +920,83 @@ mod tests {
             },
         }
     }
-    /// Terse output must reach both the primary agent and its subagents, and cost nothing when off.
+    /// A renderer that knows the tool kinds every built-in base template needs.
+    fn common_tools_renderer() -> distill_tools::types::template_renderer::TemplateRenderer {
+        use distill_tools::types::tool::ToolKind;
+        let tools = [
+            (ToolKind::Read, "read_file"),
+            (ToolKind::Edit, "search_replace"),
+            (ToolKind::Execute, "run_terminal_command"),
+            (ToolKind::Search, "grep"),
+            (ToolKind::List, "list_dir"),
+            (ToolKind::Plan, "todo_write"),
+            (ToolKind::Skill, "skill"),
+            (
+                ToolKind::BackgroundTaskAction,
+                "get_command_or_subagent_output",
+            ),
+            (ToolKind::KillTaskAction, "kill_command_or_subagent"),
+            (ToolKind::WebSearch, "web_search"),
+        ]
+        .into_iter()
+        .map(|(kind, name)| (kind, name.to_owned()))
+        .collect();
+        distill_tools::types::template_renderer::TemplateRenderer::new(
+            tools,
+            std::collections::HashMap::new(),
+        )
+    }
+    /// Terse output and the lazy-developer rules are always on. A section missing from a custom or
+    /// codex base, a full-mode body, or a host that leaves `output_style` unset would silently switch
+    /// that behavior off for those sessions, so every audience and base must carry both, once.
     #[test]
-    fn output_style_renders_in_primary_and_subagent_prompts_only_when_set() {
-        let rules = crate::prompt::caveman::CavemanLevel::Full
-            .instructions()
-            .unwrap();
-        let render_primary = |ctx: minijinja::Value| {
-            let mut env = minijinja::Environment::new();
-            env.set_syntax(
-                minijinja::syntax::SyntaxConfig::builder()
-                    .block_delimiters("${%", "%}")
-                    .variable_delimiters("${{", "}}")
-                    .comment_delimiters("${#", "#}")
-                    .build()
-                    .unwrap(),
-            );
-            let tmpl = crate::prompt::template::base_template();
-            env.add_template("prompt", &tmpl).unwrap();
-            env.get_template("prompt").unwrap().render(ctx).unwrap()
-        };
-        let with_style = |style: &str| {
-            minijinja::context! { output_style => style, ..base_template_ctx() }
-        };
-        for render in [render_primary, render_subagent_template] {
-            let on = render(with_style(&rules));
-            assert!(on.contains("<output_style>") && on.contains(&rules));
-            assert!(!render(with_style("")).contains("<output_style>"));
+    fn style_and_ponytail_reach_every_prompt_path_exactly_once() {
+        let renderer = common_tools_renderer();
+        let caveman = CavemanLevel::Full.instructions();
+        for audience in [PromptAudience::Primary, PromptAudience::Subagent] {
+            for (mode, base, body) in [
+                (PromptMode::Extend, TemplateOverride::None, None),
+                (PromptMode::Extend, TemplateOverride::Codex, None),
+                (
+                    PromptMode::Extend,
+                    TemplateOverride::Custom("custom base".to_owned()),
+                    Some("custom body"),
+                ),
+                (PromptMode::Full, TemplateOverride::None, Some("own prompt")),
+            ] {
+                let context = PromptContext {
+                    prompt_mode: mode.clone(),
+                    audience,
+                    system_prompt: base.clone(),
+                    prompt_body: body.map(str::to_owned),
+                    ..Default::default()
+                };
+                let prompt = context.render_with_renderer(&renderer).unwrap();
+                let label = format!("{audience:?} {mode:?} {base:?}");
+                assert_eq!(prompt.matches("<output_style>\n").count(), 1, "{label}");
+                assert!(prompt.contains(&caveman), "{label}");
+                assert_eq!(prompt.matches("<ponytail>\n").count(), 1, "{label}");
+                assert!(prompt.contains(ponytail::instructions(audience)), "{label}");
+                assert!(
+                    prompt.trim_end().ends_with("</output_style>"),
+                    "the style rules stay last so they are the most recent instruction: {label}"
+                );
+            }
         }
+    }
+    /// A pinned level replaces the default text, and never adds a second section.
+    #[test]
+    fn a_chosen_caveman_level_replaces_the_default_text() {
+        let context = PromptContext {
+            output_style: Some(CavemanLevel::Ultra.instructions()),
+            ..Default::default()
+        };
+        let prompt = context
+            .render_with_renderer(&common_tools_renderer())
+            .unwrap();
+        assert!(prompt.contains("Level ultra"));
+        assert!(!prompt.contains("Level full"));
+        assert_eq!(prompt.matches("<output_style>\n").count(), 1);
     }
     /// The main model is told to plan, delegate and review only when there is a
     /// worker to delegate to and a tool to delegate with. A child never gets it:
@@ -958,7 +1028,9 @@ mod tests {
         };
         let on = render_primary(ctx("chatgpt/gpt-6-luna", "spawn_subagent"));
         assert!(on.contains("<orchestration>"));
-        assert!(on.contains("The worker model `chatgpt/gpt-6-luna` costs a small fraction of each of your turns"));
+        assert!(on.contains(
+            "The worker model `chatgpt/gpt-6-luna` costs a small fraction of each of your turns"
+        ));
         assert!(
             on.contains("Delegate by default, small changes included")
                 && on.contains("delegate it before reading the code yourself"),
@@ -970,7 +1042,9 @@ mod tests {
             "waiting on a lone assignment in the foreground saves the main model a turn"
         );
         assert!(
-            on.contains("Write every assignment as a spec a weaker model can follow without guessing"),
+            on.contains(
+                "Write every assignment as a spec a weaker model can follow without guessing"
+            ),
             "delegated work must come with a precise spec"
         );
         assert!(on.contains("Keep what needs judgment no spec can carry"));

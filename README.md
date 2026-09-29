@@ -68,6 +68,21 @@ directly:
 /utility-model openrouter-qwen37 auto
 ```
 
+## Always-on behavior
+
+Two rule sets are built into every system prompt, for the main model and for
+its subagents, and neither has an off switch:
+
+- **Caveman**: the agent writes terse prose and keeps code, paths and error
+  strings exact. `/caveman lite|full|ultra` changes how hard it compresses
+  (default `full`); a stored `off` is ignored.
+- **Ponytail**: the agent works like a lazy senior developer. Before writing
+  code it asks whether the code needs to exist, then reuses what the codebase
+  has, then the standard library, then an installed dependency, and only then
+  writes the minimum that works. Validation, error handling, security and
+  anything you asked for are never cut. Adapted from
+  [ponytail](https://github.com/DietrichGebert/ponytail) (MIT).
+
 ### Read More:
 
 - [Accounts and local models](docs/local-models.md)

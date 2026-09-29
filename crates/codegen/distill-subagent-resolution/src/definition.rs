@@ -507,6 +507,10 @@ mod tests {
         assert!(prompt.contains("<project_instructions_spec>"));
         assert!(prompt.contains(&format!("Workspace Path: {}", cwd.path().display())));
         assert!(!prompt.contains("${{"));
+        assert!(
+            prompt.contains("<output_style>\n") && prompt.contains("<ponytail>\n"),
+            "a host that renders only the subagent prompt still gets the always-on rules"
+        );
     }
     #[tokio::test]
     async fn initial_user_message_contains_project_instructions() {

@@ -16699,6 +16699,27 @@ Additional requirements / notices:
   distributions).
 
 
+--------------------------------------------------------------------------------
+DietrichGebert/ponytail
+--------------------------------------------------------------------------------
+Source:  https://github.com/DietrichGebert/ponytail
+License: MIT
+Upstream paths: skills/ponytail/SKILL.md, AGENTS.md
+
+Copyright notice:
+  Copyright (c) 2026 DietrichGebert
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Rule text adapted into the always-on system prompt section in:
+    crates/codegen/distill-agent/src/prompt/ponytail.rs
+  The rules were shortened, reworded for the Distill harness, and split into a
+  primary and a subagent variant. The MIT copyright and permission notice must
+  be included in all copies or substantial portions of the Software (this entry
+  satisfies that for source distributions).
+
+
 ================================================================================
 PART II — LICENSE TEXTS
 ================================================================================

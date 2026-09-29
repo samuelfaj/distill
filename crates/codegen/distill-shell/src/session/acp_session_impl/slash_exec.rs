@@ -79,7 +79,7 @@ impl SessionActor {
                         self.push_system_reminder(&caveman_switch_reminder(level));
                         format!("Caveman output level set to {} for this session.", level.as_str())
                     }
-                    None => "Unknown caveman level. Use /caveman lite|full|ultra|off.".to_owned(),
+                    None => "Unknown caveman level. Caveman is always on; use /caveman lite|full|ultra.".to_owned(),
                 };
                 self.send_host_turn_slash_command_output(&summary).await;
                 ok_end_turn(0, None)
@@ -1024,13 +1024,11 @@ pub(super) fn slash_feedback_rated_turn(
 
 /// Mid-session switch as a reminder instead of a prompt re-render, so the cached prompt prefix survives.
 fn caveman_switch_reminder(level: distill_agent::prompt::caveman::CavemanLevel) -> String {
-    match level.instructions() {
-        Some(rules) => format!(
-            "The user set the output style to caveman level {}. It replaces any earlier <output_style> level.\n\n{rules}",
-            level.as_str()
-        ),
-        None => "The user turned the caveman output style off. Ignore <output_style>; write normal prose from now on.".to_owned(),
-    }
+    format!(
+        "The user set the output style to caveman level {}. It replaces any earlier <output_style> level.\n\n{}",
+        level.as_str(),
+        level.instructions()
+    )
 }
 
 #[cfg(test)]
@@ -1038,11 +1036,12 @@ mod caveman_switch_tests {
     use super::caveman_switch_reminder;
     use distill_agent::prompt::caveman::CavemanLevel;
 
-    /// Off must explicitly cancel the system-prompt section, which stays in the cached prompt.
+    /// The switch replaces the level in the cached system prompt, so the reminder must carry the
+    /// full rules of the new level; there is no level that cancels the section.
     #[test]
-    fn off_cancels_prompt_section_and_levels_carry_rules() {
-        assert!(caveman_switch_reminder(CavemanLevel::Off).contains("Ignore <output_style>"));
+    fn switching_replaces_the_level_and_carries_its_rules() {
         let ultra = caveman_switch_reminder(CavemanLevel::Ultra);
         assert!(ultra.contains("level ultra") && ultra.contains("Level ultra"));
+        assert!(!ultra.contains("Ignore <output_style>"));
     }
 }

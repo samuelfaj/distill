@@ -41,7 +41,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `agent.definition` | `string (path)` | `yes` | `user` | Path to an agent definition markdown file with YAML frontmatter. |
 | `agent.name` | `string` | `yes` | `user` | Built-in or discovered agent definition name. Also GROK_AGENT and `--agent-profile`. |
 | `agent.system_prompt_label` | `string` | `yes` | `user` | Global system-prompt identity; per-model override wins. |
-| `agent.caveman` | `string` | `yes` | `user` | Terse output level for agent prose: `off`, `lite`, `full` (default) or `ultra`. Also GROK_CAVEMAN and `/caveman`. |
+| `agent.caveman` | `string` | `yes` | `user` | Terse output level for agent prose: `lite`, `full` (default) or `ultra`. The style is always on, so `off` is ignored. Also GROK_CAVEMAN and `/caveman`. |
 
 ### `announcements`
 

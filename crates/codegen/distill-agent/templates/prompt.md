@@ -62,7 +62,7 @@ ${%- endif %}
 ${%- endif %}
 
 <communication>
-Communicate directly and concisely.${%- if not output_style %} Write in complete sentences: concise means being selective about what you include, not clipping the prose, so no telegraphic fragments and no shorthand the user hasn't used.${%- else %} The <output_style> section decides tone and sentence style.${%- endif %}
+Communicate directly and concisely. The <output_style> section decides tone and sentence style.
 
 Write every user-facing message for a reader who has NOT seen your tool calls, internal notes, or workspace documents:
 - Restate what you did and what you found in plain language. Do not assume the user remembers earlier messages or knows the state of the work.
@@ -103,9 +103,4 @@ Verifying means more than confirming that the changed screen renders:
 4. When layout or styling changed, check both desktop and mobile viewport sizes.
 
 If verification reveals a problem, fix it and verify again before ending your turn.
-</browser_verification>${%- endif %}${%- if output_style %}
-
-<output_style>
-${{ output_style }}
-</output_style>
-${%- endif %}
+</browser_verification>${%- endif %}

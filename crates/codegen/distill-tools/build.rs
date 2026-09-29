@@ -117,21 +117,11 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
         "https://github.com/sharkdp/fd/releases/download/v{ver}/fd-v{ver}-{asset_triple}.tar.gz"
     );
 
-    let bytes: Vec<u8> = {
-        let resp = reqwest::blocking::get(&url).map_err(|e| {
-            format!(
-                "Failed to download fd: {e}\nSet GROK_TOOLS_BUNDLE_FD_PATH to a local fd for offline builds."
-            )
-        })?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "HTTP {} downloading fd. Set GROK_TOOLS_BUNDLE_FD_PATH for offline builds.",
-                resp.status()
-            )
-            .into());
-        }
-        resp.bytes()?.to_vec()
-    };
+    let bytes = download(
+        &url,
+        "fd",
+        "Set GROK_TOOLS_BUNDLE_FD_PATH to a local fd for offline builds.",
+    )?;
 
     // Verify the tarball against the pinned per-asset hash before unpacking.
     let expected_sha = FD_TARBALL_SHA256
@@ -179,6 +169,48 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
 
     compress_and_pin(&dest, "FD")?;
     Ok(())
+}
+
+/// Fetches a pinned release archive. One dropped connection on a CI runner used
+/// to fail a whole release build, so transport errors, 5xx and 429 are retried
+/// with backoff; any other HTTP status fails at once.
+fn download(
+    url: &str,
+    what: &str,
+    offline_hint: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    const ATTEMPTS: u32 = 4;
+    let mut last_error = String::new();
+    for attempt in 1..=ATTEMPTS {
+        if attempt > 1 {
+            std::thread::sleep(std::time::Duration::from_secs(1 << (attempt - 1)));
+        }
+        match reqwest::blocking::get(url) {
+            Ok(resp) if resp.status().is_success() => match resp.bytes() {
+                Ok(bytes) => return Ok(bytes.to_vec()),
+                Err(e) => last_error = e.to_string(),
+            },
+            Ok(resp)
+                if resp.status().is_server_error()
+                    || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+            {
+                last_error = format!("HTTP {}", resp.status());
+            }
+            Ok(resp) => {
+                return Err(
+                    format!("HTTP {} downloading {what}. {offline_hint}", resp.status()).into(),
+                );
+            }
+            Err(e) => last_error = e.to_string(),
+        }
+        println!(
+            "cargo:warning=downloading {what} failed (attempt {attempt}/{ATTEMPTS}): {last_error}"
+        );
+    }
+    Err(format!(
+        "Failed to download {what} after {ATTEMPTS} attempts: {last_error}\n{offline_hint}"
+    )
+    .into())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -314,22 +346,11 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         t = asset_triple
     );
 
-    let bytes: Vec<u8> = {
-        let resp = reqwest::blocking::get(&url).map_err(|e| {
-            format!(
-                "Failed to download ripgrep: {}\nSet GROK_TOOLS_BUNDLE_RG_PATH to a local rg for offline builds.",
-                e
-            )
-        })?;
-        if !resp.status().is_success() {
-            return Err(format!(
-                "HTTP {} downloading ripgrep. Set GROK_TOOLS_BUNDLE_RG_PATH for offline builds.",
-                resp.status()
-            )
-            .into());
-        }
-        resp.bytes()?.to_vec()
-    };
+    let bytes = download(
+        &url,
+        "ripgrep",
+        "Set GROK_TOOLS_BUNDLE_RG_PATH to a local rg for offline builds.",
+    )?;
 
     let gz = flate2::read::GzDecoder::new(bytes.as_slice());
     let mut ar = tar::Archive::new(gz);

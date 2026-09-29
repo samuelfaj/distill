@@ -1367,11 +1367,27 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
-        "reasoning_model" => {
+        "worker_model" => {
             let SettingValue::String(s) = value else {
-                return Err(kind_mismatch("reasoning_model", "String", &value));
+                return Err(kind_mismatch("worker_model", "String", &value));
             };
-            distill_shell::util::config::set_reasoning_model(s)
+            distill_shell::util::config::set_worker_model(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "worker_effort" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("worker_effort", "String", &value));
+            };
+            distill_shell::util::config::set_worker_effort(crate::acp::model_state::parse_effort_setting(&s)?)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "main_effort" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("main_effort", "String", &value));
+            };
+            distill_shell::util::config::set_main_effort(crate::acp::model_state::parse_effort_setting(&s)?)
                 .await
                 .map_err(|e| e.to_string())
         }

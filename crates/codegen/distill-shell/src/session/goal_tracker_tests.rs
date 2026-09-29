@@ -2262,24 +2262,15 @@ fn only_harness_stops_hold_the_goal_for_the_user() {
     }
 }
 
-/// The user asked for the reasoning model to keep a stalled goal until it ends:
-/// neither progress nor a pause and resume hands the goal back to the main
-/// model, and a new goal starts on the main model again.
+/// Escalations count the stalled evaluations since the last progress: progress
+/// resets the count and reports how many it took.
 #[test]
-fn a_reasoning_takeover_lasts_until_the_goal_ends() {
+fn escalations_count_until_progress_returns() {
     let mut t = make_tracker();
     activate_tracker(&mut t);
-    assert_eq!(t.note_escalation(false), (1, false), "no reasoning model, no takeover");
-    assert!(!t.reasoning_takeover_active());
-    assert_eq!(t.note_escalation(true), (2, true));
-    assert_eq!(t.note_escalation(true), (3, false), "the takeover starts once");
-    assert_eq!(t.finish_escalation(), Some(3));
-    assert!(t.reasoning_takeover_active(), "progress keeps the takeover");
-    assert!(t.pause(GoalPauseReason::User));
-    assert!(!t.reasoning_takeover_active(), "a paused goal runs no rounds");
-    assert!(t.resume());
-    assert!(t.reasoning_takeover_active(), "resume keeps the takeover");
-    t.clear();
-    activate_tracker(&mut t);
-    assert!(!t.reasoning_takeover_active(), "a new goal starts on the main model");
+    assert_eq!(t.note_escalation(), 1);
+    assert_eq!(t.note_escalation(), 2);
+    assert_eq!(t.finish_escalation(), Some(2));
+    assert_eq!(t.finish_escalation(), None, "nothing left to resolve");
+    assert_eq!(t.note_escalation(), 1, "a new stall counts from one");
 }

@@ -114,3 +114,49 @@ async fn clearing_the_jev_local_model_reads_back_as_no_cheap_lane() {
         "the empty pick is what the lane has to read as unset"
     );
 }
+
+/// Both tiers take `auto` or a level, and each write must land where its reader
+/// looks: the worker's in `[models].worker_effort` (read by the subagent
+/// resolver), the main model's as `[jev] effort_auto` plus
+/// `[models].default_reasoning_effort` (read when a session starts). Switching
+/// the main model back to auto keeps the last level as its fallback.
+#[tokio::test]
+#[serial_test::serial(GROK_HOME)]
+async fn tier_efforts_persist_auto_or_a_level_where_their_readers_look() {
+    use distill_sampling_types::ReasoningEffort;
+    let home = tempfile::tempdir().expect("home");
+    let _guard = distill_test_support::env::EnvGuard::set("GROK_HOME", home.path());
+    let path = crate::util::config::user_config_path();
+    std::fs::write(
+        &path,
+        "[models]\ndefault = \"sol\"\nworker = \"luna\"\n\n[jev]\nprovider = \"openrouter_decisions\"\n",
+    )
+    .expect("seed the config");
+    let read = || -> TomlValue {
+        toml::from_str(&std::fs::read_to_string(&path).expect("read back")).expect("valid TOML")
+    };
+
+    set_worker_effort(Some(ReasoningEffort::Medium)).await.expect("pin the worker");
+    assert_eq!(read()["models"]["worker_effort"].as_str(), Some("medium"));
+    set_worker_effort(None).await.expect("worker back to auto");
+    assert_eq!(read()["models"]["worker_effort"].as_str(), Some("auto"));
+
+    set_main_effort(Some(ReasoningEffort::High)).await.expect("pin the main model");
+    let pinned = read();
+    assert_eq!(pinned["jev"]["effort_auto"].as_bool(), Some(false));
+    assert_eq!(pinned["models"]["default_reasoning_effort"].as_str(), Some("high"));
+    assert_eq!(
+        pinned["jev"]["provider"].as_str(),
+        Some("openrouter_decisions"),
+        "the provider block survives"
+    );
+    set_main_effort(None).await.expect("main back to auto");
+    let auto = read();
+    assert_eq!(auto["jev"]["effort_auto"].as_bool(), Some(true));
+    assert_eq!(
+        auto["models"]["default_reasoning_effort"].as_str(),
+        Some("high"),
+        "the last level stays as the fallback"
+    );
+    assert_eq!(auto["models"]["worker"].as_str(), Some("luna"), "the tiers are untouched");
+}

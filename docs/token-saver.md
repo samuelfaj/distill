@@ -237,10 +237,12 @@ the skills listing and the MCP announcements cost in estimated tokens.
 
 The `b2_*` levers route a call to a weaker or local model:
 
-- `b2_reasoning_model` lets the main model consult the reasoning model for a
-  step it cannot do alone, so the step is right the first time.
 - `b2_local_model` prefers your configured local model for calls it can finish.
 - `b2_micro_effort` picks the effort level per call, when you set `/effort auto`.
+
+The worker model (`/worker-model`) is the other routing saving: the main model
+delegates implementation to it, so the expensive model plans and reviews while
+the cheaper one does the long edit-and-test work in its own context.
 
 Routing changes which model answers the turn, not how many tokens the turn needs.
 It lowers your bill. If you are trying to fit a context window, these levers do

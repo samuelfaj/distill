@@ -3012,41 +3012,41 @@ fn dashboard_slash_model_stages_pending_model() {
         "staging must update the snapshot's current selection",
     );
 }
-/// On the dashboard the reasoning model is a saved preference: it persists
-/// `[models].reasoning`, keeps the main model and stages nothing for the next agent.
+/// On the dashboard the worker model is a saved preference: it persists
+/// `[models].worker`, keeps the main model and stages nothing for the next agent.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
-fn dashboard_reasoning_model_keeps_main_selection() {
+fn dashboard_worker_model_keeps_main_selection() {
     let mut app = test_app();
     seed_model(&mut app, "main", "Main");
-    seed_model(&mut app, "reasoning", "Reasoning");
+    seed_model(&mut app, "worker", "Worker");
     app.models.set_current(acp::ModelId::new("main"), None);
     open_dashboard(&mut app);
 
     let effects =
-        dispatch_dashboard_dispatch_slash(&mut app, "/reasoning-model reasoning".into());
+        dispatch_dashboard_dispatch_slash(&mut app, "/worker-model worker".into());
 
     assert!(matches!(
         effects.as_slice(),
         [Effect::PersistSetting {
-            key: "reasoning_model",
+            key: "worker_model",
             ..
         }]
     ));
     assert_eq!(app.models.current_model_id_str(), Some("main"));
     assert_eq!(
         app.models
-            .reasoning_model
+            .worker_model
             .as_ref()
             .map(|id| id.0.as_ref()),
-        Some("reasoning")
+        Some("worker")
     );
     let dashboard = app.dashboard.as_ref().unwrap();
     assert!(dashboard.pending_model.is_none());
     assert_eq!(
-        dashboard.models.reasoning_model.as_ref().map(|id| id.0.as_ref()),
-        Some("reasoning"),
-        "the dashboard snapshot shows the saved reasoning model"
+        dashboard.models.worker_model.as_ref().map(|id| id.0.as_ref()),
+        Some("worker"),
+        "the dashboard snapshot shows the saved worker model"
     );
 }
 /// A tier-restricted command typed into the dashboard dispatch input must upsell via the feedback toast, not execute, and not fall through the unknown-command path, which would spawn a session whose first prompt is the raw slash text.

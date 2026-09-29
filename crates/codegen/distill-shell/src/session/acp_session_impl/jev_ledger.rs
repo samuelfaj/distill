@@ -55,41 +55,16 @@ pub(crate) struct JevTurnLedger {
     effort_floor: Option<(String, distill_sampling_types::ReasoningEffort)>,
     /// A review may reserve one higher-effort call per turn, not a sticky floor.
     review_escalated: bool,
-    /// C4 asked for an independent reasoning review of the last executed edit.
-    reasoning_review_pending: Option<String>,
-    /// What the reasoning gates know about this request.
-    pub(crate) reasoning: super::reasoning_gates::ReasoningGates,
+    /// What the harness saw of this request: failed calls and recorded checks.
+    pub(crate) facts: super::turn_facts::TurnFacts,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
-    /// Conversation-owned Reasoning model. The outer option distinguishes an
-    /// unset legacy session from an explicit choice to use no Reasoning model.
-    /// Retained when turn rows are drained so the actor is the durable owner.
-    session_reasoning_model: crate::session::handle::SessionReasoningModelState,
-    /// The session's optional tool families. Session-scoped like
-    /// `session_reasoning_model`: draining the turn keeps it, so the tools array
-    /// only grows when a later request needs another family.
+    /// The session's optional tool families. Session-scoped: draining the turn
+    /// keeps it, so the tools array only grows when a later request needs
+    /// another family.
     pub(crate) tool_families: distill_workspace::jev::catalog::routing::ToolFamilySelection,
 }
 
 impl JevTurnLedger {
-    pub(crate) fn with_session_reasoning_model_override(
-        state: crate::session::handle::SessionReasoningModelState,
-    ) -> Self {
-        Self {
-            session_reasoning_model: state,
-            ..Default::default()
-        }
-    }
-
-    pub(crate) fn set_session_reasoning_model(&self, model: Option<String>) {
-        *self.session_reasoning_model.write() = Some(model);
-    }
-
-    /// `Some(None)` means the conversation explicitly disabled Reasoning;
-    /// outer `None` means the session retains Distill's legacy default.
-    pub(crate) fn session_reasoning_model(&self) -> Option<Option<String>> {
-        self.session_reasoning_model.read().clone()
-    }
-
     /// Notes the model and effort the next call will run with.
     ///
     /// Re-noting the same pair (a retry) bumps its call count instead of adding
@@ -115,39 +90,6 @@ impl JevTurnLedger {
             row.requests = row.requests.saturating_add(1);
         }
         self.pending = Some(index);
-        self.started.get_or_insert_with(Instant::now);
-    }
-
-    /// Adds a side call's usage (the reasoning model advising the main one) to
-    /// its own row, without touching the round the next response belongs to.
-    pub(crate) fn add_side_usage(
-        &mut self,
-        model: impl Into<String>,
-        effort: Option<String>,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) {
-        let model = model.into();
-        let index = match self
-            .rows
-            .iter()
-            .position(|row| row.model == model && row.effort == effort)
-        {
-            Some(index) => index,
-            None => {
-                self.rows.push(LedgerRow {
-                    model,
-                    effort,
-                    ..Default::default()
-                });
-                self.rows.len() - 1
-            }
-        };
-        if let Some(row) = self.rows.get_mut(index) {
-            row.requests = row.requests.saturating_add(1);
-            row.input_tokens = row.input_tokens.saturating_add(input_tokens);
-            row.output_tokens = row.output_tokens.saturating_add(output_tokens);
-        }
         self.started.get_or_insert_with(Instant::now);
     }
 
@@ -230,18 +172,6 @@ impl JevTurnLedger {
         self.effort_floor.take()
     }
 
-    pub(crate) fn request_reasoning_review(&mut self, change: String) {
-        self.reasoning_review_pending = Some(change);
-    }
-
-    pub(crate) fn take_reasoning_review(&mut self) -> Option<String> {
-        std::mem::take(&mut self.reasoning_review_pending)
-    }
-
-    pub(crate) fn reasoning_review_pending(&self) -> bool {
-        self.reasoning_review_pending.is_some()
-    }
-
     /// Whether a routed model is waiting for this round's request.
     pub(crate) fn has_pending_route(&self) -> bool {
         self.pending_route.is_some()
@@ -289,8 +219,7 @@ impl JevTurnLedger {
         self.pending_effort_label = None;
         self.effort_floor = None;
         self.review_escalated = false;
-        self.reasoning_review_pending = None;
-        self.reasoning = Default::default();
+        self.facts = Default::default();
         self.last_execution = None;
         rows.sort_by(|a, b| {
             b.tokens()
@@ -305,43 +234,6 @@ impl JevTurnLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn conversation_reasoning_override_is_actor_owned_and_survives_turn_drain() {
-        let state_a = crate::session::handle::new_session_reasoning_model_state();
-        let state_b = crate::session::handle::new_session_reasoning_model_state();
-        let mut session_a = JevTurnLedger::with_session_reasoning_model_override(state_a);
-        let session_b = JevTurnLedger::with_session_reasoning_model_override(state_b);
-
-        session_a.set_session_reasoning_model(Some("chatgpt/gpt-6-sol".to_owned()));
-        session_b.set_session_reasoning_model(None);
-        session_a.note_round("main", None);
-        let _ = session_a.take_rows();
-
-        assert_eq!(session_a.session_reasoning_model(), Some(Some("chatgpt/gpt-6-sol".to_owned())));
-        assert_eq!(session_b.session_reasoning_model(), Some(None));
-    }
-
-    /// The reasoning model's advice is billed on its own row, like the main
-    /// model's rounds, and never takes the usage of the round still pending.
-    #[test]
-    fn side_usage_gets_its_own_row_and_keeps_the_pending_round() {
-        let mut ledger = JevTurnLedger::default();
-        ledger.note_round("GPT-6-Luna (ChatGPT)", Some("medium".to_owned()));
-        ledger.add_side_usage("GPT-6-Sol (ChatGPT)", Some("high".to_owned()), 4_000, 900);
-        ledger.add_usage(10_000, 500);
-        ledger.add_side_usage("GPT-6-Sol (ChatGPT)", Some("high".to_owned()), 1_000, 100);
-
-        let rows = ledger.take_rows();
-        let main = rows.iter().find(|row| row.model.starts_with("GPT-6-Luna")).unwrap();
-        assert_eq!((main.requests, main.input_tokens, main.output_tokens), (1, 10_000, 500));
-        let reasoning = rows.iter().find(|row| row.model.starts_with("GPT-6-Sol")).unwrap();
-        assert_eq!(reasoning.effort.as_deref(), Some("high"));
-        assert_eq!(
-            (reasoning.requests, reasoning.input_tokens, reasoning.output_tokens),
-            (2, 5_000, 1_000)
-        );
-    }
 
     #[test]
     fn usage_lands_on_the_round_it_belongs_to() {

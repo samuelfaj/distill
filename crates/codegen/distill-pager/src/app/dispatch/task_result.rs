@@ -2410,10 +2410,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         true,
                         "Main model saved. Continue when ready.",
                     ),
-                    "reasoning_model" => state.finish_setting_persistence(
+                    "worker_model" => state.finish_setting_persistence(
                         key,
                         true,
-                        "Reasoning model saved for planning and review.",
+                        "Worker model saved for delegated work.",
                     ),
                     _ => {}
                 }
@@ -2445,10 +2445,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                         false,
                         format!("Main model was not saved: {scrubbed}. Try again."),
                     ),
-                    "reasoning_model" => state.finish_setting_persistence(
+                    "worker_model" => state.finish_setting_persistence(
                         key,
                         false,
-                        format!("Reasoning model was not saved: {scrubbed}. Try again."),
+                        format!("Worker model was not saved: {scrubbed}. Try again."),
                     ),
                     _ => {}
                 }

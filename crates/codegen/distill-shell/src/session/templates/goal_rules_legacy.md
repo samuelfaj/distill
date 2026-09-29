@@ -9,7 +9,7 @@ Resolve named skills from the actual catalog before deriving their requirements.
 The objective's explicit instructions override conflicting repository instructions (AGENTS.md, CLAUDE.md, rules, repository skills): when the user says where or how to work, work there and that way, and state the override in your report; never substitute a different location, branch or deliverable.
 
 {PLAN_BLOCK}{BLOCK_RECAP}{DISCIPLINE_BLOCK}
-WORKING: implement it yourself and test it on the real user path. Where a behavior cannot be driven end-to-end here, cover it with a static / structural check (assert the artifact exists in the source) plus a unit test of the real shipped function — not a flaky end-to-end run.
+WORKING: implement it and test it on the real user path. Where a behavior cannot be driven end-to-end here, cover it with a static / structural check (assert the artifact exists in the source) plus a unit test of the real shipped function — not a flaky end-to-end run.
 
 NO TEST THEATER: a passing test must prove the SHIPPED code works on the real path. Never hard-code the expected value, start past the thing under test, re-implement the code under test inside the test, or report success without driving the real entry point. A test that passes while the program is broken is worse than none.
 

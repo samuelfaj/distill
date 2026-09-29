@@ -11,14 +11,6 @@ use distill_sampling_types::ReasoningEffort;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
-/// Per-session Reasoning selection shared by the ACP handle and Jev turn actor.
-/// The nested option distinguishes no override from an explicit Main-only choice.
-pub(crate) type SessionReasoningModelState =
-    std::sync::Arc<parking_lot::RwLock<Option<Option<String>>>>;
-
-pub(crate) fn new_session_reasoning_model_state() -> SessionReasoningModelState {
-    std::sync::Arc::new(parking_lot::RwLock::new(None))
-}
 /// Coarse lifecycle state of a session as known to the leader/agent.
 /// A grok session is a resumable log on disk with no terminal status field of its own, so "liveness" is residency plus turn state, not a pid.
 /// The agent's join-handle supervisor tracks this per session so a panicked actor is demoted to `Dormant` instead of lingering in the roster.
@@ -113,7 +105,6 @@ pub struct SessionHandle {
     /// Per-session tracking prevents cross-client contamination in leader mode where `MvpAgent.current_model_id` is shared mutable state.
     pub model_id: acp::ModelId,
     pub reasoning_effort: Option<ReasoningEffort>,
-    pub(crate) reasoning_model_override: SessionReasoningModelState,
     /// Whether Jev may choose effort/model routing for this session. This is
     /// session-local even though the remote model catalog is shared.
     pub jev_effort_auto: std::sync::Arc<std::sync::atomic::AtomicBool>,

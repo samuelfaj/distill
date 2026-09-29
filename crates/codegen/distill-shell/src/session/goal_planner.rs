@@ -338,8 +338,8 @@ impl ChannelSpawner {
             // Goal roles are never auto-backgrounded: the planner runs until it finishes or the user interrupts.
             await_to_completion: true,
             // A verbatim fork reuses the parent's cached prefix on the parent's model; a planner on
-            // another model (the reasoning model) starts from its own prompt instead of a
-            // conversation written for a different provider.
+            // another model starts from its own prompt instead of a conversation written for a
+            // different provider.
             fork_context,
             owner: SubagentOwner::Task,
             cancel_token: self.cancel_token.clone(),

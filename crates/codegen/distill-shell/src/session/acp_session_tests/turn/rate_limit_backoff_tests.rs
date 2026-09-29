@@ -376,7 +376,6 @@ async fn controlled_routes_are_captured_on_the_wire() {
             let (actor, _retries) =
                 actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_reasoning_model(None);
             install_wire_routing_catalog_with_window(&actor, &server.url(), 272_000);
             let mut initial = actor
                 .chat_state_handle
@@ -448,7 +447,6 @@ async fn controlled_routes_are_captured_on_the_wire() {
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_reasoning_model();
 
             let responses: Vec<_> = server
                 .request_bodies()
@@ -502,7 +500,6 @@ async fn zero_or_single_effort_menus_do_not_invoke_auto_routing() {
                 .jev_effort_auto
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_reasoning_model(None);
             crate::jev::set_test_decision_answers([Some(controlled_effort_answer("low"))]);
 
             // The test actor's default catalog has no effort menu: preparation
@@ -553,7 +550,6 @@ async fn zero_or_single_effort_menus_do_not_invoke_auto_routing() {
             assert_eq!(signals.active_reasoning_effort, None);
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -600,7 +596,6 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 max_context_tokens: Some(256_000),
                 ..Default::default()
             });
-            crate::jev::set_test_reasoning_model(None);
             crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
             let mut config = actor
                 .chat_state_handle
@@ -670,7 +665,6 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
             }));
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -724,7 +718,6 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
                 max_context_tokens: Some(256_000),
                 ..Default::default()
             });
-            crate::jev::set_test_reasoning_model(None);
             crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
             let mut config = actor
                 .chat_state_handle
@@ -798,7 +791,6 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -833,7 +825,6 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
             )
             .await;
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_reasoning_model(None);
             install_wire_routing_catalog(&actor, &server.url());
             actor
                 .jev_effort_auto
@@ -895,7 +886,6 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
 
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }
@@ -929,7 +919,6 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 .jev_effort_auto
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             crate::jev::set_test_local_config(Default::default());
-            crate::jev::set_test_reasoning_model(None);
             install_wire_routing_catalog(&actor, &server.url());
             let mut config = actor
                 .chat_state_handle
@@ -984,7 +973,6 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();
-            crate::jev::clear_test_reasoning_model();
         })
         .await;
 }

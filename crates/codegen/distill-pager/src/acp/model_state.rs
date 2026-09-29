@@ -42,13 +42,34 @@ impl EffortTokenError {
     }
 }
 
+/// How a tier's effort reads in a toast, the status or the tier editor: the
+/// level, or `auto`.
+pub fn effort_setting_label(effort: Option<ReasoningEffort>) -> String {
+    effort.map_or_else(|| "auto".to_owned(), |level| level.to_string())
+}
+
+/// A tier effort as the settings store it: `auto` (or empty) is `None`, any
+/// other value must be a level.
+pub fn parse_effort_setting(value: &str) -> Result<Option<ReasoningEffort>, String> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    value
+        .parse()
+        .map(Some)
+        .map_err(|_| format!("unknown effort `{value}`"))
+}
+
 /// Per-agent model state.
 #[derive(Debug, Clone, Default)]
 pub struct ModelState {
     pub available: IndexMap<acp::ModelId, acp::ModelInfo>,
     pub current: Option<acp::ModelId>,
-    /// The optional reasoning model; independent of the active (main) session model.
-    pub reasoning_model: Option<acp::ModelId>,
+    /// The optional worker model; independent of the active (main) session model.
+    pub worker_model: Option<acp::ModelId>,
+    /// The worker's saved effort; `None` is auto (Jev picks it per call).
+    pub worker_effort: Option<ReasoningEffort>,
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Set when the user asked for **auto effort** (`/effort auto`): the harness
     /// picks the effort for each model call, and the footer shows `(auto)`.
@@ -90,15 +111,29 @@ impl ModelState {
         }
     }
 
-    pub fn reasoning_model_name(&self) -> Option<String> {
-        let id = self.reasoning_model.as_ref()?;
+    pub fn worker_model_name(&self) -> Option<String> {
+        let id = self.worker_model.as_ref()?;
         Some(self.available.get(id).map_or_else(|| id.0.to_string(), |info| info.name.clone()))
     }
 
-    /// The saved reasoning model (`[models].reasoning`); `None` when the main
-    /// model works alone.
-    pub fn configured_reasoning_model() -> Option<acp::ModelId> {
-        distill_shell::jev::reasoning_model().map(acp::ModelId::new)
+    /// The worker's name with its effort, as the footer shows it: `Luna (auto)`.
+    pub fn worker_label(&self) -> Option<String> {
+        let name = self.worker_model_name()?;
+        Some(match self.worker_effort {
+            Some(effort) => format!("{name} ({effort})"),
+            None => format!("{name} (auto)"),
+        })
+    }
+
+    /// The saved worker model (`[models].worker`); `None` when the main model
+    /// does all the work.
+    pub fn configured_worker_model() -> Option<acp::ModelId> {
+        distill_shell::jev::worker_model().map(acp::ModelId::new)
+    }
+
+    /// The saved worker effort (`[models].worker_effort`); `None` is auto.
+    pub fn configured_worker_effort() -> Option<ReasoningEffort> {
+        distill_shell::jev::worker_effort()
     }
 
     /// Machine-readable model ID string for the current model (e.g. "grok-4.5").
@@ -334,7 +369,8 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                 Self {
                     available: models,
                     current: current_model,
-                    reasoning_model: Self::configured_reasoning_model(),
+                    worker_model: Self::configured_worker_model(),
+                    worker_effort: Self::configured_worker_effort(),
                     reasoning_effort,
                     // A session starts in auto effort: the harness ships with
                     // `[jev] effort_auto` on (unset ⇒ on) and the shell seeds

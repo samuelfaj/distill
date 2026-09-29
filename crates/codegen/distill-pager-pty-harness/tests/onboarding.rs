@@ -98,15 +98,15 @@ fn assert_model_saved(content: &ContentController) {
     );
 }
 
-fn assert_reasoning_saved(content: &ContentController, expected: &str) {
+fn assert_worker_saved(content: &ContentController, expected: &str) {
     let config = config_value(content);
     assert_eq!(
         config
             .get("models")
-            .and_then(|models| models.get("reasoning"))
+            .and_then(|models| models.get("worker"))
             .and_then(toml::Value::as_str),
         Some(expected),
-        "reasoning selection must persist the selected catalog id"
+        "worker selection must persist the selected catalog id"
     );
 }
 
@@ -258,19 +258,19 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
     assert_model_saved(&content);
     save_artifacts(&content, &harness, "normal-step2-model-selected");
 
-    // Connect -> Reasoning: select the other catalog model as the reasoning
-    // model and wait for the persistence acknowledgement before Community.
+    // Connect -> Worker: select the other catalog model as the worker model
+    // and wait for the persistence acknowledgement before Community.
     press(&mut harness, END);
     press(&mut harness, keys::ENTER);
     wait_for_step(&mut harness, 3);
     press(&mut harness, keys::ENTER);
     harness
-        .wait_for_text("Reasoning model saved", WAIT)
-        .expect("reasoning model persistence acknowledgement");
-    assert_reasoning_saved(&content, "default-model");
+        .wait_for_text("Worker model saved", WAIT)
+        .expect("worker model persistence acknowledgement");
+    assert_worker_saved(&content, "default-model");
     save_artifacts(&content, &harness, "normal-step3");
 
-    // Continue from the reasoning picker, record the safe URL opener seam, then
+    // Continue from the worker picker, record the safe URL opener seam, then
     // select Finish without following or sending anything.
     press(&mut harness, END);
     press(&mut harness, keys::ENTER);
@@ -291,7 +291,7 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
         .wait_for_text_absent(STEP4, WAIT)
         .expect("Finish closes completed onboarding");
     assert_completion(&content);
-    assert_reasoning_saved(&content, "default-model");
+    assert_worker_saved(&content, "default-model");
     save_artifacts(&content, &harness, "normal-complete");
     harness
         .quit()
@@ -309,7 +309,7 @@ async fn onboarding_four_steps_persist_and_restart_normal_and_narrow() {
         "persisted completion must prevent automatic onboarding after restart\nscreen:\n{}",
         restart.screen_contents()
     );
-    assert_reasoning_saved(&content, "default-model");
+    assert_worker_saved(&content, "default-model");
     save_artifacts(&content, &restart, "restart-completed");
     restart
         .quit()

@@ -51,16 +51,20 @@ model, or enter `/tiers`. You can edit each tier in that screen.
 
 | Tier | Purpose | Picker |
 |---|---|---|
-| Main model | Required. Runs every session and every step. | `/model` or `/tiers main` |
-| Reasoning model | Optional. Plans and reviews the steps the main model cannot do alone. | `/reasoning-model` or `/tiers reasoning` |
+| Main model | Required. Owns every session: it plans, specifies, delegates, and reviews the work. | `/model` or `/tiers main` |
+| Worker model | Optional. Runs every delegated assignment the main model hands it as a precise spec. Without it, the main model does all the work. | `/worker-model` or `/tiers worker` |
 | Utility model | Handles bounded tasks such as extraction, summaries, and compression. | `/utility-model` or `/tiers utility` |
 
-The main model picker also lets you set effort; `auto` is the default. You can
-supply each selection directly:
+Pick your strongest model as the main model and a cheaper one as the worker:
+the main model gives the worker as much of the work as it can do well. Each
+tier takes an effort level or `auto`, which lets Jev pick the effort for every
+call; `auto` is the default. In the Model tiers screen, enter a tier as
+`model effort` (for example `gpt-6-luna auto`). You can supply each selection
+directly:
 
 ```text
-/model gpt-6-luna auto
-/reasoning-model gpt-6-sol
+/model gpt-6-sol auto
+/worker-model gpt-6-luna auto
 /utility-model openrouter-qwen37 auto
 ```
 

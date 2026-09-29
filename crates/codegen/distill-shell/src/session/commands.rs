@@ -427,11 +427,6 @@ pub enum SessionCommand {
         effort: distill_sampling_types::ReasoningEffort,
         responds_to: oneshot::Sender<Result<acp::ModelId, acp::Error>>,
     },
-    /// Set or explicitly disable the conversation's Reasoning model between turns.
-    SetReasoningModel {
-        model_id: Option<String>,
-        responds_to: oneshot::Sender<Result<Option<String>, acp::Error>>,
-    },
     /// Zero-turn harness rebuild: build a brand-new `Agent` from the session's `AgentRebuildSpec` and the new `AgentDefinition`.
     /// Re-register MCP tools, swap the live `Agent`, and rewrite the system message in the conversation.
     /// Triggered by `MvpAgent::set_session_model` when the new model's `agent_type` differs from the session's current one.

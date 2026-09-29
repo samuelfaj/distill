@@ -2343,11 +2343,11 @@ impl AppView {
             .collect()
     }
 
-    /// Reasoning candidates: every other model in the catalog. The reasoning
-    /// model only receives bounded, tool-free requests, so any provider works.
-    fn onboarding_reasoning_options(&self) -> Vec<(String, String)> {
+    /// Worker candidates: every other model in the catalog. The worker runs the
+    /// delegated subagent sessions with the same tools as the main model.
+    fn onboarding_worker_options(&self) -> Vec<(String, String)> {
         let main = self.models.current_model_id_str();
-        let current = self.models.reasoning_model.as_ref().map(|id| id.0.as_ref());
+        let current = self.models.worker_model.as_ref().map(|id| id.0.as_ref());
         self.models
             .available
             .iter()
@@ -2356,8 +2356,8 @@ impl AppView {
             .collect()
     }
 
-    fn onboarding_current_reasoning(&self) -> Option<String> {
-        self.models.reasoning_model_name()
+    fn onboarding_current_worker(&self) -> Option<String> {
+        self.models.worker_model_name()
     }
 
     /// Open onboarding only after the normal interactive startup gates are settled. Resume,
@@ -2393,11 +2393,11 @@ impl AppView {
 
     fn handle_onboarding_input(&mut self, ev: &Event) -> InputOutcome {
         let model_ids: Vec<acp::ModelId> = self.models.available.keys().cloned().collect();
-        let reasoning_options = self.onboarding_reasoning_options();
+        let worker_options = self.onboarding_worker_options();
         let command = self
             .onboarding
             .as_mut()
-            .and_then(|state| state.handle_input(ev, model_ids.len(), reasoning_options.len()));
+            .and_then(|state| state.handle_input(ev, model_ids.len(), worker_options.len()));
         let Some(command) = command else {
             return InputOutcome::Changed;
         };
@@ -2469,11 +2469,11 @@ impl AppView {
                 };
                 InputOutcome::Action(Action::SetDefaultModel(id))
             }
-            crate::views::onboarding::OnboardingCommand::SelectReasoning(index) => {
-                let Some((id, _)) = reasoning_options.get(index) else {
+            crate::views::onboarding::OnboardingCommand::SelectWorker(index) => {
+                let Some((id, _)) = worker_options.get(index) else {
                     return InputOutcome::Changed;
                 };
-                InputOutcome::Action(Action::SetReasoningModel(acp::ModelId::new(id.as_str())))
+                InputOutcome::Action(Action::SetWorkerModel(acp::ModelId::new(id.as_str()), None))
             }
             crate::views::onboarding::OnboardingCommand::OpenX => {
                 InputOutcome::Action(Action::OpenUrl(crate::views::onboarding::X_URL.to_owned()))
@@ -2493,8 +2493,8 @@ impl AppView {
         onboarding: &mut Option<crate::views::onboarding::OnboardingState>,
         compact: bool,
         models: &[(String, String)],
-        reasoning_options: &[(String, String)],
-        current_reasoning: Option<&str>,
+        worker_options: &[(String, String)],
+        current_worker: Option<&str>,
         provider_auth: Option<ProviderAuthState>,
     ) {
         // Grok onboarding temporarily reuses Welcome's existing auth controls below.
@@ -2507,8 +2507,8 @@ impl AppView {
                 state,
                 compact,
                 models,
-                reasoning_options,
-                current_reasoning,
+                worker_options,
+                current_worker,
                 provider_auth,
             );
         }
@@ -3441,11 +3441,11 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 return match editor.handle_key(key) {
                     crate::views::tier_editor::TierEditorOutcome::Submitted {
                         main,
-                        reasoning,
+                        worker,
                         utility,
                     } => InputOutcome::Action(Action::SetTierEditor {
                         main,
-                        reasoning,
+                        worker,
                         utility,
                     }),
                     crate::views::tier_editor::TierEditorOutcome::Cancelled => {
@@ -4683,8 +4683,8 @@ impl AppView {
         let agent_mouse_pos = self.last_mouse_pos;
         let status_line_frame = self.status_line_frame();
         let onboarding_models = self.onboarding_model_options();
-        let onboarding_reasoning = self.onboarding_reasoning_options();
-        let onboarding_current_reasoning = self.onboarding_current_reasoning();
+        let onboarding_worker = self.onboarding_worker_options();
+        let onboarding_current_worker = self.onboarding_current_worker();
         let onboarding_provider_auth = self.provider_auth;
         let welcome_mode = self.home_session().map(|home| {
             (
@@ -5012,8 +5012,8 @@ impl AppView {
                                     &mut self.onboarding,
                                     compact,
                                     &onboarding_models,
-                                    &onboarding_reasoning,
-                                    onboarding_current_reasoning.as_deref(),
+                                    &onboarding_worker,
+                                    onboarding_current_worker.as_deref(),
                                     onboarding_provider_auth,
                                 );
                             }
@@ -5178,8 +5178,8 @@ impl AppView {
                                         &mut self.onboarding,
                                         compact,
                                         &onboarding_models,
-                                        &onboarding_reasoning,
-                                        onboarding_current_reasoning.as_deref(),
+                                        &onboarding_worker,
+                                        onboarding_current_worker.as_deref(),
                                         onboarding_provider_auth,
                                     );
                                 }
@@ -5333,8 +5333,8 @@ impl AppView {
                                         &mut self.onboarding,
                                         compact,
                                         &onboarding_models,
-                                        &onboarding_reasoning,
-                                        onboarding_current_reasoning.as_deref(),
+                                        &onboarding_worker,
+                                        onboarding_current_worker.as_deref(),
                                         onboarding_provider_auth,
                                     );
                                 }

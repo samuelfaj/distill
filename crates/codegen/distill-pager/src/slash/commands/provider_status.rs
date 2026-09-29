@@ -104,27 +104,31 @@ pub fn cheap_lane_status() -> String {
     out
 }
 
-/// The main, reasoning and utility models.
+/// The main, worker and utility models.
 ///
 /// `session_model` is the session's own model id, which only the caller knows:
-/// it is the main model, which runs every step.
+/// it is the main model, which owns the session.
 pub fn tier_status(session_model: Option<&str>) -> String {
     let main = session_model.unwrap_or("(no session model yet)");
     let mut out = format!("Main model: {main}");
     out.push_str(
-        "\n  Required. Runs every session and every step. Set it with `/model <name-or-id>`. \
-         A configured OpenRouter model can also be entered as `vendor/model`.",
+        "\n  Required. Owns every session: it plans, delegates and reviews the work. Set it \
+         with `/model <name-or-id> [effort|auto]`. A configured OpenRouter model can also be \
+         entered as `vendor/model`.",
     );
-    match crate::acp::ModelState::configured_reasoning_model() {
-        Some(reasoning) => out.push_str(&format!(
-            "\n\nReasoning model: {}\n  Optional. The main model consults it to plan or \
-             review a step it cannot do alone. Set it with `/reasoning-model <name-or-id>`; \
-             `/reasoning-model clear` removes it.",
-            reasoning.0
+    match crate::acp::ModelState::configured_worker_model() {
+        Some(worker) => out.push_str(&format!(
+            "\n\nWorker model: {} (effort {})\n  Optional. Runs the work the main model delegates. \
+             Set it with `/worker-model <name-or-id> [effort|auto]`; `/worker-model clear` \
+             removes it.",
+            worker.0,
+            crate::acp::model_state::effort_setting_label(
+                crate::acp::ModelState::configured_worker_effort()
+            )
         )),
         None => out.push_str(
-            "\n\nReasoning model: (not set)\n  Optional. Without it the main model works alone. \
-             Set it with `/reasoning-model <name-or-id>`.",
+            "\n\nWorker model: (not set)\n  Optional. Without it the main model does all the \
+             work. Set it with `/worker-model <name-or-id> [effort|auto]`.",
         ),
     }
     out.push_str("\n\n");
@@ -133,7 +137,7 @@ pub fn tier_status(session_model: Option<&str>) -> String {
         "\n  Handles short, repetitive, or fallback work at lower cost. Set it with \
          `/utility-model <entry>` or `/utility-model <id>,<id>`.\n\n\
          You can edit all three fields in the Model tiers screen, or use `/tiers main`, \
-         `/tiers reasoning`, and `/tiers utility`.",
+         `/tiers worker`, and `/tiers utility`.",
     );
     out
 }
@@ -201,16 +205,16 @@ mod tests {
         }
     }
 
-    /// The status names the main model first, then the optional reasoning and
+    /// The status names the main model first, then the optional worker and
     /// the utility models, each with the command that sets it.
     #[test]
-    fn the_tier_status_names_main_reasoning_and_utility_models() {
+    fn the_tier_status_names_main_worker_and_utility_models() {
         let text = tier_status(Some("grok-4.6"));
         let main = text.find("Main model: grok-4.6").expect("main model named");
-        let reasoning = text.find("Reasoning model:").expect("reasoning tier named");
+        let worker = text.find("Worker model:").expect("worker tier named");
         let utility = text.find("Utility model:").expect("utility tier named");
-        assert!(main < reasoning && reasoning < utility, "{text}");
-        assert!(text.contains("/model") && text.contains("/reasoning-model"), "{text}");
+        assert!(main < worker && worker < utility, "{text}");
+        assert!(text.contains("/model") && text.contains("/worker-model"), "{text}");
     }
 
     #[test]

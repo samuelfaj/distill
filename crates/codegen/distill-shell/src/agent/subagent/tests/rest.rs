@@ -2535,7 +2535,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             Some("goal-model"),
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(
@@ -2548,7 +2548,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             None,
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(
@@ -2561,7 +2561,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             Some("does-not-exist"),
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(
@@ -2569,10 +2569,93 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             "an unknown override falls through to the pin",
         );
 }
-/// Ordinary execution stays on the main model; planning, review, and a bounded
-/// stall handoff default to the reasoning model. Explicit role pins still win.
+/// Work the main model delegates runs on the cheaper worker model, while planning
+/// and review stay on the main model and harness roles, resumes, forks and
+/// explicit models keep theirs: that split is what makes the main model the
+/// orchestrator instead of the one grinding through every step.
+#[test]
+fn only_fresh_model_delegation_defaults_to_the_worker_model() {
+    use distill_tools::implementations::distill::task::types::ModelOverrideProvenance;
+    crate::jev::set_test_worker_model(Some("worker-model".to_string()));
+    let delegated = |subagent_type: &str| {
+        let mut request = bootstrap_test_request(false);
+        request.subagent_type = subagent_type.to_string();
+        request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+        request
+    };
+    for agent in ["general-purpose", "explore", "local-helper"] {
+        assert_eq!(
+            delegated_worker_model(&delegated(agent), false).as_deref(),
+            Some("worker-model"),
+            "{agent}",
+        );
+    }
+    for agent in ["plan", "code-reviewer"] {
+        assert_eq!(delegated_worker_model(&delegated(agent), false), None, "{agent}");
+    }
+    assert_eq!(delegated_worker_model(&delegated("general-purpose"), true), None, "resume");
+    let mut fork = delegated("general-purpose");
+    fork.fork_context = true;
+    assert_eq!(delegated_worker_model(&fork, false), None, "fork");
+    let mut explicit = delegated("general-purpose");
+    explicit.runtime_overrides.model = Some("other-model".to_string());
+    assert_eq!(delegated_worker_model(&explicit, false), None, "explicit model");
+    let harness = bootstrap_test_request(false);
+    assert_eq!(delegated_worker_model(&harness, false), None, "harness role");
+    crate::jev::set_test_worker_model(None);
+    assert_eq!(delegated_worker_model(&delegated("general-purpose"), false), None);
+    crate::jev::clear_test_worker_model();
+}
+/// The worker's configured effort reaches a child on the worker model, auto
+/// included, but it never overrides an effort the caller, a role or the agent
+/// definition chose, and it never touches a child on another model.
+#[test]
+fn a_worker_child_follows_the_worker_effort_unless_an_effort_is_explicit() {
+    use distill_sampling_types::ReasoningEffort;
+    let request = bootstrap_test_request(false);
+    let runtime = EffectiveRuntimeConfig::default();
+
+    crate::jev::set_test_worker_effort(Some(ReasoningEffort::Medium));
+    assert_eq!(
+        worker_effort_policy(true, &request, &runtime),
+        Some(Some(ReasoningEffort::Medium)),
+        "a pinned level applies"
+    );
+    crate::jev::set_test_worker_effort(None);
+    assert_eq!(worker_effort_policy(true, &request, &runtime), Some(None), "auto: Jev decides");
+    assert_eq!(worker_effort_policy(false, &request, &runtime), None, "not on the worker");
+
+    let mut caller = bootstrap_test_request(false);
+    caller.runtime_overrides.reasoning_effort = Some("high".to_string());
+    assert_eq!(worker_effort_policy(true, &caller, &runtime), None, "the caller's effort wins");
+    let defined = EffectiveRuntimeConfig {
+        reasoning_effort: Some("low".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(worker_effort_policy(true, &request, &defined), None, "a role or definition effort wins");
+    crate::jev::clear_test_worker_effort();
+}
+/// A fresh child on the worker model starts with the instruction to follow its
+/// spec literally and report instead of guessing: that is what lets a cheaper
+/// model get delegated work right. Resumed and forked children already carry
+/// their instructions, and children on other models are left as they were.
+#[test]
+fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
+    let reminder = worker_discipline_reminder(true, &InitialContextSource::New)
+        .expect("a fresh worker child gets the discipline")
+        .text_content();
+    assert!(reminder.contains("Do exactly what the assignment specifies"), "{reminder}");
+    assert!(reminder.contains("stop and report the mismatch or the question instead of guessing"), "{reminder}");
+    assert!(reminder.contains("exit status"), "{reminder}");
+    assert!(worker_discipline_reminder(true, &InitialContextSource::Resumed).is_none());
+    assert!(worker_discipline_reminder(true, &InitialContextSource::Forked).is_none());
+    assert!(worker_discipline_reminder(false, &InitialContextSource::New).is_none());
+}
+/// The worker default resolves to the worker's own endpoint and credentials,
+/// yields to an explicit `[subagents.models]` pin, and falls back to the main
+/// model when the worker is the main model or is missing from the catalog.
 #[tokio::test]
-async fn plan_and_review_use_the_reasoning_model_and_other_tasks_stay_on_main() {
+async fn delegated_work_resolves_to_the_worker_model_unless_pinned() {
     use distill_agent::config::ModelOverride;
 
     let mut ctx = ctx_with_toggle(HashMap::new());
@@ -2580,46 +2663,40 @@ async fn plan_and_review_use_the_reasoning_model_and_other_tasks_stay_on_main() 
     ctx.model_id = acp::ModelId::new("main-model");
     ctx.available_models
         .insert("main-model".to_string(), test_model_entry("main-model"));
-    let mut reasoning = test_model_entry("reasoning-model");
-    reasoning.info.base_url = "https://reasoning.example/v1".to_string();
-    reasoning.api_key = Some("reasoning-key".to_string());
-    ctx.available_models
-        .insert("reasoning-model".to_string(), reasoning);
+    let mut worker = test_model_entry("worker-model");
+    worker.info.base_url = "https://worker.example/v1".to_string();
+    worker.api_key = Some("worker-key".to_string());
+    ctx.available_models.insert("worker-model".to_string(), worker);
     ctx.parent_chat_state = Some(spawn_test_parent_chat_state("main-model"));
-    crate::jev::set_test_reasoning_model(Some("reasoning-model".to_string()));
 
-    let (task_config, task_model) = resolve_effective_model_config(
-        None,
-        "general-purpose",
-        &ModelOverride::Inherit,
-        &ctx,
+    let (config, model) = resolve_effective_model_config(
+        None, "general-purpose", &ModelOverride::Inherit, Some("worker-model"), &ctx,
     )
     .await;
-    assert_eq!(task_model.0.as_ref(), "main-model");
-    assert_eq!(task_config.model, "main-model");
+    assert_eq!(model.0.as_ref(), "worker-model");
+    assert_eq!(config.base_url, "https://worker.example/v1");
+    assert_eq!(config.api_key.as_deref(), Some("worker-key"));
 
-    for agent in ["plan", "code-reviewer", "reasoning-executor"] {
-        let (config, model) =
-            resolve_effective_model_config(None, agent, &ModelOverride::Inherit, &ctx).await;
-        assert_eq!(model.0.as_ref(), "reasoning-model", "{agent}");
-        assert_eq!(config.base_url, "https://reasoning.example/v1", "{agent}");
-        assert_eq!(config.api_key.as_deref(), Some("reasoning-key"), "{agent}");
+    let (_, review) =
+        resolve_effective_model_config(None, "code-reviewer", &ModelOverride::Inherit, None, &ctx)
+            .await;
+    assert_eq!(review.0.as_ref(), "main-model", "no worker default: the main model reviews");
+
+    for unusable in ["main-model", "missing-model"] {
+        let (_, fallback) = resolve_effective_model_config(
+            None, "general-purpose", &ModelOverride::Inherit, Some(unusable), &ctx,
+        )
+        .await;
+        assert_eq!(fallback.0.as_ref(), "main-model", "{unusable}");
     }
 
-    ctx.subagent_model_overrides.insert(
-        "reasoning-executor".to_owned(), "main-model".to_owned(),
-    );
+    ctx.subagent_model_overrides
+        .insert("general-purpose".to_owned(), "main-model".to_owned());
     let (_, pinned) = resolve_effective_model_config(
-        None, "reasoning-executor", &ModelOverride::Inherit, &ctx,
-    ).await;
-    assert_eq!(pinned.0.as_ref(), "main-model", "explicit role pin wins");
-
-    crate::jev::set_test_reasoning_model(None);
-    let (_, review_model) =
-        resolve_effective_model_config(None, "code-reviewer", &ModelOverride::Inherit, &ctx)
-            .await;
-    assert_eq!(review_model.0.as_ref(), "main-model");
-    crate::jev::clear_test_reasoning_model();
+        None, "general-purpose", &ModelOverride::Inherit, Some("worker-model"), &ctx,
+    )
+    .await;
+    assert_eq!(pinned.0.as_ref(), "main-model", "an explicit pin wins over the worker");
 }
 /// A `fork_context = true` spawn must infer on the parent session model (`ctx.model_id`) for per-model radix reuse. That holds even when a `[subagents.models]` pin and an `AgentDefinition.model` override are both present.
 /// `run_shell_child` forces `effective_runtime.model = Some(ctx.model_id)` on the fork path after other override sources. The runtime override wins in `resolve_effective_model_config`.
@@ -2651,7 +2728,7 @@ async fn fork_context_pins_parent_model_over_overrides() {
             runtime_override.as_deref(),
             "general-purpose",
             &agent_def,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(
@@ -2664,7 +2741,7 @@ async fn fork_context_pins_parent_model_over_overrides() {
             None,
             "general-purpose",
             &agent_def,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(
@@ -2685,7 +2762,7 @@ async fn resolve_subagent_inherits_parent_model_without_pins() {
         let (config, model_id) = resolve_subagent_sampling_config(
                 "explore",
                 &ModelOverride::Inherit,
-                &ctx,
+                None, &ctx,
             )
             .await;
         assert_eq!(
@@ -2710,7 +2787,7 @@ async fn resolve_subagent_config_override_pin_applies_for_any_parent() {
         let (config, model_id) = resolve_subagent_sampling_config(
                 "explore",
                 &ModelOverride::Inherit,
-                &ctx,
+                None, &ctx,
             )
             .await;
         assert_eq!(
@@ -2733,7 +2810,7 @@ async fn resolve_subagent_agent_definition_pin_applies_for_light_parent() {
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "pinned-model");
@@ -2755,7 +2832,7 @@ async fn resolve_subagent_config_override_wins_over_agent_definition() {
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "config-pin");
@@ -2787,7 +2864,7 @@ async fn resolve_subagent_config_override_unselectable_model_falls_through_to_in
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "grok-4.5");
@@ -2813,7 +2890,7 @@ async fn resolve_subagent_config_override_user_allowlist_still_applies() {
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "subagent-only");
@@ -2835,7 +2912,7 @@ async fn resolve_subagent_config_override_none_agent_config_blocks_unselectable(
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "grok-4.5");
@@ -2853,7 +2930,7 @@ async fn resolve_subagent_config_override_unknown_model_falls_through_to_inherit
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "grok-4.5");
@@ -2870,7 +2947,7 @@ async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inheri
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.model, "grok-4.5");
@@ -2902,7 +2979,7 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
     let (config, model_id) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(model_id.0.as_ref(), "proxied");
@@ -2914,7 +2991,7 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
     let (config, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
-            &ctx,
+            None, &ctx,
         )
         .await;
     assert_eq!(config.api_key.as_deref(), Some("tok-1"));

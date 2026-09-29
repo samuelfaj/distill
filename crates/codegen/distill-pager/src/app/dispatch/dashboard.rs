@@ -1531,14 +1531,15 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             stage_dashboard_model(app, model_id, None);
             vec![]
         }
-        // The reasoning model is a saved preference, not a per-spawn choice.
+        // The worker model is a saved preference, not a per-spawn choice.
         CommandResult::Action(
-            action @ (Action::SetReasoningModel(_) | Action::ClearReasoningModel),
+            action @ (Action::SetWorkerModel(..) | Action::ClearWorkerModel),
         ) => {
             let effects = dispatch(action, app);
             if let Some(d) = app.dashboard.as_mut() {
                 d.dispatch.set_text("");
-                d.models.reasoning_model = app.models.reasoning_model.clone();
+                d.models.worker_model = app.models.worker_model.clone();
+                d.models.worker_effort = app.models.worker_effort;
             }
             effects
         }

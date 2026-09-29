@@ -1845,10 +1845,10 @@ fn onboarding_selection_status_tracks_persisted_results() {
     assert!(!state.status_is_error);
     assert!(state.status.as_deref().unwrap().contains("saved"));
 
-    app.onboarding.as_mut().unwrap().set_reasoning_model_pending();
+    app.onboarding.as_mut().unwrap().set_worker_model_pending();
     dispatch(
         Action::TaskComplete(TaskResult::SettingPersistFailed {
-            key: "reasoning_model",
+            key: "worker_model",
             rollback_value: crate::settings::SettingValue::String(String::new()),
             error: "disk full".to_owned(),
         }),

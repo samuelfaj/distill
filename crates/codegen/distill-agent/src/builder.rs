@@ -42,6 +42,7 @@ pub struct AgentBuilder {
     role_instructions: Option<String>,
     persona_instructions: Option<String>,
     output_style: Option<String>,
+    worker_model: Option<String>,
     name: Option<String>,
     description: Option<String>,
     prompt_mode: PromptMode,
@@ -179,6 +180,7 @@ impl AgentBuilder {
             role_instructions: None,
             persona_instructions: None,
             output_style: None,
+            worker_model: None,
             name: None,
             description: None,
             prompt_mode: PromptMode::Extend,
@@ -270,6 +272,12 @@ impl AgentBuilder {
     }
     pub fn with_output_style(mut self, instructions: Option<String>) -> Self {
         self.output_style = instructions;
+        self
+    }
+    /// The worker model delegated work runs on; a primary prompt then asks the
+    /// main model to plan, delegate and review.
+    pub fn with_worker_model(mut self, worker_model: Option<String>) -> Self {
+        self.worker_model = worker_model;
         self
     }
     pub fn with_persona_instructions(mut self, instructions: Option<String>) -> Self {
@@ -1277,6 +1285,7 @@ impl AgentBuilder {
             role_instructions: self.role_instructions,
             persona_instructions: self.persona_instructions,
             output_style: self.output_style,
+            worker_model: self.worker_model,
             os_name: Some(std::env::consts::OS.to_string()),
             shell_path: Some(resolve_shell_for_prompt()),
             working_directory: Some(display_working_dir),
@@ -1386,9 +1395,9 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
         "Set it only when the user explicitly asks for a specific model; an unknown slug is rejected with the list of valid ones. "
     };
     format!(
-        "\n\n{availability}Otherwise omit `{TASK_MODEL_PARAM}`: a subagent runs on the main model, and plan and \
-         code-reviewer run on the configured reasoning model unless pinned in \
-         [subagents.models]. Explicit model pins remain \
+        "\n\n{availability}Otherwise omit `{TASK_MODEL_PARAM}`: a fresh subagent runs on the configured worker \
+         model (the main model when none is set), and plan and code-reviewer run on the main \
+         model unless pinned in [subagents.models]. Explicit model pins remain \
          authoritative, and resumed or full-context forked children retain their existing \
          model/context semantics."
     )
@@ -1455,9 +1464,8 @@ pub(crate) fn build_task_description(
              and relevant paths; return the result and verification, not the parent transcript. \
              After a substantive code checkpoint or before final handoff, use code-reviewer when \
              independent review could catch a material defect. Provide the diff, criteria and test \
-             evidence. Follow existing reasoning_advice or reasoning_review for the same checkpoint \
-             before considering another subagent. Skip trivial or unchanged checkpoints and do \
-             not repeat review of the same diff.",
+             evidence. Skip trivial or unchanged checkpoints and do not repeat review of the same \
+             diff.",
         );
     }
     description
@@ -1908,7 +1916,8 @@ mod tests {
         assert!(!desc.contains("- alpha"), "{desc}");
         assert!(desc.contains("an unknown slug is rejected with the list of valid ones"));
         assert!(desc.contains("${{ params.task.model }}"));
-        assert!(desc.contains("runs on the main model"));
+        assert!(desc.contains("a fresh subagent runs on the configured worker"));
+        assert!(desc.contains("plan and code-reviewer run on the main"));
     }
 
     /// User-level and plugin agents keep one line; project agents, which were
@@ -1937,7 +1946,8 @@ mod tests {
         let desc = build_task_description(&subagents, &[], &ChildToolNames::new());
         assert!(desc.contains("${{ params.task.model }}"));
         assert!(!desc.contains("- alpha"));
-        assert!(desc.contains("runs on the main model"));
+        assert!(desc.contains("a fresh subagent runs on the configured worker"));
+        assert!(desc.contains("plan and code-reviewer run on the main"));
     }
     #[test]
     fn task_model_guidance_resolves_model_param_override() {

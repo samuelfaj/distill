@@ -403,61 +403,190 @@ fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {
     );
     assert!(expect_agent(&app, id).session.model_switch_pending);
 }
-/// The reasoning model is a separate, optional preference: choosing it saves
-/// `[models].reasoning` and must never switch the session off its main model.
+/// The worker model is a separate, optional preference: choosing it saves
+/// `[models].worker` and must never switch the session off its main model.
 #[test]
-fn slash_reasoning_model_saves_reasoning_and_keeps_main_session() {
+fn slash_worker_model_saves_worker_and_keeps_main_session() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
-    let main = acp::ModelId::new("chatgpt/gpt-6-luna");
-    let reasoning = acp::ModelId::new("reasoning-test-sol");
+    let main = acp::ModelId::new("chatgpt/gpt-6-sol");
+    let worker = acp::ModelId::new("worker-test-luna");
     {
         let models = &mut app.agents.get_mut(&agent_id).unwrap().session.models;
         models
             .available
-            .insert(main.clone(), acp::ModelInfo::new(main.clone(), "GPT-6-Luna"));
+            .insert(main.clone(), acp::ModelInfo::new(main.clone(), "GPT-6-Sol"));
         models.available.insert(
-            reasoning.clone(),
-            acp::ModelInfo::new(reasoning.clone(), "Reasoning Test Sol"),
+            worker.clone(),
+            acp::ModelInfo::new(worker.clone(), "Worker Test Luna"),
         );
         models.set_current(main.clone(), None);
     }
 
     let effects = dispatch(
-        Action::SendPrompt("/reasoning-model Reasoning Test Sol".into()),
+        Action::SendPrompt("/worker-model Worker Test Luna".into()),
         &mut app,
     );
     assert!(matches!(
         effects.as_slice(),
         [Effect::PersistSetting {
-            key: "reasoning_model",
+            key: "worker_model",
             value: crate::settings::SettingValue::String(saved),
             ..
-        }] if saved == "reasoning-test-sol"
+        }] if saved == "worker-test-luna"
     ));
     let agent = expect_agent(&app, agent_id);
     assert_eq!(agent.session.models.current, Some(main.clone()));
-    assert_eq!(agent.session.models.reasoning_model, Some(reasoning));
+    assert_eq!(agent.session.models.worker_model, Some(worker));
     assert!(!agent.session.model_switch_pending);
 
-    let effects = dispatch(Action::SendPrompt("/reasoning-model clear".into()), &mut app);
+    let effects = dispatch(Action::SendPrompt("/worker-model clear".into()), &mut app);
     assert!(matches!(
         effects.as_slice(),
         [Effect::PersistSetting {
-            key: "reasoning_model",
+            key: "worker_model",
             value: crate::settings::SettingValue::String(saved),
             ..
         }] if saved.is_empty()
     ));
     let agent = expect_agent(&app, agent_id);
-    assert_eq!(agent.session.models.reasoning_model, None);
+    assert_eq!(agent.session.models.worker_model, None);
     assert_eq!(agent.session.models.current, Some(main));
 }
 
-/// A failed reasoning write restores the previous reasoning mirror and leaves
-/// the main model alone.
+fn effort_capable(id: &acp::ModelId, name: &str) -> acp::ModelInfo {
+    let meta = serde_json::json!({
+        "supportsReasoningEffort": true,
+        "reasoningEfforts": [
+            {"id": "low", "value": "low", "label": "Low"},
+            {"id": "medium", "value": "medium", "label": "Medium"},
+            {"id": "high", "value": "high", "label": "High"},
+        ],
+    });
+    acp::ModelInfo::new(id.clone(), name).meta(meta.as_object().cloned())
+}
+
+/// A trailing effort pins the worker: the model and the effort persist as two
+/// settings the worker's readers see, and the mirrors show the pick.
 #[test]
-fn reasoning_model_rollback_restores_only_the_reasoning_mirror() {
+fn slash_worker_model_with_an_effort_saves_both() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let main = acp::ModelId::new("chatgpt/gpt-6-sol");
+    let worker = acp::ModelId::new("worker-test-luna");
+    {
+        let models = &mut app.agents.get_mut(&agent_id).unwrap().session.models;
+        models.available.insert(main.clone(), effort_capable(&main, "GPT-6-Sol"));
+        models.available.insert(worker.clone(), effort_capable(&worker, "Worker Test Luna"));
+        models.set_current(main.clone(), None);
+    }
+
+    let effects = dispatch(
+        Action::SendPrompt("/worker-model Worker Test Luna medium".into()),
+        &mut app,
+    );
+    let keys: Vec<(&str, String)> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::PersistSetting {
+                key,
+                value: crate::settings::SettingValue::String(value),
+                ..
+            } => Some((*key, value.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            ("worker_model", "worker-test-luna".to_owned()),
+            ("worker_effort", "medium".to_owned()),
+        ]
+    );
+    let agent = expect_agent(&app, agent_id);
+    assert_eq!(agent.session.models.worker_model, Some(worker));
+    assert_eq!(
+        agent.session.models.worker_effort,
+        Some(distill_shell::sampling::types::ReasoningEffort::Medium)
+    );
+    assert_eq!(agent.session.models.current, Some(main), "the main model is untouched");
+}
+
+/// The Model tiers screen takes `model [effort]` for the main model and the
+/// worker. The main model's level switches this session and is saved for new
+/// ones; the worker's `auto` is saved as the worker effort.
+#[test]
+fn tier_editor_saves_main_and_worker_efforts() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let main = acp::ModelId::new("chatgpt/gpt-6-sol");
+    let worker = acp::ModelId::new("worker-test-luna");
+    {
+        let agent = app.agents.get_mut(&agent_id).unwrap();
+        agent.session.session_id = Some(acp::SessionId::new("tier-session"));
+        let models = &mut agent.session.models;
+        models.available.insert(main.clone(), effort_capable(&main, "GPT-6-Sol"));
+        models.available.insert(worker.clone(), effort_capable(&worker, "Worker Test Luna"));
+        models.set_current(main.clone(), None);
+        models.effort_auto = true;
+    }
+
+    let effects = dispatch(
+        Action::SetTierEditor {
+            main: "chatgpt/gpt-6-sol high".into(),
+            worker: "worker-test-luna auto".into(),
+            utility: String::new(),
+        },
+        &mut app,
+    );
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SwitchModel { model_id, effort: Some(effort), .. }
+                if model_id == &main
+                    && *effort == distill_shell::sampling::types::ReasoningEffort::High
+        )),
+        "the session switches to the pinned level: {effects:?}"
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::PersistSetting {
+            key: "main_effort",
+            value: crate::settings::SettingValue::String(value),
+            ..
+        } if value == "high"
+    )));
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        Effect::PersistSetting {
+            key: "worker_model",
+            value: crate::settings::SettingValue::String(value),
+            ..
+        } if value == "worker-test-luna"
+    )));
+    let agent = expect_agent(&app, agent_id);
+    assert!(!agent.session.models.effort_auto, "a level turns auto off");
+    assert_eq!(agent.session.models.worker_effort, None, "the worker stays on auto");
+}
+
+/// A failed worker-effort write restores the previous effort mirror.
+#[test]
+fn worker_effort_rollback_restores_the_previous_effort() {
+    let mut app = test_app_with_agent();
+    app.models.worker_effort = Some(distill_shell::sampling::types::ReasoningEffort::High);
+    apply_setting_rollback(
+        &mut app,
+        "worker_effort",
+        &crate::settings::SettingValue::String("auto".to_owned()),
+    );
+    assert_eq!(app.models.worker_effort, None);
+    assert_eq!(expect_agent(&app, AgentId(0)).session.models.worker_effort, None);
+}
+
+/// A failed worker write restores the previous worker mirror and leaves the
+/// main model alone.
+#[test]
+fn worker_model_rollback_restores_only_the_worker_mirror() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
     let main = acp::ModelId::new("main-model");
@@ -467,20 +596,20 @@ fn reasoning_model_rollback_restores_only_the_reasoning_mirror() {
         .session
         .models
         .set_current(main.clone(), None);
-    app.models.reasoning_model = Some(acp::ModelId::new("new-reasoning"));
+    app.models.worker_model = Some(acp::ModelId::new("new-worker"));
     apply_setting_rollback(
         &mut app,
-        "reasoning_model",
-        &crate::settings::SettingValue::String("old-reasoning".to_owned()),
+        "worker_model",
+        &crate::settings::SettingValue::String("old-worker".to_owned()),
     );
     assert_eq!(
-        app.models.reasoning_model,
-        Some(acp::ModelId::new("old-reasoning"))
+        app.models.worker_model,
+        Some(acp::ModelId::new("old-worker"))
     );
     let agent = expect_agent(&app, agent_id);
     assert_eq!(
-        agent.session.models.reasoning_model,
-        Some(acp::ModelId::new("old-reasoning"))
+        agent.session.models.worker_model,
+        Some(acp::ModelId::new("old-worker"))
     );
     assert_eq!(agent.session.models.current, Some(main));
 }

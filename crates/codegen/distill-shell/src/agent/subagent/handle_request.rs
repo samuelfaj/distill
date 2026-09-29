@@ -817,10 +817,15 @@ pub(crate) async fn run_shell_child(
     if request.fork_context && !explicit_model_override {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
     }
+    let worker_model = crate::agent::subagent::delegated_worker_model(
+        &request,
+        resume_source.is_some() || request.resume_from.is_some(),
+    );
     let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
         effective_runtime.model.as_deref(),
         &request.subagent_type,
         &definition.model,
+        worker_model.as_deref(),
         &ctx,
     )
     .await;
@@ -871,6 +876,14 @@ pub(crate) async fn run_shell_child(
         }
     }
     let caller_effort_override = request.runtime_overrides.reasoning_effort.is_some();
+    // A delegated child that landed on the worker model follows the worker's
+    // effort setting, unless the caller, a role or the agent definition set one.
+    let on_worker = worker_model
+        .as_deref()
+        .and_then(|worker| resolve_model_override_to_config(worker, &ctx))
+        .is_some_and(|(_, id)| id == effective_model_id);
+    let worker_effort =
+        crate::agent::subagent::worker_effort_policy(on_worker, &request, &effective_runtime);
     let caller_manual_effort = request
         .runtime_overrides
         .reasoning_effort
@@ -884,12 +897,15 @@ pub(crate) async fn run_shell_child(
     // Resolve the Jev policy before applying a numeric sampler effort. A
     // durable/forked `auto` policy must not be replaced by a fresh role or
     // definition number; an explicit caller number still wins.
-    let child_jev_effort_auto = crate::agent::subagent::resolve_child_jev_effort_auto(
-        ctx.parent_effort_auto,
-        &request,
-        &effective_runtime,
-        resume_source.as_ref(),
-    );
+    let child_jev_effort_auto = match worker_effort {
+        Some(level) => level.is_none(),
+        None => crate::agent::subagent::resolve_child_jev_effort_auto(
+            ctx.parent_effort_auto,
+            &request,
+            &effective_runtime,
+            resume_source.as_ref(),
+        ),
+    };
     let inherited_effort = resume_source
         .as_ref()
         .and_then(|source| source.reasoning_effort)
@@ -930,6 +946,18 @@ pub(crate) async fn run_shell_child(
                 )
             }
         }
+    }
+    if let Some(Some(level)) = worker_effort
+        && ctx
+            .models_manager
+            .model_supports_reasoning_effort(effective_model_id.0.as_ref())
+    {
+        ctx.models_manager.apply_supported_effort(
+            &mut effective_sampling_config,
+            Some(level),
+            &acp::SessionId::new(request.id.clone()),
+            crate::sampling::EffortTarget::NewSession,
+        );
     }
     if effective_sampling_config.conversation_group_id.is_none() {
         let inherited_group_id = if let Some(parent_chat_state) = ctx.parent_chat_state.as_ref() {
@@ -1030,6 +1058,13 @@ pub(crate) async fn run_shell_child(
         let reminder = distill_sampling_types::conversation::ConversationItem::system_reminder(
             format!("<system-reminder>\n{pi}\n</system-reminder>"),
         );
+        let insert_at = inherited_prefix_len.min(forked_conversation.len());
+        forked_conversation.insert(insert_at, reminder);
+        inherited_prefix_len += 1;
+    }
+    if let Some(reminder) =
+        crate::agent::subagent::worker_discipline_reminder(on_worker, &context_source)
+    {
         let insert_at = inherited_prefix_len.min(forked_conversation.len());
         forked_conversation.insert(insert_at, reminder);
         inherited_prefix_len += 1;
@@ -1584,7 +1619,6 @@ pub(crate) async fn run_shell_child(
     let session_bootstrap_span = phase_region(SubagentSpawnPhase::SessionBootstrap);
     let spawn_phase_parent = session_bootstrap_span.span().clone();
     let bootstrap_started_at = std::time::Instant::now();
-    let inherited_reasoning_model = ctx.parent_reasoning_model.clone();
     let pins = ctx.compaction_pins_for_child(&definition.user_message_template);
     let spawn_result = session::spawn_session_on_thread(
         child_session_info,
@@ -1785,7 +1819,6 @@ pub(crate) async fn run_shell_child(
         toolset: child_toolset,
         ..
     } = child_init;
-    *child_handle.reasoning_model_override.write() = inherited_reasoning_model;
     session::bind_installed_toolset(
         &ctx.workspace_ops,
         &child_handle.info.id,

@@ -574,10 +574,11 @@ pub enum Action {
     /// Clear the persisted default model (`cfg.models.default = None`).
     /// Active session's model is unchanged; next session resolves via the shell's default-resolution chain.
     ClearDefaultModel,
-    /// Save the optional reasoning model (`[models].reasoning`) without switching the main model.
-    SetReasoningModel(acp::ModelId),
-    /// Remove the reasoning model: the main model works alone.
-    ClearReasoningModel,
+    /// Save the optional worker model (`[models].worker`) and its effort
+    /// (`None` is auto) without switching the main model.
+    SetWorkerModel(acp::ModelId, Option<ReasoningEffort>),
+    /// Remove the worker model: the main model does all the work.
+    ClearWorkerModel,
     /// Commit the max-thoughts-width (column budget for the thoughts panel).
     /// Payload is `i64`; clamped to `u16` at the shell helper boundary.
     SetMaxThoughtsWidth(i64),
@@ -691,12 +692,12 @@ pub enum Action {
         title: String,
         content: String,
     },
-    /// Open the editable main, reasoning, and utility model form.
+    /// Open the editable main, worker, and utility model form.
     ShowTierEditor,
     /// Save all three model tier fields from the tier editor.
     SetTierEditor {
         main: String,
-        reasoning: String,
+        worker: String,
         utility: String,
     },
     /// Rename the current session's title/summary.

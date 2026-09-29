@@ -5,20 +5,18 @@ state assembled by the harness: which model should handle a call, how much
 effort it needs, or which parts of a tool result are worth keeping.
 
 Of the tiers set in [Choose your models](../README.md#choose-your-models), the
-**main** model is required and owns every session. The optional
-**reasoning** model advises on planning, recovery, and review when the task
-warrants an independent pass. After a diagnosed stall persists, one bounded
-`reasoning-executor` child may work on the blocker while the main model waits.
-Utility tasks receive a bounded
+**main** model is required and owns every session: it plans the work, delegates
+the implementation, and reviews what comes back. The optional **worker** model
+runs the subagents the main model delegates to. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
 ```text
-   Main model: owns the session and normal execution
-      |                  |                     |
-  conversation   reasoning advice       Utility task
-                 (plan or review)      bounded payload
-  persistent stall -> one executor -> main verifies
+   Main model: owns the session, plans, delegates, reviews
+      |                     |                        |
+  conversation      delegated chunk          Utility task
+                  (worker subagent)         bounded payload
+                  report + diff -> main reviews
 ```
 
 Jev chooses among candidates supplied by code. It does not invent candidates
@@ -27,126 +25,101 @@ permission policies; Jev cannot approve, veto, or hold a tool call for
 confirmation. If a Jev decision fails, times out, or lacks enough confidence,
 the harness keeps its normal execution path.
 
-## Main and reasoning
+## Main and worker
 
-The main model executes the task and owns the conversation. Jev decides whether
-an up-front plan is needed. When it selects one, the harness records planning,
-execution, correction, and approval phases. A completed plan joins the conversation
-as `<reasoning_advice>` before the Worker's first edit. Delivery then requires
-an independent review without a second Jev decision. Routine requests keep
-Worker execution and the optional review decision.
+The main model owns the conversation for the whole session. When a worker model
+is configured, the main model's system prompt carries an `<orchestration>`
+section that makes the worker the default executor, small changes included: the
+main model gives it every assignment a precise spec fully determines (implementing a specified
+change, writing tests for specified behavior, mechanical or repetitive edits,
+running builds and tests, and finding or summarizing code) and keeps what needs
+judgment no spec can carry (unclear requirements, design decisions, finding the
+cause of an unexplained failure, security-sensitive choices). Each assignment is
+written as a spec a weaker model can follow without guessing: goal, exact files
+and functions, the change with signatures and an example, what must stay
+unchanged, conventions, acceptance criteria, and the exact verifying command
+with its expected result. The main model judges each result by its diff and
+check output, sends a failure back with the concrete error, splits or takes over
+an assignment that fails twice, and runs the final check itself. A request that
+already states the change goes to the worker before the main model reads the
+code, a lone assignment runs in the foreground (`background: false`) so its
+result returns in the same call, and the main model edits files itself only to
+fix a few lines found in review or to finish an assignment the worker failed
+twice. Without a
+worker model, or when the worker is the main model, the section is left out and
+the main model does the work itself.
 
-| Decision | When Jev is asked | What it weighs |
-|---|---|---|
-| Plan | The first round of a request | Whether the reasoning model plans it: not at all, now (a request that can be planned from its text), or after inspecting the workspace. For the last case, a fresh read-only `plan` subagent inspects files before the Worker's first action. If that reader cannot run, the harness records and discloses the missing plan. Jev also judges complexity for later decisions. |
-| Step | Every later round in which the main model did something the reasoning model has not weighed | Whether the main model is stuck and needs a diagnosis before its next round. The facts since the last advice are in the question: tool calls and failures, the call that failed most, the call repeated most (waiting on background work aside), failures in a row, edits undone, rounds without advice and the latest calls. |
-| Review | Before delivery | A request with a completed reasoning plan requires a review of the current Git diff (including shell edits), recorded checks, plan, acceptance criteria, and final message. The diff comes from the delivery worktree (an unfinished goal's verified worktree, else the session directory) and includes commits made since the goal's or the turn's starting commit; the reviewer runs in that worktree. If Git is unavailable, the reviewer receives recorded tool edits with that limitation. The read-only `code-reviewer` can inspect files; the inline reasoning consult remains the fallback. `VERDICT: revise` returns concrete findings to the Worker; `VERDICT: approve` permits delivery. Other requests retain Jev's optional review decision. |
+A fresh child on the worker model starts with a worker instruction from the
+harness: do exactly what the assignment specifies and change nothing else; when
+the code does not match the assignment or it leaves open a decision that
+changes the result, stop and report instead of guessing; run the checks it
+names and report each exit status and relevant output.
 
-An edit the change review (C4) flags for another model's opinion is itself a
-Jev decision and is reviewed as it comes. Normal consults have no fixed budget
-or cooldown. A persistent stall has a deterministic guard: after six Worker
-rounds with the same failed call repeated or an edit undone, or eight rounds
-with only the same non-polling call repeated and no edits, the reasoning model
-diagnoses it even if Jev did not request advice. If the same signal recurs over
-three more rounds, one foreground `reasoning-executor` child gets at most five
-turns to make a focused correction and report its check. The Worker then inspects
-the actual change and verifies the behavior. A failed diagnosis or child stops
-further escalation for that request and tells the Worker to report the blocker.
-If no Reasoning model is configured, the Worker continues to own the task.
-While a stalled goal's own reasoning executor owns the work, this handoff is skipped.
-Repeated background polling and elapsed rounds alone do not trigger this path.
-An unsure or missing plan
-decision leaves the main model to proceed. An unsure or missing delivery decision
-still requests optional review when changes are visible or the final check failed.
-For a planned request, an unavailable or unclear review is disclosed rather than
-counted as approval. An unchanged diff, check record, and final response are not reviewed twice;
-after three revision verdicts in a turn, whether the review was required or chosen by Jev, the
-Worker reports unresolved findings. With
-`/effort auto`, the round's question rides in the same decision request as the
-main model's effort, so a round costs one Jev call. Without a reasoning model,
-the main model works alone. If Jev is unavailable while Reasoning is configured,
-planning and recovery fall back to the main model; visible changes can still
-receive an optional delivery review.
+Model choice for subagents:
 
-Inline consults of one request are one conversation with the reasoning model. The
-instructions are the same for every consult, and each consult resends the
-earlier messages and advice unchanged, then adds one message: the work the main
-model did since the last reply, the consult's own material (the struggle, the
-flagged change, or the diffs, recent checks and final message of a review) and the
-task last. Work already sent is never sent again, and every consult of the
-request shares one `prompt_cache_key`, so the provider can serve the repeated
-prefix from its prompt cache.
+| Subagent | Model |
+|---|---|
+| A fresh subagent the main model delegates (`general-purpose`, `explore`, a user agent without a `model:`) | the worker model; the main model when none is set |
+| `plan` and `code-reviewer` | the main model |
+| A full-context fork, a resumed subagent, or one spawned with an explicit `model` | its own model (the parent's for a fork) |
+| Harness roles (a goal's planner, verifiers, strategist, summarizer) | the main model |
 
-Jev decides each consult in one question battery: for every piece of work the
-reasoning model has not seen, whether it needs it in full or only as a one-line
-summary; and, with `/effort auto` (`b2_micro_effort`), the effort this consult
-thinks with, from the reasoning model's own menu. Nothing carries over between
-consults: without an answer every item goes in full and the model keeps its
-configured effort. When a consult still does not fit the reasoning model's
-window, the largest items are cut to verified quotes from the utility model
-(`cite_spans`, each quote checked against the item), then to their summaries;
-a consult that does not fit even then is skipped and logged.
+An explicit `[subagents.models]` pin or an agent definition's `model:` wins over
+the worker default. A worker model missing from the catalog falls back to the
+main model.
 
-While an inline reasoning consult runs, the status row names it (for example
-`reasoning review gpt-6-sol high`). The turn report lists inline consult
-tokens and a `Reasoning - Nx (plan, review)` count. Completed child usage is
-folded into the parent session's usage accounting; an incomplete fold blocks a
-cost claim, and child usage must not be added twice. With `GROK_LOG_JEV=1`,
-each decision and a per-request summary (rounds, failures, changes,
-complexity, phase, consults, review verdicts) are logged under `b2_reasoning_model`,
-which is what the questions should be tuned from.
+A delegated worker cannot delegate further (the subagent depth limit is one). Its
+final message is the report the main model receives: the outcome, then the
+evidence (`path:line` references and each command with its result), then what it
+could not verify.
 
-The built-in `plan`, `code-reviewer`, and harness-only `reasoning-executor`
-subagents default to the reasoning model; other subagents run on the main model.
-An explicit subagent model pin
-still wins. Without a reasoning model, `plan` and `code-reviewer` use the main
-model. Jev starts these roles with fresh context, so a full-context fork cannot
-pin them to the Worker's model. They receive the user request (a goal's objective
-while the goal runs) and relevant evidence, and follow project instructions except
-where the user's request explicitly overrides one. The planner and reviewer are read-only;
-the executor can edit under the normal child permissions. The final review
-may include pre-existing workspace changes; its prompt identifies that limit.
+Both tiers take an effort level or `auto`, and `auto` lets Jev pick the effort
+for every call from that model's own menu:
 
-`/effort auto` chooses the main model's effort per call; a fixed effort pins
-that model's intensity. `/model <model> [effort]` selects the main model;
-`/reasoning-model <model>` sets the reasoning model and
-`/reasoning-model clear` removes it. Explicit subagent model and effort
-policies remain pinned.
+- Main model: `/model <model> [effort|auto]` and `/effort <level|auto>` set this
+  session. The Model tiers screen (`/tiers`, entered as `model effort`) also saves
+  it for new sessions: `auto` as `[jev] effort_auto = true`, a level as
+  `[jev] effort_auto = false` plus `[models].default_reasoning_effort`.
+- Worker model: `/worker-model <model> [effort|auto]` or the Model tiers screen
+  saves `[models].worker_effort`; unset means `auto`. It applies to every child
+  that runs on the worker, independent of the main model's mode, unless the
+  caller, a role or the agent definition set an effort. `/worker-model clear`
+  removes the worker.
 
-Jev chooses effort from each model's supported menu. An uncertain answer keeps
-that model's configured default. A redo can raise effort when the previous
-attempt lacked reasoning; the next independent step can return to auto.
-Delegation is useful for a coherent task with clear acceptance criteria and
-small relevant context. A trivial step stays with the main agent; a fresh
-subagent returns its result and verification rather than its full transcript.
+Explicit subagent model and effort policies remain pinned.
 
-Effort selection uses a confidence floor of 0.40, and the plan decision a floor
-of 0.55. A fixed effort, selected in a picker or with `/effort <level>`,
-takes precedence over automatic effort selection.
+Jev chooses effort from each model's supported menu, with a confidence floor of
+0.40. An uncertain answer keeps that model's configured default. A redo can
+raise effort when the previous attempt lacked reasoning; the next independent
+step can return to auto. A fixed effort, selected in a picker or with
+`/effort <level>`, takes precedence over automatic effort selection.
 
 ```toml
 [models]
-default = "chatgpt/gpt-6-luna"    # main model (required)
-reasoning = "chatgpt/gpt-6-sol"   # reasoning model (optional)
+default = "chatgpt/gpt-6-sol"    # main model (required)
+worker = "chatgpt/gpt-6-luna"    # worker model (optional)
+worker_effort = "auto"           # worker effort: auto or a level
 
 [jev]
-effort_auto = true
+effort_auto = true               # main model effort: auto
 ```
 
-`b2_reasoning_model` (formerly `b2_light_model`, still accepted) turns the
-reasoning consult on or off. Older configs with `[jev.tiers] light` are migrated
-at startup: the worker becomes `[models].default` and the old default becomes
-`[models].reasoning`.
+Older configs are migrated at startup. A `[models].reasoning` model becomes
+`[models].default`, and the previous main model becomes `[models].worker`. The
+previous main model's `default_reasoning_effort` never reaches the new main
+model: when auto effort was off it becomes `[models].worker_effort`, and under
+auto (where it was only the fallback) it is dropped. A `[jev.tiers] light` model
+becomes `[models].worker`, and a fixed `light_effort` becomes its
+`worker_effort`.
 
-The built-in `code-reviewer` subagent inspects a substantive code checkpoint
-using a fresh, read-only context on the reasoning model, unless pinned through
-`[subagents.models]`. Give it the diff, acceptance criteria and test evidence.
-Routine or unchanged checkpoints do not need a separate review. Jev's
-change-risk decision can request a second opinion, while the agent chooses a
-reviewer at meaningful checkpoints and before final code handoff. Goal
-completion still uses its existing verifier. A goal's planner and its progress
-evaluator run on the reasoning model when one is configured; without one, or when
-that call fails, they fall back to the main model.
+Jev's change review (C4) judges each executed edit. When it wants an independent
+look, the main model is told to ask the read-only `code-reviewer`; a delegated
+worker is told to name the edit and its risk in its report instead, so the main
+model reviews it. The built-in `code-reviewer` inspects a substantive code
+checkpoint with a fresh, read-only context on the main model, unless pinned
+through `[subagents.models]`. Give it the diff, acceptance criteria and test
+evidence. Goal completion still uses its existing verifier; a goal's planner and
+progress evaluator run on the main model.
 
 ```toml
 [subagents.models]
@@ -156,10 +129,10 @@ code-reviewer = "reviewer-catalog-entry"
 The value must name an existing model catalog entry.
 
 The routing and subagent choices are hypotheses about quality and cost. To
-claim a saving, compare accepted tasks with and without the role handoffs,
-including all main, reasoning, subagent, utility, and retry usage. Test outcomes
-and the delivered behavior must be compared alongside cost; token counts alone
-do not establish a financial saving.
+claim a saving, compare accepted tasks with and without delegation, including
+all main, worker, subagent, utility, and retry usage. Test outcomes and the
+delivered behavior must be compared alongside cost; token counts alone do not
+establish a financial saving.
 
 ## Optional model facts and cache
 
@@ -248,7 +221,7 @@ timeout_ms = 20000
 effort_auto = true
 
 [jev.ladder]
-b2_reasoning_model = true
+b2_micro_effort = true
 b2_local_model = true
 e_retention = true
 ```

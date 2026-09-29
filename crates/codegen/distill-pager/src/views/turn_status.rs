@@ -1224,34 +1224,34 @@ mod tests {
         );
 
         let routed_without_a_decision = render_running_with_jev(JevTurnActivity {
-            route: Some("reasoning-model high".to_owned()),
+            route: Some("gpt-6-sol high".to_owned()),
             ..Default::default()
         });
         assert!(
-            routed_without_a_decision.contains("reasoning-model high"),
+            routed_without_a_decision.contains("gpt-6-sol high"),
             "the final model remains visible even when Jev made no decision: {routed_without_a_decision:?}"
         );
 
         let routed_while_in_flight = render_running_with_jev(JevTurnActivity {
             in_flight: 1,
-            route: Some("reasoning-model high".to_owned()),
+            route: Some("gpt-6-sol high".to_owned()),
             ..Default::default()
         });
         assert!(
-            routed_while_in_flight.contains("reasoning-model high"),
+            routed_while_in_flight.contains("gpt-6-sol high"),
             "an in-flight consultation keeps the known route visible: {routed_while_in_flight:?}"
         );
 
         let refused_with_fallback_route = render_running_with_jev(JevTurnActivity {
             decisions: 2,
             refused: true,
-            route: Some("reasoning-model high".to_owned()),
+            route: Some("gpt-6-sol high".to_owned()),
             ..Default::default()
         });
         assert!(
             refused_with_fallback_route.contains("jev ×2")
                 && !refused_with_fallback_route.contains("fallback")
-                && refused_with_fallback_route.contains("reasoning-model high"),
+                && refused_with_fallback_route.contains("gpt-6-sol high"),
             "a refusal keeps the final route visible: {refused_with_fallback_route:?}"
         );
 
@@ -1305,20 +1305,6 @@ mod tests {
         assert!(
             local.contains("jev ×4 ·local"),
             "local runs are visible on the row: {local:?}"
-        );
-
-        // While the reasoning model advises, the row names it instead of the
-        // main model: that is the call the turn is waiting on.
-        let advising = render_running_with_jev(JevTurnActivity {
-            decisions: 5,
-            route: Some("gpt-6-luna medium".to_owned()),
-            reasoning: Some("gpt-6-sol high".to_owned()),
-            ..Default::default()
-        });
-        assert!(
-            advising.contains("jev ×5 ·reasoning gpt-6-sol high")
-                && !advising.contains("gpt-6-luna"),
-            "the reasoning model is visible while it advises: {advising:?}"
         );
 
         // The chip shares the row: the running tool and the timer survive it.

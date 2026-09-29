@@ -399,18 +399,6 @@ impl SessionActor {
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
         let tool_calls = self.reject_excess_media_gen_calls(tool_calls).await?;
-        // The commit before this turn's first tool runs, so a delivery review
-        // also sees work the turn committed.
-        if !tool_calls.is_empty() && self.jev_ledger.borrow().reasoning.needs_turn_baseline() {
-            let head = crate::session::goal_classifier::capture_git_baseline(
-                self.tool_context.cwd.as_path(),
-            )
-            .await;
-            self.jev_ledger
-                .borrow_mut()
-                .reasoning
-                .set_turn_baseline(head);
-        }
         if !tool_calls.is_empty() {
             if tool_calls.len() > 1 {
                 let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);
@@ -2922,14 +2910,12 @@ impl SessionActor {
             .or_else(|| tool_parsed_args.get("script"))
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        // Every finished call is a fact for the reasoning gates (failures,
-        // loops, edits, checks), whether or not Jev post-processes its text.
-        self.jev_ledger.borrow_mut().reasoning.note_tool_result(
-            &call_id.to_string(),
-            requested_tool_name,
-            tool_parsed_args,
-            &result.output,
-        );
+        // Every finished call is a fact the harness keeps (failures and
+        // checks), whether or not Jev post-processes its text.
+        self.jev_ledger
+            .borrow_mut()
+            .facts
+            .note_tool_result(&call_id.to_string(), &result.output);
         let prompt_text = if should_bypass_jev_post_process(&prompt_text, output_replaced) {
             prompt_text
         } else {

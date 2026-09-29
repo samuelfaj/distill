@@ -51,7 +51,6 @@ pub mod privacy;
 pub mod provider_status;
 pub mod queue;
 pub mod recap;
-pub mod reasoning_model;
 pub mod release_notes;
 pub mod remember;
 pub mod rename;
@@ -74,6 +73,7 @@ pub mod usage;
 pub mod view_plan;
 pub mod vim_mode;
 pub mod voice;
+pub mod worker_model;
 pub mod workflow;
 pub mod workflows;
 use super::command::SlashCommand;
@@ -162,7 +162,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(login_codex::LoginCodexCommand),
         Arc::new(login_openrouter::LoginOpenrouterCommand),
         Arc::new(cheap_model::CheapModelCommand),
-        Arc::new(reasoning_model::ReasoningModelCommand),
+        Arc::new(worker_model::WorkerModelCommand),
         Arc::new(tiers::TiersCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(home::HomeCommand),

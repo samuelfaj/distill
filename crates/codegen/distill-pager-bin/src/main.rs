@@ -2026,8 +2026,8 @@ fn main() {
         );
         std::process::exit(2);
     }
-    // Before anything reads the model roles: the legacy worker becomes the
-    // main model and the legacy default the reasoning model.
+    // Before anything reads the model roles: a legacy reasoning model becomes
+    // the main model and the model it advised becomes the worker.
     if let Err(error) = distill_shell::util::config::migrate_model_roles() {
         tracing::warn!(%error, "model role migration skipped");
     }

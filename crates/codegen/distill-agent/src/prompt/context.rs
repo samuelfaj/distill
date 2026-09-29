@@ -124,6 +124,10 @@ pub struct PromptContext {
     /// Terse-prose rules rendered as `<output_style>`; `None` keeps the prompt unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_style: Option<String>,
+    /// The worker model delegated work runs on; renders the primary prompt's
+    /// `<orchestration>` section. `None` means the main model works alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_model: Option<String>,
     /// OS name for the `<user_info>` system prompt block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_name: Option<String>,
@@ -181,6 +185,7 @@ impl Default for PromptContext {
             role_instructions: None,
             persona_instructions: None,
             output_style: None,
+            worker_model: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -231,6 +236,7 @@ impl PromptContext {
             "role_instructions": self.role_instructions.as_deref().unwrap_or(""),
             "persona_instructions": self.persona_instructions.as_deref().unwrap_or(""),
             "output_style": self.output_style.as_deref().unwrap_or(""),
+            "worker_model": self.worker_model.as_deref().unwrap_or(""),
             "os_name": self.os_name.as_deref().unwrap_or(""),
             "shell_path": self.shell_path.as_deref().unwrap_or(""),
             "working_directory": self.working_directory.as_deref().unwrap_or(""),
@@ -378,6 +384,7 @@ mod tests {
             role_instructions: None,
             persona_instructions: None,
             output_style: None,
+            worker_model: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -790,6 +797,7 @@ mod tests {
             role_instructions: None,
             persona_instructions: None,
             output_style: None,
+            worker_model: None,
             os_name: None,
             shell_path: None,
             working_directory: None,
@@ -919,6 +927,59 @@ mod tests {
             assert!(on.contains("<output_style>") && on.contains(&rules));
             assert!(!render(with_style("")).contains("<output_style>"));
         }
+    }
+    /// The main model is told to plan, delegate and review only when there is a
+    /// worker to delegate to and a tool to delegate with. A child never gets it:
+    /// it is the one doing the delegated work.
+    #[test]
+    fn orchestration_renders_only_for_a_primary_prompt_with_a_worker_and_the_task_tool() {
+        let render_primary = |ctx: minijinja::Value| {
+            let mut env = minijinja::Environment::new();
+            env.set_syntax(
+                minijinja::syntax::SyntaxConfig::builder()
+                    .block_delimiters("${%", "%}")
+                    .variable_delimiters("${{", "}}")
+                    .comment_delimiters("${#", "#}")
+                    .build()
+                    .unwrap(),
+            );
+            let tmpl = crate::prompt::template::base_template();
+            env.add_template("prompt", &tmpl).unwrap();
+            env.get_template("prompt").unwrap().render(ctx).unwrap()
+        };
+        let ctx = |worker: &str, task: &str| {
+            minijinja::context! {
+                worker_model => worker,
+                tools => minijinja::context! {
+                    by_kind => minijinja::context! { task => task, read => "read_file" }
+                },
+                ..base_template_ctx()
+            }
+        };
+        let on = render_primary(ctx("chatgpt/gpt-6-luna", "spawn_subagent"));
+        assert!(on.contains("<orchestration>"));
+        assert!(on.contains("The worker model `chatgpt/gpt-6-luna` costs a small fraction of each of your turns"));
+        assert!(
+            on.contains("Delegate by default, small changes included")
+                && on.contains("delegate it before reading the code yourself"),
+            "the cheap worker gets the work unless it needs judgment"
+        );
+        assert!(on.contains("Delegate with `spawn_subagent`"));
+        assert!(
+            on.contains("Launch a lone assignment with `background: false`"),
+            "waiting on a lone assignment in the foreground saves the main model a turn"
+        );
+        assert!(
+            on.contains("Write every assignment as a spec a weaker model can follow without guessing"),
+            "delegated work must come with a precise spec"
+        );
+        assert!(on.contains("Keep what needs judgment no spec can carry"));
+        assert!(!render_primary(ctx("", "spawn_subagent")).contains("<orchestration>"));
+        assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<orchestration>"));
+        assert!(
+            !render_subagent_template(ctx("chatgpt/gpt-6-luna", "spawn_subagent"))
+                .contains("<orchestration>")
+        );
     }
     #[test]
     fn child_rendered_prompt_includes_memory_section() {

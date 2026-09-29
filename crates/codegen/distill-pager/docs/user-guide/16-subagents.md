@@ -275,7 +275,7 @@ plan = false                         # disable the plan subagent
 explore = "grok-4.6"                 # route explore to a specific model
 ```
 
-Per-type model overrides apply for any parent. Without an override, a subagent inherits the parent's model.
+Per-type model overrides apply for any parent. Without an override, a fresh subagent the model delegates to runs on the worker model (`[models].worker`, set with `/worker-model`) at the worker's effort (`[models].worker_effort`, `auto` by default) and starts with the harness's worker instruction: follow the assignment exactly, and report a mismatch or an open decision instead of guessing. `plan` and `code-reviewer`, full-context forks, resumed subagents and harness roles inherit the parent's model, and so does every subagent when no worker model is set.
 
 ### Custom Roles and Personas
 

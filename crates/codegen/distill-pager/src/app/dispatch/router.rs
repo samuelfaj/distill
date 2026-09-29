@@ -76,7 +76,7 @@ use super::session::load::{
 };
 use super::session::modal::{dispatch_rename_session, dispatch_reset_session_title};
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, clear_reasoning_model,
+    clear_default_model, clear_fork_secondary_model, clear_worker_model,
     preview_auto_dark_theme, preview_auto_light_theme, preview_theme,
     set_ask_user_question_timeout_enabled, set_auto_dark_theme, set_auto_light_theme,
     set_auto_update, set_cheap_model, set_collapsed_edit_blocks, set_combine_queued_prompts,
@@ -87,7 +87,7 @@ use super::settings::setters::{
     set_display_refresh_auto_cadence, set_follow_up_behavior, set_fork_secondary_model,
     set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection,
     set_max_thoughts_width, set_multiline_mode, set_page_flip_on_send, set_prompt_suggestions,
-    set_reasoning_model, set_remember_tool_approvals, set_render_mermaid, set_respect_manual_folds,
+    set_worker_model, set_remember_tool_approvals, set_render_mermaid, set_respect_manual_folds,
     set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_show_thinking_blocks,
     set_show_tips, set_simple_mode, set_theme, set_tier_editor, set_timeline, set_timestamps,
     set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled, set_voice_stt_language,
@@ -1189,15 +1189,15 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetAutoLightTheme(v) => set_auto_light_theme(app, v),
         Action::SetDefaultModel(v) => set_default_model(app, v),
         Action::ClearDefaultModel => clear_default_model(app),
-        Action::SetReasoningModel(v) => set_reasoning_model(app, v),
-        Action::ClearReasoningModel => clear_reasoning_model(app),
+        Action::SetWorkerModel(v, effort) => set_worker_model(app, v, effort),
+        Action::ClearWorkerModel => clear_worker_model(app),
         Action::SetForkSecondaryModel(v) => set_fork_secondary_model(app, v),
         Action::SetCheapModel(v, effort) => set_cheap_model(app, v, effort),
         Action::SetTierEditor {
             main,
-            reasoning,
+            worker,
             utility,
-        } => set_tier_editor(app, main, reasoning, utility),
+        } => set_tier_editor(app, main, worker, utility),
         Action::ClearForkSecondaryModel => clear_fork_secondary_model(app),
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),

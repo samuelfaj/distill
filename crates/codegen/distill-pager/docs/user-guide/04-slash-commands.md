@@ -108,6 +108,16 @@ Switch models. Accepts a model ID or display name (case-insensitive), and for re
 /model Reasoning X high
 ```
 
+### `/worker-model <name> [effort|auto]|clear`
+
+Choose the optional worker model and its effort. The main model gives the worker every assignment a precise spec fully determines and keeps planning, judgment and review for itself. The effort is a level the model offers, or `auto` (the default), which lets the decision layer pick it for every call. `clear` removes the worker, so the main model does all the work. Alias: `/worker`. `/tiers worker <name> [effort|auto]` does the same, and bare `/tiers` opens the editor for the main, worker, and utility models, where each tier is entered as `model effort`.
+
+```
+/worker-model gpt-6-luna auto
+/worker-model gpt-6-luna medium
+/worker-model clear
+```
+
 ### `/effort <level>`
 
 Set reasoning effort on the **current** model without reselecting it. Levels are `low`, `medium`, `high`, and `xhigh`, and it only applies when the active model supports reasoning effort.
@@ -393,7 +403,7 @@ Open the durable four-step first-run setup. It is separate from `/tutorial`, and
 
 1. **Make your AI budget go further** — how model choice and routing can change cost without claiming that OpenRouter reduces tokens by itself.
 2. **Connect your AI** — reuse Grok, Codex (ChatGPT), and OpenRouter login flows, then choose the primary model through the existing model selector.
-3. **Choose a worker model** — choose an eligible worker with the existing compatibility and effort checks, or skip while preserving the current worker.
+3. **Choose a worker model** — pick the optional, usually cheaper model that runs the work the main model delegates, or skip to keep the current one.
 4. **Stay in the loop** — optionally open `https://x.com/samfajreldines/`, then finish without automatically following or claiming that you followed.
 
 Completion is written to `[ui].onboarding_completed` only after the config write succeeds. Startup auto-opening waits until ordinary interactive startup gates are settled and is deferred for resume, fork, prompt, dashboard, trust, consent, mandatory login, external-agent, noninteractive, and minimal launches; those paths keep their existing first interaction. Press `Esc` to close, `←`/`Backspace` to go back, and use `/onboarding` again to resume. In a narrow terminal the content wraps; if there is too little space, the overlay gives a visible resize instruction.

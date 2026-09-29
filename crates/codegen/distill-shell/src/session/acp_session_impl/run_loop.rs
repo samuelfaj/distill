@@ -851,10 +851,6 @@ pub(super) async fn run_session(
                             let updated_model_id = session.handle_set_reasoning_effort(effort).await;
                             let _ = responds_to.send(updated_model_id);
                         }
-                        SessionCommand::SetReasoningModel { model_id, responds_to } => {
-                            let applied = session.set_session_reasoning_model(model_id);
-                            let _ = responds_to.send(applied);
-                        }
                         SessionCommand::RebuildAgentForDefinition { definition, system_prompt_label, responds_to } => {
                             let outcome = session.handle_rebuild_agent_for_definition(definition, system_prompt_label).await;
                             let _ = responds_to.send(outcome);

@@ -1642,6 +1642,7 @@ fn merging_the_jev_slice_writes_the_cheap_model_and_preserves_the_lane() {
                 model: Some("openrouter-qwen37".into()),
                 effort: Some("auto".into()),
             }),
+            ..Default::default()
         },
     );
 

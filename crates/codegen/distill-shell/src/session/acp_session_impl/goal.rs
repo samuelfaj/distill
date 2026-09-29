@@ -70,8 +70,8 @@ pub(crate) enum GapsUpdate<'a> {
     Preserve,
 }
 
-/// Consecutive goal evaluations without observable progress before the
-/// reasoning model takes over the work.
+/// Consecutive goal evaluations without observable progress before the goal
+/// is told to change approach.
 pub(crate) const GOAL_ESCALATE_AFTER_STALLED_EVALUATIONS: u32 = 2;
 
 /// How a paused goal takes the user's answer.
@@ -106,7 +106,7 @@ impl SessionActor {
         let checks = self
             .jev_ledger
             .borrow()
-            .reasoning
+            .facts
             .recorded_checks()
             .iter()
             .map(|check| {
@@ -173,28 +173,16 @@ impl SessionActor {
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| self.models_manager.current_model_id().0.to_string());
         let session_id = self.session_info.id.to_string();
-        // Judging progress is the goal's judgment: it runs on the reasoning
-        // model when one is configured, and a failed attempt there falls back
-        // to the session model.
-        let reasoning = self.goal_reasoning_model().await;
+        let model = active_model;
         let mut last_error = String::new();
-        for attempt_index in 0..2 {
-            let (client, model, effort) = match reasoning.as_ref().filter(|_| attempt_index == 0) {
-                Some((_, cfg)) => match distill_sampler::SamplingClient::new(cfg.clone()) {
-                    Ok(client) => (client, cfg.model.clone(), cfg.reasoning_effort),
-                    Err(error) => {
-                        last_error =
-                            format!("could not prepare reasoning evaluator client: {error}");
-                        continue;
-                    }
-                },
-                None => match self.prepare_chat_completion(false).await {
-                    Ok(client) => (client, active_model.clone(), None),
-                    Err(error) => {
-                        last_error = format!("could not prepare evaluator client: {error}");
-                        continue;
-                    }
-                },
+        // One retry on the session model before a failed evaluation pauses the goal.
+        for _ in 0..2 {
+            let client = match self.prepare_chat_completion(false).await {
+                Ok(client) => client,
+                Err(error) => {
+                    last_error = format!("could not prepare evaluator client: {error}");
+                    continue;
+                }
             };
             let mut request = build_goal_evaluator_request(
                 &objective,
@@ -207,7 +195,6 @@ impl SessionActor {
                 prior_gaps.as_deref(),
                 &harness_observed,
             );
-            request.reasoning_effort = effort;
             if checkpoint {
                 request.items.push(ConversationItem::user(
                     "This is an intermediate progress checkpoint while the Worker is still executing. Assess only material progress and repeated work. Ongoing work is not itself a blocker. Do not request completion or verifier rechecks; return continue or blocked with the next concrete step.",
@@ -565,7 +552,7 @@ impl SessionActor {
 
     /// The verifier rejected completion with the same gaps again. A goal does
     /// not pause for that: the strategist restructures the approach and the
-    /// reasoning model takes over the gaps.
+    /// goal is told to change approach on the gaps.
     async fn escalate_classifier_stall(&self, attempt: u32, gaps_summary: &str) {
         let claimed = self.goal_tracker.lock().claim_strategist_fire(|_, _| true);
         if let Some(consecutive) = claimed {
@@ -810,7 +797,7 @@ impl SessionActor {
         let harness_checks: Vec<crate::session::goal_classifier::HarnessCheck> = self
             .jev_ledger
             .borrow()
-            .reasoning
+            .facts
             .recorded_checks()
             .iter()
             .map(|check| crate::session::goal_classifier::HarnessCheck {
@@ -1782,7 +1769,7 @@ impl SessionActor {
             && has_gaps
             && (no_progress_rounds == 0 || target_changed);
         // A goal never pauses for lack of progress. Once evaluations stop
-        // seeing it, the reasoning model takes over until progress returns.
+        // seeing it, the goal is told to change approach.
         let escalate = no_progress_rounds >= GOAL_ESCALATE_AFTER_STALLED_EVALUATIONS
             && verdict.decision != GoalEvaluatorDecision::Blocked
             && (checkpoint
@@ -1908,54 +1895,32 @@ impl SessionActor {
         GoalRoundDecision::Continue(plan.directive)
     }
 
-    /// Hands a stalled goal to the reasoning model: from the first escalation
-    /// on, every round of this goal runs on it (`goal_takeover_sampler`) in the
-    /// same conversation until the goal ends. Without a usable reasoning model
-    /// the Worker keeps the goal with a change-of-approach directive.
+    /// A stalled goal gets a change-of-approach directive: the main model keeps
+    /// the goal and must stop repeating the work that stalled.
     async fn run_goal_escalation(&self, assessment: &str, next_step: &str, stalled: u32) {
         use crate::session::goal_tracker::{GoalEvent, GoalHistoryEntry};
-        let reasoning = self.goal_reasoning_model().await.map(|(id, _)| id);
-        let (runs, started) = {
+        let runs = {
             let mut tracker = self.goal_tracker.lock();
-            let (runs, started) = tracker.note_escalation(reasoning.is_some());
-            let detail = match reasoning.as_deref() {
-                Some(model) if started => format!(
-                    "the reasoning model {model} runs this goal until it ends, after {stalled} evaluations without progress"
-                ),
-                Some(_) => format!(
-                    "escalation {runs}: still no progress after {stalled} evaluations; the reasoning model keeps the goal"
-                ),
-                None => format!(
-                    "escalation {runs} after {stalled} evaluations without progress; no reasoning model is available"
-                ),
-            };
-            tracker.append_history(GoalHistoryEntry::now(GoalEvent::EscalatedToReasoning, Some(detail)));
+            let runs = tracker.note_escalation();
+            tracker.append_history(GoalHistoryEntry::now(
+                GoalEvent::Escalated,
+                Some(format!(
+                    "escalation {runs} after {stalled} evaluations without progress"
+                )),
+            ));
             self.goal_notify_sender().persist_goal_state(&tracker);
-            (runs, started)
+            runs
         };
         self.log_goal_evaluation(serde_json::json!({
             "kind": "escalation",
-            "action": match (&reasoning, started) {
-                (Some(_), true) => "reasoning_takeover",
-                (Some(_), false) => "reasoning_continues",
-                (None, _) => "reasoning_unavailable",
-            },
+            "action": "change_approach",
             "stalled_evaluations": stalled,
             "escalations": runs,
-            "reasoning_model": reasoning,
         }))
         .await;
-        let note = if reasoning.is_some() {
-            format!(
-                "{stalled} goal evaluations in a row found no verifiable progress. The reasoning model runs this goal from here until it ends.\n\nEvaluator assessment: {assessment}\nEvaluator next step: {next_step}\n\nRe-examine the evidence, drop the approach that stalled, and advance a pending criterion with a check whose result is new. If only the user can resolve the blocker, report it."
-            )
-        } else {
-            format!(
-                "No verifiable progress in {stalled} goal evaluations, and no reasoning model is available. Stop repeating the same evidence collection. Change approach using this next step, or report the concrete dependency: {next_step}"
-            )
-        };
-        self.chat_state_handle
-            .push_user_message(ConversationItem::system_reminder(note));
+        self.chat_state_handle.push_user_message(ConversationItem::system_reminder(format!(
+            "{stalled} goal evaluations in a row found no verifiable progress.\n\nEvaluator assessment: {assessment}\nEvaluator next step: {next_step}\n\nRe-examine the evidence, drop the approach that stalled, and advance a pending criterion with a check whose result is new. If only the user can resolve the blocker, report it."
+        )));
     }
 
     /// Pauses for a blocker only the user can clear, with the evaluator's user
@@ -1987,32 +1952,8 @@ impl SessionActor {
         }
     }
 
-    /// A round on the reasoning model failed: the main model runs the goal again
-    /// instead of the goal pausing on the reasoning endpoint. The next stall
-    /// hands it back to the reasoning model.
-    pub(super) async fn end_goal_reasoning_takeover(&self) -> bool {
-        use crate::session::goal_tracker::{GoalEvent, GoalHistoryEntry};
-        {
-            let mut tracker = self.goal_tracker.lock();
-            if !tracker.end_reasoning_takeover() {
-                return false;
-            }
-            tracker.append_history(GoalHistoryEntry::now(
-                GoalEvent::WorkerFailed,
-                Some("a round on the reasoning model failed; the main model runs the goal again".to_owned()),
-            ));
-            self.goal_notify_sender().persist_goal_state(&tracker);
-        }
-        self.log_goal_evaluation(serde_json::json!({
-            "kind": "escalation",
-            "action": "reasoning_failed",
-        }))
-        .await;
-        true
-    }
-
     /// Progress returned after a stall. Returns how many escalations the stall
-    /// took, if any; a reasoning takeover keeps running the goal.
+    /// took, if any.
     fn finish_goal_escalation(&self) -> Option<u32> {
         use crate::session::goal_tracker::{GoalEvent, GoalHistoryEntry};
         let mut tracker = self.goal_tracker.lock();

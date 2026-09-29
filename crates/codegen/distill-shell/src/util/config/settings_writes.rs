@@ -264,21 +264,45 @@ pub async fn set_jev_local_model(value: String) -> Result<()> {
     .await
 }
 
-/// Persist `[models].reasoning`: the optional reasoning model the main model
-/// consults for planning and review.
+/// Persist `[models].worker`: the optional model that runs the work the main
+/// model delegates.
 ///
-/// Empty string clears the pick — the file keeps `reasoning = ""`, which
-/// [`crate::jev::reasoning_model`] reads as unset, because the merge never
+/// Empty string clears the pick — the file keeps `worker = ""`, which
+/// [`crate::jev::worker_model`] reads as unset, because the merge never
 /// deletes keys. Caller validates `value` against the model catalog first.
-pub async fn set_reasoning_model(value: String) -> Result<()> {
+pub async fn set_worker_model(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {
         anyhow::bail!(
-            "reasoning model name too long ({} > {} bytes)",
+            "worker model name too long ({} > {} bytes)",
             value.len(),
             MAX_DEFAULT_MODEL_LEN
         );
     }
-    update_config(|cfg| cfg.models.reasoning = Some(value)).await
+    update_config(|cfg| cfg.models.worker = Some(value)).await
+}
+
+/// Persist `[models].worker_effort`: `None` saves `auto` (Jev picks the
+/// worker's effort per call), a level pins it.
+pub async fn set_worker_effort(
+    effort: Option<crate::sampling::types::ReasoningEffort>,
+) -> Result<()> {
+    let value = effort.map_or_else(|| "auto".to_owned(), |level| level.to_string());
+    update_config(|cfg| cfg.models.worker_effort = Some(value)).await
+}
+
+/// Persist the main model's effort for new sessions: `None` saves auto
+/// (`[jev] effort_auto = true`); a level turns auto off and saves the level as
+/// `[models].default_reasoning_effort`.
+pub async fn set_main_effort(
+    effort: Option<crate::sampling::types::ReasoningEffort>,
+) -> Result<()> {
+    update_config(|cfg| {
+        cfg.jev.effort_auto = Some(effort.is_none());
+        if let Some(level) = effort {
+            cfg.models.default_reasoning_effort = Some(level);
+        }
+    })
+    .await
 }
 
 /// Bounds for [`set_max_thoughts_width`].

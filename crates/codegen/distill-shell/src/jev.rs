@@ -77,7 +77,6 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b2_model_tier: cfg.ladder.b2_model_tier,
             b2_micro_effort: cfg.ladder.b2_micro_effort,
             b2_local_model: cfg.ladder.b2_local_model,
-            b2_reasoning_model: cfg.ladder.b2_reasoning_model,
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,
@@ -669,33 +668,6 @@ pub fn record_item(
     ActivitySink.record(&record);
 }
 
-/// Logs a reasoning-gate decision the harness took without asking Jev (a
-/// struggle signal, the budget, a delivery review) next to Jev's decisions,
-/// without counting it as a Jev call on the row or in the turn report.
-pub fn record_gate(decision: &str, reason: &str) {
-    use distill_workspace::jev::policy::{DecisionRecord, DecisionSink};
-    let (session, turn, round) = telemetry_context();
-    let record = DecisionRecord {
-        lever: distill_workspace::jev::flags::JevLever::B2ReasoningModel
-            .as_str()
-            .to_owned(),
-        questions: Vec::new(),
-        decision: decision.to_owned(),
-        reason: reason.to_owned(),
-        confidence: None,
-        model: "n/a".to_owned(),
-        latency_ms: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        request_id: None,
-        session_id: (!session.is_empty()).then_some(session),
-        turn_id: (!turn.is_empty()).then_some(turn),
-        round_id: (round > 0).then_some(round),
-        escalated: false,
-    };
-    distill_workspace::jev::policy::TracingSink.record(&record);
-}
-
 // ---------------------------------------------------------------------------
 // Activity for the turn-status row ("Jev was used here")
 // ---------------------------------------------------------------------------
@@ -726,15 +698,12 @@ pub struct JevTurnActivity {
     /// Routing of the call that is running now, as the row shows it:
     /// `local low`, `high`, `local`, … (`None` when the round is untouched).
     pub route: Option<String>,
-    /// The reasoning model planning or reviewing this step **right now**, as
-    /// `gpt-6-sol high` (`None` while the main model works alone).
-    pub reasoning: Option<String>,
 }
 
 impl JevTurnActivity {
     /// Nothing to show: no decision in the window and nothing in flight.
     pub const fn is_quiet(&self) -> bool {
-        self.decisions == 0 && self.in_flight == 0 && self.reasoning.is_none()
+        self.decisions == 0 && self.in_flight == 0
     }
 
     /// The chip text, e.g. `jev…`, `jev 0.4s`, `jev ×3`. A final route is
@@ -749,18 +718,13 @@ impl JevTurnActivity {
         }
         // The current micro-action's routing when the decision set one, else the
         // turn's own local marker.
-        // While the reasoning model advises, the row names it instead of the
-        // main model's route: that call is the one the turn is waiting on.
-        let suffix = match (&self.reasoning, &self.route) {
-            (Some(reasoning), _) => format!(" ·reasoning {reasoning}"),
-            (None, Some(route)) => format!(" ·{route}"),
-            (None, None) if self.local_runs > 0 => " ·local".to_owned(),
-            (None, None) => String::new(),
+        let suffix = match &self.route {
+            Some(route) => format!(" ·{route}"),
+            None if self.local_runs > 0 => " ·local".to_owned(),
+            None => String::new(),
         };
         match self.decisions {
-            0 if self.route.is_some() || self.reasoning.is_some() => {
-                Some(format!("model{suffix}"))
-            }
+            0 if self.route.is_some() => Some(format!("model{suffix}")),
             0 if self.in_flight > 0 => Some("jev…".to_owned()),
             0 => None,
             1 => Some(format!(
@@ -949,7 +913,6 @@ struct SessionActivityState {
     ring: std::collections::VecDeque<JevActivity>,
     in_flight: u32,
     route: Option<String>,
-    reasoning: Option<String>,
 }
 
 fn activity_state() -> &'static std::sync::Mutex<ActivityState> {
@@ -1069,7 +1032,6 @@ pub fn turn_activity_for_session(
     let mut activity = JevTurnActivity {
         in_flight: session.in_flight,
         route: session.route.clone(),
-        reasoning: session.reasoning.clone(),
         ..Default::default()
     };
     for entry in session.ring.iter().rev() {
@@ -1097,33 +1059,6 @@ pub fn turn_activity_for_session(
 pub fn reset_activity_for_test() {
     if let Ok(mut state) = activity_state().lock() {
         state.sessions.clear();
-    }
-}
-
-/// Shows the reasoning model on the row for as long as it advises the main
-/// model, and clears it on every exit (answer, error, or a cancelled turn).
-pub struct ReasoningInFlight {
-    session: String,
-}
-
-impl ReasoningInFlight {
-    /// `label` is what the row shows after `reasoning`, e.g. `gpt-6-sol high`.
-    pub fn begin(label: String) -> Self {
-        let session = active_session_id();
-        if let Ok(mut state) = activity_state().lock() {
-            state.sessions.entry(session.clone()).or_default().reasoning = Some(label);
-        }
-        Self { session }
-    }
-}
-
-impl Drop for ReasoningInFlight {
-    fn drop(&mut self) {
-        if let Ok(mut state) = activity_state().lock()
-            && let Some(session) = state.sessions.get_mut(&self.session)
-        {
-            session.reasoning = None;
-        }
     }
 }
 
@@ -1174,8 +1109,11 @@ thread_local! {
     /// production still reads the process cache below.
     static TEST_LOCAL_MODEL_CONFIG: std::cell::RefCell<Option<JevLocalConfig>> =
         const { std::cell::RefCell::new(None) };
-    /// `Some(None)` pins "no reasoning model" regardless of the disk config.
-    static TEST_REASONING_MODEL: std::cell::RefCell<Option<Option<String>>> =
+    /// `Some(None)` pins "no worker model" regardless of the disk config.
+    static TEST_WORKER_MODEL: std::cell::RefCell<Option<Option<String>>> =
+        const { std::cell::RefCell::new(None) };
+    /// `Some(None)` pins the worker's effort to auto regardless of the disk config.
+    static TEST_WORKER_EFFORT: std::cell::RefCell<Option<Option<distill_sampling_types::ReasoningEffort>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1191,21 +1129,41 @@ pub fn local_config_cached() -> JevLocalConfig {
         .clone()
 }
 
-/// The configured reasoning model (`[models].reasoning`), or `None` when the
-/// main model works alone. Session actors apply their own override separately.
-pub fn reasoning_model() -> Option<String> {
+/// The configured worker model (`[models].worker`) that runs delegated work,
+/// or `None` when the main model does all the work. Read on every call, so a
+/// change reaches sessions in other processes.
+pub fn worker_model() -> Option<String> {
     #[cfg(test)]
-    if let Some(model) = TEST_REASONING_MODEL.with(|model| model.borrow().clone()) {
+    if let Some(model) = TEST_WORKER_MODEL.with(|model| model.borrow().clone()) {
         return model;
     }
     crate::config::load_effective_config()
         .ok()?
         .get("models")?
-        .get("reasoning")?
+        .get("worker")?
         .as_str()
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
+}
+
+/// The worker's configured effort (`[models].worker_effort`): a level, or
+/// `None` for auto (Jev picks it per call), which is also what an unset or
+/// unreadable value means.
+pub fn worker_effort() -> Option<distill_sampling_types::ReasoningEffort> {
+    #[cfg(test)]
+    if let Some(effort) = TEST_WORKER_EFFORT.with(|effort| *effort.borrow()) {
+        return effort;
+    }
+    crate::config::load_effective_config()
+        .ok()?
+        .get("models")?
+        .get("worker_effort")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("auto"))?
+        .parse()
+        .ok()
 }
 
 /// Publish a utility selection only after its atomic config write succeeds.
@@ -1228,13 +1186,23 @@ pub(crate) fn clear_test_local_config() {
 }
 
 #[cfg(test)]
-pub(crate) fn set_test_reasoning_model(model: Option<String>) {
-    TEST_REASONING_MODEL.with(|current| *current.borrow_mut() = Some(model));
+pub(crate) fn set_test_worker_model(model: Option<String>) {
+    TEST_WORKER_MODEL.with(|current| *current.borrow_mut() = Some(model));
 }
 
 #[cfg(test)]
-pub(crate) fn clear_test_reasoning_model() {
-    TEST_REASONING_MODEL.with(|current| *current.borrow_mut() = None);
+pub(crate) fn clear_test_worker_model() {
+    TEST_WORKER_MODEL.with(|current| *current.borrow_mut() = None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_worker_effort(effort: Option<distill_sampling_types::ReasoningEffort>) {
+    TEST_WORKER_EFFORT.with(|current| *current.borrow_mut() = Some(effort));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_worker_effort() {
+    TEST_WORKER_EFFORT.with(|current| *current.borrow_mut() = None);
 }
 
 /// Whether a session starts in auto effort: the decision layer picks the effort
@@ -1503,7 +1471,7 @@ mod catalogue_helper_tests {
         reset_activity_for_test();
         let before = std::time::Instant::now();
         note_decision("p1_tool_family", "defer", 410);
-        note_decision("b2_reasoning_model", "refused", 380);
+        note_decision("b2_micro_effort", "refused", 380);
         note_decision(LOCAL_LEVER, LOCAL_DECISION, 1200);
         // A window that opens *after* the two decisions, offset past any clock
         // granularity, so "was it in this turn?" cannot depend on timer detail.
@@ -1568,28 +1536,17 @@ mod catalogue_helper_tests {
         reset_activity_for_test();
     }
 
-    /// While the reasoning model advises, the row must say so: the turn is
-    /// waiting on that call, not on the main model. Once it answers (or the
-    /// call fails), the row goes back to the main model's route.
+    /// The row names the model and effort the running call uses, next to
+    /// the decision that chose them.
     #[serial_test::serial]
     #[test]
-    fn the_row_names_the_reasoning_model_only_while_it_advises() {
+    fn the_row_names_the_route_of_the_running_call() {
         reset_activity_for_test();
-        note_decision("b2_reasoning_model", "consult", 300);
-        note_route(Some("gpt-6-luna"), Some("medium"));
+        note_decision("b2_micro_effort", "high", 300);
+        note_route(Some("gpt-6-sol"), Some("high"));
         assert_eq!(
             turn_activity(None).label().as_deref(),
-            Some("jev 0.3s ·gpt-6-luna medium")
-        );
-        let advising = ReasoningInFlight::begin("plan gpt-6-sol high".to_owned());
-        assert_eq!(
-            turn_activity(None).label().as_deref(),
-            Some("jev 0.3s ·reasoning plan gpt-6-sol high")
-        );
-        drop(advising);
-        assert_eq!(
-            turn_activity(None).label().as_deref(),
-            Some("jev 0.3s ·gpt-6-luna medium")
+            Some("jev 0.3s ·gpt-6-sol high")
         );
         reset_activity_for_test();
     }

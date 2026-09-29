@@ -291,6 +291,15 @@ impl AgentRebuildSpec {
             env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
             Arc::new(env)
         };
+        // The main model orchestrates only when it has a distinct worker to
+        // delegate to; a child is the one doing the delegated work.
+        let worker_model = (*prompt_audience == PromptAudience::Primary && *subagents_enabled)
+            .then(crate::jev::worker_model)
+            .flatten()
+            .filter(|worker| {
+                models_manager.model_in_catalog(worker)
+                    && worker.as_str() != models_manager.current_model_id().0.as_ref()
+            });
         let mut builder = AgentBuilder::new(
             working_directory.clone(),
             terminal_backend.clone(),
@@ -332,6 +341,7 @@ impl AgentRebuildSpec {
         .with_role_instructions(role_instructions.clone())
         .with_persona_instructions(persona_instructions.clone())
         .with_output_style(crate::util::config::resolve_caveman_level().instructions())
+        .with_worker_model(worker_model)
         .with_skills_config(skills_config.clone())
         .with_compat_config(*compat)
         .with_paths_config(paths_config.clone())

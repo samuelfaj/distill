@@ -97,9 +97,9 @@ pub struct TaskToolInput {
     /// Optional model slug for this subagent.
     #[schemars(
         description = "Optional model slug for this agent. If provided, it must resolve to one \
-            of the available model slugs. If omitted, the subagent runs on the main model; plan \
-            and code-reviewer run on the configured reasoning model. Explicit \
-            model pins remain authoritative, and resumed or full-context forked children retain \
+            of the available model slugs. If omitted, a fresh subagent runs on the configured \
+            worker model (the main model when none is set); plan and code-reviewer run on the \
+            main model. Explicit model pins remain authoritative, and resumed or full-context forked children retain \
             their existing model/context semantics. Do not pass if resume_from is set (the prior \
             model and context will be used). Only choose an explicit model when the user directly \
             requests it."

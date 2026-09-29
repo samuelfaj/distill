@@ -207,9 +207,6 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent session's Jev auto-routing choice, captured per session rather
     /// than rereading the process-wide models manager in the child.
     pub parent_effort_auto: bool,
-    /// Parent conversation's explicit Reasoning selection; `Some(None)` disables it.
-    /// Outer `None` retains the legacy global default for non-RemoteCode clients.
-    pub parent_reasoning_model: Option<Option<String>>,
     pub auth: Option<distill_login::GrokAuth>,
     pub parent_cwd: PathBuf,
     pub parent_session_id: String,
@@ -636,12 +633,64 @@ impl SubagentPresentation {
         Arc::clone(&self.is_turn_active)
     }
 }
-/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the reasoning model for `plan`, `code-reviewer`, and `reasoning-executor` > the parent session's live sampling config (the main model).
+/// What a child on the worker model reads before its assignment: a cheaper
+/// model does best when it executes the spec literally and reports instead of
+/// improvising.
+pub(crate) const WORKER_DISCIPLINE: &str = "You run on the worker model: the main model planned this work and delegated this assignment to you as a spec.\n\
+- Do exactly what the assignment specifies, in the files it names. Change nothing else: no refactors, renames, reformatting or extra features.\n\
+- When the code does not match the assignment, or the assignment leaves open a decision that changes the result, stop and report the mismatch or the question instead of guessing.\n\
+- Run the checks the assignment names, and report each command with its exit status and the relevant output.\n\
+- End with the report the assignment asks for; without one, list the files changed, the checks with their results, and anything left open.";
+/// The worker's effort for a delegated child that runs on the worker model:
+/// `Some(None)` is auto (Jev picks it per call), `Some(Some(level))` pins the
+/// level, and `None` keeps the child's usual policy, either because it is not
+/// on the worker or because the caller, a role or its definition set an effort.
+pub(crate) fn worker_effort_policy(
+    on_worker: bool,
+    request: &SubagentRequest,
+    effective_runtime: &EffectiveRuntimeConfig,
+) -> Option<Option<distill_sampling_types::ReasoningEffort>> {
+    (on_worker
+        && request.runtime_overrides.reasoning_effort.is_none()
+        && effective_runtime.reasoning_effort.is_none())
+    .then(crate::jev::worker_effort)
+}
+/// The reminder a fresh child on the worker model starts with. A resumed or
+/// forked child already has its instructions in its conversation.
+pub(crate) fn worker_discipline_reminder(
+    on_worker: bool,
+    context_source: &InitialContextSource,
+) -> Option<ConversationItem> {
+    (on_worker && *context_source == InitialContextSource::New).then(|| {
+        ConversationItem::system_reminder(format!(
+            "<system-reminder>\n{WORKER_DISCIPLINE}\n</system-reminder>"
+        ))
+    })
+}
+/// The worker model a fresh, model-delegated child defaults to. Planning and
+/// review stay on the main model; explicit models, resumes and full-context
+/// forks keep their own model, and harness roles inherit the main model.
+pub(crate) fn delegated_worker_model(
+    request: &SubagentRequest,
+    resuming: bool,
+) -> Option<String> {
+    if resuming
+        || request.fork_context
+        || request.runtime_overrides.model.is_some()
+        || request.runtime_overrides.model_override_provenance != ModelOverrideProvenance::Tool
+        || matches!(request.subagent_type.as_str(), "plan" | "code-reviewer")
+    {
+        return None;
+    }
+    crate::jev::worker_model()
+}
+/// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the worker model for delegated work ([`delegated_worker_model`]) > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_subagent_sampling_config(
     agent_name: &str,
     agent_model: &distill_agent::config::ModelOverride,
+    worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
 ) -> (distill_sampler::SamplerConfig, acp::ModelId) {
     let (parent_config, parent_mid) = read_parent_sampling_config(ctx).await;
@@ -681,19 +730,13 @@ async fn resolve_subagent_sampling_config(
     {
         return resolved;
     }
-    // Planning and review are the reasoning model's job. Without one, or when
-    // the parent already runs on it, the child inherits the parent's model.
-    if matches!(agent_name, "plan" | "code-reviewer" | "reasoning-executor")
-        && let Some(reasoning) = ctx
-            .parent_reasoning_model
-            .clone()
-            .unwrap_or_else(crate::jev::reasoning_model)
-        && reasoning.as_str() != parent_mid.0.as_ref()
+    if let Some(worker) = worker_model
         && let Some(resolved) = try_pin(
-            &reasoning,
-            "reasoning_model",
-            "Reasoning model unavailable for planning, review, or execution, falling through to parent",
+            worker,
+            "worker_model",
+            "Worker model unavailable for delegated work, falling through to parent",
         )
+        && resolved.1 != parent_mid
     {
         return resolved;
     }
@@ -714,6 +757,7 @@ async fn resolve_effective_model_config(
     runtime_override_model: Option<&str>,
     subagent_type: &str,
     definition_model: &distill_agent::config::ModelOverride,
+    worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
 ) -> (distill_sampler::SamplerConfig, acp::ModelId) {
     if let Some(model_id) = runtime_override_model {
@@ -725,7 +769,7 @@ async fn resolve_effective_model_config(
             "Runtime model override references unknown model, falling through"
         );
     }
-    resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
+    resolve_subagent_sampling_config(subagent_type, definition_model, worker_model, ctx).await
 }
 /// Truncate an API key to a safe prefix for logging.
 /// Counts characters, not bytes: a configured key with a multi-byte character would panic a byte slice, and this only ever runs to build a log line.

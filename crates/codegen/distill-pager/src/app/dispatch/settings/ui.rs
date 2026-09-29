@@ -967,12 +967,21 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 }
             }
         }
-        // reasoning_model: restore only the mirror; the main model never changed.
-        ("reasoning_model", SettingValue::String(s)) => {
-            let previous = if s.is_empty() { None } else { Some(acp::ModelId::new(s.clone())) };
-            app.models.reasoning_model = previous.clone();
+        // worker_effort: restore only the mirror.
+        ("worker_effort", SettingValue::String(s)) => {
+            let previous = crate::acp::model_state::parse_effort_setting(s).unwrap_or(None);
+            app.models.worker_effort = previous;
             for agent in app.agents.values_mut() {
-                agent.session.models.reasoning_model = previous.clone();
+                agent.session.models.worker_effort = previous;
+            }
+            refresh_open_settings_modals(app);
+        }
+        // worker_model: restore only the mirror; the main model never changed.
+        ("worker_model", SettingValue::String(s)) => {
+            let previous = if s.is_empty() { None } else { Some(acp::ModelId::new(s.clone())) };
+            app.models.worker_model = previous.clone();
+            for agent in app.agents.values_mut() {
+                agent.session.models.worker_model = previous.clone();
             }
             refresh_open_settings_modals(app);
         }
@@ -1082,6 +1091,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         // config file the jev lanes resolve at startup, so the failure toast is
         // the whole story.
         ("cheap_model", SettingValue::String(_)) => {}
+        // main_effort: saved for new sessions only; the running session already
+        // switched, so there is no mirror to restore.
+        ("main_effort", SettingValue::String(_)) => {}
 
         _ => {
             tracing::error!(

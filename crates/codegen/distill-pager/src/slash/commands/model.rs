@@ -12,7 +12,7 @@ use crate::slash::command::{
 use crate::slash::commands::effort_levels::{build_effort_arg_items, effort_auto_arg_item};
 
 /// Choose the main model (and optionally its reasoning effort).
-/// The main model is required and runs every step; `/reasoning-model` sets the optional one.
+/// The main model is required and owns every session; `/worker-model` sets the optional worker.
 pub struct ModelCommand;
 
 impl SlashCommand for ModelCommand {
@@ -208,7 +208,7 @@ pub(super) fn tier_suggestions(models: &ModelState, query: &str) -> Vec<ArgItem>
     items
 }
 
-pub(super) fn parse_tier_selection(
+pub(crate) fn parse_tier_selection(
     models: &ModelState,
     args: &str,
 ) -> Result<

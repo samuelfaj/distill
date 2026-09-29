@@ -122,7 +122,7 @@ fn goal_event_as_str(event: &crate::session::goal_tracker::GoalEvent) -> &'stati
         GoalEvent::GoalCleared => "goal_cleared",
         GoalEvent::BudgetExceeded => "budget_exceeded",
         GoalEvent::PrematureStopDetected => "premature_stop_detected",
-        GoalEvent::EscalatedToReasoning => "escalated_to_reasoning",
+        GoalEvent::Escalated => "escalated",
         GoalEvent::EscalationResolved => "escalation_resolved",
         GoalEvent::Unknown => "unknown",
     }

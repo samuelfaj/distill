@@ -363,7 +363,7 @@ fn onboarding_grok_login_uses_provider_connection_state() {
 fn onboarding_opens_x_once_when_entering_community_and_finish_does_not_reopen() {
     let mut app = test_app();
     let mut onboarding = crate::views::onboarding::OnboardingState::new();
-    onboarding.step = crate::views::onboarding::OnboardingStep::Reasoning;
+    onboarding.step = crate::views::onboarding::OnboardingStep::Worker;
     onboarding.selected = 1;
     app.onboarding = Some(onboarding);
 

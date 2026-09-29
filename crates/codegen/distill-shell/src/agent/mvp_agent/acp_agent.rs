@@ -545,7 +545,6 @@ impl acp::Agent for MvpAgent {
                     },
                     "x.ai/capabilities": {
                         "toolOverrides": tool_overrides_capability(),
-                        "sessionReasoningModel": true,
                     },
                 })
                                 .as_object()
@@ -2017,9 +2016,6 @@ impl acp::Agent for MvpAgent {
             }
             "x.ai/session/repair" => crate::extensions::repair::handle(self, &args).await,
             "x.ai/session/usage" => crate::extensions::usage::handle(self, &args).await,
-            "x.ai/session/reasoning_model/set" => {
-                crate::extensions::session_reasoning_model::handle(self, &args).await
-            }
             crate::extensions::memory::MEMORY_FLUSH_METHOD
             | crate::extensions::memory::MEMORY_DREAM_METHOD
             | "x.ai/memory/rewrite"

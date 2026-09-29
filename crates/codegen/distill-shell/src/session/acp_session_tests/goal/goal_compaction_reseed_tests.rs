@@ -92,42 +92,38 @@ async fn goal_recheck_retires_resolved_gaps_without_completing_pending_work() {
     }).await;
 }
 
-/// Serves the session model `test` and the reasoning model `reasoner` from
-/// `server`, as `[models] reasoning` configures a real session. Jev decisions
-/// are answered locally so the main model's effort passes stay offline.
-fn install_reasoning_model(actor: &SessionActor, server: &distill_test_support::MockInferenceServer) {
-    for id in ["test", "reasoner"] {
-        let mut entry = crate::agent::config::ModelEntry::fallback(
-            id,
-            &crate::agent::config::EndpointsConfig::default(),
-        );
-        entry.info.base_url = server.url();
-        entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-        entry.api_key = Some("test-key".to_owned());
-        actor.models_manager.insert_test_entry(id, entry);
-    }
+/// Serves the session model `test` from `server`. Jev decisions are answered
+/// locally so the main model's effort passes stay offline.
+fn install_main_model(actor: &SessionActor, server: &distill_test_support::MockInferenceServer) {
+    let mut entry = crate::agent::config::ModelEntry::fallback(
+        "test",
+        &crate::agent::config::EndpointsConfig::default(),
+    );
+    entry.info.base_url = server.url();
+    entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
+    entry.api_key = Some("test-key".to_owned());
+    actor.models_manager.insert_test_entry("test", entry);
     actor
         .models_manager
         .set_current_model_id(agent_client_protocol::ModelId::new("test"));
-    crate::jev::set_test_reasoning_model(Some("reasoner".to_owned()));
     crate::jev::set_test_decision_answers([]);
 }
 
 /// The model the session's next round is sent to.
 async fn next_round_model(actor: &SessionActor) -> String {
-    crate::jev::with_session_scope_and_recorder("goal-takeover-test", None, async {
+    crate::jev::with_session_scope_and_recorder("goal-stall-test", None, async {
         actor.prepare_sampler_for_turn().await.model
     })
     .await
 }
 
 /// A goal that stops making progress is never paused for it. From the second
-/// evaluation without progress the reasoning model runs the goal's own rounds
-/// in the same conversation, with no side executor, and the persisted proof
+/// evaluation without progress the main model is told to change approach and
+/// keeps the goal's rounds, with no side executor, and the persisted proof
 /// survives compaction throughout.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn a_stalled_goal_hands_its_rounds_to_the_reasoning_model() {
+async fn a_stalled_goal_changes_approach_without_pausing() {
     use super::rate_limit_backoff_tests::actor_under_test_with_subagents;
     use crate::session::goal_tracker::{GoalEvent, GoalStatus};
     use distill_test_support::sse::responses_api_script_exact;
@@ -161,10 +157,9 @@ async fn a_stalled_goal_hands_its_rounds_to_the_reasoning_model() {
             }
         });
         let actor = actor_under_test_with_subagents(&server, tx).await;
-        install_reasoning_model(&actor, &server);
+        install_main_model(&actor, &server);
         set_goal_harness_for_tests(&actor);
         start_device_test_goal(&actor);
-        assert_eq!(next_round_model(&actor).await, "test", "the main model runs the goal until it stalls");
         for round in 0..=3 {
             if round == 1 {
                 actor.chat_state_handle.replace_conversation_for_compaction(vec![
@@ -185,38 +180,32 @@ async fn a_stalled_goal_hands_its_rounds_to_the_reasoning_model() {
             assert_eq!(goal.status, GoalStatus::Active);
             assert_eq!(goal.progress.no_progress_rounds, round);
             assert_eq!(goal.progress.criteria[0].evidence, "playwright.log:12 PASS");
-            assert_eq!(
-                goal.reasoning_takeover,
-                round >= 2,
-                "the reasoning model takes over from the second evaluation without progress"
-            );
             assert_eq!(goal.escalation_runs, round.saturating_sub(1));
             if checkpoint {
                 assert_eq!(goal.total_worker_rounds, worker_rounds, "a checkpoint does not finish a worker round");
                 assert_eq!(goal.classifier_runs_attempted, 0, "checkpoints never trigger a verifier");
             }
         }
-        assert_eq!(spawns.get(), 0, "no side executor: the reasoning model is the Worker");
-        assert_eq!(next_round_model(&actor).await, "reasoner", "the goal's next round runs on the reasoning model");
+        assert_eq!(spawns.get(), 0, "no side executor: the main model keeps the goal");
+        assert_eq!(next_round_model(&actor).await, "test", "the goal's next round stays on the main model");
         assert!(actor.chat_state_handle.get_conversation().await.iter()
-            .any(|item| item.text_content().contains("The reasoning model runs this goal from here until it ends")));
+            .any(|item| item.text_content().contains("goal evaluations in a row found no verifiable progress")));
         {
             let tracker = actor.goal_tracker.lock();
             let goal = tracker.snapshot().unwrap();
-            assert!(goal.history.iter().any(|entry| matches!(entry.event, GoalEvent::EscalatedToReasoning)
-                && entry.detail.as_deref().is_some_and(|detail| detail.contains("runs this goal until it ends"))));
+            assert!(goal.history.iter().any(|entry| matches!(entry.event, GoalEvent::Escalated)
+                && entry.detail.as_deref().is_some_and(|detail| detail.contains("without progress"))));
         }
         coordinator.abort();
-        crate::jev::clear_test_reasoning_model();
         crate::jev::clear_test_decision_answers();
     }).await;
 }
 
-/// Progress after a stall ends the stall, not the takeover: the reasoning
-/// model keeps the goal's rounds until the goal ends.
+/// Progress after a stall ends it: the escalation count resets and the history
+/// says the stall resolved.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn observed_progress_keeps_the_reasoning_takeover() {
+async fn observed_progress_resolves_the_escalation() {
     use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
     use crate::session::goal_tracker::GoalEvent;
     use distill_test_support::sse::responses_api_script_exact;
@@ -254,95 +243,34 @@ async fn observed_progress_keeps_the_reasoning_takeover() {
             }
             let (actor, _) =
                 actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
-            install_reasoning_model(&actor, &server);
+            install_main_model(&actor, &server);
             set_goal_harness_for_tests(&actor);
             start_device_test_goal(&actor);
             for _ in 0..3 {
                 actor.run_goal_round_end().await;
             }
             assert_eq!(actor.goal_tracker.lock().snapshot().unwrap().escalation_runs, 1);
-            assert!(actor.goal_tracker.lock().reasoning_takeover_active());
             actor.run_goal_round_end().await;
             {
                 let tracker = actor.goal_tracker.lock();
                 let goal = tracker.snapshot().unwrap();
                 assert_eq!(goal.progress.no_progress_rounds, 0);
                 assert_eq!(goal.escalation_runs, 0);
-                assert!(goal.reasoning_takeover, "progress does not hand the goal back");
                 assert!(
                     goal.history
                         .iter()
                         .any(|entry| matches!(entry.event, GoalEvent::EscalationResolved))
                 );
             }
-            assert_eq!(next_round_model(&actor).await, "reasoner");
-            crate::jev::clear_test_reasoning_model();
-            crate::jev::clear_test_decision_answers();
-        })
-        .await;
-}
-
-/// A round on the reasoning model can fail (a usage limit, a 5xx). That must not
-/// pause the goal: the main model takes it back and the next round is queued,
-/// as the main model kept going when the old side executor failed.
-#[tokio::test(flavor = "current_thread")]
-#[serial_test::serial]
-async fn a_failed_reasoning_round_hands_the_goal_back_instead_of_pausing() {
-    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
-    use crate::session::goal_tracker::{GoalEvent, GoalStatus};
-    use distill_test_support::MockInferenceServer;
-
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let server = MockInferenceServer::start().await.unwrap();
-            let (actor, _) =
-                actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
-            install_reasoning_model(&actor, &server);
-            set_goal_harness_for_tests(&actor);
-            start_device_test_goal(&actor);
-            assert_eq!(actor.goal_tracker.lock().note_escalation(true), (1, true));
-            assert_eq!(next_round_model(&actor).await, "reasoner");
-
-            assert!(
-                !actor
-                    .apply_infra_pause_after_turn_err("Turn failed: rate limited".to_owned())
-                    .await,
-                "a failed takeover round does not pause the goal"
-            );
-            actor.handle_turn_end(false, false).await;
-            {
-                let tracker = actor.goal_tracker.lock();
-                let goal = tracker.snapshot().unwrap();
-                assert_eq!(goal.status, GoalStatus::Active);
-                assert!(!goal.reasoning_takeover);
-                assert!(goal.history.iter().any(|entry| matches!(entry.event, GoalEvent::WorkerFailed)
-                    && entry.detail.as_deref().is_some_and(|detail| detail.contains("the main model runs the goal again"))));
-            }
-            assert!(
-                actor.state.lock().await.pending_inputs.iter().any(|input| matches!(
-                    input.input_origin.as_prompt_origin(),
-                    crate::session::PromptOrigin::GoalSummary
-                )),
-                "the next goal round is queued"
-            );
-            assert_eq!(next_round_model(&actor).await, "test", "the main model runs the next round");
-
-            assert!(
-                actor
-                    .apply_infra_pause_after_turn_err("Turn failed: rate limited".to_owned())
-                    .await,
-                "without a takeover the same failure still pauses the goal"
-            );
-            assert_eq!(actor.goal_tracker.lock().status(), Some(GoalStatus::InfraPaused));
-            crate::jev::clear_test_reasoning_model();
+            assert_eq!(next_round_model(&actor).await, "test");
             crate::jev::clear_test_decision_answers();
         })
         .await;
 }
 
 /// The verifier rejecting completion with the same gaps again used to pause the
-/// goal on the second rejection. It now restructures and hands the gaps to
-/// the reasoning model; only the configured rejection cap still pauses.
+/// goal on the second rejection. It now restructures and escalates the gaps;
+/// only the configured rejection cap still pauses.
 #[tokio::test(flavor = "current_thread")]
 async fn repeated_verifier_gaps_escalate_instead_of_pausing() {
     use crate::session::goal_classifier::GoalClassifierOutcome;
@@ -381,12 +309,12 @@ async fn repeated_verifier_gaps_escalate_instead_of_pausing() {
             let goal = tracker.snapshot().unwrap();
             assert!(
                 goal.escalation_runs >= 1,
-                "the reasoning model took over the repeated gaps"
+                "the repeated gaps were escalated"
             );
             assert!(
                 goal.history
                     .iter()
-                    .any(|entry| matches!(entry.event, GoalEvent::EscalatedToReasoning))
+                    .any(|entry| matches!(entry.event, GoalEvent::Escalated))
             );
         })
         .await;
@@ -491,12 +419,10 @@ async fn each_goal_evaluation_and_escalation_is_recorded() {
             *actor.goal_tracker.lock() =
                 crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf());
             set_goal_harness_for_tests(&actor);
-            crate::jev::set_test_reasoning_model(None);
             start_device_test_goal(&actor);
             actor.run_goal_progress_checkpoint().await;
             actor.run_goal_round_end().await;
             actor.run_goal_round_end().await;
-            crate::jev::clear_test_reasoning_model();
             let log = std::fs::read_to_string(tmp.path().join("goal/evaluations.jsonl")).unwrap();
             let records: Vec<serde_json::Value> = log
                 .lines()
@@ -517,7 +443,7 @@ async fn each_goal_evaluation_and_escalation_is_recorded() {
                     ("checkpoint", "continue"),
                     ("round_end", "continue"),
                     ("round_end", "escalate"),
-                    ("escalation", "reasoning_unavailable"),
+                    ("escalation", "change_approach"),
                 ]
             );
             assert_eq!(records[2]["no_progress_rounds"], 2);

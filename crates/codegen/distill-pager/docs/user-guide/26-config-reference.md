@@ -434,6 +434,8 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `models.temperature` | `number` | `yes` | `user` | Global sampling temperature default when a model leaves it unset. |
 | `models.top_p` | `number` | `yes` | `user` | Global top_p default when a model leaves it unset. |
 | `models.web_search` | `string` | `pin` | `user` | Model used by the client `web_search` tool. Also `GROK_WEB_SEARCH_MODEL`. |
+| `models.worker` | `string` | `yes` | `user` | Worker model: runs the subagents the main model delegates. Empty or unset means the main model does all the work. Set with `/worker-model`. |
+| `models.worker_effort` | `string` | `yes` | `user` | The worker model's effort: `auto` (the decision layer picks it per call) or a level the model offers. Unset means `auto`. Set with `/worker-model <model> [effort]`. |
 
 ### `path_not_found_hints`
 

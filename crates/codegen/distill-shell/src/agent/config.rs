@@ -960,13 +960,17 @@ pub struct DiagnosticsConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
-    /// The main model: owns every session and runs every step (`/model`).
+    /// The main model: owns every session; it plans, delegates and reviews (`/model`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
-    /// The optional reasoning model (`/reasoning-model`). The main model
-    /// consults it for planning and review when a step is beyond it.
+    /// The optional worker model (`/worker-model`) that runs the work the main
+    /// model delegates. Empty means the main model does all the work.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
+    pub worker: Option<String>,
+    /// The worker's effort: `auto` (Jev picks it per call) or a level. Unset
+    /// means `auto`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_effort: Option<String>,
     /// The pre-campaign `models.default` (merged user/managed/requirements), captured when a campaign is overriding the default.
     /// Model resolution recovers to it if the campaign points at a model missing from the catalog.
     /// `None` when there is nothing to recover to. Runtime-only; never serialized.
@@ -1311,10 +1315,6 @@ pub struct JevLadderConfig {
     /// B2 (local): route a model call to the configured local model when it can
     /// fully do it (free), falling back to the cloud model otherwise.
     pub b2_local_model: Option<bool>,
-    /// B2 (reasoning): the main model consults the reasoning model for a step
-    /// it cannot do alone. Off means the main model always works alone.
-    #[serde(default, alias = "b2_light_model")]
-    pub b2_reasoning_model: Option<bool>,
     /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
     #[serde(default, alias = "b2_micro_effort")]
     pub b2_micro_effort: Option<bool>,

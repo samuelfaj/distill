@@ -562,11 +562,6 @@ impl SessionActor {
     }
 
     pub(super) async fn apply_infra_pause_after_turn_err(&self, message: String) -> bool {
-        // A failed round on the reasoning model does not pause the goal:
-        // `handle_turn_end` hands it back to the main model.
-        if self.goal_tracker.lock().reasoning_takeover_active() {
-            return false;
-        }
         let slash_detail = match message.strip_prefix("Turn failed: ") {
             Some(rest) => rest.to_owned(),
             None => message.clone(),

@@ -832,8 +832,8 @@ impl SessionActor {
         let mut review_note: Option<String> = None;
 
         // A typed, complete Bun test result is already a closed status answer.
-        // Store the source before replacing it so the reasoning model and any
-        // later main model can recover the exact tool result without rerunning it.
+        // Store the source before replacing it so a later round can recover the
+        // exact tool result without rerunning it.
         if crate::jev::lever_active(JevLever::ECheapCompress)
             && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
             && !distill_workspace::jev::retention::looks_structured(lane_command, &body)
@@ -1036,7 +1036,7 @@ impl SessionActor {
         if cheap_eligible {
             let source_kind = match output {
                 ToolOutput::Bash(bash)
-                    if super::reasoning_gates::looks_like_check_command(&bash.command) =>
+                    if super::turn_facts::looks_like_check_command(&bash.command) =>
                 {
                     "checks"
                 }
@@ -1609,7 +1609,7 @@ impl SessionActor {
             let conversation = self.chat_state_handle.get_conversation().await;
             let action = crate::session::acp_session::describe_micro_action(
                 &conversation,
-                &self.jev_ledger.borrow().reasoning,
+                &self.jev_ledger.borrow().facts,
             );
             let intent = if action.plan.is_empty() {
                 request.clone()
@@ -1676,16 +1676,17 @@ impl SessionActor {
                         raised_level = Some(level);
                     }
                     if !prose_only {
-                        if review.needs_other_model {
-                            self.jev_ledger
-                                .borrow_mut()
-                                .request_reasoning_review(change.to_string());
-                        }
-                        let needs_reasoner = review.needs_other_model;
+                        let needs_review = review.needs_other_model;
                         review.needs_other_model = false;
                         review_note = verify::diff_review_note_with(&review, raised_level.as_deref());
-                        if needs_reasoner {
-                            let instruction = "Jev requested independent review of this edit. Use the supplied reasoning_advice for this change; if it is absent, ask the read-only code-reviewer subagent before moving on.";
+                        if needs_review {
+                            // A delegated worker cannot spawn a reviewer; the
+                            // main model reviews what its report names.
+                            let instruction = if self.startup_hints.is_subagent {
+                                "Jev flagged this edit for independent review: name it and its risk in your report so the delegating agent reviews it."
+                            } else {
+                                "Jev requested independent review of this edit: ask the read-only code-reviewer subagent before moving on."
+                            };
                             review_note = Some(match review_note {
                                 Some(note) => format!("{note} {instruction}"),
                                 None => instruction.to_owned(),

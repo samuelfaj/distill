@@ -1814,15 +1814,13 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
     }]
 }
 
-/// Toast format for `reasoning_model`.
-fn save_reasoning_model_toast(value: &str) -> String {
-    format!("\u{2713} Reasoning model: {value}")
-}
-
-/// Save the optional reasoning model without changing the session's main model.
-pub(in crate::app::dispatch) fn set_reasoning_model(
+/// Save the optional worker model and its effort (`None` is auto) without
+/// changing the session's main model. The model and the effort persist as two
+/// settings, so each rolls back on its own.
+pub(in crate::app::dispatch) fn set_worker_model(
     app: &mut AppView,
     new_id: acp::ModelId,
+    effort: Option<distill_shell::sampling::types::ReasoningEffort>,
 ) -> Vec<Effect> {
     let models = match app.active_view {
         ActiveView::Agent(aid) => app.agents.get(&aid).map(|agent| &agent.session.models),
@@ -1830,61 +1828,81 @@ pub(in crate::app::dispatch) fn set_reasoning_model(
     };
     let Some(models) = models else { return vec![] };
     if !models.available.contains_key(&new_id) {
-        app.show_toast("Reasoning model is not in the catalog.");
+        app.show_toast("Worker model is not in the catalog.");
         return vec![];
     }
-    let prev_id = app.models.reasoning_model.clone()
-        .or_else(crate::acp::ModelState::configured_reasoning_model);
-    if prev_id.as_ref() == Some(&new_id) {
-        app.show_toast("Reasoning model is already selected.");
+    let prev_id = app.models.worker_model.clone()
+        .or_else(crate::acp::ModelState::configured_worker_model);
+    let prev_effort = crate::acp::ModelState::configured_worker_effort();
+    let model_changed = prev_id.as_ref() != Some(&new_id);
+    let effort_changed = prev_effort != effort;
+    if !model_changed && !effort_changed {
+        app.show_toast("Worker model is already selected.");
         return vec![];
     }
     let new_display = models.display_name_for(&new_id);
-    app.models.reasoning_model = Some(new_id.clone());
+    app.models.worker_model = Some(new_id.clone());
+    app.models.worker_effort = effort;
     for agent in app.agents.values_mut() {
-        agent.session.models.reasoning_model = Some(new_id.clone());
+        agent.session.models.worker_model = Some(new_id.clone());
+        agent.session.models.worker_effort = effort;
     }
     refresh_open_settings_modals(app);
     tracing::info!(
         target: "settings",
-        key = "reasoning_model",
+        key = "worker_model",
         new_id = %new_id.0,
+        effort = %crate::acp::model_state::effort_setting_label(effort),
         prev_id = ?prev_id.as_ref().map(|id| id.0.as_ref()),
         "setting changed",
     );
-    app.show_toast(&save_reasoning_model_toast(&new_display));
-    if let Some(state) = app.onboarding.as_mut() {
-        state.set_reasoning_model_pending();
+    app.show_toast(&format!(
+        "\u{2713} Worker model: {new_display} ({})",
+        crate::acp::model_state::effort_setting_label(effort)
+    ));
+    let mut effects = Vec::new();
+    if model_changed {
+        if let Some(state) = app.onboarding.as_mut() {
+            state.set_worker_model_pending();
+        }
+        effects.push(Effect::PersistSetting {
+            key: "worker_model",
+            value: crate::settings::SettingValue::String(new_id.0.to_string()),
+            rollback_value: crate::settings::SettingValue::String(
+                prev_id.map_or_else(String::new, |id| id.0.to_string()),
+            ),
+        });
     }
-    vec![Effect::PersistSetting {
-        key: "reasoning_model",
-        value: crate::settings::SettingValue::String(new_id.0.to_string()),
-        rollback_value: crate::settings::SettingValue::String(
-            prev_id.map_or_else(String::new, |id| id.0.to_string()),
-        ),
-    }]
+    if effort_changed {
+        effects.push(Effect::PersistSetting {
+            key: "worker_effort",
+            value: crate::settings::SettingValue::String(crate::acp::model_state::effort_setting_label(effort)),
+            rollback_value: crate::settings::SettingValue::String(crate::acp::model_state::effort_setting_label(prev_effort)),
+        });
+    }
+    effects
 }
 
-/// Remove the reasoning model: the main model then works alone.
-/// Persists `[models].reasoning = ""`; does NOT mutate the active session's main model.
-pub(in crate::app::dispatch) fn clear_reasoning_model(app: &mut AppView) -> Vec<Effect> {
-    let prev_id_str = app.models.reasoning_model.take()
-        .or_else(crate::acp::ModelState::configured_reasoning_model)
+/// Remove the worker model: the main model then does all the work.
+/// Persists `[models].worker = ""`; does NOT mutate the active session's main model.
+pub(in crate::app::dispatch) fn clear_worker_model(app: &mut AppView) -> Vec<Effect> {
+    let prev_id_str = app.models.worker_model.take()
+        .or_else(crate::acp::ModelState::configured_worker_model)
         .map_or_else(String::new, |id| id.0.to_string());
     for agent in app.agents.values_mut() {
-        agent.session.models.reasoning_model = None;
+        agent.session.models.worker_model = None;
     }
     tracing::info!(
         target: "settings",
-        key = "reasoning_model",
+        key = "worker_model",
         value = "<cleared>",
         prev_id = %prev_id_str,
         "setting changed",
     );
     refresh_open_settings_modals(app);
-    app.show_toast("\u{2713} Reasoning model: cleared");
+    app.show_toast("\u{2713} Worker model: cleared");
     vec![Effect::PersistSetting {
-        key: "reasoning_model",
+        key: "worker_model",
         value: crate::settings::SettingValue::String(String::new()),
         rollback_value: crate::settings::SettingValue::String(prev_id_str),
     }]
@@ -2050,13 +2068,17 @@ pub(in crate::app::dispatch) fn set_cheap_model(
 }
 
 /// Validate and save the three fields submitted by the tier editor: the
-/// required main model, the optional reasoning model and the utility model.
+/// required main model and the optional worker model, each as `model [effort]`
+/// (no effort, or `auto`, lets Jev choose it per call), and the utility model.
+/// The main model and its effort switch the session the way `/model` does and
+/// are also saved for new sessions.
 pub(in crate::app::dispatch) fn set_tier_editor(
     app: &mut AppView,
     main: String,
-    reasoning: String,
+    worker: String,
     utility: String,
 ) -> Vec<Effect> {
+    use crate::slash::commands::model::parse_tier_selection;
     let models = match app.active_view {
         ActiveView::Agent(aid) => app.agents.get(&aid).map(|agent| &agent.session.models),
         ActiveView::Welcome => Some(&app.models),
@@ -2069,18 +2091,26 @@ pub(in crate::app::dispatch) fn set_tier_editor(
         app.show_toast("The main model is required.");
         return vec![];
     }
-    let Some(main_id) = models.resolve_by_name_or_id(&main) else {
-        app.show_toast(&format!("Unknown main model: {main}"));
-        return vec![];
+    let (main_id, main_effort) = match parse_tier_selection(models, &main) {
+        Ok((id, effort)) => (acp::ModelId::new(id), effort),
+        Err(error) => {
+            app.show_toast(&format!("Main model: {error}"));
+            return vec![];
+        }
     };
     let current_main = models.current.clone();
-    let reasoning_id = if reasoning.is_empty() {
+    let current_main_effort = if models.effort_auto {
         None
     } else {
-        match models.resolve_by_name_or_id(&reasoning) {
-            Some(id) => Some(id),
-            None => {
-                app.show_toast(&format!("Unknown reasoning model: {reasoning}"));
+        models.reasoning_effort
+    };
+    let worker_pick = if worker.is_empty() {
+        None
+    } else {
+        match parse_tier_selection(models, &worker) {
+            Ok((id, effort)) => Some((acp::ModelId::new(id), effort)),
+            Err(error) => {
+                app.show_toast(&format!("Worker model: {error}"));
                 return vec![];
             }
         }
@@ -2097,19 +2127,51 @@ pub(in crate::app::dispatch) fn set_tier_editor(
         return vec![];
     }
 
-    let mut effects = if current_main.as_ref() == Some(&main_id) {
-        vec![]
-    } else {
-        set_default_model(app, main_id)
-    };
-    let current_reasoning = app
+    let mut effects = Vec::new();
+    let main_changed = current_main.as_ref() != Some(&main_id);
+    if main_changed || current_main_effort != main_effort {
+        match main_effort {
+            None if main_changed => effects.extend(set_default_model(app, main_id.clone())),
+            None => effects.extend(super::super::router::dispatch(
+                crate::app::actions::Action::SetEffortAuto { model_id: main_id.clone() },
+                app,
+            )),
+            Some(level) => {
+                effects.extend(super::super::router::dispatch(
+                    crate::app::actions::Action::SwitchModel { model_id: main_id.clone(), effort: Some(level) },
+                    app,
+                ));
+                if main_changed {
+                    effects.push(Effect::PersistPreferredModel {
+                        model_id: main_id.clone(),
+                        reasoning_effort: Some(level),
+                    });
+                }
+            }
+        }
+        effects.push(Effect::PersistSetting {
+            key: "main_effort",
+            value: crate::settings::SettingValue::String(
+                crate::acp::model_state::effort_setting_label(main_effort),
+            ),
+            rollback_value: crate::settings::SettingValue::String(
+                crate::acp::model_state::effort_setting_label(current_main_effort),
+            ),
+        });
+    }
+    let current_worker = app
         .models
-        .reasoning_model
+        .worker_model
         .clone()
-        .or_else(crate::acp::ModelState::configured_reasoning_model);
-    effects.extend(match reasoning_id {
-        Some(id) if current_reasoning.as_ref() != Some(&id) => set_reasoning_model(app, id),
-        None if current_reasoning.is_some() => clear_reasoning_model(app),
+        .or_else(crate::acp::ModelState::configured_worker_model);
+    effects.extend(match worker_pick {
+        Some((id, effort))
+            if current_worker.as_ref() != Some(&id)
+                || crate::acp::ModelState::configured_worker_effort() != effort =>
+        {
+            set_worker_model(app, id, effort)
+        }
+        None if current_worker.is_some() => clear_worker_model(app),
         _ => vec![],
     });
     effects.extend(set_cheap_model(app, utility, None));

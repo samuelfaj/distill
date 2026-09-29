@@ -1387,8 +1387,8 @@ impl SessionActor {
                             self.inject_goal_continuation_message(directive).await;
                             continue;
                         }
-                        // The goal just stopped for the user: no delivery review or
-                        // stop-gate continuation may keep working on it meanwhile.
+                        // The goal just stopped for the user: no stop-gate
+                        // continuation may keep working on it meanwhile.
                         if self.goal_stopped_for_user() {
                             break round;
                         }
@@ -1398,15 +1398,6 @@ impl SessionActor {
                              resumes the goal"
                         );
                     }
-                }
-                // A planned request needs a reasoning review before delivery.
-                // Concrete findings return to the Worker for correction.
-                if let Some(review) = self.jev_delivery_review().await {
-                    salvage.round_boundary();
-                    self.chat_state_handle.push_user_message(ConversationItem::system_reminder(
-                        distill_tools::reminders::wrap_reminder(&review),
-                    ));
-                    continue;
                 }
                 match self
                     .run_stop_gate(prompt_id, stop_continuations_this_turn)
@@ -1996,8 +1987,6 @@ impl SessionActor {
                      Use /goal resume to retry or /goal clear to abandon."
                 ))
                 .await;
-            } else if self.end_goal_reasoning_takeover().await {
-                self.maybe_queue_goal_continuation().await;
             }
         }
     }

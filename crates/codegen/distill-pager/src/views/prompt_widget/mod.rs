@@ -357,7 +357,7 @@ pub struct PromptInfo<'a> {
     pub usage_warning: Option<&'a str>,
     /// When true the warning uses the yellow warning color (5% or less left); when false it uses dim grey text (5-10% left).
     pub usage_warning_critical: bool,
-    /// The main/reasoning model summary shown before the `change` action.
+    /// The main/worker model summary shown before the `change` action.
     pub model_tiers: Option<&'a PromptModelTiers>,
 }
 
@@ -365,7 +365,7 @@ pub struct PromptInfo<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptModelTiers {
     pub main: String,
-    pub reasoning: Option<String>,
+    pub worker: Option<String>,
 }
 
 impl PromptModelTiers {
@@ -373,7 +373,7 @@ impl PromptModelTiers {
         let main = models.current_model_name()?;
         Some(Self {
             main: models.effort_label(&main),
-            reasoning: models.reasoning_model_name(),
+            worker: models.worker_label(),
         })
     }
 }
@@ -3524,13 +3524,13 @@ impl PromptWidget {
         let mut change_end = None;
         if let Some(tiers) = info.model_tiers {
             let primary_style = Style::default().fg(theme.accent_skill).bg(bg);
-            let reasoning_style = Style::default().fg(theme.accent_success).bg(bg);
+            let worker_style = Style::default().fg(theme.accent_success).bg(bg);
             left_spans.push(Span::styled("Main: ", primary_style));
             left_spans.push(Span::styled(tiers.main.as_str(), primary_style));
-            if let Some(reasoning) = &tiers.reasoning {
+            if let Some(worker) = &tiers.worker {
                 left_spans.push(Span::styled(" | ", sep_style));
-                left_spans.push(Span::styled("Reasoning: ", reasoning_style));
-                left_spans.push(Span::styled(reasoning.as_str(), reasoning_style));
+                left_spans.push(Span::styled("Worker: ", worker_style));
+                left_spans.push(Span::styled(worker.as_str(), worker_style));
             }
             left_spans.push(Span::styled(" | ", sep_style));
             change_start = Some(Line::from(left_spans.clone()).width() as u16);

@@ -1238,7 +1238,6 @@ fn make_test_handle(
         ),
         model_id: acp::ModelId::new(model),
         reasoning_effort: None,
-        reasoning_model_override: crate::session::handle::new_session_reasoning_model_state(),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         yolo_mode: yolo,
         origin_client: client_id.map(|s| crate::http::OriginClientInfo {
@@ -5047,19 +5046,20 @@ fn new_session_registers_root_identity() {
     });
 }
 
-/// The main model owns every session; a configured reasoning model is only
-/// consulted for planning and review, so it must never become the session model.
+/// The main model owns every session; a configured worker model only runs the
+/// subagents the main model delegates to, so it must never become the session
+/// model.
 #[test]
-fn new_session_runs_on_the_main_model_even_with_a_reasoning_model() {
+fn new_session_runs_on_the_main_model_even_with_a_worker_model() {
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
-        let reasoning = crate::agent::config::ModelEntry::fallback(
-            "session-reasoning",
+        let worker = crate::agent::config::ModelEntry::fallback(
+            "session-worker",
             &crate::agent::config::EndpointsConfig::default(),
         );
-        agent.models_manager.insert_test_entry("session-reasoning", reasoning);
+        agent.models_manager.insert_test_entry("session-worker", worker);
         let main = agent.models_manager.current_model_id();
-        crate::jev::set_test_reasoning_model(Some("session-reasoning".to_owned()));
+        crate::jev::set_test_worker_model(Some("session-worker".to_owned()));
         let cwd = tempfile::tempdir().unwrap();
         agent.set_auth_method(acp::AuthMethodId::new("cached_token"));
         let init = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
@@ -5077,11 +5077,11 @@ fn new_session_runs_on_the_main_model_even_with_a_reasoning_model() {
         assert_eq!(handle.model_id, main);
         assert_ne!(
             handle.chat_state_handle.get_sampling_config().await.unwrap().model,
-            "session-reasoning",
+            "session-worker",
             "the session's rounds are sampled on the main model"
         );
         agent.remove_session(&sid);
-        crate::jev::clear_test_reasoning_model();
+        crate::jev::clear_test_worker_model();
     });
 }
 #[test]

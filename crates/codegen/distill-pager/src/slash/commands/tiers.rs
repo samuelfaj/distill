@@ -1,7 +1,7 @@
 //! `/tiers`: the three models a call can run on, and how to set each one.
 //!
-//! The main model runs every step; the optional reasoning model plans and
-//! reviews steps the main model cannot do alone.
+//! The main model plans, delegates and reviews; the optional worker model runs
+//! the work it delegates.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
@@ -11,8 +11,8 @@ pub struct TiersCommand;
 impl SlashCommand for TiersCommand {
     slash_meta! {
         name: "tiers",
-        description: "Show or set the main, reasoning and utility models",
-        usage: "/tiers [main <name>|reasoning <name>|utility <ids>]",
+        description: "Show or set the main, worker and utility models",
+        usage: "/tiers [main <name>|worker <name>|utility <ids>]",
         takes_args: true,
     }
 
@@ -27,10 +27,10 @@ impl SlashCommand for TiersCommand {
         };
         match what {
             "main" => super::model::ModelCommand.run(ctx, rest),
-            "reasoning" => super::reasoning_model::ReasoningModelCommand.run(ctx, rest),
+            "worker" => super::worker_model::WorkerModelCommand.run(ctx, rest),
             "utility" | "cheap" => super::cheap_model::CheapModelCommand.run(ctx, rest),
             other => CommandResult::Error(format!(
-                "Unknown tier `{other}`. Usage: /tiers [main <name>|reasoning <name>|utility <ids>]"
+                "Unknown tier `{other}`. Usage: /tiers [main <name>|worker <name>|utility <ids>]"
             )),
         }
     }
@@ -80,21 +80,21 @@ mod tests {
         ));
     }
 
-    /// `main` sets the required main model; `reasoning` sets or clears the
+    /// `main` sets the required main model; `worker` sets or clears the
     /// optional one. Each tier goes through its own command, so they agree.
     #[test]
-    fn main_and_reasoning_tiers_route_to_their_commands() {
+    fn main_and_worker_tiers_route_to_their_commands() {
         assert!(matches!(
             run("main codex-luna"),
             CommandResult::Action(Action::SetDefaultModel(id)) if id.0.as_ref() == "codex-luna"
         ));
         assert!(matches!(
-            run("reasoning codex-luna"),
-            CommandResult::Action(Action::SetReasoningModel(id)) if id.0.as_ref() == "codex-luna"
+            run("worker codex-luna"),
+            CommandResult::Action(Action::SetWorkerModel(id, None)) if id.0.as_ref() == "codex-luna"
         ));
         assert!(matches!(
-            run("reasoning clear"),
-            CommandResult::Action(Action::ClearReasoningModel)
+            run("worker clear"),
+            CommandResult::Action(Action::ClearWorkerModel)
         ));
     }
 
@@ -120,8 +120,8 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_without_a_name_explains_itself() {
-        assert!(matches!(run("reasoning"), CommandResult::Error(_)));
+    fn worker_without_a_name_explains_itself() {
+        assert!(matches!(run("worker"), CommandResult::Error(_)));
     }
 
     #[test]

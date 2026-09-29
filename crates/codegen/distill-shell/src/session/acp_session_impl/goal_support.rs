@@ -1468,12 +1468,9 @@ impl SessionActor {
             .lock()
             .expect("current_prompt_id mutex poisoned")
             .clone();
-        // Planning is the goal's judgment, so it runs on the reasoning model when one is configured.
-        // Without one, a mirror-child fork copies the parent conversation verbatim on the parent model to reuse its cached prefix.
-        let role_override = crate::session::goal_planner::RoleSpawnOverride {
-            model: self.goal_reasoning_model().await.map(|(id, _)| id),
-            agent_type: None,
-        };
+        // A mirror-child fork copies the parent conversation verbatim on the
+        // parent (main) model to reuse its cached prefix.
+        let role_override = crate::session::goal_planner::RoleSpawnOverride::default();
         if !matches!(
             self.goal_role_models.planner,
             crate::agent::config::GoalRoleModelChoice::InheritCurrent

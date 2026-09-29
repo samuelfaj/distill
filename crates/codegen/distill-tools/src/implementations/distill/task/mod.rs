@@ -300,7 +300,7 @@ impl crate::types::tool_metadata::ToolMetadata for TaskTool {
                 },
             );
             description.push_str(
-                " For bounded delegation, include the specific objective, relevant instructions/evidence, and file/path/handle references in prompt. When model is omitted, the subagent runs on the main model; plan and code-reviewer run on the configured reasoning model.",
+                " For bounded delegation, include the specific objective, relevant instructions/evidence, and file/path/handle references in prompt. When model is omitted, a fresh subagent runs on the configured worker model (the main model when none is set); plan and code-reviewer run on the main model.",
             );
             description
         });
@@ -449,8 +449,8 @@ impl distill_tool_runtime::Tool for TaskTool {
         });
 
         // Model overrides are soft-ignored on resume (source model is always pinned).
-        // An omitted model remains unset so the shell resolver can route plan
-        // and code-reviewer to the configured reasoning model.
+        // An omitted model remains unset so the shell resolver can route
+        // delegated work to the configured worker model.
         let model = distill_tool_types::sanitize_optional_arg(input.model);
         let model = if resume_from.is_some() {
             if let Some(ref ignored) = model {
@@ -1859,9 +1859,9 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(
                 "Optional model slug for this agent. If provided, it must resolve to one of the \
-             available model slugs. If omitted, the subagent runs on the main model; plan and \
-             code-reviewer run on the configured reasoning model. Explicit model \
-             pins remain authoritative, and resumed or full-context forked children retain their \
+             available model slugs. If omitted, a fresh subagent runs on the configured worker \
+             model (the main model when none is set); plan and code-reviewer run on the main \
+             model. Explicit model pins remain authoritative, and resumed or full-context forked children retain their \
              existing model/context semantics. Do not pass if resume_from is set (the prior model \
              and context will be used). Only choose an explicit model when the user directly \
              requests it."

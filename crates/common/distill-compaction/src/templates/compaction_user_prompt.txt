@@ -1,4 +1,4 @@
-Your task is to create a detailed summary of the Grok Chat conversation so far, paying close attention to the user's explicit requests and all previous actions as Grok (built by xAI).
+Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and all of the assistant's previous actions.
 This summary should be thorough in capturing technical details, code patterns, architectural decisions, tool chains, and verification steps that would be essential for continuing development, research, or complex tasks without losing context.
 
 Important Clarification on Terminology (Broad File Definition):
@@ -9,20 +9,20 @@ Throughout this prompt, the term "file", "files", "file IDs", "file names", and 
 - rendered image or content outputs
 - Any other file-like content, media objects, visual artifacts, or structured content blocks that have appeared in the conversation history (including but not limited to uploads, generations, render components, or persistent references).
 
-Only include information that is visible in the direct user-Grok conversation history (user messages + Grok's responses, reasoning, tool calls, and tool outputs). Do not include any internal team communication, chatroom messages, or multi-agent interactions.
+Only include information that is visible in the direct user-assistant conversation history (user messages + the assistant's responses, reasoning, tool calls, and tool outputs). Do not include any internal team communication, chatroom messages, or multi-agent interactions.
 
 Use your internal thinking channel to chronologically analyze each message and section of the conversation before producing the final summary, and ensure you've covered all necessary points.
 During that analysis, thoroughly identify:
 - The user's explicit requests and evolving intents
-- Grok's approach to addressing them: reasoning steps, specific tool calls (including parallel calls), parameters, results, and how they were interpreted/synthesized (truth-seeking emphasis)
+- The assistant's approach to addressing them: reasoning steps, specific tool calls (including parallel calls), parameters, results, and how they were interpreted/synthesized (truth-seeking emphasis)
 - Key decisions, technical concepts, code patterns, and architectural choices
 - Specific details like:
   - file IDs, attachment IDs, image references/URLs, render_result IDs (if any)
   - file names, attachment names, image captions/descriptions, render component details (if any)
-  - full code snippets (especially recent ones or those executed in REPL)
+  - full code snippets (especially recent ones)
   - function signatures
   - file edits / diffs
-  - tool call details (e.g., code_execution snippets, web_search queries, browse_page instructions, X search operators)
+  - tool call details (e.g., shell commands, file reads and edits, search queries, web fetches)
   - render components used (if any)
 - Errors encountered (tool failures, code exec errors, search limitations, reasoning issues) and how they were diagnosed/fixed
 - Pay special attention to specific user feedback, especially if the user told you to do something differently, corrected facts, or changed direction.
@@ -33,11 +33,11 @@ Your final summary must contain the following sections, in order:
 
 1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail, including any evolution over the conversation.
 
-2. Key Technical Concepts: List all important technical concepts, technologies, frameworks, and Grok-specific tool patterns discussed.
+2. Key Technical Concepts: List all important technical concepts, technologies, frameworks, and tool patterns discussed.
 
-3. Tool Usage & Verification: Summarize significant tool calls (code_execution REPL state, web_search, browse_page, X tools, etc.), key information retrieved/verified, cross-referencing steps, and how they influenced decisions or responses.
+3. Tool Usage & Verification: Summarize significant tool calls (shell commands, file edits, searches, web fetches, etc.), key information retrieved/verified, cross-referencing steps, and how they influenced decisions or responses.
 
-4. Files, Attachments, Images, Render Results & Code Artifacts: Enumerate all specific file-like artifacts (broadly defined as above: files, attachments, images, render_results, etc.), code sections, or REPL executions examined, modified, or created. Pay special attention to the most recent messages and include full code snippets, image descriptions/references, render outputs, or attachment details where applicable, plus a summary of why this artifact is important for continuation.
+4. Files, Attachments, Images, Render Results & Code Artifacts: Enumerate all specific file-like artifacts (broadly defined as above: files, attachments, images, render_results, etc.), code sections, or command executions examined, modified, or created. Pay special attention to the most recent messages and include full code snippets, image descriptions/references, render outputs, or attachment details where applicable, plus a summary of why this artifact is important for continuation.
 
 5. Errors and Fixes: List all errors encountered (tool-related or otherwise), how you fixed them, and specific user feedback (especially "do something differently").
 
@@ -82,7 +82,7 @@ Output the summary directly using the section headings above. Do not wrap the ou
 There may be additional summarization instructions provided in the included context. If so, follow these instructions when creating the above summary. Examples of instructions include:
 <example>
 ## Compact Instructions
-When summarizing focus on tool outputs, REPL state, code changes, test results, and recent user feedback/corrections. Include critical code snippets and tool calls verbatim.
+When summarizing focus on tool outputs, code changes, test results, and recent user feedback/corrections. Include critical code snippets and tool calls verbatim.
 </example>
 
 <example>

@@ -305,7 +305,7 @@ impl SessionActor {
                 return;
             }
         };
-        self.ensure_prefix_ready().await;
+        self.ensure_prefix_ready(None).await;
 
         let prompt_id = format!("parent-message-{}", message.message_id);
         let (turn_result_tx, turn_result_rx) = oneshot::channel();

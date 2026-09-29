@@ -978,7 +978,7 @@ impl SessionActor {
             let crate::session::prompt_parser::ParsedPrompt {
                 mut context,
                 query,
-                skill_information: skill_info,
+                skill_information: mut skill_info,
                 images: mut raw_images,
                 is_cursor,
             } = match parse_prompt_with_skills(
@@ -999,6 +999,20 @@ impl SessionActor {
                     return Err(err);
                 }
             };
+            // One line after the user's query naming the skill this request needs
+            // (or that none applies); earlier conversation items, and so the
+            // cached prefix, stay untouched.
+            if matches!(input_origin.as_prompt_origin(), super::super::PromptOrigin::User)
+                && Self::extract_bash_command(&prompt_blocks).is_none()
+                && let Some(hint) = self
+                    .jev_skill_relevance_hint(&Self::queue_text_from_blocks(&prompt_blocks))
+                    .await
+            {
+                if !skill_info.is_empty() && !skill_info.ends_with('\n') {
+                    skill_info.push('\n');
+                }
+                skill_info.push_str(&hint);
+            }
             let recovered = if policy.authority == InputAuthority::ModelAuthoredUntrusted {
                 0
             } else {

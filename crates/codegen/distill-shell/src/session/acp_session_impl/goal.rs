@@ -805,6 +805,21 @@ impl SessionActor {
 
         let implementer_scratch =
             crate::session::goal_tracker::implementer_scratch_dir(&verifier_id);
+        // The harness's own record of the checks this goal ran, so skeptics
+        // audit it instead of asking the implementer for log files.
+        let harness_checks: Vec<crate::session::goal_classifier::HarnessCheck> = self
+            .jev_ledger
+            .borrow()
+            .reasoning
+            .recorded_checks()
+            .iter()
+            .map(|check| crate::session::goal_classifier::HarnessCheck {
+                command: check.command.clone(),
+                passed: !check.failed,
+                excerpt: check.excerpt.clone(),
+                finished_at: check.finished_at,
+            })
+            .collect();
 
         let inputs = VerificationStageInputs {
             objective: &review_objective,
@@ -837,6 +852,7 @@ impl SessionActor {
             prior_gaps: prior_gaps.as_deref(),
             tool_names: &skeptic_tool_names,
             inherit_tool_names: &inherit_tool_names,
+            harness_checks: &harness_checks,
         };
 
         let result = run_verification_stage(spawner, inputs, &|e| self.events.emit(e)).await;
@@ -1316,7 +1332,7 @@ impl SessionActor {
 
     /// Summarizer pin so multi-compact cannot drop the objective.
     pub(crate) fn goal_compaction_user_context(&self) -> Option<String> {
-        let (objective, plan_path) = {
+        let (objective, plan_path, evaluator_step) = {
             let tracker = self.goal_tracker.lock();
             let o = tracker.snapshot()?;
             if o.status != crate::session::goal_tracker::GoalStatus::Active {
@@ -1329,12 +1345,13 @@ impl SessionActor {
                 o.objective.clone(),
                 goal_reminder_plan_path(self.goal_planner_enabled, o)
                     .map(std::path::Path::to_path_buf),
+                o.last_evaluator_next_step.clone(),
             )
         };
         let mut ctx = format!(
             "Objective: {objective}\nDo not restart this goal or revive a prior unrelated task. Continue from the current next step."
         );
-        if let Some(step) = resolve_goal_next_step(plan_path.as_deref()) {
+        if let Some(step) = resolve_goal_next_step(evaluator_step.as_deref(), plan_path.as_deref()) {
             ctx.push_str("\nNext step: ");
             ctx.push_str(&step);
         }
@@ -1367,7 +1384,7 @@ impl SessionActor {
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
         let (tokens_used, _) = self.goal_tokens(current_tokens);
         let planner_enabled = self.goal_planner_enabled;
-        let (objective, status, elapsed, plan_path, is_active) = {
+        let (objective, status, elapsed, plan_path, is_active, evaluator_step) = {
             let mut tracker = self.goal_tracker.lock();
             tracker.account_elapsed();
             let o = tracker.snapshot()?;
@@ -1388,9 +1405,16 @@ impl SessionActor {
             };
             let plan_path =
                 goal_reminder_plan_path(planner_enabled, o).map(std::path::Path::to_path_buf);
-            (o.objective.clone(), status, elapsed, plan_path, is_active)
+            (
+                o.objective.clone(),
+                status,
+                elapsed,
+                plan_path,
+                is_active,
+                o.last_evaluator_next_step.clone(),
+            )
         };
-        let next_step = resolve_goal_next_step(plan_path.as_deref())
+        let next_step = resolve_goal_next_step(evaluator_step.as_deref(), plan_path.as_deref())
             .unwrap_or_else(|| format!("Check your `{}` list for next steps.", names.todo));
         let body = if is_active {
             format!(
@@ -1522,6 +1546,7 @@ impl SessionActor {
             scratch_ready,
             rounds_since_verify,
             refuted,
+            evaluator_step,
         ) = {
             let mut tracker = self.goal_tracker.lock();
             tracker.account_elapsed();
@@ -1574,9 +1599,10 @@ impl SessionActor {
                 o.scratch_dir_ready,
                 rounds_since_verify,
                 refuted,
+                o.last_evaluator_next_step.clone(),
             )
         };
-        let next_step = resolve_goal_next_step(plan_path.as_deref())
+        let next_step = resolve_goal_next_step(evaluator_step.as_deref(), plan_path.as_deref())
             .unwrap_or_else(|| format!("Check your `{todo_tool}` list for next steps."));
         let tokens = u64::try_from(tokens_used).unwrap_or(0);
         let bail_preface = if stop_pattern.is_some() {
@@ -1731,6 +1757,8 @@ impl SessionActor {
             });
             if result.is_ok() {
                 goal.seen_work.observe(&signals);
+                let step = verdict.next_step.trim();
+                goal.last_evaluator_next_step = (!step.is_empty()).then(|| step.to_owned());
             }
             if result.is_ok() && target_changed {
                 // A resumed reviewer would still have the previous worktree as cwd.
@@ -1871,9 +1899,6 @@ impl SessionActor {
         else {
             return GoalRoundDecision::EndTurn;
         };
-        plan.directive.push_str("\nEvaluator next step: ");
-        plan.directive.push_str(verdict.next_step.trim());
-        plan.directive.push('\n');
         if let Some(rec) = plan.strategy_rec.as_deref() {
             self.consume_strategist_note(rec);
         }

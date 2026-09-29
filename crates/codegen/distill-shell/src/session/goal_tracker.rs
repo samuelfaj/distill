@@ -463,6 +463,11 @@ pub struct GoalOrchestration {
     /// So the freshest verifier feedback reaches the model each round rather than once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_classifier_gaps: Option<String>,
+    /// The progress evaluator's most recent next step. The continuation nudge
+    /// prefers it over the plan's first unchecked box: it is chosen from the
+    /// latest evidence, so it cannot go stale when the agent skips plan edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_evaluator_next_step: Option<String>,
     /// First verification round's full `FINAL_RESPONSE`, replayed on later rounds.
     /// So a cold skeptic panel sees the whole deliverable, not just that round's fix note.
     /// Captured once (capped); never cleared on `Achieved`: it must outlive each round.
@@ -868,6 +873,7 @@ impl GoalTracker {
             last_classifier_details_path: None,
             last_classifier_at: None,
             last_classifier_gaps: None,
+            last_evaluator_next_step: None,
             first_final_response: None,
             skeptic0_session_id: None,
             skeptic_model_assignment: Vec::new(),
@@ -1297,6 +1303,7 @@ pub(crate) fn make_base_orchestration() -> GoalOrchestration {
         last_classifier_details_path: None,
         last_classifier_at: None,
         last_classifier_gaps: None,
+        last_evaluator_next_step: None,
         first_final_response: None,
         skeptic0_session_id: None,
         skeptic_model_assignment: Vec::new(),

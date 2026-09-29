@@ -220,7 +220,7 @@ async fn progressive_body() {
         tokio::task::spawn_local(async move { bg.build_prefix_after_mcp_wait(full_wait).await }),
         full_wait,
     );
-    let (_, deferred_wait) = timed(wedged.ensure_prefix_ready()).await;
+    let (_, deferred_wait) = timed(wedged.ensure_prefix_ready(None)).await;
     assert!(
         deferred_wait >= DELIVERY_TOOLS_DEFAULT_PREFIX_WAIT,
         "the deferred prefix runs the full delivery wait, got {deferred_wait:?}"
@@ -255,7 +255,7 @@ async fn delivery_policy_applied_after_the_deferred_build_started_still_waits_fu
                 false,
             );
             *a.delivery_tools.borrow_mut() = vec!["linear__post".to_string()];
-            let (_, wait) = timed(a.ensure_prefix_ready()).await;
+            let (_, wait) = timed(a.ensure_prefix_ready(None)).await;
             assert!(
                 wait >= DELIVERY_TOOLS_DEFAULT_PREFIX_WAIT,
                 "the policy arriving late still holds the full wait, got {wait:?}"

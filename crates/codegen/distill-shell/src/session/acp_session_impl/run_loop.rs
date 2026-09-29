@@ -740,7 +740,11 @@ pub(super) async fn run_session(
                                 SessionActor::respond_removed_prompt(respond_to);
                                 continue;
                             }
-                            session.ensure_prefix_ready().await;
+                            let incoming = (!origin.is_synthetic()
+                                && SessionActor::extract_bash_command(&prompt_blocks).is_none())
+                            .then(|| SessionActor::queue_text_from_blocks(&prompt_blocks))
+                            .filter(|text| !text.trim().is_empty());
+                            session.ensure_prefix_ready(incoming.as_deref()).await;
                             // Clear suppression: the user is re-engaging
                             // Synthetic auto-wake prompts skip this; the user has not actually re-engaged, so post-cancel suppression must hold
                             if !origin.is_synthetic() {

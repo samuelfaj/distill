@@ -82,6 +82,7 @@ impl SessionActor {
                 &payload,
                 &source,
                 "Choose one short dashboard fragment from the assistant reply. Reply with exactly one quoted source span, at most 12 words, preserving paths, numbers, and unresolved or test status; no labels or prose.",
+                "Which fragment best states the outcome of the assistant's reply for a one-line dashboard entry? Prefer one that keeps paths, numbers and unresolved or test status. Choose `none` if no fragment states an outcome.",
                 turn_summary::turn_summary_display_text,
             ),
         )

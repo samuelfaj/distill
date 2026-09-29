@@ -582,6 +582,56 @@ mod tests {
         cancellation.cancel();
     }
 
+    fn title_text_events() -> Vec<distill_test_support::SseEvent> {
+        let chunk = |delta: serde_json::Value, finish: Option<&str>| {
+            distill_test_support::SseEvent::data(
+                serde_json::json!({
+                    "id": "chatcmpl-initial-title-text",
+                    "object": "chat.completion.chunk",
+                    "created": 1234567890,
+                    "model": "served-title-model",
+                    "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }]
+                })
+                .to_string(),
+            )
+        };
+        vec![
+            chunk(
+                serde_json::json!({"role": "assistant", "content": "Parser race fix and suite rerun"}),
+                None,
+            ),
+            chunk(serde_json::json!({}), Some("stop")),
+            distill_test_support::SseEvent::data("[DONE]".to_owned()),
+        ]
+    }
+
+    /// Backends that reject a named-function tool_choice made every initial
+    /// title fail; the request lets the model choose, and a plain-text title
+    /// is used when the model answers without the tool.
+    #[tokio::test]
+    async fn initial_title_does_not_force_a_named_tool_and_accepts_text() {
+        let server = distill_test_support::MockInferenceServer::start()
+            .await
+            .expect("mock inference server");
+        server.enqueue_response(
+            "/v1/chat/completions",
+            distill_test_support::ScriptedResponse::sse(title_text_events()),
+        );
+        let client = OaiCompatClient::new(title_sampler_config(server.url())).unwrap();
+        let generated =
+            generate_session_summary("fix the parser race".to_owned(), client, "configured-title-model")
+                .await;
+        assert_eq!(generated.title, "Parser race fix and suite rerun");
+        assert_eq!(generated.status, distill_chat_state::UsageCallStatus::Completed);
+        let body = server
+            .requests()
+            .into_iter()
+            .find(|request| request.path == "/v1/chat/completions")
+            .and_then(|request| request.body)
+            .expect("title request body");
+        assert_eq!(body["tool_choice"], "auto", "{body}");
+    }
+
     #[tokio::test]
     async fn initial_title_preserves_paid_length_rejection_metadata() {
         let server = distill_test_support::MockInferenceServer::start()

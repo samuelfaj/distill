@@ -119,7 +119,7 @@ pub(crate) const GOAL_VERIFIER_DETAILS_PATH_TEMPLATE: &str =
 
 /// `Achieved` / `NotAchieved` are PARSE-class outcomes: the subagent produced a usable verdict.
 /// `FailOpenAchieved` is INFRA-class: the harness could not extract a verdict and treats the goal as achieved.
-/// PARSE-class fail-closed outcomes (malformed terminal token, missing details file) map onto `NotAchieved`.
+/// PARSE-class fail-closed outcomes (malformed terminal token and missing or malformed verdict JSON) map onto `NotAchieved`.
 #[derive(Debug, Clone)]
 pub(crate) enum GoalClassifierOutcome {
     Achieved {
@@ -707,6 +707,12 @@ pub(crate) struct Finding {
 }
 
 impl Finding {
+    /// A demonstrable defect in shipped behavior or a stub left in, as opposed
+    /// to a missing test or piece of evidence (`gap`).
+    fn is_defect(&self) -> bool {
+        matches!(self.kind.trim().to_ascii_lowercase().as_str(), "bug" | "todo")
+    }
+
     fn is_empty(&self) -> bool {
         self.kind.trim().is_empty()
             && self.location.trim().is_empty()
@@ -821,9 +827,14 @@ pub(crate) fn format_verifier_details_path(
     )
 }
 
-/// For a fan-out panel (`total > 1`), skeptic 0's not-refuted vote does NOT count.
-/// Skeptic 0 is the resumed reject-gatekeeper, so its not-refuted vote must not tip a borderline panel toward approval.
-/// `total <= 1` (the N==1 sole judge, or the short-circuit case where `results` holds only skeptic 0) keeps the simple all-votes rule (`needed = 1`).
+/// For a fan-out panel (`total > 1`), skeptic 0's not-refuted vote does NOT count: skeptic 0 is the
+/// resumed reject-gatekeeper, so its approval must not tip a borderline panel. Its refute does count.
+/// A refute that reports a demonstrable defect (a `bug` or `todo` finding) blocks on its own. Other
+/// refutes (missing tests or evidence, a token-only verdict, a failed skeptic) are votes: the panel
+/// passes when at least one cold skeptic approves and cold approvals are at least as many as refutes,
+/// so one skeptic's evidence request no longer outweighs the peers that verified the same work.
+/// `total <= 1` (the N==1 sole judge, or the short-circuit case where `results` holds only skeptic 0)
+/// keeps the simple rule: the one verdict decides.
 pub(crate) fn aggregate_skeptic_verdicts(results: &[SkepticResult]) -> (u32, u32, bool) {
     let total = results.len() as u32;
     // Defensive empty-case: `run_verification_stage` clamps N >= 1 before fan-out, but the function is `pub(crate)` and tests call it with `&[]`
@@ -832,18 +843,18 @@ pub(crate) fn aggregate_skeptic_verdicts(results: &[SkepticResult]) -> (u32, u32
         return (0, 0, false);
     }
     let refuted_count = results.iter().filter(|r| r.refuted).count() as u32;
-    let (needed, not_refuted) = if total <= 1 {
-        (1, total - refuted_count)
-    } else {
-        // Strict majority of the COLD panel; skeptic 0 excluded
-        let cold_count = results.iter().filter(|r| r.skeptic_idx >= 1).count() as u32;
-        let cold_not_refuted = results
-            .iter()
-            .filter(|r| r.skeptic_idx >= 1 && !r.refuted)
-            .count() as u32;
-        (cold_count / 2 + 1, cold_not_refuted)
-    };
-    (refuted_count, total, not_refuted >= needed)
+    if total <= 1 {
+        return (refuted_count, total, refuted_count == 0);
+    }
+    let defect_refute = results
+        .iter()
+        .any(|r| r.refuted && r.findings.iter().any(Finding::is_defect));
+    let cold_approvals = results
+        .iter()
+        .filter(|r| r.skeptic_idx >= 1 && !r.refuted)
+        .count() as u32;
+    let achieved = !defect_refute && cold_approvals >= 1 && cold_approvals >= refuted_count;
+    (refuted_count, total, achieved)
 }
 
 /// Per-evidence-line char cap for the inlined gaps summary: bounds a runaway verdict yet holds a full multi-point gap.
@@ -1137,8 +1148,89 @@ fn kind_lens(kind: Option<GoalKind>) -> &'static str {
 const GOAL_VERIFIER_RESUME_PROMPT_TEMPLATE: &str =
     include_str!("templates/goal_verifier_resume_prompt.md");
 
-/// Wrap the evidence packet (OBJECTIVE / CHANGES_FILE / PLAN_FILE / FINAL_RESPONSE) in `template`.
-/// Substitutes the kind-specific review lens into `{KIND_LENS}` and the runner-allocated output paths into `{DETAILS_FILE}` / `{VERDICT_FILE}`.
+/// Per-skeptic tail of a verifier prompt. It comes after the shared
+/// instructions and the evidence, so the skeptics of one round send an
+/// identical prefix that the provider can serve from its prompt cache.
+const GOAL_VERIFIER_ROUND_BLOCK: &str = "## This verification round\n\n\
+PRIOR_GAPS — the gaps the previous round told the implementer to fix:\n\n{PRIOR_GAPS}\n\n\
+Your files:\n\
+- Verdict JSON, your only write: `{VERDICT_FILE}`\n\
+- Your scratch dir, for cheap spot-checks only: `{SKEPTIC_SCRATCH}`. {SCRATCH_STATUS} \
+When you re-run a `## Verification plan` step, its literal `{SCRATCH}` placeholder resolves here.\n";
+
+/// Characters of a check's output tail shown to the verifier.
+const HARNESS_CHECK_EXCERPT_CHARS: usize = 800;
+
+/// A build, test or lint command the harness saw finish during the goal.
+/// The harness records these itself, so the agent cannot edit them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HarnessCheck {
+    pub command: String,
+    pub passed: bool,
+    pub excerpt: String,
+    pub finished_at: std::time::SystemTime,
+}
+
+/// Renders the `HARNESS_CHECKS` evidence section, newest first. A check is
+/// `current` when it finished after the last change to the delivered files,
+/// so the verifier can accept it as a run on the delivered code instead of
+/// asking the implementer for a log file of the same command.
+pub(crate) fn render_harness_checks(
+    checks: &[HarnessCheck],
+    last_change: Option<std::time::SystemTime>,
+) -> String {
+    if checks.is_empty() {
+        return "(none recorded)\n".to_owned();
+    }
+    let mut ordered: Vec<&HarnessCheck> = checks.iter().collect();
+    ordered.sort_by(|a, b| b.finished_at.cmp(&a.finished_at));
+    let mut out = String::new();
+    for check in ordered {
+        let freshness = match last_change {
+            Some(changed) if check.finished_at < changed => "stale",
+            _ => "current",
+        };
+        let outcome = if check.passed { "passed" } else { "failed" };
+        let skip = check
+            .excerpt
+            .chars()
+            .count()
+            .saturating_sub(HARNESS_CHECK_EXCERPT_CHARS);
+        let tail: String = check.excerpt.chars().skip(skip).collect();
+        let command = evidence::sanitize_final_response(&check.command).replace('\n', " ");
+        let tail = evidence::sanitize_final_response(tail.trim());
+        out.push_str(&format!("- `{command}` {outcome} ({freshness}); end of output:\n"));
+        for line in tail.lines() {
+            out.push_str("    ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Latest modification time among the delivered files, the reference point
+/// for whether a recorded check ran on the current code.
+async fn last_change_of(workspace_root: &Path, changed_files: &[String]) -> Option<std::time::SystemTime> {
+    let mut latest = None;
+    for path in changed_files.iter().take(CHANGED_FILES_MTIME_MAX) {
+        if let Ok(modified) = tokio::fs::metadata(workspace_root.join(path))
+            .await
+            .and_then(|meta| meta.modified())
+        {
+            latest = latest.max(Some(modified));
+        }
+    }
+    latest
+}
+
+/// Changed files stat-ed for [`last_change_of`]; a larger diff keeps the first ones.
+const CHANGED_FILES_MTIME_MAX: usize = 500;
+
+/// Build a skeptic prompt: the shared instructions (`template` with the lens
+/// and the implementer scratch dir rendered in), then the evidence packet and
+/// `HARNESS_CHECKS`, then the per-skeptic round block. Everything that differs
+/// between the skeptics of one round sits in that final block.
 /// Shared by the cold and resume skeptic prompts; only the template differs.
 #[allow(clippy::too_many_arguments)]
 fn render_verifier_prompt(
@@ -1149,7 +1241,7 @@ fn render_verifier_prompt(
     plan_file: Option<&Path>,
     plan_changes: Option<&str>,
     final_response: &str,
-    details_path: &str,
+    harness_checks: &str,
     verdict_path: &str,
     kind_lens: &str,
     skeptic_scratch: &str,
@@ -1158,7 +1250,7 @@ fn render_verifier_prompt(
     tool_names: &RoleToolNames,
     scratch_ready: bool,
 ) -> String {
-    let user_prompt = evidence::build_classifier_evidence_packet(
+    let packet = evidence::build_classifier_evidence_packet(
         objective,
         changes_ref,
         changed_files,
@@ -1170,12 +1262,17 @@ fn render_verifier_prompt(
         Some(g) if !g.trim().is_empty() => sanitize_prior_gaps(g),
         _ => "(none — first verification round)".to_string(),
     };
-    let rendered = template
-        .replace("{KIND_LENS}", kind_lens)
-        .replace("{DETAILS_FILE}", details_path)
+    let instructions = crate::session::goal_autonomy::with_goal_autonomy(
+        distill_agent::prompt::template::strip_source_notice(template),
+    )
+    .replace("{KIND_LENS}", kind_lens)
+    .replace("{IMPLEMENTER_SCRATCH}", implementer_scratch);
+    let instructions = tool_names.apply(&instructions);
+    // PRIOR_GAPS is model-derived, so it is substituted last: nothing after it
+    // can expand a placeholder hidden in its text.
+    let round = GOAL_VERIFIER_ROUND_BLOCK
         .replace("{VERDICT_FILE}", verdict_path)
         .replace("{SKEPTIC_SCRATCH}", skeptic_scratch)
-        .replace("{IMPLEMENTER_SCRATCH}", implementer_scratch)
         // Only claim the dirs exist when both were actually created.
         .replace(
             "{SCRATCH_STATUS}",
@@ -1186,11 +1283,16 @@ fn render_verifier_prompt(
             },
         )
         .replace("{PRIOR_GAPS}", &prior_gaps_rendered);
-    let rendered = tool_names.apply(&rendered);
-    let mut out = String::with_capacity(rendered.len() + user_prompt.len() + 8);
-    out.push_str(&rendered);
+    let mut out = String::with_capacity(
+        instructions.len() + packet.len() + harness_checks.len() + round.len() + 32,
+    );
+    out.push_str(&instructions);
     out.push_str("\n\n");
-    out.push_str(&user_prompt);
+    out.push_str(&packet);
+    out.push_str("\nHARNESS_CHECKS:\n");
+    out.push_str(harness_checks);
+    out.push('\n');
+    out.push_str(&round);
     out
 }
 
@@ -1203,7 +1305,7 @@ fn render_skeptic_prompt(
     plan_file: Option<&Path>,
     plan_changes: Option<&str>,
     final_response: &str,
-    details_path: &str,
+    harness_checks: &str,
     verdict_path: &str,
     kind_lens: &str,
     skeptic_scratch: &str,
@@ -1220,7 +1322,7 @@ fn render_skeptic_prompt(
         plan_file,
         plan_changes,
         final_response,
-        details_path,
+        harness_checks,
         verdict_path,
         kind_lens,
         skeptic_scratch,
@@ -1240,7 +1342,7 @@ fn render_skeptic_resume_prompt(
     plan_file: Option<&Path>,
     plan_changes: Option<&str>,
     final_response: &str,
-    details_path: &str,
+    harness_checks: &str,
     verdict_path: &str,
     kind_lens: &str,
     skeptic_scratch: &str,
@@ -1257,7 +1359,7 @@ fn render_skeptic_resume_prompt(
         plan_file,
         plan_changes,
         final_response,
-        details_path,
+        harness_checks,
         verdict_path,
         kind_lens,
         skeptic_scratch,
@@ -1398,7 +1500,7 @@ async fn run_one_skeptic(
                 inputs.plan_file,
                 inputs.plan_changes,
                 inputs.final_response,
-                &details_raw,
+                inputs.harness_checks,
                 &verdict_raw,
                 inputs.kind_lens,
                 &skeptic_scratch,
@@ -1451,7 +1553,7 @@ async fn run_one_skeptic(
             inputs.plan_file,
             inputs.plan_changes,
             inputs.final_response,
-            &details_raw,
+            inputs.harness_checks,
             &verdict_raw,
             inputs.kind_lens,
             &skeptic_scratch,
@@ -1509,6 +1611,8 @@ struct SkepticInputs<'a> {
     scratch_dir_ready: bool,
     /// Previous round's gaps summary for the `{PRIOR_GAPS}` placeholder (see [`VerificationStageInputs::prior_gaps`]).
     prior_gaps: Option<&'a str>,
+    /// Rendered `HARNESS_CHECKS` section, shared by the panel.
+    harness_checks: &'a str,
 }
 
 /// Stage-level inputs threaded into [`run_verification_stage`].
@@ -1551,6 +1655,8 @@ pub(crate) struct VerificationStageInputs<'a> {
     /// Default/parent-toolset tool names used to render each skeptic's fail-open RETRY prompt.
     /// The retry falls back to the default toolset, so the prompt must name THAT toolset's tools. Shared across the panel.
     pub inherit_tool_names: &'a RoleToolNames,
+    /// Build, test and lint commands the harness recorded during the goal.
+    pub harness_checks: &'a [HarnessCheck],
 }
 
 /// Outcome of [`run_verification_stage`] plus skeptic 0's child session id when an N > 1 panel ran, so the next attempt can resume it.
@@ -1732,6 +1838,8 @@ pub(crate) async fn run_verification_stage(
             .get(idx as usize)
             .unwrap_or(&default_tool_names)
     };
+    let last_change = last_change_of(inputs.workspace_root, &changed_files).await;
+    let harness_checks = render_harness_checks(inputs.harness_checks, last_change);
     let skeptic_inputs = SkepticInputs {
         objective: inputs.objective,
         final_response: sanitized.as_ref(),
@@ -1745,6 +1853,7 @@ pub(crate) async fn run_verification_stage(
         implementer_scratch: implementer_scratch.as_ref(),
         scratch_dir_ready: inputs.scratch_dir_ready,
         prior_gaps: inputs.prior_gaps,
+        harness_checks: &harness_checks,
     };
 
     // When N > 1, run skeptic 0 first: a high-confidence refute is decisive and can never yield Achieved.

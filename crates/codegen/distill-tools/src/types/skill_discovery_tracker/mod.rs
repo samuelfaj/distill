@@ -20,7 +20,8 @@ use crate::types::compat::CompatConfig;
 
 use conditional::ConditionalSkills;
 use listing::{
-    DEFAULT_SKILL_TOOL_NAME, SKILL_BUDGET_CONTEXT_PERCENT, format_announcement, is_listable,
+    DEFAULT_SKILL_TOOL_NAME, MAX_LISTING_BUDGET_CHARS, SKILL_BUDGET_CONTEXT_PERCENT,
+    format_announcement, is_listable,
 };
 
 pub use listing::{XmlRenderMode, format_announcement_xml, format_compaction_skill_listing};
@@ -317,8 +318,8 @@ impl SkillManager {
         skill_budget_percent: Option<f64>,
     ) {
         let percent = skill_budget_percent.unwrap_or(SKILL_BUDGET_CONTEXT_PERCENT);
-        self.listing_budget_chars =
-            context_window_tokens.map(|tokens| (tokens as f64 * 4.0 * percent) as usize);
+        self.listing_budget_chars = context_window_tokens
+            .map(|tokens| ((tokens as f64 * 4.0 * percent) as usize).min(MAX_LISTING_BUDGET_CHARS));
         // Store the real cwd as string for path prefix rewriting.
         if let Some(ref display) = display_cwd {
             if let Some(ref c) = cwd {
@@ -1712,7 +1713,7 @@ mod tests {
                 s
             })
             .collect();
-        // 128k context window → budget = 128_000 * 4 * 0.5 = 256000 chars
+        // 128k context window → budget = 128_000 * 4 * 0.04 = 20480 chars
         let context_window: u64 = 128_000;
         let expected_budget = (context_window as f64 * 4.0 * SKILL_BUDGET_CONTEXT_PERCENT) as usize;
         mgr.seed(None, None, skills, None, Some(context_window), None);
@@ -1725,6 +1726,28 @@ mod tests {
         );
     }
 
+    /// A 1M-token window must not buy a 100 KB listing: the cap bounds it.
+    #[test]
+    fn budget_is_capped_for_large_context_windows() {
+        let mut mgr = SkillManager::new();
+        let skills: Vec<SkillInfo> = (0..250)
+            .map(|i| {
+                let mut s = make_skill(&format!("skill-{i}"), &format!("/s/{i}/SKILL.md"));
+                s.description = "A".repeat(400);
+                s
+            })
+            .collect();
+        mgr.seed(None, None, skills, None, Some(1_000_000), None);
+        let r = mgr.take_pending_reconciliation().unwrap();
+        let text = r.effects.system_reminder.unwrap();
+        assert!(
+            text.len() <= MAX_LISTING_BUDGET_CHARS + 100,
+            "listing should stay under the cap, got {} chars",
+            text.len()
+        );
+        assert!(text.contains("Absolute path: /s/249/SKILL.md"), "every skill keeps its path");
+    }
+
     #[test]
     fn budget_cap_names_only_when_extreme() {
         let mut mgr = SkillManager::new();
@@ -1735,7 +1758,7 @@ mod tests {
                 s
             })
             .collect();
-        // 300 token context window → budget = 300 * 4 * 0.5 = 600 chars.
+        // 300 token context window → budget = 300 * 4 * 0.04 = 48 chars.
         // 200 skills with 500-char descriptions can't fit.
         let context_window: u64 = 300;
         let expected_budget = (context_window as f64 * 4.0 * SKILL_BUDGET_CONTEXT_PERCENT) as usize;

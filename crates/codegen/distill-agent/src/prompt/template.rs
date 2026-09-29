@@ -18,11 +18,25 @@ fn decrypt(data: &[u8], seed: u8) -> Zeroizing<String> {
         .enumerate()
         .map(|(i, &b)| b ^ seed.wrapping_add(i as u8))
         .collect();
-    Zeroizing::new(String::from_utf8(bytes).expect(
+    let text = Zeroizing::new(String::from_utf8(bytes).expect(
         "prompt template decryption produced invalid UTF-8 — \
          prompt_encrypted.rs is likely stale; run: \
          python3 scripts/encrypt_templates.py",
-    ))
+    ));
+    Zeroizing::new(strip_source_notice(&text).to_owned())
+}
+
+/// Drops the leading `<!-- ... -->` modification notice. It must stay in the
+/// template source files for the license, but it is not an instruction and
+/// would otherwise be sent to the model on every request.
+pub fn strip_source_notice(text: &str) -> &str {
+    if let Some(rest) = text.strip_prefix("<!--")
+        && let Some(end) = rest.find("-->")
+    {
+        let after = &rest[end + "-->".len()..];
+        return after.strip_prefix('\n').unwrap_or(after);
+    }
+    text
 }
 
 /// The base prompt template (decrypted fresh; zeroed on drop).
@@ -96,6 +110,56 @@ mod tests {
             &xor_encrypt(subagent_raw, PROMPT_SEEDS[2]),
             "subagent_prompt.md encrypted bytes are stale — run scripts/encrypt_templates.py"
         );
+    }
+
+    /// The license notice is source metadata: it must remain in each template file
+    /// but never reach the model, where it costs tokens on every request.
+    #[test]
+    fn source_notice_stays_in_files_but_not_in_prompts() {
+        for (name, raw, decrypted) in [
+            ("prompt.md", include_str!("../../templates/prompt.md"), base_template()),
+            (
+                "apply_patch_prompt.md",
+                include_str!("../../templates/apply_patch_prompt.md"),
+                apply_patch_template(),
+            ),
+            (
+                "subagent_prompt.md",
+                include_str!("../../templates/subagent_prompt.md"),
+                subagent_template(),
+            ),
+        ] {
+            assert!(raw.starts_with("<!-- Modified for Distill"), "{name} lost its notice");
+            assert!(!decrypted.contains("<!--"), "{name} sends the notice to the model");
+            assert!(!decrypted.starts_with('\n'), "{name} keeps a blank first line");
+        }
+        assert_eq!(strip_source_notice("no notice"), "no notice");
+    }
+
+    /// The default label is the harness name, so the identity line must not repeat it.
+    #[test]
+    fn default_label_is_not_repeated_but_custom_label_names_the_harness() {
+        let renderer = default_renderer();
+        let prompt = render_base(&renderer, &default_placeholders());
+        assert!(prompt.starts_with("You are Distill, a coding harness"), "{prompt}");
+        let mut custom = default_placeholders();
+        jset(&mut custom, "system_prompt_label", serde_json::json!("Grok 4.7"));
+        let prompt = render_base(&renderer, &custom);
+        assert!(prompt.starts_with("You are Grok 4.7, working within Distill, a coding harness"));
+    }
+
+    /// With an output style active, the style section alone decides sentence
+    /// shape; the base prompt must not also demand the opposite.
+    #[test]
+    fn communication_defers_to_output_style_when_one_is_set() {
+        let renderer = default_renderer();
+        let plain = render_base(&renderer, &default_placeholders());
+        assert!(plain.contains("no telegraphic fragments"));
+        let mut styled = default_placeholders();
+        jset(&mut styled, "output_style", serde_json::json!("terse"));
+        let prompt = render_base(&renderer, &styled);
+        assert!(!prompt.contains("no telegraphic fragments"), "{prompt}");
+        assert!(prompt.contains("The <output_style> section decides tone"));
     }
 
     /// The memory injector treats any `<memory-context>` substring in the system prompt as an

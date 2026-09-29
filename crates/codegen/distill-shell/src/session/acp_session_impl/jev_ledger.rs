@@ -64,8 +64,10 @@ pub(crate) struct JevTurnLedger {
     /// unset legacy session from an explicit choice to use no Reasoning model.
     /// Retained when turn rows are drained so the actor is the durable owner.
     session_reasoning_model: crate::session::handle::SessionReasoningModelState,
-    /// Stable schemas within a turn; invalidate when the request or available names change.
-    pub(crate) tool_selection: Option<(String, Vec<String>)>,
+    /// The session's optional tool families. Session-scoped like
+    /// `session_reasoning_model`: draining the turn keeps it, so the tools array
+    /// only grows when a later request needs another family.
+    pub(crate) tool_families: distill_workspace::jev::catalog::routing::ToolFamilySelection,
 }
 
 impl JevTurnLedger {
@@ -290,7 +292,6 @@ impl JevTurnLedger {
         self.reasoning_review_pending = None;
         self.reasoning = Default::default();
         self.last_execution = None;
-        self.tool_selection = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

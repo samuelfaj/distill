@@ -140,6 +140,44 @@ const GOAL_PLANNER_SUBAGENT_DESCRIPTION: &str = "goal plan writer";
 
 const GOAL_PLANNER_PROMPT_TEMPLATE: &str = include_str!("templates/goal_planner_prompt.md");
 
+/// Browser and game guidance, sent only when the objective reads as visual or
+/// interactive; other goals keep the generic launch check.
+const GOAL_PLANNER_VISUAL_APPENDIX: &str = include_str!("templates/goal_planner_visual_appendix.md");
+
+/// Words that mark a visual or interactive deliverable, in English and
+/// Portuguese. A miss only drops the browser specifics from the planner (the
+/// verifier's code-change lens still enforces them), so the list errs wide.
+const VISUAL_OBJECTIVE_TERMS: &[&str] = &[
+    "game", "games", "jogo", "jogos", "canvas", "browser", "navegador", "page", "pages",
+    "pagina", "página", "html", "css", "frontend", "front-end", "ui", "ux", "interface",
+    "screen", "tela", "telas", "layout", "webgl", "threejs", "three.js", "svg", "animation",
+    "animação", "animacao", "react", "vue", "svelte", "nextjs", "next.js", "site", "website",
+    "landing", "dashboard", "button", "botão", "botao", "visual", "sprite", "platformer",
+    "playable", "jogável", "jogavel", "web",
+];
+
+/// Whether the objective reads as a visual or interactive deliverable.
+fn objective_looks_visual(objective: &str) -> bool {
+    objective
+        .to_lowercase()
+        .split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '-'))
+        .map(|word| word.trim_matches(|c: char| c == '.' || c == '-'))
+        .any(|word| VISUAL_OBJECTIVE_TERMS.contains(&word))
+}
+
+/// The planner template with its shared parts rendered for this objective.
+fn planner_template_for(objective: &str) -> String {
+    let appendix = if objective_looks_visual(objective) {
+        GOAL_PLANNER_VISUAL_APPENDIX
+    } else {
+        ""
+    };
+    crate::session::goal_autonomy::with_goal_autonomy(
+        distill_agent::prompt::template::strip_source_notice(GOAL_PLANNER_PROMPT_TEMPLATE),
+    )
+    .replace("{VISUAL_APPENDIX}", appendix)
+}
+
 // Outcome and spawner abstraction
 
 /// `Planned` carries the path the planner wrote (always the input `plan_file`).
@@ -387,7 +425,8 @@ pub(crate) async fn run_goal_planner(
     }
 
     let plan_file_str = inputs.plan_file.to_string_lossy();
-    let with_plan_file = GOAL_PLANNER_PROMPT_TEMPLATE.replace("{PLAN_FILE}", &plan_file_str);
+    let with_plan_file =
+        planner_template_for(inputs.objective).replace("{PLAN_FILE}", &plan_file_str);
     // Render once per toolset: `primary` for the resolved toolset, `fallback` for the default/parent toolset the explicit-pair retry falls back to
     let render = |tool_names: &RoleToolNames| -> String {
         let rendered = tool_names.apply(&with_plan_file);
@@ -487,6 +526,35 @@ mod tests {
     use crate::session::goal_role_tools::tests::{assert_no_tool_placeholders, summary_with};
     use distill_tools::types::tool::ToolKind;
     use std::sync::{Arc, Mutex};
+
+    /// Browser specifics cost every planner call, so they travel only with a
+    /// visual objective; every objective still gets the generic launch check.
+    #[test]
+    fn visual_appendix_only_for_visual_objectives() {
+        let game = planner_template_for("Implemente um jogo de plataforma em JS no navegador");
+        assert!(game.contains("## Visual / interactive objectives"));
+        let cli = planner_template_for("Fix the off-by-one in the CSV parser's quoting");
+        assert!(!cli.contains("## Visual / interactive objectives"));
+        for rendered in [&game, &cli] {
+            assert!(rendered.contains("## Entry-point launch check"));
+            assert!(!rendered.contains("{VISUAL_APPENDIX}"));
+            assert!(!rendered.contains("{AUTONOMY}"));
+            assert!(!rendered.contains("<!--"), "the license notice must not reach the model");
+        }
+        assert!(!objective_looks_visual("build the guide for the uint parser"));
+        assert!(objective_looks_visual("Make the settings UI match the design"));
+    }
+
+    /// A planner that explored first and never wrote the file paused goals; the
+    /// prompt must ask for the file early and must not reintroduce HOW sections
+    /// that pin one implementation.
+    #[test]
+    fn planner_writes_early_and_specifies_outcomes_only() {
+        let rendered = planner_template_for("do X");
+        assert!(rendered.contains("WRITE EARLY"));
+        assert!(!rendered.contains("## Task checklist"));
+        assert!(!rendered.contains("## Implementation approach"));
+    }
 
     #[test]
     fn planner_template_default_render_has_no_placeholders() {

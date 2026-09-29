@@ -625,16 +625,40 @@ fn aggregate_n2_table_driven() {
 
 #[test]
 fn aggregate_n3_table_driven() {
-    // N=3 (variant-C): strict majority of the 2-member cold panel (skeptics 1, 2), so needed = 2/2 + 1 = 2
-    // Skeptic 0 never counts
+    // N=3: cold approvals (s1, s2) must be at least the refutes, skeptic 0's refute included;
+    // skeptic 0's approval never counts. One evidence request alone no longer blocks.
     for (rs, expected) in [
-        (vec![false, false, false], true), // cold s1,s2 not-refuted → 2 ≥ 2
-        (vec![false, false, true], false), // cold not-refuted = 1 (only s1) < 2
-        (vec![false, true, true], false),  // cold not-refuted = 0
+        (vec![false, false, false], true), // 2 cold approvals, 0 refutes
+        (vec![false, false, true], true),  // 1 cold approval vs 1 gap refute
+        (vec![true, false, true], false),  // 1 cold approval vs 2 refutes (s0 counts)
+        (vec![true, false, false], true),  // 2 cold approvals vs 1 refute
+        (vec![false, true, true], false),  // no cold approval
         (vec![true, true, true], false),
     ] {
         assert_aggregate(&rs, expected, "N=3");
     }
+}
+
+/// A demonstrable defect is decisive no matter how many peers approved; a
+/// refute that only asks for more evidence is one vote among the panel.
+#[test]
+fn aggregate_defect_findings_block_but_gap_findings_are_votes() {
+    let with_finding = |idx: u32, kind: &str| {
+        let mut result = skeptic(idx, true);
+        result.findings = vec![Finding {
+            kind: kind.to_owned(),
+            location: "src/lib.rs:1".to_owned(),
+            detail: "detail".to_owned(),
+        }];
+        result
+    };
+    let passing = [skeptic(0, false), skeptic(1, false)];
+    let gap = [passing[0].clone(), passing[1].clone(), with_finding(2, "gap")];
+    assert!(aggregate_skeptic_verdicts(&gap).2, "a lone gap refute is outvoted");
+    let bug = [passing[0].clone(), passing[1].clone(), with_finding(2, "bug")];
+    assert!(!aggregate_skeptic_verdicts(&bug).2, "a demonstrated bug blocks alone");
+    let todo = [with_finding(0, "TODO"), skeptic(1, false), skeptic(2, false)];
+    assert!(!aggregate_skeptic_verdicts(&todo).2, "a stub left in blocks even from skeptic 0");
 }
 
 #[test]
@@ -700,18 +724,15 @@ fn aggregate_total_one_uses_all_votes_fallback() {
 }
 
 #[test]
-fn aggregate_cold_panel_bar_derives_from_cold_count_not_total() {
-    // The bar is a strict majority of the COLD panel by SIZE, so it holds with skeptic 0 absent: a 2-member cold panel needs 2/2
-    // A `total`-based bar of ceil(2/2) = 1 would slip to a plurality
-    let votes = [skeptic(1, false), skeptic(2, true)]; // s0 absent; 1 of 2 cold refuted
+fn aggregate_cold_approvals_must_match_every_refute() {
+    // With skeptic 0 absent, one cold approval balances one gap refute...
+    let votes = [skeptic(1, false), skeptic(2, true)];
     let (refuted, total, achieved) = aggregate_skeptic_verdicts(&votes);
     assert_eq!((refuted, total), (1, 2));
-    assert!(
-        !achieved,
-        "cold-panel majority needs 2/2 with skeptic 0 absent; 1 not-refuted must fail",
-    );
-    // Both cold not-refuted clears the 2/2 bar.
-    assert!(aggregate_skeptic_verdicts(&[skeptic(1, false), skeptic(2, false)]).2);
+    assert!(achieved, "one approval balances one evidence request");
+    // ...but not two, and an all-refuting cold panel never passes.
+    assert!(!aggregate_skeptic_verdicts(&[skeptic(1, false), skeptic(2, true), skeptic(3, true)]).2);
+    assert!(!aggregate_skeptic_verdicts(&[skeptic(1, true), skeptic(2, true)]).2);
 }
 
 #[test]
@@ -866,7 +887,7 @@ fn prior_gaps_keeps_full_multi_skeptic_summary_past_800_chars() {
         None,
         None,
         "final response",
-        "/tmp/d.md",
+        "(none recorded)\n",
         "/tmp/v.json",
         "",
         "/tmp/ss",
@@ -1459,7 +1480,7 @@ fn render_skeptic_prompt_substitutes_kind_lens_and_leaves_no_placeholder() {
         None,
         None,
         "final",
-        "/tmp/goal-verifier-details-x-1-0.md",
+        SAMPLE_HARNESS_CHECKS,
         "/tmp/goal-verdict-x-1-0.json",
         kind_lens(Some(GoalKind::CodeChange)),
         "/tmp/grok-goal-x/skeptic-0",
@@ -1488,7 +1509,7 @@ fn render_skeptic_prompt_substitutes_kind_lens_and_leaves_no_placeholder() {
         None,
         None,
         "final",
-        "/tmp/goal-verifier-details-x-1-0.md",
+        SAMPLE_HARNESS_CHECKS,
         "/tmp/goal-verdict-x-1-0.json",
         kind_lens(None),
         "/tmp/grok-goal-x/skeptic-1",
@@ -1513,7 +1534,7 @@ fn render_skeptic_prompt_scratch_status_reflects_readiness() {
             None,
             None,
             "final",
-            "/tmp/goal-verifier-details-x-1-0.md",
+            SAMPLE_HARNESS_CHECKS,
             "/tmp/goal-verdict-x-1-0.json",
             kind_lens(Some(GoalKind::CodeChange)),
             "/tmp/grok-goal-x/skeptic-0",
@@ -1552,7 +1573,7 @@ fn render_skeptic_prompt_substitutes_prior_gaps() {
             None,
             None,
             "final",
-            "/tmp/goal-verifier-details-x-2-1.md",
+            SAMPLE_HARNESS_CHECKS,
             "/tmp/goal-verdict-x-2-1.json",
             kind_lens(Some(GoalKind::CodeChange)),
             "/tmp/grok-goal-x/skeptic-1",
@@ -1585,7 +1606,7 @@ fn render_skeptic_resume_prompt_is_delta_focused_and_substitutes_paths() {
         None,
         None,
         "final",
-        "/tmp/goal-classifier-x-2-skeptic-0.md",
+        SAMPLE_HARNESS_CHECKS,
         "/tmp/goal-verdict-x-2-0.json",
         kind_lens(Some(GoalKind::CodeChange)),
         "/tmp/grok-goal-x/skeptic-0",
@@ -1600,7 +1621,7 @@ fn render_skeptic_resume_prompt_is_delta_focused_and_substitutes_paths() {
     );
     // Output contract carries the new attempt's paths; no placeholders.
     assert!(body.contains("/tmp/goal-verdict-x-2-0.json"));
-    assert!(body.contains("/tmp/goal-classifier-x-2-skeptic-0.md"));
+    assert!(body.contains("HARNESS_CHECKS:\n- `cargo test -p parser` passed (current)"));
     // Scratch dirs: the skeptic's own and the implementer's, both substituted
     assert!(body.contains("/tmp/grok-goal-x/skeptic-0"));
     assert!(body.contains("/tmp/grok-goal-x/implementer"));
@@ -1612,6 +1633,85 @@ fn render_skeptic_resume_prompt_is_delta_focused_and_substitutes_paths() {
             && !body.contains("{IMPLEMENTER_SCRATCH}"),
         "all placeholders must be substituted:\n{body}",
     );
+}
+
+const SAMPLE_HARNESS_CHECKS: &str =
+    "- `cargo test -p parser` passed (current); end of output:\n    test result: ok. 3 passed\n";
+
+fn cold_prompt_for(verdict: &str, scratch: &str) -> String {
+    render_skeptic_prompt(
+        "obj",
+        evidence::ChangesRef::Unavailable,
+        &["src/parser.rs".to_owned()],
+        None,
+        None,
+        "final",
+        SAMPLE_HARNESS_CHECKS,
+        verdict,
+        kind_lens(Some(GoalKind::CodeChange)),
+        scratch,
+        "/tmp/grok-goal-x/implementer",
+        Some("- [skeptic 0, high]\n  gap · src/parser.rs:9 — no test"),
+        &RoleToolNames::inherit_defaults(),
+        true,
+    )
+}
+
+/// Skeptics of one round must send the same prefix so the provider can serve
+/// the instructions and evidence from its prompt cache; only the round block
+/// at the end may differ between them.
+#[test]
+fn skeptics_of_one_round_share_everything_before_the_round_block() {
+    let first = cold_prompt_for("/tmp/goal-verdict-x-1-1.json", "/tmp/grok-goal-x/skeptic-1");
+    let second = cold_prompt_for("/tmp/goal-verdict-x-1-2.json", "/tmp/grok-goal-x/skeptic-2");
+    let cut = |p: &str| p.find("## This verification round").expect("round block present");
+    let (a, b) = (cut(&first), cut(&second));
+    assert_eq!(first[..a], second[..b], "the shared prefix diverged");
+    assert!(first[a..].contains("/tmp/goal-verdict-x-1-1.json"));
+    assert!(first[a..].contains("gap · src/parser.rs:9 — no test"));
+    assert!(first.find("HARNESS_CHECKS:").unwrap() < a);
+    assert!(!first[..a].contains("goal-verdict-"), "per-skeptic paths leaked into the prefix");
+}
+
+/// The harness saves `details_md` itself, so a skeptic spends no turn writing
+/// a second copy of its findings.
+#[test]
+fn verifier_prompt_asks_for_the_verdict_json_only() {
+    let body = cold_prompt_for("/tmp/goal-verdict-x-1-0.json", "/tmp/grok-goal-x/skeptic-0");
+    assert!(!body.contains("{DETAILS_FILE}"));
+    assert!(!body.contains("Details →"));
+    assert!(body.contains("your only write: `/tmp/goal-verdict-x-1-0.json`"));
+    assert!(!body.contains("<!--"), "the license notice must not reach the model");
+}
+
+/// A check that finished before the last edit does not cover the delivered
+/// code; the verifier must see which is which, newest first.
+#[test]
+fn harness_checks_are_newest_first_and_marked_current_or_stale() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let at = |secs| UNIX_EPOCH + Duration::from_secs(secs);
+    let checks = [
+        HarnessCheck {
+            command: "cargo test".into(),
+            passed: false,
+            excerpt: "1 failed".into(),
+            finished_at: at(100),
+        },
+        HarnessCheck {
+            command: "cargo test".into(),
+            passed: true,
+            excerpt: format!("{}\ntest result: ok", "x".repeat(2000)),
+            finished_at: at(300),
+        },
+    ];
+    let text = render_harness_checks(&checks, Some(at(200)));
+    let passed = text.find("`cargo test` passed (current)").expect("newest run is current");
+    let failed = text.find("`cargo test` failed (stale)").expect("older run is stale");
+    assert!(passed < failed, "newest first:\n{text}");
+    assert!(text.contains("test result: ok"));
+    assert!(text.len() < 1200, "the output tail is bounded");
+    assert_eq!(render_harness_checks(&[], None), "(none recorded)\n");
+    assert!(render_harness_checks(&checks[..1], None).contains("(current)"));
 }
 
 #[test]
@@ -1964,6 +2064,7 @@ fn stage_inputs_resume<'a>(
         // Empty: every skeptic falls back to `inherit_defaults()` (the literal fallback tool names), matching the earlier rendered prompts
         tool_names: &[],
         inherit_tool_names: default_inherit_tool_names(),
+        harness_checks: &[],
     }
 }
 
@@ -2003,7 +2104,7 @@ async fn fired_event_reports_effective_cap_not_default() {
 #[tokio::test]
 async fn verification_stage_n1_not_refuted_returns_achieved() {
     // The lone skeptic returns Not Refuted, so the goal is Achieved
-    // Also pins that the rendered prompt substituted both the `{DETAILS_FILE}` and `{VERDICT_FILE}` placeholders and is not the empty template
+    // Also pins that the rendered prompt substituted `{VERDICT_FILE}`, asks for no details file, and is not the empty template
     let spawner = Arc::new(MockSpawner::new([MockResponse::not_refuted()]));
     let observed = spawner.clone();
     let spawner: Arc<dyn GoalClassifierSpawner> = spawner;
@@ -2033,8 +2134,8 @@ async fn verification_stage_n1_not_refuted_returns_achieved() {
         "VERDICT_FILE missing in prompt"
     );
     assert!(
-        p.contains(&format_verifier_details_path(&vid, 1, 0)),
-        "DETAILS_FILE missing in prompt",
+        !p.contains(&format_verifier_details_path(&vid, 1, 0)),
+        "the harness saves details_md itself; the prompt must not ask for a details file",
     );
     assert!(
         !p.contains("{DETAILS_FILE}") && !p.contains("{VERDICT_FILE}"),
@@ -2162,10 +2263,10 @@ async fn verification_stage_n3_majority_refute_returns_not_achieved() {
 }
 
 #[tokio::test]
-async fn verification_stage_n3_skeptic0_clears_cold_split_returns_not_achieved() {
-    // Variant-C pivotal case: skeptic 0 not-refuted, cold panel split {skeptic 1 refuted, skeptic 2 not-refuted}
-    // Skeptic 0's not-refuted vote does NOT count toward the quorum, so the cold not-refuted count is 1 < needed(2) and the verdict is NotAchieved
-    // (Pre-variant-C this wrongly Achieved on the 1-of-3 minority refute.)
+async fn verification_stage_n3_lone_evidence_refute_is_outvoted() {
+    // Skeptic 0 clears and the cold panel splits {skeptic 1 refutes without a defect finding, skeptic 2 clears}.
+    // One cold approval balances one evidence request, so the panel passes; before, this lone refute
+    // blocked goals whose other two reviewers had verified the same work.
     let spawner: Arc<dyn GoalClassifierSpawner> = Arc::new(MockSpawner::new([
         MockResponse::not_refuted(),
         MockResponse::refuted(),
@@ -2181,8 +2282,38 @@ async fn verification_stage_n3_skeptic0_clears_cold_split_returns_not_achieved()
     )
     .await
     .outcome;
+    let GoalClassifierOutcome::Achieved { details_path } = outcome else {
+        panic!("expected Achieved: a lone evidence request is one vote");
+    };
+    let _ = tokio::fs::remove_file(&details_path).await;
+    let log = log.lock().unwrap();
+    assert!(log.iter().any(|t| t == "agg:1/3:true"));
+}
+
+#[tokio::test]
+async fn verification_stage_n3_lone_defect_refute_still_blocks() {
+    // Same split, but the refuting skeptic demonstrates a bug: a defect blocks on its own.
+    let mut bug = MockResponse::refuted();
+    bug.verdict_json = Some(
+        "{\"refuted\":true,\"evidence\":\"off-by-one at src/foo.rs:9\",\"confidence\":\"medium\",\"findings\":[{\"kind\":\"bug\",\"location\":\"src/foo.rs:9\",\"detail\":\"empty input returns 1\"}],\"details_md\":\"# Skeptic\\n\\nbug\"}".into(),
+    );
+    let spawner: Arc<dyn GoalClassifierSpawner> = Arc::new(MockSpawner::new([
+        MockResponse::not_refuted(),
+        bug,
+        MockResponse::not_refuted(),
+    ]));
+    let (log, emit) = collect_events();
+    let _wsp = tempfile::tempdir().unwrap();
+    let vid = unique_verifier_id();
+    let outcome = run_verification_stage(
+        spawner,
+        stage_inputs("obj", "claim", _wsp.path(), &vid, 1, 3),
+        &emit,
+    )
+    .await
+    .outcome;
     let GoalClassifierOutcome::NotAchieved { details_path, .. } = outcome else {
-        panic!("expected NotAchieved: skeptic-0 not-refuted cannot carry the cold quorum");
+        panic!("expected NotAchieved: a demonstrated bug blocks alone");
     };
     let _ = tokio::fs::remove_file(&details_path).await;
     let log = log.lock().unwrap();
@@ -3571,6 +3702,7 @@ async fn run_one_skeptic_fails_closed_when_scratch_root_squatted() {
         implementer_scratch: "/tmp/grok-goal-test/implementer",
         scratch_dir_ready: true,
         prior_gaps: None,
+        harness_checks: "(none recorded)\n",
     };
 
     let result = run_one_skeptic(

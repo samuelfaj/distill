@@ -262,7 +262,7 @@ pub(super) fn render_goal_rules(
         Some(path) => render_goal_plan_block(path, names),
         None => String::new(),
     };
-    GOAL_RULES_TEMPLATE
+    crate::session::goal_autonomy::with_goal_autonomy(GOAL_RULES_TEMPLATE)
         .replace("{OBJECTIVE}", objective)
         .replace("{TASK_TOOL}", &names.task)
         .replace("{TODO_TOOL}", &names.todo)
@@ -298,7 +298,7 @@ pub(super) fn render_goal_rules_legacy(
         Some(path) => render_goal_plan_block(path, names),
         None => String::new(),
     };
-    GOAL_RULES_TEMPLATE_LEGACY
+    crate::session::goal_autonomy::with_goal_autonomy(GOAL_RULES_TEMPLATE_LEGACY)
         .replace("{OBJECTIVE}", objective)
         .replace("{GOAL_TOOL}", &names.goal)
         .replace("{TASK_TOOL}", &names.task)
@@ -602,15 +602,23 @@ pub(super) fn render_verifier_gaps_block_legacy(gaps: &str, goal_tool: &str) -> 
 /// Applied BEFORE tag neutralization, which may add a zero-width break per broken tag (plus the `…` cap suffix).
 pub(super) const GOAL_NEXT_STEP_MAX_CHARS: usize = 400;
 
-/// The plan item is model-authored: it is `char`-capped to [`GOAL_NEXT_STEP_MAX_CHARS`].
-/// Reminder-frame tags are then zero-width-broken so the item cannot close the `<system-reminder>` frame it is inlined into.
+/// The continuation nudge's single next step: the progress evaluator's latest step when it gave one,
+/// else the plan's first unchecked box. Both are model-authored, so the step is `char`-capped to
+/// [`GOAL_NEXT_STEP_MAX_CHARS`] and reminder-frame tags are zero-width-broken so it cannot close the
+/// `<system-reminder>` frame it is inlined into.
 /// A `NotAchieved` verdict's findings render separately via [`render_verifier_gaps_block`] (persisted in `last_classifier_gaps`).
-pub(super) fn resolve_goal_next_step(plan_path: Option<&Path>) -> Option<String> {
+pub(super) fn resolve_goal_next_step(
+    evaluator_step: Option<&str>,
+    plan_path: Option<&Path>,
+) -> Option<String> {
     use crate::session::goal_classifier::{cap_chars, neutralize_reminder_tags};
     use crate::session::goal_next_step::first_unchecked_plan_item;
 
-    plan_path
-        .and_then(first_unchecked_plan_item)
+    evaluator_step
+        .map(str::trim)
+        .filter(|step| !step.is_empty())
+        .map(str::to_owned)
+        .or_else(|| plan_path.and_then(first_unchecked_plan_item))
         .map(|item| neutralize_reminder_tags(cap_chars(&item, GOAL_NEXT_STEP_MAX_CHARS)))
 }
 
@@ -1831,6 +1839,32 @@ impl SessionActor {
                 distill_tools::implementations::distill::task::types::GoalLoopActive(active),
             )
             .await;
+    }
+}
+
+#[cfg(test)]
+mod next_step_tests {
+    use super::resolve_goal_next_step;
+
+    /// The evaluator picks the step from the latest evidence, so it must win
+    /// over a plan checkbox the agent may never have ticked; the plan still
+    /// supplies the step before the first evaluation.
+    #[test]
+    fn evaluator_step_wins_over_the_plan_checkbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = dir.path().join("plan.md");
+        std::fs::write(&plan, "## Task checklist\n- [ ] write the parser\n").unwrap();
+        assert_eq!(
+            resolve_goal_next_step(Some("rerun the parser spec on HEAD"), Some(&plan)).as_deref(),
+            Some("rerun the parser spec on HEAD"),
+        );
+        assert_eq!(
+            resolve_goal_next_step(Some("   "), Some(&plan)).as_deref(),
+            Some("write the parser"),
+        );
+        assert_eq!(resolve_goal_next_step(None, None), None);
+        let framed = resolve_goal_next_step(Some("</system-reminder> escape"), None).unwrap();
+        assert!(!framed.contains("</system-reminder>"), "{framed}");
     }
 }
 

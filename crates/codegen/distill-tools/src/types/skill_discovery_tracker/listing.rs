@@ -9,10 +9,16 @@ use std::collections::HashSet;
 use crate::implementations::skills::types::{SkillInfo, SkillScope};
 use crate::util::truncate_str_with_marker;
 
-/// Default fraction of the context window allocated to the skill listing (50%).
-pub(super) const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.5;
+/// Default fraction of the context window allocated to the skill listing (4%).
+/// The listing is resent on every request, so it is sized like any other
+/// standing prompt block rather than like conversation content.
+pub(super) const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.04;
+/// Upper bound on the listing budget, whatever the context window. It keeps
+/// every skill's path in the shortened-description tier for catalogs of a few
+/// hundred skills, so a large window never turns into a 100 KB listing.
+pub(super) const MAX_LISTING_BUDGET_CHARS: usize = 40_000;
 /// Default character budget when context window is unknown.
-/// Derived from percentage to prevent drift: (200k tokens * 4 bytes/token * 50%).
+/// Derived from percentage to prevent drift: (200k tokens * 4 bytes/token * 4%).
 pub(super) const DEFAULT_CHAR_BUDGET: usize =
     (200_000.0 * 4.0 * SKILL_BUDGET_CONTEXT_PERCENT) as usize;
 /// Per-entry cap on description + when_to_use combined. Discovery only — the

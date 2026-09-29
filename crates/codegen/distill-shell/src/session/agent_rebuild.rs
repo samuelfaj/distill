@@ -658,12 +658,12 @@ mod legacy_tests {
                     .await
                     .expect("first agent build should succeed");
                 let first_description = task_description(&first);
+                // The slug list is left to the call-time validator, which reads the
+                // live catalog; the description resent every request only says so.
+                assert!(!first_description.contains("alpha-public"), "{first_description}");
                 assert!(
-                    first_description.contains(
-                        "If the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
-                         - alpha-public\n\
-                         - zeta-public"
-                    )
+                    first_description
+                        .contains("an unknown slug is rejected with the list of valid ones")
                 );
                 assert!(!first_description.contains("private-hidden-model"));
                 assert!(!first_description.contains("private-unselectable-model"));
@@ -676,9 +676,14 @@ mod legacy_tests {
                     .expect("Task model validator should be registered");
                 assert!(validator.error_for("alpha-public").is_none());
                 assert!(validator.error_for("private-hidden-model").is_some());
+                let listed = validator.error_for("no-such-model").expect("unknown slug");
+                assert!(listed.contains("alpha-public") && listed.contains("zeta-public"), "{listed}");
+                assert!(!listed.contains("private-hidden-model"), "{listed}");
                 models_manager
                     .insert_test_entry("beta-public", model_entry("internal-beta"));
                 assert!(validator.error_for("beta-public").is_none());
+                let listed = validator.error_for("no-such-model").expect("unknown slug");
+                assert!(listed.contains("beta-public"), "the error reads the live catalog: {listed}");
                 let rebuilt = spec
                     .build_agent(
                         AgentDefinition::default_distill(),
@@ -687,14 +692,7 @@ mod legacy_tests {
                     .await
                     .expect("rebuilt agent should succeed");
                 let rebuilt_description = task_description(&rebuilt);
-                assert!(
-                    rebuilt_description.contains(
-                        "If the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
-                         - alpha-public\n\
-                         - beta-public\n\
-                         - zeta-public"
-                    )
-                );
+                assert!(!rebuilt_description.contains("beta-public"), "{rebuilt_description}");
             })
             .await;
     }

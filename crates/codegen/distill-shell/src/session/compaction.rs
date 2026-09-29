@@ -1549,7 +1549,24 @@ impl SessionActor {
             }
         };
         let generate_session_compact = compact_output.content.clone();
-        let user_message_prefix = self.build_user_message_prefix().await;
+        // The request-aware skill listing survives compaction: the prefix is
+        // rebuilt here anyway, and the latest request is still in the history.
+        let skill_projection = if use_short_prompt {
+            None
+        } else {
+            self.jev_model_skill_projection(None).await
+        };
+        let is_templated_user_message = matches!(
+            &self.agent.borrow().definition().user_message_template,
+            distill_agent::prompt::user_message::UserMessageTemplate::Custom(_)
+        );
+        let user_message_prefix = match skill_projection.as_ref() {
+            Some(projection) if is_templated_user_message => {
+                self.build_user_message_prefix_with_skill_rows(Some(&projection.rows))
+                    .await
+            }
+            _ => self.build_user_message_prefix().await,
+        };
         let conversation = self.chat_state_handle.get_conversation().await;
         let (discovered_agents_md, all_skills_for_compaction, _agent_edited_paths, state_context) =
             if use_short_prompt {
@@ -1846,16 +1863,36 @@ impl SessionActor {
                 format!("<{tag}>\n## Available Workflows\n{listing}\n</{tag}>")
             })
         } else {
-            to_system_reminder(
+            let listed_skills: &[distill_tools::implementations::skills::types::SkillInfo] =
+                if skill_projection.is_some() {
+                    &[]
+                } else {
+                    &all_skills_for_compaction
+                };
+            let reminder = to_system_reminder(
                 &state_context,
                 &discovered_agents_md,
-                &all_skills_for_compaction,
+                listed_skills,
                 memory_ref,
                 subagent_tool_names.as_ref(),
                 mcp_tool_names.as_ref(),
                 workflow_listing.as_deref(),
             )
-            .await
+            .await;
+            match (reminder, skill_projection.as_ref()) {
+                (Some(text), Some(projection)) => Some(super::goal_support::splice_goal_section(
+                    &text,
+                    &format!("## Available Skills\n{}", projection.envelope),
+                )),
+                (None, Some(projection)) => {
+                    let tag = self.reminder_wrapper_tag();
+                    Some(format!(
+                        "<{tag}>\n## Available Skills\n{}\n</{tag}>",
+                        projection.envelope
+                    ))
+                }
+                (reminder, None) => reminder,
+            }
         };
         let v2_memory_context = if self.memory.can_expose_v2() {
             if let Some(storage) = self.memory.storage() {

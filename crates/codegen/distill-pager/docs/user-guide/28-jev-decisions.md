@@ -32,10 +32,10 @@ enabled = true               # default; false (or GROK_JEV=0) disables everythin
 shadow  = false              # default: Jev decides; true = record only
 
 [jev.ladder]
-p1_tool_family        = true # B4: prune tool families for the turn
+p1_tool_family        = true # B4: add optional tool families when a request needs them
 p2_read_shortlist     = true # A2: pick the read window instead of the whole file
 p3_compaction_recorte = true # D1: which segments the summarizer must see
-p6_skill_suggestion   = true # B5: name the announced skill the request needs
+p6_skill_suggestion   = true # B5: rank the skill catalog for the listing and the turn's hint
 a1_file_to_edit       = true # A1: rank the candidate files
 a3_log_lines          = true # A3: keep the lines that explain a failure
 a4_web_results        = true # A4: rank search results before reading them

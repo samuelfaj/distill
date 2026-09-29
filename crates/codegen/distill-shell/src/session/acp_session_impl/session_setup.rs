@@ -117,7 +117,10 @@ impl SessionActor {
     }
     /// Await the background prefix and inject at conversation index 1.
     #[tracing::instrument(skip_all)]
-    pub(super) async fn ensure_prefix_ready(&self) {
+    /// `incoming` is the human request that triggered the call, when there is
+    /// one: the conversation does not hold it yet, and the skill projection
+    /// needs it to pick the skills this session starts with.
+    pub(super) async fn ensure_prefix_ready(&self, incoming: Option<&str>) {
         let Some((mut handle, full_wait)) = self.deferred_prefix.take() else {
             return;
         };
@@ -163,7 +166,7 @@ impl SessionActor {
         // so apply the request-aware model projection at the last safe point
         // before it enters the conversation. The full catalog remains owned by
         // SkillManager and continues to back slash commands/discovery.
-        let model_skill_projection = self.jev_model_skill_projection().await;
+        let model_skill_projection = self.jev_model_skill_projection(incoming).await;
         let trusted_skill_listing = if model_skill_projection.is_some() {
             self.tool_bridge_handle()
                 .skill_listing_snapshot()

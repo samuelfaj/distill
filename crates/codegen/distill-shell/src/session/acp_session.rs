@@ -1532,6 +1532,9 @@ mod support;
 #[path = "acp_session_tests/usage_categories_tests.rs"]
 mod usage_categories_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/skill_projection_tests.rs"]
+mod skill_projection_tests;
+#[cfg(test)]
 mod managed_gateway_descriptor_tests {
     use super::*;
     use distill_tools::types::output::{MCPOutput, ToolOutput};

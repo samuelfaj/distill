@@ -261,7 +261,9 @@ fn description_template_keeps_real_delimiters() {
     assert!(template.contains("${{ params.feedback.failure_mode }}"));
     assert!(template.contains("${%- if tools.by_kind.ask_user %}"));
     assert!(template.contains("${{ tools.by_kind.ask_user }}"));
-    assert!(template.contains("${{ feedback_drafts_path }}"));
+    // A per-session path would make the tools array differ between sessions.
+    assert!(!template.contains("drafts file is"));
+    assert!(!template.contains("Grok"), "the product is Distill");
     assert!(!template.contains("${ params."));
     assert!(!template.contains("${- if"));
 }
@@ -300,19 +302,14 @@ fn advertised_description(renderer: &TemplateRenderer) -> String {
 
 #[test]
 fn advertised_description_renders_present_names_and_omits_absent_ones() {
-    let drafts = drafts_file_path(std::path::Path::new("/tmp/session"));
-    let text = advertised_description(
-        &feedback_renderer(HashMap::from([
-            (ToolKind::Feedback, "send_feedback".to_owned()),
-            (ToolKind::AskUser, "ask_user_question".to_owned()),
-        ]))
-        .with_feedback_drafts_path(&drafts),
-    );
+    let text = advertised_description(&feedback_renderer(HashMap::from([
+        (ToolKind::Feedback, "send_feedback".to_owned()),
+        (ToolKind::AskUser, "ask_user_question".to_owned()),
+    ])));
     for name in ["draft_id", "title", "details", "area", "failure_mode"] {
         assert!(text.contains(name), "{name} missing from {text}");
     }
     assert!(text.contains("ask_user_question"), "{text}");
-    assert!(text.contains(&drafts), "{text}");
     assert!(!text.contains("${"), "{text}");
 
     let text = advertised_description(&feedback_renderer(HashMap::from([(

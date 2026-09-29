@@ -263,7 +263,7 @@ pub(crate) async fn run_goal_strategist(
     let plan_file_str = inputs.plan_file.to_string_lossy();
     let traces_dir_str = inputs.session_traces_dir.to_string_lossy();
     let scratch_root_str = inputs.scratch_root.to_string_lossy();
-    let with_paths = GOAL_STRATEGIST_PROMPT_TEMPLATE
+    let with_paths = distill_agent::prompt::template::strip_source_notice(GOAL_STRATEGIST_PROMPT_TEMPLATE)
         .replace("{STRATEGY_FILE}", &strategy_file_str)
         .replace("{PLAN_FILE}", &plan_file_str)
         .replace("{SESSION_TRACES_DIR}", &traces_dir_str)

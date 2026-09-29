@@ -372,8 +372,13 @@ fn render_model_skill_descriptor_rows_base(skills: &[SkillInfo]) -> String {
 /// discovery announcements. It never serializes `SkillInfo::body`; loaded
 /// instructions therefore remain lossless in the full catalog and on skill
 /// invocation while the request carries only metadata and a recovery path.
+///
+/// `other_names` lists the omitted skills by name only, so the model still sees
+/// the whole catalog at a fraction of its size; it renders only next to a
+/// recovery path, which is where their descriptions and paths live.
 pub fn render_model_skill_descriptors(
     skills: &[SkillInfo],
+    other_names: &[String],
     read_tool_name: &str,
     recovery_path: Option<&str>,
 ) -> String {
@@ -385,12 +390,59 @@ pub fn render_model_skill_descriptors(
     } else {
         "These are the complete available descriptors for this request."
     };
-    let recovery_note = recovery.map_or_else(String::new, |path| {
+    let recovery_note = recovery.as_ref().map_or_else(String::new, |path| {
         format!(" Full catalog index for recovery: use the {read_tool} tool on {path}.")
     });
+    let others = if recovery.is_some() && !other_names.is_empty() {
+        let names: Vec<String> = other_names.iter().map(|name| xml_attribute(name)).collect();
+        format!(
+            "\n<other_skills description=\"Also available, listed by name only. Look up a skill's path in the full catalog index before reading it.\">{}</other_skills>",
+            names.join(", ")
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<agent_skills>\n<available_skills description=\"Selected skill descriptors for this request. Use the {read_tool} tool with each absolute path for full instructions. {availability}{recovery_note}\">\n{rows}\n</available_skills>\n</agent_skills>"
+        "<agent_skills>\n<available_skills description=\"Selected skill descriptors for this request. Use the {read_tool} tool with each absolute path for full instructions. {availability}{recovery_note}\">\n{rows}\n</available_skills>{others}\n</agent_skills>"
     )
+}
+
+/// Selects descriptors from a ranking computed elsewhere (the Jev P6 pass):
+/// explicit and active pins first, then ranked skills in order, `limit` in
+/// total. Pins are kept even beyond `limit`, as in [`select_model_skills`].
+pub fn select_ranked_skills(
+    catalog: &[SkillInfo],
+    pinned_names: &[String],
+    active_names: &[String],
+    ranked_keys: &[String],
+    limit: usize,
+) -> Vec<SkillInfo> {
+    let mut seen = HashSet::new();
+    let mut selected: Vec<SkillInfo> = catalog
+        .iter()
+        .filter(|skill| skill.enabled)
+        .filter(|skill| {
+            pinned_names
+                .iter()
+                .chain(active_names)
+                .any(|name| skill_name_matches(skill, name))
+        })
+        .filter(|skill| seen.insert(skill.dedup_key()))
+        .cloned()
+        .collect();
+    let take = limit.max(selected.len());
+    for key in ranked_keys {
+        if selected.len() >= take {
+            break;
+        }
+        if let Some(skill) = catalog.iter().find(|skill| {
+            skill.enabled && !skill.disable_model_invocation && skill.dedup_key() == *key
+        }) && seen.insert(skill.dedup_key())
+        {
+            selected.push(skill.clone());
+        }
+    }
+    selected
 }
 
 /// Canonical source of all config directories that may contain skills.
@@ -1868,14 +1920,14 @@ mod tests {
             manual_selected[0].body.as_deref(),
             Some("manual instructions")
         );
-        let rendered_pins = render_model_skill_descriptors(&manual_selected, "Read", None);
+        let rendered_pins = render_model_skill_descriptors(&manual_selected, &[], "Read", None);
         assert!(
             rendered_pins.contains("manual-only"),
             "an explicit manual-only pin remains visible in the compact projection"
         );
 
         assert!(select_model_skills("unmatched capability", &catalog, &[], &[], 8).is_empty());
-        let recovery = render_model_skill_descriptors(&[], "Read", Some("/tmp/skills.json"));
+        let recovery = render_model_skill_descriptors(&[], &[], "Read", Some("/tmp/skills.json"));
         assert!(recovery.contains("normal discovery"));
         assert!(recovery.contains("not disabled"));
         assert!(recovery.contains("/tmp/skills.json"));
@@ -1887,11 +1939,58 @@ mod tests {
         skill.description = "x".repeat(MODEL_SKILL_DESCRIPTION_CHARS + 20);
         skill.when_to_use = Some("y".repeat(MODEL_SKILL_DESCRIPTION_CHARS + 20));
         skill.body = Some("lossless body".to_owned());
-        let rendered = render_model_skill_descriptors(&[skill.clone()], "Read", None);
+        let rendered = render_model_skill_descriptors(&[skill.clone()], &[], "Read", None);
         assert!(rendered.matches('x').count() <= MODEL_SKILL_DESCRIPTION_CHARS + 1);
         assert!(rendered.matches('y').count() <= MODEL_SKILL_DESCRIPTION_CHARS + 1);
         assert!(!rendered.contains("lossless body"));
         assert_eq!(skill.body.as_deref(), Some("lossless body"));
+    }
+
+    /// An external ranking (Jev) decides which skills get descriptors, but
+    /// explicit and active pins always survive, even past the limit.
+    #[test]
+    fn ranked_selection_keeps_pins_then_follows_the_ranking() {
+        let catalog: Vec<SkillInfo> = ["alpha", "beta", "gamma", "delta"]
+            .iter()
+            .map(|name| SkillInfo {
+                name: (*name).to_owned(),
+                description: format!("{name} skill"),
+                path: format!("/skills/{name}/SKILL.md"),
+                enabled: true,
+                ..SkillInfo::default()
+            })
+            .collect();
+        let key = |name: &str| {
+            catalog
+                .iter()
+                .find(|skill| skill.name == name)
+                .unwrap()
+                .dedup_key()
+        };
+        let ranked = vec![key("gamma"), key("beta"), key("alpha")];
+        let selected = select_ranked_skills(&catalog, &[key("delta")], &[], &ranked, 2);
+        let names: Vec<&str> = selected.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["delta", "gamma"]);
+        let pins_only = select_ranked_skills(&catalog, &[key("delta"), key("alpha")], &[], &ranked, 1);
+        assert_eq!(pins_only.len(), 2, "pins are never dropped for the limit");
+    }
+
+    /// Omitted skills stay visible by name next to the recovery index, so the
+    /// model knows they exist without paying for their descriptions.
+    #[test]
+    fn omitted_skills_are_listed_by_name_next_to_the_recovery_index() {
+        let with_index = render_model_skill_descriptors(
+            &[],
+            &["seo-audit".to_owned(), "a<b".to_owned()],
+            "Read",
+            Some("/tmp/skills.json"),
+        );
+        assert!(with_index.contains("<other_skills"));
+        assert!(with_index.contains("seo-audit, a&lt;b"));
+        assert!(with_index.ends_with("</other_skills>\n</agent_skills>"));
+        let without_recovery =
+            render_model_skill_descriptors(&[], &["seo-audit".to_owned()], "Read", None);
+        assert!(!without_recovery.contains("<other_skills"), "names need the recovery index");
     }
 
     #[test]
@@ -1916,11 +2015,7 @@ mod tests {
             selected.is_empty(),
             "the Portuguese request is intentionally not an English lexical match"
         );
-        let rendered = render_model_skill_descriptors(
-            &selected,
-            "Read",
-            handle.to_str(),
-        );
+        let rendered = render_model_skill_descriptors(&selected, &[], "Read", handle.to_str());
         assert!(rendered.contains(handle.to_str().unwrap()));
 
         let recovered: Vec<SkillInfo> =

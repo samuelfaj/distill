@@ -83,6 +83,10 @@ pub(crate) struct TestEvidence {
     pub(crate) cwd: String,
     pub(crate) failed: bool,
     pub(crate) excerpt: String,
+    /// When the harness saw the command finish; the goal verifier compares it
+    /// with the delivered files' modification times.
+    #[serde(skip)]
+    pub(crate) finished_at: std::time::SystemTime,
 }
 
 /// Where the once-per-request plan gate stands.
@@ -331,6 +335,7 @@ impl ReasoningGates {
             cwd,
             failed,
             excerpt: tail_chars(output, TEST_EXCERPT_CHARS),
+            finished_at: std::time::SystemTime::now(),
         };
         self.last_test = Some(check.clone());
         if let Some(previous) = self.checks.iter_mut().find(|previous| {
@@ -1250,6 +1255,7 @@ mod tests {
             cwd: "/repo".into(),
             failed: false,
             excerpt: "1 passed in 0.1s".into(),
+            finished_at: std::time::UNIX_EPOCH,
         };
         gates.checks.push(check.clone());
         let original = gates.review_check_identity();
@@ -1457,6 +1463,7 @@ mod tests {
             command: "cargo test".to_owned(),
             failed: true,
             excerpt: "1 failed".to_owned(),
+            finished_at: std::time::UNIX_EPOCH,
         });
         let state = gates.delivery_state("Done: fixed the parser.");
         assert_eq!(state["changed_files"], 2);

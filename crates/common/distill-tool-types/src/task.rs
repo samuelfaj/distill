@@ -965,7 +965,7 @@ ${%- if tools.by_kind.edit %}
 - NEVER create files unless absolutely necessary. Prefer editing existing files.
 - NEVER create documentation files (*.md) unless explicitly requested.\
 ${%- endif %}
-- Return absolute file paths and relevant code snippets in your final response.
+- Return absolute file paths in your final response; quote code only where a finding depends on the exact text.
 
 Workspace boundary:
 - Default scope is the workspace in <user_info>. Stay within it unless told otherwise.

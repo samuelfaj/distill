@@ -790,7 +790,8 @@ pub const CORE_FAMILIES: &[&str] = &["read", "edit", "execute", "interact", "web
 
 /// Every family the pruner knows about, in a stable order.
 pub const TOOL_FAMILIES: &[&str] = &[
-    "read", "edit", "execute", "interact", "web", "delegate", "mcp",
+    "read", "edit", "execute", "interact", "web", "delegate", "mcp", "media", "schedule",
+    "feedback",
 ];
 
 /// Probability at or above which a non-core family survives the pruning.
@@ -840,8 +841,26 @@ pub fn tool_family_of(name: &str) -> Option<&'static str> {
             | "wait_tasks"
             | "send_subagent_message"
             | "spawn_agent"
+            | "spawn_subagent"
     ) {
         "delegate"
+    } else if matches!(
+        lower.as_str(),
+        "get_command_or_subagent_output" | "kill_command_or_subagent" | "wait_commands_or_subagents"
+    ) {
+        "execute"
+    } else if matches!(
+        lower.as_str(),
+        "image_gen" | "image_edit" | "image_to_video" | "reference_to_video"
+    ) {
+        "media"
+    } else if matches!(
+        lower.as_str(),
+        "scheduler_create" | "scheduler_delete" | "scheduler_list"
+    ) {
+        "schedule"
+    } else if lower == "send_feedback" {
+        "feedback"
     } else if matches!(
         lower.as_str(),
         "ask_user_question" | "todo_write" | "update_plan" | "exit_plan_mode" | "enter_plan_mode"
@@ -871,10 +890,16 @@ pub fn tool_family_questions(
     }
     let mut questions = BTreeMap::new();
     for family in families {
+        let instruction = match family {
+            "media" => "Does the request ask to generate, edit or animate an image or a video?".to_owned(),
+            "schedule" => "Does the request ask to schedule, list or cancel a task that runs later or on a recurring timer?".to_owned(),
+            "feedback" => "Is the user giving feedback about this assistant or its tools, or asking to report a problem with them?".to_owned(),
+            other => format!("Does this turn need the `{other}` tool family?"),
+        };
         questions.insert(
             format!("family_{family}"),
             Question::noul_with_criteria(
-                format!("Does this turn need the `{family}` tool family?"),
+                instruction,
                 "At least one tool of this family is plausibly needed",
                 "Nothing in this turn calls for this family",
             ),
@@ -883,12 +908,12 @@ pub fn tool_family_questions(
     Ok(questions)
 }
 
-/// The pruned tool list, or `None` to keep every tool.
-///
-/// Unknown tools (no family) are kept, core families are kept, and a family is
-/// kept when its probability clears [`FAMILY_KEEP_FLOOR`]. A missing answer for
-/// any family returns `None` — the caller then offers everything.
-pub fn keep_tools(names: &[String], answers: &JevAnswerSet) -> Option<Vec<String>> {
+/// Keep/drop per prunable family present in `names`, or `None` when any of
+/// them went unanswered (the caller then offers everything).
+pub fn family_decisions(
+    names: &[String],
+    answers: &JevAnswerSet,
+) -> Option<BTreeMap<&'static str, bool>> {
     let mut decisions: BTreeMap<&'static str, bool> = BTreeMap::new();
     for name in names {
         let Some(family) = tool_family_of(name) else {
@@ -897,14 +922,82 @@ pub fn keep_tools(names: &[String], answers: &JevAnswerSet) -> Option<Vec<String
         if CORE_FAMILIES.contains(&family) || decisions.contains_key(family) {
             continue;
         }
-        let Some(probability) = super::noul_of(answers, &format!("family_{family}")) else {
-            return None;
-        };
+        let probability = super::noul_of(answers, &format!("family_{family}"))?;
         decisions.insert(family, probability >= FAMILY_KEEP_FLOOR);
     }
-    if decisions.is_empty() {
-        return None;
+    (!decisions.is_empty()).then_some(decisions)
+}
+
+/// The session's optional tool families. A family joins the tool set the first
+/// time a human request needs it and never leaves: the tools array opens the
+/// cached prompt prefix, so a family that came and went would re-bill the
+/// whole conversation. A family not needed yet is asked about again only when
+/// a new human request arrives.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolFamilySelection {
+    included: std::collections::BTreeSet<String>,
+    asked_for: Option<String>,
+}
+
+impl ToolFamilySelection {
+    /// Optional families present in `names` that the session has not included.
+    /// `mcp_prunable` is false when nothing can find a dropped MCP tool again.
+    pub fn pending(&self, names: &[String], mcp_prunable: bool) -> Vec<&'static str> {
+        let mut pending = Vec::new();
+        for name in names {
+            if let Some(family) = tool_family_of(name)
+                && !CORE_FAMILIES.contains(&family)
+                && (mcp_prunable || family != "mcp")
+                && !self.included.contains(family)
+                && !pending.contains(&family)
+            {
+                pending.push(family);
+            }
+        }
+        pending
     }
+
+    /// Whether `request` still needs an answer about the pending families.
+    pub fn should_ask(&self, request: &str) -> bool {
+        self.asked_for.as_deref() != Some(request)
+    }
+
+    /// Records the answer for `request`. Families judged needed join the set;
+    /// with no answer every pending family joins, which is today's full set.
+    pub fn record(
+        &mut self,
+        request: &str,
+        pending: &[&'static str],
+        decisions: Option<&BTreeMap<&'static str, bool>>,
+    ) {
+        for family in pending {
+            let keep = decisions.is_none_or(|d| d.get(family).copied().unwrap_or(true));
+            if keep {
+                self.included.insert((*family).to_owned());
+            }
+        }
+        self.asked_for = Some(request.to_owned());
+    }
+
+    /// Whether a tool stays in the request: core and unknown tools always do,
+    /// optional ones once their family is included.
+    pub fn keeps(&self, name: &str, mcp_prunable: bool) -> bool {
+        match tool_family_of(name) {
+            None => true,
+            Some(family) if CORE_FAMILIES.contains(&family) => true,
+            Some("mcp") if !mcp_prunable => true,
+            Some(family) => self.included.contains(family),
+        }
+    }
+}
+
+/// The pruned tool list, or `None` to keep every tool.
+///
+/// Unknown tools (no family) are kept, core families are kept, and a family is
+/// kept when its probability clears [`FAMILY_KEEP_FLOOR`]. A missing answer for
+/// any family returns `None` — the caller then offers everything.
+pub fn keep_tools(names: &[String], answers: &JevAnswerSet) -> Option<Vec<String>> {
+    let decisions = family_decisions(names, answers)?;
     Some(
         names
             .iter()
@@ -1035,6 +1128,61 @@ mod tests {
             choice("made-up", 0.99, &[("made-up", 0.99)]),
         )]);
         assert_eq!(compose_subagent_type(&invented, &definitions), None);
+    }
+
+    /// Media, scheduling and feedback tools were sent on every request but
+    /// almost never used; they are optional families with plain questions.
+    #[test]
+    fn rarely_used_internal_tools_form_optional_families() {
+        let names: Vec<String> = [
+            "read_file",
+            "spawn_subagent",
+            "get_command_or_subagent_output",
+            "image_gen",
+            "reference_to_video",
+            "scheduler_create",
+            "send_feedback",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(tool_family_of("spawn_subagent"), Some("delegate"));
+        assert_eq!(tool_family_of("get_command_or_subagent_output"), Some("execute"));
+        let questions = tool_family_questions(&names).expect("optional families present");
+        for family in ["media", "schedule", "feedback"] {
+            assert!(questions.contains_key(&format!("family_{family}")), "{family}");
+        }
+        assert!(!questions.contains_key("family_delegate"));
+    }
+
+    /// A family joins when a request needs it and never leaves, so the tools
+    /// array (the start of the cached prefix) only changes when it must.
+    #[test]
+    fn tool_family_selection_only_grows_and_asks_once_per_request() {
+        let names: Vec<String> = ["read_file", "image_gen", "scheduler_list", "mcp__acme__deploy"]
+            .map(str::to_owned)
+            .to_vec();
+        let mut selection = ToolFamilySelection::default();
+        let pending = selection.pending(&names, false);
+        assert_eq!(pending, ["media", "schedule"], "mcp stays core without search_tool");
+        let coding = BTreeMap::from([("media", false), ("schedule", false)]);
+        selection.record("fix the parser", &pending, Some(&coding));
+        assert!(!selection.should_ask("fix the parser"));
+        assert!(!selection.keeps("image_gen", false));
+        assert!(selection.keeps("read_file", false) && selection.keeps("mcp__acme__deploy", false));
+
+        let icon = BTreeMap::from([("media", true), ("schedule", false)]);
+        assert!(selection.should_ask("draw an icon for the app"));
+        selection.record("draw an icon for the app", &selection.pending(&names, false), Some(&icon));
+        assert!(selection.keeps("image_gen", false));
+
+        let later = BTreeMap::from([("schedule", false)]);
+        selection.record("fix the parser again", &selection.pending(&names, false), Some(&later));
+        assert!(selection.keeps("image_gen", false), "an included family never leaves");
+        assert!(!selection.keeps("scheduler_list", false));
+
+        let mut offline = ToolFamilySelection::default();
+        offline.record("anything", &offline.pending(&names, false), None);
+        assert!(offline.keeps("image_gen", false) && offline.keeps("scheduler_list", false));
     }
 
     #[test]

@@ -270,6 +270,7 @@ const SYSTEM_TAGS: &[&str] = &[
     "command-message",
     "command-args",
     "rules",
+    "skill_relevance",
 ];
 /// Strip all known system/metadata tag blocks from `text`.
 /// Unclosed tags are left untouched.

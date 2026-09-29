@@ -2,7 +2,7 @@
 use crate::agent::Agent;
 use crate::compaction::CompactionPolicy;
 use crate::config::{AGENT_TASK_CLASSIFIER_RE, short_tool_name, tool_id_eq, tool_id_matches};
-use crate::config::{AgentDefinition, BuiltinAgentName, PermissionMode, PromptMode};
+use crate::config::{AgentDefinition, AgentScope, BuiltinAgentName, PermissionMode, PromptMode};
 use crate::discovery::{SubagentEntry, SubagentSource};
 use crate::error::AgentBuildError;
 use crate::prompt::context::{PromptAudience, PromptContext};
@@ -740,24 +740,6 @@ impl AgentBuilder {
                     .tools
                     .push((&distill_tools::implementations::distill::LspTool).into());
             }
-            if self.image_gen_config.image_gen_enabled() {
-                tool_config
-                    .tools
-                    .push((&distill_tools::implementations::distill::ImageGenTool).into());
-            }
-            if self.image_gen_config.image_edit_enabled() {
-                tool_config
-                    .tools
-                    .push((&distill_tools::implementations::distill::ImageEditTool).into());
-            }
-            if self.video_gen_config.is_enabled() {
-                tool_config
-                    .tools
-                    .push((&distill_tools::implementations::distill::ImageToVideoTool).into());
-                tool_config.tools.push(
-                    (&distill_tools::implementations::distill::ReferenceToVideoTool).into(),
-                );
-            }
             let has_write_tool = tool_config
                 .tools
                 .iter()
@@ -766,6 +748,28 @@ impl AgentBuilder {
             let has_edit_tool = tool_config.tools.iter().any(|tc| {
                 tc.kind.or_else(|| known_kinds.get(&tc.id).copied()) == Some(ToolKind::Edit)
             });
+            // Image and video tools create files, so an agent that cannot write
+            // files (explore, plan, code-reviewer, a read-only child) never gets
+            // them; it would only carry their schemas on every request.
+            let can_write_files = has_write_tool || has_edit_tool;
+            if can_write_files && self.image_gen_config.image_gen_enabled() {
+                tool_config
+                    .tools
+                    .push((&distill_tools::implementations::distill::ImageGenTool).into());
+            }
+            if can_write_files && self.image_gen_config.image_edit_enabled() {
+                tool_config
+                    .tools
+                    .push((&distill_tools::implementations::distill::ImageEditTool).into());
+            }
+            if can_write_files && self.video_gen_config.is_enabled() {
+                tool_config
+                    .tools
+                    .push((&distill_tools::implementations::distill::ImageToVideoTool).into());
+                tool_config.tools.push(
+                    (&distill_tools::implementations::distill::ReferenceToVideoTool).into(),
+                );
+            }
             if self.write_file_enabled && !has_write_tool && has_edit_tool {
                 tool_config
                     .tools
@@ -1372,35 +1376,40 @@ pub(crate) struct ChildToolPreview {
 }
 pub(crate) type ChildToolNames = HashMap<BuiltinAgentName, ChildToolPreview>;
 const TASK_MODEL_PARAM: &str = "${{ params.task.model }}";
+/// Model guidance for the task tool. The slug list itself is not repeated in
+/// the description, which every request resends: an unknown slug is rejected
+/// at call time with the current list (`TaskModelValidator`).
 fn task_model_guidance(model_slugs: &[String]) -> String {
-    let mut model_slugs = model_slugs.to_vec();
-    model_slugs.sort_unstable();
-    model_slugs.dedup();
-    if model_slugs.is_empty() {
-        return format!(
-            "\n\nNo explicit model slugs are currently available. \
-             Omit `{TASK_MODEL_PARAM}`: a subagent runs on the main model, and plan and \
-             code-reviewer run on the configured reasoning model unless pinned in \
-             [subagents.models]. Explicit model pins remain \
-             authoritative, and resumed or full-context forked children retain their existing \
-             model/context semantics."
-        );
-    }
-    let model_list = model_slugs
-        .into_iter()
-        .map(|slug| format!("- {slug}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let availability = if model_slugs.is_empty() {
+        "No explicit model slugs are currently available. "
+    } else {
+        "Set it only when the user explicitly asks for a specific model; an unknown slug is rejected with the list of valid ones. "
+    };
     format!(
-        "\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use \
-         model slugs from this list:\n\
-         {model_list}\n\n\
-         Otherwise omit `{TASK_MODEL_PARAM}`: a subagent runs on the main model, and plan and \
+        "\n\n{availability}Otherwise omit `{TASK_MODEL_PARAM}`: a subagent runs on the main model, and plan and \
          code-reviewer run on the configured reasoning model unless pinned in \
          [subagents.models]. Explicit model pins remain \
-         authoritative, and resumed or full-context \
-         forked children retain their existing model/context semantics."
+         authoritative, and resumed or full-context forked children retain their existing \
+         model/context semantics."
     )
+}
+/// Longest description kept for a user-level, bundled or plugin agent type in
+/// the task tool. Project agents and built-ins keep theirs in full.
+const USER_AGENT_DESCRIPTION_CHARS: usize = 100;
+/// First sentence of `description`, capped at `limit` characters.
+fn first_sentence(description: &str, limit: usize) -> String {
+    let text = description.trim();
+    let end = text
+        .char_indices()
+        .find(|(i, c)| *c == '\n' || (*c == '.' && text[i + 1..].starts_with(char::is_whitespace)))
+        .map_or(text.len(), |(i, c)| if c == '.' { i + 1 } else { i });
+    let sentence = text[..end].trim();
+    if sentence.chars().count() <= limit {
+        return sentence.to_owned();
+    }
+    let mut cut: String = sentence.chars().take(limit).collect();
+    cut.push('…');
+    cut
 }
 /// Defers to [`distill_tool_types::build_task_description`] so the CLI and the prod chat stack share one builder.
 /// A built-in entry lists the tools its preview resolved, falling back to the static template when no preview exists;
@@ -1423,9 +1432,17 @@ pub(crate) fn build_task_description(
                 }),
                 SubagentSource::UserDefined { .. } => None,
             };
+            // User-level, bundled and plugin agents rarely match the repository at
+            // hand, yet every request resends their descriptions; keep one line.
+            let description = match &entry.source {
+                SubagentSource::UserDefined { scope } if *scope != AgentScope::Project => {
+                    first_sentence(&entry.description, USER_AGENT_DESCRIPTION_CHARS)
+                }
+                _ => entry.description.clone(),
+            };
             distill_tool_types::SubagentDescriptor {
                 name: entry.name.clone(),
-                description: entry.description.clone(),
+                description,
                 tools,
             }
         })
@@ -1874,8 +1891,10 @@ mod tests {
             "type without a preview keeps the static fragment: {desc}"
         );
     }
+    /// The slug list is resent with every request but only matters when the
+    /// user names a model; the call-time validator returns it instead.
     #[test]
-    fn build_task_description_lists_public_model_slugs() {
+    fn build_task_description_leaves_the_slug_list_to_the_validator() {
         let subagents = vec![entry(
             "explore",
             "Explore.",
@@ -1886,9 +1905,27 @@ mod tests {
             &["zeta".to_string(), "alpha".to_string(), "alpha".to_string()],
             &ChildToolNames::new(),
         );
-        assert!(desc.contains("- alpha\n- zeta"));
+        assert!(!desc.contains("- alpha"), "{desc}");
+        assert!(desc.contains("an unknown slug is rejected with the list of valid ones"));
         assert!(desc.contains("${{ params.task.model }}"));
         assert!(desc.contains("runs on the main model"));
+    }
+
+    /// User-level and plugin agents keep one line; project agents, which were
+    /// written for this repository, keep their whole description.
+    #[test]
+    fn build_task_description_shortens_user_level_agents_only() {
+        let long = "Budget and bidding specialist. Audits budget allocation, bidding strategies, learning phase health and campaign structure.";
+        let subagents = vec![
+            entry("audit-budget", long, SubagentSource::UserDefined { scope: AgentScope::User }),
+            entry("repo-agent", long, SubagentSource::UserDefined { scope: AgentScope::Project }),
+        ];
+        let desc = build_task_description(&subagents, &[], &ChildToolNames::new());
+        assert!(desc.contains("Budget and bidding specialist."));
+        assert_eq!(desc.matches("Audits budget allocation").count(), 1, "{desc}");
+        assert_eq!(first_sentence("One. Two.", 100), "One.");
+        assert_eq!(first_sentence(&"x".repeat(150), 10), format!("{}…", "x".repeat(10)));
+        assert_eq!(first_sentence("v1.2 parser: fast", 100), "v1.2 parser: fast");
     }
     #[test]
     fn build_task_description_handles_empty_model_catalog() {
@@ -2299,9 +2336,10 @@ mod tests {
             "{general_purpose}"
         );
     }
-    /// "Read-only" follows the read-only capability allowlist, so a child handed a generating tool loses the prefix.
+    /// A read-only child never receives the generating tools, so explore stays
+    /// "Read-only" and its schema stays small even with image generation on.
     #[tokio::test]
-    async fn explore_fragment_drops_read_only_prefix_when_image_generation_is_enabled() {
+    async fn explore_stays_read_only_when_image_generation_is_enabled() {
         use distill_tools::implementations::distill::image_gen::ImageGenConfig;
         let image_gen = ImageGenConfig::Enabled {
             api_key: "test-key".into(),
@@ -2315,8 +2353,10 @@ mod tests {
         };
         let defs = previewing_primary(|builder| builder.with_image_gen_config(image_gen)).await;
         let explore = task_type_line(&defs, "explore");
-        assert!(explore.contains("image_gen"), "{explore}");
-        assert!(!explore.contains("Read-only"), "{explore}");
+        assert!(!explore.contains("image_gen"), "{explore}");
+        assert!(explore.contains("Read-only"), "{explore}");
+        let general_purpose = task_type_line(&defs, "general-purpose");
+        assert!(general_purpose.contains("image_gen"), "{general_purpose}");
     }
     /// Write follows the edit tool and plan mode never reaches a child, whatever the built-in type's toolset.
     /// Children are built at the default depth, so nested subagents stay disabled as in production.

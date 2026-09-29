@@ -314,7 +314,11 @@ Just generate the session_title and nothing else"#,
     }])
     .with_max_output_tokens(INITIAL_TITLE_MAX_OUTPUT_TOKENS)
     .with_temperature(1.0)
-    .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()));
+    // A named-function tool_choice is rejected by some backends (every
+    // initial-title call failed on the ChatGPT Codex backend and on OpenRouter
+    // Muse while their other requests succeeded). With `Auto` the model still
+    // calls the only tool, and a plain-text title is accepted below.
+    .with_tool_choice(ConversationToolChoice::Auto);
 
     let (response_result, rejected_response) = client
         .conversation_collect_with_idle_timeout_and_rejection(
@@ -340,6 +344,16 @@ Just generate the session_title and nothing else"#,
                     model = %model,
                     "session title generation returned an empty session_title"
                 );
+            }
+            if let Some(title) = response
+                .assistant()
+                .and_then(|a| title_display_text(&a.content))
+            {
+                return InitialTitleGeneration {
+                    title,
+                    status: distill_chat_state::UsageCallStatus::Completed,
+                    response: Some(response),
+                };
             }
             tracing::debug!(
                 model = %model,

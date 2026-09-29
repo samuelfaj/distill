@@ -544,101 +544,167 @@ pub fn measure_recorte(
 // P6 — which announced skill matters
 // ---------------------------------------------------------------------------
 
-/// One announced skill the harness can suggest (name + one-line description).
+/// One skill offered to the P6 ranking: `name` is the option key (the caller's
+/// stable id for the skill) and `description` its one-line text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillCandidate {
     pub name: String,
     pub description: String,
 }
 
-/// Result of a P6 decision.
+/// Result of a P6 ranking over the catalog.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SkillSuggestion {
-    /// The chosen skill, or `None` when nothing (or nothing confidently) fits.
-    pub skill: Option<String>,
-    /// Probability mass the model put on "no skill applies".
-    pub none_probability: Option<f64>,
-    pub confidence: Option<f64>,
+pub struct SkillRanking {
+    /// Candidate names by descending probability; `none` is excluded.
+    pub ranked: Vec<(String, f64)>,
+    /// Mean of the gate nouls, oriented so that high means "this turn needs a
+    /// documented procedure"; `None` when Jev answered none of them.
+    pub gate: Option<f64>,
+    /// The skill to point this turn at, or `None` when nothing fits confidently.
+    pub suggestion: Option<String>,
 }
 
-/// Top-label probability needed to name a skill; below it the suggestion is
-/// dropped entirely (item 111: an uncertain pick falls back to the generic path).
-pub const P6_MIN_CONFIDENCE: f64 = 0.60;
 /// Label used for "nothing in this turn needs a skill".
 pub const P6_NONE_LABEL: &str = "none";
+/// Mean gate noul below which no skill is suggested. Starting point from
+/// TypeSafe's skill-suggestion cookbook; calibrate on real turns.
+pub const P6_GATE_THRESHOLD: f64 = 0.30;
+/// Probability the top skill needs before the turn is pointed at it.
+pub const P6_SUGGEST_MIN_PROBABILITY: f64 = 0.40;
+/// Probability a skill needs to earn a full descriptor in the session listing.
+pub const P6_DESCRIPTOR_MIN_PROBABILITY: f64 = 0.02;
+/// Longest description sent for one option; shorter for large catalogs.
+pub const P6_OPTION_CHARS_MAX: usize = 160;
+const P6_OPTION_CHARS_MIN: usize = 24;
+/// Bytes all options of one request may use, under the client's request
+/// ceiling with room for the state and the gate questions.
+const P6_OPTIONS_BUDGET_BYTES: usize = 52 * 1024;
+/// Per-option overhead of the JSON encoding (key, quotes, separators).
+const P6_OPTION_OVERHEAD_BYTES: usize = 48;
 
-/// One `choice` over the announced skills plus the explicit `none` option.
+/// The cookbook's gate: whether the turn asks for action that a documented
+/// procedure serves, rather than an explanation. `true` marks the question
+/// whose "yes" points away from needing a skill.
+const P6_GATES: [(&str, &str, bool); 3] = [
+    (
+        "gate_acts",
+        "Is the assistant being asked to act on the user's files, repository, accounts, devices or online services, rather than only to explain or advise?",
+        false,
+    ),
+    (
+        "gate_procedure",
+        "Would a careful expert handling this request consult a specific documented procedure or set of commands, rather than work from general understanding?",
+        false,
+    ),
+    (
+        "gate_prose",
+        "Could a knowledgeable generalist fully satisfy this request in prose, with no tools, no documentation and no access to the user's files or accounts?",
+        true,
+    ),
+];
+
+fn option_chars(count: usize) -> usize {
+    (P6_OPTIONS_BUDGET_BYTES / count.max(1))
+        .saturating_sub(P6_OPTION_OVERHEAD_BYTES)
+        .clamp(P6_OPTION_CHARS_MIN, P6_OPTION_CHARS_MAX)
+}
+
+fn chunk_question_id(chunk: usize, chunks: usize) -> String {
+    if chunks == 1 {
+        "best_skill".to_owned()
+    } else {
+        format!("best_skill_{chunk}")
+    }
+}
+
+/// One `choice` over the whole catalog (split into several when it exceeds
+/// one question's option ceiling), each with an explicit `none`, plus the
+/// three gate nouls, all in one request.
+///
+/// The candidate list is every skill the harness would offer the model, each
+/// description bounded. It is not a lexical shortlist: a choice cannot pick an
+/// option the code dropped, and TypeSafe's guidance is to send the full list.
 pub fn skill_questions(
     skills: &[SkillCandidate],
 ) -> Result<BTreeMap<QuestionId, Question>, JevError> {
     if skills.is_empty() {
         return Err(JevError::invalid("no announced skills to rank"));
     }
-    if skills.len() + 1 > MAX_CHOICE_OPTIONS {
-        return Err(JevError::invalid(format!(
-            "{} skills over the ceiling for one choice question",
-            skills.len()
-        )));
-    }
-    let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
-    for skill in skills {
-        criteria.insert(skill.name.clone(), Json::String(skill.description.clone()));
-    }
-    criteria.insert(
-        P6_NONE_LABEL.to_owned(),
-        Json::String("Nothing in this turn needs a skill".to_owned()),
-    );
+    let per_chunk = MAX_CHOICE_OPTIONS - 1;
+    let chunks = skills.len().div_ceil(per_chunk);
+    let chars = option_chars(skills.len());
     let mut questions = BTreeMap::new();
-    questions.insert(
-        "best_skill".to_owned(),
-        Question::choice(
-            "Which single announced skill does this turn need, if any? Choose `none` when nothing applies.",
-            criteria,
-        )?,
-    );
+    for (index, chunk) in skills.chunks(per_chunk).enumerate() {
+        let mut criteria: BTreeMap<String, Json> = BTreeMap::new();
+        for skill in chunk {
+            let text: String = skill.description.chars().take(chars).collect();
+            criteria.insert(skill.name.clone(), Json::String(text));
+        }
+        criteria.insert(
+            P6_NONE_LABEL.to_owned(),
+            Json::String("Nothing in this turn needs one of these skills".to_owned()),
+        );
+        questions.insert(
+            chunk_question_id(index, chunks),
+            Question::choice(
+                "Which of these skills, if any, is the right one to load to help with the user's latest request? Choose `none` when nothing applies.",
+                criteria,
+            )?,
+        );
+    }
+    for (id, text, _) in P6_GATES {
+        questions.insert(id.to_owned(), Question::noul(text));
+    }
     Ok(questions)
 }
 
-/// Composes the suggestion, dropping anything uncertain (never a second call).
-pub fn compose_skill_suggestion(answers: &JevAnswerSet) -> SkillSuggestion {
-    let confidence = answers.confidence("best_skill");
-    let none_probability = answers.probability("best_skill", P6_NONE_LABEL);
-    let choice = answers.choice("best_skill").map(str::to_owned);
-    let Some(choice) = choice else {
-        return SkillSuggestion {
-            skill: None,
-            none_probability,
-            confidence,
-        };
-    };
-    if choice == P6_NONE_LABEL {
-        return SkillSuggestion {
-            skill: None,
-            none_probability,
-            confidence,
-        };
+/// Reads a [`skill_questions`] battery back into a ranking and, when the gate
+/// and the top probability both clear their bars, a suggestion.
+pub fn compose_skill_ranking(answers: &JevAnswerSet, skills: &[SkillCandidate]) -> SkillRanking {
+    let per_chunk = MAX_CHOICE_OPTIONS - 1;
+    let chunks = skills.len().div_ceil(per_chunk).max(1);
+    let mut ranked = Vec::new();
+    let mut none_of_top_chunk = BTreeMap::new();
+    for (index, chunk) in skills.chunks(per_chunk).enumerate() {
+        let id = chunk_question_id(index, chunks);
+        let none = answers.probability(&id, P6_NONE_LABEL).unwrap_or(0.0);
+        for skill in chunk {
+            if let Some(probability) = answers.probability(&id, &skill.name)
+                && probability > 0.0
+            {
+                none_of_top_chunk.insert(skill.name.clone(), none);
+                ranked.push((skill.name.clone(), probability));
+            }
+        }
     }
-    if confidence.unwrap_or(0.0) < P6_MIN_CONFIDENCE {
-        return SkillSuggestion {
-            skill: None,
-            none_probability,
-            confidence,
-        };
-    }
-    SkillSuggestion {
-        skill: Some(choice),
-        none_probability,
-        confidence,
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let oriented: Vec<f64> = P6_GATES
+        .iter()
+        .filter_map(|(id, _, inverted)| {
+            answers
+                .noul(id)
+                .map(|value| if *inverted { 1.0 - value } else { value })
+        })
+        .collect();
+    let gate = (!oriented.is_empty()).then(|| oriented.iter().sum::<f64>() / oriented.len() as f64);
+    let suggestion = ranked.first().and_then(|(name, probability)| {
+        let beats_none = *probability > none_of_top_chunk.get(name).copied().unwrap_or(0.0);
+        (gate.is_some_and(|g| g >= P6_GATE_THRESHOLD)
+            && *probability >= P6_SUGGEST_MIN_PROBABILITY
+            && beats_none)
+            .then(|| name.clone())
+    });
+    SkillRanking {
+        ranked,
+        gate,
+        suggestion,
     }
 }
 
 /// Token measurement for P6: the whole announcement versus one suggestion line.
-pub fn measure_skill_suggestion(
-    announcement: &str,
-    suggestion: &SkillSuggestion,
-) -> LeverMeasurement {
+pub fn measure_skill_suggestion(announcement: &str, suggestion: Option<&str>) -> LeverMeasurement {
     let before = estimate_tokens(announcement);
-    let after = match &suggestion.skill {
+    let after = match suggestion {
         Some(name) => estimate_tokens(name) + 4,
         // "nothing applies" still ships one sentence (item 101).
         None => estimate_tokens("no skill applies to this turn"),
@@ -959,9 +1025,8 @@ mod tests {
         assert!(no_prefix[0].pinned);
     }
 
-    #[test]
-    fn p6_suggests_only_confidently_and_measures_the_line() {
-        let skills = vec![
+    fn p6_skills() -> Vec<SkillCandidate> {
+        vec![
             SkillCandidate {
                 name: "graphify".to_owned(),
                 description: "knowledge graph from any input".to_owned(),
@@ -970,48 +1035,74 @@ mod tests {
                 name: "pdf".to_owned(),
                 description: "read and create PDFs".to_owned(),
             },
-        ];
-        let questions = skill_questions(&skills).expect("questions build");
-        assert!(questions.contains_key("best_skill"));
+        ]
+    }
 
-        let confident = answer_set(vec![(
-            "best_skill",
-            Answer::Choice {
-                choice: "pdf".to_owned(),
-                probabilities: [
-                    ("pdf".to_owned(), 0.8),
-                    ("graphify".to_owned(), 0.1),
-                    (P6_NONE_LABEL.to_owned(), 0.1),
-                ]
-                .into_iter()
-                .collect(),
-                confidence: Some(0.8),
-            },
-        )]);
-        let suggestion = compose_skill_suggestion(&confident);
-        assert_eq!(suggestion.skill.as_deref(), Some("pdf"));
-
-        let unsure = answer_set(vec![(
-            "best_skill",
-            Answer::Choice {
-                choice: "pdf".to_owned(),
-                probabilities: [("pdf".to_owned(), 0.5), (P6_NONE_LABEL.to_owned(), 0.5)]
+    fn p6_answers(pdf: f64, graphify: f64, none: f64, gate: [f64; 3]) -> JevAnswerSet {
+        answer_set(vec![
+            (
+                "best_skill",
+                Answer::Choice {
+                    choice: "pdf".to_owned(),
+                    probabilities: [
+                        ("pdf".to_owned(), pdf),
+                        ("graphify".to_owned(), graphify),
+                        (P6_NONE_LABEL.to_owned(), none),
+                    ]
                     .into_iter()
                     .collect(),
-                confidence: Some(0.5),
-            },
-        )]);
-        assert_eq!(compose_skill_suggestion(&unsure).skill, None);
+                    confidence: Some(pdf),
+                },
+            ),
+            ("gate_acts", Answer::Noul { noul: gate[0] }),
+            ("gate_procedure", Answer::Noul { noul: gate[1] }),
+            ("gate_prose", Answer::Noul { noul: gate[2] }),
+        ])
+    }
 
-        let announcement = "skill: graphify — …\n".repeat(50);
-        let measurement = measure_skill_suggestion(&announcement, &suggestion);
-        println!(
-            "MEASURE p6: announcement tokens {} -> suggestion line {} (saved {})",
-            measurement.tokens_before,
-            measurement.tokens_after,
-            measurement.saved()
-        );
+    /// The whole catalog is offered with an explicit `none`, and the turn is
+    /// pointed at a skill only when the gate says a procedure is wanted and the
+    /// top skill clearly beats `none`.
+    #[test]
+    fn p6_ranks_the_catalog_and_suggests_only_confidently() {
+        let skills = p6_skills();
+        let questions = skill_questions(&skills).expect("questions build");
+        assert!(questions.contains_key("best_skill"));
+        assert!(questions.contains_key("gate_prose"));
+
+        let confident = compose_skill_ranking(&p6_answers(0.8, 0.1, 0.1, [0.9, 0.8, 0.1]), &skills);
+        assert_eq!(confident.suggestion.as_deref(), Some("pdf"));
+        assert_eq!(confident.ranked[0].0, "pdf");
+        assert!(confident.gate.unwrap() > 0.8);
+
+        let talk_only = compose_skill_ranking(&p6_answers(0.8, 0.1, 0.1, [0.1, 0.1, 0.9]), &skills);
+        assert_eq!(talk_only.suggestion, None, "a prose request gets no skill");
+        assert_eq!(talk_only.ranked[0].0, "pdf", "the ranking still orders the listing");
+
+        let unsure = compose_skill_ranking(&p6_answers(0.35, 0.15, 0.5, [0.9, 0.9, 0.1]), &skills);
+        assert_eq!(unsure.suggestion, None, "none outweighs the top skill");
+
+        let measurement = measure_skill_suggestion(&"skill: graphify — …\n".repeat(50), Some("pdf"));
         assert!(measurement.saved() > 0);
+    }
+
+    /// A catalog larger than one question's option ceiling is split into
+    /// several choices in the same request, with shorter descriptions so the
+    /// request stays under the client's ceiling.
+    #[test]
+    fn p6_splits_large_catalogs_and_bounds_each_option() {
+        let skills: Vec<SkillCandidate> = (0..300)
+            .map(|i| SkillCandidate {
+                name: format!("skill-{i}"),
+                description: "d".repeat(500),
+            })
+            .collect();
+        let questions = skill_questions(&skills).expect("questions build");
+        assert!(questions.contains_key("best_skill_0") && questions.contains_key("best_skill_1"));
+        assert!(!questions.contains_key("best_skill"));
+        let encoded = serde_json::to_string(&questions).unwrap();
+        assert!(encoded.len() < 60 * 1024, "request body too large: {}", encoded.len());
+        assert!(skill_questions(&[]).is_err());
     }
 
     #[test]

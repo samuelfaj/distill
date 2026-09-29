@@ -134,6 +134,7 @@ impl SessionActor {
                 &payload,
                 &source,
                 "Choose one short title span from the source. Reply with exactly one quoted source span, 5-10 words, and no labels or prose.",
+                "Which fragment best names what this session is working on? Choose `none` if no fragment names it.",
                 session_summary::title_display_text,
             ),
         )

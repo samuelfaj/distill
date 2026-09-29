@@ -78,6 +78,20 @@ fn set_utility_review_choices(choices: &[&str]) {
     }));
 }
 
+/// Review choices for a turn summary (one source line) followed by a title
+/// refresh whose source has two acceptable lines: the title first asks Jev to
+/// pick a line, and no answer (`None`) falls back to the utility lane.
+fn set_summary_then_title_review_choices() {
+    let review = |choice| Some(crate::jev_cheap::test_utility_review_answer(choice));
+    crate::jev::set_test_decision_answers([
+        review("allow"),
+        review("accept"),
+        None,
+        review("allow"),
+        review("accept"),
+    ]);
+}
+
 /// Checks that an auxiliary call replays the parent conversation verbatim and appends one instruction. A prefix that shifts cannot hit the cache.
 fn assert_rides_parent_prefix(
     body: &serde_json::Value,
@@ -1747,7 +1761,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 .expect("recap Messages body");
             assert_messages_rides_parent_prefix(&body, parent.clone(), "recap");
 
-            set_utility_review_choices(&["allow", "accept", "allow", "accept"]);
+            set_summary_then_title_review_choices();
             actor.restart_turn_summary("prompt-3".to_string());
             for _ in 0..200 {
                 if actor.turn_summary_task.borrow().is_none() {
@@ -1901,7 +1915,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     .expect("recap Messages body");
                 assert_messages_reasoning_stripped(&body, "recap");
 
-                set_utility_review_choices(&["allow", "accept", "allow", "accept"]);
+                set_summary_then_title_review_choices();
                 actor.restart_turn_summary("prompt-3".to_string());
                 for _ in 0..200 {
                     if actor.turn_summary_task.borrow().is_none() {

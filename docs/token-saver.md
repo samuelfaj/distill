@@ -206,11 +206,20 @@ model that does not never pays for them.
 
 ## Context pruning
 
-Six levers affect what reaches the model, five of them by default:
+Seven levers affect what reaches the model, six of them by default:
 
-- `p1_tool_family` narrows the tool set announced for a turn to the families that
-  turn needs. Tool schemas are resent every round, which makes them a recurring
-  cost rather than a one-off.
+- `p1_tool_family` keeps rarely used tool families (image and video generation,
+  scheduling, feedback, and MCP tools when `search_tool` can find them again) out
+  of the tools array until a human request needs them. Tool schemas are resent
+  every round, which makes them a recurring cost rather than a one-off. A family
+  that joins never leaves: the tools array opens the cached prompt prefix, so a
+  family that came and went would re-bill the whole conversation.
+- `p6_skill_suggestion` has Jev rank the whole skill catalog against the request.
+  The listing keeps full descriptors only for the skills that request needs,
+  names every other skill next to a full-catalog index file, and is rebuilt only
+  when the prefix is (the first prompt and each compaction). Each human turn also
+  gets one `<skill_relevance>` line that names the skill to read, or says none
+  applies, without touching earlier messages.
 - `p2_read_shortlist` picks line and segment windows instead of whole files.
 - `p3_compaction_recorte` decides which segments the compactor must see.
 - `d2_big_output_retention` drops a large tool result once it is no longer

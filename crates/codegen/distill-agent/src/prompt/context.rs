@@ -1048,6 +1048,7 @@ mod tests {
         assert!(on.contains("Keep what needs judgment no spec can carry"));
         assert!(on.contains("Batch your own diff inspection and any required behavioral checks"));
         assert!(on.contains("Review the actual repository diff independently"));
+        assert!(on.contains("Reject duplicated or unrequested implementations even when checks pass"));
         assert!(on.contains("harness's own diff/status capture after the worker finished"));
         assert!(on.contains("Missing, failed, truncated, or insufficient evidence still requires verification"));
         assert!(on.contains(

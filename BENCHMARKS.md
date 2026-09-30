@@ -466,7 +466,42 @@ six prompt-installation tests pass. An initial incorrect message-type accessor
 caused a compile error and was replaced with the existing enum match before these
 tests passed.
 
-## Setup failures retained
+## Checkpoint 15: performance targets passed; manual quality gate rejected a duplicate
+
+The fifth repeated cohort passed **18/18** frozen behavioral graders and complete
+subscription accounting. It reached both performance targets, including the
+conservative credit comparison, but it is **not accepted as a complete goal**:
+manual diff review found an unnecessary duplicate `render_inventory` in
+`formatter.py` in `inventory-report-en-distill-2`. Codex had no such duplicate.
+The delivered patch is retained unchanged; it was not repaired after measurement
+or omitted from the totals.
+
+| Agent | Total seconds | Median seconds | Calls | Input / cached / output tokens | Modeled credits |
+|---|---:|---:|---:|---|---:|
+| Distill | 314.575754 | 34.254346 | 66 | 225,877 / 89,472 / 8,476 | 4.6468085 |
+| Codex high | 480.192501 | 51.386248 | 52 | 1,033,768 / 796,032 / 6,603 | 15.5276300 |
+
+This is **34.5% faster** and **70.1% lower in modeled credits**; excluding Codex's
+zero-output requests gives 11.00918 credits and a **57.8%** reduction. These numbers
+alone do not prove equal quality. Behavioral, scope and commit checks passed, but
+the added explicit function-ownership/no-extra-implementation check confirms the
+manual counterexample: Distill **8/9**, Codex **9/9** for that structural gate.
+Raw usage and quality readback:
+[`subscription-execution-evidence-cohort-v5.json`](tools/task_cost_eval/results/subscription-execution-evidence-cohort-v5.json).
+Binary and harness source: `2d186c32ab1f7c2d400d71500c06da46ffa0d551`.
+
+The next instruction correction keeps each function in its existing module;
+naming several files is not a request to copy the function into each. Main must
+reject duplicated or unrequested implementations even when tests pass. The
+frozen behavioral graders remain unchanged; the pre-existing manual diff review
+gate now also records the exact structural counterexample programmatically for
+these tiny fixtures. The candidate is not yet measured.
+
+Verification: compiled primary rendering, encrypted-template freshness, fresh
+Worker scoping and all six prompt-installation tests pass. No behavioral grader
+or benchmark input was changed for this instruction correction.
+
+## Earlier attempts and setup failures retained
 
 - Before subscription-only scope was clarified, an initial API pilot failed.
   A separate OpenRouter pilot was already in flight when that instruction arrived

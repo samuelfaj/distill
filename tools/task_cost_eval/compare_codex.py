@@ -22,6 +22,10 @@ ROOT = Path(__file__).resolve().parent
 # Standard subscription credits / 1M tokens. Retrieved 2026-09-30:
 # https://learn.chatgpt.com/docs/pricing#token-rates
 CREDIT_RATES = {'gpt-6.1-sol': (50, 2.5, 250), 'gpt-6-luna': (2.5, .25, 12.5)}
+# Existing operator allowlist for this local-file cohort: shell file operations
+# plus delegation/lifecycle. Internal IDs precede model-facing renames, and
+# children inherit the restriction.
+LOCAL_TOOLS = 'run_terminal_cmd,task,get_task_output,kill_task,wait_tasks'
 
 
 def credits(model, incoming, cached, outgoing):
@@ -85,10 +89,12 @@ use_leader = false
 default = "chatgpt/gpt-6.1-sol"
 worker = "chatgpt/gpt-6-luna"
 worker_effort = "auto"
-session_summary = "chatgpt/gpt-6.1-sol"
 [jev]
 effort_auto = true
 api_key_env = "DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY"
+[jev.local]
+model = "chatgpt/gpt-6-luna"
+effort = "auto"
 [features]
 telemetry = false
 [managed_mcps]
@@ -96,6 +102,8 @@ enabled = false
 [compat.cursor]
 mcps = false
 [compat.claude]
+mcps = false
+[compat.codex]
 mcps = false
 '''
 
@@ -270,6 +278,7 @@ def run_cell(args):
                    '--cwd', str(worktree), '--session-id', session, '--prompt-file',
                    str(output / 'prompt.txt'), '--output-format', 'streaming-json',
                    '--model', 'chatgpt/gpt-6.1-sol']
+        command.extend(['--tools', LOCAL_TOOLS])
     else:
         endpoint = f'http://127.0.0.1:{collector.server_port}/v1/logs'
         config = 'model="gpt-6.1-sol"\nmodel_reasoning_effort="high"\nforced_login_method="chatgpt"\n'

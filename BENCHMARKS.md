@@ -180,6 +180,40 @@ headers and existing turn-state scoping. A fresh build and measurement will
 determine whether this correction improves cache or latency; header parity alone
 is not evidence of a performance gain.
 
+## Checkpoint 5: cache result and bounded local execution
+
+The native-header diagnostic passed the grader with complete usage: **53.27 s**,
+10 calls, 73,310 input / 49,024 cached input / 1,206 output tokens, and **0.9254505
+modeled credits**. The later main requests received 12,544 and 12,928 cached
+tokens. Cost is 36.8% below the previous Codex diagnostic including its warmup,
+but only 3.8% below the conservative baseline excluding it. Speed still misses
+the target. One Worker shell attempt used an unavailable `python` executable;
+its retry and all associated model usage are included.
+
+The next candidate asks Workers to batch independent named-file reads with
+instruction discovery, confirm uncertain runtimes in that inspection, and
+report a compact diff and check evidence. Main planning and independent final
+verification remain required. The local-file benchmark uses the existing
+`--tools` operator allowlist for shell commands, delegation, and child lifecycle
+management. File reading, editing, search, and checks use the shell, which keeps
+those capabilities available to both parent and Worker. Scheduling, feedback, workflow, and external
+integration schemas are not needed by these tasks. This is an explicit runtime
+profile for this cohort, not a claim about the default full toolset. Codex MCP
+imports are also disabled, completing the external-tool discovery control.
+
+The user's installed configuration was aligned with subscription-only execution:
+main/planning/review use ChatGPT Sol, Worker/local-worker/auxiliary models use
+ChatGPT Luna, and Worker/utility effort is auto. The external Jev decision
+service points to an unset credential variable so it defers to existing native
+fallbacks. Codex now has `forced_login_method="chatgpt"`. Selected routes were
+read back without exposing credentials; benchmark profiles remain isolated.
+
+Raw header diagnostic: [`subscription-native-headers.json`](tools/task_cost_eval/results/subscription-native-headers.json).
+
+Verification for the bounded candidate: the Worker discipline regression and
+the primary/child orchestration renderer test passed; the 18 accounting and
+runner/evaluator tests passed again. Candidate task timing remains pending.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

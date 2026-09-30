@@ -2677,6 +2677,7 @@ fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
     assert!(reminder.contains("Do exactly what the assignment specifies"), "{reminder}");
     assert!(reminder.contains("stop and report the mismatch or the question instead of guessing"), "{reminder}");
     assert!(reminder.contains("exit status"), "{reminder}");
+    assert!(reminder.contains("Batch independent reads"), "{reminder}");
     assert!(worker_discipline_reminder(true, &InitialContextSource::Resumed).is_none());
     assert!(worker_discipline_reminder(true, &InitialContextSource::Forked).is_none());
     assert!(worker_discipline_reminder(false, &InitialContextSource::New).is_none());

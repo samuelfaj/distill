@@ -1022,10 +1022,11 @@ fn resolve_model_override_to_config(
         ctx.sampling_config.deployment_id.clone(),
         ctx.sampling_config.user_id.clone(),
     );
-    config.bearer_resolver = if !ctx.would_strip_fallback_key(config.api_key.as_deref())
+    if config.bearer_resolver.is_none()
+        && !ctx.would_strip_fallback_key(config.api_key.as_deref())
         && resolved_auth_type == distill_chat_state::AuthType::SessionToken
     {
-        session_bearer_resolver(
+        config.bearer_resolver = session_bearer_resolver(
             ctx,
             if entry.has_own_credentials() {
                 crate::agent::auth_method::ModelByok::Byok
@@ -1033,10 +1034,8 @@ fn resolve_model_override_to_config(
                 crate::agent::auth_method::ModelByok::NotByok
             },
             &config.base_url,
-        )
-    } else {
-        None
-    };
+        );
+    }
     distill_telemetry::unified_log::debug(
         "subagent resolve_model_override_to_config",
         None,

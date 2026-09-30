@@ -14,7 +14,10 @@ impl SessionActor {
     /// Cancellation can only land before that block, never inside it.
     /// Generation is also checked immediately before commit, so a task that finishes after abort cannot write a stale summary.
     pub(crate) fn restart_turn_summary(self: &Arc<Self>, prompt_id: String) {
-        if !self.turn_summary_enabled || self.startup_hints.is_subagent {
+        if !self.turn_summary_enabled
+            || self.startup_hints.is_subagent
+            || self.attach_non_interactive.get()
+        {
             return;
         }
         // A queued follow-up promoted by `maybe_start_running_task` is already running when this fires from the completion arm

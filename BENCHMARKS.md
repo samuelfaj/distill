@@ -109,6 +109,34 @@ measurement will explicitly freeze external-tool discovery for both agents.
 Raw non-secret pilot summaries and call metadata are in
 [`tools/task_cost_eval/results/sol-luna-subscription-pilot.json`](tools/task_cost_eval/results/sol-luna-subscription-pilot.json).
 
+## Checkpoint 2: auxiliary calls and complete child accounting
+
+The control diagnostic with Cursor/Claude MCP imports disabled still took
+**55.85 s**, passed the tax grader, and retained both incomplete auxiliary calls.
+Managed MCP discovery is now explicitly disabled as well for subsequent cells.
+
+Two product corrections address the observed execution paths:
+
+- Preserve the ChatGPT OAuth resolver when resolving a subagent model. The
+  previous assignment erased it after catalog resolution: direct child title
+  calls received HTTP 401 while normal child calls reconstructed OAuth.
+- A noninteractive attachment does not start a dashboard turn-summary model
+  call immediately before shutdown. Interactive dashboard summaries retain
+  their existing path.
+
+Focused verification: **12 tests passed** (four model-resolution tests, the
+new headless regression, and seven existing turn-summary/config/roster tests).
+A release build and repeated task measurements are still pending.
+
+A separate native Codex probe successfully launched two children. Completed
+response telemetry recorded **13 calls across three conversations**, with
+**242,962 input / 178,560 cached input / 515 output tokens**. The parent CLI
+reported only **127,805 input / 379 output tokens**. This demonstrates why parent
+CLI totals alone are insufficient. All observed requests cost an estimated
+**3.79525 Standard credits** at the published rates; this probe is excluded from
+task speed comparisons. Its non-secret call records are in
+[`subscription-accounting-probe.json`](tools/task_cost_eval/results/subscription-accounting-probe.json).
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

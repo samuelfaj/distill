@@ -87,8 +87,14 @@ session_summary = "chatgpt/gpt-6.1-sol"
 [jev]
 effort_auto = true
 api_key_env = "DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY"
-[privacy]
+[features]
 telemetry = false
+[managed_mcps]
+enabled = false
+[compat.cursor]
+mcps = false
+[compat.claude]
+mcps = false
 '''
 
 
@@ -184,8 +190,10 @@ def run_cell(args):
     thread.start()
     session = str(uuid.uuid4())
     environment = {k: v for k, v in os.environ.items()
-                   if k not in {'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'GROK_API_KEY', 'JEV_API_KEY'}}
+                   if not k.endswith('_API_KEY') and k != 'DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY'}
     environment['PATH'] = str(args.codex.expanduser().parent) + os.pathsep + environment['PATH']
+    environment['GROK_MANAGED_MCPS_ENABLED'] = 'false'
+    environment['GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED'] = 'false'
     if args.variant == 'distill':
         auth_source = args.distill_profile.expanduser() / 'codex-auth.json'
         auth = json.loads(auth_source.read_text())
@@ -207,6 +215,7 @@ def run_cell(args):
         command = [str(executable), 'exec', '--yolo', '--ignore-user-config', '--ephemeral',
                    '--json', '-C', str(worktree), '-m', 'gpt-6.1-sol',
                    '-c', 'model_reasoning_effort="high"', '-c', 'forced_login_method="chatgpt"',
+                   '-c', 'web_search="disabled"',
                    '-c', f'otel.exporter={{otlp-http={{endpoint="{endpoint}",protocol="json"}}}}',
                    '-c', 'otel.log_user_prompt=false', '-']
     (output / 'config.toml').write_text(config)

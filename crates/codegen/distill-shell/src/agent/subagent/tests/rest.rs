@@ -2431,6 +2431,36 @@ fn resolve_model_override_to_config_no_resolver_for_byok_model() {
     assert!(config.bearer_resolver.is_none());
     assert_eq!(config.api_key.as_deref(), Some("sk-byok"));
 }
+#[test]
+#[serial_test::serial]
+fn resolve_model_override_preserves_chatgpt_oauth_resolver() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+    let _canonical = distill_test_support::EnvGuard::set("DISTILL_HOME", home.path());
+    let _xai = distill_test_support::EnvGuard::unset("XAI_API_KEY");
+    let _openai = distill_test_support::EnvGuard::unset("OPENAI_API_KEY");
+    let path = crate::codex_auth::auth_file_path();
+    assert!(path.starts_with(home.path()));
+    std::fs::write(&path, serde_json::to_vec(&crate::codex_auth::CodexAuthStore {
+        auth_mode: Some("chatgpt".to_owned()),
+        openai_api_key: None,
+        tokens: Some(crate::codex_auth::CodexTokenData {
+            id_token: "e30.e30.signature".to_owned(),
+            access_token: "test-oauth-access".to_owned(),
+            refresh_token: "test-oauth-refresh".to_owned(),
+            account_id: None,
+        }),
+        last_refresh: None,
+    }).unwrap()).unwrap();
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    let mut model = test_model_entry("subscription-worker");
+    model.info.base_url = crate::codex_auth::CODEX_BACKEND_BASE_URL.to_owned();
+    ctx.available_models.insert("subscription-worker".to_owned(), model);
+    let (config, _) = resolve_model_override_to_config("subscription-worker", &ctx).unwrap();
+    assert!(config.bearer_resolver.is_some(), "direct child side-calls must retain OAuth");
+    assert!(config.api_key.is_none());
+    assert_eq!(config.api_backend, distill_sampler::ApiBackend::Responses);
+}
 #[tokio::test]
 async fn read_parent_sampling_config_resolves_backend_search_from_catalog() {
     let mut entry = test_model_entry("grok-4.5");

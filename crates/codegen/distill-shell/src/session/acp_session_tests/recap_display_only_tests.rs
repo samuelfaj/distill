@@ -1119,6 +1119,23 @@ async fn recap_request_sends_hosted_tools_under_backend_search() {
 
 // ── Turn-summary task lifecycle (bail / abort-and-respawn) ──────────────
 
+#[tokio::test(flavor = "current_thread")]
+async fn headless_turn_does_not_start_a_dashboard_model_call() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _grx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, mut prx) = tokio::sync::mpsc::unbounded_channel();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.turn_summary_enabled = true;
+            actor.attach_non_interactive.set(true);
+            let actor = std::sync::Arc::new(actor);
+            actor.restart_turn_summary("completed-headless-turn".to_owned());
+            assert!(actor.turn_summary_task.borrow().is_none());
+            assert!(prx.try_recv().is_err());
+        })
+        .await;
+}
+
 /// A queued follow-up promoted before the post-turn respawn fires is already running; a snapshot taken now would contain its user message.
 /// The entry gate on `current_prompt_id` bails; that turn's completion re-fires.
 /// The gate also stays inert when the feature is off.

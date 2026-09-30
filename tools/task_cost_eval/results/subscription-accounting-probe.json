@@ -1,0 +1,157 @@
+{
+  "accounting_complete": true,
+  "calls": 13,
+  "call_usage": [
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 10041,
+      "cached_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "credits": 0.50205
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 20953,
+      "cached_input_tokens": 9856,
+      "output_tokens": 118,
+      "reasoning_tokens": 0,
+      "credits": 0.60899
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 21156,
+      "cached_input_tokens": 20736,
+      "output_tokens": 97,
+      "reasoning_tokens": 0,
+      "credits": 0.09709
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-e723-7f73-acb8-33d3382d59f9",
+      "complete": true,
+      "input_tokens": 9802,
+      "cached_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "credits": 0.4901
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-e723-7f73-acb8-33d3382d59f9",
+      "complete": true,
+      "input_tokens": 21334,
+      "cached_input_tokens": 0,
+      "output_tokens": 61,
+      "reasoning_tokens": 0,
+      "credits": 1.08195
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 21274,
+      "cached_input_tokens": 20992,
+      "output_tokens": 97,
+      "reasoning_tokens": 0,
+      "credits": 0.09083
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f098-0046-7c11-8dab-b4f57b223239",
+      "complete": true,
+      "input_tokens": 9802,
+      "cached_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "credits": 0.4901
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-e723-7f73-acb8-33d3382d59f9",
+      "complete": true,
+      "input_tokens": 21421,
+      "cached_input_tokens": 21120,
+      "output_tokens": 6,
+      "reasoning_tokens": 0,
+      "credits": 0.06935
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 21392,
+      "cached_input_tokens": 21120,
+      "output_tokens": 21,
+      "reasoning_tokens": 0,
+      "credits": 0.07165
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 21474,
+      "cached_input_tokens": 21248,
+      "output_tokens": 21,
+      "reasoning_tokens": 0,
+      "credits": 0.06967
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f098-0046-7c11-8dab-b4f57b223239",
+      "complete": true,
+      "input_tokens": 21334,
+      "cached_input_tokens": 21120,
+      "output_tokens": 63,
+      "reasoning_tokens": 0,
+      "credits": 0.07925
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f098-0046-7c11-8dab-b4f57b223239",
+      "complete": true,
+      "input_tokens": 21423,
+      "cached_input_tokens": 21120,
+      "output_tokens": 6,
+      "reasoning_tokens": 0,
+      "credits": 0.06945
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+      "complete": true,
+      "input_tokens": 21556,
+      "cached_input_tokens": 21248,
+      "output_tokens": 25,
+      "reasoning_tokens": 0,
+      "credits": 0.07477
+    }
+  ],
+  "telemetry_events": 78,
+  "input_tokens": 242962,
+  "cached_input_tokens": 178560,
+  "output_tokens": 515,
+  "reasoning_tokens": 0,
+  "credit_estimate": 3.79525,
+  "exit_code": 0,
+  "wall_time_s": 40.59417812502943,
+  "provider": "chatgpt_subscription",
+  "purpose": "Validate native Codex accounting with two real subagents; excluded from task performance cohort.",
+  "version": "codex-cli 0.159.1",
+  "conversations": 3,
+  "root_conversation": "01a0f097-a30e-7861-b90e-00edc42140f8",
+  "parent_cli_usage": {
+    "input_tokens": 127805,
+    "cached_input_tokens": 115200,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 379,
+    "reasoning_output_tokens": 0
+  },
+  "credit_estimate_excluding_zero_output": 2.313
+}

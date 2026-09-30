@@ -19,7 +19,6 @@
       "grader_passed": true,
       "cost_basis": "published_subscription_credit_rates",
       "accounting_complete": true,
-      "reason": "telemetry schema inspection pending",
       "telemetry_events": 43,
       "telemetry_fields": [
         "auth.env_refresh_token_url_override_present",
@@ -247,6 +246,163 @@
       "cached_input_tokens": 13952,
       "reasoning_tokens": 76,
       "credit_estimate": null
+    },
+    {
+      "variant": "distill",
+      "case": "tax-bug-en",
+      "session": "477ff8ef-99eb-4957-b228-aa916d787622",
+      "provider": "chatgpt_subscription",
+      "version": "distill 2.0.9 (9bdd5e8e7fd5)",
+      "executable_sha256": "eab026e13059b28bbb737aba9a77fb865e9397a91a597ee1e95deab8d9d39d29",
+      "source_sha": "21fc0ae13113d1d8990546397614e009cfd9bc30",
+      "prompt_sha256": "66841a304589413d3e2e97c086a159db5b2affedcb4a46afa12f8bc26fcfc69e",
+      "fixture_sha256": "7e6198752d4832761022358cd51c8d2efec565dbd97e7e0e9a29c16f9c73e0e9",
+      "grader_sha256": "f6c9d14dba47437fe9787d3cc920beaf81fad14561c1780a8dce4e257db4cfcf",
+      "config_sha256": "0136bba17594788b2d8ebb7652af8ad015056488d77ef74790187c8db5b75892",
+      "wall_time_s": 55.851164,
+      "exit_code": 0,
+      "timed_out": false,
+      "grader_passed": true,
+      "cost_basis": "published_subscription_credit_rates",
+      "accounting_complete": false,
+      "calls": 12,
+      "call_usage": [
+        {
+          "attempt": "initial-title:edb4b0b3-c537-4d71-b035-59ebbf7f0755",
+          "model": "gpt-6.1-sol",
+          "role": "auxiliary",
+          "effort": "effort:low",
+          "input_tokens": 269,
+          "cached_input_tokens": 0,
+          "output_tokens": 25,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.0197
+        },
+        {
+          "attempt": "sampler:590d734d-5edd-4abd-9aae-394389d18627",
+          "model": "gpt-6.1-sol",
+          "role": "main",
+          "effort": "effort:low",
+          "input_tokens": 12715,
+          "cached_input_tokens": 0,
+          "output_tokens": 211,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.6885
+        },
+        {
+          "attempt": "initial-title:64455cef-fb42-41b3-a4f6-9afe7c890838",
+          "complete": false
+        },
+        {
+          "attempt": "sampler:79eb1154-9fcc-4fcc-b3c5-249bcd1ab49d",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 6277,
+          "cached_input_tokens": 0,
+          "output_tokens": 185,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.018005
+        },
+        {
+          "attempt": "sampler:5e3d008a-a38e-4816-ba62-ca930dc44fa8",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 6685,
+          "cached_input_tokens": 2560,
+          "output_tokens": 49,
+          "reasoning_tokens": 20,
+          "complete": true,
+          "credits": 0.011565
+        },
+        {
+          "attempt": "sampler:6145c024-bbb8-4ad8-aa4e-f49f070f991a",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 6789,
+          "cached_input_tokens": 0,
+          "output_tokens": 75,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.01791
+        },
+        {
+          "attempt": "sampler:8c627c05-2b31-4816-854c-5c234ac72f49",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 6894,
+          "cached_input_tokens": 0,
+          "output_tokens": 138,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.01896
+        },
+        {
+          "attempt": "sampler:c713870e-31b9-41e9-8d8e-7d421ac95085",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 7201,
+          "cached_input_tokens": 0,
+          "output_tokens": 158,
+          "reasoning_tokens": 35,
+          "complete": true,
+          "credits": 0.0199775
+        },
+        {
+          "attempt": "sampler:0dcc550d-2f6c-42f1-b7b4-9d3ea2ae6f84",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 7390,
+          "cached_input_tokens": 0,
+          "output_tokens": 244,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.021525
+        },
+        {
+          "attempt": "sampler:9a9da791-e712-4ea4-adbf-9f0ad662733f",
+          "model": "gpt-6.1-sol",
+          "role": "main",
+          "effort": "effort:low",
+          "input_tokens": 13256,
+          "cached_input_tokens": 0,
+          "output_tokens": 180,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.7078
+        },
+        {
+          "attempt": "sampler:8085cb43-a16c-4a39-a2f9-1bee8385fcd0",
+          "model": "gpt-6.1-sol",
+          "role": "main",
+          "effort": "effort:low",
+          "input_tokens": 13600,
+          "cached_input_tokens": 0,
+          "output_tokens": 101,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.70525
+        },
+        {
+          "attempt": "auxiliary:jev-tool-result-6749f835-a3d7-4bec-b724-1deb8a53ad3f",
+          "complete": false
+        }
+      ],
+      "unfolded_child_attempts": [],
+      "input_tokens": 81076,
+      "output_tokens": 1366,
+      "cached_input_tokens": 2560,
+      "reasoning_tokens": 55,
+      "credit_estimate": null,
+      "note": "Control diagnostic: Cursor and Claude MCP compatibility disabled; managed MCPs were not yet explicitly disabled. Same baseline binary as pilot."
     }
   ]
 }

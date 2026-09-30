@@ -1042,13 +1042,12 @@ mod tests {
             "waiting on a lone assignment in the foreground saves the main model a turn"
         );
         assert!(
-            on.contains(
-                "Write every assignment as a spec a weaker model can follow without guessing"
-            ),
+            on.contains("Write a spec the worker can execute without guessing"),
             "delegated work must come with a precise spec"
         );
         assert!(on.contains("Keep what needs judgment no spec can carry"));
         assert!(on.contains("Batch your own diff inspection and final behavioral checks"));
+        assert!(on.contains("Omit optional defaults and nulls"));
         assert!(!render_primary(ctx("", "spawn_subagent")).contains("<orchestration>"));
         assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<orchestration>"));
         assert!(

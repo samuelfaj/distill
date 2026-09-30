@@ -820,6 +820,7 @@ pub(crate) async fn run_shell_child(
     let worker_model = crate::agent::subagent::delegated_worker_model(
         &request,
         resume_source.is_some() || request.resume_from.is_some(),
+        ctx.parent_worker.as_ref(),
     );
     let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
         effective_runtime.model.as_deref(),
@@ -882,8 +883,12 @@ pub(crate) async fn run_shell_child(
         .as_deref()
         .and_then(|worker| resolve_model_override_to_config(worker, &ctx))
         .is_some_and(|(_, id)| id == effective_model_id);
-    let worker_effort =
-        crate::agent::subagent::worker_effort_policy(on_worker, &request, &effective_runtime);
+    let worker_effort = crate::agent::subagent::worker_effort_policy(
+        on_worker,
+        &request,
+        &effective_runtime,
+        ctx.parent_worker.as_ref(),
+    );
     let caller_manual_effort = request
         .runtime_overrides
         .reasoning_effort
@@ -1817,6 +1822,7 @@ pub(crate) async fn run_shell_child(
         toolset: child_toolset,
         ..
     } = child_init;
+    *child_handle.worker_override.write() = ctx.parent_worker.clone();
     session::bind_installed_toolset(
         &ctx.workspace_ops,
         &child_handle.info.id,

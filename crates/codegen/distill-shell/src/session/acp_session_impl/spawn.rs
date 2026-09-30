@@ -2415,6 +2415,7 @@ pub(crate) async fn spawn_session_actor(
         tool_context: tool_context_for_handle,
         model_id: session_model_id,
         reasoning_effort: sampling_config.reasoning_effort,
+        worker_override: crate::session::handle::new_session_worker_state(),
         jev_effort_auto,
         yolo_mode: session_yolo_mode,
         origin_client: origin_client.clone(),

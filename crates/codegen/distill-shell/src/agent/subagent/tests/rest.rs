@@ -2615,25 +2615,25 @@ fn only_fresh_model_delegation_defaults_to_the_worker_model() {
     };
     for agent in ["general-purpose", "explore", "local-helper"] {
         assert_eq!(
-            delegated_worker_model(&delegated(agent), false).as_deref(),
+            delegated_worker_model(&delegated(agent), false, None).as_deref(),
             Some("worker-model"),
             "{agent}",
         );
     }
     for agent in ["plan", "code-reviewer"] {
-        assert_eq!(delegated_worker_model(&delegated(agent), false), None, "{agent}");
+        assert_eq!(delegated_worker_model(&delegated(agent), false, None), None, "{agent}");
     }
-    assert_eq!(delegated_worker_model(&delegated("general-purpose"), true), None, "resume");
+    assert_eq!(delegated_worker_model(&delegated("general-purpose"), true, None), None, "resume");
     let mut fork = delegated("general-purpose");
     fork.fork_context = true;
-    assert_eq!(delegated_worker_model(&fork, false), None, "fork");
+    assert_eq!(delegated_worker_model(&fork, false, None), None, "fork");
     let mut explicit = delegated("general-purpose");
     explicit.runtime_overrides.model = Some("other-model".to_string());
-    assert_eq!(delegated_worker_model(&explicit, false), None, "explicit model");
+    assert_eq!(delegated_worker_model(&explicit, false, None), None, "explicit model");
     let harness = bootstrap_test_request(false);
-    assert_eq!(delegated_worker_model(&harness, false), None, "harness role");
+    assert_eq!(delegated_worker_model(&harness, false, None), None, "harness role");
     crate::jev::set_test_worker_model(None);
-    assert_eq!(delegated_worker_model(&delegated("general-purpose"), false), None);
+    assert_eq!(delegated_worker_model(&delegated("general-purpose"), false, None), None);
     crate::jev::clear_test_worker_model();
 }
 /// The worker's configured effort reaches a child on the worker model, auto
@@ -2647,23 +2647,92 @@ fn a_worker_child_follows_the_worker_effort_unless_an_effort_is_explicit() {
 
     crate::jev::set_test_worker_effort(Some(ReasoningEffort::Medium));
     assert_eq!(
-        worker_effort_policy(true, &request, &runtime),
+        worker_effort_policy(true, &request, &runtime, None),
         Some(Some(ReasoningEffort::Medium)),
         "a pinned level applies"
     );
     crate::jev::set_test_worker_effort(None);
-    assert_eq!(worker_effort_policy(true, &request, &runtime), Some(None), "auto: Jev decides");
-    assert_eq!(worker_effort_policy(false, &request, &runtime), None, "not on the worker");
+    assert_eq!(worker_effort_policy(true, &request, &runtime, None), Some(None), "auto: Jev decides");
+    assert_eq!(worker_effort_policy(false, &request, &runtime, None), None, "not on the worker");
 
     let mut caller = bootstrap_test_request(false);
     caller.runtime_overrides.reasoning_effort = Some("high".to_string());
-    assert_eq!(worker_effort_policy(true, &caller, &runtime), None, "the caller's effort wins");
+    assert_eq!(worker_effort_policy(true, &caller, &runtime, None), None, "the caller's effort wins");
     let defined = EffectiveRuntimeConfig {
         reasoning_effort: Some("low".to_string()),
         ..Default::default()
     };
-    assert_eq!(worker_effort_policy(true, &request, &defined), None, "a role or definition effort wins");
+    assert_eq!(worker_effort_policy(true, &request, &defined, None), None, "a role or definition effort wins");
     crate::jev::clear_test_worker_effort();
+}
+/// A session's own worker choice beats `[models] worker`/`worker_effort`, and
+/// `""` keeps delegated work on the main model even when the config names a
+/// worker. Without a session choice the config still applies. The exclusions
+/// (plan, review, resume, fork, explicit model) hold whichever source wins.
+#[test]
+fn session_worker_overrides_the_configured_worker_and_keeps_the_exclusions() {
+    use crate::session::handle::SessionWorker;
+    use distill_sampling_types::ReasoningEffort;
+    use distill_tools::implementations::distill::task::types::ModelOverrideProvenance;
+    crate::jev::set_test_worker_model(Some("config-worker".to_string()));
+    crate::jev::set_test_worker_effort(Some(ReasoningEffort::Low));
+    let delegated = |subagent_type: &str| {
+        let mut request = bootstrap_test_request(false);
+        request.subagent_type = subagent_type.to_string();
+        request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+        request
+    };
+    let request = delegated("general-purpose");
+    let session = SessionWorker {
+        model_id: Some("session-worker".to_string()),
+        effort: Some(ReasoningEffort::High),
+    };
+    assert_eq!(
+        delegated_worker_model(&request, false, Some(&session)).as_deref(),
+        Some("session-worker"),
+        "session > config"
+    );
+    assert_eq!(
+        delegated_worker_model(&request, false, None).as_deref(),
+        Some("config-worker"),
+        "no session choice inherits the config"
+    );
+    let disabled = SessionWorker { model_id: None, effort: None };
+    assert_eq!(
+        delegated_worker_model(&request, false, Some(&disabled)),
+        None,
+        "an empty session worker means the main model does the work"
+    );
+    for agent in ["plan", "code-reviewer"] {
+        assert_eq!(delegated_worker_model(&delegated(agent), false, Some(&session)), None, "{agent}");
+    }
+    assert_eq!(delegated_worker_model(&request, true, Some(&session)), None, "resume");
+    let mut fork = delegated("general-purpose");
+    fork.fork_context = true;
+    assert_eq!(delegated_worker_model(&fork, false, Some(&session)), None, "fork");
+    let mut explicit = delegated("general-purpose");
+    explicit.runtime_overrides.model = Some("other-model".to_string());
+    assert_eq!(delegated_worker_model(&explicit, false, Some(&session)), None, "explicit model");
+
+    let runtime = EffectiveRuntimeConfig::default();
+    assert_eq!(
+        worker_effort_policy(true, &request, &runtime, Some(&session)),
+        Some(Some(ReasoningEffort::High)),
+        "session effort beats the configured one"
+    );
+    let auto = SessionWorker { model_id: Some("session-worker".to_string()), effort: None };
+    assert_eq!(
+        worker_effort_policy(true, &request, &runtime, Some(&auto)),
+        Some(None),
+        "session auto beats a configured level"
+    );
+    assert_eq!(
+        worker_effort_policy(true, &request, &runtime, None),
+        Some(Some(ReasoningEffort::Low)),
+        "no session choice inherits the configured level"
+    );
+    crate::jev::clear_test_worker_effort();
+    crate::jev::clear_test_worker_model();
 }
 /// A fresh child on the worker model starts with the instruction to follow its
 /// spec literally and report instead of guessing: that is what lets a cheaper

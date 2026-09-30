@@ -206,6 +206,8 @@ Optional fields on `session/new`:
 | `agentProfile` | Agent profile name or JSON object. |
 | `yoloMode` | When `true`, always-approve for this session. |
 | `autoMode` | When `true`, auto permission mode for this session. Superseded when always-approve is already on. |
+| `workerModelId` | Worker model for this session (see [Session worker model](#session-worker-model)). Also read by `session/load` and `session/resume`. Absent inherits `[models].worker`; `""` means no worker. |
+| `workerEffort` | Worker effort with `workerModelId`: `auto` (default when absent) or a level. |
 
 ```json
 {
@@ -214,6 +216,35 @@ Optional fields on `session/new`:
   "_meta": { "yoloMode": true }
 }
 ```
+
+---
+
+## Session worker model
+
+The worker model runs the subagents the main model delegates (`[models].worker` and `[models].worker_effort`, see [Subagents](16-subagents.md)). An ACP client can choose the worker per session instead. `initialize` advertises this as `"sessionWorkerModel": true` in `agentCapabilities._meta["x.ai/capabilities"]`.
+
+The choice is kept in memory for the session and never written to `config.toml`. Precedence for a fresh, model-delegated subagent: session choice, then `[models].worker` / `worker_effort`, then the parent model. `plan` and `code-reviewer`, forks, resumes and explicit-model requests keep their usual model, and a worker id missing from the catalog warns and falls back to the parent model.
+
+**At session start.** `session/new`, `session/load` and `session/resume` accept `_meta.workerModelId` (string) and `_meta.workerEffort` (string). Both absent: the session inherits the config. `workerModelId: ""`: no worker, the main model does all the work. `workerEffort` absent or `"auto"` lets the decision layer pick the effort per call. `workerEffort` without `workerModelId` is ignored. A non-string value or an unknown effort name is an invalid-params error; the model id is checked against the catalog only when a subagent spawns.
+
+**During the session.** Send the extension request `x.ai/session/worker_model/set` (on the JSON-RPC wire, the ACP convention for extension methods prefixes it with `_`: `_x.ai/session/worker_model/set`):
+
+```json
+{ "sessionId": "…", "modelId": "gpt-5.4-mini", "effort": "low" }
+```
+
+| Field | Values |
+| ----- | ------ |
+| `modelId` | `null` clears the session choice and inherits the config. `""` means no worker. Otherwise a catalog model id, else invalid params. |
+| `effort` | `null` or `"auto"` is auto. A level must be one the chosen model offers, else invalid params. Ignored when there is no worker. |
+
+The response is the effective worker after the change:
+
+```json
+{ "modelId": "gpt-5.4-mini", "effort": "low", "source": "session" }
+```
+
+`modelId` is `null` when no worker runs. `source` is `"session"` for a session choice and `"config"` when it was cleared and the config applies. An unknown `sessionId` returns a resource-not-found error.
 
 ---
 

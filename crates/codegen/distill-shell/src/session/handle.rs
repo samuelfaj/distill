@@ -11,6 +11,21 @@ use distill_sampling_types::ReasoningEffort;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
+/// A session's worker choice, overriding `[models] worker` / `worker_effort`.
+/// `model_id: None` means no worker (the main model does all work); `effort: None` is auto.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionWorker {
+    pub model_id: Option<String>,
+    pub effort: Option<ReasoningEffort>,
+}
+
+/// Shared by the ACP handle and subagent spawn. Outer `None` inherits the config.
+pub(crate) type SessionWorkerState = std::sync::Arc<parking_lot::RwLock<Option<SessionWorker>>>;
+
+pub(crate) fn new_session_worker_state() -> SessionWorkerState {
+    std::sync::Arc::new(parking_lot::RwLock::new(None))
+}
+
 /// Coarse lifecycle state of a session as known to the leader/agent.
 /// A grok session is a resumable log on disk with no terminal status field of its own, so "liveness" is residency plus turn state, not a pid.
 /// The agent's join-handle supervisor tracks this per session so a panicked actor is demoted to `Dormant` instead of lingering in the roster.
@@ -105,6 +120,8 @@ pub struct SessionHandle {
     /// Per-session tracking prevents cross-client contamination in leader mode where `MvpAgent.current_model_id` is shared mutable state.
     pub model_id: acp::ModelId,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// In-memory worker model/effort override for this session; never written to config.
+    pub(crate) worker_override: SessionWorkerState,
     /// Whether Jev may choose effort/model routing for this session. This is
     /// session-local even though the remote model catalog is shared.
     pub jev_effort_auto: std::sync::Arc<std::sync::atomic::AtomicBool>,

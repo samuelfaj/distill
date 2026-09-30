@@ -20,10 +20,10 @@ OpenAI-compatible protocol.
 
 ## Benchmarks
 
-| Agent | Models and effort | Total time | Estimated cost (USD) | Passing runs |
-|---|---|---:|---:|---:|
-| Distill | GPT-6.1 Sol auto + GPT-6 Luna auto | 308.18 s (**-33.8%**) | $0.19 (**-67.2%**) |  9/9 |
-| Codex `--yolo` | GPT-6.1 Sol high | 465.27 s  | $0.59 | 9/9 |
+| Agent | Models and effort | Total time | Estimated cost (USD) |
+|---|---|---:|---:|
+| Distill | GPT-6.1 Sol auto + GPT-6 Luna auto | 308.18 s (**-33.8%**) | $0.19 (**-67.2%**) |
+| Codex | GPT-6.1 Sol high | 465.27 s  | $0.59 | 
 
 See more in [BENCHMARKS.md](BENCHMARKS.md) .
 

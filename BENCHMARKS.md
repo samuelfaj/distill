@@ -269,6 +269,27 @@ User-owned global files remain available outside the isolated benchmark profile.
 Codex continues to use `--ignore-user-config`. This comparison concerns these
 explicit runtime profiles; it does not claim identical built-in prompts or tools.
 
+## Checkpoint 8: global imports removed from the measured profile
+
+The next tax pair used the same prompt and frozen input hashes. Both passed the
+external grader with complete subscription accounting. Runtime prompt readback
+found no Claude-plugin or Stripe references, and Worker used two terminal calls.
+
+| Agent | Wall seconds | Calls | Input / cached / output tokens | Modeled credits |
+|---|---:|---:|---|---:|
+| Distill | 41.017758 | 8 | 27,771 / 10,880 / 851 | 0.78627 |
+| Codex high | 42.258616 | 5 | 98,094 / 74,880 / 568 | 1.48990 |
+
+This diagnostic is **2.9% faster** and **47.2% lower in modeled credits**. Removing
+Codex's zero-output request from its cost gives 0.98785 credits and an **20.4%**
+reduction. It still misses both acceptance targets. Main independently inspected
+the actual diff and executed behavioral assertions; its final request missed
+cache again. This pair is exploratory, not the repeated final cohort.
+
+Raw data: [`subscription-frozen-imports.json`](tools/task_cost_eval/results/subscription-frozen-imports.json).
+Distill binary source: `8401878eec6e789c6f2b45dd6f783cf1dbbb34ef`; harness source:
+`e6d67bdf9b4df984f6a136e7d863610984f7fa46`.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

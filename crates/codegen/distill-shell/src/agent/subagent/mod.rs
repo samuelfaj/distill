@@ -641,7 +641,7 @@ pub(crate) const WORKER_DISCIPLINE: &str = "You run on the worker model: the mai
 - Batch independent reads of named files and applicable instruction discovery in one tool round. List or search other paths only to resolve a concrete missing fact. Confirm an uncertain runtime in that first inspection.\n\
 - When the code does not match the assignment, or the assignment leaves open a decision that changes the result, stop and report the mismatch or the question instead of guessing.\n\
 - Run the checks the assignment names, and report each command with its exit status and the relevant output.\n\
-- End with a compact report containing the actual diff, each check's command and exit status, relevant output, and anything left open. Do not repeat the assignment.";
+- End with the actual diff and a compact check report: relative file names once, command names and exit statuses, relevant output, and anything left open. Keep prose within 100 words unless the assignment requires more. Do not repeat the assignment.";
 /// The worker's effort for a delegated child that runs on the worker model:
 /// `Some(None)` is auto (Jev picks it per call), `Some(Some(level))` pins the
 /// level, and `None` keeps the child's usual policy, either because it is not
@@ -662,11 +662,8 @@ pub(crate) fn worker_discipline_reminder(
     on_worker: bool,
     context_source: &InitialContextSource,
 ) -> Option<ConversationItem> {
-    (on_worker && *context_source == InitialContextSource::New).then(|| {
-        ConversationItem::system_reminder(format!(
-            "<system-reminder>\n{WORKER_DISCIPLINE}\n</system-reminder>"
-        ))
-    })
+    (on_worker && *context_source == InitialContextSource::New)
+        .then(|| ConversationItem::system(WORKER_DISCIPLINE))
 }
 /// The worker model a fresh, model-delegated child defaults to. Planning and
 /// review stay on the main model; explicit models, resumes and full-context

@@ -253,6 +253,8 @@ def run_cell(args):
                     'commit', '-qm', 'Frozen task input'], cwd=worktree, check=True)
     prompt = (ROOT / case['prompt_ref']).read_text()
     prompt += '\nWork only in this repository. Finish the code change autonomously. Do not commit.'
+    # Both agents receive the same available runtime fact for the Python cohort.
+    prompt += '\nThe available Python interpreter is python3.'
     (output / 'prompt.txt').write_text(prompt)
     executable = args.distill.resolve() if args.variant == 'distill' else args.codex.resolve()
     version = subprocess.check_output([str(executable), '--version'], text=True).strip()

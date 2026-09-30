@@ -214,6 +214,42 @@ Verification for the bounded candidate: the Worker discipline regression and
 the primary/child orchestration renderer test passed; the 18 accounting and
 runner/evaluator tests passed again. Candidate task timing remains pending.
 
+## Checkpoint 6: bounded profile counterexample
+
+The first bounded inventory diagnostic passed, but took **72.13 s** with 11 calls,
+59,351 input / 28,928 cached input / 1,982 output tokens, costing **1.202059**
+modeled credits. Its preceding native Codex diagnostic passed in **61.24 s** with
+six calls and **1.6567** modeled credits (**1.15465** excluding zero-output warmup).
+The bounded profile therefore did not meet either target in this diagnostic.
+Manual diff review confirms both deliver the same minimal aggregation and
+formatting correction.
+
+The Worker still performed three separate inspections and used unavailable
+`python` before retrying with `python3`. Main then split diff inspection and
+behavioral verification, and one of its later requests missed the cache.
+All of these calls remain in the totals. Raw candidate data:
+[`subscription-bounded-local.json`](tools/task_cost_eval/results/subscription-bounded-local.json).
+
+The next revision makes the existing fresh-Worker discipline a system instruction,
+retaining its original fresh-child/model scoping. It asks for relative file names
+and a compact report, and gives main an explicit instruction to combine its own
+independent diff/check operations. Both agents now receive the same fact that
+`python3` is available. Original fixture prompts and external graders are
+unchanged; final-run prompt hashes will include that shared runtime fact.
+
+Direct inspection then found that the bounded diagnostic's executable still
+loaded the old generated primary prompt: its Markdown source had changed, but
+the XOR-obfuscated compiled copy had not been regenerated. The existing template
+freshness test failed, and the saved runtime prompt lacked the new batching
+instruction. The generated copy is now synchronized; the orchestration test also
+asserts that the compiled prompt contains the new main batching instruction.
+This explains why that diagnostic cannot establish the effect of the main prompt
+change. The Worker discipline was present in its saved conversation.
+
+Verification after synchronization: the fresh-Worker scoping/authority test,
+compiled orchestration renderer, and existing encrypted-template freshness
+test all passed. The 18 Python accounting/runner/evaluator tests passed again.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

@@ -2672,8 +2672,9 @@ fn a_worker_child_follows_the_worker_effort_unless_an_effort_is_explicit() {
 #[test]
 fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
     let reminder = worker_discipline_reminder(true, &InitialContextSource::New)
-        .expect("a fresh worker child gets the discipline")
-        .text_content();
+        .expect("a fresh worker child gets the discipline");
+    assert!(matches!(reminder, ConversationItem::System(_)));
+    let reminder = reminder.text_content();
     assert!(reminder.contains("Do exactly what the assignment specifies"), "{reminder}");
     assert!(reminder.contains("stop and report the mismatch or the question instead of guessing"), "{reminder}");
     assert!(reminder.contains("exit status"), "{reminder}");

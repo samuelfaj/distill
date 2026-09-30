@@ -26,10 +26,10 @@ with alternating agent order. All 18 passed the frozen external graders, extra
 behavior/scope checks, function-ownership checks and independent actual-diff
 review. All calls have complete accounting and use the same ChatGPT account.
 
-| Agent | Total elapsed | Median per task | All model calls | Modeled Standard credits |
-|---|---:|---:|---:|---:|
-| Distill Sol auto + Luna auto | 308.183911 s | 31.086975 s | 69 | 4.83045 |
-| Codex Sol high `--yolo` | 465.270066 s | 53.439253 s | 50 | 14.71436 |
+| Agent | Total elapsed | Time saved | Estimated cost (USD) | Cost saved | Median per task | All model calls | Modeled Standard credits |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Distill Sol auto + Luna auto | 308.183911 s | 33.8% | $0.19 | 67.2% | 31.086975 s | 69 | 4.83045 |
+| Codex Sol high `--yolo` | 465.270066 s | 0% (baseline) | $0.59 | 0% (baseline) | 53.439253 s | 50 | 14.71436 |
 
 Distill is **33.8% faster** and uses **67.2% fewer modeled credits**. Excluding
 Codex's zero-output requests from its credit estimate gives 10.19591 credits and
@@ -69,6 +69,26 @@ included subscription allowance. The benchmark does not reconcile an invoice,
 change a fixed monthly subscription price, or convert API token prices into
 subscription charges. Lower modeled credit cost matters when usage draws on
 purchased credits; monetary conversion depends on the plan's credit price.
+
+### Dollar estimates
+
+For the public comparison, we use **$0.04 per credit**, derived from
+[OpenAI's published equivalence of 2,500 ChatGPT credits to $100](https://developers.openai.com/community/students).
+This is a reference conversion. Actual credit purchase prices and discounts
+depend on the plan or agreement.
+
+`estimated USD = modeled Standard credits * 0.04`
+
+- Distill: `4.83045 * 0.04 = $0.193218`, shown as **$0.19**.
+- Codex: `14.71436 * 0.04 = $0.5885744`, shown as **$0.59**.
+- Codex excluding zero-output requests: `10.19591 * 0.04 = $0.4078364`.
+
+Time and cost savings compare the unrounded totals against Codex:
+`100 * (1 - Distill / Codex)`. This gives **33.8% less time**, **67.2% lower
+estimated cost**, or **52.6% lower cost** in the conservative comparison.
+The dollar estimates cover all nine runs per agent and all their model calls.
+They are not API charges, a reconciled invoice, or a reduction in the monthly
+subscription price. The underlying credit and token records remain unchanged.
 
 ## Reproduce
 

@@ -21,20 +21,23 @@ OpenAI-compatible protocol.
 ## Benchmarks
 
 We ran three small Python tasks three times with each agent. Both used the same
-ChatGPT account. The totals include every model call, including workers, titles
+ChatGPT subscription. The totals include every model call, including workers, titles
 and retries.
 
-| Agent | Models and effort | Total time | Estimated Standard credits | Passing runs |
-|---|---|---:|---:|---:|
-| Distill | GPT-6.1 Sol auto + GPT-6 Luna auto | 308.18 s | 4.83045 | 9/9 |
-| Codex `--yolo` | GPT-6.1 Sol high | 465.27 s | 14.71436 | 9/9 |
+| Agent | Models and effort | Total time | Time saved | Estimated cost (USD) | Cost saved | Passing runs |
+|---|---|---:|---:|---:|---:|---:|
+| Distill | GPT-6.1 Sol auto + GPT-6 Luna auto | 308.18 s | 33.8% | $0.19 | 67.2% | 9/9 |
+| Codex `--yolo` | GPT-6.1 Sol high | 465.27 s | 0% (baseline) | $0.59 | 0% (baseline) | 9/9 |
 
-Distill finished 33.8% faster and used 67.2% fewer estimated credits. Excluding
-Codex's zero-output requests from its credit estimate gives a 52.6% reduction.
-Both agents passed the same behavior checks and a review of their actual diffs.
+Dollar estimates use Standard credit rates and $0.04 per credit, based on
+[OpenAI's published equivalence of 2,500 credits to $100](https://developers.openai.com/community/students).
+The percentages compare unrounded totals against Codex. Excluding Codex's
+zero-output requests from its cost estimate gives a 52.6% reduction. Both agents
+passed the same behavior checks and a review of their actual diffs.
 
-These results cover the tested tasks. Standard credit estimates do not measure
-the included subscription allowance or reduce the fixed monthly price.
+These results cover the tested tasks. Dollar figures are reference estimates;
+actual credit prices can vary by plan. They do not measure the included
+subscription allowance or reduce the fixed monthly price.
 [BENCHMARKS.md](BENCHMARKS.md) has the methodology, call accounting, earlier
 attempts and raw results.
 

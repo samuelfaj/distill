@@ -126,7 +126,8 @@ Two product corrections address the observed execution paths:
 
 Focused verification: **12 tests passed** (four model-resolution tests, the
 new headless regression, and seven existing turn-summary/config/roster tests).
-A release build and repeated task measurements are still pending.
+The release build completed from `a6ad779d193d38f6cea17ac59f2a814134700090`;
+binary SHA256: `da213b731fcd14e9642bf7ca821df2bc6fcea1b46c9d20b62c486c2a2bf61f9c`.
 
 A separate native Codex probe successfully launched two children. Completed
 response telemetry recorded **13 calls across three conversations**, with
@@ -136,6 +137,34 @@ CLI totals alone are insufficient. All observed requests cost an estimated
 **3.79525 Standard credits** at the published rates; this probe is excluded from
 task speed comparisons. Its non-secret call records are in
 [`subscription-accounting-probe.json`](tools/task_cost_eval/results/subscription-accounting-probe.json).
+
+## Checkpoint 3: complete subscription accounting
+
+The first pair after the auxiliary fixes has complete call usage, matching
+ChatGPT account checks, unchanged frozen inputs, and passing external graders.
+Manual diff review confirms both make the required two-line tax correction.
+This is another diagnostic pair, not the final repeated cohort.
+
+| Agent | Grade | Wall time | Calls | Input | Cached input | Output | Modeled credits |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Codex Sol high | PASS | 43.28 s | 5 | 95,709 | 73,088 | 603 | 1.46452 |
+| Distill Sol auto + Luna auto | PASS | 51.68 s | 10 | 72,996 | 16,384 | 1,126 | 2.1724185 |
+
+Distill is **19.4% slower** and uses **48.3% more modeled credits** in this pair.
+Excluding Codex's zero-output warmup gives a conservative baseline of **0.96247**
+credits, against which Distill costs **125.7% more**. All three main Sol requests
+reported zero cached input; the Worker did receive cached input. Both title
+calls now have complete usage, and the cancelled headless dashboard call is gone.
+
+The accounting runner checks request/response counts per native conversation,
+deduplicates repeated telemetry exports, and rejects missing child usage or
+unfolded Distill child attempts. **18 Python tests passed**, covering these
+accounting gates and the existing runner/evaluator. Native OAuth auth mode is
+recorded for every completed Codex response. Executable provenance includes the
+native payload as well as its JavaScript launcher; the payload hash in this
+diagnostic was corrected after identifying the installed package layout.
+
+Raw call metadata: [`subscription-aux-fixes.json`](tools/task_cost_eval/results/subscription-aux-fixes.json).
 
 ## Setup failures retained
 

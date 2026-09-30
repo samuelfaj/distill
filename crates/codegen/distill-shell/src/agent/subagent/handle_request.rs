@@ -2186,7 +2186,14 @@ pub(crate) async fn run_shell_child(
             child_handle.tool_context.session_env.as_ref().clone(),
         )
         .await;
-        result.output = Arc::from(format!("{}\n\n{review}", result.output));
+        let conversation = child_actor_query(
+            "worker_execution_evidence",
+            child_handle.chat_state_handle.get_conversation(),
+            Vec::new(),
+        )
+        .await;
+        let execution = super::worker_execution_evidence(&conversation);
+        result.output = Arc::from(format!("{}\n\n{execution}\n\n{review}", result.output));
     }
     result.duration_ms = start.elapsed().as_millis() as u64;
     let (model_tx, model_rx) = oneshot::channel();

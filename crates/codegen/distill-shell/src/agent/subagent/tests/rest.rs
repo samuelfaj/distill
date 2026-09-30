@@ -2717,6 +2717,24 @@ async fn worker_repository_review_captures_actual_changes_and_flags_truncation()
     ).await;
     assert!(capture.contains("capture_complete=false") && capture.contains("truncated=true"));
 }
+#[test]
+fn worker_execution_evidence_uses_recorded_results_not_the_final_claim() {
+    use distill_sampling_types::conversation::ToolCall;
+    let call = |id: &str, command: &str| ConversationItem::assistant_tool_calls(vec![ToolCall {
+        id: Arc::from(id), name: "run_terminal_command".into(),
+        arguments: Arc::from(format!("{{\"command\":\"{command}\"}}")),
+    }]);
+    let conversation = vec![
+        call("read", "read-old-context"), ConversationItem::tool_result("read", "exit: 0"),
+        call("check", "python3-check"), ConversationItem::tool_result("check", "exit: 1\nassertion failed"),
+        ConversationItem::assistant("All checks passed"),
+    ];
+    let evidence = worker_execution_evidence(&conversation);
+    assert!(evidence.contains("python3-check") && evidence.contains("exit: 1\nassertion failed"));
+    assert!(!evidence.contains("read-old-context") && !evidence.contains("All checks passed"));
+    let pending = worker_execution_evidence(&conversation[..3]);
+    assert!(pending.contains("missing; execution is unverified"));
+}
 /// The worker default resolves to the worker's own endpoint and credentials,
 /// yields to an explicit `[subagents.models]` pin, and falls back to the main
 /// model when the worker is the main model or is missing from the catalog.

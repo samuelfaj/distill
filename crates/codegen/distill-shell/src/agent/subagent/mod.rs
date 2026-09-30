@@ -678,6 +678,47 @@ pub(super) async fn worker_repository_review(
         "<repository_review>\nHarness-captured tracked diff against HEAD, followed by short status. May include pre-existing changes. Untracked file contents are not included.\n{evidence}\n</repository_review>"
     )
 }
+/// The latest tool batch and its recorded results, rather than the child's claim.
+pub(super) fn worker_execution_evidence(conversation: &[ConversationItem]) -> String {
+    let mut evidence = String::new();
+    if let Some((index, assistant)) = conversation
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| match item {
+            ConversationItem::Assistant(assistant) if !assistant.tool_calls.is_empty() => {
+                Some((index, assistant))
+            }
+            _ => None,
+        })
+    {
+        for call in &assistant.tool_calls {
+            let result = conversation[index + 1..].iter().find_map(|item| match item {
+                ConversationItem::ToolResult(result) if result.tool_call_id == call.id.as_ref() => {
+                    Some(result.content.as_ref())
+                }
+                _ => None,
+            });
+            evidence.push_str(&format!(
+                "tool={} arguments={}\nrecorded_result={}\n",
+                call.name,
+                call.arguments,
+                result.unwrap_or("missing; execution is unverified")
+            ));
+        }
+    } else {
+        evidence.push_str("No tool execution evidence is available.");
+    }
+    let truncated = evidence.len() > 8_000;
+    if truncated {
+        let mut end = 8_000;
+        while !evidence.is_char_boundary(end) {
+            end -= 1;
+        }
+        evidence.truncate(end);
+    }
+    format!("<worker_execution_evidence>\nHarness-captured last tool batch. Assess what its commands/results prove; this is not a test verdict. truncated={truncated}\n{evidence}\n</worker_execution_evidence>")
+}
 /// The worker's effort for a delegated child that runs on the worker model:
 /// `Some(None)` is auto (Jev picks it per call), `Some(Some(level))` pins the
 /// level, and `None` keeps the child's usual policy, either because it is not

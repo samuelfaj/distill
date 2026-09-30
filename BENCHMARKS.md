@@ -430,6 +430,42 @@ Worker scoping, and all six system-prompt installation tests. The installation
 test's old wording assertion initially failed and was updated to the new
 one-command instruction; its preservation and exactly-once assertions remain.
 
+## Checkpoint 14: harness diff measured; recorded tool results added for review
+
+The fourth repeated cohort passed **18/18** frozen graders, complete subscription
+accounting and frozen-input checks. Independent checks also passed for all 18:
+integer zero/negative/large-value tax behavior; strict active flags, new lists,
+order and nonmutation; empty/zero/negative inventory totals and lexical order;
+only the requested files changed, with the initial task commit preserved.
+
+| Agent | Total seconds | Median seconds | Calls | Input / cached / output tokens | Modeled credits |
+|---|---:|---:|---:|---|---:|
+| Distill | 357.760117 | 40.402157 | 71 | 254,642 / 135,808 / 9,607 | 4.212626 |
+| Codex high | 480.563331 | 56.317114 | 50 | 988,883 / 768,000 / 6,915 | 14.692900 |
+
+This is **25.6% faster** and **71.3% lower in modeled credits**. Excluding
+Codex's zero-output requests gives 10.17445 credits and a **58.6%** reduction.
+The time target remains unmet. Raw data and independent check readback:
+[`subscription-harness-diff-cohort-v4.json`](tools/task_cost_eval/results/subscription-harness-diff-cohort-v4.json).
+Binary and harness source: `5c0169b7`.
+
+Runtime readback confirms Main receives the harness's actual diff and can finish
+with two model rounds. Some repetitions still repeat behavioral checks because
+Worker's final report does not make its coverage clear. The next candidate adds
+the latest tool batch's actual arguments and matching recorded results from the
+child conversation, capped at 8,000 bytes with explicit truncation. It makes no
+test verdict: Main assesses coverage against the spec and diff, and still verifies
+missing, failed, truncated, or insufficient evidence. This avoids treating a
+brief report as proof or as the only available record of completed checks.
+The same fresh foreground/headless and structured-output exclusions apply.
+This candidate is not yet measured.
+
+Verification: recorded-result and missing-result checks, actual repository capture
+and truncation, compiled primary rendering, encrypted-template freshness, and all
+six prompt-installation tests pass. An initial incorrect message-type accessor
+caused a compile error and was replaced with the existing enum match before these
+tests passed.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, an initial API pilot failed.

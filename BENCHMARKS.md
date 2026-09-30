@@ -202,9 +202,11 @@ profile for this cohort, not a claim about the default full toolset. A reserved
 Codex compatibility config cell was also set here; later source inspection
 showed its MCP surface is not implemented, so it did not affect discovery.
 
-The user's installed configuration was aligned with subscription-only execution:
-main/planning/review use ChatGPT Sol, Worker/local-worker/auxiliary models use
-ChatGPT Luna, and Worker/utility effort is auto. The external Jev decision
+The user's installed main and delegation configuration was aligned with
+subscription-only execution: main/planning/review use ChatGPT Sol and
+Worker/local-worker/utility selection uses ChatGPT Luna, with auto effort.
+The auxiliary call-site model overrides were still unset here and were pinned
+explicitly in checkpoint 11. The external Jev decision
 service points to an unset credential variable so it defers to existing native
 fallbacks. Codex now has `forced_login_method="chatgpt"`. Selected routes were
 read back without exposing credentials; benchmark profiles remain isolated.
@@ -341,6 +343,20 @@ the updated Worker scoping test, and the Responses wire-schema regression all
 pass. The sampling-types build reports two pre-existing test-attribute/dead-code
 warnings outside these changes. The candidate needs a new release build and
 runtime prompt/tool-argument readback before making a performance claim.
+
+## Checkpoint 11: explicit subscription auxiliary routes
+
+The current source confirms `[models].session_summary` is a supported runtime
+setting. The isolated benchmark profile now pins it to ChatGPT Luna instead of
+relying on the compiled Grok-title model's fallback to the current model. Every
+title request remains counted, with its observed model and token usage.
+
+The user's installed profile now also pins session titles, image description,
+and next-prompt suggestions to ChatGPT Luna, and search to ChatGPT Sol. Its normal
+model picker allows only `chatgpt/*`, and goal roles inherit the current native
+model. These settings were read back without credentials. Custom provider
+catalogs remain stored; the benchmark strips model API keys and validates every
+observed inference route independently.
 
 ## Setup failures retained
 

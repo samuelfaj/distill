@@ -89,6 +89,7 @@ use_leader = false
 default = "chatgpt/gpt-6.1-sol"
 worker = "chatgpt/gpt-6-luna"
 worker_effort = "auto"
+session_summary = "chatgpt/gpt-6-luna"
 [jev]
 effort_auto = true
 api_key_env = "DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY"

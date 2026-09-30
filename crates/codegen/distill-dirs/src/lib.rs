@@ -1,6 +1,6 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Home-directory resolution generally: USERPROFILE-first `home_dir`, plus
-//! Distill home (`$DISTILL_HOME` or `<home>/.distill`, with legacy profile reuse). Shared by `distill-config`
+//! Distill home (`$DISTILL_HOME` or `<home>/.distill`). Shared by `distill-config`
 //! and `distill-fast-worktree`.
 //!
 //! Which function to call:
@@ -47,8 +47,8 @@ fn distill_home_in(home: &Path) -> PathBuf {
         .join(".distill")
 }
 
-/// Explicit home verbatim when non-empty; otherwise reuse an existing legacy profile
-/// until a Distill profile exists.
+/// Explicit home verbatim when non-empty; otherwise `<home>/.distill`.
+/// A leftover `<home>/.grok` (the Grok CLI's directory) is never adopted: Distill keeps its own profile.
 /// Used as-is (not canonicalized) so literal prefix checks and symlink guards still see original components.
 fn resolve_distill_home_from(
     distill_home_env: Option<&OsStr>,
@@ -57,17 +57,7 @@ fn resolve_distill_home_from(
     if let Some(env) = distill_home_env.filter(|env| !env.is_empty()) {
         return Some((PathBuf::from(env), DistillHomeSource::EnvOverride));
     }
-    os_home.map(|home| {
-        let current = distill_home_in(home);
-        let legacy = home.join(".grok");
-        // Existing users retain their accounts and sessions after the rename.
-        let path = if !current.exists() && legacy.is_dir() {
-            legacy
-        } else {
-            current
-        };
-        (path, DistillHomeSource::HomeDefault)
-    })
+    os_home.map(|home| (distill_home_in(home), DistillHomeSource::HomeDefault))
 }
 
 /// Resolve the Distill home from the environment (fresh, no cache); `None` if neither resolves.
@@ -166,21 +156,16 @@ mod tests {
     }
 
     #[test]
-    fn existing_profile_is_reused_until_distill_profile_exists() {
+    fn a_grok_cli_directory_is_never_adopted_as_the_distill_home() {
+        // `~/.grok` belongs to the Grok CLI (its binaries and credentials live
+        // there). Falling back to it would make Distill read and write that
+        // directory whenever `~/.distill` is missing.
         let tmp = tempfile::tempdir().unwrap();
         let home = dunce::canonicalize(tmp.path()).unwrap();
-        let legacy = home.join(".grok");
-        std::fs::create_dir(&legacy).unwrap();
-        assert_eq!(
-            resolve_distill_home_from(None, Some(&home)).unwrap().0,
-            legacy
-        );
-        let current = home.join(".distill");
-        std::fs::create_dir(&current).unwrap();
-        assert_eq!(
-            resolve_distill_home_from(None, Some(&home)).unwrap().0,
-            current
-        );
+        std::fs::create_dir(home.join(".grok")).unwrap();
+        let (path, source) = resolve_distill_home_from(None, Some(&home)).unwrap();
+        assert_eq!(path, home.join(".distill"));
+        assert_eq!(source, DistillHomeSource::HomeDefault);
     }
 
     #[test]

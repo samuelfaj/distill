@@ -231,6 +231,14 @@ impl ModelsManagerBuilder {
     }
 }
 
+/// A signed-in ChatGPT or Claude account whose model catalog has not been
+/// fetched yet. Those catalogs live in memory and are filled by
+/// `refresh_chatgpt_models`, which runs after startup.
+fn subscription_catalog_pending() -> bool {
+    (crate::codex_auth::is_logged_in() && crate::codex_models::cached_models().is_empty())
+        || (crate::claude_auth::is_logged_in() && crate::claude_models::cached_models().is_empty())
+}
+
 impl ModelsManager {
     pub(crate) fn new(
         prefetched: Option<IndexMap<String, ModelEntry>>,
@@ -257,6 +265,23 @@ impl ModelsManager {
         prefetched_models: Option<IndexMap<String, ModelEntry>>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self, String> {
+        Self::from_config_with(
+            cfg,
+            prefetched_models,
+            auth_manager,
+            subscription_catalog_pending(),
+        )
+    }
+
+    /// `subscription_catalog_pending` is a signed-in ChatGPT or Claude account
+    /// whose model catalog is fetched after startup (see
+    /// [`subscription_catalog_pending`]).
+    fn from_config_with(
+        cfg: &config::Config,
+        prefetched_models: Option<IndexMap<String, ModelEntry>>,
+        auth_manager: Arc<AuthManager>,
+        subscription_catalog_pending: bool,
+    ) -> Result<Self, String> {
         let has_session = auth_manager.current_or_expired().is_some();
         let is_session_auth = auth_manager
             .current_or_expired()
@@ -279,7 +304,11 @@ impl ModelsManager {
         let catalog = resolve_model_catalog(cfg, prefetched_models.clone());
 
         // Only against a real catalog. A fleet pin on built-ins-only (custom endpoint, cold cache) would reject a valid policy before the first fetch. The catalog still marks unselectable entries; this check runs after prefetch / cache.
-        if has_prefetched {
+        // The same holds for a signed-in ChatGPT/Claude account: its models arrive with the first
+        // `initialize`, so `allowed_models = ["chatgpt/*"]` matches nothing until then. The
+        // prompt-path guard (`allowlist_excludes_all`) still latches, and `apply_config` validates
+        // once those catalogs land.
+        if has_prefetched && !subscription_catalog_pending {
             validate_selectable(cfg, &catalog)?;
         }
 
@@ -898,6 +927,9 @@ impl ModelsManager {
         if let Err(error) = crate::codex_models::refresh().await {
             tracing::warn!(%error, "ChatGPT model catalog refresh failed");
         }
+        if let Err(error) = crate::claude_models::refresh().await {
+            tracing::warn!(%error, "Claude model catalog refresh failed");
+        }
         let config = self.inner.cfg.read().clone();
         if self.inner.user_selected_model.load(Ordering::Relaxed) {
             self.apply_config(config);
@@ -1207,7 +1239,8 @@ impl ModelsManager {
                 .send_replace(CatalogProgress::Ready);
             (first_real_catalog, cat.allowlist_excludes_all)
         };
-        if excludes_all {
+        // Not yet an error while a signed-in ChatGPT/Claude catalog is still on its way.
+        if excludes_all && !subscription_catalog_pending() {
             tracing::error!("allowed_models excludes all fetched models; prompts will be blocked");
         }
 

@@ -10,6 +10,7 @@ fn grok_logout_keeps_the_harness_and_other_accounts_available() {
     app.provider_auth = Some(ProviderAuthState {
         grok: true,
         chatgpt: true,
+        claude: true,
         openrouter: true,
     });
     dispatch(Action::TaskComplete(TaskResult::LogoutComplete), &mut app);
@@ -20,6 +21,7 @@ fn grok_logout_keeps_the_harness_and_other_accounts_available() {
         Some(ProviderAuthState {
             grok: false,
             chatgpt: true,
+            claude: true,
             openrouter: true,
         })
     );
@@ -953,6 +955,47 @@ fn onboarding_grok_handoff_clears_prior_provider_viewer_for_manual_auth() {
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)
         )),
         InputOutcome::Action(Action::CancelOnboardingLogin)
+    ));
+}
+
+#[test]
+fn clicking_the_claude_row_starts_the_claude_login_not_a_neighbouring_one() {
+    use crate::app::actions::{Action, LoginProvider};
+    use crate::app::app_view::InputOutcome;
+    use crate::views::onboarding::{OnboardingStep, render_onboarding};
+    use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    let mut app = test_app();
+    dispatch(Action::OpenOnboarding, &mut app);
+    let area = Rect::new(0, 0, 80, 40);
+    let mut buffer = Buffer::empty(area);
+    let state = app.onboarding.as_mut().expect("onboarding opened");
+    state.step = OnboardingStep::Connect;
+    render_onboarding(&mut buffer, area, state, false, &[], &[], None, None);
+
+    let row_text = |y: u16| {
+        (area.x..area.right())
+            .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol()))
+            .collect::<String>()
+    };
+    let y = (area.y..area.bottom())
+        .find(|y| row_text(*y).contains("Claude (login)"))
+        .expect("the Claude row is rendered");
+    let x = row_text(y).find("Claude").expect("label offset") as u16;
+    let click = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+    let InputOutcome::Action(action) = app.handle_input(&click) else {
+        panic!("the Claude row must dispatch a provider login");
+    };
+    assert!(matches!(
+        action,
+        Action::LoginProvider(LoginProvider::Claude)
     ));
 }
 

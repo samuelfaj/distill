@@ -1799,12 +1799,13 @@ fn render_welcome_done(
     let gate_menu;
     let owned_menu;
     let menu_items: &[(&str, &str)] = if !p.has_access {
-        // The provider rows are on this menu too: signing in to ChatGPT or
+        // The provider rows are on this menu too: signing in to ChatGPT, Claude or
         // OpenRouter is exactly what a user without a Grok session needs, and the
         // harness runs on any of them — or on local models only.
         gate_menu = [
             (key_g, cta),
             ("", "Log in with ChatGPT"),
+            ("", "Log in with Claude"),
             ("", "Log in with OpenRouter"),
             (key_l, "Logout"),
             (key_q, "Quit"),
@@ -1844,6 +1845,14 @@ fn render_welcome_done(
                 "Log out of ChatGPT"
             } else {
                 "Log in with ChatGPT"
+            },
+        ));
+        items.push((
+            "",
+            if p.provider_auth.claude {
+                "Log out of Claude"
+            } else {
+                "Log in with Claude"
             },
         ));
         items.push((

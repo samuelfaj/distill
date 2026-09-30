@@ -338,6 +338,7 @@ fn onboarding_grok_login_uses_provider_connection_state() {
     app.provider_auth = Some(crate::app::actions::ProviderAuthState {
         grok: false,
         chatgpt: true,
+        claude: false,
         openrouter: false,
     });
 
@@ -2274,6 +2275,7 @@ fn independent_provider_keeps_usage_discoverable_without_grok_manage() {
     app.provider_auth = Some(ProviderAuthState {
         grok: false,
         chatgpt: true,
+        claude: false,
         openrouter: false,
     });
     app.sync_billing_surface_to_agents();
@@ -3391,7 +3393,7 @@ fn welcome_ctrl_d_requires_confirmation() {
 #[test]
 fn menu_action_indices_match_the_shipped_menu() {
     // New worktree, Resume session, Log in with Grok, Log in with Codex,
-    // Log in with OpenRouter, Model tiers, Quit.
+    // Log in with Claude, Log in with OpenRouter, Model tiers, Quit.
     assert!(matches!(
         dispatch_menu_action(0, false, true, Default::default()),
         InputOutcome::Action(Action::OpenNewWorktreeDialog)
@@ -3401,11 +3403,11 @@ fn menu_action_indices_match_the_shipped_menu() {
         InputOutcome::Action(Action::FetchSessionList)
     ));
     assert!(matches!(
-        dispatch_menu_action(6, false, true, Default::default()),
+        dispatch_menu_action(7, false, true, Default::default()),
         InputOutcome::Action(Action::Quit)
     ));
     assert!(matches!(
-        dispatch_menu_action(7, false, true, Default::default()),
+        dispatch_menu_action(8, false, true, Default::default()),
         InputOutcome::Unchanged
     ));
 }
@@ -3418,7 +3420,11 @@ fn menu_action_provider_rows_start_login() {
         dispatch_menu_action(2, false, true, Default::default()),
         InputOutcome::Action(Action::Login)
     ));
-    for (index, provider) in [(3, LoginProvider::ChatGpt), (4, LoginProvider::OpenRouter)] {
+    for (index, provider) in [
+        (3, LoginProvider::ChatGpt),
+        (4, LoginProvider::Claude),
+        (5, LoginProvider::OpenRouter),
+    ] {
         for (row, import, access) in [
             (index, false, true),
             (index + 1, true, true),
@@ -3431,7 +3437,7 @@ fn menu_action_provider_rows_start_login() {
         }
     }
     assert!(matches!(
-        dispatch_menu_action(5, false, true, Default::default()),
+        dispatch_menu_action(6, false, true, Default::default()),
         InputOutcome::Action(Action::ShowTierEditor)
     ));
 }
@@ -3455,7 +3461,7 @@ fn menu_action_indices_shift_by_the_import_row() {
         InputOutcome::Action(Action::Login)
     ));
     assert!(matches!(
-        dispatch_menu_action(7, true, true, Default::default()),
+        dispatch_menu_action(8, true, true, Default::default()),
         InputOutcome::Action(Action::Quit)
     ));
 }
@@ -3465,6 +3471,7 @@ fn welcome_provider_rows_logout_only_the_connected_accounts() {
     let state = ProviderAuthState {
         grok: true,
         chatgpt: false,
+        claude: true,
         openrouter: true,
     };
     assert!(matches!(
@@ -3477,6 +3484,10 @@ fn welcome_provider_rows_logout_only_the_connected_accounts() {
     ));
     assert!(matches!(
         dispatch_menu_action(4, false, true, state),
+        InputOutcome::Action(Action::LogoutProvider(LoginProvider::Claude))
+    ));
+    assert!(matches!(
+        dispatch_menu_action(5, false, true, state),
         InputOutcome::Action(Action::LogoutProvider(LoginProvider::OpenRouter))
     ));
     let state = ProviderAuthState {

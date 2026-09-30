@@ -1234,6 +1234,7 @@ pub(crate) async fn run(
         app.provider_auth = Some(super::actions::ProviderAuthState {
             grok: connection.auth_manager.current_or_expired().is_some(),
             chatgpt: distill_shell::codex_auth::is_logged_in(),
+            claude: distill_shell::claude_auth::is_logged_in(),
             openrouter: distill_shell::openrouter_auth::is_logged_in(),
         });
     }

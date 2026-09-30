@@ -126,6 +126,40 @@ impl CodexTurnAffinity {
     }
 }
 
+/// Beta flag under which the Messages API accepts a Claude subscription bearer.
+const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// A subscription bearer is only honoured for requests that open with this
+/// identity line, so it is always the first system block.
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+fn prepend_claude_code_identity(system: &mut Option<messages::SystemParam>) {
+    use messages::{SystemParam, TextBlock};
+    let identity = TextBlock {
+        r#type: "text".to_owned(),
+        text: CLAUDE_CODE_IDENTITY.to_owned(),
+        cache_control: None,
+    };
+    *system = Some(match system.take() {
+        None => SystemParam::Blocks(vec![identity]),
+        Some(SystemParam::Text(text)) if text == CLAUDE_CODE_IDENTITY => SystemParam::Text(text),
+        Some(SystemParam::Text(text)) => SystemParam::Blocks(vec![
+            identity,
+            TextBlock {
+                r#type: "text".to_owned(),
+                text,
+                cache_control: None,
+            },
+        ]),
+        Some(SystemParam::Blocks(mut blocks)) => {
+            if blocks.first().is_none_or(|first| first.text != CLAUDE_CODE_IDENTITY) {
+                blocks.insert(0, identity);
+            }
+            SystemParam::Blocks(blocks)
+        }
+    });
+}
+
 fn is_openrouter_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).is_ok_and(|url| {
         url.scheme() == "https"
@@ -1956,7 +1990,21 @@ impl SamplingClient {
             request.inner.top_p = self.defaults.top_p;
         }
 
+        if self.uses_claude_subscription_bearer() {
+            prepend_claude_code_identity(&mut request.inner.system);
+        }
+
         Ok(())
+    }
+
+    /// True when the request carries the Anthropic beta flag that accepts a
+    /// Claude subscription (OAuth) bearer. The shell sets it; the sampler only
+    /// reads it, so it stays URL-agnostic.
+    fn uses_claude_subscription_bearer(&self) -> bool {
+        self.default_headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|flag| flag.trim() == CLAUDE_OAUTH_BETA))
     }
 
     /// Create a message using the Anthropic Messages API (non-streaming).
@@ -3282,6 +3330,71 @@ mod tests {
         let mut grok = original.clone();
         patch_codex_response_request("https://api.x.ai/v1", &mut grok);
         assert_eq!(grok, original);
+    }
+
+    fn system_texts(system: &Option<messages::SystemParam>) -> Vec<String> {
+        match system {
+            None => vec![],
+            Some(messages::SystemParam::Text(text)) => vec![text.clone()],
+            Some(messages::SystemParam::Blocks(blocks)) => {
+                blocks.iter().map(|block| block.text.clone()).collect()
+            }
+        }
+    }
+
+    #[test]
+    fn claude_subscription_identity_is_always_the_first_system_block() {
+        // The API rejects a subscription bearer unless this line leads, so it
+        // must precede the agent's own prompt however that prompt is shaped.
+        let mut none = None;
+        prepend_claude_code_identity(&mut none);
+        assert_eq!(system_texts(&none), [CLAUDE_CODE_IDENTITY]);
+
+        let mut text = Some(messages::SystemParam::Text("agent prompt".to_owned()));
+        prepend_claude_code_identity(&mut text);
+        assert_eq!(system_texts(&text), [CLAUDE_CODE_IDENTITY, "agent prompt"]);
+
+        let block = |text: &str| messages::TextBlock {
+            r#type: "text".to_owned(),
+            text: text.to_owned(),
+            cache_control: Some(messages::CacheControl {
+                r#type: "ephemeral".to_owned(),
+            }),
+        };
+        let mut blocks = Some(messages::SystemParam::Blocks(vec![block("agent prompt")]));
+        prepend_claude_code_identity(&mut blocks);
+        assert_eq!(system_texts(&blocks), [CLAUDE_CODE_IDENTITY, "agent prompt"]);
+
+        // Applying it twice (a retry rebuilds defaults) must not stack the line.
+        prepend_claude_code_identity(&mut blocks);
+        assert_eq!(system_texts(&blocks), [CLAUDE_CODE_IDENTITY, "agent prompt"]);
+    }
+
+    #[test]
+    fn claude_identity_is_added_only_when_the_oauth_beta_is_configured() {
+        let with_beta = SamplingClient::new(SamplerConfig {
+            extra_headers: IndexMap::from([(
+                "anthropic-beta".to_owned(),
+                "claude-code-20250219, oauth-2025-04-20".to_owned(),
+            )]),
+            ..minimal_config()
+        })
+        .unwrap();
+        assert!(with_beta.uses_claude_subscription_bearer());
+
+        // A plain API-key Anthropic model must keep its system prompt untouched.
+        let api_key = SamplingClient::new(SamplerConfig {
+            extra_headers: IndexMap::from([(
+                "anthropic-beta".to_owned(),
+                "interleaved-thinking-2025-05-14".to_owned(),
+            )]),
+            ..minimal_config()
+        })
+        .unwrap();
+        assert!(!api_key.uses_claude_subscription_bearer());
+        assert!(!SamplingClient::new(minimal_config())
+            .unwrap()
+            .uses_claude_subscription_bearer());
     }
 
     async fn capture_response_body(streaming: bool) -> serde_json::Value {

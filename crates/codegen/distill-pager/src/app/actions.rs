@@ -16,6 +16,7 @@ use distill_shell::session::unified_list::SessionKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginProvider {
     ChatGpt,
+    Claude,
     OpenRouter,
 }
 
@@ -23,6 +24,7 @@ impl LoginProvider {
     pub fn name(self) -> &'static str {
         match self {
             Self::ChatGpt => "ChatGPT",
+            Self::Claude => "Claude",
             Self::OpenRouter => "OpenRouter",
         }
     }
@@ -33,6 +35,7 @@ impl LoginProvider {
 pub struct ProviderAuthState {
     pub grok: bool,
     pub chatgpt: bool,
+    pub claude: bool,
     pub openrouter: bool,
 }
 

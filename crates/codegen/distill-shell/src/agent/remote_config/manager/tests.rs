@@ -712,6 +712,55 @@ fn from_config_defers_validate_without_prefetch() {
 }
 
 #[test]
+fn validate_selectable_ignores_a_campaign_default_the_allowlist_excludes() {
+    // A campaign can point `models.default` at a model the user's allowlist
+    // excludes. Rejecting the config for that would block every reload,
+    // including the one that brings in the models the user did allow.
+    let mut cfg = config_from_toml(
+        r#"
+            [models]
+            default = "grok-3"
+            allowed_models = ["grok-4*"]
+            [model.grok-3]
+            model = "grok-3"
+            base_url = "https://api.x.ai/v1"
+            context_window = 256000
+            [model.grok-4]
+            model = "grok-4"
+            base_url = "https://api.x.ai/v1"
+            context_window = 256000
+            "#,
+    );
+    let catalog = resolve_model_catalog(&cfg, None);
+    assert!(validate_selectable(&cfg, &catalog).is_err(), "setup: an explicit default is rejected");
+
+    cfg.models.default_is_campaign_driven = true;
+    assert!(validate_selectable(&cfg, &catalog).is_ok());
+}
+
+#[test]
+fn from_config_waits_for_a_signed_in_subscription_catalog_before_rejecting_the_allowlist() {
+    // `allowed_models = ["chatgpt/*"]` only matches once the ChatGPT catalog is
+    // fetched, which happens after startup. Rejecting it at startup would make
+    // a chatgpt-only setup impossible to launch.
+    let cfg = config_from_toml("[models]\nallowed_models = [\"chatgpt/*\"]");
+    let auth = || Arc::new(AuthManager::new(tempfile::TempDir::new().unwrap().path(), GrokComConfig::default()));
+
+    let mgr = ModelsManager::from_config_with(&cfg, Some(make_prefetched(&["grok-4"])), auth(), true)
+        .expect("a pending subscription catalog defers the check");
+    assert!(
+        mgr.allowlist_excludes_all(),
+        "prompts stay blocked until the catalog lands and apply_config re-checks"
+    );
+
+    // With nothing left to arrive, the same setup is a real misconfiguration.
+    let error = ModelsManager::from_config_with(&cfg, Some(make_prefetched(&["grok-4"])), auth(), false)
+        .err()
+        .expect("no pending catalog means the allowlist is checked now");
+    assert!(error.contains("allowed_models"), "{error}");
+}
+
+#[test]
 fn set_session_model_fleet_deny_uses_organization_message() {
     let raw: toml::Value = toml::from_str(
         r#"

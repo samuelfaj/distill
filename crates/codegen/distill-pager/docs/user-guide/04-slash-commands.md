@@ -402,7 +402,7 @@ Alias: `/tour`
 Open the durable four-step first-run setup. It is separate from `/tutorial`, and a closed flow resumes at the same step when reopened:
 
 1. **Make your AI budget go further** — how model choice and routing can change cost without claiming that OpenRouter reduces tokens by itself.
-2. **Connect your AI** — reuse Grok, Codex (ChatGPT), and OpenRouter login flows, then choose the primary model through the existing model selector.
+2. **Connect your AI** — reuse Grok, Codex (ChatGPT), Claude, and OpenRouter login flows, then choose the primary model through the existing model selector.
 3. **Choose a worker model** — pick the optional, usually cheaper model that runs the work the main model delegates, or skip to keep the current one.
 4. **Stay in the loop** — optionally open `https://x.com/samfajreldines/`, then finish without automatically following or claiming that you followed.
 

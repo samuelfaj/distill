@@ -2437,6 +2437,7 @@ impl AppView {
             crate::views::onboarding::OnboardingCommand::LoginProvider(provider) => {
                 let connected = self.provider_auth.is_some_and(|auth| match provider {
                     LoginProvider::ChatGpt => auth.chatgpt,
+                    LoginProvider::Claude => auth.claude,
                     LoginProvider::OpenRouter => auth.openrouter,
                 });
                 if connected {
@@ -4419,7 +4420,7 @@ fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
 }
 /// Dispatch an action for a welcome menu item by index.
 /// Menu order: `[Import]`, New worktree, Resume session, Log in with Grok,
-/// Log in with Codex, Log in with OpenRouter, Model tiers, Quit.
+/// Log in with Codex, Log in with Claude, Log in with OpenRouter, Model tiers, Quit.
 /// The release notes are not a row on this screen: `/release-notes` opens them.
 fn dispatch_menu_action(
     index: usize,
@@ -4428,15 +4429,16 @@ fn dispatch_menu_action(
     provider_auth: ProviderAuthState,
 ) -> InputOutcome {
     // Without a Grok session the screen shows the gate menu: the subscription
-    // call to action, the two provider logins this harness owns (ChatGPT and
-    // OpenRouter), Logout and Quit. The other rows need a session to mean
+    // call to action, the three provider logins this harness owns (ChatGPT,
+    // Claude and OpenRouter), Logout and Quit. The other rows need a session to mean
     // anything, so they are only on the menu that has one.
     if !has_access {
         return match index {
             1 => InputOutcome::Action(Action::LoginProvider(LoginProvider::ChatGpt)),
-            2 => InputOutcome::Action(Action::LoginProvider(LoginProvider::OpenRouter)),
-            3 => InputOutcome::Action(Action::Logout),
-            4 => InputOutcome::Action(Action::Quit),
+            2 => InputOutcome::Action(Action::LoginProvider(LoginProvider::Claude)),
+            3 => InputOutcome::Action(Action::LoginProvider(LoginProvider::OpenRouter)),
+            4 => InputOutcome::Action(Action::Logout),
+            5 => InputOutcome::Action(Action::Quit),
             _ => InputOutcome::Unchanged,
         };
     }
@@ -4445,9 +4447,10 @@ fn dispatch_menu_action(
     let resume_idx = base + 1;
     let login_grok_idx = base + 2;
     let login_codex_idx = base + 3;
-    let login_openrouter_idx = base + 4;
-    let cheap_model_idx = base + 5;
-    let quit_idx = base + 6;
+    let login_claude_idx = base + 4;
+    let login_openrouter_idx = base + 5;
+    let cheap_model_idx = base + 6;
+    let quit_idx = base + 7;
     if has_claude_import && index == 0 {
         return InputOutcome::Action(Action::ImportClaudeSettings);
     }
@@ -4469,6 +4472,13 @@ fn dispatch_menu_action(
             Action::LogoutProvider(LoginProvider::ChatGpt)
         } else {
             Action::LoginProvider(LoginProvider::ChatGpt)
+        });
+    }
+    if index == login_claude_idx {
+        return InputOutcome::Action(if provider_auth.claude {
+            Action::LogoutProvider(LoginProvider::Claude)
+        } else {
+            Action::LoginProvider(LoginProvider::Claude)
         });
     }
     if index == login_openrouter_idx {

@@ -212,6 +212,14 @@ pub(crate) fn execute(
                                     format!("Connected ChatGPT as {label}. Use /model to select a ChatGPT model.")
                                 })
                             }
+                            actions::LoginProvider::Claude => {
+                                distill_shell::claude_auth::run_tui_login(fallback_tx)
+                                    .await
+                                    .map(|account| {
+                                        let label = account.email.as_deref().or(account.account_uuid.as_deref()).unwrap_or("your account");
+                                        format!("Connected Claude as {label}. Use /model to select a Claude model.")
+                                    })
+                            }
                             actions::LoginProvider::OpenRouter => {
                                 distill_shell::openrouter_auth::run_tui_login(fallback_tx)
                                     .await
@@ -220,9 +228,9 @@ pub(crate) fn execute(
                         }
                     } => {
                         match result {
-                            Ok(message) if provider == actions::LoginProvider::ChatGpt => {
+                            Ok(message) if matches!(provider, actions::LoginProvider::ChatGpt | actions::LoginProvider::Claude) => {
                                 if let Err(error) = distill_shell::cli_models::fetch_model_state(&model_tx).await {
-                                    tracing::warn!(%error, "Could not refresh models after ChatGPT login");
+                                    tracing::warn!(%error, provider = provider.name(), "Could not refresh models after provider login");
                                 }
                                 Ok(message)
                             }
@@ -250,6 +258,9 @@ pub(crate) fn execute(
                 let result = match provider {
                     actions::LoginProvider::ChatGpt => {
                         distill_shell::codex_auth::run_cli_logout().await.map(|_| ())
+                    }
+                    actions::LoginProvider::Claude => {
+                        distill_shell::claude_auth::run_cli_logout().await.map(|_| ())
                     }
                     actions::LoginProvider::OpenRouter => {
                         distill_shell::openrouter_auth::logout().map_err(Into::into)

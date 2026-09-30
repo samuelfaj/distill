@@ -3531,6 +3531,7 @@ pub(crate) fn resolve_model_list(
     }
     let codex_models = crate::codex_models::cached_models();
     resolved.extend(codex_models.clone());
+    resolved.extend(crate::claude_models::cached_models());
     let mut explicit_api_backend_keys = std::collections::HashSet::new();
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
@@ -4912,6 +4913,16 @@ pub(crate) fn resolve_credentials(
             info.base_url.clone(),
             distill_chat_state::AuthType::ApiKey,
         )
+    } else if crate::claude_auth::is_claude_backend(&info.base_url)
+        && crate::claude_auth::is_logged_in()
+    {
+        // The Claude bearer resolver supplies this account's OAuth token. An
+        // unrelated XAI_API_KEY must not be sent to Anthropic in its place.
+        (
+            None,
+            info.base_url.clone(),
+            distill_chat_state::AuthType::ApiKey,
+        )
     } else if let Some(key) = session_key
         && distill_login::backend::AuthBackend::may_receive_session(
             &distill_login::backend::ActiveAuthBackend::default(),
@@ -5346,6 +5357,9 @@ pub(crate) fn sampling_config_for_model(
     // A model pointed at the ChatGPT Codex backend needs the CLI's sign-in as its
     // bearer and the workspace header; everything else is left alone.
     crate::codex_auth::apply_codex_backend(&mut config);
+    // A model pointed at the Anthropic API uses the Claude subscription sign-in
+    // when one exists and no API key was configured.
+    crate::claude_auth::apply_claude_backend(&mut config);
     config
 }
 /// Fold URL-derived headers into `extra_headers`. The sampler crate is intentionally URL-agnostic: it does not inspect `base_url` to decide which auth or staging headers to add.

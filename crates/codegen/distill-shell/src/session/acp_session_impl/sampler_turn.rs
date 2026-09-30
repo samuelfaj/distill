@@ -277,11 +277,15 @@ impl SessionTokenAuthGate {
     ) -> Self {
         let has_codex_auth = !base_url.trim().is_empty()
             && crate::codex_auth::is_trusted_inference_base_url(base_url);
+        // Anthropic is never a Grok-session endpoint: the Claude sign-in (or the model's own
+        // key) authenticates it, and the Grok session token must not be sent there.
+        let is_claude_endpoint = crate::claude_auth::is_claude_backend(base_url);
         Self {
             // `None` (pre-`authenticate`) classifies as non-session-based, so the gate stays inactive until a method is selected
             is_session_based: auth_method_id
                 .is_some_and(crate::agent::auth_method::is_session_based_method)
-                && !has_codex_auth,
+                && !has_codex_auth
+                && !is_claude_endpoint,
             model_byok,
             endpoint_is_first_party: crate::util::is_xai_api_url(base_url),
         }
@@ -838,6 +842,15 @@ impl SessionActor {
                 // cannot retain the resolver. Restore it for each inference call.
                 Some(std::sync::Arc::new(
                     crate::codex_auth::CodexBearerResolver::from_headers(&extra_headers),
+                ))
+            } else if api_key.is_none()
+                && crate::claude_auth::is_claude_backend(&cfg.base_url)
+                && crate::claude_auth::is_logged_in()
+            {
+                // Same restore-per-call rule as Codex: the anchor headers persist
+                // with the session, the resolver does not.
+                Some(std::sync::Arc::new(
+                    crate::claude_auth::ClaudeBearerResolver::from_headers(&extra_headers),
                 ))
             } else {
                 None

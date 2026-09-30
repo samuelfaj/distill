@@ -30,7 +30,7 @@ Start Distill by running:
 distill
 ```
 
-Distill starts without provider login. Choose a login action in the home menu if you want to use Grok, ChatGPT, or OpenRouter, or configure a local model.
+Distill starts without provider login. Choose a login action in the home menu if you want to use Grok, ChatGPT, Claude, or OpenRouter, or configure a local model.
 
 If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
 

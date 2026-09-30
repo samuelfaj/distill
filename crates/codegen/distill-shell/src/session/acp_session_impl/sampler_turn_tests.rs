@@ -22,6 +22,22 @@ fn chatgpt_requests_do_not_use_or_refresh_the_grok_session() {
     assert!(grok.active());
 }
 
+#[test]
+fn claude_requests_never_carry_the_grok_session_token() {
+    use crate::agent::auth_method::ModelByok;
+    let method = agent_client_protocol::AuthMethodId::new("cached_token");
+    // A catalog model has no key of its own (`NotByok`), which is exactly the
+    // case that used to select the Grok session bearer for api.anthropic.com.
+    for byok in [ModelByok::NotByok, ModelByok::Unknown] {
+        let gate = super::SessionTokenAuthGate::new(
+            Some(&method),
+            byok,
+            "https://api.anthropic.com/v1",
+        );
+        assert!(!gate.active(), "{byok:?} must not use the Grok session");
+    }
+}
+
 fn x_cut(to: &str) -> XSearchOptions {
     XSearchOptions {
         date_bound: Some(SearchDateBound::new(None, Some(to.into())).unwrap()),

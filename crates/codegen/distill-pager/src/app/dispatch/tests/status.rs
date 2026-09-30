@@ -2185,6 +2185,7 @@ fn minimal_usage_reports_external_grok_unavailable_without_billing_fetch() {
     app.provider_auth = Some(crate::app::actions::ProviderAuthState {
         grok: false,
         chatgpt: true,
+        claude: false,
         openrouter: false,
     });
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;

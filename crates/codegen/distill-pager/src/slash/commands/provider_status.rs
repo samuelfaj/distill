@@ -2,8 +2,8 @@
 //! What the provider surfaces report, read from the same sources the lanes
 //! themselves use, so the menu cannot disagree with the runtime.
 //!
-//! The ChatGPT sign-in is the harness's own (`Distill login --chatgpt`, the
-//! OAuth this fork carries); OpenRouter uses its saved key or the environment, the
+//! The ChatGPT and Claude sign-ins are the harness's own (`Distill login --chatgpt`
+//! and `Distill login --claude`, the OAuth this fork carries); OpenRouter uses its saved key or the environment, the
 //! Grok sign-in to the login flow, and the utility model to `[jev.local]`. Each
 //! reports the live state and the exact next step — reporting a wrong state
 //! would be worse than reporting nothing.
@@ -38,6 +38,40 @@ pub fn codex_status() -> String {
         Err(error) => format!(
             "ChatGPT: the credential file could not be read ({error}).\n\
              Expected at {shown}. Sign in again with `Distill login --chatgpt`."
+        ),
+    }
+}
+
+/// What the Claude (Pro/Max subscription) sign-in looks like right now.
+pub fn claude_status() -> String {
+    let path = distill_shell::claude_auth::auth_file_path();
+    let shown = path.display();
+    match distill_shell::claude_auth::load_credentials() {
+        Ok(Some(credentials)) => {
+            let label = credentials
+                .email
+                .clone()
+                .or_else(|| credentials.account_uuid.clone())
+                .unwrap_or_else(|| "this account".to_owned());
+            format!(
+                "Claude: signed in as {label}.\n\n\
+                 Credentials: {shown} — this harness's own OAuth, refreshed by the harness.\n\
+                 Models: the account's Claude models are listed under `claude/<id>` in /model. Any \
+                 `[model.<id>]` entry pointing at https://api.anthropic.com/v1 with no API key uses \
+                 the same sign-in.\n\
+                 Sign out with `Distill logout --claude`."
+            )
+        }
+        Ok(None) => format!(
+            "Claude: not signed in.\n\n\
+             The harness runs its own OAuth, so the sign-in happens here:\n  \
+             `Distill login --claude`\n\
+             It opens the browser and writes {shown}.\n\
+             Until then, Claude subscription models stay unavailable and everything else works."
+        ),
+        Err(error) => format!(
+            "Claude: the credential file could not be read ({error}).\n\
+             Expected at {shown}. Sign in again with `Distill login --claude`."
         ),
     }
 }
@@ -190,6 +224,19 @@ mod tests {
         assert!(status.contains("auth.json"), "{status}");
         // No token material, ever: the status reports the account, not the token.
         assert!(!status.contains("eyJ"), "no token material: {status}");
+    }
+
+    #[test]
+    fn the_claude_status_says_which_file_it_reads_and_what_to_do() {
+        let status = claude_status();
+        assert!(status.starts_with("Claude:"), "{status}");
+        assert!(
+            status.contains("Distill login --claude") || status.contains("Distill logout --claude"),
+            "{status}"
+        );
+        assert!(status.contains("claude-auth.json"), "{status}");
+        // No token material, ever: the status reports the account, not the token.
+        assert!(!status.contains("sk-ant-"), "no token material: {status}");
     }
 
     #[test]

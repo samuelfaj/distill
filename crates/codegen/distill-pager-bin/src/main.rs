@@ -2329,12 +2329,26 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             Command::Login {
                 legacy: _,
                 chatgpt,
+                claude,
                 oauth,
                 device_auth,
                 devbox,
             } => {
                 init_tracing_simple("cli");
                 let _otel_guard = distill_telemetry::otel_layer::otel_guard();
+                if claude {
+                    // This harness's own Claude subscription OAuth: its own token
+                    // store and refresh, never Claude Code's credentials.
+                    let account = distill_shell::claude_auth::run_cli_login().await?;
+                    let label = account
+                        .email
+                        .as_deref()
+                        .or(account.account_uuid.as_deref())
+                        .unwrap_or("Claude account");
+                    println!("Connected Claude as {label}.");
+                    println!();
+                    distill_shell::instrumentation::finalize_and_exit(0);
+                }
                 if chatgpt {
                     // This harness's own ChatGPT OAuth: its own token store, its
                     // own refresh, and the account's GPT models behind it.
@@ -2366,8 +2380,19 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 println!();
                 distill_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Logout { chatgpt } => {
+            Command::Logout { chatgpt, claude } => {
                 init_tracing_simple("cli");
+                if claude {
+                    // Only this harness's own Claude credential.
+                    let removed = distill_shell::claude_auth::run_cli_logout().await?;
+                    if removed {
+                        println!("Signed out of Claude.");
+                    } else {
+                        println!("No Claude sign-in to remove.");
+                    }
+                    println!();
+                    distill_shell::instrumentation::finalize_and_exit(0);
+                }
                 if chatgpt {
                     // Only this harness's own ChatGPT credential: the Grok
                     // sign-in is a different store and stays as it was.

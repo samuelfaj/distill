@@ -422,8 +422,15 @@ pub(crate) fn validate_selectable(
     if !catalog.values().any(|e| e.info.user_selectable) {
         return Err(allowlist_excludes_all_message(cfg));
     }
+    // A default a campaign injected is not something the user configured, and model
+    // resolution already falls back to a selectable model when it is excluded.
+    let configured_default = cfg
+        .models
+        .default
+        .as_deref()
+        .filter(|_| !cfg.models.default_is_campaign_driven);
     for (src, id) in [
-        ("default", cfg.models.default.as_deref()),
+        ("default", configured_default),
         ("-m flag", cfg.default_model_override.as_deref()),
     ] {
         if let Some(id) = id

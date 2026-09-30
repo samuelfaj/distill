@@ -22,17 +22,23 @@ pub enum Command {
     /// Sign out and clear cached credentials
     Logout {
         /// Sign out of ChatGPT (Codex) instead of Grok.
-        #[arg(long = "chatgpt", alias = "codex")]
+        #[arg(long = "chatgpt", alias = "codex", conflicts_with = "claude")]
         chatgpt: bool,
+        /// Sign out of Claude (Pro/Max subscription) instead of Grok.
+        #[arg(long = "claude")]
+        claude: bool,
     },
-    /// Sign in to Grok, or to ChatGPT
+    /// Sign in to Grok, ChatGPT, or Claude
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
         /// Sign in to ChatGPT (Codex) with this harness's own OAuth, instead of Grok.
-        #[arg(long = "chatgpt", alias = "codex", conflicts_with_all = ["oauth"])]
+        #[arg(long = "chatgpt", alias = "codex", conflicts_with_all = ["oauth", "claude"])]
         chatgpt: bool,
+        /// Sign in to Claude with a Pro/Max subscription, using this harness's own OAuth.
+        #[arg(long = "claude", conflicts_with_all = ["oauth", "device_auth"])]
+        claude: bool,
         /// Use Grok OAuth via auth.x.ai.
         #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
         oauth: bool,
@@ -428,9 +434,9 @@ pub struct PagerArgs {
     /// Working directory.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
-    /// Use a custom leader socket path instead of the default `~/.grok/leader.sock`.
+    /// Use a custom leader socket path instead of the default `~/.distill/leader.sock`.
     /// A local/branch build can thus run an isolated leader without colliding with the default one already running on the machine
-    /// Name it `~/.grok/leader-*.sock` to keep `distill leader list/kill` able to find it; any other location works but won't be auto-discovered
+    /// Name it `~/.distill/leader-*.sock` to keep `distill leader list/kill` able to find it; any other location works but won't be auto-discovered
     #[arg(
         long = "leader-socket",
         value_name = "PATH",
@@ -1400,7 +1406,10 @@ mod tests {
         let args = PagerArgs::try_parse_from(["distill", "logout"]).expect("subcommand parses");
         assert!(matches!(
             args.command,
-            Some(Command::Logout { chatgpt: false })
+            Some(Command::Logout {
+                chatgpt: false,
+                claude: false
+            })
         ));
         assert!(args.prompt.is_none());
     }

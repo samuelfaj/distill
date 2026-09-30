@@ -368,9 +368,9 @@ struct RefreshRequest<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct Pkce {
-    code_verifier: String,
-    code_challenge: String,
+pub(crate) struct Pkce {
+    pub(crate) code_verifier: String,
+    pub(crate) code_challenge: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -623,7 +623,7 @@ fn acquire_auth_lock(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn generate_pkce() -> Pkce {
+pub(crate) fn generate_pkce() -> Pkce {
     let mut random_bytes = [0u8; 64];
     rand::rng().fill_bytes(&mut random_bytes);
     let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes);
@@ -635,7 +635,7 @@ fn generate_pkce() -> Pkce {
     }
 }
 
-fn generate_state() -> String {
+pub(crate) fn generate_state() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -717,7 +717,7 @@ async fn bind_callback_listener() -> io::Result<TcpListener> {
 /// Own the callback listener and server future in one awaitable. Dropping this
 /// future (for example when the pager cancels an OAuth attempt) drops the
 /// listener too, so a retry can bind the callback port immediately.
-async fn serve_callback_until_result(
+pub(crate) async fn serve_callback_until_result(
     listener: TcpListener,
     app: Router,
     result_rx: tokio::sync::oneshot::Receiver<Result<String, String>>,
@@ -1241,7 +1241,7 @@ fn apply_request_auth(
     request
 }
 
-fn safe_error_excerpt(body: &str) -> String {
+pub(crate) fn safe_error_excerpt(body: &str) -> String {
     const LIMIT: usize = 512;
     let mut excerpt: String = body.chars().take(LIMIT).collect();
     if body.chars().count() > LIMIT {

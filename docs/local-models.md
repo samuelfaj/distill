@@ -1,8 +1,12 @@
 # Accounts and local models
 
-The home menu has separate login and logout actions for Grok, ChatGPT, and
-OpenRouter. Signing out of one does not sign out of the others. ChatGPT uses
-OAuth and the model catalog available to your account. OpenRouter supports
+The home menu has separate login and logout actions for Grok, ChatGPT, Claude,
+and OpenRouter. Signing out of one does not sign out of the others. ChatGPT uses
+OAuth and the model catalog available to your account. Claude uses your Pro/Max
+subscription through OAuth (`distill login --claude`): the account's models appear in `/model` as
+`claude/<id>`, and any `[model.*]` entry whose `base_url` is
+`https://api.anthropic.com/v1` with no API key uses the same sign-in.
+OpenRouter supports
 browser login or an `OPENROUTER_API_KEY` environment variable.
 
 For a local model, start an OpenAI-compatible server and add an entry to your

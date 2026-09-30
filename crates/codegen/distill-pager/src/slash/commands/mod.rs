@@ -34,6 +34,7 @@ pub mod imagine_video;
 pub mod import_claude;
 pub mod jump;
 pub mod login;
+pub mod login_claude;
 pub mod login_codex;
 pub mod login_openrouter;
 pub mod logout;
@@ -159,6 +160,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(doctor::DoctorCommand),
         Arc::new(import_claude::ImportClaudeCommand),
         Arc::new(login::LoginCommand),
+        Arc::new(login_claude::LoginClaudeCommand),
         Arc::new(login_codex::LoginCodexCommand),
         Arc::new(login_openrouter::LoginOpenrouterCommand),
         Arc::new(cheap_model::CheapModelCommand),

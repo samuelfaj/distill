@@ -1213,6 +1213,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.provider_login_cancel = None;
             if let Some(state) = app.provider_auth.as_mut() {
                 state.chatgpt = distill_shell::codex_auth::is_logged_in();
+                state.claude = distill_shell::claude_auth::is_logged_in();
                 state.openrouter = distill_shell::openrouter_auth::is_logged_in();
             }
             let succeeded = result.is_ok();
@@ -1246,6 +1247,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.provider_login_cancel = None;
             if let Some(state) = app.provider_auth.as_mut() {
                 state.chatgpt = distill_shell::codex_auth::is_logged_in();
+                state.claude = distill_shell::claude_auth::is_logged_in();
                 state.openrouter = distill_shell::openrouter_auth::is_logged_in();
             }
             app.show_toast(&match result {

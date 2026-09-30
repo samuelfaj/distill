@@ -177,6 +177,9 @@ impl OnboardingState {
             Some(LoginProvider::ChatGpt) => {
                 "For a VPS, cancel, run `distill login --chatgpt --device-auth`, then restart Distill."
             }
+            Some(LoginProvider::Claude) => {
+                "For a VPS, cancel, run `distill login --claude` on a machine with a browser, copy ~/.opengrok/claude-auth.json to the VPS, then restart Distill."
+            }
             Some(LoginProvider::OpenRouter) => {
                 "For a VPS, set OPENROUTER_API_KEY before starting Distill."
             }
@@ -268,7 +271,7 @@ impl OnboardingState {
     fn item_count(&self, model_count: usize, worker_count: usize) -> usize {
         match self.step {
             OnboardingStep::Budget => 1,
-            OnboardingStep::Connect => 4 + model_count,
+            OnboardingStep::Connect => 5 + model_count,
             OnboardingStep::Worker => worker_count + 2,
             OnboardingStep::Community => 1,
         }
@@ -294,11 +297,15 @@ impl OnboardingState {
                     Some(OnboardingCommand::LoginProvider(LoginProvider::ChatGpt))
                 }
                 2 => {
+                    self.set_auth_started(Some(LoginProvider::Claude));
+                    Some(OnboardingCommand::LoginProvider(LoginProvider::Claude))
+                }
+                3 => {
                     self.set_auth_started(Some(LoginProvider::OpenRouter));
                     Some(OnboardingCommand::LoginProvider(LoginProvider::OpenRouter))
                 }
-                selected if selected < 3 + model_count => {
-                    Some(OnboardingCommand::SelectModel(selected - 3))
+                selected if selected < 4 + model_count => {
+                    Some(OnboardingCommand::SelectModel(selected - 4))
                 }
                 _ => {
                     self.set_step(OnboardingStep::Worker);
@@ -651,6 +658,21 @@ pub fn render_onboarding(
                 2,
                 state.selected,
                 format!(
+                    "Claude {}",
+                    if auth.claude {
+                        "(connected)"
+                    } else {
+                        "(login)"
+                    }
+                ),
+                &theme,
+            );
+            push_choice_row(
+                &mut option_lines,
+                &mut row_lines,
+                3,
+                state.selected,
+                format!(
                     "OpenRouter {}",
                     if auth.openrouter {
                         "(connected)"
@@ -664,7 +686,7 @@ pub fn render_onboarding(
                 push_choice_row(
                     &mut option_lines,
                     &mut row_lines,
-                    index + 3,
+                    index + 4,
                     state.selected,
                     model_label(name, id, model_label_width, &theme),
                     &theme,
@@ -673,7 +695,7 @@ pub fn render_onboarding(
             push_choice_row(
                 &mut option_lines,
                 &mut row_lines,
-                3 + models.len(),
+                4 + models.len(),
                 state.selected,
                 "Continue without changing the main model",
                 &theme,
@@ -1235,7 +1257,7 @@ mod tests {
         );
         assert_eq!(state.step, OnboardingStep::Connect);
 
-        state.selected = 3;
+        state.selected = 4;
         assert_eq!(
             state.handle_input(&enter, 1, 1),
             Some(OnboardingCommand::SelectModel(0))
@@ -1257,6 +1279,41 @@ mod tests {
             state.handle_input(&enter, 0, 0),
             Some(OnboardingCommand::Complete)
         );
+    }
+
+    #[test]
+    fn connect_rows_start_each_provider_login_in_menu_order() {
+        // The rows read Grok, ChatGPT, Claude, OpenRouter; a shifted index would
+        // sign the user in to a different provider than the one they picked.
+        let enter = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        for (selected, expected) in [
+            (1, LoginProvider::ChatGpt),
+            (2, LoginProvider::Claude),
+            (3, LoginProvider::OpenRouter),
+        ] {
+            let mut state = OnboardingState::new();
+            state.set_step(OnboardingStep::Connect);
+            state.selected = selected;
+            assert_eq!(
+                state.handle_input(&enter, 1, 1),
+                Some(OnboardingCommand::LoginProvider(expected))
+            );
+            assert_eq!(state.auth_provider, Some(expected));
+        }
+    }
+
+    #[test]
+    fn claude_browser_fallback_explains_the_vps_workaround_without_device_auth() {
+        let mut state = OnboardingState::new();
+        state.set_auth_started(Some(LoginProvider::Claude));
+        state.set_auth_browser_fallback("https://claude.ai/oauth/authorize?state=x");
+        let status = state.status.as_deref().unwrap();
+        // Claude has no device-code flow, so the hint must not point at one.
+        assert!(!status.contains("--device-auth"), "{status}");
+        assert!(status.contains("distill login --claude"), "{status}");
     }
 
     #[test]
@@ -1405,7 +1462,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        state.selected = 3 + models.len() - 1;
+        state.selected = 4 + models.len() - 1;
         let area = Rect::new(0, 0, 34, 14);
         let mut buffer = Buffer::empty(area);
         render_onboarding(

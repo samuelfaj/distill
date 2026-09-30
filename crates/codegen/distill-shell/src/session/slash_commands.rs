@@ -530,6 +530,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "import-claude",
     "jump",
     "login",
+    "login-claude",
     "login-codex",
     "login-openrouter",
     "logout",

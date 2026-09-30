@@ -75,7 +75,7 @@ Rebuild from source to update. The source installers under
 
 ### Browser Login (Default)
 
-Distill starts without provider login. Choose a login action in the home menu if you want to use Grok, ChatGPT, or OpenRouter, or configure a local model.
+Distill starts without provider login. Choose a login action in the home menu if you want to use Grok, ChatGPT, Claude, or OpenRouter, or configure a local model.
 
 ```bash
 distill

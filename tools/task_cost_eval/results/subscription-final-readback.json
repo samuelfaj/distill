@@ -1,0 +1,24 @@
+{
+  "temporary_oauth_copies": 0,
+  "owned_benchmark_processes": [],
+  "binary_hash_unchanged": true,
+  "harness_hash_unchanged": true,
+  "models": {
+    "default": "chatgpt/gpt-6.1-sol",
+    "worker": "chatgpt/gpt-6-luna",
+    "worker_effort": "auto",
+    "session_summary": "chatgpt/gpt-6-luna",
+    "image_description": "chatgpt/gpt-6-luna",
+    "prompt_suggestion": "chatgpt/gpt-6-luna",
+    "web_search": "chatgpt/gpt-6.1-sol",
+    "allowed_models": [
+      "chatgpt/*"
+    ]
+  },
+  "jev_effort_auto": true,
+  "jev_local_model": "chatgpt/gpt-6-luna",
+  "jev_local_effort": "auto",
+  "third_party_service_key_env_unset": true,
+  "codex_forced_login_method": "chatgpt",
+  "global_distill_installation_changed": false
+}

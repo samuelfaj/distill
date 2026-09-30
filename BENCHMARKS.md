@@ -1,7 +1,9 @@
 # Distill vs. Codex: ChatGPT Sol + Luna
 
-Status: baseline and optimization in progress. **Distill has not yet met the
-speed and cost targets.** Results below are measurements, including failures.
+Status: **complete for the measured task cohort**. The sixth full cohort meets
+the speed, modeled credit cost, accounting, subscription and delivered-quality
+gates. Every earlier attempt, including rejected results, remains below.
+Branch: `perf/distill-sol-luna-benchmarks-20260930`.
 
 Both agents use the user's **ChatGPT subscription**, with the same account:
 
@@ -16,6 +18,28 @@ Jev decision service has no credential in the isolated profile: auto remains
 selected and uses Distill's existing per-model fallback (observed: Sol low,
 Luna medium). This measures subscription-only operation, including its current
 fallback behavior, rather than claiming the external Jev service ran.
+
+## Final result
+
+Three tasks, three repetitions each, two agents: **18 sequential executions**,
+with alternating agent order. All 18 passed the frozen external graders, extra
+behavior/scope checks, function-ownership checks and independent actual-diff
+review. All calls have complete accounting and use the same ChatGPT account.
+
+| Agent | Total elapsed | Median per task | All model calls | Modeled Standard credits |
+|---|---:|---:|---:|---:|
+| Distill Sol auto + Luna auto | 308.183911 s | 31.086975 s | 69 | 4.83045 |
+| Codex Sol high `--yolo` | 465.270066 s | 53.439253 s | 50 | 14.71436 |
+
+Distill is **33.8% faster** and uses **67.2% fewer modeled credits**. Excluding
+Codex's zero-output requests from its credit estimate gives 10.19591 credits and
+a conservative **52.6% reduction**. Those requests remain in usage and call counts.
+This establishes the requested thresholds for these small tasks, not universal
+quality equivalence or a reduction in the fixed subscription bill.
+
+Final evidence: [sixth cohort](tools/task_cost_eval/results/subscription-function-ownership-cohort-v6.json).
+The controller and all optimization attempts are accounted separately in
+[overall usage audit](tools/task_cost_eval/results/subscription-overall-usage-audit.json).
 
 ## Acceptance criteria
 
@@ -500,6 +524,121 @@ these tiny fixtures. The candidate is not yet measured.
 Verification: compiled primary rendering, encrypted-template freshness, fresh
 Worker scoping and all six prompt-installation tests pass. No behavioral grader
 or benchmark input was changed for this instruction correction.
+
+## Checkpoint 16: final cohort accepted after function-ownership correction
+
+The sixth cohort retains all 18 repetitions and passes every acceptance gate.
+The same external behavioral graders remain frozen. Additional checks cover
+zero/negative/large integer tax values; strict active flags, new lists, order and
+nonmutation; empty/zero/negative inventory totals and lexical order. Git scope,
+the initial task commit and each function's existing module are preserved.
+Independent review read all actual diffs, covering five unique patches. No
+duplicate or unrequested implementation remains. One active-records patch adds
+a dictionary guard with unchanged behavior on the specified dictionary inputs.
+
+| Task, three repetitions per agent | Distill elapsed | Codex elapsed | Time reduction |
+|---|---:|---:|---:|
+| Integer tax bug | 90.795928 s | 146.369563 s | 38.0% |
+| Strict active records | 110.265292 s | 147.296334 s | 25.1% |
+| Inventory across two files | 107.122691 s | 171.604169 s | 37.6% |
+
+The declared 30% threshold applies to the paired aggregate, which improves by
+33.8%; active records alone improves by 25.1%. This suite was used during
+optimization and is not a held-out validation set. Three repetitions of three
+small Python tasks do not establish performance on larger or unseen workloads.
+
+### Final complete call usage
+
+| Agent | Calls | Input | Cached input (within input) | Output | Reasoning (within output) |
+|---|---:|---:|---:|---:|---:|
+| Distill | 69 | 244,570 | 106,880 | 8,139 | 387 |
+| Codex | 50 | 985,643 | 763,264 | 6,749 | 190 |
+
+Distill's 69 calls break down as follows. Utilities are included, not treated as
+free or omitted. Child calls are folded exactly once into the parent ledger.
+
+| Model and role | Calls | Modeled credits |
+|---|---:|---:|
+| Sol Main | 20 | 4.5944500 |
+| Luna Worker | 31 | 0.2180150 |
+| Luna Main titles | 9 | 0.0090425 |
+| Luna Worker titles | 9 | 0.0089425 |
+| **Distill total** | **69** | **4.8304500** |
+
+Both agents together used **1,245,101 tokens** (input plus output), across
+**119 model calls**. Their combined modeled cost is **19.54481 Standard credits**;
+cached input and reasoning are subsets, not additional tokens. Native telemetry
+counts every conversation, including any subagent, utility and warmup request.
+Failed or missing usage would invalidate this complete-cost result.
+
+### Source, delivery and verification
+
+- Source/harness commit: `7ca66fbe28e43ec652b869c26495fbcba87bb6b8`.
+- Distill: `distill 2.0.9 (7ca66fbe28e4)`; release binary SHA256
+  `f44919a4671ab35a14cc74debc4e0fef554dfa6c90b21850818d557be8db0c8d`.
+- Evaluator SHA256:
+  `deb4d912c7a8b72da80883f384f0965f71efd17203240fd57844e0af94610cbd`.
+- Native Codex: the already installed **0.159.1**, Sol high, forced ChatGPT login.
+  Executable/payload and frozen prompt/fixture/grader/config hashes are recorded
+  for each cell. All frozen-input checks pass.
+- Final tests: **18 Python evaluator tests** and **22 focused Rust tests** pass,
+  including OAuth preservation, headless summary suppression, native headers,
+  optional wire arguments, encrypted-template freshness, prompt installation,
+  actual repository capture and recorded execution evidence. Release build passed.
+- Cleanup readback: **zero temporary OAuth copies and zero owned benchmark
+  processes**; final binary and evaluator hashes remain unchanged.
+- Local preferences select ChatGPT Sol Main, ChatGPT Luna Worker, both auto;
+  title/summary and other auxiliary choices stay on ChatGPT. Codex's login method
+  is forced to ChatGPT. Readback:
+  [final configuration and cleanup](tools/task_cost_eval/results/subscription-final-readback.json).
+
+The product corrections are committed on this branch; the measured release
+binary was built locally.
+The global Distill executable was not replaced, and no release, deployment or
+push was performed. Interactive/background/structured-output review paths were
+not broadened by the foreground headless evidence capture.
+
+## Total usage, including the controller and every optimization attempt
+
+Native controller meter cutoff: **2026-09-30T09:28:10.931Z**. This is a cumulative
+snapshot for the current outer agent, including earlier turns and optimization
+work, not just the accepted benchmark. No outer subagents were launched; benchmark
+children are included separately in the experiment ledgers and are not double counted.
+
+| Scope | Input | Cached input (within input) | Output | Known input plus output |
+|---|---:|---:|---:|---:|
+| Main controller, Sol | 53,560,846 | 52,125,952 | 358,561 | 53,919,407 |
+| All experiments, main/children/utilities/retries | 8,998,911 | 6,266,050 | 111,492 | 9,110,403 |
+| **Known combined usage** | **62,559,757** | **58,392,002** | **470,053** | **63,029,810** |
+
+Across experiments, **868 recorded calls** include
+**855 with known usage** and
+**13 historical calls missing usage**.
+Another **2 setup attempts** have
+no request measurement. Missing usage remains unknown, not zero: the historical
+combined total is a **lower bound**, not a complete cost claim. The final cohort
+itself has complete accounting. Reasoning (220,101
+controller; 4,953 experiment tokens) is already within output.
+
+Known modeled Standard subscription credits: **291.699830**
+for the controller and **137.950148**
+for experiments, **429.649978**
+combined, with the same historical unknown-usage limitation. This is a rate-based
+estimate, not a reconciled invoice or included-allowance measurement. Controller
+and exploratory optimization costs are disclosed separately from the paired
+performance comparison; they are not hidden in the accepted cohort's denominator.
+
+The already-in-flight early API pilot reported **US$0.3559037**;
+its missing fifth-call usage prevents a complete historical API cost total.
+That separate API amount is not converted into subscription credits. All later
+measured cohorts use ChatGPT OAuth, with API credentials removed from their
+environments. The older native two-child probe and pilot did not capture per-call
+auth mode; current cohorts do, so historical metadata is not retroactively asserted.
+
+The snapshot excludes later unrecorded controller responses, including this
+completion message. Re-running the audit against the native session log is
+needed for a later cutoff. Detailed per-attempt accounting and limitations:
+[subscription-overall-usage-audit.json](tools/task_cost_eval/results/subscription-overall-usage-audit.json).
 
 ## Earlier attempts and setup failures retained
 

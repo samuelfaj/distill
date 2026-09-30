@@ -685,7 +685,7 @@ impl SessionActor {
     /// through one typed envelope. The envelope itself has no origin field,
     /// so use the same authoritative terminal backend the producer queried;
     /// command text and status alone are not sufficient evidence.
-    async fn task_output_is_compression_source(
+    pub(super) async fn task_output_is_compression_source(
         &self,
         output: &distill_tools::types::output::ToolOutput,
     ) -> bool {
@@ -780,6 +780,9 @@ impl SessionActor {
         output: &distill_tools::types::output::ToolOutput,
         text: String,
     ) -> String {
+        if let Some(compressed) = self.native_compress_tool_output(output, &text).await {
+            return compressed;
+        }
         // A change review is about the *edit*, not about a long output, and an
         // edit's result is a one-line summary: the size guard must not swallow
         // it. The same holds for every other call that changed the workspace.

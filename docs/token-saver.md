@@ -18,6 +18,7 @@ which calls one pipeline function so that the tested code is the shipped code:
 
 | Step | What it removes | Runs when | Default |
 |---|---|---|---|
+| Native command filters | Passing test records, Cargo build progress and Git status boilerplate | Complete terminal results of 512 bytes or more; only when the stored, final replacement is smaller | Always |
 | Read reuse | A second copy of bytes already in the conversation | 2000 bytes or more, and hash-identical to a payload already sent | On |
 | Exact-output guard | Nothing. This step stops the rest | The call is line-addressed, or the text belongs to a skill | Always |
 | Preclean | Terminal noise, and content the payload itself repeats | 2000 bytes or more, and not a document | On |
@@ -25,9 +26,34 @@ which calls one pipeline function so that the tested code is the shipped code:
 | Utility task | A payload a small model can digest cheaper than you reading it | 2000 bytes or more, a task registered for the shape, and the lane decision not against it | On |
 | Utility compression | The same, for a payload too large to want whole | 24 KiB or more, with the lane decision not against it | On |
 
-The first four save tokens. The utility task and the routing levers save money
+The deterministic steps save tokens. The utility task and the routing levers save money
 by using a cheaper model, which is a different thing, and the last section says
 why the distinction matters.
+
+## Native command filters
+
+The harness includes local output filters inspired by [RTK](https://github.com/rtk-ai/rtk).
+They run before Jev's optional reductions, including when Jev is disabled, without
+rewriting the command, installing another executable or calling a model.
+
+Supported direct invocations are Cargo `test/build/check/clippy`, Bun/npm/pnpm/yarn
+`test` or `run test`, Jest/Vitest (also through `npx`), pytest (also through
+`python -m pytest`), `go test`, and human-readable `git status`. Completed single
+background terminal results use the same filters after their origin is checked
+against the terminal backend. Mixed task results, running/interrupted commands,
+truncated output, compound shell commands, structured documents and exact-output
+reads stay on the existing path.
+
+Only recognized routine lines are removed. Unknown lines, failure blocks, skip
+counts and test summaries stay; command/status/exit-code metadata and the raw
+tool output shown to clients are unchanged. The complete original model-visible
+result is stored in the existing recovery store before replacement, and the
+replacement names that file. Storage failure or no net reduction keeps the
+original. These filters skip secret-bearing results.
+
+Each accepted replacement logs its filter, original/final byte counts and
+original/final token estimates under `native command output compressed`. These
+measure the tool text reduced, not a percentage reduction in the provider bill.
 
 ## Read reuse
 

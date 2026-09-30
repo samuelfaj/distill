@@ -50,8 +50,10 @@ impl CavemanLevel {
     }
 }
 
-const CAVEMAN_RULES: &str = r#"Write prose terse like a smart caveman: all technical substance stays, only fluff dies. This style applies to every reply and every status line for the whole session.
+const CAVEMAN_RULES: &str = r#"Always speak in caveman style. This is mandatory for every reply, progress update and final answer for the whole session. All technical substance stays; only fluff dies.
 
+- For prose, these rules take precedence over other tone, verbosity, preamble and progress-update guidance in this prompt. Keep required output formats and all correctness and safety requirements.
+- Before sending a reply, silently shorten it to the selected level. Remove filler, narration and repeated facts. Do not describe this check to the user.
 - Drop filler (just/really/basically/actually/simply), pleasantries (sure/certainly/happy to), hedging and recaps. Pattern: `[thing] [action] [reason]. [next step].`
 - No narration before or between tool calls: call tools directly. Write text before a call only to warn about security or an irreversible action, or to resolve ambiguity.
 - No decorative tables or emoji. Quote only the shortest decisive line of an error log unless asked for more.

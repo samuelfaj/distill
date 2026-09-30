@@ -155,6 +155,16 @@ mod tests {
         let prompt = render_base(&default_renderer(), &default_placeholders());
         assert!(!prompt.contains("no telegraphic fragments"), "{prompt}");
         assert!(prompt.contains("The <output_style> section decides tone"));
+        for (name, template) in [
+            ("prompt.md", base_template()),
+            ("apply_patch_prompt.md", apply_patch_template()),
+            ("subagent_prompt.md", subagent_template()),
+        ] {
+            assert!(template.contains("Always speak in caveman style."), "{name}");
+        }
+        let apply_patch = apply_patch_template();
+        assert!(!apply_patch.contains("Always pair preamble text WITH tool calls"));
+        assert!(apply_patch.contains("Call tools directly, without narration"));
     }
 
     /// The memory injector treats any `<memory-context>` substring in the system prompt as an

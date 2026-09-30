@@ -186,6 +186,8 @@ mod jev_memory;
 mod jev_routing;
 #[path = "acp_session_impl/jev_tool_result.rs"]
 mod jev_tool_result;
+#[path = "acp_session_impl/native_tool_output.rs"]
+mod native_tool_output;
 #[path = "acp_session_impl/jev_tool_subset.rs"]
 mod jev_tool_subset;
 #[path = "acp_session_impl/length_salvage.rs"]

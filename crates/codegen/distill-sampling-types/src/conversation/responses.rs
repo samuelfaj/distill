@@ -371,7 +371,9 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: Some(t.parameters.clone()),
-                strict: None,
+                // Responses may normalize an omitted flag into strict mode,
+                // making the harness's optional arguments mandatory.
+                strict: Some(false),
             })
         })
         .collect();

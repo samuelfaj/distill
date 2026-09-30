@@ -492,6 +492,35 @@ mod install_system_prompt_tests {
             "inserted System grows the preserved prefix"
         );
     }
+    #[test]
+    fn fresh_worker_discipline_survives_child_system_installation() {
+        use crate::agent::subagent::{InitialContextSource, apply_worker_discipline};
+        use distill_agent::prompt::context::{PromptAudience, PromptContext};
+        use distill_tools::types::template_renderer::TemplateRenderer;
+
+        let mut context = PromptContext {
+            audience: PromptAudience::Subagent,
+            prompt_body: Some("Existing agent instructions".to_string()),
+            ..Default::default()
+        };
+        apply_worker_discipline(&mut context.prompt_body, true, &InitialContextSource::New);
+        let renderer = TemplateRenderer::new(Default::default(), Default::default());
+        let prompt = context
+            .render_with_renderer(&renderer)
+            .expect("rendered child prompt");
+        let mut conversation = Vec::new();
+        let mut prefix = Some(0);
+        install_system_prompt(&mut conversation, &mut prefix, true, false, &prompt);
+        let installed = conversation
+            .first()
+            .map(system_text)
+            .expect("system head");
+        assert!(installed.contains("Existing agent instructions"));
+        assert!(installed.contains("Batch independent reads"));
+        assert!(installed.contains("omit optional defaults and nulls"));
+        assert_eq!(installed.matches("You run on the worker model").count(), 1);
+        assert_eq!(prefix, Some(1));
+    }
 }
 impl SessionActor {
     /// Rewrite the user-message prefix at conversation index 1.

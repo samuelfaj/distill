@@ -642,7 +642,7 @@ pub(crate) const WORKER_DISCIPLINE: &str = "You run on the worker model: the mai
 - Supply required tool arguments and purposeful overrides only; omit optional defaults and nulls.\n\
 - When the code does not match the assignment, or the assignment leaves open a decision that changes the result, stop and report the mismatch or the question instead of guessing.\n\
 - Run the checks the assignment names, using the shortest command that proves the required behavior. For a localized change, cover one representative case and one relevant boundary unless the assignment requires more. Report each command with its exit status and the relevant output.\n\
-- End with the actual diff and a compact check report: relative file names once, command names and exit statuses, relevant output, and anything left open. Keep prose within 100 words unless the assignment requires more. Do not repeat the assignment.";
+- End with the relevant diff hunks and a compact check report: relative file names once, command names and exit statuses, relevant output, and anything left open. Omit diff file headers and unchanged context. Keep prose within 50 words unless the assignment requires more. Do not repeat the assignment.";
 /// The worker's effort for a delegated child that runs on the worker model:
 /// `Some(None)` is auto (Jev picks it per call), `Some(Some(level))` pins the
 /// level, and `None` keeps the child's usual policy, either because it is not
@@ -657,14 +657,20 @@ pub(crate) fn worker_effort_policy(
         && effective_runtime.reasoning_effort.is_none())
     .then(crate::jev::worker_effort)
 }
-/// The reminder a fresh child on the worker model starts with. A resumed or
-/// forked child already has its instructions in its conversation.
-pub(crate) fn worker_discipline_reminder(
+/// Add the fresh worker's instructions to its rendered system prompt. A
+/// separate System head would be replaced during child-session startup.
+pub(crate) fn apply_worker_discipline(
+    prompt_body: &mut Option<String>,
     on_worker: bool,
     context_source: &InitialContextSource,
-) -> Option<ConversationItem> {
-    (on_worker && *context_source == InitialContextSource::New)
-        .then(|| ConversationItem::system(WORKER_DISCIPLINE))
+) {
+    if on_worker && *context_source == InitialContextSource::New {
+        let body = prompt_body.get_or_insert_with(String::new);
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(WORKER_DISCIPLINE);
+    }
 }
 /// The worker model a fresh, model-delegated child defaults to. Planning and
 /// review stay on the main model; explicit models, resumes and full-context

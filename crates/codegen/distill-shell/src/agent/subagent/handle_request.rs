@@ -1062,13 +1062,11 @@ pub(crate) async fn run_shell_child(
         forked_conversation.insert(insert_at, reminder);
         inherited_prefix_len += 1;
     }
-    if let Some(reminder) =
-        crate::agent::subagent::worker_discipline_reminder(on_worker, &context_source)
-    {
-        let insert_at = inherited_prefix_len.min(forked_conversation.len());
-        forked_conversation.insert(insert_at, reminder);
-        inherited_prefix_len += 1;
-    }
+    crate::agent::subagent::apply_worker_discipline(
+        &mut definition.prompt_body,
+        on_worker,
+        &context_source,
+    );
     let effective_source_str = match &context_source {
         InitialContextSource::New => "new",
         InitialContextSource::Forked => "forked",

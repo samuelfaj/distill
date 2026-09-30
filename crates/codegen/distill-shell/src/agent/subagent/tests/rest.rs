@@ -2671,17 +2671,23 @@ fn a_worker_child_follows_the_worker_effort_unless_an_effort_is_explicit() {
 /// their instructions, and children on other models are left as they were.
 #[test]
 fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
-    let reminder = worker_discipline_reminder(true, &InitialContextSource::New)
-        .expect("a fresh worker child gets the discipline");
-    assert!(matches!(reminder, ConversationItem::System(_)));
-    let reminder = reminder.text_content();
+    let mut body = Some("Existing agent instructions".to_string());
+    apply_worker_discipline(&mut body, true, &InitialContextSource::New);
+    let reminder = body.expect("a fresh worker child gets the discipline");
+    assert!(reminder.starts_with("Existing agent instructions\n\n"));
     assert!(reminder.contains("Do exactly what the assignment specifies"), "{reminder}");
     assert!(reminder.contains("stop and report the mismatch or the question instead of guessing"), "{reminder}");
     assert!(reminder.contains("exit status"), "{reminder}");
     assert!(reminder.contains("Batch independent reads"), "{reminder}");
-    assert!(worker_discipline_reminder(true, &InitialContextSource::Resumed).is_none());
-    assert!(worker_discipline_reminder(true, &InitialContextSource::Forked).is_none());
-    assert!(worker_discipline_reminder(false, &InitialContextSource::New).is_none());
+    for (on_worker, source) in [
+        (true, InitialContextSource::Resumed),
+        (true, InitialContextSource::Forked),
+        (false, InitialContextSource::New),
+    ] {
+        let mut body = Some("Existing agent instructions".to_string());
+        apply_worker_discipline(&mut body, on_worker, &source);
+        assert_eq!(body.as_deref(), Some("Existing agent instructions"));
+    }
 }
 /// The worker default resolves to the worker's own endpoint and credentials,
 /// yields to an explicit `[subagents.models]` pin, and falls back to the main

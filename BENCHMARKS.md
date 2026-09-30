@@ -304,6 +304,44 @@ and fresh-Worker scoping tests pass, as do the 18 Python evaluator tests. The
 renderer assertion was updated for the shorter instruction after its original
 wording assertion failed. A rebuilt release is required for the next measurement.
 
+## Checkpoint 10: repeated compact cohort and actual Worker instruction loss
+
+Three tasks × three repetitions per agent, sequential with alternating agent
+order. All **18/18** cells passed their external graders and complete subscription
+accounting. Binary and harness hashes stayed frozen throughout the cohort.
+
+| Agent | Total seconds | Median seconds | Calls | Input / cached / output tokens | Modeled credits |
+|---|---:|---:|---:|---|---:|
+| Distill | 431.869738 | 48.566174 | 82 | 288,748 / 152,448 / 11,465 | 5.3086515 |
+| Codex high | 466.087862 | 49.214434 | 50 | 990,811 / 762,368 / 6,905 | 15.0543200 |
+
+This cohort is **7.3% faster** and **64.7% lower in modeled credits**. Excluding
+Codex's zero-output requests gives 10.53587 credits and a **49.6%** reduction.
+The time target remains unmet. These are aggregate elapsed seconds, not parallel
+makespan. Raw data, plan, hashes and every per-call attribution:
+[`subscription-compact-cohort-v1.json`](tools/task_cost_eval/results/subscription-compact-cohort-v1.json).
+
+Runtime readback found that the fresh Worker did **not** receive the discipline
+instructions. The standalone helper test missed the startup interaction: child
+startup replaces the leading System message, which had contained the discipline.
+The next correction adds it to the existing agent prompt body, so it is part of
+the rendered system prompt. A regression test now renders that prompt and runs
+the actual installation helper. The existing fresh/model/source scope remains.
+Worker reports also retain relevant hunks and check evidence with less repeated
+diff metadata. Main continues independent diff and behavioral verification.
+
+Responses function tools now explicitly send `strict: false`. Omitting that flag
+can cause the backend to normalize optional arguments into required nullable
+fields, explaining why prompt instructions to omit them were ineffective. This
+preserves the harness's declared optional arguments; it does not change tool
+permissions or the subscription endpoint. See [OpenAI's protocol documentation](https://developers.openai.com/api/docs/guides/function-calling#strict-mode).
+
+Verification: six prompt-installation tests (including the new regression),
+the updated Worker scoping test, and the Responses wire-schema regression all
+pass. The sampling-types build reports two pre-existing test-attribute/dead-code
+warnings outside these changes. The candidate needs a new release build and
+runtime prompt/tool-argument readback before making a performance claim.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

@@ -187,6 +187,26 @@ fn function_web_search_kept_when_no_hosted_tools() {
 }
 
 #[test]
+fn function_tools_preserve_optional_arguments_on_the_wire() {
+    let parameters = serde_json::json!({
+        "type": "object",
+        "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}},
+        "required": ["command"]
+    });
+    let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")]).with_tools(vec![
+        ToolSpec {
+            name: "run".into(),
+            description: None,
+            parameters: parameters.clone(),
+        },
+    ]);
+    let response: rs::CreateResponse = (&req).into();
+    let wire = serde_json::to_value(response).expect("serialized request");
+    assert_eq!(wire.pointer("/tools/0/strict"), Some(&serde_json::json!(false)));
+    assert_eq!(wire.pointer("/tools/0/parameters"), Some(&parameters));
+}
+
+#[test]
 fn test_responses_api_response_to_conversation_item() {
     use crate::rs;
 

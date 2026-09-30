@@ -861,6 +861,32 @@ impl SamplingClient {
         })
     }
 
+    fn codex_session_headers(
+        &self,
+        mut builder: reqwest::RequestBuilder,
+        request: &CreateResponseWrapper,
+    ) -> reqwest::RequestBuilder {
+        if is_codex_base_url(&self.base_url) {
+            if let Some(session) = request
+                .x_grok_session_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                builder = builder.header("session-id", session);
+            }
+            if let Some(thread) = request
+                .x_grok_conv_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                builder = builder
+                    .header("thread-id", thread)
+                    .header("x-client-request-id", thread);
+            }
+        }
+        builder
+    }
+
     pub fn api_backend(&self) -> ApiBackend {
         self.defaults.api_backend.clone()
     }
@@ -1581,7 +1607,10 @@ impl SamplingClient {
             sent_bearer,
         } = self.post(self.endpoint("responses"));
         let built_request = self
-            .build_json_request(grok_headers.apply(builder), &request_body)
+            .build_json_request(
+                self.codex_session_headers(grok_headers.apply(builder), &request),
+                &request_body,
+            )
             .await?;
         let response = self.send(built_request).await?;
 
@@ -1737,8 +1766,8 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("responses"));
-        let mut http_request = grok_headers
-            .apply(builder)
+        let mut http_request = self
+            .codex_session_headers(grok_headers.apply(builder), &request)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
         if let Some(state) = codex_turn.as_ref().and_then(|key| {
             self.codex_turn_affinity
@@ -2942,6 +2971,9 @@ mod tests {
                 let wire = wire.clone();
                 let recorded = recorded.clone();
                 async move {
+                    assert_eq!(headers["session-id"], "session-1");
+                    assert_eq!(headers["thread-id"], "thread-1");
+                    assert_eq!(headers["x-client-request-id"], "thread-1");
                     let mut seen = recorded.lock().unwrap();
                     seen.push(
                         headers
@@ -2978,6 +3010,7 @@ mod tests {
                 ..Default::default()
             });
             request.x_grok_session_id = Some("session-1".into());
+            request.x_grok_conv_id = Some("thread-1".into());
             request.x_grok_turn_idx = Some(turn.into());
             async move {
                 let (raw, _, _) = client.create_response_stream(request).await.unwrap();
@@ -3007,6 +3040,20 @@ mod tests {
             ]
         );
         server.abort();
+    }
+
+    #[test]
+    fn codex_session_headers_are_scoped_to_the_subscription_endpoint() {
+        let request =
+            CreateResponseWrapper::new(rs::CreateResponse::default()).with_conv_id("thread-1");
+        let client = SamplingClient::new(minimal_config()).unwrap();
+        let built = client
+            .codex_session_headers(client.http.post("https://example.com/responses"), &request)
+            .build()
+            .unwrap();
+        for name in ["session-id", "thread-id", "x-client-request-id"] {
+            assert!(!built.headers().contains_key(name));
+        }
     }
 
     #[tokio::test]

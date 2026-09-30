@@ -166,6 +166,20 @@ diagnostic was corrected after identifying the installed package layout.
 
 Raw call metadata: [`subscription-aux-fixes.json`](tools/task_cost_eval/results/subscription-aux-fixes.json).
 
+## Checkpoint 4: native session header parity
+
+The pinned [Codex 0.159.1 HTTP client](https://github.com/openai/codex/blob/rust-v0.159.1/codex-rs/codex-api/src/endpoint/responses.rs)
+sends native session/thread headers alongside turn affinity. Distill already
+forwards a stable prompt cache key and echoes the turn-state response header,
+but omitted `session-id`, `thread-id`, and `x-client-request-id`.
+Its streaming and auxiliary Responses requests now send those identifiers only
+to the canonical ChatGPT subscription endpoint. Other providers are unchanged.
+
+**Five focused sampler tests passed**, including real local HTTP capture of the
+headers and existing turn-state scoping. A fresh build and measurement will
+determine whether this correction improves cache or latency; header parity alone
+is not evidence of a performance gain.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

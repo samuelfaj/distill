@@ -395,9 +395,13 @@ infrastructure or dependency was added for this instruction change.
 
 ## Setup failures retained
 
-- Before subscription-only scope was clarified, a direct API pilot failed with
-  no credits. It is excluded from the subscription cohort and makes no cost or
-  performance claim. The final runner has no API inference mode.
+- Before subscription-only scope was clarified, an initial API pilot failed.
+  A separate OpenRouter pilot completed the task: four calls reported 272,141
+  input and 670 output tokens, with US$0.3559037 of recorded API cost. A fifth
+  request lacks usage, so its full accounting remains incomplete. These older
+  attempts are excluded from the subscription performance comparison but remain
+  part of the overall experiment usage audit. The final runner has no API
+  inference mode, and the current cohorts use ChatGPT subscription routes only.
 - Codex 0.147.0: unsupported Sol model and incompatible catalog metadata; no
   accepted task.
 - Distill with 0.147.0 discovery: unknown Sol catalog ID; no accepted task.

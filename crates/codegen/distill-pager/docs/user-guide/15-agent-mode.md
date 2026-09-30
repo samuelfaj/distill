@@ -206,6 +206,9 @@ Optional fields on `session/new`:
 | `agentProfile` | Agent profile name or JSON object. |
 | `yoloMode` | When `true`, always-approve for this session. |
 | `autoMode` | When `true`, auto permission mode for this session. Superseded when always-approve is already on. |
+| `modelId` | Main model for this session (catalog id). Also read by `session/load` and `session/resume`, where it replaces the persisted model. See [Per-session model state](#per-session-model-state). |
+| `reasoningEffort` | Main effort level for this session. An explicit level wins over `reasoningEffortAuto`. |
+| `reasoningEffortAuto` | `true` lets the decision layer pick the effort per model call; `false` keeps it manual. |
 | `workerModelId` | Worker model for this session (see [Session worker model](#session-worker-model)). Also read by `session/load` and `session/resume`. Absent inherits `[models].worker`; `""` means no worker. |
 | `workerEffort` | Worker effort with `workerModelId`: `auto` (default when absent) or a level. |
 
@@ -216,6 +219,18 @@ Optional fields on `session/new`:
   "_meta": { "yoloMode": true }
 }
 ```
+
+---
+
+## Per-session model state
+
+The main model, the main effort and the auto-effort flag belong to the session. `initialize` advertises this as `"sessionMainModel": true` in `agentCapabilities._meta["x.ai/capabilities"]`, next to `sessionWorkerModel`.
+
+- **At session start.** `session/new`, `session/load` and `session/resume` accept `_meta.modelId`, `_meta.reasoningEffort` and `_meta.reasoningEffortAuto` (bool). They are applied to that session only, before the call returns and so before its first turn. An explicit `reasoningEffort` level wins over `reasoningEffortAuto`. Absent keys fall back to the configuration (`[models] default`, `default_reasoning_effort`, `[jev] effort_auto`), never to what another session last chose. An unavailable `modelId` is ignored with a warning and the session keeps the default (or, on load, the persisted model).
+- **During the session.** `session/set_model` (with optional `_meta.reasoningEffort` / `_meta.reasoningEffortAuto`) and `session/set_config_option` change this session only. Another existing session, and any session created later without `_meta`, is unaffected. `reasoningEffortAuto: false` without a level turns auto off and keeps the current level.
+- **`session/set_model` response `_meta`.** Besides `model` and `contextWindow`, it returns `canonicalModelId` (the requested catalog id), `reasoningEffort` (the applied level, or `null`) and `reasoningEffortAuto` (bool).
+
+Only the first-party pager (`clientType` `grok-pager`) also updates the process-wide defaults its footer and `/new` read; other ACP clients never do.
 
 ---
 

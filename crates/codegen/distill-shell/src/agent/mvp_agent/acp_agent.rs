@@ -40,6 +40,8 @@ pub(super) fn x_ai_capabilities() -> serde_json::Value {
         "toolOverrides": tool_overrides_capability(),
         // `session/new|load|resume` take `_meta.workerModelId` / `_meta.workerEffort`, and `x.ai/session/worker_model/set` exists
         "sessionWorkerModel": true,
+        // `session/new|load|resume` take `_meta.modelId` / `reasoningEffort` / `reasoningEffortAuto`, applied to that session only
+        "sessionMainModel": true,
     })
 }
 impl MvpAgent {

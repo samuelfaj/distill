@@ -393,10 +393,49 @@ Verification: compiled primary rendering, encrypted-template freshness, fresh
 Worker scoping, and all six system-prompt installation tests pass. No new test
 infrastructure or dependency was added for this instruction change.
 
+## Checkpoint 13: proportionate review measured; actual diff supplied by the harness
+
+The third repeated cohort again passed **18/18** external graders, complete usage
+accounting, native subscription routing, and frozen-input checks.
+
+| Agent | Total seconds | Median seconds | Calls | Input / cached / output tokens | Modeled credits |
+|---|---:|---:|---:|---|---:|
+| Distill | 427.339720 | 43.356803 | 80 | 305,063 / 175,488 / 9,970 | 4.594871 |
+| Codex high | 477.739804 | 49.068719 | 49 | 970,865 / 753,792 / 6,570 | 14.380630 |
+
+This is **10.5% faster** and **68.0% lower in modeled credits**. Excluding
+Codex's zero-output requests gives 9.86218 credits and a **53.4%** reduction.
+The speed target is still unmet. A slow tax repetition and Main's additional
+inventory check are retained. Raw data:
+[`subscription-proportionate-review-cohort-v3.json`](tools/task_cost_eval/results/subscription-proportionate-review-cohort-v3.json).
+Binary source: `e9e6db2f`; harness source: `55d732f4`.
+
+The next candidate captures the actual tracked diff against HEAD and short status
+through the child's existing terminal after a successful fresh, foreground Worker
+finishes a headless assignment. Main receives this harness evidence with the
+Worker's check report, allowing independent diff review without another model
+call just to request it. Structured-output assignments are excluded. Capture has
+a five-second timeout and 24,000-byte output limit; failures/truncation are marked
+incomplete. The snapshot can include pre-existing changes and lists untracked
+paths without their contents, so Main still reads missing relevant source.
+
+Worker also reads explicit local targets and applicable instructions in one
+terminal call and returns check evidence without repeating patch hunks unless
+asked. The frozen external graders and conditional Main behavioral checks are
+unchanged. This candidate is not yet measured.
+
+Verification: the actual diff/status capture and truncation regression pass,
+along with compiled primary rendering, encrypted-template freshness, fresh
+Worker scoping, and all six system-prompt installation tests. The installation
+test's old wording assertion initially failed and was updated to the new
+one-command instruction; its preservation and exactly-once assertions remain.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, an initial API pilot failed.
-  A separate OpenRouter pilot completed the task: four calls reported 272,141
+  A separate OpenRouter pilot was already in flight when that instruction arrived
+  (started 03:33:53.381 UTC; instruction 03:33:53.827; finished 03:34:43.029).
+  It completed the task: four calls reported 272,141
   input and 670 output tokens, with US$0.3559037 of recorded API cost. A fifth
   request lacks usage, so its full accounting remains incomplete. These older
   attempts are excluded from the subscription performance comparison but remain

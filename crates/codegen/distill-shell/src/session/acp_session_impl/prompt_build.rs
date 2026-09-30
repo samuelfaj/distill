@@ -516,7 +516,7 @@ mod install_system_prompt_tests {
             .map(system_text)
             .expect("system head");
         assert!(installed.contains("Existing agent instructions"));
-        assert!(installed.contains("Batch independent reads"));
+        assert!(installed.contains("in one terminal call"));
         assert!(installed.contains("omit optional defaults and nulls"));
         assert_eq!(installed.matches("You run on the worker model").count(), 1);
         assert_eq!(prefix, Some(1));

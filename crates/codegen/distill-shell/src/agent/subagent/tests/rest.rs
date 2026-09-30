@@ -2678,7 +2678,7 @@ fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
     assert!(reminder.contains("Do exactly what the assignment specifies"), "{reminder}");
     assert!(reminder.contains("stop and report the mismatch or the question instead of guessing"), "{reminder}");
     assert!(reminder.contains("exit status"), "{reminder}");
-    assert!(reminder.contains("Batch independent reads"), "{reminder}");
+    assert!(reminder.contains("in one terminal call"), "{reminder}");
     for (on_worker, source) in [
         (true, InitialContextSource::Resumed),
         (true, InitialContextSource::Forked),
@@ -2688,6 +2688,34 @@ fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
         apply_worker_discipline(&mut body, on_worker, &source);
         assert_eq!(body.as_deref(), Some("Existing agent instructions"));
     }
+}
+#[tokio::test]
+async fn worker_repository_review_captures_actual_changes_and_flags_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(dir.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(dir.path().join("tracked.txt"), "before\n").unwrap();
+    git(&["add", "tracked.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "baseline"]);
+    std::fs::write(dir.path().join("tracked.txt"), "after\n").unwrap();
+    std::fs::write(dir.path().join("untracked.txt"), "untracked body\n").unwrap();
+    let cwd = distill_paths::AbsPathBuf::new(dir.path().to_path_buf()).unwrap();
+    let capture = worker_repository_review(
+        &crate::terminal::LocalTerminalRunner, cwd.clone(), HashMap::new(),
+    ).await;
+    assert!(capture.contains("capture_complete=true"), "{capture}");
+    assert!(capture.contains("-before") && capture.contains("+after"), "{capture}");
+    assert!(capture.contains("?? untracked.txt") && !capture.contains("untracked body"));
+
+    std::fs::write(dir.path().join("tracked.txt"), "x".repeat(24_001)).unwrap();
+    let capture = worker_repository_review(
+        &crate::terminal::LocalTerminalRunner, cwd, HashMap::new(),
+    ).await;
+    assert!(capture.contains("capture_complete=false") && capture.contains("truncated=true"));
 }
 /// The worker default resolves to the worker's own endpoint and credentials,
 /// yields to an explicit `[subagents.models]` pin, and falls back to the main

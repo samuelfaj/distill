@@ -638,11 +638,46 @@ impl SubagentPresentation {
 /// improvising.
 pub(crate) const WORKER_DISCIPLINE: &str = "You run on the worker model: the main model planned this work and delegated this assignment to you as a spec.\n\
 - Do exactly what the assignment specifies, in the files it names. Change nothing else: no refactors, renames, reformatting or extra features.\n\
-- Batch independent reads of target files or directory contents, applicable instruction discovery, status, and runtime/import context in the first tool round. For a target directory, collect its listing and relevant file contents together. List or search other paths only to resolve a concrete missing fact. Run checks in the project's module/runtime context.\n\
+- For explicit local targets, read their contents, discover applicable instructions, and collect missing status/runtime/import facts in one terminal call. For a target directory, collect its listing and relevant file contents together. Do not list the workspace just to reconfirm the working directory. List or search other paths only to resolve a concrete missing fact. Run checks in the project's module/runtime context.\n\
 - Supply required tool arguments and purposeful overrides only; omit optional defaults and nulls.\n\
 - When the code does not match the assignment, or the assignment leaves open a decision that changes the result, stop and report the mismatch or the question instead of guessing.\n\
 - Run the checks the assignment names, using the shortest command that proves the required behavior. For a localized change, cover one representative case and one relevant boundary unless the assignment requires more. Report each command with its exit status and the relevant output.\n\
-- End with the relevant diff hunks and a compact check report: relative file names once, command names and exit statuses, relevant output, and anything left open. Omit diff file headers and unchanged context. Keep prose within 50 words unless the assignment requires more. Do not repeat the assignment.";
+- End with a compact check report: changed relative file names once, check commands and exit statuses, relevant output, and anything left open. The main model independently inspects the actual diff; do not repeat patch hunks unless the assignment asks for them. Keep prose within 50 words unless the assignment requires more. Do not repeat the assignment.";
+
+/// Read the repository through the child's terminal, independently of its report.
+/// This lets Main review a small completed assignment without another model/tool round.
+pub(super) async fn worker_repository_review(
+    terminal: &dyn AsyncTerminalRunner,
+    cwd: distill_paths::AbsPathBuf,
+    env: HashMap<String, String>,
+) -> String {
+    let result = terminal
+        .run(crate::terminal::TerminalRunRequest {
+            tool_call_id: acp::ToolCallId::new(format!("worker-review:{}", uuid::Uuid::new_v4())),
+            command: "git --no-optional-locks -c core.fsmonitor=false diff --no-ext-diff --no-textconv HEAD && git --no-optional-locks -c core.fsmonitor=false status --short --untracked-files=all".to_owned(),
+            cwd,
+            env,
+            timeout: std::time::Duration::from_secs(5),
+            output_byte_limit: 24_000,
+            stream: false,
+            output_file: None,
+        })
+        .await;
+    let evidence = match result {
+        Ok(result) => format!(
+            "capture_complete={} exit={:?} truncated={} timed_out={}\n{}",
+            result.exit_code == Some(0) && !result.truncated && !result.timed_out,
+            result.exit_code,
+            result.truncated,
+            result.timed_out,
+            result.combined_output
+        ),
+        Err(error) => format!("capture_complete=false: {error}"),
+    };
+    format!(
+        "<repository_review>\nHarness-captured tracked diff against HEAD, followed by short status. May include pre-existing changes. Untracked file contents are not included.\n{evidence}\n</repository_review>"
+    )
+}
 /// The worker's effort for a delegated child that runs on the worker model:
 /// `Some(None)` is auto (Jev picks it per call), `Some(Some(level))` pins the
 /// level, and `None` keeps the child's usual policy, either because it is not

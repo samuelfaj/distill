@@ -2172,6 +2172,22 @@ pub(crate) async fn run_shell_child(
         .unwrap_or((0, 0));
     result.tool_calls = tool_calls;
     result.turns = turns;
+    if result.success
+        && on_worker
+        && context_source == InitialContextSource::New
+        && ctx.parent_non_interactive
+        && !request.run_in_background
+        && request.surface_completion
+        && request.runtime_overrides.output_schema.is_none()
+    {
+        let review = super::worker_repository_review(
+            child_handle.tool_context.terminal.as_ref(),
+            child_handle.tool_context.cwd.clone(),
+            child_handle.tool_context.session_env.as_ref().clone(),
+        )
+        .await;
+        result.output = Arc::from(format!("{}\n\n{review}", result.output));
+    }
     result.duration_ms = start.elapsed().as_millis() as u64;
     let (model_tx, model_rx) = oneshot::channel();
     let final_model = if child_handle

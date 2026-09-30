@@ -25,6 +25,7 @@ OpenAI-compatible protocol.
 | Distill | GPT-6.1 Sol auto + GPT-6 Luna auto | 308.18 s (**-33.8%**) | $0.19 (**-67.2%**) |
 | Codex | GPT-6.1 Sol high | 465.27 s  | $0.59 | 
 
+Same quality and 9/9 passing runs.
 See more in [BENCHMARKS.md](BENCHMARKS.md) .
 
 ## Install

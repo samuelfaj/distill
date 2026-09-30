@@ -358,6 +358,41 @@ model. These settings were read back without credentials. Custom provider
 catalogs remain stored; the benchmark strips model API keys and validates every
 observed inference route independently.
 
+## Checkpoint 12: Worker startup correction measured; proportionate review candidate
+
+The second repeated cohort retained the same 18-cell plan and frozen graders.
+All **18/18** cells passed, with complete usage and subscription-only routes.
+Runtime readback confirms the Worker discipline now survives system-prompt
+installation, and optional default/null tool arguments are omitted. Titles use
+ChatGPT Luna explicitly. Binary source was `e3bb2d83d156`; harness source was
+`6306de24cce8afbd53f6bb46fb824a6cbde441f7`.
+
+| Agent | Total seconds | Median seconds | Calls | Input / cached / output tokens | Modeled credits |
+|---|---:|---:|---:|---|---:|
+| Distill | 418.029388 | 45.832054 | 79 | 291,387 / 160,896 / 10,193 | 5.0001935 |
+| Codex high | 471.641351 | 49.848692 | 51 | 1,009,644 / 788,608 / 7,073 | 14.7915700 |
+
+This is **11.4% faster** and **66.2% lower in modeled credits**. Excluding
+Codex's zero-output requests gives 10.27312 credits and a **51.3%** reduction.
+The cost target is met under both calculations; the time target remains unmet.
+All repetitions, including a Worker import-context retry, remain included.
+Raw data: [`subscription-worker-prompt-cohort-v2.json`](tools/task_cost_eval/results/subscription-worker-prompt-cohort-v2.json).
+
+The next candidate keeps independent inspection of the actual repository diff
+and requires Worker check commands, exit statuses, and relevant output. For a
+fully specified, low-risk localized change, Main repeats behavioral checks when
+evidence is incomplete, inconsistent, or leaves a concrete requirement unverified.
+Larger or security-sensitive changes still require Main's final behavioral check.
+This trades unconditional duplicated execution for review of the actual diff and
+check evidence; the external benchmark graders remain independent and unchanged.
+Worker instructions also batch directory contents, instruction discovery, status,
+and runtime/import context in the first tool round. This candidate is not yet
+measured and makes no performance claim.
+
+Verification: compiled primary rendering, encrypted-template freshness, fresh
+Worker scoping, and all six system-prompt installation tests pass. No new test
+infrastructure or dependency was added for this instruction change.
+
 ## Setup failures retained
 
 - Before subscription-only scope was clarified, a direct API pilot failed with

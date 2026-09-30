@@ -1046,7 +1046,11 @@ mod tests {
             "delegated work must come with a precise spec"
         );
         assert!(on.contains("Keep what needs judgment no spec can carry"));
-        assert!(on.contains("Batch your own diff inspection and final behavioral checks"));
+        assert!(on.contains("Batch your own diff inspection and any required behavioral checks"));
+        assert!(on.contains("Review the actual repository diff independently"));
+        assert!(on.contains(
+            "For larger or security-sensitive changes, run the final behavioral check yourself"
+        ));
         assert!(on.contains("Omit optional defaults and nulls"));
         assert!(!render_primary(ctx("", "spawn_subagent")).contains("<orchestration>"));
         assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<orchestration>"));

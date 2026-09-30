@@ -99,12 +99,22 @@ effort = "auto"
 telemetry = false
 [managed_mcps]
 enabled = false
+[plugins]
+disabled = ["clangd-lsp", "claude-blog", "stripe", "swift-lsp", "watch", "rust-analyzer-lsp"]
+[skills]
+ignore = ["~/.agents", "~/.codex"]
 [compat.cursor]
 mcps = false
+rules = false
+skills = false
+agents = false
+hooks = false
 [compat.claude]
 mcps = false
-[compat.codex]
-mcps = false
+rules = false
+skills = false
+agents = false
+hooks = false
 '''
 
 

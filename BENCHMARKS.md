@@ -198,8 +198,9 @@ verification remain required. The local-file benchmark uses the existing
 management. File reading, editing, search, and checks use the shell, which keeps
 those capabilities available to both parent and Worker. Scheduling, feedback, workflow, and external
 integration schemas are not needed by these tasks. This is an explicit runtime
-profile for this cohort, not a claim about the default full toolset. Codex MCP
-imports are also disabled, completing the external-tool discovery control.
+profile for this cohort, not a claim about the default full toolset. A reserved
+Codex compatibility config cell was also set here; later source inspection
+showed its MCP surface is not implemented, so it did not affect discovery.
 
 The user's installed configuration was aligned with subscription-only execution:
 main/planning/review use ChatGPT Sol, Worker/local-worker/auxiliary models use
@@ -249,6 +250,24 @@ change. The Worker discipline was present in its saved conversation.
 Verification after synchronization: the fresh-Worker scoping/authority test,
 compiled orchestration renderer, and existing encrypted-template freshness
 test all passed. The 18 Python accounting/runner/evaluator tests passed again.
+
+## Checkpoint 7: compiled prompt readback and global import control
+
+The synchronized tax diagnostic passed with complete usage in **48.83 s**:
+nine calls, 52,351 input / 23,040 cached input / 1,097 output, **1.0826995** modeled
+credits. Its saved main prompt contains the new instruction, and main combined
+its diff and check in one terminal call. A later main request still missed cache.
+Worker imported the global bug-fix skill, producing additional discovery work
+and context. Raw data: [`subscription-synced-prompts.json`](tools/task_cost_eval/results/subscription-synced-prompts.json).
+
+The benchmark profile now also disables the six installed Claude plugins and
+vendor rule/skill/agent/hook imports, and excludes the user's `.agents` and
+`.codex` skill roots through the existing skill-ignore setting. This prevents
+unrequested global frameworks and plugin MCPs from entering these self-contained
+local tasks. The unsupported Codex MCP compatibility entry was removed.
+User-owned global files remain available outside the isolated benchmark profile.
+Codex continues to use `--ignore-user-config`. This comparison concerns these
+explicit runtime profiles; it does not claim identical built-in prompts or tools.
 
 ## Setup failures retained
 

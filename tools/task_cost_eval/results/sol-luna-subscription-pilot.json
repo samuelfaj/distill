@@ -1,0 +1,252 @@
+{
+  "cohort": "subscription-pilot",
+  "runs": [
+    {
+      "variant": "codex",
+      "case": "tax-bug-en",
+      "session": "8eac236f-850a-4d9c-9428-8e98be71313c",
+      "provider": "chatgpt_subscription",
+      "version": "codex-cli 0.159.1",
+      "executable_sha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "source_sha": "9bdd5e8e7fd57a2e4bc49f2820ce2894b3e4356c",
+      "prompt_sha256": "66841a304589413d3e2e97c086a159db5b2affedcb4a46afa12f8bc26fcfc69e",
+      "fixture_sha256": "7e6198752d4832761022358cd51c8d2efec565dbd97e7e0e9a29c16f9c73e0e9",
+      "grader_sha256": "f6c9d14dba47437fe9787d3cc920beaf81fad14561c1780a8dce4e257db4cfcf",
+      "config_sha256": "0e9839d26f1b58012d4006a49f111eb50e3ead18f3711209a50f1f5b814f78ef",
+      "wall_time_s": 50.056369,
+      "exit_code": 0,
+      "timed_out": false,
+      "grader_passed": true,
+      "cost_basis": "published_subscription_credit_rates",
+      "accounting_complete": true,
+      "reason": "telemetry schema inspection pending",
+      "telemetry_events": 43,
+      "telemetry_fields": [
+        "auth.env_refresh_token_url_override_present",
+        "cache_write_token_count",
+        "cached_token_count",
+        "conversation.id",
+        "event.kind",
+        "event.name",
+        "input_token_count",
+        "model",
+        "output_token_count",
+        "reasoning_effort",
+        "reasoning_token_count",
+        "tool_token_count"
+      ],
+      "calls": 6,
+      "call_usage": [
+        {
+          "model": "gpt-6.1-sol",
+          "conversation": "01a0f069-3a34-78a3-b974-fa59fa9e3113",
+          "complete": true,
+          "input_tokens": 12497,
+          "cached_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_tokens": 0,
+          "credits": 0.62485
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "conversation": "01a0f069-3a34-78a3-b974-fa59fa9e3113",
+          "complete": true,
+          "input_tokens": 24032,
+          "cached_input_tokens": 12288,
+          "output_tokens": 160,
+          "reasoning_tokens": 0,
+          "credits": 0.65792
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "conversation": "01a0f069-3a34-78a3-b974-fa59fa9e3113",
+          "complete": true,
+          "input_tokens": 24381,
+          "cached_input_tokens": 23808,
+          "output_tokens": 87,
+          "reasoning_tokens": 0,
+          "credits": 0.10992
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "conversation": "01a0f069-3a34-78a3-b974-fa59fa9e3113",
+          "complete": true,
+          "input_tokens": 24524,
+          "cached_input_tokens": 24192,
+          "output_tokens": 104,
+          "reasoning_tokens": 0,
+          "credits": 0.10308
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "conversation": "01a0f069-3a34-78a3-b974-fa59fa9e3113",
+          "complete": true,
+          "input_tokens": 24652,
+          "cached_input_tokens": 24320,
+          "output_tokens": 252,
+          "reasoning_tokens": 0,
+          "credits": 0.1404
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "conversation": "01a0f069-3a34-78a3-b974-fa59fa9e3113",
+          "complete": true,
+          "input_tokens": 25165,
+          "cached_input_tokens": 24448,
+          "output_tokens": 59,
+          "reasoning_tokens": 0,
+          "credits": 0.11172
+        }
+      ],
+      "input_tokens": 135251,
+      "cached_input_tokens": 109056,
+      "output_tokens": 662,
+      "reasoning_tokens": 0,
+      "credit_estimate": 1.74789
+    },
+    {
+      "variant": "distill",
+      "case": "tax-bug-en",
+      "session": "649ca7e7-e25d-4dd8-bc64-301421100b05",
+      "provider": "chatgpt_subscription",
+      "version": "distill 2.0.9 (9bdd5e8e7fd5)",
+      "executable_sha256": "eab026e13059b28bbb737aba9a77fb865e9397a91a597ee1e95deab8d9d39d29",
+      "source_sha": "9bdd5e8e7fd57a2e4bc49f2820ce2894b3e4356c",
+      "prompt_sha256": "66841a304589413d3e2e97c086a159db5b2affedcb4a46afa12f8bc26fcfc69e",
+      "fixture_sha256": "7e6198752d4832761022358cd51c8d2efec565dbd97e7e0e9a29c16f9c73e0e9",
+      "grader_sha256": "f6c9d14dba47437fe9787d3cc920beaf81fad14561c1780a8dce4e257db4cfcf",
+      "config_sha256": "4b4389b7d67327d059466f6dd935e7da4258ce652c4a623436d67b030e33bfdf",
+      "wall_time_s": 62.850445,
+      "exit_code": 0,
+      "timed_out": false,
+      "grader_passed": true,
+      "cost_basis": "published_subscription_credit_rates",
+      "accounting_complete": false,
+      "calls": 11,
+      "call_usage": [
+        {
+          "attempt": "initial-title:3ee3d789-c22f-4707-b017-f102989e0858",
+          "model": "gpt-6.1-sol",
+          "role": "auxiliary",
+          "effort": "effort:low",
+          "input_tokens": 269,
+          "cached_input_tokens": 0,
+          "output_tokens": 25,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.0197
+        },
+        {
+          "attempt": "sampler:53cecf91-5a15-43fb-bc69-7e8047713618",
+          "model": "gpt-6.1-sol",
+          "role": "main",
+          "effort": "effort:low",
+          "input_tokens": 12708,
+          "cached_input_tokens": 0,
+          "output_tokens": 202,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.6859
+        },
+        {
+          "attempt": "initial-title:2b86de98-0bba-45cf-89ae-122e54c2e138",
+          "complete": false
+        },
+        {
+          "attempt": "sampler:e2cf5802-961e-4828-b73c-bc89f6c110b1",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 7174,
+          "cached_input_tokens": 0,
+          "output_tokens": 83,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.0189725
+        },
+        {
+          "attempt": "sampler:1ceb38ee-ee26-4fa7-b842-8775a51df955",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 7333,
+          "cached_input_tokens": 0,
+          "output_tokens": 140,
+          "reasoning_tokens": 39,
+          "complete": true,
+          "credits": 0.0200825
+        },
+        {
+          "attempt": "sampler:328654a3-a8df-43be-b72f-c080da966b64",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 7656,
+          "cached_input_tokens": 0,
+          "output_tokens": 114,
+          "reasoning_tokens": 37,
+          "complete": true,
+          "credits": 0.020565
+        },
+        {
+          "attempt": "sampler:e7e677cc-9788-44fb-97a5-6a77728637a8",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 7800,
+          "cached_input_tokens": 0,
+          "output_tokens": 216,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.0222
+        },
+        {
+          "attempt": "sampler:18cba771-2778-4020-8aa7-540409851c03",
+          "model": "gpt-6-luna",
+          "role": "main",
+          "effort": "effort:medium",
+          "input_tokens": 8195,
+          "cached_input_tokens": 0,
+          "output_tokens": 168,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.0225875
+        },
+        {
+          "attempt": "sampler:8d9afa64-33ff-4276-ae58-6e3ed132bdc3",
+          "model": "gpt-6.1-sol",
+          "role": "main",
+          "effort": "effort:low",
+          "input_tokens": 14094,
+          "cached_input_tokens": 0,
+          "output_tokens": 172,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.7477
+        },
+        {
+          "attempt": "sampler:74b4643c-14dd-4d40-aab8-8c4c4e523467",
+          "model": "gpt-6.1-sol",
+          "role": "main",
+          "effort": "effort:low",
+          "input_tokens": 14446,
+          "cached_input_tokens": 13952,
+          "output_tokens": 102,
+          "reasoning_tokens": 0,
+          "complete": true,
+          "credits": 0.08508
+        },
+        {
+          "attempt": "auxiliary:jev-tool-result-8063651a-d1f8-4a29-b466-435a15fac542",
+          "complete": false
+        }
+      ],
+      "unfolded_child_attempts": [],
+      "input_tokens": 79675,
+      "output_tokens": 1222,
+      "cached_input_tokens": 13952,
+      "reasoning_tokens": 76,
+      "credit_estimate": null
+    }
+  ]
+}

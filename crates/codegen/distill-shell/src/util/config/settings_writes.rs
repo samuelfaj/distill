@@ -466,11 +466,31 @@ pub async fn set_auto_update(value: bool) -> Result<()> {
 #[path = "settings_writes_tests.rs"]
 mod tests;
 
+pub fn utility_model_warning(
+    spec: &str,
+    is_catalog_model: bool,
+    lane_builds: bool,
+) -> Option<String> {
+    (!spec.trim().is_empty() && !is_catalog_model && !lane_builds).then(|| {
+        format!("Utility model `{spec}` cannot build a lane with current credentials; utility work will be skipped.")
+    })
+}
+
 /// Save the utility model and its effort together, preserving other settings.
 pub async fn set_utility_model(
     model: String,
     effort: Option<crate::sampling::types::ReasoningEffort>,
 ) -> Result<()> {
+    set_utility_model_with_catalog(model, effort, false)
+        .await
+        .map(|_| ())
+}
+
+pub async fn set_utility_model_with_catalog(
+    model: String,
+    effort: Option<crate::sampling::types::ReasoningEffort>,
+    is_catalog_model: bool,
+) -> Result<Option<String>> {
     anyhow::ensure!(model.len() <= MAX_DEFAULT_MODEL_LEN, "Model name too long");
     let effort = effort
         .map(|level| level.to_string())
@@ -482,6 +502,7 @@ pub async fn set_utility_model(
         });
     })
     .await?;
-    crate::jev::update_local_model_cache(model, effort);
-    Ok(())
+    crate::jev::update_local_model_cache(model.clone(), effort);
+    let lane_builds = is_catalog_model || crate::jev_cheap::CheapLane::from_spec(&model).is_some();
+    Ok(utility_model_warning(&model, is_catalog_model, lane_builds))
 }

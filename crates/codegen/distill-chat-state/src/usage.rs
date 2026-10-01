@@ -80,6 +80,12 @@ pub struct UsageAttribution {
     pub requested_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_in: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_out: Option<u64>,
     pub status: UsageCallStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
@@ -94,7 +100,7 @@ pub struct UsageAttribution {
     pub cost_basis: UsageCostBasis,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageTotals {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -192,7 +198,7 @@ fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageLedger {
     pub totals: UsageTotals,
     pub by_model: IndexMap<String, UsageTotals>,
@@ -477,6 +483,9 @@ mod tests {
             model_id: "free-model".to_owned(),
             endpoint: None,
             requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Completed,
             usage: Some(tu(1, 1)),
@@ -512,6 +521,9 @@ mod tests {
             model_id: "child-model".to_owned(),
             endpoint: Some("https://provider.test".to_owned()),
             requested_effort: Some("low".to_owned()),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("effort:low".to_owned()),
             status: UsageCallStatus::Completed,
             usage: Some(tu(7, 2)),
@@ -529,6 +541,9 @@ mod tests {
             model_id: "child-model".to_owned(),
             endpoint: None,
             requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("absent".to_owned()),
             status: UsageCallStatus::Failed,
             usage: None,
@@ -566,6 +581,9 @@ mod tests {
                 model_id: "model".to_owned(),
                 endpoint: Some("https://provider.test/chat".to_owned()),
                 requested_effort: None,
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
                 applied_effort: Some("absent".to_owned()),
                 status: if role == "main" {
                     UsageCallStatus::Completed
@@ -613,6 +631,9 @@ mod tests {
             model_id: "cheap-model".to_owned(),
             endpoint: Some("https://provider.test/chat".to_owned()),
             requested_effort: Some("low".to_owned()),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Rejected,
             usage: Some(usage),
@@ -645,6 +666,9 @@ mod tests {
             model_id: "jev".to_owned(),
             endpoint: None,
             requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Completed,
             usage: Some(tu(11, 0)),
@@ -688,6 +712,9 @@ mod tests {
             model_id: "title-model".to_owned(),
             endpoint: Some("https://provider.test/chat".to_owned()),
             requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("absent".to_owned()),
             status: UsageCallStatus::Completed,
             usage: Some(tu(4, 2)),
@@ -709,5 +736,41 @@ mod tests {
         assert_eq!(parent.totals.model_calls, 2);
         assert_eq!(parent.totals.cost_usd_ticks, Some(12));
         assert_eq!(parent.attributions.len(), 1);
+    }
+
+    #[test]
+    fn utility_attempt_metadata_serializes_into_ledger_row() {
+        let attribution = UsageAttribution {
+            attempt_id: "utility-attempt".to_owned(),
+            task_id: Some("cite_spans".to_owned()),
+            turn_id: None,
+            request_id: None,
+            role: "utility".to_owned(),
+            model_id: "gpt-6-luna".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+            reason: Some("defer:consumer-rejected".to_owned()),
+            bytes_in: Some(321),
+            bytes_out: Some(88),
+            status: UsageCallStatus::Rejected,
+            usage: None,
+            usage_complete: false,
+            api_duration_ms: Some(4),
+            cost_usd_ticks: None,
+            cost_basis: UsageCostBasis::Unknown,
+        };
+        let mut ledger = UsageLedger::default();
+        ledger.record_attribution(attribution);
+        let json = serde_json::to_value(&ledger).expect("serialize usage ledger");
+        assert_eq!(json["attributions"][0]["reason"], "defer:consumer-rejected");
+        assert_eq!(json["attributions"][0]["bytes_in"], 321);
+        assert_eq!(json["attributions"][0]["bytes_out"], 88);
+        let mut old = json.clone();
+        let row = old["attributions"][0].as_object_mut().expect("ledger row");
+        row.remove("reason");
+        row.remove("bytes_in");
+        row.remove("bytes_out");
+        serde_json::from_value::<UsageLedger>(old).expect("old usage ledger format");
     }
 }

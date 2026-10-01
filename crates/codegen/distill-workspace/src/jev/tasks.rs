@@ -10,7 +10,7 @@
 //! request, gates the answer, and returns `None` on anything else — which every
 //! caller treats as "keep today's bytes".
 
-use super::cheap::{CheapAnswer, CheapClient, CheapTask};
+use super::cheap::{CheapAnswer, CheapTask, TaskClient};
 use super::crushers;
 use super::reduce;
 
@@ -776,8 +776,8 @@ pub struct TaskOutcome {
 
 /// Runs one catalogue task: build the closed prompt, send one request, gate the
 /// answer. `None` means "keep today's bytes", for any reason at all.
-pub async fn run(
-    client: &CheapClient,
+pub async fn run<C: TaskClient + ?Sized>(
+    client: &C,
     id: &str,
     payload: &str,
     question: &str,
@@ -787,8 +787,8 @@ pub async fn run(
 
 /// Same, with the caller's candidate ids and labels for the `Pick`/`Classify`
 /// kinds.
-pub async fn run_with(
-    client: &CheapClient,
+pub async fn run_with<C: TaskClient + ?Sized>(
+    client: &C,
     id: &str,
     payload: &str,
     question: &str,
@@ -824,13 +824,13 @@ pub async fn run_with(
         return None;
     }
     let task = task_for(spec, &prepared, question);
-    if !task.fits(client.config().max_input_bytes) {
+    if !task.fits(client.max_input_bytes()) {
         tracing::info!(target: "jev.decision", event_kind = "utility_skip",
             task_id = id, skip_reason = "input_limit", accepted = false,
             "utility task skipped before request");
         return None;
     }
-    let answer = client.ask(&task).await.ok()?;
+    let answer = client.ask_task(&task).await.ok()?;
     let accepted = gate(spec, &prepared, &answer.text, candidates, labels);
     tracing::info!(target: "jev.decision", event_kind = "utility_acceptance",
         task_id = id, request_id = answer.request_id.as_deref().unwrap_or(""),
@@ -852,8 +852,8 @@ pub const BEST_OF: usize = 3;
 /// and by size second, so quality is never traded for a smaller answer. One
 /// accepted candidate short-circuits the rest: the extra samples are for the
 /// cases where the first answer is refused, not a default tax on every call.
-pub async fn run_best_of(
-    client: &CheapClient,
+pub async fn run_best_of<C: TaskClient + ?Sized>(
+    client: &C,
     id: &str,
     payload: &str,
     question: &str,
@@ -868,10 +868,10 @@ pub async fn run_best_of(
     let mut best: Option<TaskOutcome> = None;
     for attempt in 0..samples.max(1) {
         let task = task_for(spec, &prepared, question);
-        if !task.fits(client.config().max_input_bytes) {
+        if !task.fits(client.max_input_bytes()) {
             return best;
         }
-        let Ok(answer) = client.ask(&task).await else {
+        let Ok(answer) = client.ask_task(&task).await else {
             continue;
         };
         let Ok(text) = gate(spec, &prepared, &answer.text, &[], &[]) else {

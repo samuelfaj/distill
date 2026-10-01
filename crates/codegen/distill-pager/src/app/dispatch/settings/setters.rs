@@ -2062,6 +2062,7 @@ pub(in crate::app::dispatch) fn set_cheap_model(
             .unwrap_or_else(|| "auto".into())
     ));
     vec![Effect::PersistUtilityModel {
+        is_catalog_model: app.models.resolve_by_name_or_id(&entry).is_some(),
         model: entry,
         effort,
     }]

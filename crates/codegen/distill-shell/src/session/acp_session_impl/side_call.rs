@@ -179,6 +179,9 @@ fn record_auxiliary_response_with_status(
             endpoint: Some(attempt.endpoint.clone()),
             requested_effort: attempt.requested_effort.clone(),
             applied_effort: attempt.applied_effort.clone(),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             status,
             usage: response.usage.clone(),
             usage_complete: response.usage.is_some(),
@@ -278,6 +281,9 @@ fn record_auxiliary_failures_with_status(
                 endpoint: Some(attempt.endpoint.clone()),
                 requested_effort: attempt.requested_effort.clone(),
                 applied_effort: attempt.applied_effort.clone(),
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
                 status,
                 usage: None,
                 usage_complete: false,
@@ -456,102 +462,8 @@ pub(crate) async fn run_display_task(
         }
     }
 
-    let main_lane = actor.tool_result_main_lane().await?;
-    let request = main_lane.task_request(task_id, payload, question)?;
-    let applied_effort = main_lane
-        .client()
-        .attribution_applied_effort(request.reasoning_effort, request.max_output_tokens);
-    let main_key = crate::jev_cheap::optional_compression_key(
-        &main_lane.client().attribution_endpoint(),
-        main_lane.model(),
-        task_id,
-        applied_effort.as_deref().unwrap_or("provider_default"),
-        "display",
-    );
-    if !crate::jev_cheap::optional_compression_allowed(&main_key) {
-        return None;
-    }
-
-    let attempt = auxiliary_attempt(main_lane.client(), &request);
-    let mut cancellation_guard = super::jev_tool_result::MainAttemptCancellationGuard::new(
-        actor,
-        attempt.clone(),
-        Some(main_key.clone()),
-    );
-    cancellation_guard.mark_dispatched();
-    let call_started = std::time::Instant::now();
-    let (response_result, rejected_response) = main_lane.collect(request).await;
-    match response_result {
-        Ok(response) => {
-            let candidate =
-                distill_workspace::jev::tasks::display_fragment(source, &response.assistant_text())
-                    .ok()
-                    .and_then(|fragment| accept(&fragment));
-            let api_duration_ms = Some(call_started.elapsed().as_millis() as u64);
-            if let Some(display) = candidate {
-                record_auxiliary_response(
-                    actor,
-                    "display_auxiliary_main",
-                    main_lane.model(),
-                    &attempt,
-                    &response,
-                    api_duration_ms,
-                    false,
-                );
-                crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                crate::jev_cheap::note_optional_compression_success(&main_key);
-                cancellation_guard.complete();
-                log_prompt_cache_usage(
-                    "display_auxiliary_main",
-                    main_lane.client().api_backend(),
-                    &response,
-                );
-                Some(display)
-            } else {
-                record_auxiliary_rejected_response(
-                    actor,
-                    "display_auxiliary_main",
-                    main_lane.model(),
-                    &attempt,
-                    &response,
-                    api_duration_ms,
-                    false,
-                );
-                crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
-                crate::jev_cheap::note_optional_compression_failure(&main_key);
-                cancellation_guard.complete();
-                log_prompt_cache_usage(
-                    "display_auxiliary_main",
-                    main_lane.client().api_backend(),
-                    &response,
-                );
-                None
-            }
-        }
-        Err(error) => {
-            if let Some(response) = rejected_response {
-                record_auxiliary_rejected_response(
-                    actor,
-                    "display_auxiliary_main",
-                    main_lane.model(),
-                    &attempt,
-                    &response,
-                    None,
-                    false,
-                );
-            } else {
-                record_auxiliary_failures(actor, std::slice::from_ref(&attempt), false);
-            }
-            crate::jev_cheap::note_failure(JevLever::ECheapCompress);
-            crate::jev_cheap::note_optional_compression_failure(&main_key);
-            cancellation_guard.complete();
-            tracing::debug!(error = %error, "display auxiliary main-model call failed");
-            None
-        }
-    }
+    None
 }
-
 pub(super) fn should_strip_side_call_reasoning(
     backend: crate::sampling::ApiBackend,
     reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,

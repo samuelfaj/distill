@@ -108,6 +108,9 @@ async fn turn_distribution_includes_nested_subagent_efforts_once() {
                 endpoint: None,
                 requested_effort: Some("high".into()),
                 applied_effort: Some(format!("effort:{effort}")),
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
                 status: UsageCallStatus::Completed,
                 usage: Some(TokenUsage {
                     prompt_tokens: input,

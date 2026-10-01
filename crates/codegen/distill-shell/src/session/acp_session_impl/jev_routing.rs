@@ -10,6 +10,7 @@
 //! list (slash commands, discovery, and lossless bodies) remains untouched.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use distill_sampling_types::ReasoningEffort;
 use distill_workspace::jev::catalog::routing;
@@ -22,6 +23,13 @@ use super::*;
 const REQUEST_CHARS: usize = 600;
 /// Conversation items scanned for the next step's description.
 const RECENT_ITEMS: usize = 12;
+static UTILITY_LANE_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+
+fn warn_utility_lane_once(model: &str, reason: &str) {
+    if !UTILITY_LANE_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
+        tracing::warn!(model, reason, "utility model lane unavailable");
+    }
+}
 /// Calls of the previous step described to the battery.
 const MAX_STEP_CALLS: usize = 6;
 /// Results of the previous step described to the battery.
@@ -386,10 +394,38 @@ impl SessionActor {
             .map(str::to_owned)
             .unwrap_or_else(crate::jev_cheap::default_model_spec);
         if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec).is_some() {
-            let cfg = self.resolve_aux_sampler_config(&spec).await?;
-            return crate::jev_cheap::CheapLane::from_sampler_config(&cfg);
+            let Some(mut cfg) = self.resolve_aux_sampler_config(&spec).await else {
+                if crate::jev::local_config_cached().model.is_some() {
+                    warn_utility_lane_once(&spec, "no sampler configuration");
+                }
+                return None;
+            };
+            if crate::jev::local_config_cached()
+                .effort
+                .as_deref()
+                .is_none_or(|effort| effort == "auto")
+            {
+                cfg.reasoning_effort = self
+                    .model_effort_menu(&cfg.model)
+                    .and_then(|menu| Self::lowest_effort_level(&menu));
+            }
+            let lane = crate::jev_cheap::CheapLane::from_sampler_config(&cfg);
+            if lane.is_none() && crate::jev::local_config_cached().model.is_some() {
+                warn_utility_lane_once(&spec, "sampler configuration rejected");
+            }
+            return lane;
         }
-        crate::jev_cheap::CheapLane::from_spec(&spec)
+        let lane = crate::jev_cheap::CheapLane::from_spec(&spec);
+        if lane.is_none() && crate::jev::local_config_cached().model.is_some() {
+            warn_utility_lane_once(&spec, "no usable transport or credential");
+        }
+        lane
+    }
+
+    fn lowest_effort_level(menu: &[EffortLevel]) -> Option<ReasoningEffort> {
+        menu.iter()
+            .min_by_key(|level| effort_rank(level.value))
+            .map(|level| level.value)
     }
 
     /// The level above `current` in this model's own menu, if there is one.
@@ -1011,6 +1047,26 @@ fn effort_from_id(id: &str) -> Option<ReasoningEffort> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_effort_uses_lowest_model_menu_level() {
+        let menu = vec![
+            EffortLevel {
+                id: "high".to_owned(),
+                value: ReasoningEffort::High,
+                description: String::new(),
+            },
+            EffortLevel {
+                id: "low".to_owned(),
+                value: ReasoningEffort::Low,
+                description: String::new(),
+            },
+        ];
+        assert_eq!(
+            SessionActor::lowest_effort_level(&menu),
+            Some(ReasoningEffort::Low)
+        );
+    }
 
     /// While a goal runs its objective is the request. The kickoff arrives as a
     /// system reminder, so an older human message ("por que pausou?") used to

@@ -1749,6 +1749,7 @@ pub enum Effect {
     PersistUtilityModel {
         model: String,
         effort: Option<ReasoningEffort>,
+        is_catalog_model: bool,
     },
     /// Persist a typed setting; roll back the cache if the write fails.
     PersistSetting {
@@ -3349,6 +3350,11 @@ pub enum TaskResult {
         agent_id: AgentId,
         suggestion: Option<String>,
         generation: u64,
+    },
+    /// Utility model persisted, with an optional lane warning.
+    UtilityModelPersisted {
+        model: String,
+        warning: Option<String>,
     },
     /// Setting persisted successfully. No reconciliation needed today.
     SettingPersisted {

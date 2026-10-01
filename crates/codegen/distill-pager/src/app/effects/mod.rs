@@ -2438,11 +2438,11 @@ pub(crate) fn execute(
                     ),
                 );
         }
-        Effect::PersistUtilityModel { model, effort } => {
+        Effect::PersistUtilityModel { model, effort, is_catalog_model } => {
             tasks.spawn(async move {
                 let key = "cheap_model";
-                match distill_shell::util::config::set_utility_model(model.clone(), effort).await {
-                    Ok(()) => TaskResult::SettingPersisted { key, value: crate::settings::SettingValue::String(model) },
+                match distill_shell::util::config::set_utility_model_with_catalog(model.clone(), effort, is_catalog_model).await {
+                    Ok(warning) => TaskResult::UtilityModelPersisted { model, warning },
                     Err(error) => TaskResult::SettingPersistFailedBestEffort { key, error: error.to_string() },
                 }
             });

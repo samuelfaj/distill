@@ -1991,7 +1991,7 @@ fn resume_identity_does_not_gate_on_model() {
     assert_eq!(
             source.model_id.as_deref(),
             Some("grok-3"),
-            "source model remains available for pinning"
+            "source model remains available as historical resume metadata"
         );
 }
 #[test]
@@ -2062,19 +2062,6 @@ fn durable_meta_roundtrips_effective_model_id() {
         "a fork without an override must inherit the parent policy"
     );
     let _ = std::fs::remove_dir_all(&dir);
-}
-#[test]
-fn resume_model_pinning_overrides_default_resolution() {
-    let source_model = Some("grok-3".to_string());
-    let resolved_model = "grok-light";
-    let needs_pin = source_model.as_deref() != Some(resolved_model);
-    assert!(
-            needs_pin,
-            "resolved model differs from source — pinning should trigger"
-        );
-    let resolved_same = "grok-3";
-    let no_pin = source_model.as_deref() == Some(resolved_same);
-    assert!(no_pin, "same model — no pinning needed");
 }
 #[test]
 fn provenance_carries_resumed_from() {
@@ -2599,10 +2586,9 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
             "an unknown override falls through to the pin",
         );
 }
-/// Work the main model delegates runs on the cheaper worker model, while planning
-/// and review stay on the main model and harness roles, resumes, forks and
-/// explicit models keep theirs: that split is what makes the main model the
-/// orchestrator instead of the one grinding through every step.
+/// Work the main model delegates runs on the current worker model, including
+/// resumed children; planning and review stay on the main model, while forks,
+/// explicit models and harness roles keep their established routing.
 #[test]
 fn only_fresh_model_delegation_defaults_to_the_worker_model() {
     use distill_tools::implementations::distill::task::types::ModelOverrideProvenance;
@@ -2623,13 +2609,25 @@ fn only_fresh_model_delegation_defaults_to_the_worker_model() {
     for agent in ["plan", "code-reviewer"] {
         assert_eq!(delegated_worker_model(&delegated(agent), false, None), None, "{agent}");
     }
-    assert_eq!(delegated_worker_model(&delegated("general-purpose"), true, None), None, "resume");
+    assert_eq!(
+        delegated_worker_model(&delegated("general-purpose"), true, None).as_deref(),
+        Some("worker-model"),
+        "a resumed child uses the current worker, not its persisted source model (for example, gpt-6-luna)",
+    );
+    crate::jev::set_test_worker_model(None);
+    assert_eq!(
+        delegated_worker_model(&delegated("general-purpose"), true, None),
+        None,
+        "without a worker, resumed child inherits the current parent model",
+    );
+    crate::jev::set_test_worker_model(Some("worker-model".to_string()));
     let mut fork = delegated("general-purpose");
     fork.fork_context = true;
     assert_eq!(delegated_worker_model(&fork, false, None), None, "fork");
     let mut explicit = delegated("general-purpose");
     explicit.runtime_overrides.model = Some("other-model".to_string());
     assert_eq!(delegated_worker_model(&explicit, false, None), None, "explicit model");
+    assert_eq!(delegated_worker_model(&explicit, true, None), None, "explicit model on resume");
     let harness = bootstrap_test_request(false);
     assert_eq!(delegated_worker_model(&harness, false, None), None, "harness role");
     crate::jev::set_test_worker_model(None);
@@ -2668,7 +2666,7 @@ fn a_worker_child_follows_the_worker_effort_unless_an_effort_is_explicit() {
 /// A session's own worker choice beats `[models] worker`/`worker_effort`, and
 /// `""` keeps delegated work on the main model even when the config names a
 /// worker. Without a session choice the config still applies. The exclusions
-/// (plan, review, resume, fork, explicit model) hold whichever source wins.
+/// (plan, review, fork, explicit model) hold whichever source wins; resumes use current selection.
 #[test]
 fn session_worker_overrides_the_configured_worker_and_keeps_the_exclusions() {
     use crate::session::handle::SessionWorker;
@@ -2706,7 +2704,11 @@ fn session_worker_overrides_the_configured_worker_and_keeps_the_exclusions() {
     for agent in ["plan", "code-reviewer"] {
         assert_eq!(delegated_worker_model(&delegated(agent), false, Some(&session)), None, "{agent}");
     }
-    assert_eq!(delegated_worker_model(&request, true, Some(&session)), None, "resume");
+    assert_eq!(
+        delegated_worker_model(&request, true, Some(&session)).as_deref(),
+        Some("session-worker"),
+        "resume uses current session worker",
+    );
     let mut fork = delegated("general-purpose");
     fork.fork_context = true;
     assert_eq!(delegated_worker_model(&fork, false, Some(&session)), None, "fork");

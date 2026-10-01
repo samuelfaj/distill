@@ -2766,7 +2766,7 @@ fn resumed_tool_model_override_is_ignored() {
                 false,
             )
             .is_none(),
-            "resume must preserve source-model pinning"
+            "resume allows current model selection without requiring a stale source-model pin"
         );
 }
 #[test]

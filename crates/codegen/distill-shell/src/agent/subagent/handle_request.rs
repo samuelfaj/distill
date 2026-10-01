@@ -853,29 +853,6 @@ pub(crate) async fn run_shell_child(
             effective_model_id = parent_mid;
         }
     }
-    if let Some(ref source) = resume_source
-        && !explicit_model_override
-        && let Some(ref source_model) = source.model_id
-        && effective_model_id.0.as_ref() != source_model.as_str()
-    {
-        if let Some(resolved) = resolve_model_override_to_config(source_model, &ctx) {
-            tracing::info!(
-                subagent_id = %request.id,
-                resolved_model = %effective_model_id.0,
-                source_model = source_model,
-                "Pinning resumed child to source model"
-            );
-            effective_sampling_config = resolved.0;
-            effective_model_id = resolved.1;
-        } else {
-            let msg = format!(
-                "Cannot resume from subagent '{}': source model '{source_model}' \
-                 is no longer available in the model catalogue.",
-                source.subagent_id,
-            );
-            return child_run_output(failure_result(&request, &msg), completion_data, None);
-        }
-    }
     let caller_effort_override = request.runtime_overrides.reasoning_effort.is_some();
     // A delegated child that landed on the worker model follows the worker's
     // effort setting, unless the caller, a role or the agent definition set one.
@@ -979,8 +956,8 @@ pub(crate) async fn run_shell_child(
             }));
     }
     // Explicit model/effort choices win. A resumed source restores its durable
-    // auto/manual policy, while a missing legacy field conservatively stays
-    // manual; ordinary forked children inherit the parent's policy.
+    // auto/manual effort policy, while model selection follows the current
+    // conversation; ordinary forked children inherit the parent's policy.
     let subagent_model_id = effective_sampling_config.model.clone();
     let auto_compact_threshold_percent =
         ctx.resolve_auto_compact_threshold_percent(&subagent_model_id);

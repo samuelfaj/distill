@@ -755,17 +755,16 @@ pub(crate) fn apply_worker_discipline(
         body.push_str(WORKER_DISCIPLINE);
     }
 }
-/// The worker model a fresh, model-delegated child defaults to. Planning and
-/// review stay on the main model; explicit models, resumes and full-context
-/// forks keep their own model, and harness roles inherit the main model.
-/// The session's own worker choice wins over `[models] worker`.
+/// The current worker model a model-delegated child defaults to, including on
+/// resume. Planning and review stay on the main model; explicit models and
+/// full-context forks keep their own model, and harness roles inherit the main
+/// model. The session's own worker choice wins over `[models] worker`.
 pub(crate) fn delegated_worker_model(
     request: &SubagentRequest,
-    resuming: bool,
+    _resuming: bool,
     session_worker: Option<&crate::session::handle::SessionWorker>,
 ) -> Option<String> {
-    if resuming
-        || request.fork_context
+    if request.fork_context
         || request.runtime_overrides.model.is_some()
         || request.runtime_overrides.model_override_provenance != ModelOverrideProvenance::Tool
         || matches!(request.subagent_type.as_str(), "plan" | "code-reviewer")

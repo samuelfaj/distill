@@ -207,6 +207,8 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent session's Jev auto-routing choice, captured per session rather
     /// than rereading the process-wide models manager in the child.
     pub parent_effort_auto: bool,
+    /// Parent session's worker override (`None` inherits `[models] worker`).
+    pub parent_worker: Option<crate::session::handle::SessionWorker>,
     pub auth: Option<distill_login::GrokAuth>,
     pub parent_cwd: PathBuf,
     pub parent_session_id: String,
@@ -728,11 +730,15 @@ pub(crate) fn worker_effort_policy(
     on_worker: bool,
     request: &SubagentRequest,
     effective_runtime: &EffectiveRuntimeConfig,
+    session_worker: Option<&crate::session::handle::SessionWorker>,
 ) -> Option<Option<distill_sampling_types::ReasoningEffort>> {
     (on_worker
         && request.runtime_overrides.reasoning_effort.is_none()
         && effective_runtime.reasoning_effort.is_none())
-    .then(crate::jev::worker_effort)
+    .then(|| match session_worker {
+        Some(worker) => worker.effort,
+        None => crate::jev::worker_effort(),
+    })
 }
 /// Add the fresh worker's instructions to its rendered system prompt. A
 /// separate System head would be replaced during child-session startup.
@@ -752,9 +758,11 @@ pub(crate) fn apply_worker_discipline(
 /// The worker model a fresh, model-delegated child defaults to. Planning and
 /// review stay on the main model; explicit models, resumes and full-context
 /// forks keep their own model, and harness roles inherit the main model.
+/// The session's own worker choice wins over `[models] worker`.
 pub(crate) fn delegated_worker_model(
     request: &SubagentRequest,
     resuming: bool,
+    session_worker: Option<&crate::session::handle::SessionWorker>,
 ) -> Option<String> {
     if resuming
         || request.fork_context
@@ -764,7 +772,10 @@ pub(crate) fn delegated_worker_model(
     {
         return None;
     }
-    crate::jev::worker_model()
+    match session_worker {
+        Some(worker) => worker.model_id.clone(),
+        None => crate::jev::worker_model(),
+    }
 }
 /// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the worker model for delegated work ([`delegated_worker_model`]) > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.

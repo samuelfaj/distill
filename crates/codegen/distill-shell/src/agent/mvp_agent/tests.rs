@@ -1238,6 +1238,7 @@ fn make_test_handle(
         ),
         model_id: acp::ModelId::new(model),
         reasoning_effort: None,
+        worker_override: crate::session::handle::new_session_worker_state(),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         yolo_mode: yolo,
         origin_client: client_id.map(|s| crate::http::OriginClientInfo {
@@ -1670,7 +1671,14 @@ async fn restore_effort_via_load(
         crate::session::persistence::Summary::new(&info, acp::ModelId::new("effort-model"))
             .unwrap();
     summary.reasoning_effort = persisted;
-    agent.restore_persisted_model(&sid, &summary, initial).await;
+    agent
+        .restore_persisted_model(
+            &sid,
+            &summary,
+            initial,
+            &crate::agent::mvp_agent::reasoning_effort::SessionMainMeta::default(),
+        )
+        .await;
     agent.resident_handle(&sid).and_then(|h| h.reasoning_effort)
 }
 #[tokio::test]
@@ -3196,6 +3204,8 @@ mod list_running_heal_tests;
 mod process_scope_reclaim;
 mod session_rename_tests;
 mod session_resume_close_tests;
+mod session_main_model_tests;
+mod session_worker_model_tests;
 mod subagent_spawn_context_tests;
 /// With no load in flight and no session the wait returns immediately (the caller then surfaces "unknown session id" exactly as before).
 #[tokio::test]

@@ -4,7 +4,7 @@
 //!
 //! [session setup]: https://agentclientprotocol.com/protocol/v1/session-setup
 use super::reasoning_effort::{
-    NewSessionEffort, resolve_new_session_effort_hint, split_new_session_effort,
+    NewSessionEffort, SessionMainMeta, resolve_new_session_effort_hint, split_new_session_effort,
 };
 use super::sampler_prewarm::spawn_sampler_transport_prewarm;
 use super::*;
@@ -392,6 +392,8 @@ impl MvpAgent {
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         let session_started_at = std::time::Instant::now();
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
+        let worker_override =
+            crate::extensions::session_worker_model::worker_from_meta(arguments.meta.as_ref())?;
         tracing::debug!(config = ?self.sampling_config, "Received new session request {arguments:?}");
         let init = self.initialize_request.get().ok_or_else(|| {
             acp::Error::invalid_params().data("initialize must be called before new_session")
@@ -588,6 +590,9 @@ impl MvpAgent {
                 origin_client.clone(),
             )
         });
+        let main_meta = SessionMainMeta::from_meta(arguments.meta.as_ref());
+        let session_effort_auto =
+            main_meta.effort_auto(self.models_manager.current_effort_auto());
         let effort_route = split_new_session_effort(
             resolved_custom_model,
             resolve_new_session_effort_hint(
@@ -698,6 +703,7 @@ impl MvpAgent {
                     model_agent_type: model_agent_type.as_deref(),
                     session_model_id,
                     initial_reasoning_effort: spawn_effort,
+                    jev_effort_auto: Some(session_effort_auto),
                     session_yolo_mode,
                     session_auto_mode: session_auto_mode && !session_yolo_mode,
                     prompt_display_cwd: None,
@@ -722,6 +728,12 @@ impl MvpAgent {
         }
         spawn_res?;
         tracing::debug!(session_id = %session_id.0, "new_session: spawn_session_actor");
+        if let Some(handle) = self.resident_handle(&session_id) {
+            crate::extensions::session_worker_model::apply_meta(
+                &handle.worker_override,
+                worker_override,
+            );
+        }
         if session_computer_sessions
             .as_ref()
             .is_some_and(|sessions| !sessions.is_empty())
@@ -963,6 +975,8 @@ impl MvpAgent {
             meta: request_meta,
             ..
         } = arguments;
+        let worker_override =
+            crate::extensions::session_worker_model::worker_from_meta(request_meta.as_ref())?;
         let policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
         let SessionWorkspace {
             cwd,
@@ -1241,6 +1255,7 @@ impl MvpAgent {
                         model_agent_type: persisted_agent_name.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
                         initial_reasoning_effort: None,
+                        jev_effort_auto: None,
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,
@@ -1324,6 +1339,12 @@ impl MvpAgent {
         {
             handle.set_client_hooks(hooks);
         }
+        if let Some(handle) = self.resident_handle(&session_id) {
+            crate::extensions::session_worker_model::apply_meta(
+                &handle.worker_override,
+                worker_override,
+            );
+        }
         #[allow(unused_variables)]
         let local_transcript_rendered = !no_replay
             && updates_file_path
@@ -1343,8 +1364,13 @@ impl MvpAgent {
         );
         self.heal_orphaned_subagents(&session_id, &unfinished_subagents)
             .await;
-        self.restore_persisted_model(&session_id, &summary, initial_reasoning_effort)
-            .await;
+        self.restore_persisted_model(
+            &session_id,
+            &summary,
+            initial_reasoning_effort,
+            &SessionMainMeta::from_meta(request_meta.as_ref()),
+        )
+        .await;
         let (model_state, response_meta) = self
             .build_attach_response_meta(&session_id, &summary, persist_data, code_restore_info)
             .await;
@@ -1650,6 +1676,7 @@ impl MvpAgent {
         session_id: &acp::SessionId,
         summary: &crate::session::persistence::Summary,
         initial_reasoning_effort: Option<ReasoningEffort>,
+        main_meta: &SessionMainMeta,
     ) {
         let session_id = session_id.clone();
         let persisted_model = summary.current_model_id.clone();
@@ -1680,7 +1707,23 @@ impl MvpAgent {
         };
         let selectable_catalog_key =
             selectable_catalog_key_for_persisted(&models, &available, &persisted_model);
-        let model_id = if let Some(catalog_key) = selectable_catalog_key {
+        // A model the client asked for on this load wins over the persisted one.
+        let requested_model = main_meta.model_id.as_deref().and_then(|requested| {
+            match self.resolve_model_id(&acp::ModelId::new(requested)) {
+                Ok(model) if model.info.user_selectable => Some(acp::ModelId::new(requested)),
+                _ => {
+                    tracing::warn!(
+                        session_id = %session_id.0,
+                        requested_model = requested,
+                        "load_session: requested model unavailable; restoring the persisted model"
+                    );
+                    None
+                }
+            }
+        });
+        let model_id = if let Some(requested) = requested_model {
+            requested
+        } else if let Some(catalog_key) = selectable_catalog_key {
             if catalog_key != persisted_model {
                 tracing::info!(
                     session_id = %session_id.0,
@@ -1770,7 +1813,8 @@ impl MvpAgent {
             let restore_effort = initial_reasoning_effort.or(summary.reasoning_effort);
             if let Err(err) = crate::agent::handlers::model_switch::apply(
                 self,
-                acp::SetSessionModelRequest::new(session_id.to_owned(), model_id),
+                acp::SetSessionModelRequest::new(session_id.to_owned(), model_id)
+                    .meta(main_meta.switch_meta()),
                 crate::agent::handlers::model_switch::SwitchEffort::Set(restore_effort),
                 crate::agent::handlers::model_switch::ConfigNotice::Skip,
             )

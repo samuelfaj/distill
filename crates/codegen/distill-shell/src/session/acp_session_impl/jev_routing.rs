@@ -491,10 +491,9 @@ impl SessionActor {
         let Some(request) = self.jev_last_human_request().await else {
             return;
         };
-        let Some(current) = self
-            .models_manager
-            .current_reasoning_effort()
-            .or(cfg.reasoning_effort)
+        let Some(current) = cfg
+            .reasoning_effort
+            .or_else(|| self.models_manager.current_reasoning_effort())
             .or_else(|| {
                 self.models_manager
                     .model_default_reasoning_effort(&cfg.model)

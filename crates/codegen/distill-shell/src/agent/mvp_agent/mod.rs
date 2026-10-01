@@ -246,6 +246,8 @@ pub(crate) struct SessionSpawnOptions<'a> {
     pub session_model_id: acp::ModelId,
     /// A `session/new` reasoning-effort hint applied to the spawn sampling; `None` for loads.
     pub initial_reasoning_effort: Option<ReasoningEffort>,
+    /// Session-scoped Jev auto-effort flag; `None` seeds it from the configured default.
+    pub jev_effort_auto: Option<bool>,
     pub session_yolo_mode: bool,
     pub session_auto_mode: bool,
     pub prompt_display_cwd: Option<String>,
@@ -389,6 +391,7 @@ pub(crate) fn chat_session_spawn_options<'a>(
         model_agent_type,
         session_model_id,
         initial_reasoning_effort: None,
+        jev_effort_auto: None,
         session_yolo_mode,
         session_auto_mode: false,
         prompt_display_cwd: None,

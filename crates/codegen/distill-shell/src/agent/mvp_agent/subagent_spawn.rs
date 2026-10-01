@@ -276,6 +276,9 @@ impl MvpAgent {
                 .unwrap_or_else(|| acp::AuthMethodId::new("default")),
             model_id: parent_model_id,
             parent_effort_auto,
+            parent_worker: parent_handle
+                .as_ref()
+                .and_then(|handle| handle.worker_override.read().clone()),
             auth: self.current_or_buffered_auth(),
             parent_cwd: parent_cwd.clone(),
             parent_session_id: parent_session_id.to_string(),

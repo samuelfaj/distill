@@ -34,6 +34,16 @@ fn tool_overrides_capability() -> serde_json::Value {
     serde_json::to_value(TOOL_OVERRIDES_CAPABILITY)
         .expect("ToolOverridesCapability is always serializable")
 }
+/// `agentCapabilities._meta["x.ai/capabilities"]` in the `initialize` response.
+pub(super) fn x_ai_capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "toolOverrides": tool_overrides_capability(),
+        // `session/new|load|resume` take `_meta.workerModelId` / `_meta.workerEffort`, and `x.ai/session/worker_model/set` exists
+        "sessionWorkerModel": true,
+        // `session/new|load|resume` take `_meta.modelId` / `reasoningEffort` / `reasoningEffortAuto`, applied to that session only
+        "sessionMainModel": true,
+    })
+}
 impl MvpAgent {
     pub(crate) async fn set_model_gated(
         &self,
@@ -543,9 +553,7 @@ impl acp::Agent for MvpAgent {
                         "decisions": crate::extensions::hooks::ADVERTISED_DECISIONS,
                         "stopSignals": crate::extensions::hooks::ADVERTISED_STOP_SIGNALS,
                     },
-                    "x.ai/capabilities": {
-                        "toolOverrides": tool_overrides_capability(),
-                    },
+                    "x.ai/capabilities": x_ai_capabilities(),
                 })
                                 .as_object()
                                 .cloned(),
@@ -2016,6 +2024,9 @@ impl acp::Agent for MvpAgent {
             }
             "x.ai/session/repair" => crate::extensions::repair::handle(self, &args).await,
             "x.ai/session/usage" => crate::extensions::usage::handle(self, &args).await,
+            crate::extensions::session_worker_model::SET_METHOD => {
+                crate::extensions::session_worker_model::handle(self, &args).await
+            }
             crate::extensions::memory::MEMORY_FLUSH_METHOD
             | crate::extensions::memory::MEMORY_DREAM_METHOD
             | "x.ai/memory/rewrite"

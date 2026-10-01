@@ -25,6 +25,22 @@ pub(crate) enum SwitchEffort {
     /// Use this effort; `None` falls back to the new model's default (session setup and restore).
     Set(Option<ReasoningEffort>),
 }
+/// `initialize._meta.clientType` of the first-party pager (`distill-pager::client_identity::PAGER_CLIENT_TYPE`).
+const PAGER_CLIENT_TYPE: &str = "grok-pager";
+/// Whether a model/effort choice also moves the process-wide defaults.
+/// Only the first-party pager relies on that (footer and `/new` default); every other ACP client,
+/// and a leader serving many clients, gets per-session state only, so one session's choice never
+/// becomes another session's default.
+fn shares_process_defaults(agent: &MvpAgent) -> bool {
+    agent.cfg.borrow().mode != config::AgentMode::Leader
+        && agent
+            .initialize_request
+            .get()
+            .and_then(|init| init.meta.as_ref())
+            .and_then(|meta| meta.get("clientType"))
+            .and_then(serde_json::Value::as_str)
+            == Some(PAGER_CLIENT_TYPE)
+}
 /// Apply a model switch to a session (no gate; `set_session_model` gates first).
 pub(crate) async fn apply(
     agent: &MvpAgent,
@@ -45,6 +61,12 @@ pub(crate) async fn apply(
     // off, so the request's own effort stays the fallback.
     let wants_auto_effort = parse_reasoning_effort_auto_meta(args.meta.as_ref());
     let explicit_effort = parse_reasoning_effort_meta(args.meta.as_ref());
+    let auto_off_requested = args
+        .meta
+        .as_ref()
+        .and_then(|m| m.get(distill_sampling_types::REASONING_EFFORT_AUTO_META_KEY))
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
     let acp::SetSessionModelRequest {
         session_id,
         model_id,
@@ -167,8 +189,11 @@ pub(crate) async fn apply(
     // Auto effort is a session mode, not a level: an explicit level in this
     // request (or any later one) clears it, and asking for auto keeps whatever
     // level the session already had as the fallback.
+    let share_defaults = shares_process_defaults(agent);
     if wants_auto_effort && explicit_effort.is_none() {
-        agent.models_manager.set_current_effort_auto(true);
+        if share_defaults {
+            agent.models_manager.set_current_effort_auto(true);
+        }
         handle
             .jev_effort_auto
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -178,8 +203,10 @@ pub(crate) async fn apply(
             fallback_effort = ?effective_effort,
             "set_session_model: auto effort enabled; the decision layer picks the effort per model call"
         );
-    } else if explicit_effort.is_some() {
-        agent.models_manager.set_current_effort_auto(false);
+    } else if explicit_effort.is_some() || auto_off_requested {
+        if share_defaults {
+            agent.models_manager.set_current_effort_auto(false);
+        }
         handle
             .jev_effort_auto
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -259,8 +286,8 @@ pub(crate) async fn apply(
         false
     };
     let model_unchanged = previous_model_id == model_id.0;
-    let model_selection_intent =
-        !(model_unchanged && (wants_auto_effort || explicit_effort.is_some()));
+    let model_selection_intent = !(model_unchanged
+        && (wants_auto_effort || explicit_effort.is_some() || auto_off_requested));
     let (tx, rx) = oneshot::channel();
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
         switch: SessionModelSwitch {
@@ -308,7 +335,7 @@ pub(crate) async fn apply(
         required_agent_type: Some(required_agent_type.clone()),
         current_agent_type: None,
     });
-    if agent.cfg.borrow().mode != config::AgentMode::Leader {
+    if share_defaults {
         agent.models_manager.set_current_model_id(model_id.clone());
         agent
             .models_manager
@@ -323,6 +350,11 @@ pub(crate) async fn apply(
                 .get_sampling_config()
                 .await
                 .map(|cfg| cfg.context_window.get()),
+            "canonicalModelId": model_id.0.as_ref(),
+            "reasoningEffort": applied_effort.map(|eff| eff.to_string()),
+            "reasoningEffortAuto": handle
+                .jev_effort_auto
+                .load(std::sync::atomic::Ordering::Relaxed),
         })
         .as_object()
         .cloned(),
@@ -370,7 +402,7 @@ pub(crate) async fn apply_reasoning_effort(
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
     }
-    if agent.cfg.borrow().mode != config::AgentMode::Leader {
+    if shares_process_defaults(agent) {
         agent
             .models_manager
             .set_current_reasoning_effort(Some(effort));
@@ -383,6 +415,9 @@ pub(crate) async fn apply_reasoning_effort(
                 .get_sampling_config()
                 .await
                 .map(|cfg| cfg.context_window.get()),
+            "canonicalModelId": model_id.0.as_ref(),
+            "reasoningEffort": effort.to_string(),
+            "reasoningEffortAuto": false,
         })
             .as_object()
             .cloned(),

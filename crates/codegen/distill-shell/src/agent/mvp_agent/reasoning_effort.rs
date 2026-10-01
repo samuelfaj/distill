@@ -89,3 +89,57 @@ pub(crate) fn split_new_session_effort(
         Some(effort) => NewSessionEffort::Spawn(effort),
     }
 }
+
+/// Main-model choices a client can pass in `session/new|load|resume` `_meta`.
+/// They apply to that one session; nothing here touches process-wide defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionMainMeta {
+    pub model_id: Option<String>,
+    pub effort: Option<ReasoningEffort>,
+    /// `_meta.reasoningEffortAuto`; `None` when the client did not say.
+    pub auto: Option<bool>,
+}
+
+impl SessionMainMeta {
+    pub(crate) fn from_meta(meta: Option<&acp::Meta>) -> Self {
+        Self {
+            model_id: meta
+                .and_then(|m| m.get("modelId"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
+            effort: distill_sampling_types::parse_reasoning_effort_meta(meta),
+            auto: meta
+                .and_then(|m| m.get(distill_sampling_types::REASONING_EFFORT_AUTO_META_KEY))
+                .and_then(serde_json::Value::as_bool),
+        }
+    }
+
+    /// An explicit level wins over auto; otherwise the client's flag, else `default`.
+    pub(crate) fn effort_auto(&self, default: bool) -> bool {
+        if self.effort.is_some() {
+            false
+        } else {
+            self.auto.unwrap_or(default)
+        }
+    }
+
+    /// The effort fields as `session/set_model` `_meta`, for applying them through the switch path.
+    pub(crate) fn switch_meta(&self) -> Option<acp::Meta> {
+        let mut meta = acp::Meta::new();
+        if let Some(effort) = self.effort {
+            meta.insert(
+                distill_sampling_types::REASONING_EFFORT_META_KEY.to_owned(),
+                distill_sampling_types::reasoning_effort_meta_value(effort),
+            );
+        }
+        if let Some(auto) = self.auto {
+            meta.insert(
+                distill_sampling_types::REASONING_EFFORT_AUTO_META_KEY.to_owned(),
+                serde_json::Value::Bool(auto),
+            );
+        }
+        (!meta.is_empty()).then_some(meta)
+    }
+}

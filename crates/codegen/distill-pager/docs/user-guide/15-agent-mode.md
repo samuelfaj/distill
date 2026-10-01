@@ -206,6 +206,11 @@ Optional fields on `session/new`:
 | `agentProfile` | Agent profile name or JSON object. |
 | `yoloMode` | When `true`, always-approve for this session. |
 | `autoMode` | When `true`, auto permission mode for this session. Superseded when always-approve is already on. |
+| `modelId` | Main model for this session (catalog id). Also read by `session/load` and `session/resume`, where it replaces the persisted model. See [Per-session model state](#per-session-model-state). |
+| `reasoningEffort` | Main effort level for this session. An explicit level wins over `reasoningEffortAuto`. |
+| `reasoningEffortAuto` | `true` lets the decision layer pick the effort per model call; `false` keeps it manual. |
+| `workerModelId` | Worker model for this session (see [Session worker model](#session-worker-model)). Also read by `session/load` and `session/resume`. Absent inherits `[models].worker`; `""` means no worker. |
+| `workerEffort` | Worker effort with `workerModelId`: `auto` (default when absent) or a level. |
 
 ```json
 {
@@ -214,6 +219,47 @@ Optional fields on `session/new`:
   "_meta": { "yoloMode": true }
 }
 ```
+
+---
+
+## Per-session model state
+
+The main model, the main effort and the auto-effort flag belong to the session. `initialize` advertises this as `"sessionMainModel": true` in `agentCapabilities._meta["x.ai/capabilities"]`, next to `sessionWorkerModel`.
+
+- **At session start.** `session/new`, `session/load` and `session/resume` accept `_meta.modelId`, `_meta.reasoningEffort` and `_meta.reasoningEffortAuto` (bool). They are applied to that session only, before the call returns and so before its first turn. An explicit `reasoningEffort` level wins over `reasoningEffortAuto`. Absent keys fall back to the configuration (`[models] default`, `default_reasoning_effort`, `[jev] effort_auto`), never to what another session last chose. An unavailable `modelId` is ignored with a warning and the session keeps the default (or, on load, the persisted model).
+- **During the session.** `session/set_model` (with optional `_meta.reasoningEffort` / `_meta.reasoningEffortAuto`) and `session/set_config_option` change this session only. Another existing session, and any session created later without `_meta`, is unaffected. `reasoningEffortAuto: false` without a level turns auto off and keeps the current level.
+- **`session/set_model` response `_meta`.** Besides `model` and `contextWindow`, it returns `canonicalModelId` (the requested catalog id), `reasoningEffort` (the applied level, or `null`) and `reasoningEffortAuto` (bool).
+
+Only the first-party pager (`clientType` `grok-pager`) also updates the process-wide defaults its footer and `/new` read; other ACP clients never do.
+
+---
+
+## Session worker model
+
+The worker model runs the subagents the main model delegates (`[models].worker` and `[models].worker_effort`, see [Subagents](16-subagents.md)). An ACP client can choose the worker per session instead. `initialize` advertises this as `"sessionWorkerModel": true` in `agentCapabilities._meta["x.ai/capabilities"]`.
+
+The choice is kept in memory for the session and never written to `config.toml`. Precedence for a fresh, model-delegated subagent: session choice, then `[models].worker` / `worker_effort`, then the parent model. `plan` and `code-reviewer`, forks, resumes and explicit-model requests keep their usual model, and a worker id missing from the catalog warns and falls back to the parent model.
+
+**At session start.** `session/new`, `session/load` and `session/resume` accept `_meta.workerModelId` (string) and `_meta.workerEffort` (string). Both absent: the session inherits the config. `workerModelId: ""`: no worker, the main model does all the work. `workerEffort` absent or `"auto"` lets the decision layer pick the effort per call. `workerEffort` without `workerModelId` is ignored. A non-string value or an unknown effort name is an invalid-params error; the model id is checked against the catalog only when a subagent spawns.
+
+**During the session.** Send the extension request `x.ai/session/worker_model/set` (on the JSON-RPC wire, the ACP convention for extension methods prefixes it with `_`: `_x.ai/session/worker_model/set`):
+
+```json
+{ "sessionId": "…", "modelId": "gpt-5.4-mini", "effort": "low" }
+```
+
+| Field | Values |
+| ----- | ------ |
+| `modelId` | `null` clears the session choice and inherits the config. `""` means no worker. Otherwise a catalog model id, else invalid params. |
+| `effort` | `null` or `"auto"` is auto. A level must be one the chosen model offers, else invalid params. Ignored when there is no worker. |
+
+The response is the effective worker after the change:
+
+```json
+{ "modelId": "gpt-5.4-mini", "effort": "low", "source": "session" }
+```
+
+`modelId` is `null` when no worker runs. `source` is `"session"` for a session choice and `"config"` when it was cleared and the config applies. An unknown `sessionId` returns a resource-not-found error.
 
 ---
 

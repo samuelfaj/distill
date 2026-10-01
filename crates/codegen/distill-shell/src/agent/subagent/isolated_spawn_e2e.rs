@@ -46,6 +46,7 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
         auth_method_id: acp::AuthMethodId::new("test"),
         model_id: acp::ModelId::new("test"),
         parent_effort_auto: true,
+        parent_worker: None,
         auth: None,
         parent_cwd,
         parent_session_id: "grove-e2e-parent".into(),

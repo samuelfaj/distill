@@ -889,7 +889,7 @@ where
 
 /// Cost order of the effort ladder, cheapest first. The enum's own order is the
 /// cost order, and it deliberately does not derive `Ord` (semantic, not lexical).
-fn effort_rank(effort: ReasoningEffort) -> u8 {
+pub(crate) fn effort_rank(effort: ReasoningEffort) -> u8 {
     match effort {
         ReasoningEffort::None => 0,
         ReasoningEffort::Minimal => 1,

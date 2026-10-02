@@ -24,6 +24,8 @@ enum State {
 
 pub(crate) struct SummaryConfig {
     pub(crate) sampling_client: OaiCompatClient,
+    /// Utility lane for the initial title; `None` goes straight to the title model.
+    pub(crate) utility_lane: Option<std::sync::Arc<crate::jev_cheap::CheapLane>>,
     pub(crate) model: String,
     /// Channel back to the persistence actor for sequential storage writes.
     /// Weak: a strong sender here would keep the actor's own channel and task alive.
@@ -95,6 +97,7 @@ impl SummaryGenerator {
 
                 let sampling_client = self.config.sampling_client.clone();
                 let model = self.config.model.clone();
+                let utility_lane = self.config.utility_lane.clone();
                 let persistence_tx = self.config.persistence_tx.clone();
 
                 // A background task runs the LLM call so the persistence actor keeps processing messages (updates, flushes)
@@ -115,28 +118,24 @@ impl SummaryGenerator {
                         .last()
                         .unwrap_or(0);
                     let title_payload = content.get(..title_payload_end);
-                    let utility_title = if crate::jev::lever_active(
-                        distill_workspace::jev::flags::JevLever::ECheapCompress,
-                    ) {
-                        let utility_spec = crate::jev::local_config_cached()
-                            .model
-                            .filter(|spec| !spec.trim().is_empty())
-                            .unwrap_or_else(crate::jev_cheap::default_model_spec);
-                        crate::jev_cheap::CheapLane::from_spec(&utility_spec)
-                            .and_then(|lane| Some((lane, title_payload?)))
-                    } else {
-                        None
-                    };
+                    let utility_title = utility_lane.zip(title_payload);
                     let utility_title = if let Some((lane, payload)) = utility_title {
-                        lane.display_text(
+                        lane.display_text_outcome(
                             payload,
                             "Write a 3-7 word title for this conversation.",
                             80,
                             "initial_title",
                         )
                         .await
+                        .map(|outcome| (outcome, lane.endpoint()))
                     } else {
                         None
+                    };
+                    let (utility_answer, utility_title) = match utility_title {
+                        Some((outcome, endpoint)) => {
+                            (Some((outcome.answer, endpoint)), Some(outcome.text))
+                        }
+                        None => (None, None),
                     };
                     let generated = if let Some(title) = utility_title {
                         crate::session::helpers::session_summary::InitialTitleGeneration {
@@ -150,7 +149,10 @@ impl SummaryGenerator {
                     } else {
                         generate_session_summary(content.clone(), sampling_client, &model).await
                     };
-                    attempt.record(generated.status, generated.response.as_ref());
+                    match utility_answer {
+                        Some((answer, endpoint)) => attempt.record_utility(&answer, endpoint),
+                        None => attempt.record(generated.status, generated.response.as_ref()),
+                    }
                     let mut title = generated.title;
                     if title.trim().is_empty() {
                         title =
@@ -219,6 +221,46 @@ impl InitialTitleAttempt {
             started_at: Instant::now(),
             recorded: false,
             persistence_tx,
+        }
+    }
+
+    /// Records the pending attempt as the utility call that produced the title.
+    fn record_utility(
+        &mut self,
+        answer: &distill_workspace::jev::cheap::CheapAnswer,
+        endpoint: String,
+    ) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        crate::jev::record_workspace_attempt(
+            distill_workspace::jev::types::AttemptRecord {
+                attempt_id: self.attempt_id.clone(),
+                request_id: answer.request_id.clone(),
+                requested_model: self.configured_model.clone(),
+                response_model: Some(answer.model.clone()),
+                endpoint,
+                requested_effort: None,
+                applied_effort: None,
+                usage: Some(answer.usage),
+                billing: Default::default(),
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
+                status: distill_workspace::jev::types::AttemptStatus::Completed,
+                latency_ms: self.started_at.elapsed().as_millis() as u64,
+            },
+            "utility",
+            None,
+            None,
+            self.recorder.clone(),
+            false,
+        );
+        if let Some(tx) = self.persistence_tx.upgrade() {
+            let _ = tx.send(PersistenceMsg::RefreshUsage {
+                recorder: self.recorder.downgrade(),
+            });
         }
     }
 
@@ -403,6 +445,7 @@ mod tests {
             OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap();
         let mut generator = SummaryGenerator::new(SummaryConfig {
             sampling_client,
+            utility_lane: None,
             model: String::new(),
             persistence_tx: tx.downgrade(),
         });
@@ -422,6 +465,7 @@ mod tests {
             OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap();
         let mut generator = SummaryGenerator::new(SummaryConfig {
             sampling_client,
+            utility_lane: None,
             model: "configured-title-model".to_owned(),
             persistence_tx: tx.downgrade(),
         });
@@ -543,6 +587,109 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
+    async fn initial_title_uses_configured_utility_lane_not_title_model() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+
+        let home = tempfile::tempdir().expect("test Jev home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+        )
+        .expect("write test Jev config");
+        let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let utility_server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start utility stub");
+        utility_server.enqueue_response(
+            "/v1/chat/completions",
+            ScriptedResponse::json(
+                200,
+                serde_json::json!({
+                    "id": "utility-title",
+                    "model": "utility-model",
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "Fix flaky parser test"}
+                    }],
+                    "usage": {"prompt_tokens": 17, "completion_tokens": 4}
+                }),
+            ),
+        );
+        let title_server = MockInferenceServer::start().await.expect("title stub");
+        let lane =
+            crate::jev_cheap::CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+                base_url: utility_server.url(),
+                model: "utility-model".to_owned(),
+                api_backend: distill_sampling_types::ApiBackend::ChatCompletions,
+                api_key: Some("utility-test-key".to_owned()),
+                ..Default::default()
+            })
+            .expect("utility lane");
+        let client = OaiCompatClient::new(title_sampler_config(title_server.url())).unwrap();
+        let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (recorder, cancellation) = chat_state_recorder();
+        let observer = recorder.clone();
+        let mut generator = SummaryGenerator::new(SummaryConfig {
+            sampling_client: client,
+            utility_lane: Some(std::sync::Arc::new(lane)),
+            model: "configured-title-model".to_owned(),
+            persistence_tx: persistence_tx.downgrade(),
+        });
+        generator.register_initial_title_recorder(recorder.downgrade());
+
+        generator.update("fix the flaky parser test in the tokenizer module".to_owned());
+
+        loop {
+            let message =
+                tokio::time::timeout(std::time::Duration::from_secs(5), persistence_rx.recv())
+                    .await
+                    .expect("title generation did not finish")
+                    .expect("persistence channel closed");
+            match message {
+                PersistenceMsg::RefreshUsage { .. } => {}
+                PersistenceMsg::GeneratedTitle(title) => {
+                    assert_eq!(title, "Fix flaky parser test");
+                    break;
+                }
+                other => panic!("unexpected initial-title persistence message: {other:?}"),
+            }
+        }
+        assert_eq!(utility_server.request_count_for("/v1/chat/completions"), 1);
+        assert_eq!(
+            title_server.request_count_for("/v1/chat/completions"),
+            0,
+            "the title model must not run when the utility lane answers"
+        );
+
+        let ledger = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let ledger = observer
+                    .try_get_session_usage()
+                    .await
+                    .expect("chat-state actor should answer usage");
+                if !ledger.attributions.is_empty() {
+                    break ledger;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("utility title usage was not recorded");
+        let [attribution] = ledger.attributions.as_slice() else {
+            panic!("expected one title attribution: {:?}", ledger.attributions);
+        };
+        assert!(attribution.attempt_id.starts_with("initial-title:"));
+        assert_eq!(attribution.role, "utility");
+        assert_eq!(attribution.model_id, "utility-model");
+        let usage = attribution.usage.as_ref().expect("utility usage");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (17, 4));
+        cancellation.cancel();
+    }
+
+    #[tokio::test]
     async fn initial_title_records_provider_identity_and_cost_once() {
         let server = distill_test_support::MockInferenceServer::start()
             .await
@@ -557,6 +704,7 @@ mod tests {
         let observer = recorder.clone();
         let mut generator = SummaryGenerator::new(SummaryConfig {
             sampling_client: client,
+            utility_lane: None,
             model: "configured-title-model".to_owned(),
             persistence_tx: persistence_tx.downgrade(),
         });

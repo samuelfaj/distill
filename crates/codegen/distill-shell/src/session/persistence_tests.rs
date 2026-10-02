@@ -64,6 +64,7 @@ fn test_actor_inner_with_recorder(
     let mut summary =
         crate::session::summary::SummaryGenerator::new(crate::session::summary::SummaryConfig {
             sampling_client,
+            utility_lane: None,
             model: String::new(),
             persistence_tx: tx.downgrade(),
         });

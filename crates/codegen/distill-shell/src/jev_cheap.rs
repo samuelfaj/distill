@@ -713,18 +713,28 @@ impl CheapLane {
         max_chars: usize,
         source_kind: &str,
     ) -> Option<String> {
-        let outcome = self
-            .run_task_with_acceptance(
-                JevLever::ECheapCompress,
-                tasks::DISPLAY_TEXT_TASK,
-                payload,
-                question,
-                source_kind,
-                false,
-                |answer| bounded_display_answer(answer, max_chars),
-            )
-            .await?;
-        Some(outcome.text)
+        self.display_text_outcome(payload, question, max_chars, source_kind)
+            .await
+            .map(|outcome| outcome.text)
+    }
+
+    pub(crate) async fn display_text_outcome(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> Option<tasks::TaskOutcome> {
+        self.run_task_with_acceptance(
+            JevLever::ECheapCompress,
+            tasks::DISPLAY_TEXT_TASK,
+            payload,
+            question,
+            source_kind,
+            false,
+            |answer| bounded_display_answer(answer, max_chars),
+        )
+        .await
     }
 
     /// Runs one task while letting the caller apply its consumer-specific

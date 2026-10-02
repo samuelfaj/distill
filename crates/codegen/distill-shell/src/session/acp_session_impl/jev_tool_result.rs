@@ -31,7 +31,7 @@ const READ_REUSE_BYTES: usize = 2_000;
 const MIN_BYTES: usize = 400;
 /// Below this, extractive compression cannot pay for its utility call and Jev
 /// round-trip: the cited spans plus the recovery footer rarely come out shorter.
-const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
+pub(super) const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
 const GREP_COMPRESS_MIN_BYTES: usize = 12_000;
 /// Whole-file reads below this stay verbatim even in read-only sessions.
 const READ_ONLY_COMPRESS_MIN_BYTES: usize = 16_000;
@@ -626,27 +626,29 @@ fn hint_block(review_note: Option<String>, hints: Vec<String>) -> Option<String>
 
 /// What the Jev post-review reads for an accepted chunk answer.
 #[derive(Clone, Copy)]
-enum SelectionReview {
+pub(super) enum SelectionReview {
     /// The selected units, joined.
     Selected,
     /// The chunk as it will be rebuilt: selected units plus the required ones.
     Rebuilt,
 }
 
-struct UnitSelection<'a> {
-    units: &'a [String],
-    required: &'a [bool],
-    kind: crate::utility_select::UnitKind,
-    question: &'a str,
-    source_kind: &'a str,
-    handle: &'a str,
-    cap: usize,
-    review: SelectionReview,
+pub(super) struct UnitSelection<'a> {
+    pub(super) units: &'a [String],
+    pub(super) required: &'a [bool],
+    pub(super) kind: crate::utility_select::UnitKind,
+    pub(super) question: &'a str,
+    pub(super) source_kind: &'a str,
+    pub(super) handle: &'a str,
+    pub(super) cap: usize,
+    pub(super) review: SelectionReview,
+    /// Whether the utility spend counts toward the prompt's cost line.
+    pub(super) attribute_to_prompt: bool,
 }
 
 /// Asks the utility lane which units to keep, one request per chunk. `None`
 /// keeps the original: the plan did not fit, or every chunk failed.
-async fn select_units_with_lane(
+pub(super) async fn select_units_with_lane(
     utility: &crate::jev_cheap::CheapLane,
     selection: &UnitSelection<'_>,
 ) -> Option<std::collections::BTreeSet<usize>> {
@@ -659,6 +661,7 @@ async fn select_units_with_lane(
         handle,
         cap,
         review,
+        attribute_to_prompt,
     } = *selection;
     let chunks = match crate::utility_select::plan_chunks(units, cap, 8) {
         Ok(chunks) => chunks,
@@ -678,7 +681,7 @@ async fn select_units_with_lane(
                 &payload,
                 question,
                 source_kind,
-                true,
+                attribute_to_prompt,
                 |answer| {
                     let picked = if answer.trim().eq_ignore_ascii_case("none") {
                         Vec::new()
@@ -895,6 +898,7 @@ impl SessionActor {
                     handle: &handle,
                     cap: utility.max_payload_bytes().min(budget),
                     review: SelectionReview::Rebuilt,
+                    attribute_to_prompt: true,
                 },
             )
             .await
@@ -1208,6 +1212,7 @@ impl SessionActor {
                         handle: &handle,
                         cap: utility.max_payload_bytes(),
                         review: SelectionReview::Selected,
+                        attribute_to_prompt: true,
                     },
                 )
                 .await
@@ -1410,6 +1415,7 @@ impl SessionActor {
                             handle: &handle,
                             cap: utility.max_payload_bytes().min(budget),
                             review: SelectionReview::Rebuilt,
+                            attribute_to_prompt: true,
                         },
                     )
                     .await

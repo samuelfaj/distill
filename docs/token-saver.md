@@ -199,6 +199,9 @@ The utility handles these sources:
 - `search_tool`, where selected tool schemas remain JSON.
 - Whole-file `read_file` in read-only sessions at 16,000 bytes or more; line
   numbers remain intact.
+- Memory capture: tool results of 4,000 bytes or more in the finished turn,
+  at most 8 chunks per capture, skipped when the session model is the utility
+  model. The extraction itself stays on the main model.
 
 There is no Jev pre-approval and no main-model fallback. Jev post-review reads
 the reconstructed text. It is skipped for `NONE` and over-size state. If Jev

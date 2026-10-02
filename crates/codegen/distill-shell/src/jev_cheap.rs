@@ -1406,9 +1406,9 @@ mod tests {
     fn failures_are_counted_per_lane_and_never_silence_one() {
         reset_turn();
         for _ in 0..10 {
-            note_failure(JevLever::ECheapTask);
+            note_failure(JevLever::ECheapAgent);
         }
-        let (calls, failures) = lane_calls(JevLever::ECheapTask);
+        let (calls, failures) = lane_calls(JevLever::ECheapAgent);
         assert_eq!((calls, failures), (10, 10));
         // Another lane is untouched: counting is per lane, not global.
         assert_eq!(lane_calls(JevLever::ECheapCompress), (0, 0));
@@ -1423,7 +1423,7 @@ mod tests {
         );
 
         reset_turn();
-        assert_eq!(lane_calls(JevLever::ECheapTask), (0, 0));
+        assert_eq!(lane_calls(JevLever::ECheapAgent), (0, 0));
         assert!(lane_summary().is_empty());
     }
 

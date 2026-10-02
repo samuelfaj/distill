@@ -58,18 +58,14 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             e_retention: cfg.ladder.e_retention,
             e_importance: cfg.ladder.e_importance,
             e_cheap_compress: cfg.ladder.e_cheap_compress,
-            e_cheap_task: cfg.ladder.e_cheap_task,
             e_read_reuse: cfg.ladder.e_read_reuse,
-            e_lane_choice: cfg.ladder.e_lane_choice,
             e_cheap_agent: cfg.ladder.e_cheap_agent,
             e_prompt_blocks: cfg.ladder.e_prompt_blocks,
-            e_breaker: cfg.ladder.e_breaker,
             p1_tool_family: cfg.ladder.p1_tool_family,
             p2_read_shortlist: cfg.ladder.p2_read_shortlist,
             p3_compaction_recorte: cfg.ladder.p3_compaction_recorte,
             p6_skill_suggestion: cfg.ladder.p6_skill_suggestion,
             a1_file_to_edit: cfg.ladder.a1_file_to_edit,
-            a3_log_lines: cfg.ladder.a3_log_lines,
             a4_web_results: cfg.ladder.a4_web_results,
             a5_memory_rank: cfg.ladder.a5_memory_rank,
             a6_test_to_run: cfg.ladder.a6_test_to_run,
@@ -80,12 +76,10 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,
-            c2_failure_triage: cfg.ladder.c2_failure_triage,
             c3_completion_check: cfg.ladder.c3_completion_check,
             c4_diff_risk: cfg.ladder.c4_diff_risk,
             c5_error_priority: cfg.ladder.c5_error_priority,
             c6_injection_screen: cfg.ladder.c6_injection_screen,
-            c7_change_type: cfg.ladder.c7_change_type,
             d2_big_output_retention: cfg.ladder.d2_big_output_retention,
             d3_post_compaction: cfg.ladder.d3_post_compaction,
             d4_compaction_timing: cfg.ladder.d4_compaction_timing,
@@ -227,8 +221,7 @@ mod tests {
         use distill_workspace::jev::flags::JevLever;
         use distill_workspace::jev::types::{Answer, JevAnswerSet, Question, Usage};
         let mut flags = JevFlags::harness_default();
-        flags.c2_failure_triage = true;
-        flags.a3_log_lines = true;
+        flags.c6_injection_screen = true;
         flags.c5_error_priority = false;
         let pack = || {
             Some(
@@ -255,9 +248,9 @@ mod tests {
         let [first, disabled, last] = ask_items_with_flags(
             serde_json::json!({}),
             [
-                (JevLever::C2FailureTriage, pack()),
+                (JevLever::C4DiffRisk, pack()),
                 (JevLever::C5ErrorPriority, pack()),
-                (JevLever::A3LogLines, pack()),
+                (JevLever::C6InjectionScreen, pack()),
             ],
             &flags,
         )
@@ -276,7 +269,7 @@ mod tests {
         assert!(
             ask_items_with_flags(
                 serde_json::json!({}),
-                [(JevLever::C2FailureTriage, pack()),],
+                [(JevLever::C4DiffRisk, pack()),],
                 &flags
             )
             .await[0]
@@ -297,7 +290,13 @@ mod tests {
 [ladder]
 permission_classifier = true
 yolo_veto = true
-p5_call_validation = true"#,
+p5_call_validation = true
+e_cheap_task = true
+e_lane_choice = true
+e_breaker = true
+a3_log_lines = true
+c2_failure_triage = true
+c7_change_type = true"#,
         )
         .unwrap();
         let flags = flags_from_tiers(&config, Some(true));

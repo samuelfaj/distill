@@ -37,7 +37,6 @@ p2_read_shortlist     = true # A2: pick the read window instead of the whole fil
 p3_compaction_recorte = true # D1: which segments the summarizer must see
 p6_skill_suggestion   = true # B5: rank the skill catalog for the listing and the turn's hint
 a1_file_to_edit       = true # A1: rank the candidate files
-a3_log_lines          = true # A3: keep the lines that explain a failure
 a4_web_results        = true # A4: rank search results before reading them
 a5_memory_rank        = true # A5: rank memory entries before injecting them
 a6_test_to_run        = true # A6: pick which test to run
@@ -45,13 +44,14 @@ b1_intent_routing     = true # B1: classify the turn's intent and complexity
 b3_subagent_type      = true # B3: resolve an unknown subagent type
 b6_delegation_hint    = true # B6: one advisory line on the delegation tool
 c1_premature_stop     = true # C1: requested work still open
-c2_failure_triage     = true # C2: classify a failure
 c3_completion_check   = true # C3: something the user asked for is missing
 c4_diff_risk          = true # C4: flag a risky diff
 c5_error_priority     = true # C5: order errors by importance
-c7_change_type        = true # C7: label the change type
 d2_big_output_retention = true # D2: drop a large inert output
 d3_post_compaction    = true # D3: re-inject only still-relevant memory
+d4_compaction_timing  = true # D4: compact early when the next step no longer needs the history
+d5_memory_capture_gate = true # D5: gate durable memory capture
+b7_subagent_model     = true # B7: choose worker or main model for a subagent
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
@@ -86,6 +86,18 @@ exclude = ["JEV_API_KEY"]
 
 ---
 
+## Lever changes
+
+`d4_compaction_timing` decides whether the next step is independent enough to
+compact (confidence floor 0.75). `d5_memory_capture_gate` decides whether a
+turn produced durable knowledge to capture (floor 0.70). `b7_subagent_model`
+decides whether the worker can do a subagent task as well as the main model
+(floor 0.75). Missing answers keep today's behavior. P3 sends previews;
+C4 sends the change once. B1 intent reaches B2 as `turn_intent`.
+
+Retired levers `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
+`c2_failure_triage` and `c7_change_type` are ignored in configuration.
+
 ## Kill switch and how to revert
 
 * **Turn it off:** set `GROK_JEV=0` or `[jev] enabled = false`, then start a fresh process because the resolved config/status is cached per process. With the master switch off, no client is constructed and no connection is made — that is a tested property, not a promise.
@@ -115,12 +127,8 @@ Rules that hold in auto mode:
 
 * the pick is always **one of the levels that model offers** — an answer naming
   anything else is ignored;
-* the pick must clear **0.45** confidence. The floor is calibrated on live
-  answers (2026-09-18, `deepseek-v4.1-flash`): a trivial request answers `none`
-  at 0.67/0.64, while a hard one splits medium 0.40 / high 0.31 — so a clear
-  cheap win is applied and a hard call keeps the session's own level instead of
-  quietly dropping quality. Below the floor, on a timeout, on an error, or with
-  the lever off, the call keeps the session's level (the fallback);
+* the pick must clear **0.40** confidence. Below the floor, on a timeout, on an error, or with the lever off, the call
+  keeps the session's level (the fallback);
 * Jev may answer `keep_session_effort` explicitly, which means the same;
 * every decision is recorded with what it *wanted*, so the log shows a deferral
   (`wanted low at 0.41 below the floor`) as clearly as an application

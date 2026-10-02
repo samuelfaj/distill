@@ -186,11 +186,11 @@ model:
 
 | Question | Meaning | Floor |
 |---|---|---|
-| `matches_step` | Does the change include what the step asked for? A wider change (whole-file rewrite) still counts when it contains the asked-for work | 0.60 to stay silent; below it the model is told to re-read and fix or revert |
-| `may_break` | Could it break something that relies on the old behaviour (signatures, callers, data shapes)? | 0.50 → "check the callers" |
-| `looks_incomplete` | Is the change unfinished in itself — stub body, truncated code, a renamed caller left behind? | 0.50 → "finish it" |
-| `step_complete` | Is the step done as it stands, nothing left to redo? | 0.60; below it the step is redone |
-| `needs_more_thinking` | If it has to be redone, does the redo need a higher reasoning effort (not just another try)? | 0.50 |
+| `matches_step` | Does the change include what the step asked for? A wider change (whole-file rewrite) still counts when it contains the asked-for work | Below 0.30 (a confident negative) the model is told to re-read and fix or revert; from 0.30 up it stays silent |
+| `may_break` | Could it break something that relies on the old behaviour (signatures, callers, data shapes)? | 0.70 → "check the callers" |
+| `looks_incomplete` | Is the change unfinished in itself — stub body, truncated code, a renamed caller left behind? | 0.70 → "finish it" |
+| `step_complete` | Is the step done as it stands, nothing left to redo? | Redo only below 0.30; from 0.30 up the step stands |
+| `needs_more_thinking` | If it has to be redone, does the redo need a higher reasoning effort (not just another try)? | 0.70 |
 
 The reviewer reads the step the model said it was on (not the whole request: a correct edit of a two-part request
 must not read as half-done) plus the call and its result, both bounded. Anything unusable defers: no note, and no

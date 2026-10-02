@@ -30,15 +30,15 @@ pub const FAILURE_CATEGORIES: &[&str] = &[
 pub const ITEM_SATISFIED_FLOOR: f64 = 0.70;
 /// C3 — "something requested is still missing" must be below this to call it done.
 pub const LEFTOVER_FLOOR: f64 = 0.30;
-/// C4 (review) — confidence needed that the change did what the step asked for.
-pub const DIFF_MATCH_FLOOR: f64 = 0.60;
+/// C4 (review) — a mismatch is reported only when P(change matches the step) is
+/// below this: a confident negative, not a coin flip.
+pub const DIFF_MATCH_FLOOR: f64 = 0.30;
 /// C4 (review) — probability at or above which a red flag is reported back.
-pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.50;
-/// C4 (review) — confidence needed that the step is done as it stands; below it
-/// the step is redone.
-pub const STEP_COMPLETE_FLOOR: f64 = 0.60;
+pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.70;
+/// C4 (review) — the step is redone only when P(step done) is below this.
+pub const STEP_COMPLETE_FLOOR: f64 = 0.30;
 /// C4 (review) — probability at or above which the redo needs more thinking.
-pub const REDO_HIGHER_FLOOR: f64 = 0.50;
+pub const REDO_HIGHER_FLOOR: f64 = 0.70;
 /// C6 — probability at or above which a text is flagged as instruction-like.
 pub const INJECTION_FLAG_FLOOR: f64 = 0.50;
 /// C7 — confidence needed before labelling the change type.
@@ -267,7 +267,7 @@ pub const REDO_THINKING_QUESTION: &str = "needs_more_thinking";
 pub const SECOND_OPINION_QUESTION: &str = "needs_other_model";
 
 /// C4 — probability above which the review asks for another model's eyes.
-pub const SECOND_OPINION_FLOOR: f64 = 0.50;
+pub const SECOND_OPINION_FLOOR: f64 = 0.70;
 
 /// C4 (review): one battery per change, asked *after* the edit lands.
 ///
@@ -785,13 +785,13 @@ mod tests {
         let unfinished = answers(vec![
             (DIFF_MATCH_QUESTION, noul(0.85)),
             (DIFF_BREAK_QUESTION, noul(0.1)),
-            (DIFF_INCOMPLETE_QUESTION, noul(0.62)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.75)),
             (STEP_COMPLETE_QUESTION, noul(0.9)),
             (REDO_THINKING_QUESTION, noul(0.6)),
         ]);
         let review = compose_diff_review(&unfinished);
         assert_eq!(review.verdict, DiffReviewVerdict::Incomplete);
-        assert_eq!(review.confidence, Some(0.62));
+        assert_eq!(review.confidence, Some(0.75));
 
         // A missing answer never reads as "reviewed and fine".
         let partial = answers(vec![(DIFF_MATCH_QUESTION, noul(0.95))]);
@@ -928,6 +928,51 @@ mod tests {
         assert!(!note.contains("different model"), "{note}");
     }
 
+    /// Near coin flips stay silent: acting needs at least 0.70 belief in the
+    /// negative (0.30 or less in the positive), since each note costs a redo.
+    #[test]
+    fn c4_stays_silent_on_borderline_reviews() {
+        let borderline = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.45)),
+            (DIFF_BREAK_QUESTION, noul(0.55)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.55)),
+            (STEP_COMPLETE_QUESTION, noul(0.45)),
+            (REDO_THINKING_QUESTION, noul(0.55)),
+            (SECOND_OPINION_QUESTION, noul(0.55)),
+        ]);
+        let review = compose_diff_review(&borderline);
+        assert_eq!(review.verdict, DiffReviewVerdict::Ok);
+        assert_eq!(review.redo, RedoAction::None);
+        assert!(!review.needs_other_model);
+        assert_eq!(diff_review_note(&review), None);
+
+        let confident_mismatch = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.20)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.1)),
+        ]);
+        assert_eq!(
+            compose_diff_review(&confident_mismatch).verdict,
+            DiffReviewVerdict::Mismatch
+        );
+
+        let confident_redo = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.9)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+            (STEP_COMPLETE_QUESTION, noul(0.20)),
+            (REDO_THINKING_QUESTION, noul(0.80)),
+        ]);
+        assert_eq!(
+            compose_diff_review(&confident_redo).redo,
+            RedoAction::Redo {
+                higher_effort: true
+            }
+        );
+    }
+
     /// The redo decision is its own axis: a step is redone when it is not done,
     /// with more thinking only when the setting — not the attempt — was the
     /// problem, and the note says what to do when more thinking is unavailable.
@@ -962,7 +1007,7 @@ mod tests {
             (DIFF_MATCH_QUESTION, noul(0.7)),
             (DIFF_BREAK_QUESTION, noul(0.1)),
             (DIFF_INCOMPLETE_QUESTION, noul(0.2)),
-            (STEP_COMPLETE_QUESTION, noul(0.3)),
+            (STEP_COMPLETE_QUESTION, noul(0.2)),
             (REDO_THINKING_QUESTION, noul(0.8)),
         ]);
         let review = compose_diff_review(&needs_thinking);

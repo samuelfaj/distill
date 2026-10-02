@@ -4947,14 +4947,15 @@
         let shadow_badge = jev_flag(shadow, &theme).expect("shadow badge shows");
         assert_eq!(shadow_badge.text, "jev·shadow");
 
-        // A missing credential still shows where the path stands: `jev:off`,
+        // A missing credential still shows where the path stands: `jev:no-key`,
         // dimmed — never hidden, so the user can tell why nothing is happening.
         let no_credential = distill_shell::jev::JevStatus {
             credential_present: false,
             ..active
         };
         let off = jev_flag(no_credential, &theme).expect("badge always shows");
-        assert_eq!(off.text, "jev:off");
+        assert_eq!(off.text, "jev:no-key");
+        assert_eq!(off.color, Some(theme.gray));
         assert!(!off.bold);
 
         let disabled = distill_shell::jev::JevStatus {

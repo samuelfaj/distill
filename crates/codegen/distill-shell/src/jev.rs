@@ -317,7 +317,7 @@ c7_change_type = true"#,
         // presence, and that pairing is what the label encodes.
         let on = flags_from_tiers(&JevConfig::default(), None);
         assert_eq!(on.status(true).label(), "jev");
-        assert_eq!(on.status(false).label(), "jev:off");
+        assert_eq!(on.status(false).label(), "jev:no-key");
 
         let shadow = flags_from_tiers(
             &JevConfig {
@@ -914,7 +914,12 @@ pub(crate) fn record_workspace_attempt(
 #[derive(Debug, Default)]
 struct ActivityState {
     sessions: std::collections::HashMap<String, SessionActivityState>,
+    /// Child session id → parent session id, so a subagent's decisions also count for its parent.
+    parents: std::collections::HashMap<String, String>,
 }
+
+/// Longest parent chain `note_decision` follows.
+const MAX_ANCESTOR_DEPTH: usize = 8;
 
 #[derive(Debug, Default)]
 struct SessionActivityState {
@@ -975,13 +980,43 @@ pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
     let Ok(mut state) = activity_state().lock() else {
         return;
     };
-    let session = state.sessions.entry(active_session_id()).or_default();
-    session.ring.push_back(JevActivity {
+    let own = active_session_id();
+    let activity = JevActivity {
         lever: lever.to_owned(),
         decision: decision.to_owned(),
         latency_ms,
         at: std::time::Instant::now(),
-    });
+    };
+    let mut visited = vec![own.clone()];
+    let mut current = own;
+    for _ in 0..MAX_ANCESTOR_DEPTH {
+        let Some(parent) = state.parents.get(&current).cloned() else {
+            break;
+        };
+        if visited.contains(&parent) {
+            break;
+        }
+        visited.push(parent.clone());
+        current = parent;
+    }
+    for session_id in visited {
+        state
+            .sessions
+            .entry(session_id)
+            .or_default()
+            .ring
+            .push_back(activity.clone());
+    }
+}
+
+/// Links a child session to its parent so the child's decisions count for the parent too.
+pub(crate) fn register_child_session(child: &str, parent: &str) {
+    if child == parent {
+        return;
+    }
+    if let Ok(mut state) = activity_state().lock() {
+        state.parents.insert(child.to_owned(), parent.to_owned());
+    }
 }
 
 /// Sets the routing of the call that is about to run, as the row shows it.
@@ -1067,6 +1102,7 @@ pub fn turn_activity_for_session(
 pub fn reset_activity_for_test() {
     if let Ok(mut state) = activity_state().lock() {
         state.sessions.clear();
+        state.parents.clear();
     }
 }
 
@@ -1247,7 +1283,15 @@ fn client_cached() -> Option<&'static distill_workspace::jev::JevClient> {
             let cfg = resolve_config_from_disk();
             match distill_workspace::jev::JevClient::new(client_config_from(&cfg)) {
                 Ok(client) if client.credential_present() => Some(client),
-                Ok(_) => None,
+                Ok(_) => {
+                    if flags_from(&cfg).enabled {
+                        tracing::warn!(
+                            "Jev is enabled but environment variable `{}` is not set; Jev decisions are off",
+                            client_config_from(&cfg).api_key_env
+                        );
+                    }
+                    None
+                }
                 Err(error) => {
                     tracing::warn!(%error, "jev client unavailable; catalogue items stay off");
                     None
@@ -1692,6 +1736,52 @@ mod catalogue_helper_tests {
         assert_eq!(child.decisions, 1);
         assert_eq!(child.route.as_deref(), Some("child-model medium"));
         assert!(turn_activity_for_session("other", None).is_quiet());
+        reset_activity_for_test();
+    }
+
+    /// A subagent's decisions must reach the parent's chip and end-of-turn
+    /// count, through every ancestor, without touching unrelated sessions.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn child_decisions_count_for_every_ancestor() {
+        reset_activity_for_test();
+        register_child_session("child", "parent");
+        register_child_session("grandchild", "child");
+        with_session_scope("grandchild", async {
+            note_decision("b2_micro_effort", "keep", 5);
+        })
+        .await;
+        with_session_scope("child", async {
+            note_decision("b2_micro_effort", "keep", 6);
+        })
+        .await;
+        assert_eq!(turn_activity_for_session("grandchild", None).decisions, 1);
+        assert_eq!(turn_activity_for_session("child", None).decisions, 2);
+        assert_eq!(turn_activity_for_session("parent", None).decisions, 2);
+        assert!(turn_activity_for_session("unrelated", None).is_quiet());
+        // The parent's own decisions do not flow down to its children.
+        with_session_scope("parent", async {
+            note_decision("b2_micro_effort", "keep", 7);
+        })
+        .await;
+        assert_eq!(turn_activity_for_session("child", None).decisions, 2);
+        assert_eq!(turn_activity_for_session("parent", None).decisions, 3);
+        reset_activity_for_test();
+    }
+
+    /// A link cycle must not loop or double-count a session.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn child_links_that_cycle_count_once() {
+        reset_activity_for_test();
+        register_child_session("a", "b");
+        register_child_session("b", "a");
+        with_session_scope("a", async {
+            note_decision("b2_micro_effort", "keep", 5);
+        })
+        .await;
+        assert_eq!(turn_activity_for_session("a", None).decisions, 1);
+        assert_eq!(turn_activity_for_session("b", None).decisions, 1);
         reset_activity_for_test();
     }
 }

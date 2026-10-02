@@ -21,10 +21,13 @@ impl JevStatus {
         self.enabled && self.credential_present
     }
 
-    /// Short label for the prompt footer: `jev`, `jev·shadow`, or `jev:off`.
+    /// Short label for the prompt footer: `jev`, `jev·shadow`, `jev:no-key`
+    /// (enabled, no credential), or `jev:off` (disabled).
     pub const fn label(&self) -> &'static str {
-        if !self.active() {
+        if !self.enabled {
             "jev:off"
+        } else if !self.credential_present {
+            "jev:no-key"
         } else if self.shadow {
             "jev·shadow"
         } else {
@@ -708,8 +711,8 @@ mod tests {
         let enabled = JevFlags::harness_default();
         assert_eq!(enabled.status(true).label(), "jev");
         assert!(enabled.status(true).active());
-        // No credential ⇒ the seam cannot act, and the badge says so.
-        assert_eq!(enabled.status(false).label(), "jev:off");
+        // No credential ⇒ the seam cannot act, and the badge says why.
+        assert_eq!(enabled.status(false).label(), "jev:no-key");
         assert!(!enabled.status(false).active());
         // Shadow ⇒ observation only, and the badge distinguishes it.
         let shadow = enabled.with_shadow(true);

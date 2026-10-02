@@ -1849,6 +1849,7 @@ pub(crate) async fn run_shell_child(
         ..
     } = child_init;
     *child_handle.worker_override.write() = ctx.parent_worker.clone();
+    crate::jev::register_child_session(&child_session_id.0, &ctx.parent_session_id);
     session::bind_installed_toolset(
         &ctx.workspace_ops,
         &child_handle.info.id,

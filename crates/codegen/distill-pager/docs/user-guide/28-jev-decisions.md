@@ -269,9 +269,10 @@ The **prompt footer** always shows where the path stands, next to the mode flags
 |---|---|
 | **`jev`** (green, bold) | Jev is available, independently of the permission mode |
 | **`jev·shadow`** (green) | Same, but decisions are recorded and not applied |
-| **`jev:off`** (dim) | The path is disabled (`GROK_JEV=0`, `[jev] enabled = false`) or no credential is resolvable |
+| **`jev:off`** (dim) | The path is disabled (`GROK_JEV=0`, `[jev] enabled = false`) |
+| **`jev:no-key`** (dim) | The path is enabled but the environment variable named by `[jev] api_key_env` is not set; a warning in the log names the variable |
 
-The badge is always visible. `jev:off` means Jev is disabled or lacks a credential; it says nothing about permission to execute tools. The status is resolved once per process.
+The badge is always visible. `jev:off` means Jev is disabled and `jev:no-key` means it lacks a credential; it says nothing about permission to execute tools. The status is resolved once per process.
 
 Both surfaces read the same decision record, so they cannot disagree: the footer says whether the path *can* be used, the turn row says whether it *was*, and with which outcome.
 

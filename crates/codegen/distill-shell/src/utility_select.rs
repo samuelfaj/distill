@@ -234,9 +234,48 @@ pub(crate) fn reconstruct(
     output
 }
 
+/// File lines in order with their 1-based numbers; the first and last line
+/// are always kept and each omitted run names its line range.
+pub(crate) fn reconstruct_anchored_lines(lines: &[String], kept: &BTreeSet<usize>) -> String {
+    let mut output = String::new();
+    let mut omitted_start = None;
+    for (index, line) in lines.iter().enumerate() {
+        let number = index + 1;
+        if !kept.contains(&index) && index != 0 && index + 1 != lines.len() {
+            omitted_start.get_or_insert(number);
+            continue;
+        }
+        if let Some(start) = omitted_start.take() {
+            output.push_str(&format!(
+                "[… lines {start}-{prev} omitted; re-read with offset/limit …]\n",
+                prev = number - 1
+            ));
+        }
+        output.push_str(&format!("{number}→{line}\n"));
+    }
+    if let Some(start) = omitted_start {
+        output.push_str(&format!(
+            "[… lines {start}-{} omitted; re-read with offset/limit …]\n",
+            lines.len()
+        ));
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchored_lines_render_exact_omission_ranges() {
+        let lines: Vec<String> = (1..=30).map(|n| format!("line {n}")).collect();
+        let kept = [2, 24, 25].into_iter().collect();
+        let rendered = reconstruct_anchored_lines(&lines, &kept);
+        assert!(rendered.starts_with("1→line 1\n"));
+        assert!(rendered.contains("[… lines 2-2 omitted; re-read with offset/limit …]"));
+        assert!(rendered.contains("25→line 25\n26→line 26\n"));
+        assert!(rendered.contains("[… lines 27-29 omitted; re-read with offset/limit …]"));
+    }
 
     #[test]
     fn builds_lines_and_falls_back_from_large_paragraph() {

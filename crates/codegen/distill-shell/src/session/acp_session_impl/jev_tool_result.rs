@@ -33,6 +33,8 @@ const MIN_BYTES: usize = 400;
 /// round-trip: the cited spans plus the recovery footer rarely come out shorter.
 const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
 const GREP_COMPRESS_MIN_BYTES: usize = 12_000;
+/// Whole-file reads below this stay verbatim even in read-only sessions.
+const READ_ONLY_COMPRESS_MIN_BYTES: usize = 16_000;
 
 fn mcp_compression_name(tool: &str, mcp_tool: Option<&str>) -> Option<String> {
     let name = if tool == "use_tool" {
@@ -48,6 +50,22 @@ fn mcp_compression_name(tool: &str, mcp_tool: Option<&str>) -> Option<String> {
         .iter()
         .any(|reader| effective == *reader || effective.ends_with(&format!("_{reader}")));
     (!is_reader).then(|| effective.to_owned())
+}
+
+fn session_is_read_only<'a>(tool_names: impl IntoIterator<Item = &'a str>) -> bool {
+    !tool_names.into_iter().any(|name| {
+        matches!(
+            name,
+            "search_replace"
+                | "write"
+                | "edit"
+                | "apply_patch"
+                | "hashline_edit"
+                | "bash"
+                | "run_terminal_command"
+                | "run_terminal_cmd"
+        )
+    })
 }
 
 fn compression_allows_exact(
@@ -995,17 +1013,44 @@ impl SessionActor {
             output,
             ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
         ) || tool == "grep";
+        // A session without edit or terminal tools never needs exact file text
+        // for an edit, so its whole-file reads may be narrowed (line numbers kept).
+        let read_only_file = match output {
+            ToolOutput::ReadFile(distill_tools::types::output::ReadFileOutput::FileContent(
+                file,
+            )) if tool == "read_file"
+                && file.offset.is_none()
+                && file.limit.is_none()
+                && file.raw_output.lines().count() >= file.total_lines
+                && file.raw_output.len() >= READ_ONLY_COMPRESS_MIN_BYTES
+                && !body.contains("<system-reminder>")
+                && session_is_read_only(
+                    self.agent
+                        .borrow()
+                        .tool_bridge()
+                        .toolset()
+                        .tool_definitions()
+                        .iter()
+                        .map(|definition| definition.function.name.as_str()),
+                ) =>
+            {
+                Some(file.raw_output.clone())
+            }
+            _ => None,
+        };
         let cheap_eligible = tool != "search_tool"
-            && (cheap_source || task_output_source || mcp_source)
-            && (mcp_source || !is_document)
+            && (cheap_source || task_output_source || mcp_source || read_only_file.is_some())
+            && (mcp_source || read_only_file.is_some() || !is_document)
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
-            && compression_allows_exact(
-                distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
-                body.len(),
-            )
+            && (read_only_file.is_some()
+                || compression_allows_exact(
+                    distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
+                    body.len(),
+                ))
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
             let source_kind = match output {
+                _ if read_only_file.is_some() => "read_file",
                 _ if mcp_source => "mcp",
                 _ if tool == "grep" => "grep",
                 ToolOutput::Bash(bash)
@@ -1048,16 +1093,23 @@ impl SessionActor {
                     let budget = utility
                         .max_input_bytes()
                         .saturating_sub(question.len().saturating_add(512));
-                    let Some(source) = compression_source_for_lane(output, &body, budget).await
-                    else {
-                        crate::jev::record_item(
-                            Lever::ECheapCompress,
-                            "defer:utility-budget",
-                            "source did not fit utility budget",
-                            None,
-                            None,
-                        );
-                        break 'utility;
+                    let source = match read_only_file.clone() {
+                        Some(raw) => raw,
+                        None => {
+                            let Some(source) =
+                                compression_source_for_lane(output, &body, budget).await
+                            else {
+                                crate::jev::record_item(
+                                    Lever::ECheapCompress,
+                                    "defer:utility-budget",
+                                    "source did not fit utility budget",
+                                    None,
+                                    None,
+                                );
+                                break 'utility;
+                            };
+                            source
+                        }
                     };
                     let kind =
                         if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
@@ -1065,11 +1117,19 @@ impl SessionActor {
                         } else {
                             crate::utility_select::UnitKind::Lines
                         };
-                    let units = crate::utility_select::build_units(&source, kind, 24 * 1024);
+                    // File lines keep blank lines so unit index + 1 is the line number.
+                    let units = if read_only_file.is_some() {
+                        source.lines().map(str::to_owned).collect()
+                    } else {
+                        crate::utility_select::build_units(&source, kind, 24 * 1024)
+                    };
                     let evidence_source =
                         task_output_body_evidence(output).unwrap_or_else(|| source.clone());
                     let evidence: std::collections::HashSet<String> =
-                        if mcp_source || matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                        if mcp_source
+                            || read_only_file.is_some()
+                            || matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_))
+                        {
                             std::collections::HashSet::new()
                         } else {
                             crate::jev_lanes::required_tool_evidence(&evidence_source)
@@ -1206,7 +1266,13 @@ impl SessionActor {
                             }
                         }
                     }
-                    let replacement = crate::utility_select::reconstruct(
+                    let replacement = if read_only_file.is_some() {
+                        format!(
+                            "{}[compressed by verified utility selection; full output stored at {handle}]",
+                            crate::utility_select::reconstruct_anchored_lines(&units, &kept)
+                        )
+                    } else {
+                        crate::utility_select::reconstruct(
                         &units,
                         &kept,
                         kind,
@@ -1223,7 +1289,8 @@ impl SessionActor {
                                 "[compressed by verified utility selection; full output stored at {handle}]"
                             )
                         },
-                    );
+                        )
+                    };
                     if replacement.len() * 100 < body.len() * 70 {
                         crate::jev::record_item(
                             Lever::ECheapCompress,
@@ -1284,7 +1351,8 @@ impl SessionActor {
         }
 
         // P2 is a selective document lookup, never a lossy rewrite of source code.
-        if let distill_tools::types::output::ToolOutput::ReadFile(
+        if !compressed_by_utility
+            && let distill_tools::types::output::ToolOutput::ReadFile(
             distill_tools::types::output::ReadFileOutput::FileContent(file),
         ) = output
             && file.offset.is_none()
@@ -1817,6 +1885,12 @@ fn failing_tests(body: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_only_tool_names_require_no_editing_tools() {
+        assert!(!session_is_read_only(["read_file", "edit"]));
+        assert!(session_is_read_only(["read_file", "grep"]));
+    }
 
     #[test]
     fn mcp_compression_name_resolves_dispatch_and_excludes_readers() {

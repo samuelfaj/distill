@@ -111,6 +111,16 @@ pub struct CheapTask {
 }
 
 impl CheapTask {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn payload(&self) -> &str {
+        &self.payload
+    }
+    pub fn instruction(&self) -> &str {
+        &self.instruction
+    }
+
     pub fn new(
         id: impl Into<String>,
         instruction: impl Into<String>,
@@ -161,6 +171,16 @@ impl CheapAnswer {
     }
 }
 
+pub trait TaskClient {
+    fn max_input_bytes(&self) -> usize;
+    fn ask_task<'a>(
+        &'a self,
+        task: &'a CheapTask,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CheapAnswer, JevError>> + Send + 'a>,
+    >;
+}
+
 pub struct CheapClient {
     http: reqwest::Client,
     config: CheapConfig,
@@ -174,6 +194,20 @@ pub fn env_key_resolver() -> ApiKeyResolver {
             .ok()
             .filter(|value| !value.trim().is_empty())
     })
+}
+
+impl TaskClient for CheapClient {
+    fn max_input_bytes(&self) -> usize {
+        self.config.max_input_bytes
+    }
+    fn ask_task<'a>(
+        &'a self,
+        task: &'a CheapTask,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CheapAnswer, JevError>> + Send + 'a>,
+    > {
+        Box::pin(self.ask(task))
+    }
 }
 
 impl CheapClient {
@@ -251,6 +285,7 @@ impl CheapClient {
             .map_err(|error| JevError::invalid(format!("request serialization failed: {error}")))?;
 
         let url = self.config.endpoint();
+        let request_bytes = body.len();
         let deadline = self.config.timeout;
         let http = self.http.clone();
         let started = Instant::now();
@@ -267,6 +302,9 @@ impl CheapClient {
                 &self.config.reasoning_effort,
                 self.config.max_completion_tokens,
             ));
+        }
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_bytes(Some(request_bytes as u64), None);
         }
         tracing::info!(target: "jev.decision", event_kind = "utility_request",
             task_id = task.id, requested_model = self.config.model, "bounded utility request");
@@ -309,7 +347,8 @@ impl CheapClient {
                     .redact(&secret));
                 }
                 Ok(Err(error)) => {
-                    if let Some(guard) = attempt_guard.take() {
+                    if let Some(mut guard) = attempt_guard.take() {
+                        guard.set_reason(Some("transport".to_owned()));
                         guard.finish(AttemptStatus::Failed);
                     }
                     return Err(error.redact(&secret));
@@ -329,7 +368,8 @@ impl CheapClient {
         }
 
         if !status.is_success() {
-            if let Some(guard) = attempt_guard.take() {
+            if let Some(mut guard) = attempt_guard.take() {
+                guard.set_reason(Some("transport".to_owned()));
                 guard.finish(AttemptStatus::Failed);
             }
             let parsed: Option<Json> = serde_json::from_slice(&bytes).ok();
@@ -345,7 +385,8 @@ impl CheapClient {
         let reply = match parse_chat_reply(&bytes) {
             Ok(reply) => reply,
             Err(error) => {
-                if let Some(guard) = attempt_guard.take() {
+                if let Some(mut guard) = attempt_guard.take() {
+                    guard.set_reason(Some("invalid".to_owned()));
                     guard.finish(AttemptStatus::Rejected);
                 }
                 return Err(error.redact(&secret));
@@ -358,6 +399,7 @@ impl CheapClient {
                 Some(reply.usage),
             );
             guard.set_billing(reply.billing);
+            guard.set_bytes(Some(request_bytes as u64), Some(reply.content.len() as u64));
         }
         // Count a paid response even if truncation or the downstream task guard rejects it.
         tracing::info!(target: "jev.decision", event_kind = "utility_usage",
@@ -366,7 +408,8 @@ impl CheapClient {
             prompt_tokens = reply.usage.input_tokens, completion_tokens = reply.usage.output_tokens,
             latency_ms, truncated = reply.truncated, "utility response before acceptance checks");
         if reply.truncated {
-            if let Some(guard) = attempt_guard.take() {
+            if let Some(mut guard) = attempt_guard.take() {
+                guard.set_reason(Some("invalid".to_owned()));
                 guard.finish(AttemptStatus::Rejected);
             }
             return Err(JevError::invalid(
@@ -376,13 +419,15 @@ impl CheapClient {
         }
         let text = reply.content.trim().to_owned();
         if text.is_empty() {
-            if let Some(guard) = attempt_guard.take() {
+            if let Some(mut guard) = attempt_guard.take() {
+                guard.set_reason(Some("invalid".to_owned()));
                 guard.finish(AttemptStatus::Rejected);
             }
             return Err(JevError::invalid("the worker answered with nothing").redact(&secret));
         }
         if text.chars().count() > task.max_answer_chars {
-            if let Some(guard) = attempt_guard.take() {
+            if let Some(mut guard) = attempt_guard.take() {
+                guard.set_reason(Some("invalid".to_owned()));
                 guard.finish(AttemptStatus::Rejected);
             }
             return Err(JevError::invalid(
@@ -402,7 +447,13 @@ impl CheapClient {
             request_id: reply.id.or(request_id),
             latency_ms,
         };
-        if let Some(guard) = attempt_guard.take() {
+        if let Some(mut guard) = attempt_guard.take() {
+            guard.set_reason(
+                answer
+                    .text
+                    .eq_ignore_ascii_case("none")
+                    .then(|| "none".to_owned()),
+            );
             guard.finish(AttemptStatus::Completed);
         }
         Ok(answer)
@@ -686,7 +737,7 @@ mod tests {
             .json()
             .with_writer(move || writer.try_clone().unwrap())
             .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let guard = tracing::subscriber::set_default(subscriber);
         let stub = make_stub((200, chat_reply("too long", (120, 8)), false));
         let client = client_for(&stub, |_| {}).await;
         assert!(
@@ -695,6 +746,7 @@ mod tests {
                 .await
                 .is_err()
         );
+        drop(guard);
         let text = std::fs::read_to_string(log.path()).unwrap();
         let usage = text
             .lines()

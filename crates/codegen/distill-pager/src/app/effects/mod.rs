@@ -2048,6 +2048,24 @@ pub(crate) fn execute(
                     TaskResult::CancelComplete
                 });
         }
+        Effect::SetSessionWorker { session_id, model_id, effort } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({
+                    "sessionId": session_id.0.to_string(),
+                    "modelId": model_id,
+                    "effort": effort.map_or_else(|| "auto".to_owned(), |level| level.to_string()),
+                });
+                let request = acp::ExtRequest::new(
+                    "x.ai/session/worker_model/set",
+                    serde_json::value::to_raw_value(&params).expect("serialize worker params").into(),
+                );
+                if let Err(error) = acp_send(request, &tx).await {
+                    tracing::debug!("session worker update failed: {error}");
+                }
+                TaskResult::CancelComplete
+            });
+        }
         Effect::SetEffortAuto {
             agent_id,
             session_id,
@@ -2438,11 +2456,11 @@ pub(crate) fn execute(
                     ),
                 );
         }
-        Effect::PersistUtilityModel { model, effort } => {
+        Effect::PersistUtilityModel { model, effort, is_catalog_model } => {
             tasks.spawn(async move {
                 let key = "cheap_model";
-                match distill_shell::util::config::set_utility_model(model.clone(), effort).await {
-                    Ok(()) => TaskResult::SettingPersisted { key, value: crate::settings::SettingValue::String(model) },
+                match distill_shell::util::config::set_utility_model_with_catalog(model.clone(), effort, is_catalog_model).await {
+                    Ok(warning) => TaskResult::UtilityModelPersisted { model, warning },
                     Err(error) => TaskResult::SettingPersistFailedBestEffort { key, error: error.to_string() },
                 }
             });

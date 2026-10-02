@@ -732,6 +732,7 @@ fn should_auto_wake_subagent_truth_table() {
 }
 fn auto_wake_test_request(id: &str) -> SubagentRequest {
     SubagentRequest {
+            jev_worker_ok: false,
         id: id.into(),
         prompt: String::new(),
         description: "explore".into(),
@@ -1244,7 +1245,7 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
     ));
 
     request.runtime_overrides.model = Some("pinned-model".into());
-    assert!(!resolve_child_jev_effort_auto(
+    assert!(resolve_child_jev_effort_auto(
         true, &request, &runtime, None
     ));
 
@@ -1316,7 +1317,7 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
     ));
     let mut legacy_source = source.clone();
     legacy_source.effort_auto = None;
-    assert!(!resolve_child_jev_effort_auto(
+    assert!(resolve_child_jev_effort_auto(
         true,
         &request,
         &runtime,
@@ -1327,8 +1328,9 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
     assert!(resolve_child_jev_effort_auto(
         true, &request, &runtime, None
     ));
+    // A pinned model without an effort choice keeps the parent's Jev policy.
     request.runtime_overrides.model = Some("fork-model".into());
-    assert!(!resolve_child_jev_effort_auto(
+    assert!(resolve_child_jev_effort_auto(
         true, &request, &runtime, None
     ));
 }
@@ -1738,6 +1740,7 @@ fn fork_context_normalized_only_for_summarized() {
 }
 fn bootstrap_test_request(fork_context: bool) -> SubagentRequest {
     SubagentRequest {
+            jev_worker_ok: false,
         id: "bootstrap-test".into(),
         prompt: "plan".into(),
         description: "d".into(),

@@ -60,7 +60,7 @@ Model choice for subagents:
 | Subagent | Model |
 |---|---|
 | A fresh subagent the main model delegates (`general-purpose`, `explore`, a user agent without a `model:`) | the worker model; the main model when none is set |
-| `plan` and `code-reviewer` | the main model |
+| `plan` and `code-reviewer` | the main model, unless Jev routes a simple task to the worker |
 | A full-context fork, a resumed subagent, or one spawned with an explicit `model` | its own model (the parent's for a fork) |
 | Harness roles (a goal's planner, verifiers, strategist, summarizer) | the main model |
 
@@ -197,8 +197,22 @@ The `b2_local_model` route can also hand an entire call to the Utility model
 when the capacity checks and context limit allow it. This is separate from the
 bounded utility tasks. The `e_retention` route breaks large outputs into blocks
 and decides what to retain before discarding the original text, with special
-handling for secrets. Each route has a per-turn failure limit, so a failing
-endpoint does not get retried at every step.
+handling for secrets. The utility transport supports catalog models on the sampler stack as well as the closed client. Missing decisions keep the existing behavior.
+
+## New routing and context levers
+
+| Lever | Decision | Confidence floor |
+|---|---|---:|
+| `d4_compaction_timing` | Whether the next step is independent enough to compact now | 0.75 |
+| `d5_memory_capture_gate` | Whether the turn produced durable knowledge to capture | 0.70 |
+| `b7_subagent_model` | Whether the worker model can do a subagent task as well as the main model | 0.75 |
+
+A missing or uncertain answer keeps today's behavior. P3 now sends previews to
+Jev before compaction. C4 sends the change once for review. B1's intent reaches
+B2 as `turn_intent`.
+
+Retired levers are `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
+`c2_failure_triage` and `c7_change_type`. Their configuration keys are ignored.
 
 ## Other decisions
 
@@ -207,7 +221,7 @@ endpoint does not get retried at every step.
 | Content | Which files, lines, logs, search results, and instructions merit another look. |
 | Planning | Intent, relevant tool families, and delegation hints. |
 | Quality | Whether an edit or failed check needs another attempt, and which errors to address first. |
-| Context | What to preserve during compression and compaction. |
+| Context | What to preserve during compression and compaction, when to compact, and what knowledge to capture. |
 
 Individual switches live under `[jev.ladder]`. For example:
 

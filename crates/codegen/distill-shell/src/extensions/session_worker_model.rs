@@ -82,10 +82,24 @@ pub(crate) fn worker_from_meta(
     }))
 }
 
-/// Applies the `_meta` worker choice to a live session; absent keys leave it untouched.
-pub(crate) fn apply_meta(state: &SessionWorkerState, worker: Option<SessionWorker>) {
-    if let Some(worker) = worker {
-        *state.write() = Some(worker);
+/// Snapshot the configured worker when a session starts.
+pub(crate) fn config_worker_snapshot() -> SessionWorker {
+    let model_id = crate::jev::worker_model();
+    let effort = model_id.as_ref().and_then(|_| crate::jev::worker_effort());
+    SessionWorker { model_id, effort }
+}
+
+/// Apply session metadata or initialize an unconfigured session from its start-time snapshot.
+pub(crate) fn apply_meta_or_snapshot(
+    state: &SessionWorkerState,
+    meta_worker: Option<SessionWorker>,
+    snapshot: SessionWorker,
+) {
+    let mut state = state.write();
+    if let Some(worker) = meta_worker {
+        *state = Some(worker);
+    } else if state.is_none() {
+        *state = Some(snapshot);
     }
 }
 

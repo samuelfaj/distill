@@ -146,7 +146,14 @@ fn new_session_meta_sets_the_session_worker_override() {
 
         let inherited = create(None).await.expect("session/new").session_id;
         let handle = agent.resident_handle(&inherited).unwrap();
-        assert_eq!(*handle.worker_override.read(), None, "no _meta inherits the config");
+        assert_eq!(
+            *handle.worker_override.read(),
+            Some(SessionWorker {
+                model_id: Some("config-worker".to_owned()),
+                effort: None,
+            }),
+            "no _meta captures the worker configured when the session starts"
+        );
 
         let chosen = create(Some(serde_json::json!({
             "workerModelId": "session-worker", "workerEffort": "low",

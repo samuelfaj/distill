@@ -300,7 +300,7 @@ impl crate::types::tool_metadata::ToolMetadata for TaskTool {
                 },
             );
             description.push_str(
-                " For bounded delegation, include the specific objective, relevant instructions/evidence, and file/path/handle references in prompt. When model is omitted, a fresh subagent runs on the configured worker model (the main model when none is set); plan and code-reviewer run on the main model.",
+                " For bounded delegation, include the specific objective, relevant instructions/evidence, and file/path/handle references in prompt. When model is omitted, a fresh subagent runs on the configured worker model (the main model when none is set); plan and code-reviewer run on the main model, though Jev may route a simple one to the worker.",
             );
             description
         });
@@ -603,6 +603,7 @@ impl distill_tool_runtime::Tool for TaskTool {
             .flatten();
 
         let request = SubagentRequest {
+            jev_worker_ok: false,
             id: id.clone(),
             prompt: input.prompt.clone(),
             description: input.description.clone(),

@@ -31,7 +31,63 @@ const READ_REUSE_BYTES: usize = 2_000;
 const MIN_BYTES: usize = 400;
 /// Below this, extractive compression cannot pay for its utility call and Jev
 /// round-trip: the cited spans plus the recovery footer rarely come out shorter.
-const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
+pub(super) const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
+const GREP_COMPRESS_MIN_BYTES: usize = 12_000;
+/// Whole-file reads below this stay verbatim even in read-only sessions.
+const READ_ONLY_COMPRESS_MIN_BYTES: usize = 16_000;
+
+fn mcp_compression_name(tool: &str, mcp_tool: Option<&str>) -> Option<String> {
+    let name = if tool == "use_tool" {
+        mcp_tool?
+    } else if tool.contains("__") {
+        tool
+    } else {
+        return None;
+    };
+    let effective = name.rsplit_once("__").map_or(name, |(_, part)| part);
+    // File readers stay exact; match whole `_`-separated words, not `thread`.
+    let is_reader = ["read_file", "read", "read_text_file", "get_file", "cat"]
+        .iter()
+        .any(|reader| effective == *reader || effective.ends_with(&format!("_{reader}")));
+    (!is_reader).then(|| effective.to_owned())
+}
+
+/// A read without offset/limit that returned every line. `total_lines` counts
+/// the empty piece after a trailing newline, so it may exceed `lines()` by one.
+fn is_whole_file_read(file: &distill_tools::types::output::FileContent) -> bool {
+    file.offset.is_none()
+        && file.limit.is_none()
+        && file.raw_output.lines().count() + 1 >= file.total_lines
+}
+
+pub(super) fn session_is_read_only<'a>(tool_names: impl IntoIterator<Item = &'a str>) -> bool {
+    !tool_names.into_iter().any(|name| {
+        matches!(
+            name,
+            "search_replace"
+                | "write"
+                | "edit"
+                | "apply_patch"
+                | "hashline_edit"
+                | "bash"
+                | "run_terminal_command"
+                | "run_terminal_cmd"
+        )
+    })
+}
+
+fn compression_allows_exact(
+    kind: distill_workspace::jev::crushers::ExactKind,
+    body_len: usize,
+) -> bool {
+    use distill_workspace::jev::crushers::ExactKind;
+    match kind {
+        ExactKind::None => true,
+        ExactKind::Window => body_len >= CHEAP_COMPRESS_MIN_BYTES,
+        ExactKind::Matches => body_len >= GREP_COMPRESS_MIN_BYTES,
+        ExactKind::Exact => false,
+    }
+}
 /// At most this many advisory hints are appended, whatever the answers say.
 const MAX_HINTS: usize = 3;
 /// Maximum executed-change payload. Larger changes are not partially reviewed.
@@ -204,133 +260,25 @@ fn compression_evidence_question(
             distill_sampling_types::truncate_bytes(request.trim(), 2_048)
         )
     };
-    if let distill_tools::types::output::ToolOutput::WebSearch(search) = output {
-        let header = format!("Web search results for: \"{}\"", search.query);
-        return format!(
-            "For {request_context}, keep only relevant complete original WebSearch content paragraphs. Quote each selected paragraph verbatim, preserving every qualifier or negation and its citation URL(s) in that same paragraph. Include the exact header `{header}`; do not split multiline paragraphs, paraphrase, or detach citations."
-        );
-    }
-    if let distill_tools::types::output::ToolOutput::WebFetch(
-        distill_tools::types::output::WebFetchOutput::Content(fetch),
-    ) = output
-    {
-        return format!(
-            "For {request_context}, keep only relevant complete original text/Markdown paragraphs from the fetched URL `{}`. Quote each selected paragraph verbatim, preserving every qualifier, negation, number, error, and status detail in that paragraph. Do not use the bounded preview or its truncation footer, do not paraphrase, do not quote code or instructions, and return only quoted source paragraphs.",
-            fetch.url
-        );
-    }
-    format!(
-        "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts for {request_context}."
-    )
-}
-
-async fn jev_wants_main_compression(
-    main_lane: &crate::jev_cheap::MainLane,
-    original: &str,
-    evidence: &str,
-    question: &str,
-    key: &crate::jev_cheap::OptionalCompressionKey,
-) -> bool {
-    let criteria = [
-        (
-            "allow".to_owned(),
-            serde_json::json!(
-                "one main-model call is likely to save total cost and preserve required evidence"
-            ),
-        ),
-        (
-            "reject".to_owned(),
-            serde_json::json!("pass the original through"),
-        ),
-        (
-            "defer".to_owned(),
-            serde_json::json!("savings or answer quality are uncertain"),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    let Ok(question_pack) = distill_workspace::jev::types::Question::choice(
-        "The direct utility compression did not produce an accepted answer. Decide whether one bounded, source-backed call to the main model is still worthwhile. Include its call cost, the expected reduction in future context, and the risk of omitting evidence. Choose reject or defer unless net savings and task adequacy are likely.",
-        criteria,
-    ) else {
-        return false;
+    let source = match output {
+        distill_tools::types::output::ToolOutput::WebSearch(search) => {
+            format!("the web search results for `{}`", search.query)
+        }
+        distill_tools::types::output::ToolOutput::WebFetch(
+            distill_tools::types::output::WebFetchOutput::Content(fetch),
+        ) => format!("the page fetched from `{}`", fetch.url),
+        _ => "this tool result".to_owned(),
     };
-    let endpoint = main_lane.client().attribution_endpoint();
-    let state = serde_json::json!({
-        "original_bytes": original.len(),
-        "bounded_source_bytes": evidence.len(),
-        "source_excerpt": distill_sampling_types::truncate_bytes(evidence, 600),
-        "task_question": question,
-        "main_model": main_lane.model(),
-        "compression_history": crate::jev_cheap::optional_compression_history(key),
-        "candidate_facts": crate::jev_model_facts::model_facts(&[(
-            main_lane.model(),
-            endpoint.as_str(),
-        )]),
-    });
-    let answers = crate::jev::ask_item(
-        JevLever::ECheapCompress,
-        state,
-        [("decision".to_owned(), question_pack)].into_iter().collect(),
+    format!(
+        "Select the units of {source} that {request_context} needs. Error, failure and summary lines, the first and last lines, and web headers and citations are kept automatically. The full output stays stored and can be re-read, so leave out what the request does not need."
     )
-    .await;
-    let allow = answers.as_ref().is_some_and(|answer| answer.choice("decision") == Some("allow"));
-    crate::jev::record_item(
-        JevLever::ECheapCompress,
-        if allow { "main:allow" } else { "main:defer" },
-        "Jev assessed main-model fallback after utility compression",
-        answers.as_ref().and_then(|answer| answer.confidence("decision")),
-        answers.as_ref(),
-    );
-    allow
 }
 
-fn web_fetch_text_content_type(content_type: &str) -> bool {
-    let mime = content_type
-        .split(';')
-        .next()
-        .unwrap_or(content_type)
-        .trim()
-        .to_ascii_lowercase();
-    matches!(mime.as_str(), "markdown" | "text/markdown" | "text/plain")
-}
-
-fn web_fetch_source_is_unsafe(source: &str) -> bool {
-    if source.trim().is_empty()
-        || distill_workspace::jev::retention::looks_structured("", source)
-        || distill_workspace::jev::crushers::injection_presence(source).is_some()
-        || source.contains("```")
-    {
-        return true;
-    }
-    source.lines().any(|line| {
-        let line = line.trim_start().to_ascii_lowercase();
-        [
-            "#!", "<?", "function ", "def ", "class ", "import ", "export ", "const ",
-            "let ", "fn ", "pub fn ", "instruction:", "instructions:", "system:",
-            "developer:", "assistant:", "user:",
-        ]
-        .iter()
-        .any(|marker| line.starts_with(marker))
-    })
-}
-
-fn web_fetch_content_shape_is_safe(
-    fetch: &distill_tools::types::output::WebFetchContent,
-) -> bool {
-    web_fetch_text_content_type(&fetch.content_type)
-        && (fetch.source_artifact.is_some()
-            || (fetch.inline_fallback.is_none() && fetch.content.len() == fetch.bytes))
-        && !web_fetch_source_is_unsafe(&fetch.content)
-}
 
 /// WebFetch answers may only retain complete original paragraphs. The source
 /// is the complete inline body or the internally typed artifact, never the
 /// bounded preview that mentioned the artifact path.
 fn web_fetch_source_contract(source: &str, answer: &str) -> bool {
-    if web_fetch_source_is_unsafe(source) {
-        return false;
-    }
     let Ok(spans) = distill_workspace::jev::tasks::extractive_spans(answer) else {
         return false;
     };
@@ -358,7 +306,6 @@ async fn web_fetch_source_for_lane(
     budget: usize,
 ) -> Option<String> {
     if budget == 0
-        || !web_fetch_content_shape_is_safe(fetch)
         || fetch.bytes == 0
         || fetch.bytes > budget
     {
@@ -383,11 +330,10 @@ async fn web_fetch_source_for_lane(
             return None;
         }
         let source = String::from_utf8(bytes).ok()?;
-        (source.len() == fetch.bytes && !web_fetch_source_is_unsafe(&source)).then_some(source)
+        (source.len() == fetch.bytes).then_some(source)
     } else if fetch.inline_fallback.is_none()
         && fetch.content.len() == fetch.bytes
         && fetch.content.len() <= budget
-        && !web_fetch_source_is_unsafe(&fetch.content)
     {
         Some(fetch.content.clone())
     } else {
@@ -404,15 +350,10 @@ fn web_fetch_source_handle(
     else {
         return None;
     };
-    if !web_fetch_content_shape_is_safe(fetch) {
-        return None;
-    }
     if let Some(artifact) = &fetch.source_artifact {
         return (!artifact.path.as_os_str().is_empty()).then(|| artifact.path.display().to_string());
     }
-    (fetch.inline_fallback.is_none()
-        && fetch.content.len() == fetch.bytes
-        && !web_fetch_source_is_unsafe(&fetch.content))
+    (fetch.inline_fallback.is_none() && fetch.content.len() == fetch.bytes)
     .then(|| crate::jev_store::store_payload(&fetch.content))
     .flatten()
     .map(|path| path.display().to_string())
@@ -503,9 +444,12 @@ fn task_output_contains_exact_output(
     use distill_tools::types::output::ToolOutput;
 
     let is_exact_command = |result: &distill_tool_types::TaskOutputResult| {
-        distill_workspace::jev::crushers::is_exact_output(
-            "run_terminal_command",
-            &result.command,
+        !compression_allows_exact(
+            distill_workspace::jev::crushers::exact_output_kind(
+                "run_terminal_command",
+                &result.command,
+            ),
+            result.output.len(),
         )
     };
     match output {
@@ -680,6 +624,131 @@ fn hint_block(review_note: Option<String>, hints: Vec<String>) -> Option<String>
     Some(block)
 }
 
+/// What the Jev post-review reads for an accepted chunk answer.
+#[derive(Clone, Copy)]
+pub(super) enum SelectionReview {
+    /// The selected units, joined.
+    Selected,
+    /// The chunk as it will be rebuilt: selected units plus the required ones.
+    Rebuilt,
+}
+
+pub(super) struct UnitSelection<'a> {
+    pub(super) units: &'a [String],
+    pub(super) required: &'a [bool],
+    pub(super) kind: crate::utility_select::UnitKind,
+    pub(super) question: &'a str,
+    pub(super) source_kind: &'a str,
+    pub(super) handle: &'a str,
+    pub(super) cap: usize,
+    pub(super) review: SelectionReview,
+    /// Whether the utility spend counts toward the prompt's cost line.
+    pub(super) attribute_to_prompt: bool,
+}
+
+/// Asks the utility lane which units to keep, one request per chunk. `None`
+/// keeps the original: the plan did not fit, or every chunk failed.
+pub(super) async fn select_units_with_lane(
+    utility: &crate::jev_cheap::CheapLane,
+    selection: &UnitSelection<'_>,
+) -> Option<std::collections::BTreeSet<usize>> {
+    let UnitSelection {
+        units,
+        required,
+        kind,
+        question,
+        source_kind,
+        handle,
+        cap,
+        review,
+        attribute_to_prompt,
+    } = *selection;
+    let chunks = match crate::utility_select::plan_chunks(units, cap, 8) {
+        Ok(chunks) => chunks,
+        Err(reason) => {
+            crate::jev::record_item(Lever::ECheapCompress, reason, reason, None, None);
+            return None;
+        }
+    };
+    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
+        let refs: Vec<&str> = units[chunk.clone()].iter().map(String::as_str).collect();
+        let payload = distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
+        let valid = chunk.start + 1..=chunk.end;
+        match utility
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                &payload,
+                question,
+                source_kind,
+                attribute_to_prompt,
+                |answer| {
+                    let picked = if answer.trim().eq_ignore_ascii_case("none") {
+                        Vec::new()
+                    } else {
+                        distill_workspace::jev::tasks::parse_unit_ids(answer, valid.clone())
+                            .ok()?
+                    };
+                    Some(match review {
+                        SelectionReview::Selected => picked
+                            .into_iter()
+                            .filter_map(|id| units.get(id - 1))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        // Jev reviews what this chunk becomes: the picked units
+                        // plus the units the harness always keeps.
+                        SelectionReview::Rebuilt => {
+                            let kept: std::collections::BTreeSet<usize> = picked
+                                .into_iter()
+                                .map(|id| id - 1)
+                                .chain(chunk.clone().filter(|index| required[*index]))
+                                .map(|index| index - chunk.start)
+                                .collect();
+                            crate::utility_select::reconstruct(
+                                &units[chunk.clone()],
+                                &kept,
+                                kind,
+                                None,
+                                handle,
+                                format!("[compressed by verified utility selection; full output stored at {handle}]"),
+                            )
+                        }
+                    })
+                },
+            )
+            .await
+        {
+            Some(result) if result.text.trim().eq_ignore_ascii_case("none") => {
+                crate::utility_select::ChunkAnswer::Nothing
+            }
+            Some(result) => {
+                distill_workspace::jev::tasks::parse_unit_ids(&result.text, valid)
+                    .map(crate::utility_select::ChunkAnswer::Ids)
+                    .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
+            }
+            None => crate::utility_select::ChunkAnswer::Failed,
+        }
+    }))
+    .await;
+    crate::utility_select::merge(&chunks, &answers, required)
+}
+
+/// A finished bash task with the exact command the result reports.
+fn is_terminal_bash_result(
+    result: &distill_tool_types::TaskOutputResult,
+    snapshot: &distill_tools::computer::types::TaskSnapshot,
+) -> bool {
+    result.is_terminal()
+        && snapshot.completed
+        && snapshot.kind == distill_tools::computer::types::TaskKind::Bash
+        && snapshot
+            .display_command
+            .as_deref()
+            .unwrap_or(snapshot.command.as_str())
+            == result.command
+}
+
 impl SessionActor {
     /// `get_task_output` serves terminal commands and non-terminal snapshots
     /// through one typed envelope. The envelope itself has no origin field,
@@ -690,84 +759,182 @@ impl SessionActor {
         output: &distill_tools::types::output::ToolOutput,
     ) -> bool {
         use distill_tool_types::TaskOutputOutput;
-        use distill_tools::computer::types::{TaskKind, TerminalBackend};
         use distill_tools::types::output::ToolOutput;
-        use distill_tools::types::resources::Terminal;
 
-        let bridge = self.agent.borrow().tool_bridge().clone();
-        let resources = bridge.shared_resources().await;
-        let terminal = {
-            let resources = resources.lock().await;
-            resources
-                .get::<Terminal>()
-                .map(|terminal| std::sync::Arc::clone(&terminal.0))
-        };
-        let Some(terminal) = terminal else {
+        let Some(terminal) = self.task_terminal().await else {
             return false;
         };
-        let is_terminal_command = |result: &distill_tool_types::TaskOutputResult,
-                                   snapshot: &distill_tools::computer::types::TaskSnapshot| {
-            result.is_terminal()
-                && snapshot.completed
-                && snapshot.kind == TaskKind::Bash
-                && snapshot.display_command.as_deref().unwrap_or(snapshot.command.as_str())
-                    == result.command
-        };
-
         match output {
             ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => terminal
                 .get_task(&result.task_id)
                 .await
-                .is_some_and(|snapshot| is_terminal_command(result, &snapshot)),
-            // A multi-result envelope can combine bodies from different tasks.
-            // Until extractive spans carry deterministic child attribution,
-            // keep the complete envelope rather than muddling those bodies.
+                .is_some_and(|snapshot| is_terminal_bash_result(result, &snapshot)),
+            // A multi-result envelope mixes bodies from different tasks; its
+            // items are compressed one by one in `compress_multi_task_output`.
             ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(_)) => false,
             _ => false,
         }
     }
 
-    /// The main model as the fallback compression lane, resolved through the
-    /// catalog from the session's own model with its own endpoint and
-    /// credential. A missing entry is a clean defer; it never falls back to the
-    /// local utility chain.
-    pub(super) async fn tool_result_main_lane(&self) -> Option<crate::jev_cheap::MainLane> {
-        if !crate::jev::lever_active(JevLever::ECheapCompress) {
-            return None;
-        }
-        let main_id = self.models_manager.current_model_id().0.to_string();
-        if crate::agent::config::find_model_by_id(&self.models_manager.models(), &main_id).is_none()
-        {
-            crate::jev::record_item(
-                JevLever::ECheapCompress,
-                "defer:main-catalog",
-                &format!("main model `{main_id}` is not in the catalog"),
-                None,
-                None,
-            );
-            return None;
-        }
-        let Some(cfg) = self.resolve_aux_sampler_config(&main_id).await else {
-            crate::jev::record_item(
-                JevLever::ECheapCompress,
-                "defer:main-auth",
-                &format!("main model `{main_id}` has no usable sampler config"),
-                None,
-                None,
-            );
-            return None;
+    async fn task_terminal(
+        &self,
+    ) -> Option<std::sync::Arc<dyn distill_tools::computer::types::TerminalBackend>> {
+        use distill_tools::types::resources::Terminal;
+
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let resources = bridge.shared_resources().await;
+        let resources = resources.lock().await;
+        resources
+            .get::<Terminal>()
+            .map(|terminal| std::sync::Arc::clone(&terminal.0))
+    }
+
+    /// Compresses the large output of each finished bash task in a
+    /// multi-task result and leaves everything else in `body` verbatim.
+    async fn compress_multi_task_output(
+        &self,
+        output: &distill_tools::types::output::ToolOutput,
+        body: String,
+    ) -> String {
+        use distill_tool_types::TaskOutputOutput;
+        use distill_tools::types::output::ToolOutput;
+
+        let ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(multi)) = output else {
+            return body;
         };
-        let lane = crate::jev_cheap::MainLane::from_sampler_config(cfg);
-        if lane.is_none() {
+        let large = |result: &&distill_tool_types::TaskOutputResult| {
+            result.output.len() >= CHEAP_COMPRESS_MIN_BYTES
+                && compression_allows_exact(
+                    distill_workspace::jev::crushers::exact_output_kind(
+                        "run_terminal_command",
+                        &result.command,
+                    ),
+                    result.output.len(),
+                )
+        };
+        let items: Vec<_> = multi.results.iter().filter(large).collect();
+        if items.is_empty() || !crate::jev::lever_active(JevLever::ECheapCompress) {
+            return body;
+        }
+        let Some(terminal) = self.task_terminal().await else {
+            return body;
+        };
+        let Some(utility) = self.cheap_lane(JevLever::ECheapCompress).await else {
             crate::jev::record_item(
-                JevLever::ECheapCompress,
-                "defer:main-config",
-                &format!("main model `{main_id}` could not build a sampler"),
+                Lever::ECheapCompress,
+                "keep",
+                "utility lane unavailable",
                 None,
                 None,
             );
+            return body;
+        };
+        let request = self.jev_last_human_request().await.unwrap_or_default();
+        let mut body = body;
+        for result in items {
+            if body.matches(result.output.as_str()).count() != 1
+                || !terminal
+                    .get_task(&result.task_id)
+                    .await
+                    .is_some_and(|snapshot| is_terminal_bash_result(result, &snapshot))
+            {
+                continue;
+            }
+            let Some(handle) = crate::jev_store::store_payload(&result.output)
+                .map(|path| path.display().to_string())
+            else {
+                continue;
+            };
+            let question = format!(
+                "{}\nTool: {}",
+                compression_evidence_question(output, &request),
+                distill_sampling_types::truncate_bytes(&result.command, 300)
+            );
+            let budget = utility
+                .max_input_bytes()
+                .saturating_sub(question.len().saturating_add(512));
+            let Some(source) = compression_source_for_lane(output, &result.output, budget).await
+            else {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "defer:utility-budget",
+                    "source did not fit utility budget",
+                    None,
+                    None,
+                );
+                continue;
+            };
+            let kind = crate::utility_select::UnitKind::Lines;
+            let units = crate::utility_select::build_units(&source, kind, 24 * 1024);
+            let evidence: std::collections::HashSet<String> =
+                crate::jev_lanes::required_tool_evidence(&result.output)
+                    .into_iter()
+                    .collect();
+            let required = crate::utility_select::required_command_units(&units, &evidence);
+            let required_bytes: usize = units
+                .iter()
+                .zip(&required)
+                .filter(|(_, required)| **required)
+                .map(|(unit, _)| unit.len())
+                .sum();
+            if required_bytes * 100 >= source.len().saturating_mul(60) {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "defer:required-dominates",
+                    "required units dominate source",
+                    None,
+                    None,
+                );
+                continue;
+            }
+            let Some(kept) = select_units_with_lane(
+                &utility,
+                &UnitSelection {
+                    units: &units,
+                    required: &required,
+                    kind,
+                    question: &question,
+                    source_kind: "task_output",
+                    handle: &handle,
+                    cap: utility.max_payload_bytes().min(budget),
+                    review: SelectionReview::Rebuilt,
+                    attribute_to_prompt: true,
+                },
+            )
+            .await
+            else {
+                continue;
+            };
+            let replacement = crate::utility_select::reconstruct(
+                &units,
+                &kept,
+                kind,
+                None,
+                &handle,
+                format!(
+                    "[compressed by verified utility selection; full output stored at {handle}]"
+                ),
+            );
+            if replacement.len() * 100 < result.output.len() * 70 {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "compress",
+                    "verified utility selection",
+                    None,
+                    None,
+                );
+                body = body.replacen(result.output.as_str(), &replacement, 1);
+            } else {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "not_shorter",
+                    "utility selection did not reach 70% threshold",
+                    None,
+                    None,
+                );
+            }
         }
-        lane
+        body
     }
 
     /// Runs the Jev pass over a finished tool result and returns the text the
@@ -777,6 +944,7 @@ impl SessionActor {
         tool: &str,
         tool_command: &str,
         call_id: &str,
+        mcp_tool: Option<&str>,
         output: &distill_tools::types::output::ToolOutput,
         text: String,
     ) -> String {
@@ -818,7 +986,7 @@ impl SessionActor {
         let task_output_source =
             is_task_output && self.task_output_is_compression_source(output).await;
         if is_task_output && !task_output_source {
-            return text;
+            return self.compress_multi_task_output(output, text).await;
         }
         let mut body = text;
         let mut hints: Vec<String> = Vec::new();
@@ -838,7 +1006,10 @@ impl SessionActor {
         // Store the source before replacing it so a later round can recover the
         // exact tool result without rerunning it.
         if crate::jev::lever_active(JevLever::ECheapCompress)
-            && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
+            && compression_allows_exact(
+                distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
+                body.len(),
+            )
             && !distill_workspace::jev::retention::looks_structured(lane_command, &body)
             && let distill_tools::types::output::ToolOutput::Bash(bash) = output
             && let Some(status) = crate::jev_lanes::bun_test_status(
@@ -1013,31 +1184,102 @@ impl SessionActor {
             }
         }
 
-        // ---- utility-first extractive compression ----
-        //
-        // The utility and the main model share one source-backed
-        // contract. The utility is attempted once first; a rejected answer may
-        // trigger exactly one real light-tier request. Neither lane receives an
-        // unbounded payload, and the original remains at the recovery handle.
-        const EXTRACTIVE_TASK: &str = "cite_spans";
-        let cheap_source = match output {
-            distill_tools::types::output::ToolOutput::Bash(_) => true,
-            distill_tools::types::output::ToolOutput::WebSearch(search) => {
-                search.pre_formatted.is_none()
-                    && web_search_layout_is_unambiguous(&search.content, &search.citations)
-            }
-            distill_tools::types::output::ToolOutput::WebFetch(
-                distill_tools::types::output::WebFetchOutput::Content(fetch),
-            ) => web_fetch_content_shape_is_safe(fetch),
-            _ => false,
-        };
-        let cheap_eligible = (cheap_source || task_output_source)
-            && !is_document
+        let mut compressed_by_utility = false;
+        if tool == "search_tool"
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
-            && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
+            && crate::jev::lever_active(JevLever::ECheapCompress)
+            && let Some((units, parsed)) = crate::utility_select::search_tool_units(&body)
+            && !units.is_empty()
+            && let Some(utility) = self.cheap_lane(JevLever::ECheapCompress).await
+        {
+            if let Some(handle) =
+                crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
+            {
+                let question = format!(
+                    "{}\nSelect the tools the request may call. Query: {}",
+                    compression_evidence_question(output, &request),
+                    distill_sampling_types::truncate_bytes(lane_command, 300)
+                );
+                let required = vec![false; units.len()];
+                if let Some(kept) = select_units_with_lane(
+                    &utility,
+                    &UnitSelection {
+                        units: &units,
+                        required: &required,
+                        kind: crate::utility_select::UnitKind::Lines,
+                        question: &question,
+                        source_kind: "search_tool",
+                        handle: &handle,
+                        cap: utility.max_payload_bytes(),
+                        review: SelectionReview::Selected,
+                        attribute_to_prompt: true,
+                    },
+                )
+                .await
+                    && let Some(replacement) =
+                        crate::utility_select::rebuild_search_tool(parsed, &kept, &handle)
+                {
+                    if replacement.len() * 100 < body.len() * 70 {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "compress",
+                            "verified utility selection",
+                            None,
+                            None,
+                        );
+                        body = replacement;
+                        compressed_by_utility = true;
+                    } else {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "not_shorter",
+                            "utility selection did not reach 70% threshold",
+                            None,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+
+        // ---- utility-first id-based compression ----
+        const EXTRACTIVE_TASK: &str = "select_units";
+        let mcp_source = mcp_compression_name(tool, mcp_tool).is_some()
+            && matches!(output, ToolOutput::MCP(mcp) if mcp.extracted_images.is_empty());
+        let cheap_source = matches!(
+            output,
+            ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
+        ) || tool == "grep";
+        // A session without edit or terminal tools never needs exact file text
+        // for an edit, so its whole-file reads may be narrowed (line numbers kept).
+        let read_only_file = match output {
+            ToolOutput::ReadFile(distill_tools::types::output::ReadFileOutput::FileContent(
+                file,
+            )) if tool == "read_file"
+                && is_whole_file_read(file)
+                && file.raw_output.len() >= READ_ONLY_COMPRESS_MIN_BYTES
+                && !body.contains("<system-reminder>")
+                && self.model_tools_read_only.get() =>
+            {
+                Some(file.raw_output.clone())
+            }
+            _ => None,
+        };
+        let cheap_eligible = tool != "search_tool"
+            && (cheap_source || task_output_source || mcp_source || read_only_file.is_some())
+            && (mcp_source || read_only_file.is_some() || !is_document)
+            && body.len() >= CHEAP_COMPRESS_MIN_BYTES
+            && (read_only_file.is_some()
+                || compression_allows_exact(
+                    distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
+                    body.len(),
+                ))
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
             let source_kind = match output {
+                _ if read_only_file.is_some() => "read_file",
+                _ if mcp_source => "mcp",
+                _ if tool == "grep" => "grep",
                 ToolOutput::Bash(bash)
                     if super::turn_facts::looks_like_check_command(&bash.command) =>
                 {
@@ -1048,338 +1290,200 @@ impl SessionActor {
                 ToolOutput::WebFetch(_) => "web_fetch",
                 _ => "task_output",
             };
-            crate::jev::record_item(
-                Lever::ECheapCompress,
-                "eligible",
-                &format!(
-                    "{} bytes remain after deterministic reduction; extractive task {EXTRACTIVE_TASK}",
-                    body.len()
-                ),
-                None,
-                None,
-            );
             let utility = self.cheap_lane(JevLever::ECheapCompress).await;
-            let evidence_question = compression_evidence_question(output, &request);
-            let source_handle = if matches!(
-                output,
-                distill_tools::types::output::ToolOutput::WebFetch(
-                    distill_tools::types::output::WebFetchOutput::Content(_)
-                )
-            ) {
-                web_fetch_source_handle(output)
-            } else {
-                outcome.store_handle.clone().or_else(|| {
-                    crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
-                })
-            };
-            let typed_metadata = typed_tool_metadata(output);
-            let mut replacement: Option<(String, JevLever)> = None;
-            if let Some(handle) = source_handle.as_deref() {
-                // Each lane is bounded independently.  The optional main model's
-                // smaller window must never make an otherwise eligible utility
-                // call disappear before the utility gets its first attempt.
-                let utility_budget = utility.as_ref().map(|utility| {
-                    utility.client.config().max_input_bytes.saturating_sub(
-                        evidence_question.len().saturating_add(512),
-                    )
-                });
-                let utility_evidence = match utility_budget {
-                    Some(budget) => compression_source_for_lane(output, &body, budget).await,
-                    None => None,
-                };
-                if let Some(evidence) = utility_evidence {
-                    if let Some(utility) = utility.as_ref()
-                        && let Some(outcome) = utility
-                            .run_task_with_acceptance(
-                                JevLever::ECheapCompress,
-                                EXTRACTIVE_TASK,
-                                &evidence,
-                                &evidence_question,
-                                source_kind,
-                                true,
-                                |answer| {
-                                    compression_replacement_for_output(
-                                        output,
-                                        &body,
-                                        &evidence,
-                                        answer,
-                                        handle,
-                                        "utility",
-                                        typed_metadata.as_deref(),
-                                    )
-                                    .is_some()
-                                },
-                            )
-                            .await
-                    {
-                        if let Some(candidate) = compression_replacement_for_output(
-                            output,
-                            &body,
-                            &evidence,
-                            &outcome.text,
-                            handle,
-                            "utility",
-                            typed_metadata.as_deref(),
-                        ) {
-                            let key = crate::jev_cheap::optional_compression_key(
-                                &utility.client.config().endpoint(),
-                                &utility.client.config().model,
-                                EXTRACTIVE_TASK,
-                                &utility.client.config().reasoning_effort,
-                                source_kind,
-                            );
-                            crate::jev_cheap::note_optional_compression_savings(
-                                &key,
-                                body.len(),
-                                candidate.len(),
-                            );
-                            crate::jev::record_item(
-                                JevLever::ECheapCompress,
-                                "verify:accept",
-                                "extractive source-span contract",
-                                None,
-                                None,
-                            );
-                            replacement = Some((candidate, JevLever::ECheapCompress));
-                        } else {
-                            crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
-                            crate::jev::record_item(
-                                JevLever::ECheapCompress,
-                                "verify:reject",
-                                "utility answer did not retain required source evidence",
-                                None,
-                                None,
-                            );
-                        }
-                    }
-                } else if utility.is_some() {
+            'utility: {
+                if utility.is_none() {
                     crate::jev::record_item(
-                        JevLever::ECheapCompress,
-                        "defer:utility-budget",
-                        "bounded extractive task did not fit the utility input budget",
+                        Lever::ECheapCompress,
+                        "keep",
+                        "utility lane unavailable",
                         None,
                         None,
                     );
-                }
-
-                // The main model is a fallback, not a second
-                // utility attempt.  It gets its own source selection only
-                // after the utility has failed or deferred.
-                if replacement.is_none()
-                    && crate::jev::lever_active(JevLever::ECheapCompress)
-                    && let Some(main_lane) = self.tool_result_main_lane().await
-                {
-                    let main_budget = main_lane
-                        .max_payload_bytes()
-                        .saturating_sub(evidence_question.len().saturating_add(512));
-                    if let Some(evidence) = compression_source_for_lane(output, &body, main_budget).await
-                        && let Some(main_request) = main_lane.task_request(
-                        EXTRACTIVE_TASK,
-                        &evidence,
-                        &evidence_question,
-                    ) {
-                        let effort = main_lane.client().attribution_applied_effort(
-                            main_request.reasoning_effort,
-                            main_request.max_output_tokens,
-                        );
-                        let main_key = crate::jev_cheap::optional_compression_key(
-                            &main_lane.client().attribution_endpoint(),
-                            main_lane.model(),
-                            EXTRACTIVE_TASK,
-                            effort.as_deref().unwrap_or("provider_default"),
-                            source_kind,
-                        );
-                        let main_allowed =
-                            crate::jev_cheap::optional_compression_allowed(&main_key);
-                        if main_allowed
-                            && jev_wants_main_compression(
-                                &main_lane,
-                                &body,
-                                &evidence,
-                                &evidence_question,
-                                &main_key,
-                            )
-                            .await
-                        {
-                            let attempt = super::side_call::auxiliary_attempt(
-                                main_lane.client(),
-                                &main_request,
-                            );
-                            let mut cancellation_guard =
-                                MainAttemptCancellationGuard::new(
-                                    self,
-                                    attempt.clone(),
-                                    Some(main_key.clone()),
+                } else if let Some(utility) = utility {
+                    let source_handle = if matches!(output, ToolOutput::WebFetch(_)) {
+                        web_fetch_source_handle(output)
+                    } else {
+                        outcome.store_handle.clone().or_else(|| {
+                            crate::jev_store::store_payload(&body)
+                                .map(|path| path.display().to_string())
+                        })
+                    };
+                    let Some(handle) = source_handle else {
+                        break 'utility;
+                    };
+                    let question = format!(
+                        "{}\nTool: {}",
+                        compression_evidence_question(output, &request),
+                        distill_sampling_types::truncate_bytes(lane_command, 300)
+                    );
+                    let budget = utility
+                        .max_input_bytes()
+                        .saturating_sub(question.len().saturating_add(512));
+                    let source = match read_only_file.clone() {
+                        Some(raw) => raw,
+                        None => {
+                            let Some(source) =
+                                compression_source_for_lane(output, &body, budget).await
+                            else {
+                                crate::jev::record_item(
+                                    Lever::ECheapCompress,
+                                    "defer:utility-budget",
+                                    "source did not fit utility budget",
+                                    None,
+                                    None,
                                 );
-                            let call_started = std::time::Instant::now();
-                            cancellation_guard.mark_dispatched();
-                            let (response_result, rejected_response) =
-                                main_lane.collect(main_request).await;
-                            match response_result {
-                                Ok(response) => {
-                                    let answer = response.assistant_text();
-                                    let candidate = compression_replacement_for_output(
-                                        output,
-                                        &body,
-                                        &evidence,
-                                        &answer,
-                                        handle,
-                                        "main model",
-                                        typed_metadata.as_deref(),
-                                    );
-                                    let api_duration_ms =
-                                        Some(call_started.elapsed().as_millis() as u64);
-                                    if candidate.is_some() {
-                                        super::side_call::record_auxiliary_response(
-                                            self,
-                                            "jev_tool_result_main",
-                                            main_lane.model(),
-                                            &attempt,
-                                            &response,
-                                            api_duration_ms,
-                                            false,
-                                        );
-                                    } else {
-                                        super::side_call::record_auxiliary_rejected_response(
-                                            self,
-                                            "jev_tool_result_main",
-                                            main_lane.model(),
-                                            &attempt,
-                                            &response,
-                                            api_duration_ms,
-                                            false,
-                                        );
-                                    }
-                                    cancellation_guard.complete();
-                                    super::side_call::log_prompt_cache_usage(
-                                        "jev_tool_result_main",
-                                        main_lane.client().api_backend(),
-                                        &response,
-                                    );
-                                    if let Some(candidate) = candidate {
-                                        crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                                        crate::jev_cheap::note_optional_compression_success(
-                                            &main_key,
-                                        );
-                                        crate::jev_cheap::note_optional_compression_savings(
-                                            &main_key,
-                                            body.len(),
-                                            candidate.len(),
-                                        );
-                                        crate::jev::record_item(
-                                            JevLever::ECheapCompress,
-                                            "verify:accept",
-                                            "main-model extractive source-span contract",
-                                            None,
-                                            None,
-                                        );
-                                        replacement = Some((candidate, JevLever::ECheapCompress));
-                                    } else {
-                                        crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                                        crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
-                                        crate::jev_cheap::note_optional_compression_failure(
-                                            &main_key,
-                                        );
-                                        crate::jev::record_item(
-                                            JevLever::ECheapCompress,
-                                            "verify:reject",
-                                            "main-model answer did not retain required source evidence",
-                                            None,
-                                            None,
-                                        );
-                                    }
-                                }
-                                Err(_) => {
-                                    if let Some(response) = rejected_response {
-                                        super::side_call::record_auxiliary_rejected_response(
-                                            self,
-                                            "jev_tool_result_main",
-                                            main_lane.model(),
-                                            &attempt,
-                                            &response,
-                                            None,
-                                            false,
-                                        );
-                                    } else {
-                                        super::side_call::record_auxiliary_failures(
-                                            self,
-                                            std::slice::from_ref(&attempt),
-                                            false,
-                                        );
-                                    }
-                                    cancellation_guard.complete();
-                                    crate::jev_cheap::note_failure(JevLever::ECheapCompress);
-                                    crate::jev_cheap::note_optional_compression_failure(
-                                        &main_key,
-                                    );
-                                    crate::jev::record_item(
-                                        JevLever::ECheapCompress,
-                                        "main:failure",
-                                        "main model failed or was rejected; original retained",
-                                        None,
-                                        None,
-                                    );
+                                break 'utility;
+                            };
+                            source
+                        }
+                    };
+                    let kind =
+                        if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                            crate::utility_select::UnitKind::Paragraphs
+                        } else {
+                            crate::utility_select::UnitKind::Lines
+                        };
+                    // File lines keep blank lines so unit index + 1 is the line number.
+                    let units = if read_only_file.is_some() {
+                        source.lines().map(str::to_owned).collect()
+                    } else {
+                        crate::utility_select::build_units(&source, kind, 24 * 1024)
+                    };
+                    let evidence_source =
+                        task_output_body_evidence(output).unwrap_or_else(|| source.clone());
+                    let evidence: std::collections::HashSet<String> =
+                        if mcp_source
+                            || read_only_file.is_some()
+                            || matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_))
+                        {
+                            std::collections::HashSet::new()
+                        } else {
+                            crate::jev_lanes::required_tool_evidence(&evidence_source)
+                                .into_iter()
+                                .collect()
+                        };
+                    let match_listing =
+                        distill_workspace::jev::crushers::exact_output_kind(tool, lane_command)
+                            == distill_workspace::jev::crushers::ExactKind::Matches;
+                    let mut required =
+                        crate::utility_select::required_command_units(&units, &evidence);
+                    if mcp_source && !required.is_empty() {
+                        required[0] = true;
+                        let last = required.len() - 1;
+                        required[last] = true;
+                    }
+                    if match_listing {
+                        for (required, unit) in required.iter_mut().zip(&units) {
+                            if unit.starts_with("<workspace_result")
+                                || unit == "</workspace_result>"
+                                || unit.starts_with("Found ")
+                            {
+                                *required = true;
+                            }
+                        }
+                    }
+                    if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                        if !required.is_empty() {
+                            required[0] = true;
+                        }
+                    }
+                    let required_bytes: usize = units
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| required[*i])
+                        .map(|(_, u)| u.len())
+                        .sum();
+                    if required_bytes * 100 >= source.len().saturating_mul(60) {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "defer:required-dominates",
+                            "required units dominate source",
+                            None,
+                            None,
+                        );
+                        break 'utility;
+                    }
+                    let Some(kept) = select_units_with_lane(
+                        &utility,
+                        &UnitSelection {
+                            units: &units,
+                            required: &required,
+                            kind,
+                            question: &question,
+                            source_kind,
+                            handle: &handle,
+                            cap: utility.max_payload_bytes().min(budget),
+                            review: SelectionReview::Rebuilt,
+                            attribute_to_prompt: true,
+                        },
+                    )
+                    .await
+                    else {
+                        break 'utility;
+                    };
+                    let mut kept = kept;
+                    if let ToolOutput::WebSearch(search) = output {
+                        for citation in &search.citations {
+                            if !kept.iter().any(|i| units[*i].contains(citation)) {
+                                if let Some(i) =
+                                    units.iter().position(|unit| unit.contains(citation))
+                                {
+                                    kept.insert(i);
                                 }
                             }
-                        } else if !main_allowed {
-                            crate::jev::record_item(
-                                JevLever::ECheapCompress,
-                                "defer:main-failure-bound",
-                                "main model reached the optional compression failure bound",
-                                None,
-                                None,
-                            );
                         }
+                    }
+                    let replacement = if read_only_file.is_some() {
+                        format!(
+                            "{}[compressed by verified utility selection; full output stored at {handle}]",
+                            crate::utility_select::reconstruct_anchored_lines(&units, &kept)
+                        )
+                    } else {
+                        crate::utility_select::reconstruct(
+                        &units,
+                        &kept,
+                        kind,
+                        typed_tool_metadata(output).as_deref(),
+                        &handle,
+                        if match_listing {
+                            format!(
+                                "[kept {} of {} match lines by verified utility selection; full output stored at {handle}]",
+                                kept.len(),
+                                units.len()
+                            )
+                        } else {
+                            format!(
+                                "[compressed by verified utility selection; full output stored at {handle}]"
+                            )
+                        },
+                        )
+                    };
+                    if replacement.len() * 100 < body.len() * 70 {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "compress",
+                            "verified utility selection",
+                            None,
+                            None,
+                        );
+                        body = replacement;
+                        compressed_by_utility = true;
                     } else {
                         crate::jev::record_item(
-                            JevLever::ECheapCompress,
-                            "defer:main-budget",
-                            "bounded extractive task did not fit the main model",
+                            Lever::ECheapCompress,
+                            "not_shorter",
+                            "utility selection did not reach 70% threshold",
                             None,
                             None,
                         );
                     }
                 }
-            } else {
-                crate::jev::record_item(
-                    Lever::ECheapCompress,
-                    "rejected",
-                    "raw output store refused the source; original retained",
-                    None,
-                    None,
-                );
-            }
-            if let Some((candidate, lever)) = replacement {
-                crate::jev::record_item(
-                    lever,
-                    "compress",
-                    &format!(
-                        "{} bytes -> {} bytes by the {} task; source handle retained",
-                        body.len(),
-                        candidate.len(),
-                        if lever == JevLever::ECheapCompress {
-                            "main model"
-                        } else {
-                            "utility"
-                        },
-                    ),
-                    None,
-                    None,
-                );
-                body = candidate;
-            } else if source_handle.is_some() {
-                crate::jev::record_item(
-                    Lever::ECheapCompress,
-                    "rejected",
-                    "utility and main model produced no verified extractive replacement; original retained",
-                    None,
-                    None,
-                );
             }
         }
 
         // ---- A1: rank the files a grep hit, before the model reads them ----
-        if !request.is_empty() && (tool == "grep" || tool == "search") {
+        if !compressed_by_utility && !request.is_empty() && (tool == "grep" || tool == "search") {
             let files = file_paths_in(&body);
             if files.len() > 1 {
                 let reasons = snippet_per_file(&body, &files);
@@ -1415,12 +1519,11 @@ impl SessionActor {
         }
 
         // P2 is a selective document lookup, never a lossy rewrite of source code.
-        if let distill_tools::types::output::ToolOutput::ReadFile(
+        if !compressed_by_utility
+            && let distill_tools::types::output::ToolOutput::ReadFile(
             distill_tools::types::output::ReadFileOutput::FileContent(file),
         ) = output
-            && file.offset.is_none()
-            && file.limit.is_none()
-            && file.raw_output.lines().count() >= file.total_lines
+            && is_whole_file_read(file)
             && matches!(
                 file.absolute_path.extension().and_then(|s| s.to_str()),
                 Some("md" | "txt")
@@ -1949,128 +2052,59 @@ fn failing_tests(body: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn read_only_tool_names_require_no_editing_tools() {
+        assert!(!session_is_read_only(["read_file", "edit"]));
+        assert!(session_is_read_only(["read_file", "grep"]));
+    }
+
+    #[test]
+    fn mcp_compression_name_resolves_dispatch_and_excludes_readers() {
+        assert_eq!(
+            mcp_compression_name("use_tool", Some("playwright__browser_snapshot")),
+            Some("browser_snapshot".to_owned())
+        );
+        assert_eq!(
+            mcp_compression_name("use_tool", Some("cursor__read_file")),
+            None
+        );
+        assert_eq!(mcp_compression_name("server__get_file", None), None);
+        assert_eq!(mcp_compression_name("read_file", None), None);
+        assert_eq!(
+            mcp_compression_name("slack__get_thread", None),
+            Some("get_thread".to_owned())
+        );
+        assert_eq!(mcp_compression_name("fs__read", None), None);
+    }
+
     fn set_utility_review_choices(choices: &[&str]) {
         crate::jev::set_test_decision_answers(choices.iter().map(|choice| {
             Some(crate::jev_cheap::test_utility_review_answer(choice))
         }));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    #[serial_test::serial]
-    async fn main_compression_fallback_requires_jev_approval() {
-        let main_lane =
-            crate::jev_cheap::MainLane::from_sampler_config(distill_sampler::SamplerConfig {
-                model: "main-model".to_owned(),
-                base_url: "http://127.0.0.1:1/v1".to_owned(),
-                context_window: 32_000,
-                api_key: Some("test-key".to_owned()),
-                ..Default::default()
-            })
-            .expect("main lane");
-        set_utility_review_choices(&["reject"]);
-        let allowed = crate::jev::with_session_scope(
-            "main-compression-rejected",
-            jev_wants_main_compression(
-                &main_lane,
-                "source text",
-                "source text",
-                "summarize",
-                &crate::jev_cheap::optional_compression_key(
-                    "test",
-                    "test",
-                    "cite_spans",
-                    "none",
-                    "checks",
-                ),
-            ),
-        )
-        .await;
-        assert!(!allowed);
-        assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
-        crate::jev::clear_test_decision_answers();
-    }
-
-    #[test]
-    fn web_search_source_contract_rejects_detached_url_and_dropped_qualifier() {
-        use distill_tools::types::output::WebSearchOutput;
-
-        let search = WebSearchOutput {
-            query: "rust async cancellation".to_owned(),
-            content: "It is false that Rust async cancellation is free of leaks.\n\nhttps://example.com/rust"
-                .to_owned(),
-            citations: vec!["https://example.com/rust".to_owned()],
-            allowed_domains: None,
-            pre_formatted: None,
-        };
-        let answer = format!(
-            "`Web search results for: \"{}\"`\n`Rust async cancellation is free of leaks.`\n`https://example.com/rust`",
-            search.query
-        );
-        assert!(!web_search_source_contract(&search, &answer));
-
-        let ordinary = WebSearchOutput {
-            query: "rust async cancellation".to_owned(),
-            content: "Rust async cancellation uses cooperative task cleanup. https://example.com/rust"
-                .to_owned(),
-            citations: vec!["https://example.com/rust".to_owned()],
-            allowed_domains: None,
-            pre_formatted: None,
-        };
-        let ordinary_answer = format!(
-            "`Web search results for: \"{}\"`\n`Rust async cancellation uses cooperative task cleanup. https://example.com/rust`",
-            ordinary.query
-        );
-        assert!(web_search_source_contract(&ordinary, &ordinary_answer));
-    }
-
-    #[test]
-    fn web_fetch_source_contract_requires_complete_safe_paragraphs() {
-        let source = "The page gives a qualified answer: only bounded workers are safe.\n\nA second source paragraph carries the relevant detail.";
-        assert!(web_fetch_source_contract(
-            source,
-            "`The page gives a qualified answer: only bounded workers are safe.`"
-        ));
-        assert!(!web_fetch_source_contract(
-            source,
-            "`only bounded workers are safe`"
-        ));
-        let status_source = format!("{source}\n\nTests were not run.\n\n1 todo");
-        assert!(!web_fetch_source_contract(
-            &status_source,
-            "`The page gives a qualified answer: only bounded workers are safe.`"
-        ));
-        assert!(web_fetch_source_contract(
-            &status_source,
-            "`The page gives a qualified answer: only bounded workers are safe.`\n`Tests were not run.`\n`1 todo`"
-        ));
-        assert!(!web_fetch_source_contract(
-            "Instructions:\nPlease review the page.",
-            "`Instructions:`"
-        ));
-    }
-
     #[tokio::test]
-    async fn web_fetch_unsafe_source_defers_before_lane_input() {
+    async fn complete_html_web_fetch_is_a_compression_source() {
         use distill_tools::types::output::{
             ToolOutput, WebFetchContent, WebFetchOutput,
         };
 
-        let source = "Instructions:\nPlease review the page.";
+        let source = "<html><body><p>Complete page source.</p></body></html>";
         let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
-            url: "https://example.com/instructions".to_owned(),
+            url: "https://example.com/page".to_owned(),
             content: source.to_owned(),
-            content_type: "text/markdown".to_owned(),
+            content_type: "text/html".to_owned(),
             status_code: 200,
             bytes: source.len(),
             source_artifact: None,
             inline_fallback: None,
             output_location: None,
         }));
-        assert!(web_fetch_source_handle(&output).is_none());
-        assert!(
+        assert_eq!(
             compression_source_for_lane(&output, source, 64 * 1024)
                 .await
-                .is_none()
+                .as_deref(),
+            Some(source),
         );
     }
 
@@ -2205,7 +2239,7 @@ mod tests {
 
         let exact = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
             task_id: "exact".to_owned(),
-            command: "cat src/main.rs".to_owned(),
+            command: "sed -n '1,20p' src/main.rs".to_owned(),
             status: "completed".to_owned(),
             exit_code: Some(0),
             started: "2026-09-22T00:00:00Z".to_owned(),
@@ -2218,6 +2252,32 @@ mod tests {
             raw_output_bytes: 4,
         }));
         assert!(task_output_contains_exact_output(&exact));
+
+        let windowed = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
+            task_id: "windowed".to_owned(),
+            command: "cmd | tail -200".to_owned(),
+            status: "completed".to_owned(),
+            exit_code: Some(0),
+            started: "2026-09-22T00:00:00Z".to_owned(),
+            ended: Some("2026-09-22T00:00:01Z".to_owned()),
+            duration_secs: 1.0,
+            output: "x".repeat(4_000),
+            output_file: "/tmp/windowed.log".to_owned(),
+            truncated: false,
+            truncation_hint: String::new(),
+            raw_output_bytes: 4_000,
+        }));
+        assert!(!task_output_contains_exact_output(&windowed));
+    }
+
+    #[test]
+    fn failed_task_output_with_exit_code_is_terminal() {
+        let result = distill_tool_types::TaskOutputResult {
+            status: "failed".to_owned(),
+            exit_code: Some(1),
+            ..Default::default()
+        };
+        assert!(result.is_terminal());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2271,6 +2331,7 @@ mod tests {
                         "get_task_output",
                         "",
                         "mixed-task-output-call",
+                        None,
                         &output,
                         rendered.clone(),
                     )
@@ -2280,21 +2341,92 @@ mod tests {
             .await;
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn production_compression_bounds_unavailable_lanes_and_recovers_in_new_context() {
-        use distill_test_support::sse::responses_api_script_exact;
-        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
-        use distill_tools::types::output::{BashOutput, ToolOutput};
+    /// Terminal stub: `get_task` answers from a fixed list of snapshots.
+    #[derive(Debug)]
+    struct SnapshotTerminal(Vec<distill_tools::computer::types::TaskSnapshot>);
 
-        std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("test runtime");
-                tokio::task::LocalSet::new().block_on(&runtime, async {
+    #[async_trait::async_trait]
+    impl distill_tools::computer::types::TerminalBackend for SnapshotTerminal {
+        async fn run(
+            &self,
+            _: distill_tools::computer::types::TerminalRunRequest,
+        ) -> Result<
+            distill_tools::computer::types::TerminalRunResult,
+            distill_tools::computer::types::ComputerError,
+        > {
+            unimplemented!()
+        }
+        async fn run_background(
+            &self,
+            _: distill_tools::computer::types::TerminalRunRequest,
+        ) -> Result<
+            distill_tools::computer::types::BackgroundHandle,
+            distill_tools::computer::types::ComputerError,
+        > {
+            unimplemented!()
+        }
+        async fn get_task(
+            &self,
+            task_id: &str,
+        ) -> Option<distill_tools::computer::types::TaskSnapshot> {
+            self.0.iter().find(|task| task.task_id == task_id).cloned()
+        }
+        async fn kill_task(&self, _: &str) -> distill_tools::computer::types::KillOutcome {
+            distill_tools::computer::types::KillOutcome::NotFound
+        }
+        async fn wait_for_completion(
+            &self,
+            _: &str,
+            _: Option<std::time::Duration>,
+        ) -> Option<distill_tools::computer::types::TaskSnapshot> {
+            None
+        }
+        async fn list_tasks(&self) -> Vec<distill_tools::computer::types::TaskSnapshot> {
+            self.0.clone()
+        }
+    }
+
+    fn bash_snapshot(
+        task_id: &str,
+        command: &str,
+        completed: bool,
+    ) -> distill_tools::computer::types::TaskSnapshot {
+        distill_tools::computer::types::TaskSnapshot {
+            task_id: task_id.into(),
+            command: command.into(),
+            display_command: None,
+            cwd: String::new(),
+            start_time: std::time::SystemTime::now(),
+            end_time: completed.then(std::time::SystemTime::now),
+            output: String::new(),
+            output_file: std::path::PathBuf::new(),
+            truncated: false,
+            exit_code: completed.then_some(0),
+            signal: None,
+            completed,
+            kind: Default::default(),
+            block_waited: false,
+            explicitly_killed: false,
+            kill_result_delivered: false,
+            owner_session_id: None,
+            description: None,
+            is_backgrounded: true,
+            output_total_bytes: 0,
+        }
+    }
+
+    /// Two finished bash tasks with large outputs are compressed one by one;
+    /// a running task and a line-addressed command keep their bytes.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn multi_task_output_compresses_each_finished_bash_item_only() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_tool_types::{MultiTaskOutputResult, TaskOutputOutput, TaskOutputResult};
+        use distill_tools::types::output::ToolOutput;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
                 let home = tempfile::tempdir().expect("test Jev home");
                 std::fs::write(
                     home.path().join("config.toml"),
@@ -2302,332 +2434,144 @@ mod tests {
                 )
                 .expect("write test Jev config");
                 let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
-
-                let install_catalog = |actor: &SessionActor, server: &MockInferenceServer| {
-                    let mut utility = crate::agent::config::ModelEntry::fallback(
-                        "utility-model",
-                        &crate::agent::config::EndpointsConfig::default(),
-                    );
-                    utility.info.base_url = server.url();
-                    utility.info.context_window =
-                        std::num::NonZeroU64::new(48_000).expect("utility window");
-                    utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
-                    utility.api_key = Some("utility-test-key".to_owned());
-                    actor
-                        .models_manager
-                        .insert_test_entry("utility-model", utility);
-
-                    let mut main_entry = crate::agent::config::ModelEntry::fallback(
-                        "main-model",
-                        &crate::agent::config::EndpointsConfig::default(),
-                    );
-                    main_entry.info.base_url = server.url();
-                    main_entry.info.context_window =
-                        std::num::NonZeroU64::new(128_000).expect("main window");
-                    main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                    main_entry.info.max_retries = Some(0);
-                    main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-                    main_entry.info.supports_reasoning_effort = true;
-                    main_entry.info.reasoning_efforts = vec![
-                        distill_sampling_types::ReasoningEffortOption {
-                            id: "low".to_owned(),
-                            value: distill_sampling_types::ReasoningEffort::Low,
-                            label: "Low".to_owned(),
-                            description: Some("bounded test main model".to_owned()),
-                            default: true,
-                        },
-                    ];
-                    main_entry.api_key = Some("main-test-key".to_owned());
-                    actor
-                        .models_manager
-                        .insert_test_entry("main-model", main_entry);
-                };
-
-                let source = format!(
-                    "0 failed, 16 passed\n1 skipped: src/skip.test.ts\n{}",
-                    "progress noise\n".repeat(400)
-                );
-                let make_output = |source: &str| {
-                    ToolOutput::Bash(BashOutput {
-                        output: source.as_bytes().to_vec(),
-                        output_for_prompt: source.to_owned(),
-                        exit_code: 0,
-                        command: "cargo test --lib".to_owned(),
-                        truncated: false,
-                        signal: None,
-                        timed_out: false,
-                        description: None,
-                        current_dir: "/tmp".to_owned(),
-                        output_file: "/tmp/e3-tool-output".to_owned(),
-                        total_bytes: source.len(),
-                        output_delta: None,
-                        was_bare_echo: false,
-                    })
-                };
-                let output = make_output(&source);
-
                 let server = MockInferenceServer::start_with_models(vec![
                     MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("main-model").with_api_backend("responses"),
                 ])
                 .await
-                .expect("start first local inference stub");
-                server.enqueue_response(
-                    "/v1/chat/completions",
-                    ScriptedResponse::json(
-                        200,
-                        serde_json::json!({
-                            "id": "utility-rejected",
-                            "model": "utility-model",
-                            "choices": [{
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "`0 failed, 16 passed`"}
-                            }],
-                            "usage": {"prompt_tokens": 120, "completion_tokens": 4}
-                        }),
-                    ),
-                );
-                server.enqueue_response(
-                    "/v1/responses",
-                    ScriptedResponse::sse(responses_api_script_exact(
-                        "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`",
-                        "main-model",
-                    )),
-                );
-
+                .expect("start inference stub");
+                for id in ["multi-select-a", "multi-select-b"] {
+                    server.enqueue_response(
+                        "/v1/chat/completions",
+                        ScriptedResponse::json(
+                            200,
+                            serde_json::json!({
+                                "id": id,
+                                "model": "utility-model",
+                                "choices": [{
+                                    "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": "U3"}
+                                }],
+                                "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                            }),
+                        ),
+                    );
+                }
                 let actor = super::super::support::plain_actor().await;
-                install_catalog(&actor, &server);
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
                 crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
                     model: Some("utility-model".to_owned()),
                     ..Default::default()
                 });
                 actor
                     .models_manager
-                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
-                assert!(crate::jev::lever_active(JevLever::ECheapCompress));
-                assert!(!crate::jev::lever_active(JevLever::ECheapTask));
+                    .set_current_model_id(agent_client_protocol::ModelId::new("utility-model"));
+                set_utility_review_choices(&["accept", "accept"]);
 
-                set_utility_review_choices(&["allow", "allow"]);
-                let accepted = crate::jev::with_session_scope_and_recorder(
-                    "e3-production-order-accepted",
+                let big = |tag: &str| {
+                    let lines: String = (0..200)
+                        .map(|i| format!("{tag} progress line number {i} with padding text\n"))
+                        .collect();
+                    format!("{tag} start\n{lines}{tag} end\n")
+                };
+                let item = |task_id: &str, command: &str, status: &str| {
+                    let done = status == "completed";
+                    TaskOutputResult {
+                        task_id: task_id.to_owned(),
+                        command: command.to_owned(),
+                        status: status.to_owned(),
+                        exit_code: done.then_some(0),
+                        started: "2026-09-22T00:00:00Z".to_owned(),
+                        ended: done.then(|| "2026-09-22T00:00:01Z".to_owned()),
+                        duration_secs: 1.0,
+                        output: big(task_id),
+                        output_file: format!("/tmp/{task_id}.log"),
+                        truncated: false,
+                        truncation_hint: String::new(),
+                        raw_output_bytes: 10_000,
+                    }
+                };
+                let results = vec![
+                    item("alpha", "cargo test --lib", "completed"),
+                    item("running", "cargo build", "running"),
+                    item("window", "sed -n 1,400p f", "completed"),
+                    item("beta", "npm run build", "completed"),
+                ];
+                let terminal = SnapshotTerminal(
+                    results
+                        .iter()
+                        .map(|r| bash_snapshot(&r.task_id, &r.command, r.status == "completed"))
+                        .collect(),
+                );
+                {
+                    let bridge = actor.agent.borrow().tool_bridge().clone();
+                    let resources = bridge.shared_resources().await;
+                    resources
+                        .lock()
+                        .await
+                        .insert(distill_tools::types::resources::Terminal(
+                            std::sync::Arc::new(terminal),
+                        ));
+                }
+                let output = ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(
+                    MultiTaskOutputResult {
+                        mode: "wait_all".to_owned(),
+                        results: results.clone(),
+                        summary: "3/4 tasks completed (wait_all)".to_owned(),
+                    },
+                ));
+                let rendered = output.to_prompt_format();
+                for r in &results {
+                    assert_eq!(rendered.matches(r.output.as_str()).count(), 1, "{}", r.task_id);
+                }
+                let result = crate::jev::with_session_scope_and_recorder(
+                    "multi-task-output",
                     Some(actor.chat_state_handle.clone()),
                     actor.jev_post_process_tool_result(
-                        "run_terminal_command",
-                        "cargo test --lib",
-                        "call-accepted",
+                        "get_command_or_subagent_output",
+                        "",
+                        "multi-task-output-call",
+                        None,
                         &output,
-                        source.clone(),
+                        rendered.clone(),
                     ),
                 )
                 .await;
-                assert!(accepted.contains("compressed by verified main model"));
-                assert!(accepted.contains("full output stored at"));
-                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
-                assert_eq!(server.request_count_for("/v1/responses"), 1);
-                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
-                let request_models: Vec<String> = server
-                    .request_bodies()
-                    .into_iter()
-                    .filter_map(|body| {
-                        body.get("model")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .collect();
-                assert!(request_models.iter().any(|model| model == "utility-model"));
-                assert!(request_models.iter().any(|model| model == "main-model"));
-                let ledger = actor
-                    .chat_state_handle
-                    .try_get_session_usage()
-                    .await
-                    .expect("first ledger remains readable");
-                let utility_rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "utility")
-                    .collect();
-                let main_rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "auxiliary")
-                    .collect();
-                assert_eq!(utility_rows.len(), 1);
-                assert_eq!(main_rows.len(), 1);
-                assert_eq!(utility_rows[0].model_id, "utility-model");
-                assert_eq!(utility_rows[0].status, distill_chat_state::UsageCallStatus::Rejected);
-                assert!(utility_rows[0]
-                    .endpoint
-                    .as_deref()
-                    .is_some_and(|endpoint| endpoint.ends_with("/chat/completions")));
-                assert_eq!(main_rows[0].model_id, "main-model");
-                assert_eq!(main_rows[0].status, distill_chat_state::UsageCallStatus::Completed);
-                assert!(main_rows[0]
-                    .endpoint
-                    .as_deref()
-                    .is_some_and(|endpoint| endpoint.ends_with("/responses")));
-
-                let rejected_server = MockInferenceServer::start_with_models(vec![
-                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("main-model").with_api_backend("responses"),
-                ])
-                .await
-                .expect("start second local inference stub");
-                for _ in 0..2 {
-                    rejected_server.enqueue_response(
-                        "/v1/chat/completions",
-                        ScriptedResponse::text(503, "utility unavailable"),
-                    );
-                }
-                for _ in 0..2 {
-                    rejected_server.enqueue_response(
-                        "/v1/responses",
-                        ScriptedResponse::text(503, "worker unavailable"),
-                    );
-                }
-                let rejected_actor = super::super::support::plain_actor().await;
-                install_catalog(&rejected_actor, &rejected_server);
-                rejected_actor
-                    .models_manager
-                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
-                set_utility_review_choices(&["allow"; 12]);
-                let rejected_sources = vec![
-                    format!(
-                        "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nfirst payload\n{}",
-                        "progress noise\n".repeat(400)
-                    ),
-                    format!(
-                        "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nsecond payload\n{}",
-                        "progress noise\n".repeat(400)
-                    ),
-                    format!(
-                        "0 failed, 16 passed\n1 skipped: src/skip.test.ts\nthird payload\n{}",
-                        "progress noise\n".repeat(400)
-                    ),
-                ];
-                let retained = crate::jev::with_session_scope_and_recorder(
-                    "e3-production-order-rejected",
-                    Some(rejected_actor.chat_state_handle.clone()),
-                    async {
-                        let mut retained = Vec::new();
-                        for (index, source) in rejected_sources.iter().enumerate() {
-                            let output = make_output(source);
-                            retained.push(
-                                rejected_actor
-                                    .jev_post_process_tool_result(
-                                        "run_terminal_command",
-                                        "cargo test --lib",
-                                        &format!("call-rejected-{index}"),
-                                        &output,
-                                        source.clone(),
-                                    )
-                                    .await,
-                            );
-                        }
-                        retained
-                    },
-                )
-                .await;
-                assert_eq!(retained, rejected_sources);
-                assert_eq!(rejected_server.request_count_for("/v1/chat/completions"), 2);
-                assert_eq!(rejected_server.request_count_for("/v1/responses"), 2,
-                    "remaining_jev_answers={}, activity={:?}",
-                    crate::jev::test_decision_answers_remaining(),
-                    crate::jev::turn_activity_for_session("e3-production-order-rejected", None));
-                let rejected_request_bodies = serde_json::to_string(&rejected_server.request_bodies())
-                    .expect("serialize rejected request bodies");
-                assert!(rejected_request_bodies.contains("first payload"));
-                assert!(rejected_request_bodies.contains("second payload"));
-                assert!(!rejected_request_bodies.contains("third payload"));
-                let rejected_ledger = rejected_actor
-                    .chat_state_handle
-                    .try_get_session_usage()
-                    .await
-                    .expect("second ledger remains readable");
-                let rejected_rows: Vec<_> = rejected_ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "utility" || row.role == "auxiliary")
-                    .collect();
-                assert_eq!(rejected_rows.len(), 4);
-                assert_eq!(
-                    rejected_rows
-                        .iter()
-                        .filter(|row| row.role == "utility")
-                        .count(),
-                    2
-                );
-                assert_eq!(
-                    rejected_rows
-                        .iter()
-                        .filter(|row| row.role == "auxiliary")
-                        .count(),
-                    2
-                );
-                assert!(rejected_rows
-                    .iter()
-                    .all(|row| row.status == distill_chat_state::UsageCallStatus::Failed));
-
-                set_utility_review_choices(&["allow", "accept"]);
-                rejected_server.enqueue_response(
-                    "/v1/chat/completions",
-                    ScriptedResponse::json(
-                        200,
-                        serde_json::json!({
-                            "id": "utility-recovery",
-                            "model": "utility-model",
-                            "choices": [{
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`"}
-                            }],
-                            "usage": {"prompt_tokens": 120, "completion_tokens": 4}
-                        }),
-                    ),
-                );
-                let recovered = crate::jev::with_session_scope_and_recorder(
-                    "e3-production-order-recovery",
-                    Some(rejected_actor.chat_state_handle.clone()),
-                    rejected_actor.jev_post_process_tool_result(
-                        "run_terminal_command",
-                        "cargo test --lib",
-                        "call-recovery",
-                        &output,
-                        source.clone(),
-                    ),
-                )
-                .await;
-                assert!(recovered.contains("compressed by verified utility"));
-                assert_eq!(rejected_server.request_count_for("/v1/chat/completions"), 3);
-                assert_eq!(rejected_server.request_count_for("/v1/responses"), 2);
-                let recovered_ledger = rejected_actor
-                    .chat_state_handle
-                    .try_get_session_usage()
-                    .await
-                    .expect("recovery ledger remains readable");
-                let recovered_rows: Vec<_> = recovered_ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "utility" || row.role == "auxiliary")
-                    .collect();
-                assert_eq!(recovered_rows.len(), 5);
-                assert_eq!(
-                    recovered_rows
-                        .iter()
-                        .filter(|row| row.status == distill_chat_state::UsageCallStatus::Completed)
-                        .count(),
-                    1
-                );
-
                 crate::jev::clear_test_local_config();
-                });
+                crate::jev::clear_test_decision_answers();
+
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 2);
+                for compressed in [&results[0], &results[3]] {
+                    assert!(!result.contains(compressed.output.as_str()), "{result}");
+                    assert!(result.contains(&format!("{} start", compressed.task_id)));
+                    let footer = "[compressed by verified utility selection; full output stored at ";
+                    let at = result
+                        .match_indices(footer)
+                        .map(|(i, _)| i + footer.len())
+                        .find(|i| {
+                            let path = result[*i..].split(']').next().unwrap_or_default();
+                            std::fs::read_to_string(path).is_ok_and(|s| s == compressed.output)
+                        });
+                    assert!(at.is_some(), "no stored copy of {}: {result}", compressed.task_id);
+                }
+                assert_eq!(result.matches("full output stored at").count(), 2, "{result}");
+                assert!(result.contains(results[1].output.as_str()), "running stays verbatim");
+                assert!(result.contains(results[2].output.as_str()), "exact output stays verbatim");
+                assert!(rendered.len() - result.len() > 8_000, "{result}");
             })
-            .expect("spawn compression-bound test thread")
-            .join()
-            .expect("compression-bound test thread");
+            .await;
     }
 
-    /// A small shell result can never come back shorter after extraction plus the
-    /// recovery footer, so it must reach the model untouched without spending a
-    /// utility call or a main-model fallback.
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
     async fn small_shell_output_skips_utility_and_main_compression() {
@@ -2699,6 +2643,7 @@ mod tests {
                         "run_terminal_command",
                         "cargo test --lib",
                         "call-small",
+                        None,
                         &output,
                         source.clone(),
                     ),
@@ -2710,586 +2655,6 @@ mod tests {
                 assert!(!result.contains("compressed by verified"), "{result}");
                 assert!(result.starts_with(&source));
                 assert_eq!(server.request_count_for("/v1/chat/completions"), 0);
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    #[serial_test::serial]
-    async fn production_web_search_uses_utility_then_main_with_source_units() {
-        use distill_test_support::sse::responses_api_script_exact;
-        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
-        use distill_tools::types::output::{ToolOutput, WebSearchOutput};
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let home = tempfile::tempdir().expect("test Jev home");
-                std::fs::write(
-                    home.path().join("config.toml"),
-                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
-                )
-                .expect("write test Jev config");
-                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
-
-                let query = "rust async cancellation";
-                let alpha = "Result alpha: It is false that Rust async cancellation is free of leaks. https://example.com/rust";
-                let beta = "Result beta: Rust async cancellation requires a bounded worker. https://example.com/cancellation";
-                let source_content = format!(
-                    "{alpha}\n\n{beta}\n\n{}",
-                    (0..300).map(|line| format!("supporting search context {line}\n")).collect::<String>()
-                );
-                let utility_answer = format!(
-                    "`Web search results for: \"{query}\"`\n`Rust async cancellation is free of leaks`"
-                );
-                let main_answer = format!(
-                    "`Web search results for: \"{query}\"`\n`{alpha}`\n`{beta}`"
-                );
-
-                let server = MockInferenceServer::start_with_models(vec![
-                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("main-model").with_api_backend("responses"),
-                ])
-                .await
-                .expect("start web-search inference stub");
-                server.enqueue_response(
-                    "/v1/chat/completions",
-                    ScriptedResponse::json(
-                        200,
-                        serde_json::json!({
-                            "id": "web-search-utility-rejected",
-                            "model": "utility-model",
-                            "choices": [{
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": utility_answer}
-                            }],
-                            "usage": {"prompt_tokens": 120, "completion_tokens": 12}
-                        }),
-                    ),
-                );
-                server.enqueue_response(
-                    "/v1/responses",
-                    ScriptedResponse::sse(responses_api_script_exact(
-                        &main_answer,
-                        "main-model",
-                    )),
-                );
-
-                let actor = super::super::support::plain_actor().await;
-                let mut utility = crate::agent::config::ModelEntry::fallback(
-                    "utility-model",
-                    &crate::agent::config::EndpointsConfig::default(),
-                );
-                utility.info.base_url = server.url();
-                utility.info.context_window =
-                    std::num::NonZeroU64::new(48_000).expect("utility window");
-                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
-                utility.api_key = Some("utility-test-key".to_owned());
-                actor
-                    .models_manager
-                    .insert_test_entry("utility-model", utility);
-
-                let mut main_entry = crate::agent::config::ModelEntry::fallback(
-                    "main-model",
-                    &crate::agent::config::EndpointsConfig::default(),
-                );
-                main_entry.info.base_url = server.url();
-                main_entry.info.context_window =
-                    std::num::NonZeroU64::new(128_000).expect("main window");
-                main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                main_entry.info.max_retries = Some(0);
-                main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-                main_entry.info.supports_reasoning_effort = true;
-                main_entry.info.reasoning_efforts = vec![
-                    distill_sampling_types::ReasoningEffortOption {
-                        id: "low".to_owned(),
-                        value: distill_sampling_types::ReasoningEffort::Low,
-                        label: "Low".to_owned(),
-                        description: Some("bounded test main model".to_owned()),
-                        default: true,
-                    },
-                ];
-                main_entry.api_key = Some("main-test-key".to_owned());
-                actor
-                    .models_manager
-                    .insert_test_entry("main-model", main_entry);
-
-                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
-                    model: Some("utility-model".to_owned()),
-                    ..Default::default()
-                });
-                actor
-                    .models_manager
-                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
-
-                set_utility_review_choices(&["allow", "allow"]);
-                let output = ToolOutput::WebSearch(WebSearchOutput {
-                    query: query.to_owned(),
-                    content: source_content,
-                    citations: vec![
-                        "https://example.com/rust".to_owned(),
-                        "https://example.com/cancellation".to_owned(),
-                    ],
-                    allowed_domains: None,
-                    pre_formatted: None,
-                });
-                let rendered = output.to_prompt_format();
-                assert!(rendered.len() >= context::BIG_OUTPUT_BYTES);
-                let compressed = crate::jev::with_session_scope_and_recorder(
-                    "e3-web-search-utility-main",
-                    Some(actor.chat_state_handle.clone()),
-                    actor.jev_post_process_tool_result(
-                        "web_search",
-                        "",
-                        "web-search-call-1",
-                        &output,
-                        rendered,
-                    ),
-                )
-                .await;
-
-                assert!(
-                    compressed.contains("compressed by verified main model"),
-                    "expected main-model fallback: {compressed}"
-                );
-                assert!(compressed.contains("full output stored at"));
-                assert!(compressed.contains(&format!("header: Web search results for: \"{query}\"")));
-                assert!(compressed.contains(&format!("query: {query}")));
-                assert!(
-                    compressed.contains(alpha),
-                    "complete negated source unit was not retained: {compressed}"
-                );
-                assert!(compressed.contains(beta));
-                assert!(compressed.contains("https://example.com/rust"));
-                assert!(compressed.contains("https://example.com/cancellation"));
-                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
-                assert_eq!(server.request_count_for("/v1/responses"), 1);
-
-                let ledger = actor
-                    .chat_state_handle
-                    .try_get_session_usage()
-                    .await
-                    .expect("web-search ledger remains readable");
-                let utility_rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "utility")
-                    .collect();
-                let main_rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "auxiliary")
-                    .collect();
-                assert_eq!(utility_rows.len(), 1);
-                assert_eq!(main_rows.len(), 1);
-                assert_eq!(utility_rows[0].model_id, "utility-model");
-                assert_eq!(
-                    utility_rows[0].status,
-                    distill_chat_state::UsageCallStatus::Rejected
-                );
-                assert_eq!(main_rows[0].model_id, "main-model");
-                assert_eq!(
-                    main_rows[0].status,
-                    distill_chat_state::UsageCallStatus::Completed
-                );
-                assert!(utility_rows[0]
-                    .endpoint
-                    .as_deref()
-                    .is_some_and(|endpoint| endpoint.ends_with("/chat/completions")));
-                assert!(main_rows[0]
-                    .endpoint
-                    .as_deref()
-                    .is_some_and(|endpoint| endpoint.ends_with("/responses")));
-
-                crate::jev::clear_test_local_config();
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    #[serial_test::serial]
-    async fn production_web_fetch_uses_utility_then_main_with_bounded_artifact() {
-        use distill_test_support::sse::responses_api_script_exact;
-        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
-        use distill_tools::types::output::{
-            ToolOutput, WebFetchContent, WebFetchOutput, WebFetchSourceArtifact,
-        };
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let home = tempfile::tempdir().expect("test Jev home");
-                std::fs::write(
-                    home.path().join("config.toml"),
-                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
-                )
-                .expect("write test Jev config");
-                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
-
-                let url = "https://example.com/recoverable-page";
-                let alpha =
-                    "The page states alpha: bounded utility compression preserves the source.";
-                let beta =
-                    "The page states beta: a main model may retain a second paragraph.";
-                let source_content = format!(
-                    "{alpha}\n\n{beta}\n\n{}",
-                    (0..300).map(|line| format!("supporting page context {line}\n")).collect::<String>()
-                );
-                let artifact_dir = tempfile::tempdir().expect("web fetch artifact directory");
-                let artifact_path = artifact_dir.path().join("page.md");
-                std::fs::write(&artifact_path, &source_content).expect("write source artifact");
-                let preview = format!(
-                    "{}\n\n[web_fetch content truncated: showing first 6500 of {} bytes.]",
-                    (0..500).map(|line| format!("preview line {line}\n")).collect::<String>(),
-                    source_content.len()
-                );
-                let utility_answer = "`The page states alpha`";
-                let main_answer = format!("`{alpha}`\n`{beta}`");
-
-                let server = MockInferenceServer::start_with_models(vec![
-                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("main-model").with_api_backend("responses"),
-                ])
-                .await
-                .expect("start web-fetch inference stub");
-                server.enqueue_response(
-                    "/v1/chat/completions",
-                    ScriptedResponse::json(
-                        200,
-                        serde_json::json!({
-                            "id": "web-fetch-utility-rejected",
-                            "model": "utility-model",
-                            "choices": [{
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": utility_answer}
-                            }],
-                            "usage": {"prompt_tokens": 120, "completion_tokens": 12}
-                        }),
-                    ),
-                );
-                server.enqueue_response(
-                    "/v1/responses",
-                    ScriptedResponse::sse(responses_api_script_exact(
-                        &main_answer,
-                        "main-model",
-                    )),
-                );
-
-                let actor = super::super::support::plain_actor().await;
-                let mut utility = crate::agent::config::ModelEntry::fallback(
-                    "utility-model",
-                    &crate::agent::config::EndpointsConfig::default(),
-                );
-                utility.info.base_url = server.url();
-                utility.info.context_window =
-                    std::num::NonZeroU64::new(48_000).expect("utility window");
-                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
-                utility.api_key = Some("utility-test-key".to_owned());
-                actor
-                    .models_manager
-                    .insert_test_entry("utility-model", utility);
-
-                let mut main_entry = crate::agent::config::ModelEntry::fallback(
-                    "main-model",
-                    &crate::agent::config::EndpointsConfig::default(),
-                );
-                main_entry.info.base_url = server.url();
-                main_entry.info.context_window =
-                    std::num::NonZeroU64::new(128_000).expect("main window");
-                main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                main_entry.info.max_retries = Some(0);
-                main_entry.info.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
-                main_entry.info.supports_reasoning_effort = true;
-                main_entry.info.reasoning_efforts = vec![
-                    distill_sampling_types::ReasoningEffortOption {
-                        id: "low".to_owned(),
-                        value: distill_sampling_types::ReasoningEffort::Low,
-                        label: "Low".to_owned(),
-                        description: Some("bounded test main model".to_owned()),
-                        default: true,
-                    },
-                ];
-                main_entry.api_key = Some("main-test-key".to_owned());
-                actor
-                    .models_manager
-                    .insert_test_entry("main-model", main_entry);
-
-                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
-                    model: Some("utility-model".to_owned()),
-                    ..Default::default()
-                });
-                actor
-                    .models_manager
-                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
-
-                set_utility_review_choices(&["allow", "allow"]);
-                let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
-                    url: url.to_owned(),
-                    content: preview,
-                    content_type: "text/markdown".to_owned(),
-                    status_code: 200,
-                    bytes: source_content.len(),
-                    source_artifact: Some(WebFetchSourceArtifact {
-                        path: artifact_path.clone(),
-                    }),
-                    inline_fallback: Some("bounded preview".to_owned()),
-                    output_location: None,
-                }));
-                let rendered = output.to_prompt_format();
-                assert!(rendered.len() >= context::BIG_OUTPUT_BYTES);
-                let compressed = crate::jev::with_session_scope_and_recorder(
-                    "e3-web-fetch-utility-main",
-                    Some(actor.chat_state_handle.clone()),
-                    actor.jev_post_process_tool_result(
-                        "web_fetch",
-                        "",
-                        "web-fetch-call-1",
-                        &output,
-                        rendered,
-                    ),
-                )
-                .await;
-
-                assert!(
-                    compressed.contains("compressed by verified main model"),
-                    "expected main-model fallback: {compressed}"
-                );
-                assert!(compressed.contains(artifact_path.to_string_lossy().as_ref()));
-                assert!(compressed.contains(&format!("url: {url}")));
-                assert!(compressed.contains("content_type: text/markdown"));
-                assert!(compressed.contains("status_code: 200"));
-                assert!(compressed.contains(&format!("bytes: {}", source_content.len())));
-                assert!(compressed.contains(alpha));
-                assert!(compressed.contains(beta));
-                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
-                assert_eq!(server.request_count_for("/v1/responses"), 1);
-
-                let ledger = actor
-                    .chat_state_handle
-                    .try_get_session_usage()
-                    .await
-                    .expect("web-fetch ledger remains readable");
-                let utility_rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "utility")
-                    .collect();
-                let main_rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "auxiliary")
-                    .collect();
-                assert_eq!(utility_rows.len(), 1);
-                assert_eq!(main_rows.len(), 1);
-                assert_eq!(
-                    utility_rows[0].status,
-                    distill_chat_state::UsageCallStatus::Rejected
-                );
-                assert_eq!(
-                    main_rows[0].status,
-                    distill_chat_state::UsageCallStatus::Completed
-                );
-
-                crate::jev::clear_test_local_config();
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    #[serial_test::serial]
-    async fn production_task_output_uses_utility_then_main_with_typed_status() {
-        use distill_test_support::sse::responses_api_script_exact;
-        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
-        use distill_tools::computer::types::{TaskKind, TerminalBackend, TerminalRunRequest};
-        use distill_tools::notification::ToolNotificationHandle;
-        use distill_tools::types::resources::Terminal;
-        use distill_tool_types::{TaskOutputOutput, TaskOutputResult};
-        use distill_tools::types::output::ToolOutput;
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let home = tempfile::tempdir().expect("test Jev home");
-                std::fs::write(
-                    home.path().join("config.toml"),
-                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
-                )
-                .expect("write test Jev config");
-                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
-
-                let server = MockInferenceServer::start_with_models(vec![
-                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                    MockModelEntry::new("main-model").with_api_backend("responses"),
-                ])
-                .await
-                .expect("start task-output inference stub");
-                server.enqueue_response(
-                    "/v1/chat/completions",
-                    ScriptedResponse::json(
-                        200,
-                        serde_json::json!({
-                            "id": "task-output-utility-rejected",
-                            "model": "utility-model",
-                            "choices": [{
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "`0 failed, 16 passed`"}
-                            }],
-                            "usage": {"prompt_tokens": 120, "completion_tokens": 4}
-                        }),
-                    ),
-                );
-                server.enqueue_response(
-                    "/v1/responses",
-                    ScriptedResponse::sse(responses_api_script_exact(
-                        "`0 failed, 16 passed`\n`1 skipped: src/skip.test.ts`",
-                        "main-model",
-                    )),
-                );
-
-                let actor = super::super::support::plain_actor().await;
-                let bridge = actor.agent.borrow().tool_bridge().clone();
-                let resources = bridge.shared_resources().await;
-                let terminal = {
-                    let resources = resources.lock().await;
-                    resources
-                        .get::<Terminal>()
-                        .map(|terminal| std::sync::Arc::clone(&terminal.0))
-                        .expect("test tool bridge terminal backend")
-                };
-                let task_dir = tempfile::tempdir().expect("task output directory");
-                let task_command = "printf '0 failed, 16 passed\\n1 skipped: src/skip.test.ts\\n'; i=0; while [ \"$i\" -lt 800 ]; do printf 'progress noise %s\\n' \"$i\"; i=$((i + 1)); done";
-                let task = terminal
-                    .run_background(TerminalRunRequest {
-                        command: task_command.to_owned(),
-                        working_directory: std::path::PathBuf::from("/tmp"),
-                        env: std::collections::HashMap::new(),
-                        timeout: std::time::Duration::from_secs(20),
-                        output_byte_limit: 100_000,
-                        output_file: task_dir.path().join("task-output.log"),
-                        notification_handle: ToolNotificationHandle::noop(),
-                        tool_call_id: "task-output-call-1".to_owned(),
-                        display_command: Some(task_command.to_owned()),
-                        auto_background_on_timeout: false,
-                        foreground_block_budget: None,
-                        kind: TaskKind::Bash,
-                        owner_session_id: None,
-                        description: None,
-                    })
-                    .await
-                    .expect("start terminal task");
-                let snapshot = terminal
-                    .wait_for_completion(&task.task_id, Some(std::time::Duration::from_secs(20)))
-                    .await
-                    .expect("terminal task snapshot");
-                assert!(snapshot.completed, "test terminal task must complete");
-                let output_text = snapshot.output.clone();
-                let output_file = snapshot.output_file.display().to_string();
-                let mut utility = crate::agent::config::ModelEntry::fallback(
-                    "utility-model",
-                    &crate::agent::config::EndpointsConfig::default(),
-                );
-                utility.info.base_url = server.url();
-                utility.info.context_window =
-                    std::num::NonZeroU64::new(48_000).expect("utility window");
-                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
-                utility.api_key = Some("utility-test-key".to_owned());
-                actor
-                    .models_manager
-                    .insert_test_entry("utility-model", utility);
-
-                let mut main_entry = crate::agent::config::ModelEntry::fallback(
-                    "main-model",
-                    &crate::agent::config::EndpointsConfig::default(),
-                );
-                main_entry.info.base_url = server.url();
-                main_entry.info.context_window =
-                    std::num::NonZeroU64::new(128_000).expect("main window");
-                main_entry.info.api_backend = distill_sampling_types::ApiBackend::Responses;
-                main_entry.info.max_retries = Some(0);
-                main_entry.info.reasoning_effort =
-                    Some(distill_sampling_types::ReasoningEffort::Low);
-                main_entry.info.supports_reasoning_effort = true;
-                main_entry.info.reasoning_efforts = vec![
-                    distill_sampling_types::ReasoningEffortOption {
-                        id: "low".to_owned(),
-                        value: distill_sampling_types::ReasoningEffort::Low,
-                        label: "Low".to_owned(),
-                        description: Some("bounded test main model".to_owned()),
-                        default: true,
-                    },
-                ];
-                main_entry.api_key = Some("main-test-key".to_owned());
-                actor
-                    .models_manager
-                    .insert_test_entry("main-model", main_entry);
-
-                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
-                    model: Some("utility-model".to_owned()),
-                    ..Default::default()
-                });
-                actor
-                    .models_manager
-                    .set_current_model_id(agent_client_protocol::ModelId::new("main-model"));
-
-                set_utility_review_choices(&["allow", "allow"]);
-                let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(
-                    TaskOutputResult {
-                        task_id: snapshot.task_id.clone(),
-                        command: snapshot
-                            .display_command
-                            .clone()
-                            .unwrap_or_else(|| snapshot.command.clone()),
-                        status: "completed".to_owned(),
-                        exit_code: snapshot.exit_code,
-                        started: "2026-09-22T00:00:00Z".to_owned(),
-                        ended: Some("2026-09-22T00:00:01Z".to_owned()),
-                        duration_secs: 1.0,
-                        output: output_text,
-                        output_file: output_file.clone(),
-                        truncated: snapshot.truncated,
-                        truncation_hint: "[truncated - use read_file on output_file for full content]"
-                            .to_owned(),
-                        raw_output_bytes: snapshot.output_total_bytes.max(snapshot.output.len()),
-                    },
-                ));
-                let rendered = output.to_prompt_format();
-                let compressed = crate::jev::with_session_scope_and_recorder(
-                    "e3-task-output-utility-main",
-                    Some(actor.chat_state_handle.clone()),
-                    actor.jev_post_process_tool_result(
-                        "get_task_output",
-                        "",
-                        "task-output-call-1",
-                        &output,
-                        rendered,
-                    ),
-                )
-                .await;
-
-                let activity = crate::jev::turn_activity_for_session(
-                    "e3-task-output-utility-main",
-                    None,
-                );
-                assert!(
-                    compressed.contains("compressed by verified main model"),
-                    "expected main model fallback; utility_requests={}, main_requests={}, activity={activity:?}",
-                    server.request_count_for("/v1/chat/completions"),
-                    server.request_count_for("/v1/responses"),
-                );
-                for field in [
-                    "1 skipped: src/skip.test.ts",
-                    "status: completed",
-                    &format!("output_file: {output_file}"),
-                    "truncated: false",
-                    "truncation_hint: [truncated - use read_file on output_file for full content]",
-                    "full output stored at",
-                ] {
-                    assert!(compressed.contains(field), "missing {field}: {compressed}");
-                }
-                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
-                assert_eq!(server.request_count_for("/v1/responses"), 1);
-
-                crate::jev::clear_test_local_config();
             })
             .await;
     }
@@ -3330,21 +2695,21 @@ mod tests {
                 )
                 .expect("build cancellation client");
                 let lane = crate::jev_cheap::CheapLane {
-                    client,
+                    transport: crate::jev_cheap::UtilityTransport::Closed(client),
                     slug: "utility-model".to_owned(),
                 };
-                set_utility_review_choices(&["allow"]);
+                set_utility_review_choices(&["accept"]);
                 let result = crate::jev::with_session_scope_and_recorder(
                     "e3-utility-cancellation",
                     Some(actor.chat_state_handle.clone()),
                     lane.run_task_with_acceptance(
                         JevLever::ECheapCompress,
-                        "cite_spans",
-                        "source line",
+                        distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                        "[U1] source line",
                         "preserve the source line",
                         "checks",
                         true,
-                        |_| true,
+                        |answer| Some(answer.to_owned()),
                     ),
                 )
                 .await;
@@ -3399,7 +2764,7 @@ mod tests {
                             "model": "utility-model",
                             "choices": [{
                                 "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "`source line`"}
+                                "message": {"role": "assistant", "content": "U1"}
                             }],
                             "usage": {"prompt_tokens": 17, "completion_tokens": 3}
                         }),
@@ -3416,10 +2781,10 @@ mod tests {
                 )
                 .expect("build post-review cancellation client");
                 let lane = crate::jev_cheap::CheapLane {
-                    client,
+                    transport: crate::jev_cheap::UtilityTransport::Closed(client),
                     slug: "utility-model".to_owned(),
                 };
-                set_utility_review_choices(&["allow", "accept"]);
+                set_utility_review_choices(&["accept"]);
                 let (entered, _release) = crate::jev_cheap::begin_test_post_review_pause();
                 let entered_wait = entered.notified();
                 let task = tokio::task::spawn_local(crate::jev::with_session_scope_and_recorder(
@@ -3428,12 +2793,12 @@ mod tests {
                     async move {
                         lane.run_task_with_acceptance(
                             JevLever::ECheapCompress,
-                            "cite_spans",
-                            "source line",
+                            distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                            "[U1] source line",
                             "preserve the source line",
                             "checks",
                             true,
-                            |_| true,
+                            |answer| Some(answer.to_owned()),
                         )
                         .await
                     },
@@ -3462,167 +2827,6 @@ mod tests {
                 assert_eq!(usage.prompt_tokens, 17);
                 assert_eq!(usage.completion_tokens, 3);
                 assert!(rows[0].usage_complete);
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    #[serial_test::serial]
-    async fn utility_post_review_states_and_consumer_rejection_are_bounded() {
-        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let home = tempfile::tempdir().expect("test Jev home");
-                std::fs::write(
-                    home.path().join("config.toml"),
-                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
-                )
-                .expect("write test Jev config");
-                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
-                let server = MockInferenceServer::start_with_models(vec![
-                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
-                ])
-                .await
-                .expect("start post-review state stub");
-                for id in [
-                    "utility-post-reject",
-                    "utility-post-missing",
-                    "utility-post-defer",
-                    "utility-consumer-reject",
-                ] {
-                    server.enqueue_response(
-                        "/v1/chat/completions",
-                        ScriptedResponse::json(
-                            200,
-                            serde_json::json!({
-                                "id": id,
-                                "model": "utility-model",
-                                "choices": [{
-                                    "finish_reason": "stop",
-                                    "message": {"role": "assistant", "content": "`source line`"}
-                                }],
-                                "usage": {"prompt_tokens": 11, "completion_tokens": 2}
-                            }),
-                        ),
-                    );
-                }
-                let actor = super::super::support::plain_actor().await;
-                let client = distill_workspace::jev::cheap::CheapClient::with_key_resolver(
-                    distill_workspace::jev::cheap::CheapConfig {
-                        base_url: server.url(),
-                        model: "utility-model".to_owned(),
-                        ..Default::default()
-                    },
-                    std::sync::Arc::new(|_| Some("utility-test-key".to_owned())),
-                )
-                .expect("build post-review state client");
-                let lane = crate::jev_cheap::CheapLane {
-                    client,
-                    slug: "utility-model".to_owned(),
-                };
-
-                set_utility_review_choices(&["allow", "reject"]);
-                let post_rejected = crate::jev::with_session_scope_and_recorder(
-                    "e3-utility-post-rejected",
-                    Some(actor.chat_state_handle.clone()),
-                    lane.run_task_with_acceptance(
-                        JevLever::ECheapCompress,
-                        "cite_spans",
-                        "source line",
-                        "preserve the source line",
-                        "checks",
-                        true,
-                        |_| true,
-                    ),
-                )
-                .await;
-                assert!(post_rejected.is_none());
-                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
-
-                crate::jev::set_test_decision_answers([
-                    Some(crate::jev_cheap::test_utility_review_answer("allow")),
-                    None,
-                ]);
-                let post_missing = crate::jev::with_session_scope_and_recorder(
-                    "e3-utility-post-missing",
-                    Some(actor.chat_state_handle.clone()),
-                    lane.run_task_with_acceptance(
-                        JevLever::ECheapCompress,
-                        "cite_spans",
-                        "source line",
-                        "preserve the source line",
-                        "checks",
-                        true,
-                        |_| true,
-                    ),
-                )
-                .await;
-                assert!(post_missing.is_none());
-                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
-
-                crate::jev::set_test_decision_answers([
-                    Some(crate::jev_cheap::test_utility_review_answer("allow")),
-                    Some(crate::jev_cheap::test_utility_review_answer("defer")),
-                ]);
-                let post_uncertain = crate::jev::with_session_scope_and_recorder(
-                    "e3-utility-post-uncertain",
-                    Some(actor.chat_state_handle.clone()),
-                    lane.run_task_with_acceptance(
-                        JevLever::ECheapCompress,
-                        "cite_spans",
-                        "source line",
-                        "preserve the source line",
-                        "checks",
-                        true,
-                        |_| true,
-                    ),
-                )
-                .await;
-                assert!(post_uncertain.is_none());
-                assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
-
-                set_utility_review_choices(&["allow", "accept"]);
-                let consumer_rejected = crate::jev::with_session_scope_and_recorder(
-                    "e3-utility-consumer-rejected",
-                    Some(actor.chat_state_handle.clone()),
-                    lane.run_task_with_acceptance(
-                        JevLever::ECheapCompress,
-                        "cite_spans",
-                        "source line",
-                        "preserve the source line",
-                        "checks",
-                        true,
-                        |_| false,
-                    ),
-                )
-                .await;
-                assert!(consumer_rejected.is_none());
-                assert_eq!(
-                    crate::jev::test_decision_answers_remaining(),
-                    1,
-                    "consumer rejection must not consume the post-review decision"
-                );
-                crate::jev::clear_test_decision_answers();
-
-                let ledger = actor
-                    .chat_state_handle
-                    .try_get_session_usage()
-                    .await
-                    .expect("post-review state ledger remains readable");
-                let rows: Vec<_> = ledger
-                    .attributions
-                    .iter()
-                    .filter(|row| row.role == "utility")
-                    .collect();
-                assert_eq!(rows.len(), 4);
-                assert!(rows.iter().all(|row| {
-                    row.status == distill_chat_state::UsageCallStatus::Rejected
-                        && row.usage.is_some()
-                        && row.usage_complete
-                }));
-                assert_eq!(server.request_count_for("/v1/chat/completions"), 4);
             })
             .await;
     }
@@ -3694,5 +2898,15 @@ mod tests {
         let block = hint_block(None, vec!["a".to_owned()]).expect("a block");
         assert!(block.contains("- a"), "{block}");
         assert!(hint_block(None, Vec::new()).is_none());
+    }
+    #[test]
+    fn compression_exact_kind_boundaries() {
+        use distill_workspace::jev::crushers::ExactKind::*;
+        assert!(!compression_allows_exact(Window, 3_999));
+        assert!(compression_allows_exact(Window, 4_000));
+        assert!(!compression_allows_exact(Matches, 11_999));
+        assert!(compression_allows_exact(Matches, 12_000));
+        assert!(!compression_allows_exact(Exact, usize::MAX));
+        assert!(compression_allows_exact(None, 0));
     }
 }

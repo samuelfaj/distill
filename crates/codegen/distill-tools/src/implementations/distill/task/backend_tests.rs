@@ -554,6 +554,7 @@ async fn channel_backend_cancel_closed_channel() {
 async fn workflow_spawn_future_drop_cancels_but_task_drop_does_not() {
     fn request_for(owner: super::super::types::SubagentOwner) -> SubagentRequest {
         SubagentRequest {
+            jev_worker_ok: false,
             id: "drop-owner-test".to_string(),
             prompt: "test".to_string(),
             description: "test".to_string(),

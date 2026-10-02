@@ -21,10 +21,13 @@ impl JevStatus {
         self.enabled && self.credential_present
     }
 
-    /// Short label for the prompt footer: `jev`, `jev·shadow`, or `jev:off`.
+    /// Short label for the prompt footer: `jev`, `jev·shadow`, `jev:no-key`
+    /// (enabled, no credential), or `jev:off` (disabled).
     pub const fn label(&self) -> &'static str {
-        if !self.active() {
+        if !self.enabled {
             "jev:off"
+        } else if !self.credential_present {
+            "jev:no-key"
         } else if self.shadow {
             "jev·shadow"
         } else {
@@ -59,17 +62,14 @@ pub struct JevLadderOverlay {
     pub e_cheap_compress: Option<bool>,
     /// E5 — run the registered utility task the payload's command and shape call
     /// for, and use its answer only if the task's own guard accepts it.
-    pub e_cheap_task: Option<bool>,
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: Option<bool>,
     /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
-    pub e_lane_choice: Option<bool>,
     /// E6 — hand a non-critical micro-task to a cheap-model subagent.
     pub e_cheap_agent: Option<bool>,
     /// E9 — send only the standing-prompt blocks this turn needs.
     pub e_prompt_blocks: Option<bool>,
     /// E8 — stop calling a lane for the rest of the turn after repeated failures.
-    pub e_breaker: Option<bool>,
     pub p1_tool_family: Option<bool>,
     pub p2_read_shortlist: Option<bool>,
     pub p3_compaction_recorte: Option<bool>,
@@ -77,7 +77,6 @@ pub struct JevLadderOverlay {
     /// A1: rank candidate files before reading them.
     pub a1_file_to_edit: Option<bool>,
     /// A3: keep only the log/test lines that explain a failure.
-    pub a3_log_lines: Option<bool>,
     /// A4: rank search results before fetching them.
     pub a4_web_results: Option<bool>,
     /// A5: rank memory candidates before injecting them.
@@ -99,7 +98,6 @@ pub struct JevLadderOverlay {
     /// C1: detect that requested work is still unfinished.
     pub c1_premature_stop: Option<bool>,
     /// C2: classify a failure and whether the fix is in user code.
-    pub c2_failure_triage: Option<bool>,
     /// C3: refuse to call work complete while something is missing.
     pub c3_completion_check: Option<bool>,
     /// C4: flag a risky diff for confirmation (advisory).
@@ -109,11 +107,13 @@ pub struct JevLadderOverlay {
     /// C6: screen tool output for instruction-like text; off until its cost is measured.
     pub c6_injection_screen: Option<bool>,
     /// C7: label the change type for release notes.
-    pub c7_change_type: Option<bool>,
     /// D2: drop a large inert tool output from the context.
     pub d2_big_output_retention: Option<bool>,
     /// D3: re-inject only still-relevant chunks after compaction.
     pub d3_post_compaction: Option<bool>,
+    pub d4_compaction_timing: Option<bool>,
+    pub d5_memory_capture_gate: Option<bool>,
+    pub b7_subagent_model: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -142,7 +142,6 @@ impl JevFlags {
             p3_compaction_recorte: true,
             p6_skill_suggestion: true,
             a1_file_to_edit: true,
-            a3_log_lines: false,
             a4_web_results: true,
             a5_memory_rank: true,
             a6_test_to_run: true,
@@ -153,24 +152,22 @@ impl JevFlags {
             b3_subagent_type: true,
             b6_delegation_hint: false,
             c1_premature_stop: false,
-            c2_failure_triage: false,
             c3_completion_check: false,
             c4_diff_risk: true,
             c5_error_priority: true,
             c6_injection_screen: false,
-            c7_change_type: false,
             e_crushers: true,
             e_retention: false,
             e_importance: true,
             e_cheap_compress: true,
-            e_cheap_task: false,
             e_read_reuse: true,
-            e_lane_choice: false,
             e_cheap_agent: false,
             e_prompt_blocks: false,
-            e_breaker: true,
             d2_big_output_retention: true,
             d3_post_compaction: true,
+            d4_compaction_timing: true,
+            d5_memory_capture_gate: true,
+            b7_subagent_model: true,
         }
     }
 
@@ -206,21 +203,14 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.e_importance, None, self.e_importance);
         self.e_cheap_compress =
             self.enabled && resolve_switch(ladder.e_cheap_compress, None, self.e_cheap_compress);
-        self.e_cheap_task =
-            self.enabled && resolve_switch(ladder.e_cheap_task, None, self.e_cheap_task);
         self.e_read_reuse =
             self.enabled && resolve_switch(ladder.e_read_reuse, None, self.e_read_reuse);
-        self.e_lane_choice =
-            self.enabled && resolve_switch(ladder.e_lane_choice, None, self.e_lane_choice);
         self.e_cheap_agent =
             self.enabled && resolve_switch(ladder.e_cheap_agent, None, self.e_cheap_agent);
         self.e_prompt_blocks =
             self.enabled && resolve_switch(ladder.e_prompt_blocks, None, self.e_prompt_blocks);
-        self.e_breaker = self.enabled && resolve_switch(ladder.e_breaker, None, self.e_breaker);
         self.a1_file_to_edit =
             self.enabled && resolve_switch(ladder.a1_file_to_edit, None, self.a1_file_to_edit);
-        self.a3_log_lines =
-            self.enabled && resolve_switch(ladder.a3_log_lines, None, self.a3_log_lines);
         self.a4_web_results =
             self.enabled && resolve_switch(ladder.a4_web_results, None, self.a4_web_results);
         self.a5_memory_rank =
@@ -241,8 +231,6 @@ impl JevFlags {
             && resolve_switch(ladder.b6_delegation_hint, None, self.b6_delegation_hint);
         self.c1_premature_stop =
             self.enabled && resolve_switch(ladder.c1_premature_stop, None, self.c1_premature_stop);
-        self.c2_failure_triage =
-            self.enabled && resolve_switch(ladder.c2_failure_triage, None, self.c2_failure_triage);
         self.c3_completion_check = self.enabled
             && resolve_switch(ladder.c3_completion_check, None, self.c3_completion_check);
         self.c4_diff_risk =
@@ -251,8 +239,6 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.c5_error_priority, None, self.c5_error_priority);
         self.c6_injection_screen = self.enabled
             && resolve_switch(ladder.c6_injection_screen, None, self.c6_injection_screen);
-        self.c7_change_type =
-            self.enabled && resolve_switch(ladder.c7_change_type, None, self.c7_change_type);
         self.d2_big_output_retention = self.enabled
             && resolve_switch(
                 ladder.d2_big_output_retention,
@@ -261,6 +247,16 @@ impl JevFlags {
             );
         self.d3_post_compaction = self.enabled
             && resolve_switch(ladder.d3_post_compaction, None, self.d3_post_compaction);
+        self.d4_compaction_timing = self.enabled
+            && resolve_switch(ladder.d4_compaction_timing, None, self.d4_compaction_timing);
+        self.d5_memory_capture_gate = self.enabled
+            && resolve_switch(
+                ladder.d5_memory_capture_gate,
+                None,
+                self.d5_memory_capture_gate,
+            );
+        self.b7_subagent_model =
+            self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self
     }
 }
@@ -282,17 +278,14 @@ pub struct JevFlags {
     /// E3 — compress a large tool result with the cheap model, storing the original first.
     pub e_cheap_compress: bool,
     /// E5 — run a registered cheap task (classify/extract/digest) on a tool result and use its answer.
-    pub e_cheap_task: bool,
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: bool,
     /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
-    pub e_lane_choice: bool,
     /// E6 — hand a non-critical micro-task to a cheap-model subagent.
     pub e_cheap_agent: bool,
     /// E9 — send only the standing-prompt blocks this turn needs.
     pub e_prompt_blocks: bool,
     /// E8 — stop calling a lane for the rest of the turn after repeated failures.
-    pub e_breaker: bool,
     /// P1 — prune the per-turn tool set by family.
     pub p1_tool_family: bool,
     /// P2 — pick line/segment windows instead of whole files.
@@ -304,7 +297,6 @@ pub struct JevFlags {
     /// A1: rank candidate files before reading them.
     pub a1_file_to_edit: bool,
     /// A3: keep only the log/test lines that explain a failure.
-    pub a3_log_lines: bool,
     /// A4: rank search results before fetching them.
     pub a4_web_results: bool,
     /// A5: rank memory candidates before injecting them.
@@ -326,7 +318,6 @@ pub struct JevFlags {
     /// C1: detect that requested work is still unfinished.
     pub c1_premature_stop: bool,
     /// C2: classify a failure and whether the fix is in user code.
-    pub c2_failure_triage: bool,
     /// C3: refuse to call work complete while something is missing.
     pub c3_completion_check: bool,
     /// C4: flag a risky diff for confirmation (advisory).
@@ -336,11 +327,13 @@ pub struct JevFlags {
     /// C6: screen tool output for instruction-like text; off until its cost is measured.
     pub c6_injection_screen: bool,
     /// C7: label the change type for release notes.
-    pub c7_change_type: bool,
     /// D2: drop a large inert tool output from the context.
     pub d2_big_output_retention: bool,
     /// D3: re-inject only still-relevant chunks after compaction.
     pub d3_post_compaction: bool,
+    pub d4_compaction_timing: bool,
+    pub d5_memory_capture_gate: bool,
+    pub b7_subagent_model: bool,
 }
 
 impl JevFlags {
@@ -354,7 +347,6 @@ impl JevFlags {
             p3_compaction_recorte: false,
             p6_skill_suggestion: false,
             a1_file_to_edit: false,
-            a3_log_lines: false,
             a4_web_results: false,
             a5_memory_rank: false,
             a6_test_to_run: false,
@@ -365,24 +357,22 @@ impl JevFlags {
             b3_subagent_type: false,
             b6_delegation_hint: false,
             c1_premature_stop: false,
-            c2_failure_triage: false,
             c3_completion_check: false,
             c4_diff_risk: false,
             c5_error_priority: false,
             c6_injection_screen: false,
-            c7_change_type: false,
             d2_big_output_retention: false,
             e_crushers: false,
             e_retention: false,
             e_importance: false,
             e_cheap_compress: false,
-            e_cheap_task: false,
             e_read_reuse: false,
-            e_lane_choice: false,
             e_cheap_agent: false,
             e_prompt_blocks: false,
-            e_breaker: false,
             d3_post_compaction: false,
+            d4_compaction_timing: false,
+            d5_memory_capture_gate: false,
+            b7_subagent_model: false,
         }
     }
 
@@ -452,18 +442,14 @@ impl JevFlags {
             JevLever::ERetention => self.e_retention,
             JevLever::EImportance => self.e_importance,
             JevLever::ECheapCompress => self.e_cheap_compress,
-            JevLever::ECheapTask => self.e_cheap_task,
             JevLever::EReadReuse => self.e_read_reuse,
-            JevLever::ELaneChoice => self.e_lane_choice,
             JevLever::ECheapAgent => self.e_cheap_agent,
             JevLever::EPromptBlocks => self.e_prompt_blocks,
-            JevLever::EBreaker => self.e_breaker,
             JevLever::P1ToolFamily => self.p1_tool_family,
             JevLever::P2ReadShortlist => self.p2_read_shortlist,
             JevLever::P3CompactionRecorte => self.p3_compaction_recorte,
             JevLever::P6SkillSuggestion => self.p6_skill_suggestion,
             JevLever::A1FileToEdit => self.a1_file_to_edit,
-            JevLever::A3LogLines => self.a3_log_lines,
             JevLever::A4WebResults => self.a4_web_results,
             JevLever::A5MemoryRank => self.a5_memory_rank,
             JevLever::A6TestToRun => self.a6_test_to_run,
@@ -474,14 +460,15 @@ impl JevFlags {
             JevLever::B3SubagentType => self.b3_subagent_type,
             JevLever::B6DelegationHint => self.b6_delegation_hint,
             JevLever::C1PrematureStop => self.c1_premature_stop,
-            JevLever::C2FailureTriage => self.c2_failure_triage,
             JevLever::C3CompletionCheck => self.c3_completion_check,
             JevLever::C4DiffRisk => self.c4_diff_risk,
             JevLever::C5ErrorPriority => self.c5_error_priority,
             JevLever::C6InjectionScreen => self.c6_injection_screen,
-            JevLever::C7ChangeType => self.c7_change_type,
             JevLever::D2BigOutputRetention => self.d2_big_output_retention,
             JevLever::D3PostCompaction => self.d3_post_compaction,
+            JevLever::D4CompactionTiming => self.d4_compaction_timing,
+            JevLever::D5MemoryCaptureGate => self.d5_memory_capture_gate,
+            JevLever::B7SubagentModel => self.b7_subagent_model,
         }
     }
 }
@@ -493,18 +480,14 @@ pub enum JevLever {
     ERetention,
     EImportance,
     ECheapCompress,
-    ECheapTask,
     EReadReuse,
-    ELaneChoice,
     ECheapAgent,
     EPromptBlocks,
-    EBreaker,
     P1ToolFamily,
     P2ReadShortlist,
     P3CompactionRecorte,
     P6SkillSuggestion,
     A1FileToEdit,
-    A3LogLines,
     A4WebResults,
     A5MemoryRank,
     A6TestToRun,
@@ -514,15 +497,16 @@ pub enum JevLever {
     B2LocalModel,
     B3SubagentType,
     B6DelegationHint,
+    B7SubagentModel,
     C1PrematureStop,
-    C2FailureTriage,
     C3CompletionCheck,
     C4DiffRisk,
     C5ErrorPriority,
     C6InjectionScreen,
-    C7ChangeType,
     D2BigOutputRetention,
     D3PostCompaction,
+    D4CompactionTiming,
+    D5MemoryCaptureGate,
 }
 
 impl JevLever {
@@ -533,18 +517,14 @@ impl JevLever {
             Self::ERetention => "e_retention",
             Self::EImportance => "e_importance",
             Self::ECheapCompress => "e_cheap_compress",
-            Self::ECheapTask => "e_cheap_task",
             Self::EReadReuse => "e_read_reuse",
-            Self::ELaneChoice => "e_lane_choice",
             Self::ECheapAgent => "e_cheap_agent",
             Self::EPromptBlocks => "e_prompt_blocks",
-            Self::EBreaker => "e_breaker",
             Self::P1ToolFamily => "p1_tool_family",
             Self::P2ReadShortlist => "p2_read_shortlist",
             Self::P3CompactionRecorte => "p3_compaction_recorte",
             Self::P6SkillSuggestion => "p6_skill_suggestion",
             Self::A1FileToEdit => "a1_file_to_edit",
-            Self::A3LogLines => "a3_log_lines",
             Self::A4WebResults => "a4_web_results",
             Self::A5MemoryRank => "a5_memory_rank",
             Self::A6TestToRun => "a6_test_to_run",
@@ -554,15 +534,16 @@ impl JevLever {
             Self::B2LocalModel => "b2_local_model",
             Self::B3SubagentType => "b3_subagent_type",
             Self::B6DelegationHint => "b6_delegation_hint",
+            Self::B7SubagentModel => "b7_subagent_model",
             Self::C1PrematureStop => "c1_premature_stop",
-            Self::C2FailureTriage => "c2_failure_triage",
             Self::C3CompletionCheck => "c3_completion_check",
             Self::C4DiffRisk => "c4_diff_risk",
             Self::C5ErrorPriority => "c5_error_priority",
             Self::C6InjectionScreen => "c6_injection_screen",
-            Self::C7ChangeType => "c7_change_type",
             Self::D2BigOutputRetention => "d2_big_output_retention",
             Self::D3PostCompaction => "d3_post_compaction",
+            Self::D4CompactionTiming => "d4_compaction_timing",
+            Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
         }
     }
 }
@@ -582,7 +563,6 @@ mod tests {
             JevLever::P3CompactionRecorte,
             JevLever::P6SkillSuggestion,
             JevLever::A1FileToEdit,
-            JevLever::A3LogLines,
             JevLever::A4WebResults,
             JevLever::A5MemoryRank,
             JevLever::A6TestToRun,
@@ -591,14 +571,14 @@ mod tests {
             JevLever::B3SubagentType,
             JevLever::B6DelegationHint,
             JevLever::C1PrematureStop,
-            JevLever::C2FailureTriage,
             JevLever::C3CompletionCheck,
             JevLever::C4DiffRisk,
             JevLever::C5ErrorPriority,
             JevLever::C6InjectionScreen,
-            JevLever::C7ChangeType,
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
+            JevLever::D5MemoryCaptureGate,
+            JevLever::B7SubagentModel,
         ] {
             assert!(!flags.lever_active(lever), "{} must be off", lever.as_str());
         }
@@ -636,6 +616,8 @@ mod tests {
             JevLever::C5ErrorPriority,
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
+            JevLever::D5MemoryCaptureGate,
+            JevLever::B7SubagentModel,
             // The token-saving lanes, including the three that spend a utility
             // call: the crushers and the importance pass are free, and the
             // utility lanes are bounded (24 KiB floor), guarded per task, and
@@ -652,14 +634,9 @@ mod tests {
             "the retention lane asks one question per chunk; its cost is unmeasured, so it waits"
         );
         for lever in [
-            JevLever::A3LogLines,
             JevLever::B6DelegationHint,
             JevLever::C1PrematureStop,
-            JevLever::C2FailureTriage,
             JevLever::C3CompletionCheck,
-            JevLever::C7ChangeType,
-            JevLever::ECheapTask,
-            JevLever::ELaneChoice,
         ] {
             assert!(
                 !flags.lever_active(lever),
@@ -734,8 +711,8 @@ mod tests {
         let enabled = JevFlags::harness_default();
         assert_eq!(enabled.status(true).label(), "jev");
         assert!(enabled.status(true).active());
-        // No credential ⇒ the seam cannot act, and the badge says so.
-        assert_eq!(enabled.status(false).label(), "jev:off");
+        // No credential ⇒ the seam cannot act, and the badge says why.
+        assert_eq!(enabled.status(false).label(), "jev:no-key");
         assert!(!enabled.status(false).active());
         // Shadow ⇒ observation only, and the badge distinguishes it.
         let shadow = enabled.with_shadow(true);

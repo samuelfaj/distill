@@ -2609,6 +2609,18 @@ fn only_fresh_model_delegation_defaults_to_the_worker_model() {
     for agent in ["plan", "code-reviewer"] {
         assert_eq!(delegated_worker_model(&delegated(agent), false, None), None, "{agent}");
     }
+    let mut jev_approved_plan = delegated("plan");
+    jev_approved_plan.jev_worker_ok = true;
+    assert_eq!(
+        delegated_worker_model(&jev_approved_plan, false, None).as_deref(),
+        Some("worker-model"),
+        "Jev-approved plan uses worker",
+    );
+    assert_eq!(
+        delegated_worker_model(&delegated("plan"), false, None),
+        None,
+        "plan stays on main model without Jev approval",
+    );
     assert_eq!(
         delegated_worker_model(&delegated("general-purpose"), true, None).as_deref(),
         Some("worker-model"),

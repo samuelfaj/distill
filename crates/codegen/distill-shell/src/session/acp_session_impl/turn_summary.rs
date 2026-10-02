@@ -81,7 +81,7 @@ impl SessionActor {
             TURN_SUMMARY_MODEL_TIMEOUT,
             run_display_task(
                 self,
-                distill_workspace::jev::tasks::DISPLAY_FRAGMENT_TASK,
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 &payload,
                 &source,
                 "Choose one short dashboard fragment from the assistant reply. Reply with exactly one quoted source span, at most 12 words, preserving paths, numbers, and unresolved or test status; no labels or prose.",

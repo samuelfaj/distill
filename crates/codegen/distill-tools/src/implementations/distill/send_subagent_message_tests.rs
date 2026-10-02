@@ -190,6 +190,7 @@ async fn backend_operation(
 
 fn request(id: &str, parent_session_id: &str, owner: SubagentOwner) -> SubagentRequest {
     SubagentRequest {
+        jev_worker_ok: false,
         id: id.to_owned(),
         prompt: "work".to_owned(),
         description: "test child".to_owned(),

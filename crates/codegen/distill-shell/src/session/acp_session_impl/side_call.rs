@@ -179,6 +179,9 @@ fn record_auxiliary_response_with_status(
             endpoint: Some(attempt.endpoint.clone()),
             requested_effort: attempt.requested_effort.clone(),
             applied_effort: attempt.applied_effort.clone(),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             status,
             usage: response.usage.clone(),
             usage_complete: response.usage.is_some(),
@@ -278,6 +281,9 @@ fn record_auxiliary_failures_with_status(
                 endpoint: Some(attempt.endpoint.clone()),
                 requested_effort: attempt.requested_effort.clone(),
                 applied_effort: attempt.applied_effort.clone(),
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
                 status,
                 usage: None,
                 usage_complete: false,
@@ -318,8 +324,7 @@ pub(crate) struct SideCallSetup {
     pub(crate) reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
 }
 
-/// Complete sentences (and whole lines) of `source` that the consumer accepts
-/// as they are, deduplicated, at most one choice question's worth.
+/// Source lines accepted by the display consumer.
 fn display_fragments(source: &str, accept: fn(&str) -> Option<String>) -> Vec<String> {
     let mut fragments: Vec<String> = Vec::new();
     let mut push = |unit: &str| {
@@ -411,7 +416,7 @@ pub(crate) async fn run_display_task(
 
     if payload.trim().is_empty()
         || source.trim().is_empty()
-        || task_id != distill_workspace::jev::tasks::DISPLAY_FRAGMENT_TASK
+        || task_id != distill_workspace::jev::tasks::SELECT_UNITS_TASK
         || !crate::jev::lever_active(JevLever::ECheapCompress)
     {
         return None;
@@ -422,134 +427,37 @@ pub(crate) async fn run_display_task(
     {
         return picked;
     }
-    if !source.lines().any(|unit| accept(unit.trim()).is_some()) {
+    let units = fragments;
+    if units.is_empty() {
         return None;
     }
-
-    let utility = actor.cheap_lane(JevLever::ECheapCompress).await;
-    if let Some(utility) = utility {
-        let outcome = utility
-            .run_task_with_acceptance(
-                JevLever::ECheapCompress,
-                task_id,
-                payload,
-                question,
-                "display",
-                false,
-                |answer| {
-                    distill_workspace::jev::tasks::display_fragment(source, answer)
-                        .ok()
-                        .and_then(|fragment| accept(&fragment))
-                        .is_some()
-                },
-            )
-            .await;
-        // The detached utility observer records into the canonical ledger, but
-        // it returns before the foreground turn's durable snapshot is updated.
-        request_usage_refresh(actor);
-        if let Some(outcome) = outcome
-            && let Ok(fragment) =
-                distill_workspace::jev::tasks::display_fragment(source, &outcome.text)
-            && let Some(display) = accept(&fragment)
-        {
-            return Some(display);
-        }
-    }
-
-    let main_lane = actor.tool_result_main_lane().await?;
-    let request = main_lane.task_request(task_id, payload, question)?;
-    let applied_effort = main_lane
-        .client()
-        .attribution_applied_effort(request.reasoning_effort, request.max_output_tokens);
-    let main_key = crate::jev_cheap::optional_compression_key(
-        &main_lane.client().attribution_endpoint(),
-        main_lane.model(),
-        task_id,
-        applied_effort.as_deref().unwrap_or("provider_default"),
-        "display",
+    let unit_refs: Vec<&str> = units.iter().map(String::as_str).collect();
+    // The context stays in the payload; only the unit lines carry `[U<n>]` ids.
+    let rendered = format!(
+        "{payload}\n\nUNITS:\n{}",
+        distill_workspace::jev::tasks::render_units(&unit_refs, 1)
     );
-    if !crate::jev_cheap::optional_compression_allowed(&main_key) {
-        return None;
-    }
-
-    let attempt = auxiliary_attempt(main_lane.client(), &request);
-    let mut cancellation_guard = super::jev_tool_result::MainAttemptCancellationGuard::new(
-        actor,
-        attempt.clone(),
-        Some(main_key.clone()),
-    );
-    cancellation_guard.mark_dispatched();
-    let call_started = std::time::Instant::now();
-    let (response_result, rejected_response) = main_lane.collect(request).await;
-    match response_result {
-        Ok(response) => {
-            let candidate =
-                distill_workspace::jev::tasks::display_fragment(source, &response.assistant_text())
-                    .ok()
-                    .and_then(|fragment| accept(&fragment));
-            let api_duration_ms = Some(call_started.elapsed().as_millis() as u64);
-            if let Some(display) = candidate {
-                record_auxiliary_response(
-                    actor,
-                    "display_auxiliary_main",
-                    main_lane.model(),
-                    &attempt,
-                    &response,
-                    api_duration_ms,
-                    false,
-                );
-                crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                crate::jev_cheap::note_optional_compression_success(&main_key);
-                cancellation_guard.complete();
-                log_prompt_cache_usage(
-                    "display_auxiliary_main",
-                    main_lane.client().api_backend(),
-                    &response,
-                );
-                Some(display)
-            } else {
-                record_auxiliary_rejected_response(
-                    actor,
-                    "display_auxiliary_main",
-                    main_lane.model(),
-                    &attempt,
-                    &response,
-                    api_duration_ms,
-                    false,
-                );
-                crate::jev_cheap::note_success(JevLever::ECheapCompress);
-                crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
-                crate::jev_cheap::note_optional_compression_failure(&main_key);
-                cancellation_guard.complete();
-                log_prompt_cache_usage(
-                    "display_auxiliary_main",
-                    main_lane.client().api_backend(),
-                    &response,
-                );
-                None
-            }
-        }
-        Err(error) => {
-            if let Some(response) = rejected_response {
-                record_auxiliary_rejected_response(
-                    actor,
-                    "display_auxiliary_main",
-                    main_lane.model(),
-                    &attempt,
-                    &response,
-                    None,
-                    false,
-                );
-            } else {
-                record_auxiliary_failures(actor, std::slice::from_ref(&attempt), false);
-            }
-            crate::jev_cheap::note_failure(JevLever::ECheapCompress);
-            crate::jev_cheap::note_optional_compression_failure(&main_key);
-            cancellation_guard.complete();
-            tracing::debug!(error = %error, "display auxiliary main-model call failed");
-            None
-        }
-    }
+    let question = format!("{question}\n{choice_instruction}");
+    let utility = actor.cheap_lane(JevLever::ECheapCompress).await?;
+    let outcome = utility
+        .run_task_with_acceptance(
+            JevLever::ECheapCompress,
+            task_id,
+            &rendered,
+            &question,
+            "display",
+            false,
+            |answer| match distill_workspace::jev::tasks::parse_unit_ids(answer, 1..=units.len()) {
+                Ok(ids) if ids.len() == 1 => units.get(ids[0] - 1).cloned(),
+                _ => None,
+            },
+        )
+        .await;
+    request_usage_refresh(actor);
+    let outcome = outcome?;
+    let ids = distill_workspace::jev::tasks::parse_unit_ids(&outcome.text, 1..=units.len()).ok()?;
+    let unit = units.get(ids[0].saturating_sub(1))?;
+    accept(unit.trim())
 }
 
 pub(super) fn should_strip_side_call_reasoning(
@@ -712,54 +620,12 @@ mod display_fragment_tests {
         (!text.is_empty() && text.split_whitespace().count() <= 6).then(|| text.to_owned())
     }
 
-    /// Candidates are whole sentences the consumer would accept, never
-    /// arbitrary substrings, so a negation stays with its clause.
     #[test]
-    fn fragments_are_complete_accepted_sentences() {
-        let source = "Fixed the parser race. The build does not pass yet! Next: rerun CI\nshort line";
-        let fragments = display_fragments(source, short);
-        assert!(fragments.contains(&"Fixed the parser race.".to_owned()), "{fragments:?}");
-        assert!(fragments.contains(&"The build does not pass yet!".to_owned()));
-        assert!(fragments.contains(&"Next: rerun CI".to_owned()));
-        assert!(fragments.contains(&"short line".to_owned()));
-        assert!(!fragments.iter().any(|f| f == "pass yet!"), "no partial clauses");
-        assert_eq!(display_fragments("v1.2 shipped", short), ["v1.2 shipped"]);
-    }
-
-    fn choice(label: &str) -> distill_workspace::jev::JevAnswerSet {
-        distill_workspace::jev::JevAnswerSet {
-            model: "test-decision-model".to_owned(),
-            answers: [(
-                "fragment".to_owned(),
-                distill_workspace::jev::Answer::Choice {
-                    choice: label.to_owned(),
-                    probabilities: Default::default(),
-                    confidence: Some(0.9),
-                },
-            )]
-            .into_iter()
-            .collect(),
-            usage: Default::default(),
-            request_id: None,
-            latency_ms: 1,
-        }
-    }
-
-    /// Jev returns an option id, never free text: an id maps back to the
-    /// source sentence, `none` declines, and an invented id counts as no answer
-    /// so the older path can still run.
-    #[tokio::test(flavor = "current_thread")]
-    async fn jev_pick_maps_ids_back_to_source_sentences() {
-        let fragments = vec!["Fixed the parser race.".to_owned(), "Reran the suite.".to_owned()];
-        crate::jev::set_test_decision_answers([
-            Some(choice("f2")),
-            Some(choice("none")),
-            Some(choice("f9")),
-        ]);
-        let pick = |_: ()| super::jev_pick_display_fragment("ctx", &fragments, "Which fragment?");
-        assert_eq!(pick(()).await, Some(Some("Reran the suite.".to_owned())));
-        assert_eq!(pick(()).await, Some(None));
-        assert_eq!(pick(()).await, None);
-        crate::jev::clear_test_decision_answers();
+    fn fragments_are_accepted_source_lines() {
+        let source = "first short line\nlong line with too many words here now\nlast";
+        assert_eq!(
+            display_fragments(source, short),
+            ["first short line", "last"]
+        );
     }
 }

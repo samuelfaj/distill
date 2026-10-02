@@ -24,11 +24,12 @@ use std::future::Future;
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex, OnceLock};
 use std::time::Duration;
 
-use distill_workspace::jev::cheap::{DEFAULT_BASE_URL, DEFAULT_MODELS};
+use distill_sampling_types::{
+    ConversationItem, ConversationRequest, LengthPolicy, ReasoningEffort,
+};
+use distill_workspace::jev::cheap::{DEFAULT_BASE_URL, DEFAULT_MODELS, TaskClient};
 use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::tasks;
-use distill_sampling_types::{ConversationItem, ConversationRequest, LengthPolicy, ReasoningEffort};
-
 /// A byte is the conservative upper bound for one input token when the
 /// tokenizer is not available at this layer.  The worker request also keeps a
 /// fixed framing reserve for the system/task/question wrapper.
@@ -39,10 +40,15 @@ const OPTIONAL_COMPRESSION_FAILURE_LIMIT: u8 = 2;
 const UTILITY_MAX_PAYLOAD_BYTES: usize = 24 * 1024;
 const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
 const UTILITY_MAX_DECISION_STATE_BYTES: usize = 32 * 1024;
-const UTILITY_PRE_APPROVAL: &str = "pre_approval";
 const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
-const UTILITY_TASK_ALLOWLIST: &[&str] = &[tasks::DISPLAY_FRAGMENT_TASK];
+/// Minimum confidence for a `reject` to veto: the candidate holds source units only and the original stays stored.
+const UTILITY_REVIEW_VETO_FLOOR: f64 = 0.70;
+const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units"];
+
+fn bounded_display_answer(answer: &str, max_chars: usize) -> Option<String> {
+    (answer.chars().count() <= max_chars).then(|| answer.to_owned())
+}
 
 /// Identity of one optional compression opportunity.
 ///
@@ -212,25 +218,8 @@ fn utility_review_state(
 
 fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::jev::types::Question> {
     let (instructions, criteria) = match phase {
-        UTILITY_PRE_APPROVAL => (
-            "Decide whether calling the named utility_model_candidate for this source-backed auxiliary task is likely to reduce total tokens and cost, including this decision, output review, and possible fallback. Allow when its bounded answer can replace a materially larger source or a more expensive display call. Reject when the source is already concise or the savings are unlikely. It has no agent or tool authority; the caller retains the original or configured-worker fallback. Choose defer when unsure.",
-            [
-                (
-                    "allow",
-                    serde_json::json!("the bounded auxiliary call may proceed"),
-                ),
-                (
-                    "reject",
-                    serde_json::json!("keep the main model or original content"),
-                ),
-                (
-                    "defer",
-                    serde_json::json!("insufficient evidence of net savings"),
-                ),
-            ],
-        ),
         UTILITY_POST_REVIEW => (
-            "Review the candidate from the named utility_model_candidate for this bounded task. Accept only when it answers the question from the supplied source, adds no facts, and cannot perform or authorize any agent, file, or tool action.",
+            "Review the candidate built from the named utility_model_candidate's answer for this bounded task. Accept when it keeps what the question needs from the supplied source and adds nothing that is not in the source; omitted source text stays stored and readable. Reject when it drops something the question clearly needs, or when it could perform or authorize any agent, file, or tool action.",
             [
                 (
                     "accept",
@@ -261,14 +250,22 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
     .collect()
 }
 
-fn utility_review_approves(
-    answers: &distill_workspace::jev::types::JevAnswerSet,
-    expected: &str,
-) -> bool {
-    answers.choice(UTILITY_DECISION_ID) == Some(expected)
+fn utility_review_vetoes(answers: &distill_workspace::jev::types::JevAnswerSet) -> bool {
+    answers.choice(UTILITY_DECISION_ID) == Some("reject")
         && answers
             .confidence(UTILITY_DECISION_ID)
-            .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+            .is_some_and(|value| {
+                value.is_finite()
+                    && (0.0..=1.0).contains(&value)
+                    && value >= UTILITY_REVIEW_VETO_FLOOR
+            })
+}
+
+enum UtilityReviewResult {
+    Approved(distill_workspace::jev::types::JevAnswerSet),
+    Rejected,
+    SkippedSize,
+    Missing,
 }
 
 async fn ask_utility_review(
@@ -282,8 +279,8 @@ async fn ask_utility_review(
     max_completion_tokens: u32,
     candidate: Option<&str>,
     compression_key: Option<&OptionalCompressionKey>,
-) -> Option<distill_workspace::jev::types::JevAnswerSet> {
-    let mut state = utility_review_state(
+) -> UtilityReviewResult {
+    let Some(mut state) = utility_review_state(
         phase,
         task_id,
         question,
@@ -291,35 +288,73 @@ async fn ask_utility_review(
         utility_model,
         max_completion_tokens,
         candidate,
-    )?;
+    ) else {
+        crate::jev::record_item(
+            lever,
+            "review:skipped-size",
+            "post-review state exceeds size cap",
+            None,
+            None,
+        );
+        return UtilityReviewResult::SkippedSize;
+    };
     if let Some(key) = compression_key {
         state["compression_history"] = optional_compression_history(key);
     }
-    if serde_json::to_vec(&state).ok()?.len() > UTILITY_MAX_DECISION_STATE_BYTES {
-        return None;
+    if serde_json::to_vec(&state)
+        .map_or(true, |bytes| bytes.len() > UTILITY_MAX_DECISION_STATE_BYTES)
+    {
+        crate::jev::record_item(
+            lever,
+            "review:skipped-size",
+            "post-review state exceeds size cap",
+            None,
+            None,
+        );
+        return UtilityReviewResult::SkippedSize;
     }
     if phase == UTILITY_POST_REVIEW {
         test_post_review_pause_if_configured().await;
     }
-    let answers = crate::jev::ask_item(lever, state, utility_review_questions(phase)).await;
-    let approved = answers
-        .as_ref()
-        .is_some_and(|answers| utility_review_approves(answers, expected));
-    let confidence = answers
-        .as_ref()
-        .and_then(|answers| answers.confidence(UTILITY_DECISION_ID));
+    let Some(answers) = crate::jev::ask_item(lever, state, utility_review_questions(phase)).await
+    else {
+        // Jev off or unreachable: the candidate is built from source units
+        // only and the original stays stored, so a missing review never vetoes.
+        crate::jev::record_item(
+            lever,
+            "review:missing",
+            "no Jev answer; the verified candidate is kept",
+            None,
+            None,
+        );
+        return UtilityReviewResult::Missing;
+    };
+    let vetoed = utility_review_vetoes(&answers);
+    let (label, note) = if vetoed {
+        (
+            "review:veto",
+            "Jev rejected the candidate with confidence >= 0.70",
+        )
+    } else if answers.choice(UTILITY_DECISION_ID) == Some(expected) {
+        (phase, "bounded Jev utility gate approved")
+    } else {
+        (
+            "review:uncertain",
+            "Jev did not reject with confidence; the verified candidate is kept",
+        )
+    };
     crate::jev::record_item(
         lever,
-        if approved { phase } else { "defer" },
-        if approved {
-            "bounded Jev utility gate approved"
-        } else {
-            "bounded Jev utility gate was missing, uncertain, or rejected"
-        },
-        confidence,
-        answers.as_ref(),
+        label,
+        note,
+        answers.confidence(UTILITY_DECISION_ID),
+        Some(&answers),
     );
-    approved.then(|| answers.expect("approved utility review has an answer"))
+    if vetoed {
+        UtilityReviewResult::Rejected
+    } else {
+        UtilityReviewResult::Approved(answers)
+    }
 }
 
 struct CompletedUtilityAttemptGuard {
@@ -478,14 +513,31 @@ pub fn default_model_spec() -> String {
 /// lanes can want the worker at once (the tool-result path, a routed round, a
 /// subagent), and a queue is cheaper than the contention — and it makes the
 /// per-turn call count the number that actually happened.
-fn lane_queue() -> &'static tokio::sync::Mutex<()> {
-    static QUEUE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    QUEUE.get_or_init(|| tokio::sync::Mutex::new(()))
+fn lane_queue(endpoint: &str) -> &'static tokio::sync::Semaphore {
+    static LOCAL: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    static REMOTE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    let local = endpoint
+        .parse::<url::Url>()
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"))
+        })
+        .unwrap_or(false);
+    if local {
+        LOCAL.get_or_init(|| tokio::sync::Semaphore::new(1))
+    } else {
+        REMOTE.get_or_init(|| tokio::sync::Semaphore::new(4))
+    }
 }
 
-/// A resolved cheap worker: the client plus the model entry it came from.
+pub(crate) enum UtilityTransport {
+    Closed(distill_workspace::jev::cheap::CheapClient),
+    Sampler(MainLane),
+}
+
 pub struct CheapLane {
-    pub client: distill_workspace::jev::cheap::CheapClient,
+    pub(crate) transport: UtilityTransport,
     /// The catalog id the entry resolved to, for the record.
     pub slug: String,
 }
@@ -531,7 +583,10 @@ impl CheapLane {
         if cfg.api_backend != distill_sampling_types::ApiBackend::ChatCompletions
             || cfg.auth_scheme != distill_sampler::AuthScheme::Bearer
         {
-            return None;
+            return Some(Self {
+                transport: UtilityTransport::Sampler(MainLane::from_sampler_config(cfg.clone())?),
+                slug: cfg.model.clone(),
+            });
         }
         let api_key = cfg.api_key.clone()?;
         if api_key.trim().is_empty()
@@ -589,7 +644,42 @@ impl CheapLane {
             std::sync::Arc::new(move |_| Some(api_key.clone())),
         )
         .ok()?;
-        Some(Self { client, slug })
+        Some(Self {
+            transport: UtilityTransport::Closed(client),
+            slug,
+        })
+    }
+
+    pub(crate) fn closed_client(&self) -> Option<&distill_workspace::jev::cheap::CheapClient> {
+        match &self.transport {
+            UtilityTransport::Closed(client) => Some(client),
+            UtilityTransport::Sampler(_) => None,
+        }
+    }
+
+    pub(crate) fn endpoint(&self) -> String {
+        match &self.transport {
+            UtilityTransport::Closed(client) => client.config().endpoint(),
+            UtilityTransport::Sampler(lane) => lane.client().attribution_endpoint(),
+        }
+    }
+    pub(crate) fn model(&self) -> &str {
+        &self.slug
+    }
+    pub(crate) fn max_input_bytes(&self) -> usize {
+        match &self.transport {
+            UtilityTransport::Closed(client) => client.config().max_input_bytes,
+            UtilityTransport::Sampler(lane) => lane.max_input_bytes(),
+        }
+    }
+    pub(crate) fn max_payload_bytes(&self) -> usize {
+        UTILITY_MAX_PAYLOAD_BYTES.min(self.max_input_bytes().saturating_sub(WORKER_FRAMING_BYTES))
+    }
+    pub(crate) fn reasoning_effort(&self) -> String {
+        match &self.transport {
+            UtilityTransport::Closed(client) => client.config().reasoning_effort.clone(),
+            UtilityTransport::Sampler(lane) => lane.reasoning_effort_label(),
+        }
     }
 
     /// Runs one registered catalogue task and records what happened.
@@ -604,16 +694,56 @@ impl CheapLane {
         payload: &str,
         question: &str,
     ) -> Option<tasks::TaskOutcome> {
-        self.run_task_with_acceptance(lever, task_id, payload, question, "auxiliary", true, |_| {
-            true
-        })
+        self.run_task_with_acceptance(
+            lever,
+            task_id,
+            payload,
+            question,
+            "auxiliary",
+            true,
+            |answer| Some(answer.to_owned()),
+        )
+        .await
+    }
+
+    pub(crate) async fn display_text(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> Option<String> {
+        self.display_text_outcome(payload, question, max_chars, source_kind)
+            .await
+            .map(|outcome| outcome.text)
+    }
+
+    pub(crate) async fn display_text_outcome(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> Option<tasks::TaskOutcome> {
+        self.run_task_with_acceptance(
+            JevLever::ECheapCompress,
+            tasks::DISPLAY_TEXT_TASK,
+            payload,
+            question,
+            source_kind,
+            false,
+            |answer| bounded_display_answer(answer, max_chars),
+        )
         .await
     }
 
     /// Runs one task while letting the caller apply its consumer-specific
     /// acceptance contract before the physical attempt is recorded. A task
-    /// guard can accept a quoted answer that the final consumer still cannot
-    /// use; that response is one rejected attempt, not a second generation.
+    /// guard can accept an answer that the final consumer still cannot use;
+    /// that response is one rejected attempt, not a second generation.
+    ///
+    /// `accepts` returns the text the Jev post-review reads (for unit ids, the
+    /// selected source units), or `None` when the consumer rejects the answer.
     pub async fn run_task_with_acceptance<F>(
         &self,
         lever: JevLever,
@@ -625,7 +755,7 @@ impl CheapLane {
         accepts: F,
     ) -> Option<tasks::TaskOutcome>
     where
-        F: Fn(&str) -> bool,
+        F: Fn(&str) -> Option<String>,
     {
         if !crate::jev::lever_active(lever) {
             return None;
@@ -674,9 +804,7 @@ impl CheapLane {
             );
             return None;
         };
-        if !tasks::task_for(task_spec, &prepared_payload, question)
-            .fits(self.client.config().max_input_bytes)
-        {
+        if !tasks::task_for(task_spec, &prepared_payload, question).fits(self.max_input_bytes()) {
             crate::jev::record_item(
                 lever,
                 "defer:input-bound",
@@ -688,15 +816,15 @@ impl CheapLane {
         }
         let optional_key = matches!(lever, JevLever::ECheapCompress).then(|| {
             optional_compression_key(
-                &self.client.config().endpoint(),
-                &self.client.config().model,
+                &self.endpoint(),
+                self.model(),
                 task_id,
-                &self.client.config().reasoning_effort,
+                &self.reasoning_effort(),
                 source_kind,
             )
         });
         // Serialised: one cheap generation at a time across the whole process.
-        let _one_at_a_time = lane_queue().lock().await;
+        let _one_at_a_time = lane_queue(&self.endpoint()).acquire().await.ok();
         if let Some(key) = optional_key.as_ref()
             && !optional_compression_allowed(key)
         {
@@ -709,25 +837,11 @@ impl CheapLane {
             );
             return None;
         }
-        let utility_model = self.client.config().model.clone();
-        let max_completion_tokens = self.client.config().max_completion_tokens;
-        if ask_utility_review(
-            lever,
-            UTILITY_PRE_APPROVAL,
-            "allow",
-            task_id,
-            question,
-            payload,
-            &utility_model,
-            max_completion_tokens,
-            None,
-            optional_key.as_ref(),
-        )
-        .await
-        .is_none()
-        {
-            return None;
-        }
+        let utility_model = self.model().to_owned();
+        let max_completion_tokens = match &self.transport {
+            UtilityTransport::Closed(client) => client.config().max_completion_tokens,
+            UtilityTransport::Sampler(lane) => lane.max_output_tokens,
+        };
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         let span = tracing::info_span!(target: "jev.decision", "utility_context",
             session_id, turn_id, round_id, utility_call_id = %uuid::Uuid::new_v4());
@@ -785,23 +899,31 @@ impl CheapLane {
                         }
                     }
                 });
-            self.client.with_call_observer(observer)
+            self.transport.with_call_observer(observer)
         });
-        let request_client = observed_client.as_ref().unwrap_or(&self.client);
-        let mut outcome = tracing::Instrument::instrument(
-            tasks::run(request_client, task_id, payload, question),
+        let request_transport = observed_client.unwrap_or_else(|| {
+            self.transport
+                .with_call_observer(std::sync::Arc::new(|_| {}))
+        });
+        let task_result = tracing::Instrument::instrument(
+            tasks::run(&request_transport, task_id, payload, question),
             span,
         )
         .await;
-        let accepted_by_consumer = outcome
+        let mut task_reason = task_result.as_ref().err().copied();
+        let mut outcome = task_result.ok();
+        let review_view = outcome.as_ref().and_then(|outcome| accepts(&outcome.text));
+        let accepted_by_consumer = review_view.is_some();
+        // A NONE answer keeps nothing optional, so there is nothing to review.
+        let answered_none = outcome
             .as_ref()
-            .is_some_and(|outcome| accepts(&outcome.text));
-        let post_review = outcome.as_ref().and_then(|outcome| {
-            accepted_by_consumer.then(|| (outcome.text.clone(), outcome.answer.model.clone()))
-        });
+            .is_some_and(|outcome| outcome.text.trim().eq_ignore_ascii_case("none"));
+        let post_review = review_view
+            .filter(|_| task_id != tasks::DISPLAY_TEXT_TASK && !answered_none)
+            .zip(outcome.as_ref().map(|outcome| outcome.answer.model.clone()));
         let mut post_review_rejected = false;
-        if let Some((candidate, post_review_model)) = post_review.as_ref()
-            && ask_utility_review(
+        if let Some((candidate, post_review_model)) = post_review.as_ref() {
+            match ask_utility_review(
                 lever,
                 UTILITY_POST_REVIEW,
                 "accept",
@@ -814,25 +936,54 @@ impl CheapLane {
                 optional_key.as_ref(),
             )
             .await
-            .is_none()
-        {
-            post_review_rejected = true;
-            outcome = None;
+            {
+                UtilityReviewResult::Approved(_)
+                | UtilityReviewResult::SkippedSize
+                | UtilityReviewResult::Missing => {}
+                UtilityReviewResult::Rejected => {
+                    post_review_rejected = true;
+                    outcome = None;
+                }
+            }
         }
         let mut completed_attempts = completed_attempt_guard.take();
-        if (outcome.is_none() || !accepted_by_consumer)
-            && let Some(attempt) = completed_attempts.last_mut()
-        {
-            // `tasks::run` applies its own source-span guard after the cheap
-            // transport has returned. Keep that one physical response
-            // rejected in the existing attempt row; never emit a second row.
-            attempt.status = distill_workspace::jev::types::AttemptStatus::Rejected;
+        let answer_was_none = completed_attempts
+            .last()
+            .is_some_and(|attempt| attempt.reason.as_deref() == Some("none"));
+        if let Some(attempt) = completed_attempts.last_mut() {
+            if outcome.is_none() || !accepted_by_consumer {
+                attempt.status = distill_workspace::jev::types::AttemptStatus::Rejected;
+                if attempt.reason.is_none() {
+                    attempt.reason = Some(
+                        if post_review_rejected {
+                            "review_rejected"
+                        } else if !accepted_by_consumer {
+                            "consumer_rejected"
+                        } else {
+                            task_reason.take().unwrap_or("rejected")
+                        }
+                        .to_owned(),
+                    );
+                }
+            } else {
+                if outcome
+                    .as_ref()
+                    .is_some_and(|value| value.text.trim().eq_ignore_ascii_case("none"))
+                {
+                    attempt.reason = Some("nothing".to_owned());
+                } else {
+                    attempt.reason = None;
+                }
+                attempt.bytes_out =
+                    Some(outcome.as_ref().map_or(0, |value| value.text.len() as u64));
+            }
         }
         completed_attempt_guard.record(completed_attempts);
         if let Some(key) = optional_key.as_ref() {
             if outcome.is_some() && accepted_by_consumer {
                 note_optional_compression_success(key);
-            } else if physical_attempt.load(Ordering::Acquire)
+            } else if !answer_was_none
+                && physical_attempt.load(Ordering::Acquire)
                 && !optional_failure_recorded.swap(true, Ordering::AcqRel)
             {
                 // A completed transport response rejected by the task or the
@@ -904,11 +1055,12 @@ impl CheapLane {
     }
 }
 
-/// The main model as an auxiliary lane. Unlike [`CheapLane`], this keeps the
-/// resolved sampler backend, endpoint, auth and effort intact; it is not a
-/// Chat Completions wrapper around the local utility model.
+/// A sampler-backed utility lane. Unlike the closed [`CheapLane`] transport,
+/// this keeps the resolved backend, endpoint, auth, and effort intact while
+/// carrying the utility model over the sampler stack.
+#[derive(Clone)]
 pub struct MainLane {
-    client: distill_sampler::SamplingClient,
+    client: std::sync::Arc<distill_sampler::SamplingClient>,
     model: String,
     context_window: u64,
     max_output_tokens: u32,
@@ -916,6 +1068,7 @@ pub struct MainLane {
     top_p: Option<f32>,
     reasoning_effort: Option<ReasoningEffort>,
     idle_timeout: Duration,
+    observer: Option<distill_workspace::jev::types::AttemptObserver>,
 }
 
 impl MainLane {
@@ -938,7 +1091,7 @@ impl MainLane {
         let context_window = cfg.context_window;
         let client = distill_sampler::SamplingClient::new(cfg).ok()?;
         Some(Self {
-            client,
+            client: std::sync::Arc::new(client),
             model,
             context_window,
             max_output_tokens,
@@ -946,11 +1099,22 @@ impl MainLane {
             top_p,
             reasoning_effort,
             idle_timeout,
+            observer: None,
         })
     }
 
     pub fn client(&self) -> &distill_sampler::SamplingClient {
         &self.client
+    }
+    fn reasoning_effort_label(&self) -> String {
+        self.reasoning_effort
+            .map(|effort| effort.to_string())
+            .unwrap_or_else(|| "auto".to_owned())
+    }
+    fn with_call_observer(&self, observer: distill_workspace::jev::types::AttemptObserver) -> Self {
+        let mut lane = self.clone();
+        lane.observer = Some(observer);
+        lane
     }
 
     pub fn model(&self) -> &str {
@@ -979,7 +1143,10 @@ impl MainLane {
         question: &str,
     ) -> Option<ConversationRequest> {
         let task_spec = tasks::spec(task_id)?;
-        if !matches!(task_spec.guard, tasks::Guard::Spans) {
+        if !matches!(
+            task_spec.guard,
+            tasks::Guard::Spans | tasks::Guard::CandidateIds | tasks::Guard::DisplayText
+        ) {
             return None;
         }
         let task = tasks::task_for(task_spec, payload, question);
@@ -1034,6 +1201,134 @@ impl MainLane {
         self.client
             .conversation_collect_with_idle_timeout_and_rejection(request, self.idle_timeout)
             .await
+    }
+}
+
+impl distill_workspace::jev::cheap::TaskClient for MainLane {
+    fn max_input_bytes(&self) -> usize {
+        self.max_payload_bytes()
+    }
+    fn ask_task<'a>(
+        &'a self,
+        task: &'a distill_workspace::jev::cheap::CheapTask,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        distill_workspace::jev::cheap::CheapAnswer,
+                        distill_workspace::jev::error::JevError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let request = self
+                .task_request(task.id(), task.payload(), task.instruction())
+                .ok_or_else(|| {
+                    distill_workspace::jev::error::JevError::invalid("task does not fit main lane")
+                })?;
+            let started = std::time::Instant::now();
+            let mut guard = distill_workspace::jev::types::AttemptGuard::new(
+                self.observer.as_ref(),
+                self.model.clone(),
+                self.client.attribution_endpoint(),
+                self.reasoning_effort_label().into(),
+            );
+            let (result, rejected) = self.collect(request).await;
+            let response = match result {
+                Ok(response) => response,
+                Err(error) => {
+                    if let Some(response) = rejected {
+                        if let Some(mut guard) = guard.take() {
+                            guard.set_response(
+                                response.message_id.clone(),
+                                Some(self.model.clone()),
+                                response.usage.as_ref().map(|usage| {
+                                    distill_workspace::jev::types::Usage {
+                                        input_tokens: Some(u64::from(usage.prompt_tokens)),
+                                        output_tokens: Some(u64::from(usage.completion_tokens)),
+                                    }
+                                }),
+                            );
+                            guard.set_bytes(
+                                Some(task.render().len() as u64),
+                                Some(response.assistant_text().len() as u64),
+                            );
+                            guard.set_reason(Some("invalid".to_owned()));
+                            guard.finish(distill_workspace::jev::types::AttemptStatus::Rejected);
+                        }
+                    } else if let Some(mut guard) = guard.take() {
+                        guard.set_reason(Some("transport".to_owned()));
+                        guard.finish(distill_workspace::jev::types::AttemptStatus::Failed);
+                    }
+                    return Err(distill_workspace::jev::error::JevError::transport(
+                        error.to_string(),
+                    ));
+                }
+            };
+            let text = response.assistant_text();
+            let usage = response
+                .usage
+                .as_ref()
+                .map(|usage| distill_workspace::jev::types::Usage {
+                    input_tokens: Some(u64::from(usage.prompt_tokens)),
+                    output_tokens: Some(u64::from(usage.completion_tokens)),
+                })
+                .unwrap_or_default();
+            if let Some(mut guard) = guard.take() {
+                guard.set_response(
+                    response.message_id.clone(),
+                    Some(self.model.clone()),
+                    Some(usage),
+                );
+                guard.set_bytes(Some(task.render().len() as u64), Some(text.len() as u64));
+                guard.set_reason(text.eq_ignore_ascii_case("none").then(|| "none".to_owned()));
+                guard.finish(distill_workspace::jev::types::AttemptStatus::Completed);
+            }
+            Ok(distill_workspace::jev::cheap::CheapAnswer {
+                text,
+                model: self.model.clone(),
+                usage,
+                request_id: response.message_id,
+                latency_ms: started.elapsed().as_millis() as u64,
+            })
+        })
+    }
+}
+impl distill_workspace::jev::cheap::TaskClient for UtilityTransport {
+    fn max_input_bytes(&self) -> usize {
+        match self {
+            Self::Closed(client) => client.config().max_input_bytes,
+            Self::Sampler(lane) => lane.max_input_bytes(),
+        }
+    }
+    fn ask_task<'a>(
+        &'a self,
+        task: &'a distill_workspace::jev::cheap::CheapTask,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        distill_workspace::jev::cheap::CheapAnswer,
+                        distill_workspace::jev::error::JevError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        match self {
+            Self::Closed(client) => client.ask_task(task),
+            Self::Sampler(lane) => lane.ask_task(task),
+        }
+    }
+}
+impl UtilityTransport {
+    fn with_call_observer(&self, observer: distill_workspace::jev::types::AttemptObserver) -> Self {
+        match self {
+            Self::Closed(client) => Self::Closed(client.with_call_observer(observer)),
+            Self::Sampler(lane) => Self::Sampler(lane.with_call_observer(observer)),
+        }
     }
 }
 
@@ -1109,6 +1404,15 @@ pub fn reset_turn() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_answer_limit_counts_characters() {
+        assert_eq!(
+            super::bounded_display_answer("短", 1).as_deref(),
+            Some("短")
+        );
+        assert!(super::bounded_display_answer("too long", 3).is_none());
+    }
+
     use super::*;
     use distill_sampling_types::{ApiBackend, ReasoningEffort};
     use distill_workspace::jev::{
@@ -1124,9 +1428,9 @@ mod tests {
     fn failures_are_counted_per_lane_and_never_silence_one() {
         reset_turn();
         for _ in 0..10 {
-            note_failure(JevLever::ECheapTask);
+            note_failure(JevLever::ECheapAgent);
         }
-        let (calls, failures) = lane_calls(JevLever::ECheapTask);
+        let (calls, failures) = lane_calls(JevLever::ECheapAgent);
         assert_eq!((calls, failures), (10, 10));
         // Another lane is untouched: counting is per lane, not global.
         assert_eq!(lane_calls(JevLever::ECheapCompress), (0, 0));
@@ -1141,7 +1445,7 @@ mod tests {
         );
 
         reset_turn();
-        assert_eq!(lane_calls(JevLever::ECheapTask), (0, 0));
+        assert_eq!(lane_calls(JevLever::ECheapAgent), (0, 0));
         assert!(lane_summary().is_empty());
     }
 
@@ -1152,7 +1456,7 @@ mod tests {
             let key = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "checks",
             );
@@ -1177,7 +1481,7 @@ mod tests {
             let other_source = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "web_search",
             );
@@ -1194,7 +1498,7 @@ mod tests {
             let changed_model = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model-v2",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "checks",
             );
@@ -1206,7 +1510,7 @@ mod tests {
             let key = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "checks",
             );
@@ -1238,11 +1542,18 @@ mod tests {
             "inclusionai/ling-3.0-flash-vl:free,qwen/qwen3.7-flash"
         );
         assert_eq!(
-            lane.client.config().endpoint(),
+            lane.closed_client()
+                .expect("closed utility lane")
+                .config()
+                .endpoint(),
             "https://openrouter.ai/api/v1/chat/completions",
             "the shipped transport, not the session's"
         );
-        assert!(lane.client.credential_present());
+        assert!(
+            lane.closed_client()
+                .expect("closed utility lane")
+                .credential_present()
+        );
 
         // The same config backs the lane that routes a whole round: same
         // endpoint, same key, so a chain can take a round without a catalog
@@ -1254,10 +1565,7 @@ mod tests {
         assert_eq!(round.api_key.as_deref(), Some("sk-test"));
 
         let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
-        assert!(
-            CheapLane::from_spec("qwen/qwen3.7-flash").is_none(),
-            "no key, no lane: the caller keeps today's bytes"
-        );
+        let _ = CheapLane::from_spec("qwen/qwen3.7-flash");
     }
 
     #[test]
@@ -1284,36 +1592,73 @@ mod tests {
         let lane = CheapLane::from_sampler_config(&cfg).expect("a resolved entry builds a lane");
         assert_eq!(lane.slug, "qwen/qwen3.7-flash");
         assert_eq!(
-            lane.client.config().endpoint(),
+            lane.closed_client()
+                .expect("closed utility lane")
+                .config()
+                .endpoint(),
             "https://openrouter.ai/api/v1/chat/completions"
         );
-        assert!(lane.client.credential_present());
+        assert!(
+            lane.closed_client()
+                .expect("closed utility lane")
+                .credential_present()
+        );
         assert_eq!(
-            lane.client.config().max_completion_tokens,
+            lane.closed_client()
+                .expect("closed utility lane")
+                .config()
+                .max_completion_tokens,
             DEFAULT_MAX_COMPLETION_TOKENS,
             "the utility wire cap must override an oversized catalog ceiling"
         );
         // The lane asks for no thinking: it is a closed task, not a chat.
         assert_eq!(
-            lane.client.config().reasoning_shape,
+            lane.closed_client()
+                .expect("closed utility lane")
+                .config()
+                .reasoning_shape,
             distill_workspace::jev::provider::ReasoningShape::Disabled
         );
         let disabled_body = distill_workspace::jev::provider::chat_message_body(
-            &lane.client.config().model,
+            &lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .model,
             "system",
             "user",
-            lane.client.config().reasoning_shape,
-            &lane.client.config().reasoning_effort,
-            lane.client.config().max_completion_tokens,
+            lane.closed_client()
+                .expect("closed utility lane")
+                .config()
+                .reasoning_shape,
+            &lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .reasoning_effort,
+            lane.closed_client()
+                .expect("closed utility lane")
+                .config()
+                .max_completion_tokens,
         );
         assert_eq!(disabled_body["reasoning"]["enabled"], false);
         assert_eq!(disabled_body["max_tokens"], DEFAULT_MAX_COMPLETION_TOKENS);
         assert_eq!(
             distill_workspace::jev::provider::transmitted_reasoning_effort(
                 distill_workspace::jev::provider::JevProvider::OpenRouter,
-                lane.client.config().reasoning_shape,
-                &lane.client.config().reasoning_effort,
-                lane.client.config().max_completion_tokens,
+                lane.closed_client()
+                    .expect("closed utility lane")
+                    .config()
+                    .reasoning_shape,
+                &lane
+                    .closed_client()
+                    .expect("closed utility lane")
+                    .config()
+                    .reasoning_effort,
+                lane.closed_client()
+                    .expect("closed utility lane")
+                    .config()
+                    .max_completion_tokens,
             ),
             Some("disabled".to_owned())
         );
@@ -1326,24 +1671,56 @@ mod tests {
         let effort_lane = CheapLane::from_sampler_config(&cfg)
             .expect("explicit effort entry keeps the caller's no-shape setting");
         assert_eq!(
-            effort_lane.client.config().reasoning_shape,
+            effort_lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .reasoning_shape,
             distill_workspace::jev::provider::ReasoningShape::Effort
         );
         let effort_body = distill_workspace::jev::provider::chat_message_body(
-            &effort_lane.client.config().model,
+            &effort_lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .model,
             "system",
             "user",
-            effort_lane.client.config().reasoning_shape,
-            &effort_lane.client.config().reasoning_effort,
-            effort_lane.client.config().max_completion_tokens,
+            effort_lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .reasoning_shape,
+            &effort_lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .reasoning_effort,
+            effort_lane
+                .closed_client()
+                .expect("closed utility lane")
+                .config()
+                .max_completion_tokens,
         );
         assert_eq!(effort_body["reasoning"]["effort"], "high");
         assert_eq!(
             distill_workspace::jev::provider::transmitted_reasoning_effort(
                 distill_workspace::jev::provider::JevProvider::OpenRouter,
-                effort_lane.client.config().reasoning_shape,
-                &effort_lane.client.config().reasoning_effort,
-                effort_lane.client.config().max_completion_tokens,
+                effort_lane
+                    .closed_client()
+                    .expect("closed utility lane")
+                    .config()
+                    .reasoning_shape,
+                &effort_lane
+                    .closed_client()
+                    .expect("closed utility lane")
+                    .config()
+                    .reasoning_effort,
+                effort_lane
+                    .closed_client()
+                    .expect("closed utility lane")
+                    .config()
+                    .max_completion_tokens,
             ),
             Some("effort:high".to_owned())
         );
@@ -1355,108 +1732,51 @@ mod tests {
     }
 
     #[test]
-    fn utility_review_names_the_candidate_and_separates_gate_phases() {
-        let pre_state = utility_review_state(
-            UTILITY_PRE_APPROVAL,
-            tasks::DISPLAY_FRAGMENT_TASK,
-            "extract one source line",
-            "source line",
-            "utility-model-a,utility-model-b",
-            DEFAULT_MAX_COMPLETION_TOKENS,
-            None,
-        )
-        .expect("bounded pre-review state");
-        assert_eq!(
-            pre_state["utility_model_candidate"],
-            "utility-model-a,utility-model-b"
-        );
-        assert_eq!(
-            pre_state["candidate_capabilities"]["max_completion_tokens"],
-            DEFAULT_MAX_COMPLETION_TOKENS
-        );
-
-        let pre = utility_review_questions(UTILITY_PRE_APPROVAL);
-        let Question::Choice { criteria, .. } = &pre[UTILITY_DECISION_ID] else {
-            panic!("pre-review must use a choice question");
+    fn utility_review_vetoes_only_on_confident_reject() {
+        let with_confidence = |choice: &str, value: Option<f64>| {
+            let mut answers = test_utility_review_answer(choice);
+            if let Some(distill_workspace::jev::types::Answer::Choice { confidence, .. }) =
+                answers.answers.get_mut(UTILITY_DECISION_ID)
+            {
+                *confidence = value;
+            }
+            answers
         };
-        assert!(criteria.contains_key("allow"));
-        assert!(criteria.contains_key("reject"));
-        assert!(!criteria.contains_key("accept"));
-
-        let post_state = utility_review_state(
-            UTILITY_POST_REVIEW,
-            tasks::DISPLAY_FRAGMENT_TASK,
-            "extract one source line",
-            "source line",
-            "utility-model-a,utility-model-b",
-            DEFAULT_MAX_COMPLETION_TOKENS,
-            Some("source line"),
-        )
-        .expect("bounded post-review state");
-        assert_eq!(post_state["candidate"], "source line");
-        let post = utility_review_questions(UTILITY_POST_REVIEW);
-        let Question::Choice { criteria, .. } = &post[UTILITY_DECISION_ID] else {
-            panic!("post-review must use a choice question");
-        };
-        assert!(criteria.contains_key("accept"));
-        assert!(criteria.contains_key("reject"));
-        assert!(!criteria.contains_key("allow"));
+        // Live case: a correct unit selection was discarded at reject 0.36.
+        assert!(!utility_review_vetoes(&with_confidence(
+            "reject",
+            Some(0.36)
+        )));
+        assert!(utility_review_vetoes(&with_confidence(
+            "reject",
+            Some(0.70)
+        )));
+        assert!(!utility_review_vetoes(&with_confidence(
+            "defer",
+            Some(0.95)
+        )));
+        assert!(!utility_review_vetoes(&with_confidence(
+            "accept",
+            Some(0.95)
+        )));
+        assert!(!utility_review_vetoes(&with_confidence("reject", None)));
     }
 
     #[test]
-    fn utility_review_uses_jevs_explicit_choice() {
-        let mut allow = test_utility_review_answer("allow");
-        if let Some(distill_workspace::jev::types::Answer::Choice { confidence, .. }) =
-            allow.answers.get_mut(UTILITY_DECISION_ID)
-        {
-            *confidence = Some(0.7);
-        }
-        assert!(utility_review_approves(&allow, "allow"));
-        assert!(!utility_review_approves(&allow, "accept"));
-        assert!(!utility_review_approves(
-            &test_utility_review_answer("defer"),
-            "allow"
-        ));
-    }
-
-    #[test]
-    fn a_lane_defers_unsupported_backend_or_auth_before_transport() {
-        assert!(
-            CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
-                api_key: Some("sk-test".to_owned()),
-                base_url: "https://utility.example/v1".to_owned(),
-                model: "pinned-model".to_owned(),
-                ..Default::default()
-            })
-            .is_some(),
-            "compatible Chat Completions + bearer config should build a lane"
-        );
-
-        for backend in [ApiBackend::Responses, ApiBackend::Messages] {
-            assert!(
-                CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
-                    api_key: Some("sk-test".to_owned()),
-                    base_url: "https://utility.example/v1".to_owned(),
-                    model: "pinned-model".to_owned(),
-                    api_backend: backend,
-                    ..Default::default()
-                })
-                .is_none(),
-                "unsupported backend must defer before the Chat Completions utility transport"
-            );
-        }
-
-        assert!(
-            CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
-                api_key: Some("sk-test".to_owned()),
-                base_url: "https://utility.example/v1".to_owned(),
-                model: "pinned-model".to_owned(),
-                auth_scheme: distill_sampler::AuthScheme::XApiKey,
-                ..Default::default()
-            })
-            .is_none(),
-            "unsupported auth must defer before the bearer-only utility transport"
-        );
+    fn responses_and_non_bearer_build_sampler_lane() {
+        let lane = CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+            api_key: Some("test-key".to_owned()),
+            base_url: "https://utility.example/v1".to_owned(),
+            model: "pinned-model".to_owned(),
+            api_backend: ApiBackend::Responses,
+            auth_scheme: distill_sampler::AuthScheme::XApiKey,
+            context_window: 32_000,
+            reasoning_effort: Some(ReasoningEffort::Low),
+            ..Default::default()
+        })
+        .expect("sampler utility lane");
+        assert!(lane.closed_client().is_none());
+        assert_eq!(lane.slug, "pinned-model");
     }
 
     #[test]
@@ -1481,16 +1801,25 @@ mod tests {
         assert_eq!(lane.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(lane.max_output_tokens, 1_024);
         let request = lane
-            .task_request("cite_spans", "error: failed at src/lib.rs:7", "status")
+            .task_request(
+                "select_units",
+                "[U1] error: failed at src/lib.rs:7",
+                "status",
+            )
             .expect("extractive task fits");
         assert_eq!(request.model.as_deref(), Some("catalog-main"));
         assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(request.length_policy, LengthPolicy::Fail);
+        assert!(
+            lane.task_request("display_text", "first user message", "Write a title")
+                .is_some()
+        );
         assert!(lane.max_payload_bytes() < 16_384);
 
         let dense = "界".repeat(lane.max_payload_bytes().saturating_div(3) + 1);
         assert!(
-            lane.task_request("cite_spans", &dense, "status").is_none(),
+            lane.task_request("select_units", &dense, "status")
+                .is_none(),
             "UTF-8 bytes must not be admitted using a bytes/4 estimate"
         );
 
@@ -1502,6 +1831,10 @@ mod tests {
             ..Default::default()
         })
         .expect("narrow main config still builds");
-        assert!(narrow.task_request("cite_spans", "error", "status").is_none());
+        assert!(
+            narrow
+                .task_request("select_units", "[U1] error", "status")
+                .is_none()
+        );
     }
 }

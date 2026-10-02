@@ -194,6 +194,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 forked_tool_override: None,
                 compaction: crate::session::compaction_config::CompactionConfig {
                     threshold_percent: std::cell::Cell::new(85),
+                    checks_since_timing_ask: std::sync::atomic::AtomicU32::new(0),
                     force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     context_window_override: None,
                     count: std::sync::atomic::AtomicU64::new(0),
@@ -346,6 +347,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 current_turn_number: std::cell::Cell::new(0),
                 turn_phases: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
+                model_tools_read_only: std::cell::Cell::new(false),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),

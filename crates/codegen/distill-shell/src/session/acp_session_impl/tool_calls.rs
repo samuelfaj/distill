@@ -2919,10 +2919,20 @@ impl SessionActor {
         let prompt_text = if should_bypass_jev_post_process(&prompt_text, output_replaced) {
             prompt_text
         } else {
+            let mcp_tool = if requested_tool_name == "use_tool" {
+                tool_parsed_args
+                    .get("tool_name")
+                    .and_then(|value| value.as_str())
+            } else if requested_tool_name.contains("__") {
+                Some(requested_tool_name)
+            } else {
+                None
+            };
             self.jev_post_process_tool_result(
                 requested_tool_name,
                 tool_command,
                 &call_id.to_string(),
+                mcp_tool,
                 &result.output,
                 prompt_text,
             )

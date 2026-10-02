@@ -58,18 +58,14 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             e_retention: cfg.ladder.e_retention,
             e_importance: cfg.ladder.e_importance,
             e_cheap_compress: cfg.ladder.e_cheap_compress,
-            e_cheap_task: cfg.ladder.e_cheap_task,
             e_read_reuse: cfg.ladder.e_read_reuse,
-            e_lane_choice: cfg.ladder.e_lane_choice,
             e_cheap_agent: cfg.ladder.e_cheap_agent,
             e_prompt_blocks: cfg.ladder.e_prompt_blocks,
-            e_breaker: cfg.ladder.e_breaker,
             p1_tool_family: cfg.ladder.p1_tool_family,
             p2_read_shortlist: cfg.ladder.p2_read_shortlist,
             p3_compaction_recorte: cfg.ladder.p3_compaction_recorte,
             p6_skill_suggestion: cfg.ladder.p6_skill_suggestion,
             a1_file_to_edit: cfg.ladder.a1_file_to_edit,
-            a3_log_lines: cfg.ladder.a3_log_lines,
             a4_web_results: cfg.ladder.a4_web_results,
             a5_memory_rank: cfg.ladder.a5_memory_rank,
             a6_test_to_run: cfg.ladder.a6_test_to_run,
@@ -80,14 +76,15 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b3_subagent_type: cfg.ladder.b3_subagent_type,
             b6_delegation_hint: cfg.ladder.b6_delegation_hint,
             c1_premature_stop: cfg.ladder.c1_premature_stop,
-            c2_failure_triage: cfg.ladder.c2_failure_triage,
             c3_completion_check: cfg.ladder.c3_completion_check,
             c4_diff_risk: cfg.ladder.c4_diff_risk,
             c5_error_priority: cfg.ladder.c5_error_priority,
             c6_injection_screen: cfg.ladder.c6_injection_screen,
-            c7_change_type: cfg.ladder.c7_change_type,
             d2_big_output_retention: cfg.ladder.d2_big_output_retention,
             d3_post_compaction: cfg.ladder.d3_post_compaction,
+            d4_compaction_timing: cfg.ladder.d4_compaction_timing,
+            d5_memory_capture_gate: cfg.ladder.d5_memory_capture_gate,
+            b7_subagent_model: cfg.ladder.b7_subagent_model,
         },
     )
 }
@@ -120,7 +117,13 @@ pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
             .timeout_ms
             .map(core::time::Duration::from_millis)
             .unwrap_or(defaults.timeout),
-        api_key_env: cfg.api_key_env.clone().unwrap_or(defaults.api_key_env),
+        api_key_env: cfg.api_key_env.clone().unwrap_or_else(|| match provider {
+            // A TypeSafe key sent to OpenRouter is a 401, so its default follows the host.
+            JevProvider::OpenRouterDecisions | JevProvider::OpenRouter => {
+                crate::openrouter_auth::API_KEY_ENV.to_owned()
+            }
+            JevProvider::Typesafe => defaults.api_key_env,
+        }),
         max_state_bytes: cfg.max_state_bytes.unwrap_or(defaults.max_state_bytes),
         provider,
         reasoning_shape,
@@ -224,8 +227,7 @@ mod tests {
         use distill_workspace::jev::flags::JevLever;
         use distill_workspace::jev::types::{Answer, JevAnswerSet, Question, Usage};
         let mut flags = JevFlags::harness_default();
-        flags.c2_failure_triage = true;
-        flags.a3_log_lines = true;
+        flags.c6_injection_screen = true;
         flags.c5_error_priority = false;
         let pack = || {
             Some(
@@ -252,9 +254,9 @@ mod tests {
         let [first, disabled, last] = ask_items_with_flags(
             serde_json::json!({}),
             [
-                (JevLever::C2FailureTriage, pack()),
+                (JevLever::C4DiffRisk, pack()),
                 (JevLever::C5ErrorPriority, pack()),
-                (JevLever::A3LogLines, pack()),
+                (JevLever::C6InjectionScreen, pack()),
             ],
             &flags,
         )
@@ -273,7 +275,7 @@ mod tests {
         assert!(
             ask_items_with_flags(
                 serde_json::json!({}),
-                [(JevLever::C2FailureTriage, pack()),],
+                [(JevLever::C4DiffRisk, pack()),],
                 &flags
             )
             .await[0]
@@ -294,7 +296,13 @@ mod tests {
 [ladder]
 permission_classifier = true
 yolo_veto = true
-p5_call_validation = true"#,
+p5_call_validation = true
+e_cheap_task = true
+e_lane_choice = true
+e_breaker = true
+a3_log_lines = true
+c2_failure_triage = true
+c7_change_type = true"#,
         )
         .unwrap();
         let flags = flags_from_tiers(&config, Some(true));
@@ -315,7 +323,7 @@ p5_call_validation = true"#,
         // presence, and that pairing is what the label encodes.
         let on = flags_from_tiers(&JevConfig::default(), None);
         assert_eq!(on.status(true).label(), "jev");
-        assert_eq!(on.status(false).label(), "jev:off");
+        assert_eq!(on.status(false).label(), "jev:no-key");
 
         let shadow = flags_from_tiers(
             &JevConfig {
@@ -333,6 +341,22 @@ p5_call_validation = true"#,
         assert_eq!(config.base_url, "https://api.typesafe.ai");
         assert_eq!(config.api_key_env, "JEV_API_KEY");
         assert_eq!(config.endpoint(), "https://api.typesafe.ai/v1/systemone");
+    }
+
+    #[test]
+    fn api_key_env_default_follows_the_provider() {
+        let env_for = |provider: &str, api_key_env: Option<&str>| {
+            client_config_from(&JevConfig {
+                provider: Some(provider.to_owned()),
+                api_key_env: api_key_env.map(str::to_owned),
+                ..JevConfig::default()
+            })
+            .api_key_env
+        };
+        assert_eq!(env_for("typesafe", None), "JEV_API_KEY");
+        assert_eq!(env_for("openrouter_decisions", None), "OPENROUTER_API_KEY");
+        assert_eq!(env_for("openrouter", None), "OPENROUTER_API_KEY");
+        assert_eq!(env_for("openrouter_decisions", Some("MY_KEY")), "MY_KEY");
     }
 
     #[tokio::test]
@@ -366,6 +390,9 @@ p5_call_validation = true"#,
                     cost_usd_ticks: Some(0),
                     ..UsageBilling::default()
                 },
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
                 status: AttemptStatus::Completed,
                 latency_ms: 3,
             },
@@ -883,6 +910,9 @@ pub(crate) fn record_workspace_attempt(
             endpoint: Some(attempt.endpoint),
             requested_effort: attempt.requested_effort,
             applied_effort: attempt.applied_effort,
+            reason: attempt.reason,
+            bytes_in: attempt.bytes_in,
+            bytes_out: attempt.bytes_out,
             status,
             usage,
             usage_complete: attempt
@@ -906,7 +936,12 @@ pub(crate) fn record_workspace_attempt(
 #[derive(Debug, Default)]
 struct ActivityState {
     sessions: std::collections::HashMap<String, SessionActivityState>,
+    /// Child session id → parent session id, so a subagent's decisions also count for its parent.
+    parents: std::collections::HashMap<String, String>,
 }
+
+/// Longest parent chain `note_decision` follows.
+const MAX_ANCESTOR_DEPTH: usize = 8;
 
 #[derive(Debug, Default)]
 struct SessionActivityState {
@@ -967,13 +1002,43 @@ pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
     let Ok(mut state) = activity_state().lock() else {
         return;
     };
-    let session = state.sessions.entry(active_session_id()).or_default();
-    session.ring.push_back(JevActivity {
+    let own = active_session_id();
+    let activity = JevActivity {
         lever: lever.to_owned(),
         decision: decision.to_owned(),
         latency_ms,
         at: std::time::Instant::now(),
-    });
+    };
+    let mut visited = vec![own.clone()];
+    let mut current = own;
+    for _ in 0..MAX_ANCESTOR_DEPTH {
+        let Some(parent) = state.parents.get(&current).cloned() else {
+            break;
+        };
+        if visited.contains(&parent) {
+            break;
+        }
+        visited.push(parent.clone());
+        current = parent;
+    }
+    for session_id in visited {
+        state
+            .sessions
+            .entry(session_id)
+            .or_default()
+            .ring
+            .push_back(activity.clone());
+    }
+}
+
+/// Links a child session to its parent so the child's decisions count for the parent too.
+pub(crate) fn register_child_session(child: &str, parent: &str) {
+    if child == parent {
+        return;
+    }
+    if let Ok(mut state) = activity_state().lock() {
+        state.parents.insert(child.to_owned(), parent.to_owned());
+    }
 }
 
 /// Sets the routing of the call that is about to run, as the row shows it.
@@ -1059,6 +1124,7 @@ pub fn turn_activity_for_session(
 pub fn reset_activity_for_test() {
     if let Ok(mut state) = activity_state().lock() {
         state.sessions.clear();
+        state.parents.clear();
     }
 }
 
@@ -1239,7 +1305,15 @@ fn client_cached() -> Option<&'static distill_workspace::jev::JevClient> {
             let cfg = resolve_config_from_disk();
             match distill_workspace::jev::JevClient::new(client_config_from(&cfg)) {
                 Ok(client) if client.credential_present() => Some(client),
-                Ok(_) => None,
+                Ok(_) => {
+                    if flags_from(&cfg).enabled {
+                        tracing::warn!(
+                            "Jev is enabled but environment variable `{}` is not set; Jev decisions are off",
+                            client_config_from(&cfg).api_key_env
+                        );
+                    }
+                    None
+                }
                 Err(error) => {
                     tracing::warn!(%error, "jev client unavailable; catalogue items stay off");
                     None
@@ -1684,6 +1758,52 @@ mod catalogue_helper_tests {
         assert_eq!(child.decisions, 1);
         assert_eq!(child.route.as_deref(), Some("child-model medium"));
         assert!(turn_activity_for_session("other", None).is_quiet());
+        reset_activity_for_test();
+    }
+
+    /// A subagent's decisions must reach the parent's chip and end-of-turn
+    /// count, through every ancestor, without touching unrelated sessions.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn child_decisions_count_for_every_ancestor() {
+        reset_activity_for_test();
+        register_child_session("child", "parent");
+        register_child_session("grandchild", "child");
+        with_session_scope("grandchild", async {
+            note_decision("b2_micro_effort", "keep", 5);
+        })
+        .await;
+        with_session_scope("child", async {
+            note_decision("b2_micro_effort", "keep", 6);
+        })
+        .await;
+        assert_eq!(turn_activity_for_session("grandchild", None).decisions, 1);
+        assert_eq!(turn_activity_for_session("child", None).decisions, 2);
+        assert_eq!(turn_activity_for_session("parent", None).decisions, 2);
+        assert!(turn_activity_for_session("unrelated", None).is_quiet());
+        // The parent's own decisions do not flow down to its children.
+        with_session_scope("parent", async {
+            note_decision("b2_micro_effort", "keep", 7);
+        })
+        .await;
+        assert_eq!(turn_activity_for_session("child", None).decisions, 2);
+        assert_eq!(turn_activity_for_session("parent", None).decisions, 3);
+        reset_activity_for_test();
+    }
+
+    /// A link cycle must not loop or double-count a session.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn child_links_that_cycle_count_once() {
+        reset_activity_for_test();
+        register_child_session("a", "b");
+        register_child_session("b", "a");
+        with_session_scope("a", async {
+            note_decision("b2_micro_effort", "keep", 5);
+        })
+        .await;
+        assert_eq!(turn_activity_for_session("a", None).decisions, 1);
+        assert_eq!(turn_activity_for_session("b", None).decisions, 1);
         reset_activity_for_test();
     }
 }

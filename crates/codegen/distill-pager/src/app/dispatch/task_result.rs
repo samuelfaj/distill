@@ -2399,6 +2399,13 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::UtilityModelPersisted { model, warning } => {
+            tracing::trace!(target: "settings", %model, ?warning, "utility model persisted");
+            if let Some(warning) = warning {
+                app.show_toast(&warning);
+            }
+            vec![]
+        }
         TaskResult::SettingPersisted { key, value } => {
             tracing::trace!(target: "settings", ?key, ?value, "setting persisted");
             if key == "onboarding_completed" {

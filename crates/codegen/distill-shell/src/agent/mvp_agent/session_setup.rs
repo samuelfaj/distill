@@ -394,6 +394,7 @@ impl MvpAgent {
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
         let worker_override =
             crate::extensions::session_worker_model::worker_from_meta(arguments.meta.as_ref())?;
+        let worker_snapshot = crate::extensions::session_worker_model::config_worker_snapshot();
         tracing::debug!(config = ?self.sampling_config, "Received new session request {arguments:?}");
         let init = self.initialize_request.get().ok_or_else(|| {
             acp::Error::invalid_params().data("initialize must be called before new_session")
@@ -615,6 +616,7 @@ impl MvpAgent {
         );
         spawn_sampler_transport_prewarm(&session_sampling.base_url);
         let (summary_client, summary_model) = self.build_summary_client(&session_sampling)?;
+        let title_utility_lane = self.build_title_utility_lane(&session_sampling);
         let relay_sync = self.start_relay_sync(&session_id, &session_info);
         let model_id = match &session_initial_model {
             Some(chat_model) => acp::ModelId::new(chat_model.clone()),
@@ -634,6 +636,7 @@ impl MvpAgent {
                 model_id,
                 crate::session::persistence::SessionDeps {
                     sampling_client: summary_client,
+                    utility_lane: title_utility_lane,
                     storage_mode: self.storage_mode.get(),
                     auth_manager: Some(self.auth_manager.clone()),
                     relay_sync,
@@ -729,9 +732,10 @@ impl MvpAgent {
         spawn_res?;
         tracing::debug!(session_id = %session_id.0, "new_session: spawn_session_actor");
         if let Some(handle) = self.resident_handle(&session_id) {
-            crate::extensions::session_worker_model::apply_meta(
+            crate::extensions::session_worker_model::apply_meta_or_snapshot(
                 &handle.worker_override,
                 worker_override,
+                worker_snapshot,
             );
         }
         if session_computer_sessions
@@ -977,6 +981,7 @@ impl MvpAgent {
         } = arguments;
         let worker_override =
             crate::extensions::session_worker_model::worker_from_meta(request_meta.as_ref())?;
+        let worker_snapshot = crate::extensions::session_worker_model::config_worker_snapshot();
         let policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
         let SessionWorkspace {
             cwd,
@@ -1037,6 +1042,7 @@ impl MvpAgent {
             crate::sampling::derive_conversation_group_id(session_id.0.as_ref()),
         );
         let (summary_client, summary_model) = self.build_summary_client(&load_session_sampling)?;
+        let title_utility_lane = self.build_title_utility_lane(&load_session_sampling);
         let relay_sync = self.start_relay_sync(&session_id, &session_info);
         let mut persistence_timer = crate::instrumentation_timer!("session.load");
         persistence_timer.with_field("session_id", session_id.0.as_ref());
@@ -1053,6 +1059,7 @@ impl MvpAgent {
             false,
             crate::session::persistence::SessionDeps {
                 sampling_client: summary_client,
+                utility_lane: title_utility_lane,
                 storage_mode: self.storage_mode.get(),
                 auth_manager: Some(self.auth_manager.clone()),
                 relay_sync,
@@ -1340,9 +1347,10 @@ impl MvpAgent {
             handle.set_client_hooks(hooks);
         }
         if let Some(handle) = self.resident_handle(&session_id) {
-            crate::extensions::session_worker_model::apply_meta(
+            crate::extensions::session_worker_model::apply_meta_or_snapshot(
                 &handle.worker_override,
                 worker_override,
+                worker_snapshot,
             );
         }
         #[allow(unused_variables)]

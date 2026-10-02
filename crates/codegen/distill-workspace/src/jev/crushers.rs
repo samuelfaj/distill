@@ -183,6 +183,79 @@ pub fn is_exact_output(tool: &str, command: &str) -> bool {
     false
 }
 
+/// How the utility selection may treat a line-addressed result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExactKind {
+    /// Not line-addressed.
+    None,
+    /// Only `head`/`tail` windows: a large window may still be narrowed.
+    Window,
+    /// Match listings (`grep` tool, or rg/grep-likes optionally with head/tail).
+    Matches,
+    /// The bytes are the answer.
+    Exact,
+}
+
+pub fn exact_output_kind(tool: &str, command: &str) -> ExactKind {
+    let normalized_tool = tool
+        .rsplit('/')
+        .next()
+        .unwrap_or(tool)
+        .trim()
+        .to_ascii_lowercase();
+    if !is_exact_output(tool, command) {
+        return ExactKind::None;
+    }
+    if normalized_tool == "grep" {
+        return ExactKind::Matches;
+    }
+    if matches!(normalized_tool.as_str(), "read_file" | "read")
+        || command.contains("/skills/")
+        || command.contains("SKILL.md")
+    {
+        return ExactKind::Exact;
+    }
+    let words: Vec<&str> = command.split_whitespace().collect();
+    if words
+        .windows(2)
+        .any(|pair| pair[0] == "git" && matches!(pair[1], "grep" | "show" | "cat-file" | "blame"))
+    {
+        return ExactKind::Exact;
+    }
+    let programs: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')'))
+        .filter(|token| !token.is_empty())
+        .filter_map(|token| {
+            let program = token
+                .rsplit('/')
+                .next()
+                .unwrap_or(token)
+                .trim_end_matches('"');
+            EXACT_OUTPUT_COMMANDS.contains(&program).then_some(program)
+        })
+        .collect();
+    if !programs.is_empty()
+        && programs
+            .iter()
+            .all(|program| matches!(*program, "head" | "tail"))
+    {
+        ExactKind::Window
+    } else if programs
+        .iter()
+        .any(|program| matches!(*program, "rg" | "grep" | "egrep" | "fgrep" | "ag" | "ugrep"))
+        && programs.iter().all(|program| {
+            matches!(
+                *program,
+                "head" | "tail" | "rg" | "grep" | "egrep" | "fgrep" | "ag" | "ugrep"
+            )
+        })
+    {
+        ExactKind::Matches
+    } else {
+        ExactKind::Exact
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terminal noise
 // ---------------------------------------------------------------------------
@@ -1737,5 +1810,20 @@ mod tests {
         );
         assert!(ack.contains("sha "));
         assert!(ack.len() < 120);
+    }
+    #[test]
+    fn classifies_exact_output_kinds() {
+        use ExactKind::*;
+        assert_eq!(exact_output_kind("bash", "cmd | tail -200"), Window);
+        assert_eq!(
+            exact_output_kind("bash", "cargo test 2>&1 | head -50"),
+            Window
+        );
+        assert_eq!(exact_output_kind("bash", "rg foo src | head"), Matches);
+        assert_eq!(exact_output_kind("grep", ""), Matches);
+        assert_eq!(exact_output_kind("bash", "sed -n 1,50p f"), Exact);
+        assert_eq!(exact_output_kind("bash", "cat f | tail"), Exact);
+        assert_eq!(exact_output_kind("bash", "git show HEAD"), Exact);
+        assert_eq!(exact_output_kind("bash", "ls -la"), None);
     }
 }

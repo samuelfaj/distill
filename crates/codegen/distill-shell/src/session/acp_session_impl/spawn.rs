@@ -1810,6 +1810,7 @@ pub(crate) async fn spawn_session_actor(
         forked_tool_override,
         compaction: super::compaction_config::CompactionConfig {
             threshold_percent: std::cell::Cell::new(auto_compact_threshold_percent),
+            checks_since_timing_ask: std::sync::atomic::AtomicU32::new(0),
             force_compact: force_compact.clone(),
             context_window_override,
             count: std::sync::atomic::AtomicU64::new(0),
@@ -2030,6 +2031,7 @@ pub(crate) async fn spawn_session_actor(
         current_turn_number: std::cell::Cell::new(0),
         turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(initial_last_recap_main_turn),
+        model_tools_read_only: std::cell::Cell::new(false),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
         turn_summary_task: std::cell::RefCell::new(None),

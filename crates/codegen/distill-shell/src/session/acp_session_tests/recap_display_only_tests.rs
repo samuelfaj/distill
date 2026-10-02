@@ -1249,18 +1249,11 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                         "model": "display-utility",
                         "choices": [{
                             "finish_reason": "stop",
-                            "message": {"role": "assistant", "content": "`tests passed`"}
+                            "message": {"role": "assistant", "content": "U1"}
                         }],
                         "usage": {"prompt_tokens": 40, "completion_tokens": 3}
                     }),
                 ),
-            );
-            server.enqueue_response(
-                "/v1/responses",
-                ScriptedResponse::sse(responses_api_script_exact(
-                    "`patched the race and re-ran the suite`",
-                    "display-main",
-                )),
             );
             let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
             cfg.base_url = server.url();
@@ -1274,7 +1267,7 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 ConversationItem::assistant("patched the race and re-ran the suite"),
             ]);
 
-            set_utility_review_choices(&["allow", "accept"]);
+            set_utility_review_choices(&["accept"]);
             actor.restart_turn_summary("pid-happy".into());
             assert!(
                 actor.turn_summary_task.borrow().is_some(),
@@ -1342,10 +1335,6 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 .iter()
                 .find(|request| request.path == "/v1/chat/completions")
                 .expect("utility display request");
-            let main_request = requests
-                .iter()
-                .find(|request| request.path == "/v1/responses")
-                .expect("main-model display request");
             assert_eq!(j(
                 utility_request.body.as_ref().expect("utility body"),
                 "model"
@@ -1353,23 +1342,6 @@ async fn turn_summary_generate_persists_and_broadcasts() {
             assert_eq!(
                 utility_request.authorization.as_deref(),
                 Some("Bearer display-utility-key")
-            );
-            assert_eq!(j(
-                main_request.body.as_ref().expect("main-model body"),
-                "model"
-            ), "display-main");
-            assert_eq!(
-                main_request.authorization.as_deref(),
-                Some("Bearer display-main-key")
-            );
-            assert!(
-                main_request
-                    .body
-                    .as_ref()
-                    .expect("main-model body")
-                    .to_string()
-                    .contains("low"),
-                "the main model's own effort must reach the request"
             );
             let display_requests = serde_json::to_string(&server.request_bodies())
                 .expect("serialize display requests");
@@ -1379,7 +1351,8 @@ async fn turn_summary_generate_persists_and_broadcasts() {
             assert!(!display_requests.contains("you are a coding agent"));
             assert_eq!(server.request_count_for("/v1/messages"), 0);
             assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
-            assert_eq!(server.request_count_for("/v1/responses"), 1);
+            // Display tasks never fall back to the session's main model.
+            assert_eq!(server.request_count_for("/v1/responses"), 0);
 
             let ledger = actor
                 .chat_state_handle
@@ -1391,15 +1364,10 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 .iter()
                 .filter(|row| row.role == "utility" || row.role == "auxiliary")
                 .collect();
-            assert_eq!(display_rows.len(), 2);
+            assert_eq!(display_rows.len(), 1);
             assert!(display_rows.iter().any(|row| {
                 row.role == "utility"
                     && row.model_id == "display-utility"
-                    && row.status == distill_chat_state::UsageCallStatus::Rejected
-            }));
-            assert!(display_rows.iter().any(|row| {
-                row.role == "auxiliary"
-                    && row.model_id == "display-main"
                     && row.status == distill_chat_state::UsageCallStatus::Completed
             }));
 
@@ -1709,6 +1677,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
             .await
             .expect("start display inference stub");
             for (id, text) in [
+                ("display-recap", "Fixed the parser and reran the suite."),
                 ("display-summary", "`third answer`"),
                 ("display-title", "`third question`"),
             ] {
@@ -1768,15 +1737,9 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 .expect("/btw Messages body");
             assert_messages_rides_parent_prefix(&body, parent.clone(), "/btw");
 
+            // With a utility lane the recap is written by the utility model.
+
             actor.handle_recap(false).await;
-            let body = server
-                .requests()
-                .into_iter()
-                .rev()
-                .find(|request| request.path == "/v1/messages")
-                .and_then(|request| request.body)
-                .expect("recap Messages body");
-            assert_messages_rides_parent_prefix(&body, parent.clone(), "recap");
 
             set_summary_then_title_review_choices();
             actor.restart_turn_summary("prompt-3".to_string());
@@ -1802,9 +1765,17 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 actor.title_refresh_task.borrow().is_none(),
                 "title refresh must finish"
             );
-            assert_eq!(server.request_count_for("/v1/messages"), 2);
-            assert_eq!(display_server.request_count_for("/v1/chat/completions"), 2);
-            let display_requests = serde_json::to_string(&display_server.request_bodies())
+            assert_eq!(server.request_count_for("/v1/messages"), 1);
+            assert_eq!(display_server.request_count_for("/v1/chat/completions"), 3);
+            let display_requests = serde_json::to_string(
+                &display_server
+                    .request_bodies()
+                    .into_iter()
+                    // The utility recap reads the whole bounded transcript; the turn
+                    // summary and title requests are the ones bounded to the last turn.
+                    .filter(|body| !body.to_string().contains("Write a recap of this coding session"))
+                    .collect::<Vec<_>>(),
+            )
                 .expect("serialize display requests");
             assert!(display_requests.contains("LAST USER TURN:"));
             assert!(display_requests.contains("ASSISTANT REPLY:"));
@@ -1820,7 +1791,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                     .filter(|request| request.path == "/v1/chat/completions")
                     .filter(|request| request.authorization.as_deref() == Some("Bearer display-utility-key"))
                     .count(),
-                2
+                3
             );
 
             crate::jev::clear_test_decision_answers();
@@ -1875,6 +1846,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                 .await
                 .expect("start display inference stub");
                 for (id, text) in [
+                    ("display-recap", "Fixed the parser and reran the suite."),
                     ("display-summary", "`third answer`"),
                     ("display-title", "`third question`"),
                 ] {
@@ -1922,15 +1894,8 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     .expect("/btw Messages body");
                 assert_messages_reasoning_stripped(&body, "/btw");
 
+                // With a utility lane the recap is written by the utility model.
                 actor.handle_recap(false).await;
-                let body = server
-                    .requests()
-                    .into_iter()
-                    .rev()
-                    .find(|request| request.path == "/v1/messages")
-                    .and_then(|request| request.body)
-                    .expect("recap Messages body");
-                assert_messages_reasoning_stripped(&body, "recap");
 
                 set_summary_then_title_review_choices();
                 actor.restart_turn_summary("prompt-3".to_string());
@@ -1956,9 +1921,17 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     actor.title_refresh_task.borrow().is_none(),
                     "title refresh must finish"
                 );
-                assert_eq!(server.request_count_for("/v1/messages"), 2);
-                assert_eq!(display_server.request_count_for("/v1/chat/completions"), 2);
-                let display_requests = serde_json::to_string(&display_server.request_bodies())
+                assert_eq!(server.request_count_for("/v1/messages"), 1);
+                assert_eq!(display_server.request_count_for("/v1/chat/completions"), 3);
+                let display_requests = serde_json::to_string(
+                    &display_server
+                        .request_bodies()
+                        .into_iter()
+                        // The utility recap reads the whole bounded transcript; the turn
+                        // summary and title requests are the ones bounded to the last turn.
+                        .filter(|body| !body.to_string().contains("Write a recap of this coding session"))
+                        .collect::<Vec<_>>(),
+                )
                     .expect("serialize display requests");
                 assert!(display_requests.contains("LAST USER TURN:"));
                 assert!(display_requests.contains("ASSISTANT REPLY:"));

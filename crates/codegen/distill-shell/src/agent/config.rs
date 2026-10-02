@@ -1195,7 +1195,8 @@ pub struct JevConfig {
     pub model: Option<String>,
     /// Per-operation deadline in milliseconds, covering the response body read.
     pub timeout_ms: Option<u64>,
-    /// Environment variable holding the bearer token (`JEV_API_KEY` by default).
+    /// Environment variable holding the bearer token. Defaults by provider:
+    /// `JEV_API_KEY` for TypeSafe, `OPENROUTER_API_KEY` for the OpenRouter providers.
     pub api_key_env: Option<String>,
     /// Maximum serialized bytes of `state` for one request.
     pub max_state_bytes: Option<usize>,
@@ -1278,18 +1279,12 @@ pub struct JevLadderConfig {
     pub e_importance: Option<bool>,
     /// e_cheap_compress: the `e_cheap_compress` lane (see `list.md`).
     pub e_cheap_compress: Option<bool>,
-    /// e_cheap_task: the `e_cheap_task` lane (see `list.md`).
-    pub e_cheap_task: Option<bool>,
     /// e_read_reuse: the `e_read_reuse` lane (see `list.md`).
     pub e_read_reuse: Option<bool>,
-    /// e_lane_choice: the `e_lane_choice` lane (see `list.md`).
-    pub e_lane_choice: Option<bool>,
     /// e_cheap_agent: the `e_cheap_agent` lane (see `list.md`).
     pub e_cheap_agent: Option<bool>,
     /// e_prompt_blocks: the `e_prompt_blocks` lane (see `list.md`).
     pub e_prompt_blocks: Option<bool>,
-    /// e_breaker: the `e_breaker` lane (see `list.md`).
-    pub e_breaker: Option<bool>,
     /// P1: prune the per-turn tool set by family.
     pub p1_tool_family: Option<bool>,
     /// P2: pick line windows instead of reading whole files.
@@ -1301,7 +1296,6 @@ pub struct JevLadderConfig {
     /// A1: rank candidate files before reading them.
     pub a1_file_to_edit: Option<bool>,
     /// A3: keep only the log/test lines that explain a failure.
-    pub a3_log_lines: Option<bool>,
     /// A4: rank search results before fetching them.
     pub a4_web_results: Option<bool>,
     /// A5: rank memory candidates before injecting them.
@@ -1325,7 +1319,6 @@ pub struct JevLadderConfig {
     /// C1: detect that requested work is still unfinished.
     pub c1_premature_stop: Option<bool>,
     /// C2: classify a failure and whether the fix is in user code.
-    pub c2_failure_triage: Option<bool>,
     /// C3: refuse to call work complete while something is missing.
     pub c3_completion_check: Option<bool>,
     /// C4: flag a risky diff for confirmation (advisory).
@@ -1335,11 +1328,13 @@ pub struct JevLadderConfig {
     /// C6: screen tool output for instruction-like text; off until its cost is measured.
     pub c6_injection_screen: Option<bool>,
     /// C7: label the change type for release notes.
-    pub c7_change_type: Option<bool>,
     /// D2: drop a large inert tool output from the context.
     pub d2_big_output_retention: Option<bool>,
     /// D3: re-inject only still-relevant chunks after compaction.
     pub d3_post_compaction: Option<bool>,
+    pub d4_compaction_timing: Option<bool>,
+    pub d5_memory_capture_gate: Option<bool>,
+    pub b7_subagent_model: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.

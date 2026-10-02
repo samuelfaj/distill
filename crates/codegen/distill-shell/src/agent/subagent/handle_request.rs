@@ -398,6 +398,55 @@ pub(crate) async fn run_shell_child(
         );
         request.subagent_type = resolved;
     }
+    if !request.fork_context
+        && !is_wake
+        && request.resume_from.is_none()
+        && request.runtime_overrides.model.is_none()
+        && !ctx
+            .subagent_model_overrides
+            .contains_key(&request.subagent_type)
+        && request.runtime_overrides.model_override_provenance
+            == distill_tools::implementations::distill::task::types::ModelOverrideProvenance::Tool
+        && matches!(request.subagent_type.as_str(), "plan" | "code-reviewer")
+        && let Some(worker_model) = ctx
+            .parent_worker
+            .as_ref()
+            .and_then(|worker| worker.model_id.as_deref())
+        && crate::jev::lever_active(distill_workspace::jev::flags::JevLever::B7SubagentModel)
+    {
+        let questions = distill_workspace::jev::catalog::subagent_model::subagent_model_questions();
+        if let Ok(questions) = questions {
+            let state = serde_json::json!({
+                "subagent_type": request.subagent_type,
+                "task": request.prompt.chars().take(1500).collect::<String>(),
+                "worker_model": worker_model,
+                "main_model": ctx.model_id.0.as_ref(),
+            });
+            if let Some(answers) = crate::jev::ask_item(
+                distill_workspace::jev::flags::JevLever::B7SubagentModel,
+                state,
+                questions,
+            )
+            .await
+            {
+                request.jev_worker_ok =
+                    distill_workspace::jev::catalog::subagent_model::compose_subagent_model(
+                        &answers,
+                    ) == Some(true);
+                crate::jev::record_item(
+                    distill_workspace::jev::flags::JevLever::B7SubagentModel,
+                    if request.jev_worker_ok {
+                        "worker"
+                    } else {
+                        "main"
+                    },
+                    &request.subagent_type,
+                    answers.confidence("worker_model_suitable"),
+                    Some(&answers),
+                );
+            }
+        }
+    }
     let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx) else {
         let msg = format!("Unknown subagent type: {}", request.subagent_type);
         return child_run_output(failure_result(&request, &msg), completion_data, None);
@@ -1800,6 +1849,7 @@ pub(crate) async fn run_shell_child(
         ..
     } = child_init;
     *child_handle.worker_override.write() = ctx.parent_worker.clone();
+    crate::jev::register_child_session(&child_session_id.0, &ctx.parent_session_id);
     session::bind_installed_toolset(
         &ctx.workspace_ops,
         &child_handle.info.id,

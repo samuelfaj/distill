@@ -281,7 +281,7 @@ impl Answer {
 }
 
 /// Token accounting reported by the API (`input_tokens`/`output_tokens`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(default)]
     pub input_tokens: Option<u64>,
@@ -307,7 +307,7 @@ impl Usage {
 
 /// Provider billing/cache metadata carried separately so existing Jev wire
 /// fixture literals remain source-compatible.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageBilling {
     pub cached_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
@@ -325,7 +325,7 @@ impl UsageBilling {
 }
 
 /// Final state of one dispatched workspace-provider attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttemptStatus {
     Completed,
     Rejected,
@@ -334,7 +334,7 @@ pub enum AttemptStatus {
 }
 
 /// Provider metadata emitted once for every dispatched attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptRecord {
     pub attempt_id: String,
     pub request_id: Option<String>,
@@ -345,6 +345,12 @@ pub struct AttemptRecord {
     pub applied_effort: Option<String>,
     pub usage: Option<Usage>,
     pub billing: UsageBilling,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_in: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_out: Option<u64>,
     pub status: AttemptStatus,
     pub latency_ms: u64,
 }
@@ -379,6 +385,9 @@ impl AttemptGuard {
                 applied_effort: None,
                 usage: None,
                 billing: UsageBilling::default(),
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
                 status: AttemptStatus::Cancelled,
                 latency_ms: 0,
             },
@@ -405,6 +414,15 @@ impl AttemptGuard {
 
     pub fn set_applied_effort(&mut self, applied_effort: Option<String>) {
         self.record.applied_effort = applied_effort;
+    }
+
+    pub fn set_reason(&mut self, reason: Option<String>) {
+        self.record.reason = reason;
+    }
+
+    pub fn set_bytes(&mut self, bytes_in: Option<u64>, bytes_out: Option<u64>) {
+        self.record.bytes_in = bytes_in;
+        self.record.bytes_out = bytes_out;
     }
 
     pub fn set_billing(&mut self, billing: UsageBilling) {
@@ -626,5 +644,38 @@ mod tests {
         assert_eq!(a.confidence(), None);
         assert_eq!(a.noul_value(), Some(0.9));
         assert_eq!(a.top_probability(), None);
+    }
+
+    #[test]
+    fn attempt_record_metadata_round_trips_and_old_json_still_reads() {
+        let record = AttemptRecord {
+            attempt_id: "attempt".to_owned(),
+            request_id: None,
+            requested_model: "utility".to_owned(),
+            response_model: None,
+            endpoint: "http://localhost".to_owned(),
+            requested_effort: None,
+            applied_effort: None,
+            usage: None,
+            billing: UsageBilling::default(),
+            reason: Some("defer:invalid".to_owned()),
+            bytes_in: Some(12),
+            bytes_out: Some(5),
+            status: AttemptStatus::Rejected,
+            latency_ms: 2,
+        };
+        let json = serde_json::to_string(&record).expect("serialize attempt");
+        let decoded: AttemptRecord = serde_json::from_str(&json).expect("round trip attempt");
+        assert_eq!(decoded.reason.as_deref(), Some("defer:invalid"));
+        assert_eq!(decoded.bytes_in, Some(12));
+        assert_eq!(decoded.bytes_out, Some(5));
+        let old = json.replace(
+            ",\"reason\":\"defer:invalid\",\"bytes_in\":12,\"bytes_out\":5",
+            "",
+        );
+        let decoded: AttemptRecord = serde_json::from_str(&old).expect("old attempt format");
+        assert_eq!(decoded.reason, None);
+        assert_eq!(decoded.bytes_in, None);
+        assert_eq!(decoded.bytes_out, None);
     }
 }

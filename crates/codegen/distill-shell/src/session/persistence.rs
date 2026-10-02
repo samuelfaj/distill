@@ -2810,6 +2810,8 @@ const WORKTREE_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// What the actor is handed once and holds for the life of the session.
 pub(crate) struct SessionDeps {
     pub(crate) sampling_client: OaiCompatClient,
+    /// Utility lane for the initial title, resolved at session setup.
+    pub(crate) utility_lane: Option<Arc<crate::jev_cheap::CheapLane>>,
     pub(crate) storage_mode: StorageMode,
     pub(crate) auth_manager: Option<Arc<distill_login::AuthManager>>,
     pub(crate) relay_sync: Option<crate::relay::RelaySync>,
@@ -2829,6 +2831,7 @@ pub(crate) async fn new(
 ) -> io::Result<(PersistenceHandle, SessionIdentity)> {
     let SessionDeps {
         sampling_client,
+        utility_lane,
         storage_mode,
         auth_manager,
         relay_sync,
@@ -2882,6 +2885,7 @@ pub(crate) async fn new(
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
+                    utility_lane,
                     model: session_summary_model,
                     persistence_tx: summary_tx,
                 },
@@ -2992,6 +2996,7 @@ pub(crate) async fn new_with_explicit_dir(
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
+                    utility_lane: None,
                     model: session_summary_model,
                     persistence_tx: summary_tx,
                 },
@@ -3059,6 +3064,7 @@ pub(crate) async fn load_light(
 ) -> io::Result<(PersistedInfo, PersistenceHandle)> {
     let SessionDeps {
         sampling_client,
+        utility_lane,
         storage_mode,
         auth_manager,
         relay_sync,
@@ -3121,6 +3127,7 @@ pub(crate) async fn load_light(
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
+                utility_lane,
                 model: session_summary_model,
                 persistence_tx: summary_tx,
             },

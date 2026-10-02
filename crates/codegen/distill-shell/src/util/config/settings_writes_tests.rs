@@ -160,3 +160,19 @@ async fn tier_efforts_persist_auto_or_a_level_where_their_readers_look() {
     );
     assert_eq!(auto["models"]["worker"].as_str(), Some("luna"), "the tiers are untouched");
 }
+
+#[test]
+fn utility_model_warning_only_targets_non_catalog_lanes() {
+    assert_eq!(
+        utility_model_warning("chatgpt/gpt-6-luna", true, false),
+        None
+    );
+    assert_eq!(utility_model_warning("vendor/model", false, true), None);
+    assert_eq!(
+        utility_model_warning("vendor/model", false, false).as_deref(),
+        Some(
+            "Utility model `vendor/model` cannot build a lane with current credentials; utility work will be skipped."
+        )
+    );
+    assert_eq!(utility_model_warning("", false, false), None);
+}

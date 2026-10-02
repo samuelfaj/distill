@@ -737,6 +737,7 @@ impl SchedulerActor {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let (registered_tx, registered_rx) = tokio::sync::oneshot::channel();
         let request = SubagentRequest {
+            jev_worker_ok: false,
             id: subagent_id.clone(),
             prompt: framed_prompt,
             description,

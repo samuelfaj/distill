@@ -2940,6 +2940,10 @@ impl SessionActor {
                     parameters: schema,
                 });
             }
+            self.model_tools_read_only
+                .set(super::jev_tool_result::session_is_read_only(
+                    effective_tools.iter().map(|tool| tool.name.as_str()),
+                ));
             self.persist_tool_definitions_artifact(&effective_tools)
                 .await;
             let build_req_start = std::time::Instant::now();

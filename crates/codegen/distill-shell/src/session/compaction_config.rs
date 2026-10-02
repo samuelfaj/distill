@@ -165,6 +165,7 @@ pub(crate) struct CompactionConfig {
     /// `Cell` so the value can be re-resolved at model-switch time without holding `&mut self` on the actor.
     pub threshold_percent: Cell<u8>,
     /// Debug: when set, next auto-compact check triggers unconditionally.
+    pub checks_since_timing_ask: std::sync::atomic::AtomicU32,
     pub force_compact: Arc<AtomicBool>,
     /// Auto-compaction suppression state (`SUPPRESS_*`) after a deterministic failure; the gates early-return unless `SUPPRESS_NONE`.
     /// Manual `/compact` ignores it.

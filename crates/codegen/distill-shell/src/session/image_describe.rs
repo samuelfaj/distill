@@ -241,6 +241,7 @@ impl ImageDescribeCache {
         current_query: &str,
         source: ImageDescribeSource,
         path_key: &str,
+        on_call: impl FnOnce(DescribeCall),
     ) -> Result<String, DescribeError> {
         let content_fp = content_fingerprint(raw_bytes);
         let prompt_fp = describe_prompt_fingerprint(outline, current_query);
@@ -254,8 +255,14 @@ impl ImageDescribeCache {
             base64::engine::general_purpose::STANDARD.encode(raw_bytes)
         );
         let prompt_text = build_describe_prompt(outline, current_query);
-        let description =
-            describe_user_images(client, model, prompt_text, std::slice::from_ref(&url)).await?;
+        let description = describe_user_images(
+            client,
+            model,
+            prompt_text,
+            std::slice::from_ref(&url),
+            on_call,
+        )
+        .await?;
         self.inner.lock().insert(cache_key, description.clone());
         Ok(description)
     }
@@ -341,14 +348,33 @@ pub(crate) enum DescribeError {
     #[error("image describe model returned no content")]
     EmptyResponse,
 }
+/// One physical describe request, reported once so the caller can record its usage.
+pub(crate) struct DescribeCall {
+    /// The request as sent (model, effort, request id).
+    pub(crate) request: ConversationRequest,
+    pub(crate) duration_ms: u64,
+    pub(crate) outcome: DescribeCallOutcome,
+}
+
+pub(crate) enum DescribeCallOutcome {
+    /// The response carried a usable description.
+    Accepted(distill_sampling_types::ConversationResponse),
+    /// The response arrived but its text was blank.
+    Rejected(distill_sampling_types::ConversationResponse),
+    /// Transport error or timeout; no response.
+    Failed,
+}
+
 /// Call the vision model and return its description text.
 /// `image_urls` should be the cached URLs from [`persist_user_images`].
 /// The caller is responsible for outline and prompt assembly so this stays a pure transport helper.
+/// `on_call` receives the outcome of the request once it has been sent, so the caller can record its usage.
 pub(crate) async fn describe_user_images(
     client: OaiCompatClient,
     model: &str,
     prompt_text: String,
     image_urls: &[String],
+    on_call: impl FnOnce(DescribeCall),
 ) -> Result<String, DescribeError> {
     let mut user_item = ConversationItem::User(UserItem {
         content: vec![ContentPart::Text {
@@ -369,24 +395,43 @@ pub(crate) async fn describe_user_images(
         .with_temperature(0.2)
         .with_max_output_tokens(4_096);
     const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
-    let response = tokio::time::timeout(DESCRIBE_TIMEOUT, client.conversation_collect(request))
-        .await
-        .map_err(|_| {
-            DescribeError::Sampling(format!(
+    let call_request = request.clone();
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(DESCRIBE_TIMEOUT, client.conversation_collect(request)).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let report = |outcome| {
+        on_call(DescribeCall {
+            request: call_request,
+            duration_ms,
+            outcome,
+        })
+    };
+    let response = match result {
+        Ok(Ok(response)) => response,
+        Ok(Err(e)) => {
+            report(DescribeCallOutcome::Failed);
+            return Err(DescribeError::Sampling(format!("{e}")));
+        }
+        Err(_) => {
+            report(DescribeCallOutcome::Failed);
+            return Err(DescribeError::Sampling(format!(
                 "image describe call timed out after {}s",
                 DESCRIBE_TIMEOUT.as_secs()
-            ))
-        })?
-        .map_err(|e| DescribeError::Sampling(format!("{e}")))?;
+            )));
+        }
+    };
     let text = response
         .assistant()
         .map(|a| a.content.as_ref().to_owned())
         .unwrap_or_default();
     let trimmed = text.trim();
     if trimmed.is_empty() {
+        report(DescribeCallOutcome::Rejected(response));
         return Err(DescribeError::EmptyResponse);
     }
-    Ok(trimmed.to_owned())
+    let description = trimmed.to_owned();
+    report(DescribeCallOutcome::Accepted(response));
+    Ok(description)
 }
 /// Compose the final user-message text shown to the coding model when a turn includes images.
 /// The order matches the compat-harness wire format: `<image>` block(s), `<image_files>` block, then the original `<user_query>`-wrapped user text.

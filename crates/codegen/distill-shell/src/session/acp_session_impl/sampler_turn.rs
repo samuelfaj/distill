@@ -1023,15 +1023,40 @@ impl SessionActor {
                         x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
                         ..ConversationRequest::default()
                     };
+                    let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
                     let fut = sampling_client.conversation_collect(request);
-                    let response = tokio::time::timeout(classify_timeout, fut)
-                        .await
-                        .map_err(|_| distill_workspace::permission::ClassifierFailure::Timeout)?
-                        .map_err(|e| {
-                            distill_workspace::permission::ClassifierFailure::TransportError(
-                                e.to_string(),
-                            )
-                        })?;
+                    let response = match tokio::time::timeout(classify_timeout, fut).await {
+                        Ok(Ok(response)) => response,
+                        Ok(Err(error)) => {
+                            super::side_call::record_auxiliary_failures(
+                                &session,
+                                std::slice::from_ref(&attempt),
+                                true,
+                            );
+                            return Err(
+                                distill_workspace::permission::ClassifierFailure::TransportError(
+                                    error.to_string(),
+                                ),
+                            );
+                        }
+                        Err(_) => {
+                            super::side_call::record_auxiliary_failures(
+                                &session,
+                                std::slice::from_ref(&attempt),
+                                true,
+                            );
+                            return Err(distill_workspace::permission::ClassifierFailure::Timeout);
+                        }
+                    };
+                    super::side_call::record_auxiliary_response(
+                        &session,
+                        "permission_classifier",
+                        &attempt.model_id,
+                        &attempt,
+                        &response,
+                        None,
+                        true,
+                    );
                     Ok(response.assistant_text())
                 }
                 .await;

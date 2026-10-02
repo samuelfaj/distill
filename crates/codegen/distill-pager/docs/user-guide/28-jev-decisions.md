@@ -37,7 +37,6 @@ p2_read_shortlist     = true # A2: pick the read window instead of the whole fil
 p3_compaction_recorte = true # D1: which segments the summarizer must see
 p6_skill_suggestion   = true # B5: rank the skill catalog for the listing and the turn's hint
 a1_file_to_edit       = true # A1: rank the candidate files
-a3_log_lines          = true # A3: keep the lines that explain a failure
 a4_web_results        = true # A4: rank search results before reading them
 a5_memory_rank        = true # A5: rank memory entries before injecting them
 a6_test_to_run        = true # A6: pick which test to run
@@ -45,13 +44,14 @@ b1_intent_routing     = true # B1: classify the turn's intent and complexity
 b3_subagent_type      = true # B3: resolve an unknown subagent type
 b6_delegation_hint    = true # B6: one advisory line on the delegation tool
 c1_premature_stop     = true # C1: requested work still open
-c2_failure_triage     = true # C2: classify a failure
 c3_completion_check   = true # C3: something the user asked for is missing
 c4_diff_risk          = true # C4: flag a risky diff
 c5_error_priority     = true # C5: order errors by importance
-c7_change_type        = true # C7: label the change type
 d2_big_output_retention = true # D2: drop a large inert output
 d3_post_compaction    = true # D3: re-inject only still-relevant memory
+d4_compaction_timing  = true # D4: compact early when the next step no longer needs the history
+d5_memory_capture_gate = true # D5: gate durable memory capture
+b7_subagent_model     = true # B7: choose worker or main model for a subagent
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
@@ -61,7 +61,7 @@ c6_injection_screen   = false # cost per tool output not measured yet
 # base_url      = "https://api.typesafe.ai"
 # model         = "jev-latest"      # pin a version once thresholds are calibrated
 # timeout_ms    = 10000             # per call, covering reading the body
-# api_key_env   = "JEV_API_KEY"
+# api_key_env   = "JEV_API_KEY"   # follows the provider: OPENROUTER_API_KEY for the OpenRouter providers
 # max_state_bytes = 32768
 ```
 
@@ -69,7 +69,7 @@ c6_injection_screen   = false # cost per tool output not measured yet
 
 With `shadow = true`, Jev decisions are recorded without applying them. This setting does not affect permission decisions, which remain in the harness.
 
-The credential is read from the environment **at call time** by the name in `api_key_env`:
+The credential is read from the environment **at call time** by the name in `api_key_env`. Unset, the name follows the provider: `JEV_API_KEY` for TypeSafe, `OPENROUTER_API_KEY` for the OpenRouter providers (`openrouter_decisions`, `openrouter`). An explicit `api_key_env` always wins:
 
 ```sh
 export JEV_API_KEY="…"
@@ -85,6 +85,18 @@ exclude = ["JEV_API_KEY"]
 `[jev]` is read from user/system/managed configuration only — general settings never come from a repository, so a checked-out project cannot repoint the endpoint. The key is never written to configuration, logs, or error messages (a server that echoes it back is redacted before anything is logged).
 
 ---
+
+## Lever changes
+
+`d4_compaction_timing` decides whether the next step is independent enough to
+compact (confidence floor 0.75). `d5_memory_capture_gate` decides whether a
+turn produced durable knowledge to capture (floor 0.70). `b7_subagent_model`
+decides whether the worker can do a subagent task as well as the main model
+(floor 0.75). Missing answers keep today's behavior. P3 sends previews;
+C4 sends the change once. B1 intent reaches B2 as `turn_intent`.
+
+Retired levers `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
+`c2_failure_triage` and `c7_change_type` are ignored in configuration.
 
 ## Kill switch and how to revert
 
@@ -115,12 +127,8 @@ Rules that hold in auto mode:
 
 * the pick is always **one of the levels that model offers** — an answer naming
   anything else is ignored;
-* the pick must clear **0.45** confidence. The floor is calibrated on live
-  answers (2026-09-18, `deepseek-v4.1-flash`): a trivial request answers `none`
-  at 0.67/0.64, while a hard one splits medium 0.40 / high 0.31 — so a clear
-  cheap win is applied and a hard call keeps the session's own level instead of
-  quietly dropping quality. Below the floor, on a timeout, on an error, or with
-  the lever off, the call keeps the session's level (the fallback);
+* the pick must clear **0.40** confidence. Below the floor, on a timeout, on an error, or with the lever off, the call
+  keeps the session's level (the fallback);
 * Jev may answer `keep_session_effort` explicitly, which means the same;
 * every decision is recorded with what it *wanted*, so the log shows a deferral
   (`wanted low at 0.41 below the floor`) as clearly as an application
@@ -178,11 +186,11 @@ model:
 
 | Question | Meaning | Floor |
 |---|---|---|
-| `matches_step` | Does the change include what the step asked for? A wider change (whole-file rewrite) still counts when it contains the asked-for work | 0.60 to stay silent; below it the model is told to re-read and fix or revert |
-| `may_break` | Could it break something that relies on the old behaviour (signatures, callers, data shapes)? | 0.50 → "check the callers" |
-| `looks_incomplete` | Is the change unfinished in itself — stub body, truncated code, a renamed caller left behind? | 0.50 → "finish it" |
-| `step_complete` | Is the step done as it stands, nothing left to redo? | 0.60; below it the step is redone |
-| `needs_more_thinking` | If it has to be redone, does the redo need a higher reasoning effort (not just another try)? | 0.50 |
+| `matches_step` | Does the change include what the step asked for? A wider change (whole-file rewrite) still counts when it contains the asked-for work | Below 0.30 (a confident negative) the model is told to re-read and fix or revert; from 0.30 up it stays silent |
+| `may_break` | Could it break something that relies on the old behaviour (signatures, callers, data shapes)? | 0.70 → "check the callers" |
+| `looks_incomplete` | Is the change unfinished in itself — stub body, truncated code, a renamed caller left behind? | 0.70 → "finish it" |
+| `step_complete` | Is the step done as it stands, nothing left to redo? | Redo only below 0.30; from 0.30 up the step stands |
+| `needs_more_thinking` | If it has to be redone, does the redo need a higher reasoning effort (not just another try)? | 0.70 |
 
 The reviewer reads the step the model said it was on (not the whole request: a correct edit of a two-part request
 must not read as half-done) plus the call and its result, both bounded. Anything unusable defers: no note, and no
@@ -261,9 +269,10 @@ The **prompt footer** always shows where the path stands, next to the mode flags
 |---|---|
 | **`jev`** (green, bold) | Jev is available, independently of the permission mode |
 | **`jev·shadow`** (green) | Same, but decisions are recorded and not applied |
-| **`jev:off`** (dim) | The path is disabled (`GROK_JEV=0`, `[jev] enabled = false`) or no credential is resolvable |
+| **`jev:off`** (dim) | The path is disabled (`GROK_JEV=0`, `[jev] enabled = false`) |
+| **`jev:no-key`** (dim) | The path is enabled but the environment variable named by `[jev] api_key_env` is not set; a warning in the log names the variable |
 
-The badge is always visible. `jev:off` means Jev is disabled or lacks a credential; it says nothing about permission to execute tools. The status is resolved once per process.
+The badge is always visible. `jev:off` means Jev is disabled and `jev:no-key` means it lacks a credential; it says nothing about permission to execute tools. The status is resolved once per process.
 
 Both surfaces read the same decision record, so they cannot disagree: the footer says whether the path *can* be used, the turn row says whether it *was*, and with which outcome.
 

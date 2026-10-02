@@ -64,6 +64,7 @@ fn test_actor_inner_with_recorder(
     let mut summary =
         crate::session::summary::SummaryGenerator::new(crate::session::summary::SummaryConfig {
             sampling_client,
+            utility_lane: None,
             model: String::new(),
             persistence_tx: tx.downgrade(),
         });
@@ -152,6 +153,9 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
             model_id: "main-model".to_owned(),
             endpoint: Some("mock://main".to_owned()),
             requested_effort: Some("low".to_owned()),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("low".to_owned()),
             status: distill_chat_state::UsageCallStatus::Completed,
             usage: Some(distill_sampling_types::TokenUsage {
@@ -214,6 +218,9 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
             model_id: "main-model".to_owned(),
             endpoint: Some("mock://main".to_owned()),
             requested_effort: Some("low".to_owned()),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("low".to_owned()),
             status: distill_chat_state::UsageCallStatus::Completed,
             usage: Some(distill_sampling_types::TokenUsage {
@@ -270,6 +277,9 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
             model_id: "title-model".to_owned(),
             endpoint: Some("mock://title".to_owned()),
             requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("absent".to_owned()),
             status: distill_chat_state::UsageCallStatus::Completed,
             usage: Some(distill_sampling_types::TokenUsage {
@@ -505,6 +515,9 @@ async fn title_refresh_before_first_usage_turn_is_reconciled() {
             model_id: "main-model".to_owned(),
             endpoint: Some("mock://main".to_owned()),
             requested_effort: Some("low".to_owned()),
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("low".to_owned()),
             status: distill_chat_state::UsageCallStatus::Completed,
             usage: Some(distill_sampling_types::TokenUsage {
@@ -541,6 +554,9 @@ async fn title_refresh_before_first_usage_turn_is_reconciled() {
             model_id: "title-model".to_owned(),
             endpoint: Some("mock://title".to_owned()),
             requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
             applied_effort: Some("absent".to_owned()),
             status: distill_chat_state::UsageCallStatus::Completed,
             usage: Some(distill_sampling_types::TokenUsage {

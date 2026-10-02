@@ -132,6 +132,9 @@ pub struct PromptUsage {
     /// Decisions the Jev layer took during this turn (0 when it was not used).
     #[serde(default, rename = "jevCalls", skip_serializing_if = "is_zero")]
     pub jev_calls: u64,
+    /// Utility calls made during this turn, including non-completed attempts.
+    #[serde(default, rename = "utilityCalls", skip_serializing_if = "is_zero")]
+    pub utility_calls: u64,
 }
 
 /// One row of a turn's distribution: which model, at which effort, how much.
@@ -175,6 +178,7 @@ impl PromptUsage {
                 usage_is_incomplete: true,
                 effort_usage: Vec::new(),
                 jev_calls: 0,
+                utility_calls: 0,
                 ..Default::default()
             },
             None => return None,
@@ -334,6 +338,7 @@ impl From<&distill_chat_state::UsageLedger> for PromptUsage {
             usage_is_incomplete: ledger.is_incomplete(),
             effort_usage: Vec::new(),
             jev_calls: 0,
+            utility_calls: 0,
         };
         usage.scrub_untrustworthy_costs();
         usage
@@ -2852,6 +2857,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            utility_calls: 0,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &partial);
@@ -2886,6 +2892,7 @@ mod tests {
             usage_is_incomplete: true,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            utility_calls: 0,
         };
         incomplete.scrub_untrustworthy_costs();
         assert!(incomplete.totals.cost_usd_ticks.is_none());
@@ -2961,6 +2968,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            utility_calls: 0,
         };
         usage.scrub_untrustworthy_costs();
         assert!(usage.totals.cost_usd_ticks.is_none());
@@ -2997,6 +3005,7 @@ mod tests {
             usage_is_incomplete: false,
             effort_usage: Vec::new(),
             jev_calls: 0,
+            utility_calls: 0,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &usage);

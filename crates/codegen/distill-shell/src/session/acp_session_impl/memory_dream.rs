@@ -527,12 +527,31 @@ impl SessionActor {
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
             ..Default::default()
         };
-        let response = sampling_client
-            .conversation_collect(request)
-            .await
-            .map_err(|e| {
-                acp::Error::internal_error().data(format!("dream model call failed: {e}"))
-            })?;
+        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
+        let response = match sampling_client.conversation_collect(request).await {
+            Ok(response) => {
+                super::side_call::record_auxiliary_response(
+                    self,
+                    "memory_legacy",
+                    attempt.model_id.as_str(),
+                    &attempt,
+                    &response,
+                    None,
+                    false,
+                );
+                response
+            }
+            Err(error) => {
+                super::side_call::record_auxiliary_failures(
+                    self,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+                return Err(
+                    acp::Error::internal_error().data(format!("dream model call failed: {error}"))
+                );
+            }
+        };
         Ok(response.assistant_text())
     }
 
@@ -569,7 +588,7 @@ impl SessionActor {
         self.send_xai_notification(XaiSessionUpdate::MemoryFlushStarted)
             .await;
 
-        let result = async {
+        let result: Result<String, acp::Error> = async {
             let sampling_client = self.prepare_chat_completion(false).await?;
             let MemoryFlushSnapshot {
                 counts,
@@ -644,12 +663,12 @@ impl SessionActor {
             };
 
             // Run on the multi-threaded runtime so it doesn't block the session's LocalSet
+            let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
             let handle = tokio::spawn(async move {
-                let response = sampling_client
+                sampling_client
                     .conversation_collect(request)
                     .await
-                    .map_err(|e| format!("flush model call failed: {e}"))?;
-                Ok::<_, String>(response.assistant_text())
+                    .map_err(|e| format!("flush model call failed: {e}"))
             });
             // Abort the spawned task if this future is dropped (session cancellation), preventing orphan HTTP streams
             struct AbortOnDrop(tokio::task::AbortHandle);
@@ -659,13 +678,36 @@ impl SessionActor {
                 }
             }
             let _guard = AbortOnDrop(handle.abort_handle());
-            handle
-                .await
-                .map_err(|e| {
-                    acp::Error::internal_error()
-                        .data(format!("flush stream task panicked: {e}"))
-                })?
-                .map_err(|e| acp::Error::internal_error().data(e))
+            let response = match handle.await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    super::side_call::record_auxiliary_failures(
+                        self,
+                        std::slice::from_ref(&attempt),
+                        false,
+                    );
+                    return Err(acp::Error::internal_error().data(error));
+                }
+                Err(error) => {
+                    super::side_call::record_auxiliary_failures(
+                        self,
+                        std::slice::from_ref(&attempt),
+                        false,
+                    );
+                    return Err(acp::Error::internal_error()
+                        .data(format!("flush stream task panicked: {error}")));
+                }
+            };
+            super::side_call::record_auxiliary_response(
+                self,
+                "memory_legacy",
+                &attempt.model_id,
+                &attempt,
+                &response,
+                None,
+                false,
+            );
+            Ok(response.assistant_text())
         }
         .await;
 
@@ -894,11 +936,21 @@ impl SessionActor {
         };
 
         // Collect via the client so the LengthPolicy gate applies: a note truncated at the 1024-token cap must not persist to MEMORY.md
+        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
         match sampling_client
             .conversation_collect_with_idle_timeout(request, std::time::Duration::from_secs(15))
             .await
         {
             Ok(response) => {
+                super::side_call::record_auxiliary_response(
+                    self,
+                    "memory_legacy",
+                    &attempt.model_id,
+                    &attempt,
+                    &response,
+                    None,
+                    false,
+                );
                 let text = response.assistant_text();
                 if text.is_empty() {
                     Err("LLM returned empty response".to_string())
@@ -907,6 +959,11 @@ impl SessionActor {
                 }
             }
             Err(e) => {
+                super::side_call::record_auxiliary_failures(
+                    self,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
                 tracing::debug!(error = %e, "memory note rewrite inference failed");
                 Err(format!("rewrite inference failed: {e}"))
             }

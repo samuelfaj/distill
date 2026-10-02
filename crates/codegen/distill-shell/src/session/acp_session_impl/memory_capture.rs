@@ -398,6 +398,7 @@ fn log_condensation(range: distill_memory::CaptureRange, attempt: u32, stats: &C
     );
 }
 
+#[cfg(test)]
 fn select_completed_turn_transcript(
     items: Vec<ConversationItem>,
     source_prompt_index: u32,
@@ -413,7 +414,7 @@ async fn load_durable_capture_transcript(
     source_prompt_index: u32,
     attempt: u32,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Result<CondensedTranscript, CaptureExtractionFailure> {
+) -> Result<(CondensedTranscript, Vec<ConversationItem>), CaptureExtractionFailure> {
     let (respond_to, response) = tokio::sync::oneshot::channel();
     persistence_tx
         .send(PersistenceMsg::FlushAndAck { respond_to })
@@ -466,14 +467,18 @@ async fn load_durable_capture_transcript(
             })?;
         // A missing source prompt means the durable log and the queue
         // disagree; another read of the same log cannot fix that.
-        select_completed_turn_transcript(items, source_prompt_index, attempt).map_err(|detail| {
-            CaptureExtractionFailure {
-                class: MemoryV2FailureClass::Storage,
-                detail,
-                retry: CaptureRetry::Never,
-                usage: distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
-            }
-        })
+        let storage_failure = |detail| CaptureExtractionFailure {
+            class: MemoryV2FailureClass::Storage,
+            detail,
+            retry: CaptureRetry::Never,
+            usage: distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+        };
+        let selected =
+            select_completed_turn_items(items, source_prompt_index).map_err(storage_failure)?;
+        let transcript =
+            condense_turn_transcript(selected.clone(), TranscriptBudget::for_attempt(attempt))
+                .map_err(storage_failure)?;
+        Ok((transcript, selected))
     })
     .await
     .map_err(|error| {
@@ -482,6 +487,137 @@ async fn load_durable_capture_transcript(
             format!("durable transcript read task failed: {error}"),
         )
     })?
+}
+
+const CAPTURE_PREPASS_MAX_CHUNKS: usize = 8;
+const CAPTURE_PREPASS_QUESTION: &str = "Memory capture after a finished turn. Keep the lines that state durable, reusable knowledge: user preferences or instructions, decisions and their reasons, project conventions, verified facts about the code, tools or environment, commands that worked, and errors with their causes.";
+const CAPTURE_PREPASS_HANDLE: &str = "the session transcript";
+const CAPTURE_PREPASS_FOOTER: &str = "[memory capture: lines omitted by verified utility selection; the full output stays in the session transcript]";
+
+/// Shrinks large tool results of a finished turn with verified utility unit
+/// selection before the main model extracts memory from them. `None` means no
+/// item changed. The full output stays in the session transcript.
+async fn utility_prepass_capture_items(
+    lane: &crate::jev_cheap::CheapLane,
+    extraction_model: &str,
+    mut items: Vec<ConversationItem>,
+) -> Option<Vec<ConversationItem>> {
+    use super::jev_tool_result::{
+        CHEAP_COMPRESS_MIN_BYTES, SelectionReview, UnitSelection, select_units_with_lane,
+    };
+    use crate::utility_select::{UnitKind, build_units, plan_chunks, reconstruct};
+    use distill_workspace::jev::flags::JevLever;
+
+    // Running the extraction on the utility model itself saves nothing.
+    if lane.model() == extraction_model {
+        return None;
+    }
+    let mut candidates: Vec<(usize, usize)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            ConversationItem::ToolResult(result)
+                if result.content.len() >= CHEAP_COMPRESS_MIN_BYTES =>
+            {
+                Some((index, result.content.len()))
+            }
+            _ => None,
+        })
+        .collect();
+    candidates.sort_by_key(|&(_, len)| std::cmp::Reverse(len));
+    let mut chunks_left = CAPTURE_PREPASS_MAX_CHUNKS;
+    let mut changed = false;
+    for (index, _) in candidates {
+        if chunks_left == 0 {
+            break;
+        }
+        let ConversationItem::ToolResult(result) = &items[index] else {
+            continue;
+        };
+        let content = std::sync::Arc::clone(&result.content);
+        let units = build_units(&content, UnitKind::Lines, 24 * 1024);
+        let evidence: std::collections::HashSet<String> =
+            crate::jev_lanes::required_tool_evidence(&content)
+                .into_iter()
+                .collect();
+        let required = crate::utility_select::required_command_units(&units, &evidence);
+        let required_bytes: usize = units
+            .iter()
+            .zip(&required)
+            .filter(|(_, required)| **required)
+            .map(|(unit, _)| unit.len())
+            .sum();
+        if required_bytes * 100 >= content.len() * 60 {
+            crate::jev::record_item(
+                JevLever::ECheapCompress,
+                "defer:required-dominates",
+                "required units dominate source",
+                None,
+                None,
+            );
+            continue;
+        }
+        let cap = lane.max_payload_bytes();
+        let chunks = match plan_chunks(&units, cap, CAPTURE_PREPASS_MAX_CHUNKS) {
+            Ok(chunks) => chunks.len(),
+            Err(reason) => {
+                crate::jev::record_item(JevLever::ECheapCompress, reason, reason, None, None);
+                continue;
+            }
+        };
+        if chunks > chunks_left {
+            continue;
+        }
+        chunks_left -= chunks;
+        let Some(kept) = select_units_with_lane(
+            lane,
+            &UnitSelection {
+                units: &units,
+                required: &required,
+                kind: UnitKind::Lines,
+                question: CAPTURE_PREPASS_QUESTION,
+                source_kind: "memory_capture",
+                handle: CAPTURE_PREPASS_HANDLE,
+                cap,
+                review: SelectionReview::Rebuilt,
+                attribute_to_prompt: false,
+            },
+        )
+        .await
+        else {
+            continue;
+        };
+        let replacement = reconstruct(
+            &units,
+            &kept,
+            UnitKind::Lines,
+            None,
+            CAPTURE_PREPASS_HANDLE,
+            CAPTURE_PREPASS_FOOTER.into(),
+        );
+        if replacement.len() * 100 < content.len() * 70 {
+            crate::jev::record_item(
+                JevLever::ECheapCompress,
+                "compress",
+                "memory capture tool result",
+                None,
+                None,
+            );
+            if let ConversationItem::ToolResult(result) = &mut items[index] {
+                result.content = std::sync::Arc::from(replacement);
+                changed = true;
+            }
+        } else {
+            crate::jev::record_item(
+                JevLever::ECheapCompress,
+                "not_shorter",
+                "memory capture tool result",
+                None,
+                None,
+            );
+        }
+    }
+    changed.then_some(items)
 }
 
 impl SessionActor {
@@ -950,7 +1086,7 @@ impl SessionActor {
         let persistence_tx = session_snapshot.notifications.persistence_tx.clone();
         let chat_state_handle = session_snapshot.chat_state_handle.clone();
         drop(session_snapshot);
-        let transcript = load_durable_capture_transcript(
+        let (mut transcript, turn_items) = load_durable_capture_transcript(
             persistence_tx,
             session_dir,
             source_prompt_index,
@@ -959,6 +1095,42 @@ impl SessionActor {
         )
         .await?;
         log_condensation(range, attempt, &transcript.stats);
+        if crate::jev::lever_active(distill_workspace::jev::flags::JevLever::D5MemoryCaptureGate) {
+            use distill_workspace::jev::catalog::memory_capture;
+            let state = serde_json::json!({
+                "request": transcript.json.chars().take(600).collect::<String>(),
+                "reply": transcript.json.chars().rev().take(1500).collect::<String>().chars().rev().collect::<String>(),
+                "tools": [],
+            });
+            if let Ok(questions) = memory_capture::memory_capture_gate_questions() {
+                if let Some(answers) = crate::jev::ask_item(
+                    distill_workspace::jev::flags::JevLever::D5MemoryCaptureGate,
+                    state,
+                    questions,
+                )
+                .await
+                {
+                    let decision = memory_capture::compose_memory_capture_gate(&answers);
+                    crate::jev::record_item(
+                        distill_workspace::jev::flags::JevLever::D5MemoryCaptureGate,
+                        match decision {
+                            Some(false) => "skip",
+                            Some(true) => "capture",
+                            None => "defer",
+                        },
+                        "memory capture gate",
+                        answers.confidence(memory_capture::MEMORY_CAPTURE_GATE_QUESTION),
+                        Some(&answers),
+                    );
+                    if decision == Some(false) {
+                        return Ok((
+                            CaptureOutcomeDraft::Noop,
+                            distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                        ));
+                    }
+                }
+            }
+        }
         let Some(session_snapshot) = session.upgrade() else {
             return Err(CaptureExtractionFailure::retryable(
                 MemoryV2FailureClass::Convergence,
@@ -990,6 +1162,29 @@ impl SessionActor {
                 .unwrap_or_default(),
         };
         let (model, reasoning_effort) = resolve_memory_model_and_effort(&models_manager, model);
+        if let Some(actor) = session.upgrade() {
+            let shrunk = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
+                    MemoryV2FailureClass::Convergence,
+                    "capture worker cancelled".to_owned(),
+                )),
+                shrunk = async {
+                    let lane = actor
+                        .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+                        .await?;
+                    utility_prepass_capture_items(&lane, &model, turn_items).await
+                } => shrunk,
+            };
+            drop(actor);
+            if let Some(items) = shrunk
+                && let Ok(condensed) =
+                    condense_turn_transcript(items, TranscriptBudget::for_attempt(attempt))
+            {
+                log_condensation(range, attempt, &condensed.stats);
+                transcript = condensed;
+            }
+        }
         let request = build_extraction_request(
             session_id,
             range,
@@ -999,6 +1194,7 @@ impl SessionActor {
         );
         debug_assert!(request.tools.is_empty());
         debug_assert!(request.hosted_tools.is_empty());
+        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
@@ -1011,6 +1207,13 @@ impl SessionActor {
             ) => result,
         }
         .map_err(|_| {
+            if let Some(actor) = session.upgrade() {
+                super::side_call::record_auxiliary_failures(
+                    &actor,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+            }
             CaptureExtractionFailure::retryable(
                 MemoryV2FailureClass::Timeout,
                 format!(
@@ -1020,11 +1223,29 @@ impl SessionActor {
             )
         })?
         .map_err(|error| {
+            if let Some(actor) = session.upgrade() {
+                super::side_call::record_auxiliary_failures(
+                    &actor,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+            }
             CaptureExtractionFailure::retryable(
                 MemoryV2FailureClass::Model,
                 format!("extraction model failed: {error}"),
             )
         })?;
+        if let Some(actor) = session.upgrade() {
+            super::side_call::record_auxiliary_response(
+                &actor,
+                "memory_capture",
+                &model,
+                &attempt,
+                &response,
+                None,
+                false,
+            );
+        }
         let text = response.assistant_text();
         let stop_reason: &'static str = response
             .stop_reason
@@ -1759,8 +1980,13 @@ mod tests {
         file.sync_all().unwrap();
         respond_to.send(Ok(())).unwrap();
 
-        let transcript = read.await.unwrap().unwrap();
+        let (transcript, items) = read.await.unwrap().unwrap();
         assert!(transcript.json.contains("durable assistant answer"));
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, ConversationItem::Assistant(_)))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2179,6 +2405,114 @@ mod tests {
                     state_db.exists() && !actor.memory.capture_worker_is_running()
                 })
                 .await;
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_prepass_shrinks_only_large_tool_results() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_workspace::jev::flags::JevLever;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "capture-select",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "U3"}
+                            }],
+                            "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                        }),
+                    ),
+                );
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_decision_answers([Some(
+                    crate::jev_cheap::test_utility_review_answer("accept"),
+                )]);
+                let lane = actor
+                    .cheap_lane(JevLever::ECheapCompress)
+                    .await
+                    .expect("utility lane");
+
+                let kept_line = "decision: keep the cache in sqlite because of locking";
+                let big: String = (0..200)
+                    .map(|i| {
+                        if i == 2 {
+                            format!("{kept_line}\n")
+                        } else {
+                            format!("progress line number {i} with padding text\n")
+                        }
+                    })
+                    .collect();
+                assert!(big.len() > 4_000);
+                let items = vec![
+                    ConversationItem::user("remember the cache decision"),
+                    ConversationItem::tool_result("call-big", big.as_str()),
+                    ConversationItem::tool_result("call-small", "exit 0"),
+                ];
+                let before: Vec<String> = items
+                    .iter()
+                    .map(|item| serde_json::to_string(item).unwrap())
+                    .collect();
+
+                // The session model is the utility model: no saving, no request.
+                assert!(
+                    utility_prepass_capture_items(&lane, lane.model(), items.clone())
+                        .await
+                        .is_none()
+                );
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 0);
+
+                let shrunk = utility_prepass_capture_items(&lane, "main-model", items)
+                    .await
+                    .expect("large tool result is shrunk");
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                let ConversationItem::ToolResult(replaced) = &shrunk[1] else {
+                    panic!("item 1 must stay a tool result");
+                };
+                assert!(replaced.content.contains(kept_line), "{}", replaced.content);
+                assert!(replaced.content.contains(CAPTURE_PREPASS_FOOTER));
+                assert!(replaced.content.len() * 100 < big.len() * 70);
+                assert_eq!(serde_json::to_string(&shrunk[0]).unwrap(), before[0]);
+                assert_eq!(serde_json::to_string(&shrunk[2]).unwrap(), before[2]);
             })
             .await;
     }

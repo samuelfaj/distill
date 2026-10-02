@@ -101,6 +101,8 @@ pub struct SubagentRequest {
     /// Harness-only: seed child with normalized parent conversation, then append
     /// `prompt`. Not on TaskToolInput. Successful `resume_from` takes precedence.
     pub fork_context: bool,
+    /// Jev approved worker-model routing for this fresh planning or review task.
+    pub jev_worker_ok: bool,
     pub owner: SubagentOwner,
     pub cancel_token: CancellationToken,
     pub spawn_root: SpawnRootSpan,

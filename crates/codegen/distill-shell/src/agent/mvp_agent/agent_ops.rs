@@ -108,11 +108,12 @@ impl MvpAgent {
             .unwrap_or(crate::models::default_session_summary_model())
             .to_owned()
     }
-    pub(super) fn build_summary_client(
+    /// Catalog-resolved sampler for aux model `slug`, stamped with the session-local fields of `primary`.
+    fn resolve_aux_sampler_for_session(
         &self,
+        slug: &str,
         primary: &SamplingConfig,
-    ) -> Result<(OaiCompatClient, String), acp::Error> {
-        let slug = self.resolve_session_summary_model();
+    ) -> Option<SamplingConfig> {
         let session_key = self.auth_manager.current_or_expired().map(|a| a.key.clone());
         let models = self.models_manager.models();
         let endpoints = self.models_manager.endpoints();
@@ -124,29 +125,68 @@ impl MvpAgent {
                 cfg.client_version.clone(),
             )
         };
-        let config = match crate::agent::config::resolve_aux_model_sampling_config(
-            &slug,
+        let mut cfg = crate::agent::config::resolve_aux_model_sampling_config(
+            slug,
             &models,
             &endpoints,
             session_key.as_deref(),
             disable_api_key_auth,
             alpha_test_key,
             client_version,
-        ) {
-            Some(mut cfg) => {
-                crate::agent::config::stamp_session_local_sampler_fields(
-                    &mut cfg,
-                    primary,
-                    primary.client_identifier.clone(),
-                    primary.max_retries,
-                );
-                cfg
-            }
-            None => primary.clone(),
-        };
+        )?;
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut cfg,
+            primary,
+            primary.client_identifier.clone(),
+            primary.max_retries,
+        );
+        Some(cfg)
+    }
+    pub(super) fn build_summary_client(
+        &self,
+        primary: &SamplingConfig,
+    ) -> Result<(OaiCompatClient, String), acp::Error> {
+        let slug = self.resolve_session_summary_model();
+        let config = self
+            .resolve_aux_sampler_for_session(&slug, primary)
+            .unwrap_or_else(|| primary.clone());
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
         Ok((client, model))
+    }
+    /// The utility lane for the initial session title, resolved like the session's `cheap_lane`.
+    pub(super) fn build_title_utility_lane(
+        &self,
+        primary: &SamplingConfig,
+    ) -> Option<std::sync::Arc<crate::jev_cheap::CheapLane>> {
+        if !crate::jev::lever_active(distill_workspace::jev::flags::JevLever::ECheapCompress) {
+            return None;
+        }
+        let local = crate::jev::local_config_cached();
+        let spec = local
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|spec| !spec.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(crate::jev_cheap::default_model_spec);
+        let lane = if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec)
+            .is_some()
+        {
+            let mut cfg = self.resolve_aux_sampler_for_session(&spec, primary)?;
+            if local.effort.as_deref().is_none_or(|effort| effort == "auto") {
+                cfg.reasoning_effort = self
+                    .models_manager
+                    .model_reasoning_efforts(&cfg.model)
+                    .into_iter()
+                    .min_by_key(|option| crate::session::acp_session::effort_rank(option.value))
+                    .map(|option| option.value);
+            }
+            crate::jev_cheap::CheapLane::from_sampler_config(&cfg)
+        } else {
+            crate::jev_cheap::CheapLane::from_spec(&spec)
+        };
+        lane.map(std::sync::Arc::new)
     }
     fn has_proxy_credentials(&self) -> bool {
         self.cfg.borrow().endpoints.deployment_key.is_some()

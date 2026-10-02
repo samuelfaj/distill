@@ -23,10 +23,9 @@ which calls one pipeline function so that the tested code is the shipped code:
 | Exact-output guard | Nothing. This step stops the rest | The call is line-addressed, or the text belongs to a skill | Always |
 | Preclean | Terminal noise, and content the payload itself repeats | 2000 bytes or more, and not a document | On |
 | Importance extraction | The unreadable middle of a long payload | 4000 bytes or more, and not a document | On |
-| Utility task | A payload a small model can digest cheaper than you reading it | 2000 bytes or more, a task registered for the shape, and the lane decision not against it | On |
-| Utility compression | The same, for a payload too large to want whole | 24 KiB or more, with the lane decision not against it | On |
+| Utility selection | Selects source units worth keeping | Source-specific size thresholds; originals remain stored | On |
 
-The deterministic steps save tokens. The utility task and the routing levers save money
+The deterministic steps save tokens. Utility selection and the routing levers save money
 by using a cheaper model, which is a different thing, and the last section says
 why the distinction matters.
 
@@ -173,49 +172,48 @@ That refusal is why this layer is worth trusting. A summarising model can quietl
 drop the one detail that mattered; a rule that keeps the bytes when a literal
 would go cannot.
 
-## The utility task
+## Utility selection
 
-For a payload that a small model can read more cheaply than the session model
-should, Distill hands the work over. `tasks::task_for_payload` picks the task
-from the payload's command first and its shape second, because the same shape
-means different work depending on what produced it:
+The utility model runs on any catalog transport, including a ChatGPT-subscription
+model such as `chatgpt/gpt-6-luna` through Responses and OAuth via the sampler
+stack. In `auto` effort mode it uses the lowest level in that model's menu. Up
+to four calls run concurrently; localhost endpoints allow one.
 
-- the command names the work: `git log` and `git status` go to a git theme
-  summary, `kubectl` to a kubectl digest, `terraform plan` to a plan digest,
-  `gh pr` to a review-thread digest, `lldb` to a debugger digest, `cargo test` to
-  a test verdict, `cargo build` to a compiler-diagnostics list, `vite build` to a
-  bundler digest, `docker build` to an error tail, and so on;
-- with nothing named in the command, the shape decides: a test report to a test
-  verdict, a stack trace to a likely-files map, a lockfile to a dependency graph,
-  a listing to a tree digest, a diff to a patch explanation.
+The harness labels source units `[U12]`; utility returns IDs or ranges, and the
+harness copies those original units. It does not use generated replacement
+prose. Error, failure and summary lines, first and last lines, web headers and
+citations are always retained by the harness. Input is split into chunks of at
+most 24 KiB, with at most eight chunks. A replacement is accepted only when it
+is under 70% of the original. The original is always stored, and the footer
+names its stored path.
 
-Every id the table can return is checked against the registry by a test, so the
-table cannot drift away from the tasks that exist. The registry holds 93 tasks;
-each one carries a guard, and the guard is the point: a small model's answer is
-used only where it can be checked against the payload it was given.
+The utility handles these sources:
 
-- A compression must keep every literal and come out shorter.
-- A digest must keep every literal and come out shorter.
-- An extraction must quote spans that really appear in the payload.
-- A classification must land on one of the closed labels.
-- A pick must name ids that were offered.
-- A schema fill must parse as a JSON object.
+- Terminal output and task output at 4,000 bytes or more. `head` and `tail`
+  windows count; exact-output commands such as `sed`, `cat`, `jq` and `git show`
+  stay untouched.
+- Grep listings at 12,000 bytes or more. Their footer says `kept K of M match
+  lines`.
+- Web search, and web fetch of any content type, using the full source.
+- MCP results at 4,000 bytes or more; file readers are excluded.
+- `search_tool`, where selected tool schemas remain JSON.
+- Whole-file `read_file` in read-only sessions at 16,000 bytes or more; line
+  numbers remain intact.
+- Memory capture: tool results of 4,000 bytes or more in the finished turn,
+  at most 8 chunks per capture, skipped when the session model is the utility
+  model. The extraction itself stays on the main model.
 
-An answer that fails its guard is discarded and the bytes stay as they were. That
-is why a listing often yields nothing: almost every token in one is a literal (a
-path, a mode, a date, a size), so a digest that shortens it loses one, and the
-guard refuses. A real turn shows the whole sequence: the lane mapped the listing
-to `tree_listing_digest`, called it, and recorded `task tree_listing_digest
-refused or failed; keeping today's bytes`.
+There is no Jev pre-approval and no main-model fallback. Jev post-review reads
+the reconstructed text. It is skipped for `NONE` and over-size state. If Jev
+returns no answer, the verified candidate remains. Only a `reject` at
+confidence 0.70 or higher discards the candidate; `defer` or a less confident
+`reject` keeps it.
 
-The id that runs comes from the mapping, not from a constant, so a test report
-and a crash report each get their own reader instead of both getting the same one
-hard-coded in the caller.
+The utility can also write display text: initial title, shell autocomplete,
+prompt suggestion and recap. Each falls back to the old path.
 
-A second utility lane handles the payloads too large to want whole:
-`e_cheap_compress` sends anything from 24 KiB to the extractive compression task,
-and the original is stored first, so the body that replaces it names the file it
-came from.
+Utility usage rows carry `reason`, `bytes_in` and `bytes_out`. The end-of-turn
+report shows `Utility - Nx`.
 
 ## The reversible store
 
@@ -232,7 +230,7 @@ model that does not never pays for them.
 
 ## Context pruning
 
-Seven levers affect what reaches the model, six of them by default:
+Seven levers affect what reaches the model:
 
 - `p1_tool_family` keeps rarely used tool families (image and video generation,
   scheduling, feedback, and MCP tools when `search_tool` can find them again) out
@@ -276,11 +274,7 @@ not help you and the layers above do.
 
 ## The decision layer on top
 
-Jev owns the choice, and it can veto. A payload reaches a cheap lane only when
-the lane decision favours it: `e_lane_choice` asks one question per eligible
-micro-action, the answer can name the main model, and a subagent-shaped answer
-defers because that lane is not wired. With the decision against it, the payload
-stays with the session model.
+Routing levers influence model and effort choices. Utility selection itself uses the bounded source-unit protocol above; it has no Jev pre-approval.
 
 Every step records what it did, so a session can be read afterwards:
 
@@ -334,10 +328,7 @@ nothing on the live path invokes them:
   `repo_map_budget`, `write_ack`, `error_site_refs`, `test_baseline_diff`,
   `alias_identifiers`, `volatile_tokens` and `compact_span` are pure functions
   waiting for a caller.
-- Of the 93 registered utility tasks, the mapping reaches the families that
-  describe a payload's shape. The draft families that produce work rather than
-  digest it (commit messages, PR bodies, release notes, translations, issue
-  triage) stay unwired, because nothing selects them from a tool result.
+- The task registry still contains other utility tasks, but tool-result compression now selects source units instead of mapping payloads through `task_for_payload`.
 
 `TODO.md` at the repository root is the full inventory, with a status and a
 reason per entry, cross-referenced to `list.md`.

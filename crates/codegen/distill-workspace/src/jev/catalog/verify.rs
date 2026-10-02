@@ -30,15 +30,15 @@ pub const FAILURE_CATEGORIES: &[&str] = &[
 pub const ITEM_SATISFIED_FLOOR: f64 = 0.70;
 /// C3 — "something requested is still missing" must be below this to call it done.
 pub const LEFTOVER_FLOOR: f64 = 0.30;
-/// C4 (review) — confidence needed that the change did what the step asked for.
-pub const DIFF_MATCH_FLOOR: f64 = 0.60;
+/// C4 (review) — a mismatch is reported only when P(change matches the step) is
+/// below this: a confident negative, not a coin flip.
+pub const DIFF_MATCH_FLOOR: f64 = 0.30;
 /// C4 (review) — probability at or above which a red flag is reported back.
-pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.50;
-/// C4 (review) — confidence needed that the step is done as it stands; below it
-/// the step is redone.
-pub const STEP_COMPLETE_FLOOR: f64 = 0.60;
+pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.70;
+/// C4 (review) — the step is redone only when P(step done) is below this.
+pub const STEP_COMPLETE_FLOOR: f64 = 0.30;
 /// C4 (review) — probability at or above which the redo needs more thinking.
-pub const REDO_HIGHER_FLOOR: f64 = 0.50;
+pub const REDO_HIGHER_FLOOR: f64 = 0.70;
 /// C6 — probability at or above which a text is flagged as instruction-like.
 pub const INJECTION_FLAG_FLOOR: f64 = 0.50;
 /// C7 — confidence needed before labelling the change type.
@@ -267,7 +267,7 @@ pub const REDO_THINKING_QUESTION: &str = "needs_more_thinking";
 pub const SECOND_OPINION_QUESTION: &str = "needs_other_model";
 
 /// C4 — probability above which the review asks for another model's eyes.
-pub const SECOND_OPINION_FLOOR: f64 = 0.50;
+pub const SECOND_OPINION_FLOOR: f64 = 0.70;
 
 /// C4 (review): one battery per change, asked *after* the edit lands.
 ///
@@ -291,10 +291,9 @@ pub fn diff_review_request(
     questions.insert(
         DIFF_MATCH_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step asked for is `intent`; the change just applied is `change`. \
-                 Does the change include what the step asked for? A change that is broader than the \
-                 step (rewriting the whole file, touching nearby lines) still counts as long as it \
-                 contains the asked-for work and contradicts nothing.",
+                "Using `intent` and `change` from the state, does the change include what the step asked for? \
+                 A change that is broader than the step (rewriting the whole file, touching nearby lines) \
+                 still counts as long as it contains the asked-for work and contradicts nothing.",
             "It includes what the step asked for",
             "It does not include it, or it contradicts the step",
         ),
@@ -302,9 +301,9 @@ pub fn diff_review_request(
     questions.insert(
         DIFF_BREAK_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step asked for is `intent`; the change just applied is `change`. \
-                 Does the supplied evidence demonstrate a concrete break in a signature, caller, \
-                 data shape or error handling? Missing caller context or a merely possible risk is not evidence.",
+                "Using `intent` and `change` from the state, does the supplied evidence demonstrate a concrete \
+                 break in a signature, caller, data shape or error handling? Missing caller context or a \
+                 merely possible risk is not evidence.",
             "The evidence demonstrates a concrete compatibility defect",
             "No concrete compatibility defect is demonstrated",
         ),
@@ -312,9 +311,8 @@ pub fn diff_review_request(
     questions.insert(
         STEP_COMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            "The step is `intent`; the change just applied is `change`. \
-                 Does this edit satisfy its local step? Later planned edits or tests are not omissions \
-                 in this edit. Do not judge completion of the entire user request.",
+            "Using `intent` and `change` from the state, does this edit satisfy its local step? Later planned \
+                 edits or tests are not omissions in this edit. Do not judge completion of the entire user request.",
             "The step is done as it stands",
             "Something in the step still has to be redone",
         ),
@@ -322,9 +320,8 @@ pub fn diff_review_request(
     questions.insert(
         REDO_THINKING_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step is `intent`; the change just applied is `change`. \
-                 If this step has to be redone, does the redo need more thinking than this call had — \
-                 a higher reasoning effort, not just another try at the same setting?",
+                "Using `intent` and `change` from the state, if this step has to be redone, does the redo need \
+                 more thinking than this call had — a higher reasoning effort, not just another try at the same setting?",
             "The redo needs more thinking than this call had",
             "Another try at the same setting is enough",
         ),
@@ -332,10 +329,10 @@ pub fn diff_review_request(
     questions.insert(
         DIFF_INCOMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step is `intent`; the change just applied is `change`. \
-                 Is the change itself unfinished — a body left as a stub or TODO, truncated code, a \
-                 helper it calls but never defines, a caller it renames and forgets to update? Judge \
-                 the change in front of you: work the step still expects afterwards is not part of it.",
+                "Using `intent` and `change` from the state, is the change itself unfinished — a body left as a \
+                 stub or TODO, truncated code, a helper it calls but never defines, a caller it renames \
+                 and forgets to update? Judge the change in front of you: work the step still expects \
+                 afterwards is not part of it.",
             "The change itself is unfinished",
             "The change is complete in itself",
         ),
@@ -343,10 +340,9 @@ pub fn diff_review_request(
     questions.insert(
         SECOND_OPINION_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            "The step is `intent`; the change just applied is `change`. \
-                 Is judging this change well beyond this review — does it need a different model \
-                 than the one answering here, one that is stronger or that knows another part of \
-                 the stack? Answer no when reviewing it here is enough.",
+            "Using `intent` and `change` from the state, is judging this change well beyond this review — \
+                 does it need a different model than the one answering here, one that is stronger or \
+                 that knows another part of the stack? Answer no when reviewing it here is enough.",
             "This change needs a review by another model",
             "Reviewing it here is enough",
         ),
@@ -789,13 +785,13 @@ mod tests {
         let unfinished = answers(vec![
             (DIFF_MATCH_QUESTION, noul(0.85)),
             (DIFF_BREAK_QUESTION, noul(0.1)),
-            (DIFF_INCOMPLETE_QUESTION, noul(0.62)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.75)),
             (STEP_COMPLETE_QUESTION, noul(0.9)),
             (REDO_THINKING_QUESTION, noul(0.6)),
         ]);
         let review = compose_diff_review(&unfinished);
         assert_eq!(review.verdict, DiffReviewVerdict::Incomplete);
-        assert_eq!(review.confidence, Some(0.62));
+        assert_eq!(review.confidence, Some(0.75));
 
         // A missing answer never reads as "reviewed and fine".
         let partial = answers(vec![(DIFF_MATCH_QUESTION, noul(0.95))]);
@@ -813,6 +809,15 @@ mod tests {
         let wire = serde_json::json!({"state": state, "questions": questions}).to_string();
         assert_eq!(wire.matches("add a counter").count(), 1);
         assert_eq!(wire.matches("+ let n = 0;").count(), 1);
+        assert!(questions.values().all(|question| {
+            let Question::Noul { instructions, .. } = question else {
+                return false;
+            };
+            !instructions
+                .as_str()
+                .unwrap_or_default()
+                .contains("+ let n = 0;")
+        }));
         assert_eq!(
             questions.len(),
             6,
@@ -827,16 +832,16 @@ mod tests {
         };
         let text = instructions.as_str().unwrap_or_default();
         assert!(
-            text.contains("`intent`"),
-            "the question references the shared step: {text}"
+            text.contains("intent") && text.contains("from the state"),
+            "the question references the shared step in state: {text}"
         );
         assert!(
             text.contains("broader than the step"),
             "a wider change that includes the work is not a mismatch: {text}"
         );
         assert!(
-            text.contains("`change`"),
-            "the question references the shared change: {text}"
+            text.contains("change") && text.contains("from the state"),
+            "the question references the shared change in state: {text}"
         );
 
         // Only a real finding travels back: silence when it reads fine, and
@@ -923,6 +928,51 @@ mod tests {
         assert!(!note.contains("different model"), "{note}");
     }
 
+    /// Near coin flips stay silent: acting needs at least 0.70 belief in the
+    /// negative (0.30 or less in the positive), since each note costs a redo.
+    #[test]
+    fn c4_stays_silent_on_borderline_reviews() {
+        let borderline = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.45)),
+            (DIFF_BREAK_QUESTION, noul(0.55)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.55)),
+            (STEP_COMPLETE_QUESTION, noul(0.45)),
+            (REDO_THINKING_QUESTION, noul(0.55)),
+            (SECOND_OPINION_QUESTION, noul(0.55)),
+        ]);
+        let review = compose_diff_review(&borderline);
+        assert_eq!(review.verdict, DiffReviewVerdict::Ok);
+        assert_eq!(review.redo, RedoAction::None);
+        assert!(!review.needs_other_model);
+        assert_eq!(diff_review_note(&review), None);
+
+        let confident_mismatch = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.20)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+            (STEP_COMPLETE_QUESTION, noul(0.9)),
+            (REDO_THINKING_QUESTION, noul(0.1)),
+        ]);
+        assert_eq!(
+            compose_diff_review(&confident_mismatch).verdict,
+            DiffReviewVerdict::Mismatch
+        );
+
+        let confident_redo = answers(vec![
+            (DIFF_MATCH_QUESTION, noul(0.9)),
+            (DIFF_BREAK_QUESTION, noul(0.1)),
+            (DIFF_INCOMPLETE_QUESTION, noul(0.1)),
+            (STEP_COMPLETE_QUESTION, noul(0.20)),
+            (REDO_THINKING_QUESTION, noul(0.80)),
+        ]);
+        assert_eq!(
+            compose_diff_review(&confident_redo).redo,
+            RedoAction::Redo {
+                higher_effort: true
+            }
+        );
+    }
+
     /// The redo decision is its own axis: a step is redone when it is not done,
     /// with more thinking only when the setting — not the attempt — was the
     /// problem, and the note says what to do when more thinking is unavailable.
@@ -957,7 +1007,7 @@ mod tests {
             (DIFF_MATCH_QUESTION, noul(0.7)),
             (DIFF_BREAK_QUESTION, noul(0.1)),
             (DIFF_INCOMPLETE_QUESTION, noul(0.2)),
-            (STEP_COMPLETE_QUESTION, noul(0.3)),
+            (STEP_COMPLETE_QUESTION, noul(0.2)),
             (REDO_THINKING_QUESTION, noul(0.8)),
         ]);
         let review = compose_diff_review(&needs_thinking);

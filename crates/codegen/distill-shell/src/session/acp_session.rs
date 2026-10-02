@@ -1113,6 +1113,9 @@ pub(crate) struct SessionActor {
     pub(crate) turn_phases: std::sync::Arc<distill_telemetry::turn_phases::TurnPhaseProfile>,
     /// Recap rate-limit watermark (`main_turns` of last finished recap; `0` means none).
     pub(crate) last_recap_main_turn: std::cell::Cell<usize>,
+    /// Whether the tools sent to the model on the latest round include no edit
+    /// or terminal tool, so whole-file reads may be narrowed by the utility.
+    pub(crate) model_tools_read_only: std::cell::Cell<bool>,
     /// True while a recap model call is in flight (auto or manual).
     /// Prevents concurrent `spawn_local` recaps from racing watermark restore.
     pub(crate) recap_in_flight: std::cell::Cell<bool>,

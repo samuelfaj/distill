@@ -52,7 +52,15 @@ fn mcp_compression_name(tool: &str, mcp_tool: Option<&str>) -> Option<String> {
     (!is_reader).then(|| effective.to_owned())
 }
 
-fn session_is_read_only<'a>(tool_names: impl IntoIterator<Item = &'a str>) -> bool {
+/// A read without offset/limit that returned every line. `total_lines` counts
+/// the empty piece after a trailing newline, so it may exceed `lines()` by one.
+fn is_whole_file_read(file: &distill_tools::types::output::FileContent) -> bool {
+    file.offset.is_none()
+        && file.limit.is_none()
+        && file.raw_output.lines().count() + 1 >= file.total_lines
+}
+
+pub(super) fn session_is_read_only<'a>(tool_names: impl IntoIterator<Item = &'a str>) -> bool {
     !tool_names.into_iter().any(|name| {
         matches!(
             name,
@@ -1019,20 +1027,10 @@ impl SessionActor {
             ToolOutput::ReadFile(distill_tools::types::output::ReadFileOutput::FileContent(
                 file,
             )) if tool == "read_file"
-                && file.offset.is_none()
-                && file.limit.is_none()
-                && file.raw_output.lines().count() >= file.total_lines
+                && is_whole_file_read(file)
                 && file.raw_output.len() >= READ_ONLY_COMPRESS_MIN_BYTES
                 && !body.contains("<system-reminder>")
-                && session_is_read_only(
-                    self.agent
-                        .borrow()
-                        .tool_bridge()
-                        .toolset()
-                        .tool_definitions()
-                        .iter()
-                        .map(|definition| definition.function.name.as_str()),
-                ) =>
+                && self.model_tools_read_only.get() =>
             {
                 Some(file.raw_output.clone())
             }
@@ -1355,9 +1353,7 @@ impl SessionActor {
             && let distill_tools::types::output::ToolOutput::ReadFile(
             distill_tools::types::output::ReadFileOutput::FileContent(file),
         ) = output
-            && file.offset.is_none()
-            && file.limit.is_none()
-            && file.raw_output.lines().count() >= file.total_lines
+            && is_whole_file_read(file)
             && matches!(
                 file.absolute_path.extension().and_then(|s| s.to_str()),
                 Some("md" | "txt")

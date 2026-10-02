@@ -288,6 +288,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         current_turn_number: std::cell::Cell::new(0),
         turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(0),
+        model_tools_read_only: std::cell::Cell::new(false),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
         turn_summary_task: std::cell::RefCell::new(None),

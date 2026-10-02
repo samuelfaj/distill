@@ -42,6 +42,8 @@ const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
 const UTILITY_MAX_DECISION_STATE_BYTES: usize = 32 * 1024;
 const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
+/// Minimum confidence for a `reject` to veto: the candidate holds source units only and the original stays stored.
+const UTILITY_REVIEW_VETO_FLOOR: f64 = 0.70;
 const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units"];
 
 fn bounded_display_answer(answer: &str, max_chars: usize) -> Option<String> {
@@ -248,14 +250,15 @@ fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::
     .collect()
 }
 
-fn utility_review_approves(
-    answers: &distill_workspace::jev::types::JevAnswerSet,
-    expected: &str,
-) -> bool {
-    answers.choice(UTILITY_DECISION_ID) == Some(expected)
+fn utility_review_vetoes(answers: &distill_workspace::jev::types::JevAnswerSet) -> bool {
+    answers.choice(UTILITY_DECISION_ID) == Some("reject")
         && answers
             .confidence(UTILITY_DECISION_ID)
-            .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+            .is_some_and(|value| {
+                value.is_finite()
+                    && (0.0..=1.0).contains(&value)
+                    && value >= UTILITY_REVIEW_VETO_FLOOR
+            })
 }
 
 enum UtilityReviewResult {
@@ -326,22 +329,31 @@ async fn ask_utility_review(
         );
         return UtilityReviewResult::Missing;
     };
-    let approved = utility_review_approves(&answers, expected);
+    let vetoed = utility_review_vetoes(&answers);
+    let (label, note) = if vetoed {
+        (
+            "review:veto",
+            "Jev rejected the candidate with confidence >= 0.70",
+        )
+    } else if answers.choice(UTILITY_DECISION_ID) == Some(expected) {
+        (phase, "bounded Jev utility gate approved")
+    } else {
+        (
+            "review:uncertain",
+            "Jev did not reject with confidence; the verified candidate is kept",
+        )
+    };
     crate::jev::record_item(
         lever,
-        if approved { phase } else { "defer" },
-        if approved {
-            "bounded Jev utility gate approved"
-        } else {
-            "bounded Jev utility gate was uncertain or rejected"
-        },
+        label,
+        note,
         answers.confidence(UTILITY_DECISION_ID),
         Some(&answers),
     );
-    if approved {
-        UtilityReviewResult::Approved(answers)
-    } else {
+    if vetoed {
         UtilityReviewResult::Rejected
+    } else {
+        UtilityReviewResult::Approved(answers)
     }
 }
 
@@ -1710,19 +1722,34 @@ mod tests {
     }
 
     #[test]
-    fn utility_review_uses_jevs_explicit_choice() {
-        let mut allow = test_utility_review_answer("allow");
-        if let Some(distill_workspace::jev::types::Answer::Choice { confidence, .. }) =
-            allow.answers.get_mut(UTILITY_DECISION_ID)
-        {
-            *confidence = Some(0.7);
-        }
-        assert!(utility_review_approves(&allow, "allow"));
-        assert!(!utility_review_approves(&allow, "accept"));
-        assert!(!utility_review_approves(
-            &test_utility_review_answer("defer"),
-            "allow"
-        ));
+    fn utility_review_vetoes_only_on_confident_reject() {
+        let with_confidence = |choice: &str, value: Option<f64>| {
+            let mut answers = test_utility_review_answer(choice);
+            if let Some(distill_workspace::jev::types::Answer::Choice { confidence, .. }) =
+                answers.answers.get_mut(UTILITY_DECISION_ID)
+            {
+                *confidence = value;
+            }
+            answers
+        };
+        // Live case: a correct unit selection was discarded at reject 0.36.
+        assert!(!utility_review_vetoes(&with_confidence(
+            "reject",
+            Some(0.36)
+        )));
+        assert!(utility_review_vetoes(&with_confidence(
+            "reject",
+            Some(0.70)
+        )));
+        assert!(!utility_review_vetoes(&with_confidence(
+            "defer",
+            Some(0.95)
+        )));
+        assert!(!utility_review_vetoes(&with_confidence(
+            "accept",
+            Some(0.95)
+        )));
+        assert!(!utility_review_vetoes(&with_confidence("reject", None)));
     }
 
     #[test]

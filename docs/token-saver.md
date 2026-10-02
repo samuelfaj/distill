@@ -202,7 +202,9 @@ The utility handles these sources:
 
 There is no Jev pre-approval and no main-model fallback. Jev post-review reads
 the reconstructed text. It is skipped for `NONE` and over-size state. If Jev
-returns no answer, the verified candidate remains.
+returns no answer, the verified candidate remains. Only a `reject` at
+confidence 0.70 or higher discards the candidate; `defer` or a less confident
+`reject` keeps it.
 
 The utility can also write display text: initial title, shell autocomplete,
 prompt suggestion and recap. Each falls back to the old path.

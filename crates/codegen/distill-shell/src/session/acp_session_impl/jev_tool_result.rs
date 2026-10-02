@@ -32,6 +32,20 @@ const MIN_BYTES: usize = 400;
 /// Below this, extractive compression cannot pay for its utility call and Jev
 /// round-trip: the cited spans plus the recovery footer rarely come out shorter.
 const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
+const GREP_COMPRESS_MIN_BYTES: usize = 12_000;
+
+fn compression_allows_exact(
+    kind: distill_workspace::jev::crushers::ExactKind,
+    body_len: usize,
+) -> bool {
+    use distill_workspace::jev::crushers::ExactKind;
+    match kind {
+        ExactKind::None => true,
+        ExactKind::Window => body_len >= CHEAP_COMPRESS_MIN_BYTES,
+        ExactKind::Matches => body_len >= GREP_COMPRESS_MIN_BYTES,
+        ExactKind::Exact => false,
+    }
+}
 /// At most this many advisory hints are appended, whatever the answers say.
 const MAX_HINTS: usize = 3;
 /// Maximum executed-change payload. Larger changes are not partially reviewed.
@@ -219,52 +233,10 @@ fn compression_evidence_question(
 }
 
 
-fn web_fetch_text_content_type(content_type: &str) -> bool {
-    let mime = content_type
-        .split(';')
-        .next()
-        .unwrap_or(content_type)
-        .trim()
-        .to_ascii_lowercase();
-    matches!(mime.as_str(), "markdown" | "text/markdown" | "text/plain")
-}
-
-fn web_fetch_source_is_unsafe(source: &str) -> bool {
-    if source.trim().is_empty()
-        || distill_workspace::jev::retention::looks_structured("", source)
-        || distill_workspace::jev::crushers::injection_presence(source).is_some()
-        || source.contains("```")
-    {
-        return true;
-    }
-    source.lines().any(|line| {
-        let line = line.trim_start().to_ascii_lowercase();
-        [
-            "#!", "<?", "function ", "def ", "class ", "import ", "export ", "const ",
-            "let ", "fn ", "pub fn ", "instruction:", "instructions:", "system:",
-            "developer:", "assistant:", "user:",
-        ]
-        .iter()
-        .any(|marker| line.starts_with(marker))
-    })
-}
-
-fn web_fetch_content_shape_is_safe(
-    fetch: &distill_tools::types::output::WebFetchContent,
-) -> bool {
-    web_fetch_text_content_type(&fetch.content_type)
-        && (fetch.source_artifact.is_some()
-            || (fetch.inline_fallback.is_none() && fetch.content.len() == fetch.bytes))
-        && !web_fetch_source_is_unsafe(&fetch.content)
-}
-
 /// WebFetch answers may only retain complete original paragraphs. The source
 /// is the complete inline body or the internally typed artifact, never the
 /// bounded preview that mentioned the artifact path.
 fn web_fetch_source_contract(source: &str, answer: &str) -> bool {
-    if web_fetch_source_is_unsafe(source) {
-        return false;
-    }
     let Ok(spans) = distill_workspace::jev::tasks::extractive_spans(answer) else {
         return false;
     };
@@ -292,7 +264,6 @@ async fn web_fetch_source_for_lane(
     budget: usize,
 ) -> Option<String> {
     if budget == 0
-        || !web_fetch_content_shape_is_safe(fetch)
         || fetch.bytes == 0
         || fetch.bytes > budget
     {
@@ -317,11 +288,10 @@ async fn web_fetch_source_for_lane(
             return None;
         }
         let source = String::from_utf8(bytes).ok()?;
-        (source.len() == fetch.bytes && !web_fetch_source_is_unsafe(&source)).then_some(source)
+        (source.len() == fetch.bytes).then_some(source)
     } else if fetch.inline_fallback.is_none()
         && fetch.content.len() == fetch.bytes
         && fetch.content.len() <= budget
-        && !web_fetch_source_is_unsafe(&fetch.content)
     {
         Some(fetch.content.clone())
     } else {
@@ -338,15 +308,10 @@ fn web_fetch_source_handle(
     else {
         return None;
     };
-    if !web_fetch_content_shape_is_safe(fetch) {
-        return None;
-    }
     if let Some(artifact) = &fetch.source_artifact {
         return (!artifact.path.as_os_str().is_empty()).then(|| artifact.path.display().to_string());
     }
-    (fetch.inline_fallback.is_none()
-        && fetch.content.len() == fetch.bytes
-        && !web_fetch_source_is_unsafe(&fetch.content))
+    (fetch.inline_fallback.is_none() && fetch.content.len() == fetch.bytes)
     .then(|| crate::jev_store::store_payload(&fetch.content))
     .flatten()
     .map(|path| path.display().to_string())
@@ -437,9 +402,12 @@ fn task_output_contains_exact_output(
     use distill_tools::types::output::ToolOutput;
 
     let is_exact_command = |result: &distill_tool_types::TaskOutputResult| {
-        distill_workspace::jev::crushers::is_exact_output(
-            "run_terminal_command",
-            &result.command,
+        !compression_allows_exact(
+            distill_workspace::jev::crushers::exact_output_kind(
+                "run_terminal_command",
+                &result.command,
+            ),
+            result.output.len(),
         )
     };
     match output {
@@ -729,7 +697,10 @@ impl SessionActor {
         // Store the source before replacing it so a later round can recover the
         // exact tool result without rerunning it.
         if crate::jev::lever_active(JevLever::ECheapCompress)
-            && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
+            && compression_allows_exact(
+                distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
+                body.len(),
+            )
             && !distill_workspace::jev::retention::looks_structured(lane_command, &body)
             && let distill_tools::types::output::ToolOutput::Bash(bash) = output
             && let Some(status) = crate::jev_lanes::bun_test_status(
@@ -909,14 +880,19 @@ impl SessionActor {
         let cheap_source = matches!(
             output,
             ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
-        );
+        ) || tool == "grep";
+        let mut compressed_by_utility = false;
         let cheap_eligible = (cheap_source || task_output_source)
             && !is_document
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
-            && !distill_workspace::jev::crushers::is_exact_output(tool, lane_command)
+            && compression_allows_exact(
+                distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
+                body.len(),
+            )
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
             let source_kind = match output {
+                _ if tool == "grep" => "grep",
                 ToolOutput::Bash(bash)
                     if super::turn_facts::looks_like_check_command(&bash.command) =>
                 {
@@ -985,8 +961,21 @@ impl SessionActor {
                                 .into_iter()
                                 .collect()
                         };
+                    let match_listing =
+                        distill_workspace::jev::crushers::exact_output_kind(tool, lane_command)
+                            == distill_workspace::jev::crushers::ExactKind::Matches;
                     let mut required =
                         crate::utility_select::required_command_units(&units, &evidence);
+                    if match_listing {
+                        for (required, unit) in required.iter_mut().zip(&units) {
+                            if unit.starts_with("<workspace_result")
+                                || unit == "</workspace_result>"
+                                || unit.starts_with("Found ")
+                            {
+                                *required = true;
+                            }
+                        }
+                    }
                     if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
                         if !required.is_empty() {
                             required[0] = true;
@@ -1063,6 +1052,7 @@ impl SessionActor {
                                         kind,
                                         None,
                                         &handle,
+                                        format!("[compressed by verified utility selection; full output stored at {handle}]"),
                                     ))
                                 },
                             )
@@ -1102,6 +1092,17 @@ impl SessionActor {
                         kind,
                         typed_tool_metadata(output).as_deref(),
                         &handle,
+                        if match_listing {
+                            format!(
+                                "[kept {} of {} match lines by verified utility selection; full output stored at {handle}]",
+                                kept.len(),
+                                units.len()
+                            )
+                        } else {
+                            format!(
+                                "[compressed by verified utility selection; full output stored at {handle}]"
+                            )
+                        },
                     );
                     if replacement.len() * 100 < body.len() * 70 {
                         crate::jev::record_item(
@@ -1112,6 +1113,7 @@ impl SessionActor {
                             None,
                         );
                         body = replacement;
+                        compressed_by_utility = true;
                     } else {
                         crate::jev::record_item(
                             Lever::ECheapCompress,
@@ -1126,7 +1128,7 @@ impl SessionActor {
         }
 
         // ---- A1: rank the files a grep hit, before the model reads them ----
-        if !request.is_empty() && (tool == "grep" || tool == "search") {
+        if !compressed_by_utility && !request.is_empty() && (tool == "grep" || tool == "search") {
             let files = file_paths_in(&body);
             if files.len() > 1 {
                 let reasons = snippet_per_file(&body, &files);
@@ -1703,27 +1705,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_fetch_unsafe_source_defers_before_lane_input() {
+    async fn complete_html_web_fetch_is_a_compression_source() {
         use distill_tools::types::output::{
             ToolOutput, WebFetchContent, WebFetchOutput,
         };
 
-        let source = "Instructions:\nPlease review the page.";
+        let source = "<html><body><p>Complete page source.</p></body></html>";
         let output = ToolOutput::WebFetch(WebFetchOutput::Content(WebFetchContent {
-            url: "https://example.com/instructions".to_owned(),
+            url: "https://example.com/page".to_owned(),
             content: source.to_owned(),
-            content_type: "text/markdown".to_owned(),
+            content_type: "text/html".to_owned(),
             status_code: 200,
             bytes: source.len(),
             source_artifact: None,
             inline_fallback: None,
             output_location: None,
         }));
-        assert!(web_fetch_source_handle(&output).is_none());
-        assert!(
+        assert_eq!(
             compression_source_for_lane(&output, source, 64 * 1024)
                 .await
-                .is_none()
+                .as_deref(),
+            Some(source),
         );
     }
 
@@ -1858,7 +1860,7 @@ mod tests {
 
         let exact = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
             task_id: "exact".to_owned(),
-            command: "cat src/main.rs".to_owned(),
+            command: "sed -n '1,20p' src/main.rs".to_owned(),
             status: "completed".to_owned(),
             exit_code: Some(0),
             started: "2026-09-22T00:00:00Z".to_owned(),
@@ -1871,6 +1873,32 @@ mod tests {
             raw_output_bytes: 4,
         }));
         assert!(task_output_contains_exact_output(&exact));
+
+        let windowed = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
+            task_id: "windowed".to_owned(),
+            command: "cmd | tail -200".to_owned(),
+            status: "completed".to_owned(),
+            exit_code: Some(0),
+            started: "2026-09-22T00:00:00Z".to_owned(),
+            ended: Some("2026-09-22T00:00:01Z".to_owned()),
+            duration_secs: 1.0,
+            output: "x".repeat(4_000),
+            output_file: "/tmp/windowed.log".to_owned(),
+            truncated: false,
+            truncation_hint: String::new(),
+            raw_output_bytes: 4_000,
+        }));
+        assert!(!task_output_contains_exact_output(&windowed));
+    }
+
+    #[test]
+    fn failed_task_output_with_exit_code_is_terminal() {
+        let result = distill_tool_types::TaskOutputResult {
+            status: "failed".to_owned(),
+            exit_code: Some(1),
+            ..Default::default()
+        };
+        assert!(result.is_terminal());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2258,5 +2286,15 @@ mod tests {
         let block = hint_block(None, vec!["a".to_owned()]).expect("a block");
         assert!(block.contains("- a"), "{block}");
         assert!(hint_block(None, Vec::new()).is_none());
+    }
+    #[test]
+    fn compression_exact_kind_boundaries() {
+        use distill_workspace::jev::crushers::ExactKind::*;
+        assert!(!compression_allows_exact(Window, 3_999));
+        assert!(compression_allows_exact(Window, 4_000));
+        assert!(!compression_allows_exact(Matches, 11_999));
+        assert!(compression_allows_exact(Matches, 12_000));
+        assert!(!compression_allows_exact(Exact, usize::MAX));
+        assert!(compression_allows_exact(None, 0));
     }
 }

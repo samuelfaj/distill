@@ -131,6 +131,7 @@ pub(crate) fn reconstruct(
     kind: UnitKind,
     metadata: Option<&str>,
     handle: &str,
+    footer: String,
 ) -> String {
     let mut output = String::new();
     let mut omitted = 0;
@@ -171,9 +172,7 @@ pub(crate) fn reconstruct(
         output.push_str(metadata.trim_end());
         output.push('\n');
     }
-    output.push_str(&format!(
-        "[compressed by verified utility selection; full output stored at {handle}]"
-    ));
+    output.push_str(&footer);
     output
 }
 
@@ -237,9 +236,22 @@ mod tests {
             UnitKind::Lines,
             Some("exit=0"),
             "/tmp/full",
+            "[compressed by verified utility selection; full output stored at /tmp/full]".into(),
         );
         assert!(text.contains("[… 1 lines omitted …]"));
         assert!(text.contains("[tool metadata]"));
         assert!(text.contains("full output stored at /tmp/full"));
+    }
+    #[test]
+    fn reconstructs_match_footer() {
+        let text = reconstruct(
+            &["match".into()],
+            &[0].into_iter().collect(),
+            UnitKind::Lines,
+            None,
+            "/tmp/full",
+            "[kept 1 of 3 match lines by verified utility selection; full output stored at /tmp/full]".into(),
+        );
+        assert!(text.ends_with("[kept 1 of 3 match lines by verified utility selection; full output stored at /tmp/full]"));
     }
 }

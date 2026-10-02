@@ -1146,27 +1146,53 @@ impl SessionActor {
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
             ..Default::default()
         };
-        tokio::time::timeout(
+        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
+        let response = match tokio::time::timeout(
             V2_DREAM_MODEL_TIMEOUT,
             sampling_client
                 .conversation_collect_with_idle_timeout(request, V2_DREAM_MODEL_IDLE_TIMEOUT),
         )
         .await
-        .map_err(|_| V2DreamModelFailure {
-            class: MemoryV2FailureClass::Timeout,
-            detail: "v2 Dream model call timed out".to_owned(),
-            usage: distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
-        })?
-        .map(|response| {
-            let usage =
-                crate::session::memory_observation::memory_v2_model_usage(&model, &response);
-            (response.assistant_text(), usage)
-        })
-        .map_err(|error| V2DreamModelFailure {
-            class: MemoryV2FailureClass::Model,
-            detail: format!("v2 Dream model call failed: {error}"),
-            usage: distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
-        })
+        {
+            Ok(Ok(response)) => {
+                super::side_call::record_auxiliary_response(
+                    self,
+                    "memory_dream",
+                    &model,
+                    &attempt,
+                    &response,
+                    None,
+                    false,
+                );
+                response
+            }
+            Ok(Err(error)) => {
+                super::side_call::record_auxiliary_failures(
+                    self,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+                return Err(V2DreamModelFailure {
+                    class: MemoryV2FailureClass::Model,
+                    detail: format!("v2 Dream model call failed: {error}"),
+                    usage: distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                });
+            }
+            Err(_) => {
+                super::side_call::record_auxiliary_failures(
+                    self,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+                return Err(V2DreamModelFailure {
+                    class: MemoryV2FailureClass::Timeout,
+                    detail: "v2 Dream model call timed out".to_owned(),
+                    usage: distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                });
+            }
+        };
+        let usage = crate::session::memory_observation::memory_v2_model_usage(&model, &response);
+        Ok((response.assistant_text(), usage))
     }
 }
 

@@ -999,6 +999,7 @@ impl SessionActor {
         );
         debug_assert!(request.tools.is_empty());
         debug_assert!(request.hosted_tools.is_empty());
+        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
@@ -1011,6 +1012,13 @@ impl SessionActor {
             ) => result,
         }
         .map_err(|_| {
+            if let Some(actor) = session.upgrade() {
+                super::side_call::record_auxiliary_failures(
+                    &actor,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+            }
             CaptureExtractionFailure::retryable(
                 MemoryV2FailureClass::Timeout,
                 format!(
@@ -1020,11 +1028,29 @@ impl SessionActor {
             )
         })?
         .map_err(|error| {
+            if let Some(actor) = session.upgrade() {
+                super::side_call::record_auxiliary_failures(
+                    &actor,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+            }
             CaptureExtractionFailure::retryable(
                 MemoryV2FailureClass::Model,
                 format!("extraction model failed: {error}"),
             )
         })?;
+        if let Some(actor) = session.upgrade() {
+            super::side_call::record_auxiliary_response(
+                &actor,
+                "memory_capture",
+                &model,
+                &attempt,
+                &response,
+                None,
+                false,
+            );
+        }
         let text = response.assistant_text();
         let stop_reason: &'static str = response
             .stop_reason

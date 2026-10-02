@@ -465,6 +465,7 @@ impl SessionActor {
             LAZINESS_CLASSIFIER_TIMEOUT_MS,
         ));
         tokio::pin!(timeout);
+        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
         let sampler_future = sampling_client.conversation_collect(request);
         tokio::pin!(sampler_future);
         let response = loop {
@@ -475,6 +476,7 @@ impl SessionActor {
                     Err(err) => {
                         let detail = err.to_string();
                         tracing::debug!(error = %detail, "laziness classifier sampler call failed");
+                        super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         self.maybe_write_laziness_debug_log(
                             meta.take(),
@@ -492,6 +494,7 @@ impl SessionActor {
                     }
                 },
                 _ = &mut timeout => {
+                    super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
                     let elapsed_ms = started.elapsed().as_millis() as u64;
                     self.maybe_write_laziness_debug_log(
                         meta.take(),
@@ -509,6 +512,7 @@ impl SessionActor {
                 }
                 _ = tokio::time::sleep(poll_interval) => {
                     if let Some(reason) = self.laziness_abort_check(abort_snapshot) {
+                        super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         self.maybe_write_laziness_debug_log(
                             meta.take(),
@@ -529,6 +533,15 @@ impl SessionActor {
         };
 
         let elapsed_ms = started.elapsed().as_millis() as u64;
+        super::side_call::record_auxiliary_response(
+            &self,
+            "laziness_classifier",
+            &attempt.model_id,
+            &attempt,
+            &response,
+            Some(elapsed_ms),
+            false,
+        );
         let raw_text = response.assistant_text();
         let parsed = match parse_classifier_output(&raw_text) {
             Ok(p) => p,

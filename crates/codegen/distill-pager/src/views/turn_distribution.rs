@@ -33,6 +33,9 @@ pub(crate) fn report(usage: Option<&PromptUsage>) -> Option<String> {
     if usage.jev_calls > 0 {
         lines.push(format!("Jev - {}x", usage.jev_calls));
     }
+    if usage.utility_calls > 0 {
+        lines.push(format!("Utility - {}x", usage.utility_calls));
+    }
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
@@ -54,6 +57,19 @@ mod tests {
         PromptUsage {
             effort_usage: rows,
             jev_calls,
+            ..Default::default()
+        }
+    }
+
+    fn usage_with_utility(
+        rows: Vec<EffortUsageRow>,
+        jev_calls: u64,
+        utility_calls: u64,
+    ) -> PromptUsage {
+        PromptUsage {
+            effort_usage: rows,
+            jev_calls,
+            utility_calls,
             ..Default::default()
         }
     }
@@ -94,6 +110,17 @@ mod tests {
 
     /// Nothing to say ⇒ no block: a turn the decision layer never touched and
     /// whose usage was not noted must not add noise to the scrollback.
+    #[test]
+    fn utility_calls_render_after_jev_and_zero_stays_hidden() {
+        let with_utility = usage_with_utility(Vec::new(), 2, 3);
+        assert_eq!(
+            report(Some(&with_utility)).as_deref(),
+            Some("Jev - 2x\nUtility - 3x")
+        );
+        let without_utility = usage_with_utility(Vec::new(), 2, 0);
+        assert_eq!(report(Some(&without_utility)).as_deref(), Some("Jev - 2x"));
+    }
+
     #[test]
     fn an_empty_payload_reports_nothing() {
         assert!(report(None).is_none());

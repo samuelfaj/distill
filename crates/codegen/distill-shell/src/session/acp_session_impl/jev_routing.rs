@@ -226,6 +226,15 @@ impl SessionActor {
             window,
         )
         .decisions as u64;
+        usage.utility_calls = prompt_ledger
+            .map(|ledger| {
+                ledger
+                    .attributions
+                    .iter()
+                    .filter(|row| row.role == "utility")
+                    .count() as u64
+            })
+            .unwrap_or_default();
     }
 
     /// Consume a review-driven increase once. Later rounds choose their own effort.

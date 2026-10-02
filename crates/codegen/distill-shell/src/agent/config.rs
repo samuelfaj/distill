@@ -1195,7 +1195,8 @@ pub struct JevConfig {
     pub model: Option<String>,
     /// Per-operation deadline in milliseconds, covering the response body read.
     pub timeout_ms: Option<u64>,
-    /// Environment variable holding the bearer token (`JEV_API_KEY` by default).
+    /// Environment variable holding the bearer token. Defaults by provider:
+    /// `JEV_API_KEY` for TypeSafe, `OPENROUTER_API_KEY` for the OpenRouter providers.
     pub api_key_env: Option<String>,
     /// Maximum serialized bytes of `state` for one request.
     pub max_state_bytes: Option<usize>,

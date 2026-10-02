@@ -117,7 +117,13 @@ pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
             .timeout_ms
             .map(core::time::Duration::from_millis)
             .unwrap_or(defaults.timeout),
-        api_key_env: cfg.api_key_env.clone().unwrap_or(defaults.api_key_env),
+        api_key_env: cfg.api_key_env.clone().unwrap_or_else(|| match provider {
+            // A TypeSafe key sent to OpenRouter is a 401, so its default follows the host.
+            JevProvider::OpenRouterDecisions | JevProvider::OpenRouter => {
+                crate::openrouter_auth::API_KEY_ENV.to_owned()
+            }
+            JevProvider::Typesafe => defaults.api_key_env,
+        }),
         max_state_bytes: cfg.max_state_bytes.unwrap_or(defaults.max_state_bytes),
         provider,
         reasoning_shape,
@@ -335,6 +341,22 @@ c7_change_type = true"#,
         assert_eq!(config.base_url, "https://api.typesafe.ai");
         assert_eq!(config.api_key_env, "JEV_API_KEY");
         assert_eq!(config.endpoint(), "https://api.typesafe.ai/v1/systemone");
+    }
+
+    #[test]
+    fn api_key_env_default_follows_the_provider() {
+        let env_for = |provider: &str, api_key_env: Option<&str>| {
+            client_config_from(&JevConfig {
+                provider: Some(provider.to_owned()),
+                api_key_env: api_key_env.map(str::to_owned),
+                ..JevConfig::default()
+            })
+            .api_key_env
+        };
+        assert_eq!(env_for("typesafe", None), "JEV_API_KEY");
+        assert_eq!(env_for("openrouter_decisions", None), "OPENROUTER_API_KEY");
+        assert_eq!(env_for("openrouter", None), "OPENROUTER_API_KEY");
+        assert_eq!(env_for("openrouter_decisions", Some("MY_KEY")), "MY_KEY");
     }
 
     #[tokio::test]

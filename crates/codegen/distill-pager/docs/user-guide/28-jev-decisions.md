@@ -61,7 +61,7 @@ c6_injection_screen   = false # cost per tool output not measured yet
 # base_url      = "https://api.typesafe.ai"
 # model         = "jev-latest"      # pin a version once thresholds are calibrated
 # timeout_ms    = 10000             # per call, covering reading the body
-# api_key_env   = "JEV_API_KEY"
+# api_key_env   = "JEV_API_KEY"   # follows the provider: OPENROUTER_API_KEY for the OpenRouter providers
 # max_state_bytes = 32768
 ```
 
@@ -69,7 +69,7 @@ c6_injection_screen   = false # cost per tool output not measured yet
 
 With `shadow = true`, Jev decisions are recorded without applying them. This setting does not affect permission decisions, which remain in the harness.
 
-The credential is read from the environment **at call time** by the name in `api_key_env`:
+The credential is read from the environment **at call time** by the name in `api_key_env`. Unset, the name follows the provider: `JEV_API_KEY` for TypeSafe, `OPENROUTER_API_KEY` for the OpenRouter providers (`openrouter_decisions`, `openrouter`). An explicit `api_key_env` always wins:
 
 ```sh
 export JEV_API_KEY="…"

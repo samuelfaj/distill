@@ -34,6 +34,22 @@ const MIN_BYTES: usize = 400;
 const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
 const GREP_COMPRESS_MIN_BYTES: usize = 12_000;
 
+fn mcp_compression_name(tool: &str, mcp_tool: Option<&str>) -> Option<String> {
+    let name = if tool == "use_tool" {
+        mcp_tool?
+    } else if tool.contains("__") {
+        tool
+    } else {
+        return None;
+    };
+    let effective = name.rsplit_once("__").map_or(name, |(_, part)| part);
+    // File readers stay exact; match whole `_`-separated words, not `thread`.
+    let is_reader = ["read_file", "read", "read_text_file", "get_file", "cat"]
+        .iter()
+        .any(|reader| effective == *reader || effective.ends_with(&format!("_{reader}")));
+    (!is_reader).then(|| effective.to_owned())
+}
+
 fn compression_allows_exact(
     kind: distill_workspace::jev::crushers::ExactKind,
     body_len: usize,
@@ -636,6 +652,7 @@ impl SessionActor {
         tool: &str,
         tool_command: &str,
         call_id: &str,
+        mcp_tool: Option<&str>,
         output: &distill_tools::types::output::ToolOutput,
         text: String,
     ) -> String {
@@ -877,13 +894,15 @@ impl SessionActor {
 
         // ---- utility-first id-based compression ----
         const EXTRACTIVE_TASK: &str = "select_units";
+        let mcp_source = mcp_compression_name(tool, mcp_tool).is_some()
+            && matches!(output, ToolOutput::MCP(mcp) if mcp.extracted_images.is_empty());
         let cheap_source = matches!(
             output,
             ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
         ) || tool == "grep";
         let mut compressed_by_utility = false;
-        let cheap_eligible = (cheap_source || task_output_source)
-            && !is_document
+        let cheap_eligible = (cheap_source || task_output_source || mcp_source)
+            && (mcp_source || !is_document)
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
             && compression_allows_exact(
                 distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
@@ -892,6 +911,7 @@ impl SessionActor {
             && crate::jev::lever_active(JevLever::ECheapCompress);
         if cheap_eligible {
             let source_kind = match output {
+                _ if mcp_source => "mcp",
                 _ if tool == "grep" => "grep",
                 ToolOutput::Bash(bash)
                     if super::turn_facts::looks_like_check_command(&bash.command) =>
@@ -954,7 +974,7 @@ impl SessionActor {
                     let evidence_source =
                         task_output_body_evidence(output).unwrap_or_else(|| source.clone());
                     let evidence: std::collections::HashSet<String> =
-                        if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                        if mcp_source || matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
                             std::collections::HashSet::new()
                         } else {
                             crate::jev_lanes::required_tool_evidence(&evidence_source)
@@ -966,6 +986,11 @@ impl SessionActor {
                             == distill_workspace::jev::crushers::ExactKind::Matches;
                     let mut required =
                         crate::utility_select::required_command_units(&units, &evidence);
+                    if mcp_source && !required.is_empty() {
+                        required[0] = true;
+                        let last = required.len() - 1;
+                        required[last] = true;
+                    }
                     if match_listing {
                         for (required, unit) in required.iter_mut().zip(&units) {
                             if unit.starts_with("<workspace_result")
@@ -1698,6 +1723,25 @@ fn failing_tests(body: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mcp_compression_name_resolves_dispatch_and_excludes_readers() {
+        assert_eq!(
+            mcp_compression_name("use_tool", Some("playwright__browser_snapshot")),
+            Some("browser_snapshot".to_owned())
+        );
+        assert_eq!(
+            mcp_compression_name("use_tool", Some("cursor__read_file")),
+            None
+        );
+        assert_eq!(mcp_compression_name("server__get_file", None), None);
+        assert_eq!(mcp_compression_name("read_file", None), None);
+        assert_eq!(
+            mcp_compression_name("slack__get_thread", None),
+            Some("get_thread".to_owned())
+        );
+        assert_eq!(mcp_compression_name("fs__read", None), None);
+    }
+
     fn set_utility_review_choices(choices: &[&str]) {
         crate::jev::set_test_decision_answers(choices.iter().map(|choice| {
             Some(crate::jev_cheap::test_utility_review_answer(choice))
@@ -1952,6 +1996,7 @@ mod tests {
                         "get_task_output",
                         "",
                         "mixed-task-output-call",
+                        None,
                         &output,
                         rendered.clone(),
                     )
@@ -2032,6 +2077,7 @@ mod tests {
                         "run_terminal_command",
                         "cargo test --lib",
                         "call-small",
+                        None,
                         &output,
                         source.clone(),
                     ),

@@ -912,6 +912,45 @@ impl SessionActor {
         )
         .await;
     }
+
+    /// Writes the usage row of one image-describe request; cache hits never reach it.
+    pub(super) fn record_image_describe_call(
+        &self,
+        client: &distill_sampler::SamplingClient,
+        model: &str,
+        call: crate::session::image_describe::DescribeCall,
+    ) {
+        use crate::session::image_describe::DescribeCallOutcome;
+        let attempt = super::side_call::auxiliary_attempt(client, &call.request);
+        match call.outcome {
+            DescribeCallOutcome::Accepted(response) => super::side_call::record_auxiliary_response(
+                self,
+                "image_describe",
+                model,
+                &attempt,
+                &response,
+                Some(call.duration_ms),
+                true,
+            ),
+            DescribeCallOutcome::Rejected(response) => {
+                super::side_call::record_auxiliary_rejected_response(
+                    self,
+                    "image_describe",
+                    model,
+                    &attempt,
+                    &response,
+                    Some(call.duration_ms),
+                    true,
+                )
+            }
+            DescribeCallOutcome::Failed => super::side_call::record_auxiliary_failures(
+                self,
+                std::slice::from_ref(&attempt),
+                true,
+            ),
+        }
+    }
+
     /// Run the image-transcription pipeline for a turn that contains user-supplied images.
     /// Returns the new `user_message` text with the `<image>` and `<image_files>` envelopes prepended.
     /// On any failure returns an `acp::Error` so the entire turn is aborted; we never silently drop image context.
@@ -986,6 +1025,7 @@ impl SessionActor {
                         &current_query,
                         crate::session::image_describe::ImageDescribeSource::UserAttachment,
                         "",
+                        |call| self.record_image_describe_call(&client, model, call),
                     )
                     .await
                     .map_err(|e| {
@@ -1005,5 +1045,104 @@ impl SessionActor {
             &image_paths,
             &original_user_message,
         ))
+    }
+}
+
+#[cfg(test)]
+mod image_describe_usage_tests {
+    use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+    fn png(seed: u8) -> agent_client_protocol::ImageContent {
+        use base64::Engine as _;
+        agent_client_protocol::ImageContent::new(
+            base64::engine::general_purpose::STANDARD.encode([0x89, b'P', b'N', b'G', seed]),
+            "image/png",
+        )
+    }
+
+    async fn auxiliary_rows(
+        actor: &super::SessionActor,
+    ) -> Vec<distill_chat_state::UsageCallStatus> {
+        actor
+            .chat_state_handle
+            .try_get_session_usage()
+            .await
+            .expect("usage ledger readable")
+            .attributions
+            .iter()
+            .filter(|row| row.role == "auxiliary")
+            .map(|row| row.status)
+            .collect()
+    }
+
+    /// A describe request is one usage row; a cache hit sends nothing and records nothing.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn image_describe_records_usage_once_per_request() {
+        use distill_chat_state::UsageCallStatus::{Completed, Failed, Rejected};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("describe-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                server.set_response("A red square.");
+                let mut actor = super::super::support::plain_actor().await;
+                let mut model = crate::agent::config::ModelEntry::fallback(
+                    "describe-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                model.info.base_url = server.url();
+                model.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                model.api_key = Some("describe-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("describe-model", model);
+                actor.image_description_model = "describe-model".to_owned();
+                let query = "<user_query>\nwhat is this\n</user_query>".to_owned();
+
+                actor
+                    .transcribe_user_images(query.clone(), &[png(1)])
+                    .await
+                    .expect("describe succeeds");
+                assert_eq!(auxiliary_rows(&actor).await, [Completed]);
+
+                actor
+                    .transcribe_user_images(query.clone(), &[png(1)])
+                    .await
+                    .expect("cache hit");
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                assert_eq!(auxiliary_rows(&actor).await.len(), 1);
+
+                server.set_response("  ");
+                actor
+                    .transcribe_user_images(query, &[png(2)])
+                    .await
+                    .expect_err("blank description is an error");
+                assert_eq!(auxiliary_rows(&actor).await, [Completed, Rejected]);
+
+                let client = distill_sampler::SamplingClient::new(
+                    actor
+                        .resolve_aux_sampler_config("describe-model")
+                        .await
+                        .expect("describe sampler config"),
+                )
+                .expect("client");
+                actor.record_image_describe_call(
+                    &client,
+                    "describe-model",
+                    crate::session::image_describe::DescribeCall {
+                        request: distill_sampling_types::ConversationRequest::from_items(vec![])
+                            .with_model("describe-model"),
+                        duration_ms: 1,
+                        outcome: crate::session::image_describe::DescribeCallOutcome::Failed,
+                    },
+                );
+                assert_eq!(auxiliary_rows(&actor).await.last(), Some(&Failed));
+            })
+            .await;
     }
 }

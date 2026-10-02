@@ -624,6 +624,128 @@ fn hint_block(review_note: Option<String>, hints: Vec<String>) -> Option<String>
     Some(block)
 }
 
+/// What the Jev post-review reads for an accepted chunk answer.
+#[derive(Clone, Copy)]
+enum SelectionReview {
+    /// The selected units, joined.
+    Selected,
+    /// The chunk as it will be rebuilt: selected units plus the required ones.
+    Rebuilt,
+}
+
+struct UnitSelection<'a> {
+    units: &'a [String],
+    required: &'a [bool],
+    kind: crate::utility_select::UnitKind,
+    question: &'a str,
+    source_kind: &'a str,
+    handle: &'a str,
+    cap: usize,
+    review: SelectionReview,
+}
+
+/// Asks the utility lane which units to keep, one request per chunk. `None`
+/// keeps the original: the plan did not fit, or every chunk failed.
+async fn select_units_with_lane(
+    utility: &crate::jev_cheap::CheapLane,
+    selection: &UnitSelection<'_>,
+) -> Option<std::collections::BTreeSet<usize>> {
+    let UnitSelection {
+        units,
+        required,
+        kind,
+        question,
+        source_kind,
+        handle,
+        cap,
+        review,
+    } = *selection;
+    let chunks = match crate::utility_select::plan_chunks(units, cap, 8) {
+        Ok(chunks) => chunks,
+        Err(reason) => {
+            crate::jev::record_item(Lever::ECheapCompress, reason, reason, None, None);
+            return None;
+        }
+    };
+    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
+        let refs: Vec<&str> = units[chunk.clone()].iter().map(String::as_str).collect();
+        let payload = distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
+        let valid = chunk.start + 1..=chunk.end;
+        match utility
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                &payload,
+                question,
+                source_kind,
+                true,
+                |answer| {
+                    let picked = if answer.trim().eq_ignore_ascii_case("none") {
+                        Vec::new()
+                    } else {
+                        distill_workspace::jev::tasks::parse_unit_ids(answer, valid.clone())
+                            .ok()?
+                    };
+                    Some(match review {
+                        SelectionReview::Selected => picked
+                            .into_iter()
+                            .filter_map(|id| units.get(id - 1))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        // Jev reviews what this chunk becomes: the picked units
+                        // plus the units the harness always keeps.
+                        SelectionReview::Rebuilt => {
+                            let kept: std::collections::BTreeSet<usize> = picked
+                                .into_iter()
+                                .map(|id| id - 1)
+                                .chain(chunk.clone().filter(|index| required[*index]))
+                                .map(|index| index - chunk.start)
+                                .collect();
+                            crate::utility_select::reconstruct(
+                                &units[chunk.clone()],
+                                &kept,
+                                kind,
+                                None,
+                                handle,
+                                format!("[compressed by verified utility selection; full output stored at {handle}]"),
+                            )
+                        }
+                    })
+                },
+            )
+            .await
+        {
+            Some(result) if result.text.trim().eq_ignore_ascii_case("none") => {
+                crate::utility_select::ChunkAnswer::Nothing
+            }
+            Some(result) => {
+                distill_workspace::jev::tasks::parse_unit_ids(&result.text, valid)
+                    .map(crate::utility_select::ChunkAnswer::Ids)
+                    .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
+            }
+            None => crate::utility_select::ChunkAnswer::Failed,
+        }
+    }))
+    .await;
+    crate::utility_select::merge(&chunks, &answers, required)
+}
+
+/// A finished bash task with the exact command the result reports.
+fn is_terminal_bash_result(
+    result: &distill_tool_types::TaskOutputResult,
+    snapshot: &distill_tools::computer::types::TaskSnapshot,
+) -> bool {
+    result.is_terminal()
+        && snapshot.completed
+        && snapshot.kind == distill_tools::computer::types::TaskKind::Bash
+        && snapshot
+            .display_command
+            .as_deref()
+            .unwrap_or(snapshot.command.as_str())
+            == result.command
+}
+
 impl SessionActor {
     /// `get_task_output` serves terminal commands and non-terminal snapshots
     /// through one typed envelope. The envelope itself has no origin field,
@@ -634,41 +756,181 @@ impl SessionActor {
         output: &distill_tools::types::output::ToolOutput,
     ) -> bool {
         use distill_tool_types::TaskOutputOutput;
-        use distill_tools::computer::types::{TaskKind, TerminalBackend};
         use distill_tools::types::output::ToolOutput;
-        use distill_tools::types::resources::Terminal;
 
-        let bridge = self.agent.borrow().tool_bridge().clone();
-        let resources = bridge.shared_resources().await;
-        let terminal = {
-            let resources = resources.lock().await;
-            resources
-                .get::<Terminal>()
-                .map(|terminal| std::sync::Arc::clone(&terminal.0))
-        };
-        let Some(terminal) = terminal else {
+        let Some(terminal) = self.task_terminal().await else {
             return false;
         };
-        let is_terminal_command = |result: &distill_tool_types::TaskOutputResult,
-                                   snapshot: &distill_tools::computer::types::TaskSnapshot| {
-            result.is_terminal()
-                && snapshot.completed
-                && snapshot.kind == TaskKind::Bash
-                && snapshot.display_command.as_deref().unwrap_or(snapshot.command.as_str())
-                    == result.command
-        };
-
         match output {
             ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => terminal
                 .get_task(&result.task_id)
                 .await
-                .is_some_and(|snapshot| is_terminal_command(result, &snapshot)),
-            // A multi-result envelope can combine bodies from different tasks.
-            // Until extractive spans carry deterministic child attribution,
-            // keep the complete envelope rather than muddling those bodies.
+                .is_some_and(|snapshot| is_terminal_bash_result(result, &snapshot)),
+            // A multi-result envelope mixes bodies from different tasks; its
+            // items are compressed one by one in `compress_multi_task_output`.
             ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(_)) => false,
             _ => false,
         }
+    }
+
+    async fn task_terminal(
+        &self,
+    ) -> Option<std::sync::Arc<dyn distill_tools::computer::types::TerminalBackend>> {
+        use distill_tools::types::resources::Terminal;
+
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let resources = bridge.shared_resources().await;
+        let resources = resources.lock().await;
+        resources
+            .get::<Terminal>()
+            .map(|terminal| std::sync::Arc::clone(&terminal.0))
+    }
+
+    /// Compresses the large output of each finished bash task in a
+    /// multi-task result and leaves everything else in `body` verbatim.
+    async fn compress_multi_task_output(
+        &self,
+        output: &distill_tools::types::output::ToolOutput,
+        body: String,
+    ) -> String {
+        use distill_tool_types::TaskOutputOutput;
+        use distill_tools::types::output::ToolOutput;
+
+        let ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(multi)) = output else {
+            return body;
+        };
+        let large = |result: &&distill_tool_types::TaskOutputResult| {
+            result.output.len() >= CHEAP_COMPRESS_MIN_BYTES
+                && compression_allows_exact(
+                    distill_workspace::jev::crushers::exact_output_kind(
+                        "run_terminal_command",
+                        &result.command,
+                    ),
+                    result.output.len(),
+                )
+        };
+        let items: Vec<_> = multi.results.iter().filter(large).collect();
+        if items.is_empty() || !crate::jev::lever_active(JevLever::ECheapCompress) {
+            return body;
+        }
+        let Some(terminal) = self.task_terminal().await else {
+            return body;
+        };
+        let Some(utility) = self.cheap_lane(JevLever::ECheapCompress).await else {
+            crate::jev::record_item(
+                Lever::ECheapCompress,
+                "keep",
+                "utility lane unavailable",
+                None,
+                None,
+            );
+            return body;
+        };
+        let request = self.jev_last_human_request().await.unwrap_or_default();
+        let mut body = body;
+        for result in items {
+            if body.matches(result.output.as_str()).count() != 1
+                || !terminal
+                    .get_task(&result.task_id)
+                    .await
+                    .is_some_and(|snapshot| is_terminal_bash_result(result, &snapshot))
+            {
+                continue;
+            }
+            let Some(handle) = crate::jev_store::store_payload(&result.output)
+                .map(|path| path.display().to_string())
+            else {
+                continue;
+            };
+            let question = format!(
+                "{}\nTool: {}",
+                compression_evidence_question(output, &request),
+                distill_sampling_types::truncate_bytes(&result.command, 300)
+            );
+            let budget = utility
+                .max_input_bytes()
+                .saturating_sub(question.len().saturating_add(512));
+            let Some(source) = compression_source_for_lane(output, &result.output, budget).await
+            else {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "defer:utility-budget",
+                    "source did not fit utility budget",
+                    None,
+                    None,
+                );
+                continue;
+            };
+            let kind = crate::utility_select::UnitKind::Lines;
+            let units = crate::utility_select::build_units(&source, kind, 24 * 1024);
+            let evidence: std::collections::HashSet<String> =
+                crate::jev_lanes::required_tool_evidence(&result.output)
+                    .into_iter()
+                    .collect();
+            let required = crate::utility_select::required_command_units(&units, &evidence);
+            let required_bytes: usize = units
+                .iter()
+                .zip(&required)
+                .filter(|(_, required)| **required)
+                .map(|(unit, _)| unit.len())
+                .sum();
+            if required_bytes * 100 >= source.len().saturating_mul(60) {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "defer:required-dominates",
+                    "required units dominate source",
+                    None,
+                    None,
+                );
+                continue;
+            }
+            let Some(kept) = select_units_with_lane(
+                &utility,
+                &UnitSelection {
+                    units: &units,
+                    required: &required,
+                    kind,
+                    question: &question,
+                    source_kind: "task_output",
+                    handle: &handle,
+                    cap: utility.max_payload_bytes().min(budget),
+                    review: SelectionReview::Rebuilt,
+                },
+            )
+            .await
+            else {
+                continue;
+            };
+            let replacement = crate::utility_select::reconstruct(
+                &units,
+                &kept,
+                kind,
+                None,
+                &handle,
+                format!(
+                    "[compressed by verified utility selection; full output stored at {handle}]"
+                ),
+            );
+            if replacement.len() * 100 < result.output.len() * 70 {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "compress",
+                    "verified utility selection",
+                    None,
+                    None,
+                );
+                body = body.replacen(result.output.as_str(), &replacement, 1);
+            } else {
+                crate::jev::record_item(
+                    Lever::ECheapCompress,
+                    "not_shorter",
+                    "utility selection did not reach 70% threshold",
+                    None,
+                    None,
+                );
+            }
+        }
+        body
     }
 
     /// Runs the Jev pass over a finished tool result and returns the text the
@@ -720,7 +982,7 @@ impl SessionActor {
         let task_output_source =
             is_task_output && self.task_output_is_compression_source(output).await;
         if is_task_output && !task_output_source {
-            return text;
+            return self.compress_multi_task_output(output, text).await;
         }
         let mut body = text;
         let mut hints: Vec<String> = Vec::new();
@@ -934,80 +1196,42 @@ impl SessionActor {
                     compression_evidence_question(output, &request),
                     distill_sampling_types::truncate_bytes(lane_command, 300)
                 );
-                let chunks =
-                    crate::utility_select::plan_chunks(&units, utility.max_payload_bytes(), 8);
-                if let Ok(chunks) = chunks {
-                    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
-                        let refs: Vec<&str> =
-                            units[chunk.clone()].iter().map(String::as_str).collect();
-                        let payload =
-                            distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
-                        let valid = chunk.start + 1..=chunk.end;
-                        match utility
-                            .run_task_with_acceptance(
-                                JevLever::ECheapCompress,
-                                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
-                                &payload,
-                                &question,
-                                "search_tool",
-                                true,
-                                |answer| {
-                                    if answer.trim().eq_ignore_ascii_case("none") {
-                                        Some(String::new())
-                                    } else {
-                                        let ids = distill_workspace::jev::tasks::parse_unit_ids(
-                                            answer,
-                                            valid.clone(),
-                                        )
-                                        .ok()?;
-                                        Some(
-                                            ids.into_iter()
-                                                .filter_map(|id| units.get(id - 1))
-                                                .cloned()
-                                                .collect::<Vec<_>>()
-                                                .join("\n"),
-                                        )
-                                    }
-                                },
-                            )
-                            .await
-                        {
-                            Some(result) if result.text.trim().eq_ignore_ascii_case("none") => {
-                                crate::utility_select::ChunkAnswer::Nothing
-                            }
-                            Some(result) => {
-                                distill_workspace::jev::tasks::parse_unit_ids(&result.text, valid)
-                                    .map(crate::utility_select::ChunkAnswer::Ids)
-                                    .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
-                            }
-                            None => crate::utility_select::ChunkAnswer::Failed,
-                        }
-                    }))
-                    .await;
-                    if let Some(kept) =
-                        crate::utility_select::merge(&chunks, &answers, &vec![false; units.len()])
-                        && let Some(replacement) =
-                            crate::utility_select::rebuild_search_tool(parsed, &kept, &handle)
-                    {
-                        if replacement.len() * 100 < body.len() * 70 {
-                            crate::jev::record_item(
-                                Lever::ECheapCompress,
-                                "compress",
-                                "verified utility selection",
-                                None,
-                                None,
-                            );
-                            body = replacement;
-                            compressed_by_utility = true;
-                        } else {
-                            crate::jev::record_item(
-                                Lever::ECheapCompress,
-                                "not_shorter",
-                                "utility selection did not reach 70% threshold",
-                                None,
-                                None,
-                            );
-                        }
+                let required = vec![false; units.len()];
+                if let Some(kept) = select_units_with_lane(
+                    &utility,
+                    &UnitSelection {
+                        units: &units,
+                        required: &required,
+                        kind: crate::utility_select::UnitKind::Lines,
+                        question: &question,
+                        source_kind: "search_tool",
+                        handle: &handle,
+                        cap: utility.max_payload_bytes(),
+                        review: SelectionReview::Selected,
+                    },
+                )
+                .await
+                    && let Some(replacement) =
+                        crate::utility_select::rebuild_search_tool(parsed, &kept, &handle)
+                {
+                    if replacement.len() * 100 < body.len() * 70 {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "compress",
+                            "verified utility selection",
+                            None,
+                            None,
+                        );
+                        body = replacement;
+                        compressed_by_utility = true;
+                    } else {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "not_shorter",
+                            "utility selection did not reach 70% threshold",
+                            None,
+                            None,
+                        );
                     }
                 }
             }
@@ -1175,80 +1399,20 @@ impl SessionActor {
                         );
                         break 'utility;
                     }
-                    let chunks = match crate::utility_select::plan_chunks(
-                        &units,
-                        utility.max_payload_bytes().min(budget),
-                        8,
-                    ) {
-                        Ok(chunks) => chunks,
-                        Err(reason) => {
-                            crate::jev::record_item(
-                                Lever::ECheapCompress,
-                                reason,
-                                reason,
-                                None,
-                                None,
-                            );
-                            break 'utility;
-                        }
-                    };
-                    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
-                        let refs: Vec<&str> =
-                            units[chunk.clone()].iter().map(String::as_str).collect();
-                        let payload =
-                            distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
-                        let valid = chunk.start + 1..=chunk.end;
-                        match utility
-                            .run_task_with_acceptance(
-                                JevLever::ECheapCompress,
-                                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
-                                &payload,
-                                &question,
-                                source_kind,
-                                true,
-                                |answer| {
-                                    let picked = if answer.trim().eq_ignore_ascii_case("none") {
-                                        Vec::new()
-                                    } else {
-                                        distill_workspace::jev::tasks::parse_unit_ids(
-                                            answer,
-                                            valid.clone(),
-                                        )
-                                        .ok()?
-                                    };
-                                    // Jev reviews what this chunk becomes: the picked units
-                                    // plus the units the harness always keeps.
-                                    let kept: std::collections::BTreeSet<usize> = picked
-                                        .into_iter()
-                                        .map(|id| id - 1)
-                                        .chain(chunk.clone().filter(|index| required[*index]))
-                                        .map(|index| index - chunk.start)
-                                        .collect();
-                                    Some(crate::utility_select::reconstruct(
-                                        &units[chunk.clone()],
-                                        &kept,
-                                        kind,
-                                        None,
-                                        &handle,
-                                        format!("[compressed by verified utility selection; full output stored at {handle}]"),
-                                    ))
-                                },
-                            )
-                            .await
-                        {
-                            Some(result) if result.text.trim().eq_ignore_ascii_case("none") => {
-                                crate::utility_select::ChunkAnswer::Nothing
-                            }
-                            Some(result) => {
-                                distill_workspace::jev::tasks::parse_unit_ids(&result.text, valid)
-                                    .map(crate::utility_select::ChunkAnswer::Ids)
-                                    .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
-                            }
-                            None => crate::utility_select::ChunkAnswer::Failed,
-                        }
-                    }))
-                    .await;
-                    let Some(kept) = crate::utility_select::merge(&chunks, &answers, &required)
+                    let Some(kept) = select_units_with_lane(
+                        &utility,
+                        &UnitSelection {
+                            units: &units,
+                            required: &required,
+                            kind,
+                            question: &question,
+                            source_kind,
+                            handle: &handle,
+                            cap: utility.max_payload_bytes().min(budget),
+                            review: SelectionReview::Rebuilt,
+                        },
+                    )
+                    .await
                     else {
                         break 'utility;
                     };
@@ -2167,6 +2331,237 @@ mod tests {
                     )
                     .await;
                 assert_eq!(retained, rendered);
+            })
+            .await;
+    }
+
+    /// Terminal stub: `get_task` answers from a fixed list of snapshots.
+    #[derive(Debug)]
+    struct SnapshotTerminal(Vec<distill_tools::computer::types::TaskSnapshot>);
+
+    #[async_trait::async_trait]
+    impl distill_tools::computer::types::TerminalBackend for SnapshotTerminal {
+        async fn run(
+            &self,
+            _: distill_tools::computer::types::TerminalRunRequest,
+        ) -> Result<
+            distill_tools::computer::types::TerminalRunResult,
+            distill_tools::computer::types::ComputerError,
+        > {
+            unimplemented!()
+        }
+        async fn run_background(
+            &self,
+            _: distill_tools::computer::types::TerminalRunRequest,
+        ) -> Result<
+            distill_tools::computer::types::BackgroundHandle,
+            distill_tools::computer::types::ComputerError,
+        > {
+            unimplemented!()
+        }
+        async fn get_task(
+            &self,
+            task_id: &str,
+        ) -> Option<distill_tools::computer::types::TaskSnapshot> {
+            self.0.iter().find(|task| task.task_id == task_id).cloned()
+        }
+        async fn kill_task(&self, _: &str) -> distill_tools::computer::types::KillOutcome {
+            distill_tools::computer::types::KillOutcome::NotFound
+        }
+        async fn wait_for_completion(
+            &self,
+            _: &str,
+            _: Option<std::time::Duration>,
+        ) -> Option<distill_tools::computer::types::TaskSnapshot> {
+            None
+        }
+        async fn list_tasks(&self) -> Vec<distill_tools::computer::types::TaskSnapshot> {
+            self.0.clone()
+        }
+    }
+
+    fn bash_snapshot(
+        task_id: &str,
+        command: &str,
+        completed: bool,
+    ) -> distill_tools::computer::types::TaskSnapshot {
+        distill_tools::computer::types::TaskSnapshot {
+            task_id: task_id.into(),
+            command: command.into(),
+            display_command: None,
+            cwd: String::new(),
+            start_time: std::time::SystemTime::now(),
+            end_time: completed.then(std::time::SystemTime::now),
+            output: String::new(),
+            output_file: std::path::PathBuf::new(),
+            truncated: false,
+            exit_code: completed.then_some(0),
+            signal: None,
+            completed,
+            kind: Default::default(),
+            block_waited: false,
+            explicitly_killed: false,
+            kill_result_delivered: false,
+            owner_session_id: None,
+            description: None,
+            is_backgrounded: true,
+            output_total_bytes: 0,
+        }
+    }
+
+    /// Two finished bash tasks with large outputs are compressed one by one;
+    /// a running task and a line-addressed command keep their bytes.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn multi_task_output_compresses_each_finished_bash_item_only() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_tool_types::{MultiTaskOutputResult, TaskOutputOutput, TaskOutputResult};
+        use distill_tools::types::output::ToolOutput;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let home = tempfile::tempdir().expect("test Jev home");
+                std::fs::write(
+                    home.path().join("config.toml"),
+                    "[jev.ladder]\ne_cheap_compress = true\ne_cheap_task = false\ne_crushers = false\ne_importance = false\ne_read_reuse = false\nd2_big_output_retention = false\n",
+                )
+                .expect("write test Jev config");
+                let _home = distill_test_support::EnvGuard::set("GROK_HOME", home.path());
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                for id in ["multi-select-a", "multi-select-b"] {
+                    server.enqueue_response(
+                        "/v1/chat/completions",
+                        ScriptedResponse::json(
+                            200,
+                            serde_json::json!({
+                                "id": id,
+                                "model": "utility-model",
+                                "choices": [{
+                                    "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": "U3"}
+                                }],
+                                "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                            }),
+                        ),
+                    );
+                }
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                actor
+                    .models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new("utility-model"));
+                set_utility_review_choices(&["accept", "accept"]);
+
+                let big = |tag: &str| {
+                    let lines: String = (0..200)
+                        .map(|i| format!("{tag} progress line number {i} with padding text\n"))
+                        .collect();
+                    format!("{tag} start\n{lines}{tag} end\n")
+                };
+                let item = |task_id: &str, command: &str, status: &str| {
+                    let done = status == "completed";
+                    TaskOutputResult {
+                        task_id: task_id.to_owned(),
+                        command: command.to_owned(),
+                        status: status.to_owned(),
+                        exit_code: done.then_some(0),
+                        started: "2026-09-22T00:00:00Z".to_owned(),
+                        ended: done.then(|| "2026-09-22T00:00:01Z".to_owned()),
+                        duration_secs: 1.0,
+                        output: big(task_id),
+                        output_file: format!("/tmp/{task_id}.log"),
+                        truncated: false,
+                        truncation_hint: String::new(),
+                        raw_output_bytes: 10_000,
+                    }
+                };
+                let results = vec![
+                    item("alpha", "cargo test --lib", "completed"),
+                    item("running", "cargo build", "running"),
+                    item("window", "sed -n 1,400p f", "completed"),
+                    item("beta", "npm run build", "completed"),
+                ];
+                let terminal = SnapshotTerminal(
+                    results
+                        .iter()
+                        .map(|r| bash_snapshot(&r.task_id, &r.command, r.status == "completed"))
+                        .collect(),
+                );
+                {
+                    let bridge = actor.agent.borrow().tool_bridge().clone();
+                    let resources = bridge.shared_resources().await;
+                    resources
+                        .lock()
+                        .await
+                        .insert(distill_tools::types::resources::Terminal(
+                            std::sync::Arc::new(terminal),
+                        ));
+                }
+                let output = ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(
+                    MultiTaskOutputResult {
+                        mode: "wait_all".to_owned(),
+                        results: results.clone(),
+                        summary: "3/4 tasks completed (wait_all)".to_owned(),
+                    },
+                ));
+                let rendered = output.to_prompt_format();
+                for r in &results {
+                    assert_eq!(rendered.matches(r.output.as_str()).count(), 1, "{}", r.task_id);
+                }
+                let result = crate::jev::with_session_scope_and_recorder(
+                    "multi-task-output",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "get_command_or_subagent_output",
+                        "",
+                        "multi-task-output-call",
+                        None,
+                        &output,
+                        rendered.clone(),
+                    ),
+                )
+                .await;
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 2);
+                for compressed in [&results[0], &results[3]] {
+                    assert!(!result.contains(compressed.output.as_str()), "{result}");
+                    assert!(result.contains(&format!("{} start", compressed.task_id)));
+                    let footer = "[compressed by verified utility selection; full output stored at ";
+                    let at = result
+                        .match_indices(footer)
+                        .map(|(i, _)| i + footer.len())
+                        .find(|i| {
+                            let path = result[*i..].split(']').next().unwrap_or_default();
+                            std::fs::read_to_string(path).is_ok_and(|s| s == compressed.output)
+                        });
+                    assert!(at.is_some(), "no stored copy of {}: {result}", compressed.task_id);
+                }
+                assert_eq!(result.matches("full output stored at").count(), 2, "{result}");
+                assert!(result.contains(results[1].output.as_str()), "running stays verbatim");
+                assert!(result.contains(results[2].output.as_str()), "exact output stays verbatim");
+                assert!(rendered.len() - result.len() > 8_000, "{result}");
             })
             .await;
     }

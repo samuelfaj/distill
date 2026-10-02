@@ -2048,6 +2048,24 @@ pub(crate) fn execute(
                     TaskResult::CancelComplete
                 });
         }
+        Effect::SetSessionWorker { session_id, model_id, effort } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({
+                    "sessionId": session_id.0.to_string(),
+                    "modelId": model_id,
+                    "effort": effort.map_or_else(|| "auto".to_owned(), |level| level.to_string()),
+                });
+                let request = acp::ExtRequest::new(
+                    "x.ai/session/worker_model/set",
+                    serde_json::value::to_raw_value(&params).expect("serialize worker params").into(),
+                );
+                if let Err(error) = acp_send(request, &tx).await {
+                    tracing::debug!("session worker update failed: {error}");
+                }
+                TaskResult::CancelComplete
+            });
+        }
         Effect::SetEffortAuto {
             agent_id,
             session_id,

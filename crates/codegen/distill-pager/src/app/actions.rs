@@ -1689,6 +1689,12 @@ pub enum Effect {
         session_id: acp::SessionId,
         model_id: acp::ModelId,
     },
+    /// Set the session-scoped worker model.
+    SetSessionWorker {
+        session_id: acp::SessionId,
+        model_id: String,
+        effort: Option<ReasoningEffort>,
+    },
     /// Fetch changelog from CDN (both markdown and structured JSON).
     /// Runs off the render path via `spawn_blocking`.
     /// Result is cached on `AppView` so `/release-notes` and the welcome screen share it.

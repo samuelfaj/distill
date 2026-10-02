@@ -1245,7 +1245,7 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
     ));
 
     request.runtime_overrides.model = Some("pinned-model".into());
-    assert!(!resolve_child_jev_effort_auto(
+    assert!(resolve_child_jev_effort_auto(
         true, &request, &runtime, None
     ));
 
@@ -1317,7 +1317,7 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
     ));
     let mut legacy_source = source.clone();
     legacy_source.effort_auto = None;
-    assert!(!resolve_child_jev_effort_auto(
+    assert!(resolve_child_jev_effort_auto(
         true,
         &request,
         &runtime,
@@ -1328,8 +1328,9 @@ fn child_jev_auto_inherits_only_without_an_explicit_child_policy() {
     assert!(resolve_child_jev_effort_auto(
         true, &request, &runtime, None
     ));
+    // A pinned model without an effort choice keeps the parent's Jev policy.
     request.runtime_overrides.model = Some("fork-model".into());
-    assert!(!resolve_child_jev_effort_auto(
+    assert!(resolve_child_jev_effort_auto(
         true, &request, &runtime, None
     ));
 }

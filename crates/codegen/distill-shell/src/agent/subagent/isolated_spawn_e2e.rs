@@ -236,6 +236,7 @@ pub async fn spawn_isolated_subagent_for_e2e(
     let backend = ChannelBackend::for_coordinator_session(command_tx, "grove-e2e-parent");
     let id = uuid::Uuid::now_v7().to_string();
     let mut request = SubagentRequest {
+        jev_worker_ok: false,
         id: id.clone(),
         prompt: String::new(),
         description: "grove-e2e isolated".into(),

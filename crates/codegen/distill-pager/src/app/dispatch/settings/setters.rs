@@ -1860,7 +1860,16 @@ pub(in crate::app::dispatch) fn set_worker_model(
         "\u{2713} Worker model: {new_display} ({})",
         crate::acp::model_state::effort_setting_label(effort)
     ));
-    let mut effects = Vec::new();
+    let mut effects: Vec<Effect> = app
+        .agents
+        .values()
+        .filter_map(|agent| agent.session.session_id.clone())
+        .map(|session_id| Effect::SetSessionWorker {
+            session_id,
+            model_id: new_id.0.to_string(),
+            effort,
+        })
+        .collect();
     if model_changed {
         if let Some(state) = app.onboarding.as_mut() {
             state.set_worker_model_pending();
@@ -1901,11 +1910,22 @@ pub(in crate::app::dispatch) fn clear_worker_model(app: &mut AppView) -> Vec<Eff
     );
     refresh_open_settings_modals(app);
     app.show_toast("\u{2713} Worker model: cleared");
-    vec![Effect::PersistSetting {
+    let mut effects: Vec<Effect> = app
+        .agents
+        .values()
+        .filter_map(|agent| agent.session.session_id.clone())
+        .map(|session_id| Effect::SetSessionWorker {
+            session_id,
+            model_id: String::new(),
+            effort: None,
+        })
+        .collect();
+    effects.push(Effect::PersistSetting {
         key: "worker_model",
         value: crate::settings::SettingValue::String(String::new()),
         rollback_value: crate::settings::SettingValue::String(prev_id_str),
-    }]
+    });
+    effects
 }
 
 // Model-family settings: fork_secondary_model (and formerly web_search_model, session_summary_model, default_reasoning_effort)

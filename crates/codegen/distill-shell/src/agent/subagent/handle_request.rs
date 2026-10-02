@@ -402,6 +402,9 @@ pub(crate) async fn run_shell_child(
         && !is_wake
         && request.resume_from.is_none()
         && request.runtime_overrides.model.is_none()
+        && !ctx
+            .subagent_model_overrides
+            .contains_key(&request.subagent_type)
         && request.runtime_overrides.model_override_provenance
             == distill_tools::implementations::distill::task::types::ModelOverrideProvenance::Tool
         && matches!(request.subagent_type.as_str(), "plan" | "code-reviewer")

@@ -394,6 +394,7 @@ impl MvpAgent {
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
         let worker_override =
             crate::extensions::session_worker_model::worker_from_meta(arguments.meta.as_ref())?;
+        let worker_snapshot = crate::extensions::session_worker_model::config_worker_snapshot();
         tracing::debug!(config = ?self.sampling_config, "Received new session request {arguments:?}");
         let init = self.initialize_request.get().ok_or_else(|| {
             acp::Error::invalid_params().data("initialize must be called before new_session")
@@ -729,9 +730,10 @@ impl MvpAgent {
         spawn_res?;
         tracing::debug!(session_id = %session_id.0, "new_session: spawn_session_actor");
         if let Some(handle) = self.resident_handle(&session_id) {
-            crate::extensions::session_worker_model::apply_meta(
+            crate::extensions::session_worker_model::apply_meta_or_snapshot(
                 &handle.worker_override,
                 worker_override,
+                worker_snapshot,
             );
         }
         if session_computer_sessions
@@ -977,6 +979,7 @@ impl MvpAgent {
         } = arguments;
         let worker_override =
             crate::extensions::session_worker_model::worker_from_meta(request_meta.as_ref())?;
+        let worker_snapshot = crate::extensions::session_worker_model::config_worker_snapshot();
         let policy = AttachPolicy::resolve(op, request_meta.as_ref(), self.restore_code);
         let SessionWorkspace {
             cwd,
@@ -1340,9 +1343,10 @@ impl MvpAgent {
             handle.set_client_hooks(hooks);
         }
         if let Some(handle) = self.resident_handle(&session_id) {
-            crate::extensions::session_worker_model::apply_meta(
+            crate::extensions::session_worker_model::apply_meta_or_snapshot(
                 &handle.worker_override,
                 worker_override,
+                worker_snapshot,
             );
         }
         #[allow(unused_variables)]

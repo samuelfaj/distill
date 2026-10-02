@@ -423,32 +423,48 @@ fn slash_worker_model_saves_worker_and_keeps_main_session() {
         models.set_current(main.clone(), None);
     }
 
+    // The open session switches its own worker too: a running session keeps the
+    // worker it started with, so only this command may change it.
     let effects = dispatch(
         Action::SendPrompt("/worker-model Worker Test Luna".into()),
         &mut app,
     );
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::PersistSetting {
-            key: "worker_model",
-            value: crate::settings::SettingValue::String(saved),
-            ..
-        }] if saved == "worker-test-luna"
-    ));
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [
+                Effect::SetSessionWorker { session_id, model_id, .. },
+                Effect::PersistSetting {
+                    key: "worker_model",
+                    value: crate::settings::SettingValue::String(saved),
+                    ..
+                },
+            ] if session_id.0.as_ref() == "test-session"
+                && model_id == "worker-test-luna"
+                && saved == "worker-test-luna"
+        ),
+        "{effects:?}"
+    );
     let agent = expect_agent(&app, agent_id);
     assert_eq!(agent.session.models.current, Some(main.clone()));
     assert_eq!(agent.session.models.worker_model, Some(worker));
     assert!(!agent.session.model_switch_pending);
 
     let effects = dispatch(Action::SendPrompt("/worker-model clear".into()), &mut app);
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::PersistSetting {
-            key: "worker_model",
-            value: crate::settings::SettingValue::String(saved),
-            ..
-        }] if saved.is_empty()
-    ));
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [
+                Effect::SetSessionWorker { session_id, model_id, effort: None },
+                Effect::PersistSetting {
+                    key: "worker_model",
+                    value: crate::settings::SettingValue::String(saved),
+                    ..
+                },
+            ] if session_id.0.as_ref() == "test-session" && model_id.is_empty() && saved.is_empty()
+        ),
+        "{effects:?}"
+    );
     let agent = expect_agent(&app, agent_id);
     assert_eq!(agent.session.models.worker_model, None);
     assert_eq!(agent.session.models.current, Some(main));

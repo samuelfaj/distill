@@ -392,8 +392,8 @@ pub(crate) struct SubagentSpawnContext {
 }
 
 /// Resolve the child's Jev effort policy without dropping durable parent/source
-/// policy on fork or resume. A missing legacy resume field deliberately falls
-/// back to manual routing. The request/source types carry the policy inputs so
+/// policy on fork or resume. Missing caller/source policy inherits the parent.
+/// The request/source types carry the policy inputs so
 /// this cannot grow a boolean-argument matrix as spawn modes evolve.
 pub(crate) fn resolve_child_jev_effort_auto(
     parent_auto: bool,
@@ -407,19 +407,14 @@ pub(crate) fn resolve_child_jev_effort_auto(
         // fresh-child defaults and must not shadow a source policy.
         return raw.eq_ignore_ascii_case("auto");
     }
-    // A caller-supplied model without an effort choice is an explicit child
-    // policy, including on a fork; keep its conservative manual default.
-    if request.runtime_overrides.model.is_some() {
-        return false;
-    }
-    if let Some(source) = resume_source {
-        return source.effort_auto.unwrap_or(false);
+    if let Some(auto) = resume_source.and_then(|source| source.effort_auto) {
+        return auto;
     }
     if request.fork_context {
         return parent_auto;
     }
-    // A numeric role/definition value is a fresh-child manual default. With no
-    // fresh effort default, retain the parent's ordinary auto policy.
+    // A role/persona/definition effort is a fresh-child default. Without one
+    // the child inherits the parent's policy, pinned model or not.
     effective_runtime
         .reasoning_effort
         .as_deref()

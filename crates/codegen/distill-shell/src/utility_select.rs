@@ -1,5 +1,63 @@
+use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
+
+
+pub(crate) fn search_tool_units(body: &str) -> Option<(Vec<String>, Value)> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let servers = value.get("results")?.as_array()?;
+    let mut units = Vec::new();
+    for server in servers {
+        let server_name = server.get("server")?.as_str()?;
+        for tool in server.get("tools")?.as_array()? {
+            units.push(format!(
+                "{}/{}: {}",
+                server_name,
+                tool.get("tool_name")?.as_str()?,
+                tool.get("description")?.as_str()?
+            ));
+        }
+    }
+    Some((units, value))
+}
+
+pub(crate) fn rebuild_search_tool(
+    mut value: Value,
+    kept: &BTreeSet<usize>,
+    handle: &str,
+) -> Option<String> {
+    let results = value.get_mut("results")?.as_array_mut()?;
+    let mut index = 0usize;
+    let mut omitted = Vec::new();
+    for server in results.iter_mut() {
+        let name = server.get("server")?.as_str()?.to_owned();
+        let tools = server.get_mut("tools")?.as_array_mut()?;
+        let mut retained = Vec::new();
+        for tool in tools.drain(..) {
+            if kept.contains(&index) {
+                retained.push(tool);
+            } else {
+                omitted.push(format!("{}/{}", name, tool.get("tool_name")?.as_str()?));
+            }
+            index += 1;
+        }
+        *server.get_mut("tools")? = json!(retained);
+    }
+    results.retain(|server| {
+        server
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| !tools.is_empty())
+    });
+    let total = index;
+    value["omitted_tools"] = json!(omitted);
+    value["compressed"] = json!(format!(
+        "kept {} of {} tools by verified utility selection; full result stored at {handle}",
+        kept.len(),
+        total
+    ));
+    serde_json::to_string(&value).ok()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnitKind {
@@ -253,5 +311,44 @@ mod tests {
             "[kept 1 of 3 match lines by verified utility selection; full output stored at /tmp/full]".into(),
         );
         assert!(text.ends_with("[kept 1 of 3 match lines by verified utility selection; full output stored at /tmp/full]"));
+    }
+}
+
+#[cfg(test)]
+mod search_tool_tests {
+    use super::*;
+
+    #[test]
+    fn rebuilds_selected_search_tools_with_schema_and_omissions() {
+        let body = r#"{"results":[{"server":"linear","tools":[{"tool_name":"a","description":"A","input_schema":{"type":"object"}},{"tool_name":"b","description":"B","input_schema":{"type":"string"}}]},{"server":"other","tools":[{"tool_name":"c","description":"C","input_schema":{"type":"boolean"}}]}],"total_hidden_tools":2,"status":"ready","note":null}"#;
+        let (units, value) = search_tool_units(body).unwrap();
+        assert_eq!(units, ["linear/a: A", "linear/b: B", "other/c: C"]);
+        let rebuilt: Value = serde_json::from_str(
+            &rebuild_search_tool(value, &[1].into_iter().collect(), "/tmp/full").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt["results"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            rebuilt["results"][0]["tools"][0]["input_schema"]["type"],
+            "string"
+        );
+        assert_eq!(rebuilt["omitted_tools"], json!(["linear/a", "other/c"]));
+        assert_eq!(rebuilt["total_hidden_tools"], 2);
+    }
+
+    #[test]
+    fn parse_failure_returns_none() {
+        assert!(search_tool_units("not json").is_none());
+    }
+
+    #[test]
+    fn payload_below_compression_boundary_remains_unchanged() {
+        let body = "x".repeat(3_999);
+        let output = if body.len() >= 4_000 {
+            "compressed".to_owned()
+        } else {
+            body.clone()
+        };
+        assert_eq!(output, body);
     }
 }

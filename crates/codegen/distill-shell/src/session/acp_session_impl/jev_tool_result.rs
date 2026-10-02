@@ -892,6 +892,101 @@ impl SessionActor {
             }
         }
 
+        let mut compressed_by_utility = false;
+        if tool == "search_tool"
+            && body.len() >= CHEAP_COMPRESS_MIN_BYTES
+            && crate::jev::lever_active(JevLever::ECheapCompress)
+            && let Some((units, parsed)) = crate::utility_select::search_tool_units(&body)
+            && !units.is_empty()
+            && let Some(utility) = self.cheap_lane(JevLever::ECheapCompress).await
+        {
+            if let Some(handle) =
+                crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
+            {
+                let question = format!(
+                    "{}\nSelect the tools the request may call. Query: {}",
+                    compression_evidence_question(output, &request),
+                    distill_sampling_types::truncate_bytes(lane_command, 300)
+                );
+                let chunks =
+                    crate::utility_select::plan_chunks(&units, utility.max_payload_bytes(), 8);
+                if let Ok(chunks) = chunks {
+                    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
+                        let refs: Vec<&str> =
+                            units[chunk.clone()].iter().map(String::as_str).collect();
+                        let payload =
+                            distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
+                        let valid = chunk.start + 1..=chunk.end;
+                        match utility
+                            .run_task_with_acceptance(
+                                JevLever::ECheapCompress,
+                                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                                &payload,
+                                &question,
+                                "search_tool",
+                                true,
+                                |answer| {
+                                    if answer.trim().eq_ignore_ascii_case("none") {
+                                        Some(String::new())
+                                    } else {
+                                        let ids = distill_workspace::jev::tasks::parse_unit_ids(
+                                            answer,
+                                            valid.clone(),
+                                        )
+                                        .ok()?;
+                                        Some(
+                                            ids.into_iter()
+                                                .filter_map(|id| units.get(id - 1))
+                                                .cloned()
+                                                .collect::<Vec<_>>()
+                                                .join("\n"),
+                                        )
+                                    }
+                                },
+                            )
+                            .await
+                        {
+                            Some(result) if result.text.trim().eq_ignore_ascii_case("none") => {
+                                crate::utility_select::ChunkAnswer::Nothing
+                            }
+                            Some(result) => {
+                                distill_workspace::jev::tasks::parse_unit_ids(&result.text, valid)
+                                    .map(crate::utility_select::ChunkAnswer::Ids)
+                                    .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
+                            }
+                            None => crate::utility_select::ChunkAnswer::Failed,
+                        }
+                    }))
+                    .await;
+                    if let Some(kept) =
+                        crate::utility_select::merge(&chunks, &answers, &vec![false; units.len()])
+                        && let Some(replacement) =
+                            crate::utility_select::rebuild_search_tool(parsed, &kept, &handle)
+                    {
+                        if replacement.len() * 100 < body.len() * 70 {
+                            crate::jev::record_item(
+                                Lever::ECheapCompress,
+                                "compress",
+                                "verified utility selection",
+                                None,
+                                None,
+                            );
+                            body = replacement;
+                            compressed_by_utility = true;
+                        } else {
+                            crate::jev::record_item(
+                                Lever::ECheapCompress,
+                                "not_shorter",
+                                "utility selection did not reach 70% threshold",
+                                None,
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- utility-first id-based compression ----
         const EXTRACTIVE_TASK: &str = "select_units";
         let mcp_source = mcp_compression_name(tool, mcp_tool).is_some()
@@ -900,8 +995,8 @@ impl SessionActor {
             output,
             ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
         ) || tool == "grep";
-        let mut compressed_by_utility = false;
-        let cheap_eligible = (cheap_source || task_output_source || mcp_source)
+        let cheap_eligible = tool != "search_tool"
+            && (cheap_source || task_output_source || mcp_source)
             && (mcp_source || !is_document)
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
             && compression_allows_exact(

@@ -272,6 +272,12 @@ pub(crate) struct InitialTitleGeneration {
     pub(crate) response: Option<ConversationResponse>,
 }
 
+pub(crate) fn initial_title_from_utility(utility: Option<String>, fallback: String) -> String {
+    utility
+        .and_then(|text| title_display_text(&text))
+        .unwrap_or(fallback)
+}
+
 pub(crate) async fn generate_session_summary(
     user_message: String,
     client: OaiCompatClient,
@@ -421,8 +427,25 @@ mod tests {
     use super::{
         TITLE_SOURCE_MAX_BYTES, bounded_display_text, clean_title_text,
         strip_system_reminder_blocks, title_display_text, title_fallback_from_user_text,
+        initial_title_from_utility,
         title_refresh_instruction, title_refresh_payload, title_source_text,
     };
+
+    #[test]
+    fn initial_title_prefers_utility_answer_and_falls_back() {
+        assert_eq!(
+            initial_title_from_utility(Some("Utility title".to_owned()), "Fallback".to_owned()),
+            "Utility title"
+        );
+        assert_eq!(
+            initial_title_from_utility(None, "Fallback".to_owned()),
+            "Fallback"
+        );
+        assert_eq!(
+            initial_title_from_utility(Some("\n".to_owned()), "Fallback".to_owned()),
+            "Fallback"
+        );
+    }
 
     #[test]
     fn checkpoints_reached_counts_and_catches_up() {

@@ -50,6 +50,8 @@ pub enum Guard {
     /// The answer must consist of quoted evidence, with every quoted span a
     /// substring of the payload.
     Spans,
+    /// The answer must be short display text.
+    DisplayText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,8 +312,11 @@ pub fn task_for_payload(
 /// the instruction is the catalogue's own summary plus the closing line its
 /// kind needs, and the guard is what must pass before the answer is used.
 pub const SELECT_UNITS_TASK: &str = "select_units";
+pub const DISPLAY_TEXT_TASK: &str = "display_text";
 
 pub const TASKS: &[TaskSpec] = &[
+    TaskSpec { id: "display_text", kind: Kind::Digest, guard: Guard::DisplayText,
+        instruction: "Answer with the requested short display text only: no quotes, labels, markdown or explanation." },
     TaskSpec { id: "ask_handle", kind: Kind::Ask, guard: Guard::Spans,
         instruction: "Extractive QA over a recovery-scope handle with obligatory spans. Answer with the smallest extract that answers the question, quoting the payload verbatim; do not paraphrase." },
     TaskSpec { id: "binary_inspect_digest", kind: Kind::Extract, guard: Guard::Literals,
@@ -620,6 +625,21 @@ pub fn gate(
         return parse_unit_ids(trimmed, first..=last).map(|_| trimmed.to_owned());
     }
     match spec.guard {
+        Guard::DisplayText => {
+            let mut cleaned = trimmed;
+            while cleaned.len() >= 2 {
+                let first = cleaned.chars().next().unwrap_or_default();
+                let last = cleaned.chars().next_back().unwrap_or_default();
+                if !matches!((first, last), ('"', '"') | ('\'', '\'') | ('`', '`')) {
+                    break;
+                }
+                cleaned = cleaned[first.len_utf8()..cleaned.len() - last.len_utf8()].trim();
+            }
+            if cleaned.is_empty() || cleaned.contains(['\n', '\r']) {
+                return Err(Rejected::NoEvidence);
+            }
+            return Ok(cleaned.to_owned());
+        }
         Guard::Literals => {
             if trimmed.is_empty() && reduce::literals(payload).is_empty() {
                 return Err(Rejected::NoEvidence);
@@ -998,10 +1018,25 @@ mod tests {
     }
 
     #[test]
+    fn display_text_gate_accepts_short_line_and_strips_quotes() {
+        let display = spec(DISPLAY_TEXT_TASK).unwrap();
+        assert_eq!(
+            gate(display, "payload", "`short title`", &[], &[]).unwrap(),
+            "short title"
+        );
+        for answer in ["", "a\nb"] {
+            assert_eq!(
+                gate(display, "payload", answer, &[], &[]),
+                Err(Rejected::NoEvidence)
+            );
+        }
+    }
+
+    #[test]
     fn the_registry_covers_the_catalogue_rows_it_claims() {
         // The count is the inventory's: 93 catalogue functions a text model can
         // serve. A row that disappears must fail here, not in `list.md` later.
-        assert_eq!(len(), 94, "registry size");
+        assert_eq!(len(), 95, "registry size");
         for id in [
             "distill_command_output", "test_verdict", "compiler_diagnostics_extract",
             "commit_message_draft", "cite_spans", "pick_candidates", "wire_encode",

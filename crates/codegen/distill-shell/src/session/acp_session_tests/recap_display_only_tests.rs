@@ -1677,6 +1677,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
             .await
             .expect("start display inference stub");
             for (id, text) in [
+                ("display-recap", "Fixed the parser and reran the suite."),
                 ("display-summary", "`third answer`"),
                 ("display-title", "`third question`"),
             ] {
@@ -1736,15 +1737,9 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 .expect("/btw Messages body");
             assert_messages_rides_parent_prefix(&body, parent.clone(), "/btw");
 
+            // With a utility lane the recap is written by the utility model.
+
             actor.handle_recap(false).await;
-            let body = server
-                .requests()
-                .into_iter()
-                .rev()
-                .find(|request| request.path == "/v1/messages")
-                .and_then(|request| request.body)
-                .expect("recap Messages body");
-            assert_messages_rides_parent_prefix(&body, parent.clone(), "recap");
 
             set_summary_then_title_review_choices();
             actor.restart_turn_summary("prompt-3".to_string());
@@ -1770,9 +1765,17 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                 actor.title_refresh_task.borrow().is_none(),
                 "title refresh must finish"
             );
-            assert_eq!(server.request_count_for("/v1/messages"), 2);
-            assert_eq!(display_server.request_count_for("/v1/chat/completions"), 2);
-            let display_requests = serde_json::to_string(&display_server.request_bodies())
+            assert_eq!(server.request_count_for("/v1/messages"), 1);
+            assert_eq!(display_server.request_count_for("/v1/chat/completions"), 3);
+            let display_requests = serde_json::to_string(
+                &display_server
+                    .request_bodies()
+                    .into_iter()
+                    // The utility recap reads the whole bounded transcript; the turn
+                    // summary and title requests are the ones bounded to the last turn.
+                    .filter(|body| !body.to_string().contains("Write a recap of this coding session"))
+                    .collect::<Vec<_>>(),
+            )
                 .expect("serialize display requests");
             assert!(display_requests.contains("LAST USER TURN:"));
             assert!(display_requests.contains("ASSISTANT REPLY:"));
@@ -1788,7 +1791,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                     .filter(|request| request.path == "/v1/chat/completions")
                     .filter(|request| request.authorization.as_deref() == Some("Bearer display-utility-key"))
                     .count(),
-                2
+                3
             );
 
             crate::jev::clear_test_decision_answers();
@@ -1843,6 +1846,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                 .await
                 .expect("start display inference stub");
                 for (id, text) in [
+                    ("display-recap", "Fixed the parser and reran the suite."),
                     ("display-summary", "`third answer`"),
                     ("display-title", "`third question`"),
                 ] {
@@ -1890,15 +1894,8 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     .expect("/btw Messages body");
                 assert_messages_reasoning_stripped(&body, "/btw");
 
+                // With a utility lane the recap is written by the utility model.
                 actor.handle_recap(false).await;
-                let body = server
-                    .requests()
-                    .into_iter()
-                    .rev()
-                    .find(|request| request.path == "/v1/messages")
-                    .and_then(|request| request.body)
-                    .expect("recap Messages body");
-                assert_messages_reasoning_stripped(&body, "recap");
 
                 set_summary_then_title_review_choices();
                 actor.restart_turn_summary("prompt-3".to_string());
@@ -1924,9 +1921,17 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                     actor.title_refresh_task.borrow().is_none(),
                     "title refresh must finish"
                 );
-                assert_eq!(server.request_count_for("/v1/messages"), 2);
-                assert_eq!(display_server.request_count_for("/v1/chat/completions"), 2);
-                let display_requests = serde_json::to_string(&display_server.request_bodies())
+                assert_eq!(server.request_count_for("/v1/messages"), 1);
+                assert_eq!(display_server.request_count_for("/v1/chat/completions"), 3);
+                let display_requests = serde_json::to_string(
+                    &display_server
+                        .request_bodies()
+                        .into_iter()
+                        // The utility recap reads the whole bounded transcript; the turn
+                        // summary and title requests are the ones bounded to the last turn.
+                        .filter(|body| !body.to_string().contains("Write a recap of this coding session"))
+                        .collect::<Vec<_>>(),
+                )
                     .expect("serialize display requests");
                 assert!(display_requests.contains("LAST USER TURN:"));
                 assert!(display_requests.contains("ASSISTANT REPLY:"));

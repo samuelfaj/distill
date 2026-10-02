@@ -42,7 +42,11 @@ const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
 const UTILITY_MAX_DECISION_STATE_BYTES: usize = 32 * 1024;
 const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
-const UTILITY_TASK_ALLOWLIST: &[&str] = &["select_units"];
+const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units"];
+
+fn bounded_display_answer(answer: &str, max_chars: usize) -> Option<String> {
+    (answer.chars().count() <= max_chars).then(|| answer.to_owned())
+}
 
 /// Identity of one optional compression opportunity.
 ///
@@ -690,6 +694,27 @@ impl CheapLane {
         .await
     }
 
+    pub(crate) async fn display_text(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> Option<String> {
+        let outcome = self
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                tasks::DISPLAY_TEXT_TASK,
+                payload,
+                question,
+                source_kind,
+                false,
+                |answer| bounded_display_answer(answer, max_chars),
+            )
+            .await?;
+        Some(outcome.text)
+    }
+
     /// Runs one task while letting the caller apply its consumer-specific
     /// acceptance contract before the physical attempt is recorded. A task
     /// guard can accept an answer that the final consumer still cannot use;
@@ -872,7 +897,7 @@ impl CheapLane {
             .as_ref()
             .is_some_and(|outcome| outcome.text.trim().eq_ignore_ascii_case("none"));
         let post_review = review_view
-            .filter(|_| !answered_none)
+            .filter(|_| task_id != tasks::DISPLAY_TEXT_TASK && !answered_none)
             .zip(outcome.as_ref().map(|outcome| outcome.answer.model.clone()));
         let mut post_review_rejected = false;
         if let Some((candidate, post_review_model)) = post_review.as_ref() {
@@ -1098,7 +1123,7 @@ impl MainLane {
         let task_spec = tasks::spec(task_id)?;
         if !matches!(
             task_spec.guard,
-            tasks::Guard::Spans | tasks::Guard::CandidateIds
+            tasks::Guard::Spans | tasks::Guard::CandidateIds | tasks::Guard::DisplayText
         ) {
             return None;
         }
@@ -1357,6 +1382,15 @@ pub fn reset_turn() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_answer_limit_counts_characters() {
+        assert_eq!(
+            super::bounded_display_answer("短", 1).as_deref(),
+            Some("短")
+        );
+        assert!(super::bounded_display_answer("too long", 3).is_none());
+    }
+
     use super::*;
     use distill_sampling_types::{ApiBackend, ReasoningEffort};
     use distill_workspace::jev::{
@@ -1739,6 +1773,10 @@ mod tests {
         assert_eq!(request.model.as_deref(), Some("catalog-main"));
         assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(request.length_policy, LengthPolicy::Fail);
+        assert!(
+            lane.task_request("display_text", "first user message", "Write a title")
+                .is_some()
+        );
         assert!(lane.max_payload_bytes() < 16_384);
 
         let dense = "界".repeat(lane.max_payload_bytes().saturating_div(3) + 1);

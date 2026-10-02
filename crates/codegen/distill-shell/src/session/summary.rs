@@ -108,8 +108,48 @@ impl SummaryGenerator {
                         attempt_id,
                         persistence_tx.clone(),
                     );
-                    let generated =
-                        generate_session_summary(content.clone(), sampling_client, &model).await;
+                    let title_payload_end = content
+                        .char_indices()
+                        .map(|(index, character)| index + character.len_utf8())
+                        .take_while(|end| *end <= 8_000)
+                        .last()
+                        .unwrap_or(0);
+                    let title_payload = content.get(..title_payload_end);
+                    let utility_title = if crate::jev::lever_active(
+                        distill_workspace::jev::flags::JevLever::ECheapCompress,
+                    ) {
+                        let utility_spec = crate::jev::local_config_cached()
+                            .model
+                            .filter(|spec| !spec.trim().is_empty())
+                            .unwrap_or_else(crate::jev_cheap::default_model_spec);
+                        crate::jev_cheap::CheapLane::from_spec(&utility_spec)
+                            .and_then(|lane| Some((lane, title_payload?)))
+                    } else {
+                        None
+                    };
+                    let utility_title = if let Some((lane, payload)) = utility_title {
+                        lane.display_text(
+                            payload,
+                            "Write a 3-7 word title for this conversation.",
+                            80,
+                            "initial_title",
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+                    let generated = if let Some(title) = utility_title {
+                        crate::session::helpers::session_summary::InitialTitleGeneration {
+                            title: crate::session::helpers::session_summary::initial_title_from_utility(
+                                Some(title),
+                                crate::session::helpers::session_summary::title_fallback_from_user_text(&content),
+                            ),
+                            status: distill_chat_state::UsageCallStatus::Completed,
+                            response: None,
+                        }
+                    } else {
+                        generate_session_summary(content.clone(), sampling_client, &model).await
+                    };
                     attempt.record(generated.status, generated.response.as_ref());
                     let mut title = generated.title;
                     if title.trim().is_empty() {

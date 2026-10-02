@@ -130,7 +130,7 @@ impl SessionActor {
             TITLE_REFRESH_MODEL_TIMEOUT,
             run_display_task(
                 self,
-                distill_workspace::jev::tasks::DISPLAY_FRAGMENT_TASK,
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 &payload,
                 &source,
                 "Choose one short title span from the source. Reply with exactly one quoted source span, 5-10 words, and no labels or prose.",

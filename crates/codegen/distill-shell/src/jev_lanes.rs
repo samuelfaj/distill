@@ -344,8 +344,27 @@ pub fn required_tool_evidence(text: &str) -> Vec<String> {
             .filter(|token| !token.is_empty())
             .collect();
         let is_failure_or_detail = [
-            "error", "fail", "failed", "failure", "panic", "assert", "expected", "not", "run",
-            "incomplete", "timed", "out", "timeout", "skipped", "skip", "pending", "todo",
+            "error",
+            "fail",
+            "failed",
+            "failure",
+            "panic",
+            "assert",
+            "expected",
+            "not",
+            "run",
+            "incomplete",
+            "timed",
+            "out",
+            "timeout",
+            "skipped",
+            "skip",
+            "pending",
+            "todo",
+            "fatal",
+            "traceback",
+            "denied",
+            "exception",
         ]
         .iter()
         .any(|marker| tokens.contains(marker));
@@ -370,6 +389,30 @@ pub fn required_tool_evidence(text: &str) -> Vec<String> {
         required.push(line.trim().to_owned());
     }
     required
+}
+
+/// Split source into paragraph units, falling back to non-empty line units when
+/// one paragraph exceeds the request cap.
+pub fn source_units(text: &str, cap: usize) -> Vec<String> {
+    let paragraphs: Vec<&str> = text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|unit| !unit.is_empty())
+        .collect();
+    let mut units = Vec::new();
+    for paragraph in paragraphs {
+        if paragraph.len() <= cap {
+            units.push(paragraph.to_owned());
+        } else {
+            units.extend(
+                paragraph
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(str::to_owned),
+            );
+        }
+    }
+    units
 }
 
 /// Select a bounded, deterministic source slice for an extractive task.

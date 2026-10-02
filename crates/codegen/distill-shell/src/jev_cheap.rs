@@ -42,7 +42,7 @@ const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
 const UTILITY_MAX_DECISION_STATE_BYTES: usize = 32 * 1024;
 const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
-const UTILITY_TASK_ALLOWLIST: &[&str] = &[tasks::DISPLAY_FRAGMENT_TASK];
+const UTILITY_TASK_ALLOWLIST: &[&str] = &["select_units"];
 
 /// Identity of one optional compression opportunity.
 ///
@@ -213,7 +213,7 @@ fn utility_review_state(
 fn utility_review_questions(phase: &str) -> BTreeMap<String, distill_workspace::jev::types::Question> {
     let (instructions, criteria) = match phase {
         UTILITY_POST_REVIEW => (
-            "Review the candidate from the named utility_model_candidate for this bounded task. Accept only when it answers the question from the supplied source, adds no facts, and cannot perform or authorize any agent, file, or tool action.",
+            "Review the candidate built from the named utility_model_candidate's answer for this bounded task. Accept when it keeps what the question needs from the supplied source and adds nothing that is not in the source; omitted source text stays stored and readable. Reject when it drops something the question clearly needs, or when it could perform or authorize any agent, file, or tool action.",
             [
                 (
                     "accept",
@@ -254,6 +254,13 @@ fn utility_review_approves(
             .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value))
 }
 
+enum UtilityReviewResult {
+    Approved(distill_workspace::jev::types::JevAnswerSet),
+    Rejected,
+    SkippedSize,
+    Missing,
+}
+
 async fn ask_utility_review(
     lever: JevLever,
     phase: &str,
@@ -265,8 +272,8 @@ async fn ask_utility_review(
     max_completion_tokens: u32,
     candidate: Option<&str>,
     compression_key: Option<&OptionalCompressionKey>,
-) -> Option<distill_workspace::jev::types::JevAnswerSet> {
-    let mut state = utility_review_state(
+) -> UtilityReviewResult {
+    let Some(mut state) = utility_review_state(
         phase,
         task_id,
         question,
@@ -274,35 +281,64 @@ async fn ask_utility_review(
         utility_model,
         max_completion_tokens,
         candidate,
-    )?;
+    ) else {
+        crate::jev::record_item(
+            lever,
+            "review:skipped-size",
+            "post-review state exceeds size cap",
+            None,
+            None,
+        );
+        return UtilityReviewResult::SkippedSize;
+    };
     if let Some(key) = compression_key {
         state["compression_history"] = optional_compression_history(key);
     }
-    if serde_json::to_vec(&state).ok()?.len() > UTILITY_MAX_DECISION_STATE_BYTES {
-        return None;
+    if serde_json::to_vec(&state)
+        .map_or(true, |bytes| bytes.len() > UTILITY_MAX_DECISION_STATE_BYTES)
+    {
+        crate::jev::record_item(
+            lever,
+            "review:skipped-size",
+            "post-review state exceeds size cap",
+            None,
+            None,
+        );
+        return UtilityReviewResult::SkippedSize;
     }
     if phase == UTILITY_POST_REVIEW {
         test_post_review_pause_if_configured().await;
     }
-    let answers = crate::jev::ask_item(lever, state, utility_review_questions(phase)).await;
-    let approved = answers
-        .as_ref()
-        .is_some_and(|answers| utility_review_approves(answers, expected));
-    let confidence = answers
-        .as_ref()
-        .and_then(|answers| answers.confidence(UTILITY_DECISION_ID));
+    let Some(answers) = crate::jev::ask_item(lever, state, utility_review_questions(phase)).await
+    else {
+        // Jev off or unreachable: the candidate is built from source units
+        // only and the original stays stored, so a missing review never vetoes.
+        crate::jev::record_item(
+            lever,
+            "review:missing",
+            "no Jev answer; the verified candidate is kept",
+            None,
+            None,
+        );
+        return UtilityReviewResult::Missing;
+    };
+    let approved = utility_review_approves(&answers, expected);
     crate::jev::record_item(
         lever,
         if approved { phase } else { "defer" },
         if approved {
             "bounded Jev utility gate approved"
         } else {
-            "bounded Jev utility gate was missing, uncertain, or rejected"
+            "bounded Jev utility gate was uncertain or rejected"
         },
-        confidence,
-        answers.as_ref(),
+        answers.confidence(UTILITY_DECISION_ID),
+        Some(&answers),
     );
-    approved.then(|| answers.expect("approved utility review has an answer"))
+    if approved {
+        UtilityReviewResult::Approved(answers)
+    } else {
+        UtilityReviewResult::Rejected
+    }
 }
 
 struct CompletedUtilityAttemptGuard {
@@ -620,6 +656,9 @@ impl CheapLane {
             UtilityTransport::Sampler(lane) => lane.max_input_bytes(),
         }
     }
+    pub(crate) fn max_payload_bytes(&self) -> usize {
+        UTILITY_MAX_PAYLOAD_BYTES.min(self.max_input_bytes().saturating_sub(WORKER_FRAMING_BYTES))
+    }
     pub(crate) fn reasoning_effort(&self) -> String {
         match &self.transport {
             UtilityTransport::Closed(client) => client.config().reasoning_effort.clone(),
@@ -639,16 +678,25 @@ impl CheapLane {
         payload: &str,
         question: &str,
     ) -> Option<tasks::TaskOutcome> {
-        self.run_task_with_acceptance(lever, task_id, payload, question, "auxiliary", true, |_| {
-            true
-        })
+        self.run_task_with_acceptance(
+            lever,
+            task_id,
+            payload,
+            question,
+            "auxiliary",
+            true,
+            |answer| Some(answer.to_owned()),
+        )
         .await
     }
 
     /// Runs one task while letting the caller apply its consumer-specific
     /// acceptance contract before the physical attempt is recorded. A task
-    /// guard can accept a quoted answer that the final consumer still cannot
-    /// use; that response is one rejected attempt, not a second generation.
+    /// guard can accept an answer that the final consumer still cannot use;
+    /// that response is one rejected attempt, not a second generation.
+    ///
+    /// `accepts` returns the text the Jev post-review reads (for unit ids, the
+    /// selected source units), or `None` when the consumer rejects the answer.
     pub async fn run_task_with_acceptance<F>(
         &self,
         lever: JevLever,
@@ -660,7 +708,7 @@ impl CheapLane {
         accepts: F,
     ) -> Option<tasks::TaskOutcome>
     where
-        F: Fn(&str) -> bool,
+        F: Fn(&str) -> Option<String>,
     {
         if !crate::jev::lever_active(lever) {
             return None;
@@ -810,20 +858,25 @@ impl CheapLane {
             self.transport
                 .with_call_observer(std::sync::Arc::new(|_| {}))
         });
-        let mut outcome = tracing::Instrument::instrument(
+        let task_result = tracing::Instrument::instrument(
             tasks::run(&request_transport, task_id, payload, question),
             span,
         )
         .await;
-        let accepted_by_consumer = outcome
+        let mut task_reason = task_result.as_ref().err().copied();
+        let mut outcome = task_result.ok();
+        let review_view = outcome.as_ref().and_then(|outcome| accepts(&outcome.text));
+        let accepted_by_consumer = review_view.is_some();
+        // A NONE answer keeps nothing optional, so there is nothing to review.
+        let answered_none = outcome
             .as_ref()
-            .is_some_and(|outcome| accepts(&outcome.text));
-        let post_review = outcome.as_ref().and_then(|outcome| {
-            accepted_by_consumer.then(|| (outcome.text.clone(), outcome.answer.model.clone()))
-        });
+            .is_some_and(|outcome| outcome.text.trim().eq_ignore_ascii_case("none"));
+        let post_review = review_view
+            .filter(|_| !answered_none)
+            .zip(outcome.as_ref().map(|outcome| outcome.answer.model.clone()));
         let mut post_review_rejected = false;
-        if let Some((candidate, post_review_model)) = post_review.as_ref()
-            && ask_utility_review(
+        if let Some((candidate, post_review_model)) = post_review.as_ref() {
+            match ask_utility_review(
                 lever,
                 UTILITY_POST_REVIEW,
                 "accept",
@@ -836,10 +889,15 @@ impl CheapLane {
                 optional_key.as_ref(),
             )
             .await
-            .is_none()
-        {
-            post_review_rejected = true;
-            outcome = None;
+            {
+                UtilityReviewResult::Approved(_)
+                | UtilityReviewResult::SkippedSize
+                | UtilityReviewResult::Missing => {}
+                UtilityReviewResult::Rejected => {
+                    post_review_rejected = true;
+                    outcome = None;
+                }
+            }
         }
         let mut completed_attempts = completed_attempt_guard.take();
         let answer_was_none = completed_attempts
@@ -849,10 +907,26 @@ impl CheapLane {
             if outcome.is_none() || !accepted_by_consumer {
                 attempt.status = distill_workspace::jev::types::AttemptStatus::Rejected;
                 if attempt.reason.is_none() {
-                    attempt.reason = Some("rejected".to_owned());
+                    attempt.reason = Some(
+                        if post_review_rejected {
+                            "review_rejected"
+                        } else if !accepted_by_consumer {
+                            "consumer_rejected"
+                        } else {
+                            task_reason.take().unwrap_or("rejected")
+                        }
+                        .to_owned(),
+                    );
                 }
             } else {
-                attempt.reason = None;
+                if outcome
+                    .as_ref()
+                    .is_some_and(|value| value.text.trim().eq_ignore_ascii_case("none"))
+                {
+                    attempt.reason = Some("nothing".to_owned());
+                } else {
+                    attempt.reason = None;
+                }
                 attempt.bytes_out =
                     Some(outcome.as_ref().map_or(0, |value| value.text.len() as u64));
             }
@@ -1022,7 +1096,10 @@ impl MainLane {
         question: &str,
     ) -> Option<ConversationRequest> {
         let task_spec = tasks::spec(task_id)?;
-        if !matches!(task_spec.guard, tasks::Guard::Spans) {
+        if !matches!(
+            task_spec.guard,
+            tasks::Guard::Spans | tasks::Guard::CandidateIds
+        ) {
             return None;
         }
         let task = tasks::task_for(task_spec, payload, question);
@@ -1323,7 +1400,7 @@ mod tests {
             let key = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "checks",
             );
@@ -1348,7 +1425,7 @@ mod tests {
             let other_source = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "web_search",
             );
@@ -1365,7 +1442,7 @@ mod tests {
             let changed_model = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model-v2",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "checks",
             );
@@ -1377,7 +1454,7 @@ mod tests {
             let key = optional_compression_key(
                 "http://utility.test/chat/completions",
                 "utility-model",
-                "cite_spans",
+                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 "none",
                 "checks",
             );
@@ -1653,7 +1730,11 @@ mod tests {
         assert_eq!(lane.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(lane.max_output_tokens, 1_024);
         let request = lane
-            .task_request("cite_spans", "error: failed at src/lib.rs:7", "status")
+            .task_request(
+                "select_units",
+                "[U1] error: failed at src/lib.rs:7",
+                "status",
+            )
             .expect("extractive task fits");
         assert_eq!(request.model.as_deref(), Some("catalog-main"));
         assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
@@ -1662,7 +1743,8 @@ mod tests {
 
         let dense = "界".repeat(lane.max_payload_bytes().saturating_div(3) + 1);
         assert!(
-            lane.task_request("cite_spans", &dense, "status").is_none(),
+            lane.task_request("select_units", &dense, "status")
+                .is_none(),
             "UTF-8 bytes must not be admitted using a bytes/4 estimate"
         );
 
@@ -1674,6 +1756,10 @@ mod tests {
             ..Default::default()
         })
         .expect("narrow main config still builds");
-        assert!(narrow.task_request("cite_spans", "error", "status").is_none());
+        assert!(
+            narrow
+                .task_request("select_units", "[U1] error", "status")
+                .is_none()
+        );
     }
 }

@@ -65,5 +65,6 @@ pub mod tier;
 pub mod tools;
 pub mod upload;
 pub mod util;
+pub(crate) mod utility_select;
 #[doc(hidden)]
 pub mod waterfall;

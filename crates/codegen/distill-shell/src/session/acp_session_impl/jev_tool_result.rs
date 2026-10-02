@@ -204,23 +204,17 @@ fn compression_evidence_question(
             distill_sampling_types::truncate_bytes(request.trim(), 2_048)
         )
     };
-    if let distill_tools::types::output::ToolOutput::WebSearch(search) = output {
-        let header = format!("Web search results for: \"{}\"", search.query);
-        return format!(
-            "For {request_context}, keep only relevant complete original WebSearch content paragraphs. Quote each selected paragraph verbatim, preserving every qualifier or negation and its citation URL(s) in that same paragraph. Include the exact header `{header}`; do not split multiline paragraphs, paraphrase, or detach citations."
-        );
-    }
-    if let distill_tools::types::output::ToolOutput::WebFetch(
-        distill_tools::types::output::WebFetchOutput::Content(fetch),
-    ) = output
-    {
-        return format!(
-            "For {request_context}, keep only relevant complete original text/Markdown paragraphs from the fetched URL `{}`. Quote each selected paragraph verbatim, preserving every qualifier, negation, number, error, and status detail in that paragraph. Do not use the bounded preview or its truncation footer, do not paraphrase, do not quote code or instructions, and return only quoted source paragraphs.",
-            fetch.url
-        );
-    }
+    let source = match output {
+        distill_tools::types::output::ToolOutput::WebSearch(search) => {
+            format!("the web search results for `{}`", search.query)
+        }
+        distill_tools::types::output::ToolOutput::WebFetch(
+            distill_tools::types::output::WebFetchOutput::Content(fetch),
+        ) => format!("the page fetched from `{}`", fetch.url),
+        _ => "this tool result".to_owned(),
+    };
     format!(
-        "Preserve the tool result's status, failures, skips, paths, errors, and relevant counts for {request_context}."
+        "Select the units of {source} that {request_context} needs. Error, failure and summary lines, the first and last lines, and web headers and citations are kept automatically. The full output stays stored and can be re-read, so leave out what the request does not need."
     )
 }
 
@@ -910,24 +904,12 @@ impl SessionActor {
             }
         }
 
-        // ---- utility-first extractive compression ----
-        //
-        // The utility and the main model share one source-backed
-        // contract. The utility is attempted once first; a rejected answer may
-        // trigger exactly one real light-tier request. Neither lane receives an
-        // unbounded payload, and the original remains at the recovery handle.
-        const EXTRACTIVE_TASK: &str = "cite_spans";
-        let cheap_source = match output {
-            distill_tools::types::output::ToolOutput::Bash(_) => true,
-            distill_tools::types::output::ToolOutput::WebSearch(search) => {
-                search.pre_formatted.is_none()
-                    && web_search_layout_is_unambiguous(&search.content, &search.citations)
-            }
-            distill_tools::types::output::ToolOutput::WebFetch(
-                distill_tools::types::output::WebFetchOutput::Content(fetch),
-            ) => web_fetch_content_shape_is_safe(fetch),
-            _ => false,
-        };
+        // ---- utility-first id-based compression ----
+        const EXTRACTIVE_TASK: &str = "select_units";
+        let cheap_source = matches!(
+            output,
+            ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
+        );
         let cheap_eligible = (cheap_source || task_output_source)
             && !is_document
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
@@ -945,148 +927,202 @@ impl SessionActor {
                 ToolOutput::WebFetch(_) => "web_fetch",
                 _ => "task_output",
             };
-            crate::jev::record_item(
-                Lever::ECheapCompress,
-                "eligible",
-                &format!(
-                    "{} bytes remain after deterministic reduction; extractive task {EXTRACTIVE_TASK}",
-                    body.len()
-                ),
-                None,
-                None,
-            );
             let utility = self.cheap_lane(JevLever::ECheapCompress).await;
-            let evidence_question = compression_evidence_question(output, &request);
-            let source_handle = if matches!(
-                output,
-                distill_tools::types::output::ToolOutput::WebFetch(
-                    distill_tools::types::output::WebFetchOutput::Content(_)
-                )
-            ) {
-                web_fetch_source_handle(output)
-            } else {
-                outcome.store_handle.clone().or_else(|| {
-                    crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
-                })
-            };
-            let typed_metadata = typed_tool_metadata(output);
-            let mut replacement: Option<(String, JevLever)> = None;
-            if let Some(handle) = source_handle.as_deref() {
-                // Each lane is bounded independently.  The optional main model's
-                // smaller window must never make an otherwise eligible utility
-                // call disappear before the utility gets its first attempt.
-                let utility_budget = utility.as_ref().map(|utility| {
-                    utility
-                        .max_input_bytes()
-                        .saturating_sub(evidence_question.len().saturating_add(512))
-                });
-                let utility_evidence = match utility_budget {
-                    Some(budget) => compression_source_for_lane(output, &body, budget).await,
-                    None => None,
-                };
-                if let Some(evidence) = utility_evidence {
-                    if let Some(utility) = utility.as_ref()
-                        && let Some(outcome) = utility
-                            .run_task_with_acceptance(
-                                JevLever::ECheapCompress,
-                                EXTRACTIVE_TASK,
-                                &evidence,
-                                &evidence_question,
-                                source_kind,
-                                true,
-                                |answer| {
-                                    compression_replacement_for_output(
-                                        output,
-                                        &body,
-                                        &evidence,
-                                        answer,
-                                        handle,
-                                        "utility",
-                                        typed_metadata.as_deref(),
-                                    )
-                                    .is_some()
-                                },
-                            )
-                            .await
-                    {
-                        if let Some(candidate) = compression_replacement_for_output(
-                            output,
-                            &body,
-                            &evidence,
-                            &outcome.text,
-                            handle,
-                            "utility",
-                            typed_metadata.as_deref(),
-                        ) {
-                            let key = crate::jev_cheap::optional_compression_key(
-                                &utility.endpoint(),
-                                utility.model(),
-                                EXTRACTIVE_TASK,
-                                &utility.reasoning_effort(),
-                                source_kind,
-                            );
-                            crate::jev_cheap::note_optional_compression_savings(
-                                &key,
-                                body.len(),
-                                candidate.len(),
-                            );
-                            crate::jev::record_item(
-                                JevLever::ECheapCompress,
-                                "verify:accept",
-                                "extractive source-span contract",
-                                None,
-                                None,
-                            );
-                            replacement = Some((candidate, JevLever::ECheapCompress));
-                        } else {
-                            crate::jev_cheap::note_rejection(JevLever::ECheapCompress);
-                            crate::jev::record_item(
-                                JevLever::ECheapCompress,
-                                "verify:reject",
-                                "utility answer did not retain required source evidence",
-                                None,
-                                None,
-                            );
-                        }
-                    }
-                } else if utility.is_some() {
+            'utility: {
+                if utility.is_none() {
                     crate::jev::record_item(
-                        JevLever::ECheapCompress,
-                        "defer:utility-budget",
-                        "bounded extractive task did not fit the utility input budget",
+                        Lever::ECheapCompress,
+                        "keep",
+                        "utility lane unavailable",
                         None,
                         None,
                     );
-                }
-
-            if let Some((candidate, lever)) = replacement {
-                crate::jev::record_item(
-                    lever,
-                    "compress",
-                    &format!(
-                        "{} bytes -> {} bytes by the {} task; source handle retained",
-                        body.len(),
-                        candidate.len(),
-                        if lever == JevLever::ECheapCompress {
-                            "main model"
+                } else if let Some(utility) = utility {
+                    let source_handle = if matches!(output, ToolOutput::WebFetch(_)) {
+                        web_fetch_source_handle(output)
+                    } else {
+                        outcome.store_handle.clone().or_else(|| {
+                            crate::jev_store::store_payload(&body)
+                                .map(|path| path.display().to_string())
+                        })
+                    };
+                    let Some(handle) = source_handle else {
+                        break 'utility;
+                    };
+                    let question = format!(
+                        "{}\nTool: {}",
+                        compression_evidence_question(output, &request),
+                        distill_sampling_types::truncate_bytes(lane_command, 300)
+                    );
+                    let budget = utility
+                        .max_input_bytes()
+                        .saturating_sub(question.len().saturating_add(512));
+                    let Some(source) = compression_source_for_lane(output, &body, budget).await
+                    else {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "defer:utility-budget",
+                            "source did not fit utility budget",
+                            None,
+                            None,
+                        );
+                        break 'utility;
+                    };
+                    let kind =
+                        if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                            crate::utility_select::UnitKind::Paragraphs
                         } else {
-                            "utility"
-                        },
-                    ),
-                    None,
-                    None,
-                );
-                body = candidate;
-            } else if source_handle.is_some() {
-                crate::jev::record_item(
-                    Lever::ECheapCompress,
-                    "rejected",
-                    "utility and main model produced no verified extractive replacement; original retained",
-                    None,
-                    None,
-                );
+                            crate::utility_select::UnitKind::Lines
+                        };
+                    let units = crate::utility_select::build_units(&source, kind, 24 * 1024);
+                    let evidence_source =
+                        task_output_body_evidence(output).unwrap_or_else(|| source.clone());
+                    let evidence: std::collections::HashSet<String> =
+                        if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                            std::collections::HashSet::new()
+                        } else {
+                            crate::jev_lanes::required_tool_evidence(&evidence_source)
+                                .into_iter()
+                                .collect()
+                        };
+                    let mut required =
+                        crate::utility_select::required_command_units(&units, &evidence);
+                    if matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)) {
+                        if !required.is_empty() {
+                            required[0] = true;
+                        }
+                    }
+                    let required_bytes: usize = units
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| required[*i])
+                        .map(|(_, u)| u.len())
+                        .sum();
+                    if required_bytes * 100 >= source.len().saturating_mul(60) {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "defer:required-dominates",
+                            "required units dominate source",
+                            None,
+                            None,
+                        );
+                        break 'utility;
+                    }
+                    let chunks = match crate::utility_select::plan_chunks(
+                        &units,
+                        utility.max_payload_bytes().min(budget),
+                        8,
+                    ) {
+                        Ok(chunks) => chunks,
+                        Err(reason) => {
+                            crate::jev::record_item(
+                                Lever::ECheapCompress,
+                                reason,
+                                reason,
+                                None,
+                                None,
+                            );
+                            break 'utility;
+                        }
+                    };
+                    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
+                        let refs: Vec<&str> =
+                            units[chunk.clone()].iter().map(String::as_str).collect();
+                        let payload =
+                            distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
+                        let valid = chunk.start + 1..=chunk.end;
+                        match utility
+                            .run_task_with_acceptance(
+                                JevLever::ECheapCompress,
+                                distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                                &payload,
+                                &question,
+                                source_kind,
+                                true,
+                                |answer| {
+                                    let picked = if answer.trim().eq_ignore_ascii_case("none") {
+                                        Vec::new()
+                                    } else {
+                                        distill_workspace::jev::tasks::parse_unit_ids(
+                                            answer,
+                                            valid.clone(),
+                                        )
+                                        .ok()?
+                                    };
+                                    // Jev reviews what this chunk becomes: the picked units
+                                    // plus the units the harness always keeps.
+                                    let kept: std::collections::BTreeSet<usize> = picked
+                                        .into_iter()
+                                        .map(|id| id - 1)
+                                        .chain(chunk.clone().filter(|index| required[*index]))
+                                        .map(|index| index - chunk.start)
+                                        .collect();
+                                    Some(crate::utility_select::reconstruct(
+                                        &units[chunk.clone()],
+                                        &kept,
+                                        kind,
+                                        None,
+                                        &handle,
+                                    ))
+                                },
+                            )
+                            .await
+                        {
+                            Some(result) if result.text.trim().eq_ignore_ascii_case("none") => {
+                                crate::utility_select::ChunkAnswer::Nothing
+                            }
+                            Some(result) => {
+                                distill_workspace::jev::tasks::parse_unit_ids(&result.text, valid)
+                                    .map(crate::utility_select::ChunkAnswer::Ids)
+                                    .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
+                            }
+                            None => crate::utility_select::ChunkAnswer::Failed,
+                        }
+                    }))
+                    .await;
+                    let Some(kept) = crate::utility_select::merge(&chunks, &answers, &required)
+                    else {
+                        break 'utility;
+                    };
+                    let mut kept = kept;
+                    if let ToolOutput::WebSearch(search) = output {
+                        for citation in &search.citations {
+                            if !kept.iter().any(|i| units[*i].contains(citation)) {
+                                if let Some(i) =
+                                    units.iter().position(|unit| unit.contains(citation))
+                                {
+                                    kept.insert(i);
+                                }
+                            }
+                        }
+                    }
+                    let replacement = crate::utility_select::reconstruct(
+                        &units,
+                        &kept,
+                        kind,
+                        typed_tool_metadata(output).as_deref(),
+                        &handle,
+                    );
+                    if replacement.len() * 100 < body.len() * 70 {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "compress",
+                            "verified utility selection",
+                            None,
+                            None,
+                        );
+                        body = replacement;
+                    } else {
+                        crate::jev::record_item(
+                            Lever::ECheapCompress,
+                            "not_shorter",
+                            "utility selection did not reach 70% threshold",
+                            None,
+                            None,
+                        );
+                    }
+                }
             }
-        }
         }
 
         // ---- A1: rank the files a grep hit, before the model reads them ----
@@ -2022,18 +2058,18 @@ mod tests {
                     transport: crate::jev_cheap::UtilityTransport::Closed(client),
                     slug: "utility-model".to_owned(),
                 };
-                set_utility_review_choices(&["allow"]);
+                set_utility_review_choices(&["accept"]);
                 let result = crate::jev::with_session_scope_and_recorder(
                     "e3-utility-cancellation",
                     Some(actor.chat_state_handle.clone()),
                     lane.run_task_with_acceptance(
                         JevLever::ECheapCompress,
-                        "cite_spans",
-                        "source line",
+                        distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                        "[U1] source line",
                         "preserve the source line",
                         "checks",
                         true,
-                        |_| true,
+                        |answer| Some(answer.to_owned()),
                     ),
                 )
                 .await;
@@ -2088,7 +2124,7 @@ mod tests {
                             "model": "utility-model",
                             "choices": [{
                                 "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "`source line`"}
+                                "message": {"role": "assistant", "content": "U1"}
                             }],
                             "usage": {"prompt_tokens": 17, "completion_tokens": 3}
                         }),
@@ -2108,7 +2144,7 @@ mod tests {
                     transport: crate::jev_cheap::UtilityTransport::Closed(client),
                     slug: "utility-model".to_owned(),
                 };
-                set_utility_review_choices(&["allow", "accept"]);
+                set_utility_review_choices(&["accept"]);
                 let (entered, _release) = crate::jev_cheap::begin_test_post_review_pause();
                 let entered_wait = entered.notified();
                 let task = tokio::task::spawn_local(crate::jev::with_session_scope_and_recorder(
@@ -2117,12 +2153,12 @@ mod tests {
                     async move {
                         lane.run_task_with_acceptance(
                             JevLever::ECheapCompress,
-                            "cite_spans",
-                            "source line",
+                            distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                            "[U1] source line",
                             "preserve the source line",
                             "checks",
                             true,
-                            |_| true,
+                            |answer| Some(answer.to_owned()),
                         )
                         .await
                     },

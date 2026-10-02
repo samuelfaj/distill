@@ -88,6 +88,9 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             c7_change_type: cfg.ladder.c7_change_type,
             d2_big_output_retention: cfg.ladder.d2_big_output_retention,
             d3_post_compaction: cfg.ladder.d3_post_compaction,
+            d4_compaction_timing: cfg.ladder.d4_compaction_timing,
+            d5_memory_capture_gate: cfg.ladder.d5_memory_capture_gate,
+            b7_subagent_model: cfg.ladder.b7_subagent_model,
         },
     )
 }

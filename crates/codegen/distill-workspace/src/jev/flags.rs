@@ -114,6 +114,9 @@ pub struct JevLadderOverlay {
     pub d2_big_output_retention: Option<bool>,
     /// D3: re-inject only still-relevant chunks after compaction.
     pub d3_post_compaction: Option<bool>,
+    pub d4_compaction_timing: Option<bool>,
+    pub d5_memory_capture_gate: Option<bool>,
+    pub b7_subagent_model: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -171,6 +174,9 @@ impl JevFlags {
             e_breaker: true,
             d2_big_output_retention: true,
             d3_post_compaction: true,
+            d4_compaction_timing: true,
+            d5_memory_capture_gate: true,
+            b7_subagent_model: true,
         }
     }
 
@@ -261,6 +267,16 @@ impl JevFlags {
             );
         self.d3_post_compaction = self.enabled
             && resolve_switch(ladder.d3_post_compaction, None, self.d3_post_compaction);
+        self.d4_compaction_timing = self.enabled
+            && resolve_switch(ladder.d4_compaction_timing, None, self.d4_compaction_timing);
+        self.d5_memory_capture_gate = self.enabled
+            && resolve_switch(
+                ladder.d5_memory_capture_gate,
+                None,
+                self.d5_memory_capture_gate,
+            );
+        self.b7_subagent_model =
+            self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self
     }
 }
@@ -341,6 +357,9 @@ pub struct JevFlags {
     pub d2_big_output_retention: bool,
     /// D3: re-inject only still-relevant chunks after compaction.
     pub d3_post_compaction: bool,
+    pub d4_compaction_timing: bool,
+    pub d5_memory_capture_gate: bool,
+    pub b7_subagent_model: bool,
 }
 
 impl JevFlags {
@@ -383,6 +402,9 @@ impl JevFlags {
             e_prompt_blocks: false,
             e_breaker: false,
             d3_post_compaction: false,
+            d4_compaction_timing: false,
+            d5_memory_capture_gate: false,
+            b7_subagent_model: false,
         }
     }
 
@@ -482,6 +504,9 @@ impl JevFlags {
             JevLever::C7ChangeType => self.c7_change_type,
             JevLever::D2BigOutputRetention => self.d2_big_output_retention,
             JevLever::D3PostCompaction => self.d3_post_compaction,
+            JevLever::D4CompactionTiming => self.d4_compaction_timing,
+            JevLever::D5MemoryCaptureGate => self.d5_memory_capture_gate,
+            JevLever::B7SubagentModel => self.b7_subagent_model,
         }
     }
 }
@@ -514,6 +539,7 @@ pub enum JevLever {
     B2LocalModel,
     B3SubagentType,
     B6DelegationHint,
+    B7SubagentModel,
     C1PrematureStop,
     C2FailureTriage,
     C3CompletionCheck,
@@ -523,6 +549,8 @@ pub enum JevLever {
     C7ChangeType,
     D2BigOutputRetention,
     D3PostCompaction,
+    D4CompactionTiming,
+    D5MemoryCaptureGate,
 }
 
 impl JevLever {
@@ -554,6 +582,7 @@ impl JevLever {
             Self::B2LocalModel => "b2_local_model",
             Self::B3SubagentType => "b3_subagent_type",
             Self::B6DelegationHint => "b6_delegation_hint",
+            Self::B7SubagentModel => "b7_subagent_model",
             Self::C1PrematureStop => "c1_premature_stop",
             Self::C2FailureTriage => "c2_failure_triage",
             Self::C3CompletionCheck => "c3_completion_check",
@@ -563,6 +592,8 @@ impl JevLever {
             Self::C7ChangeType => "c7_change_type",
             Self::D2BigOutputRetention => "d2_big_output_retention",
             Self::D3PostCompaction => "d3_post_compaction",
+            Self::D4CompactionTiming => "d4_compaction_timing",
+            Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
         }
     }
 }
@@ -599,6 +630,8 @@ mod tests {
             JevLever::C7ChangeType,
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
+            JevLever::D5MemoryCaptureGate,
+            JevLever::B7SubagentModel,
         ] {
             assert!(!flags.lever_active(lever), "{} must be off", lever.as_str());
         }
@@ -636,6 +669,8 @@ mod tests {
             JevLever::C5ErrorPriority,
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
+            JevLever::D5MemoryCaptureGate,
+            JevLever::B7SubagentModel,
             // The token-saving lanes, including the three that spend a utility
             // call: the crushers and the importance pass are free, and the
             // utility lanes are bounded (24 KiB floor), guarded per task, and

@@ -60,7 +60,7 @@ Model choice for subagents:
 | Subagent | Model |
 |---|---|
 | A fresh subagent the main model delegates (`general-purpose`, `explore`, a user agent without a `model:`) | the worker model; the main model when none is set |
-| `plan` and `code-reviewer` | the main model |
+| `plan` and `code-reviewer` | the main model, unless Jev routes a simple task to the worker |
 | A full-context fork, a resumed subagent, or one spawned with an explicit `model` | its own model (the parent's for a fork) |
 | Harness roles (a goal's planner, verifiers, strategist, summarizer) | the main model |
 

@@ -88,6 +88,11 @@ impl SessionActor {
         .await;
         if let Some(answers) = intent_answers {
             let intent = routing::compose_intent(&answers);
+            if let Some(choice) = intent.choice.as_deref() {
+                self.jev_ledger
+                    .borrow_mut()
+                    .set_turn_intent(choice.to_owned());
+            }
             crate::jev::record_item(
                 JevLever::B1IntentRouting,
                 intent.choice.as_deref().unwrap_or("defer"),

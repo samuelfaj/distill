@@ -538,6 +538,7 @@ impl HostService {
         let spawn_once =
             |child_id: String, prompt: String, resume_from: Option<String>, fork_context: bool| {
                 SubagentRequest {
+                    jev_worker_ok: false,
                     id: child_id,
                     prompt,
                     description: description.clone(),

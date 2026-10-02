@@ -120,6 +120,7 @@ async fn create_test_actor(
         forked_tool_override: None,
         compaction: crate::session::compaction_config::CompactionConfig {
             threshold_percent: std::cell::Cell::new(threshold_percent),
+            checks_since_timing_ask: std::sync::atomic::AtomicU32::new(0),
             force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_window_override: None,
             count: std::sync::atomic::AtomicU64::new(0),
@@ -549,6 +550,7 @@ async fn create_test_actor_with_memory(
         forked_tool_override: None,
         compaction: crate::session::compaction_config::CompactionConfig {
             threshold_percent: std::cell::Cell::new(threshold_percent),
+            checks_since_timing_ask: std::sync::atomic::AtomicU32::new(0),
             force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             context_window_override: None,
             count: std::sync::atomic::AtomicU64::new(0),

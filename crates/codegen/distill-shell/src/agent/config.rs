@@ -1340,6 +1340,9 @@ pub struct JevLadderConfig {
     pub d2_big_output_retention: Option<bool>,
     /// D3: re-inject only still-relevant chunks after compaction.
     pub d3_post_compaction: Option<bool>,
+    pub d4_compaction_timing: Option<bool>,
+    pub d5_memory_capture_gate: Option<bool>,
+    pub b7_subagent_model: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.

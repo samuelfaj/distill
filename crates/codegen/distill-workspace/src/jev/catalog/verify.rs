@@ -291,10 +291,9 @@ pub fn diff_review_request(
     questions.insert(
         DIFF_MATCH_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step asked for is `intent`; the change just applied is `change`. \
-                 Does the change include what the step asked for? A change that is broader than the \
-                 step (rewriting the whole file, touching nearby lines) still counts as long as it \
-                 contains the asked-for work and contradicts nothing.",
+                "Using `intent` and `change` from the state, does the change include what the step asked for? \
+                 A change that is broader than the step (rewriting the whole file, touching nearby lines) \
+                 still counts as long as it contains the asked-for work and contradicts nothing.",
             "It includes what the step asked for",
             "It does not include it, or it contradicts the step",
         ),
@@ -302,9 +301,9 @@ pub fn diff_review_request(
     questions.insert(
         DIFF_BREAK_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step asked for is `intent`; the change just applied is `change`. \
-                 Does the supplied evidence demonstrate a concrete break in a signature, caller, \
-                 data shape or error handling? Missing caller context or a merely possible risk is not evidence.",
+                "Using `intent` and `change` from the state, does the supplied evidence demonstrate a concrete \
+                 break in a signature, caller, data shape or error handling? Missing caller context or a \
+                 merely possible risk is not evidence.",
             "The evidence demonstrates a concrete compatibility defect",
             "No concrete compatibility defect is demonstrated",
         ),
@@ -312,9 +311,8 @@ pub fn diff_review_request(
     questions.insert(
         STEP_COMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            "The step is `intent`; the change just applied is `change`. \
-                 Does this edit satisfy its local step? Later planned edits or tests are not omissions \
-                 in this edit. Do not judge completion of the entire user request.",
+            "Using `intent` and `change` from the state, does this edit satisfy its local step? Later planned \
+                 edits or tests are not omissions in this edit. Do not judge completion of the entire user request.",
             "The step is done as it stands",
             "Something in the step still has to be redone",
         ),
@@ -322,9 +320,8 @@ pub fn diff_review_request(
     questions.insert(
         REDO_THINKING_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step is `intent`; the change just applied is `change`. \
-                 If this step has to be redone, does the redo need more thinking than this call had — \
-                 a higher reasoning effort, not just another try at the same setting?",
+                "Using `intent` and `change` from the state, if this step has to be redone, does the redo need \
+                 more thinking than this call had — a higher reasoning effort, not just another try at the same setting?",
             "The redo needs more thinking than this call had",
             "Another try at the same setting is enough",
         ),
@@ -332,10 +329,10 @@ pub fn diff_review_request(
     questions.insert(
         DIFF_INCOMPLETE_QUESTION.to_owned(),
         Question::noul_with_criteria(
-                "The step is `intent`; the change just applied is `change`. \
-                 Is the change itself unfinished — a body left as a stub or TODO, truncated code, a \
-                 helper it calls but never defines, a caller it renames and forgets to update? Judge \
-                 the change in front of you: work the step still expects afterwards is not part of it.",
+                "Using `intent` and `change` from the state, is the change itself unfinished — a body left as a \
+                 stub or TODO, truncated code, a helper it calls but never defines, a caller it renames \
+                 and forgets to update? Judge the change in front of you: work the step still expects \
+                 afterwards is not part of it.",
             "The change itself is unfinished",
             "The change is complete in itself",
         ),
@@ -343,10 +340,9 @@ pub fn diff_review_request(
     questions.insert(
         SECOND_OPINION_QUESTION.to_owned(),
         Question::noul_with_criteria(
-            "The step is `intent`; the change just applied is `change`. \
-                 Is judging this change well beyond this review — does it need a different model \
-                 than the one answering here, one that is stronger or that knows another part of \
-                 the stack? Answer no when reviewing it here is enough.",
+            "Using `intent` and `change` from the state, is judging this change well beyond this review — \
+                 does it need a different model than the one answering here, one that is stronger or \
+                 that knows another part of the stack? Answer no when reviewing it here is enough.",
             "This change needs a review by another model",
             "Reviewing it here is enough",
         ),
@@ -813,6 +809,15 @@ mod tests {
         let wire = serde_json::json!({"state": state, "questions": questions}).to_string();
         assert_eq!(wire.matches("add a counter").count(), 1);
         assert_eq!(wire.matches("+ let n = 0;").count(), 1);
+        assert!(questions.values().all(|question| {
+            let Question::Noul { instructions, .. } = question else {
+                return false;
+            };
+            !instructions
+                .as_str()
+                .unwrap_or_default()
+                .contains("+ let n = 0;")
+        }));
         assert_eq!(
             questions.len(),
             6,
@@ -827,16 +832,16 @@ mod tests {
         };
         let text = instructions.as_str().unwrap_or_default();
         assert!(
-            text.contains("`intent`"),
-            "the question references the shared step: {text}"
+            text.contains("intent") && text.contains("from the state"),
+            "the question references the shared step in state: {text}"
         );
         assert!(
             text.contains("broader than the step"),
             "a wider change that includes the work is not a mismatch: {text}"
         );
         assert!(
-            text.contains("`change`"),
-            "the question references the shared change: {text}"
+            text.contains("change") && text.contains("from the state"),
+            "the question references the shared change in state: {text}"
         );
 
         // Only a real finding travels back: silence when it reads fine, and

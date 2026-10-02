@@ -57,6 +57,8 @@ pub(crate) struct JevTurnLedger {
     review_escalated: bool,
     /// What the harness saw of this request: failed calls and recorded checks.
     pub(crate) facts: super::turn_facts::TurnFacts,
+    /// B1 intent for the current human turn.
+    pub(crate) turn_intent: Option<String>,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// The session's optional tool families. Session-scoped: draining the turn
     /// keeps it, so the tools array only grows when a later request needs
@@ -65,6 +67,10 @@ pub(crate) struct JevTurnLedger {
 }
 
 impl JevTurnLedger {
+    pub(crate) fn set_turn_intent(&mut self, intent: impl Into<String>) {
+        self.turn_intent = Some(intent.into());
+    }
+
     /// Notes the model and effort the next call will run with.
     ///
     /// Re-noting the same pair (a retry) bumps its call count instead of adding
@@ -220,6 +226,7 @@ impl JevTurnLedger {
         self.effort_floor = None;
         self.review_escalated = false;
         self.facts = Default::default();
+        self.turn_intent = None;
         self.last_execution = None;
         rows.sort_by(|a, b| {
             b.tokens()

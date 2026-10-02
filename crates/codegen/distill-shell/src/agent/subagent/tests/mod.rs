@@ -732,6 +732,7 @@ fn should_auto_wake_subagent_truth_table() {
 }
 fn auto_wake_test_request(id: &str) -> SubagentRequest {
     SubagentRequest {
+            jev_worker_ok: false,
         id: id.into(),
         prompt: String::new(),
         description: "explore".into(),
@@ -1738,6 +1739,7 @@ fn fork_context_normalized_only_for_summarized() {
 }
 fn bootstrap_test_request(fork_context: bool) -> SubagentRequest {
     SubagentRequest {
+            jev_worker_ok: false,
         id: "bootstrap-test".into(),
         prompt: "plan".into(),
         description: "d".into(),

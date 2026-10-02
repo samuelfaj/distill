@@ -756,9 +756,10 @@ pub(crate) fn apply_worker_discipline(
     }
 }
 /// The current worker model a model-delegated child defaults to, including on
-/// resume. Planning and review stay on the main model; explicit models and
-/// full-context forks keep their own model, and harness roles inherit the main
-/// model. The session's own worker choice wins over `[models] worker`.
+/// resume. Planning and review stay on the main model unless Jev routes a
+/// simple task to the worker; explicit models and full-context forks keep their
+/// own model, and harness roles inherit the main model. The session's own
+/// worker choice wins over `[models] worker`.
 pub(crate) fn delegated_worker_model(
     request: &SubagentRequest,
     _resuming: bool,
@@ -767,7 +768,8 @@ pub(crate) fn delegated_worker_model(
     if request.fork_context
         || request.runtime_overrides.model.is_some()
         || request.runtime_overrides.model_override_provenance != ModelOverrideProvenance::Tool
-        || matches!(request.subagent_type.as_str(), "plan" | "code-reviewer")
+        || (matches!(request.subagent_type.as_str(), "plan" | "code-reviewer")
+            && !request.jev_worker_ok)
     {
         return None;
     }

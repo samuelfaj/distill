@@ -319,6 +319,7 @@ impl ChannelSpawner {
     ) -> Result<String, SpawnError> {
         let fork_context = model.is_none();
         let request = SubagentRequest {
+            jev_worker_ok: false,
             id: id.to_string(),
             prompt,
             description: GOAL_PLANNER_SUBAGENT_DESCRIPTION.to_string(),

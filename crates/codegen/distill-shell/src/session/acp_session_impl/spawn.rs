@@ -1810,6 +1810,7 @@ pub(crate) async fn spawn_session_actor(
         forked_tool_override,
         compaction: super::compaction_config::CompactionConfig {
             threshold_percent: std::cell::Cell::new(auto_compact_threshold_percent),
+            checks_since_timing_ask: std::sync::atomic::AtomicU32::new(0),
             force_compact: force_compact.clone(),
             context_window_override,
             count: std::sync::atomic::AtomicU64::new(0),

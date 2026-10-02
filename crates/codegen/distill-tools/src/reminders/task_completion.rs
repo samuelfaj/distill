@@ -1765,6 +1765,7 @@ mod tests {
     }
     fn test_request(id: &str) -> SubagentRequest {
         SubagentRequest {
+            jev_worker_ok: false,
             id: id.into(),
             prompt: String::new(),
             description: "test task".into(),

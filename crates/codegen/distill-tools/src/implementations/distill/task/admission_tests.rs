@@ -6,6 +6,7 @@ use crate::implementations::distill::task::types::{SubagentOwner, SubagentReques
 
 fn request(parent_session_id: &str) -> SubagentRequest {
     SubagentRequest {
+        jev_worker_ok: false,
         id: uuid::Uuid::now_v7().to_string(),
         prompt: "work".to_owned(),
         description: "work".to_owned(),

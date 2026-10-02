@@ -19,8 +19,11 @@
 //! caller already allows, introduce a candidate the code did not produce, or
 //! replace an existing safety check.
 
+pub mod compaction_timing;
 pub mod context;
 pub mod lanes;
+pub mod memory_capture;
+pub mod subagent_model;
 pub mod routing;
 pub mod selection;
 pub mod verify;

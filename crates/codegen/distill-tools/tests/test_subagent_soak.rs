@@ -411,6 +411,7 @@ impl ChildRunner for SoakRunner {
 
 fn soak_request(id: String, background: bool) -> SubagentRequest {
     SubagentRequest {
+        jev_worker_ok: false,
         id,
         prompt: "soak work".to_owned(),
         description: "soak child".to_owned(),

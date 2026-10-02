@@ -508,7 +508,7 @@ pub fn segment_conversation(items: &[SegmentInput]) -> Vec<CompactionSegment> {
 }
 
 /// A whitespace-normalized, bounded preview of one segment.
-fn preview_of(segment: &[&SegmentInput]) -> String {
+pub(crate) fn preview_of(segment: &[&SegmentInput]) -> String {
     segment
         .iter()
         .map(|item| item.text.as_str())

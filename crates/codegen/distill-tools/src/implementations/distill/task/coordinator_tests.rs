@@ -377,6 +377,7 @@ pub(in crate::implementations::distill::task::coordinator) fn request(
     background: bool,
 ) -> SubagentRequest {
     SubagentRequest {
+        jev_worker_ok: false,
         id: id.to_owned(),
         prompt: "work".to_owned(),
         description: "test child".to_owned(),

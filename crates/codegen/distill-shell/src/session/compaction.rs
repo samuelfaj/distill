@@ -30,6 +30,28 @@ use distill_chat_state::compaction_utils::{
 };
 use distill_sampling_types::{ApiBackend, ConversationItem, ConversationRequest};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+pub(crate) fn should_ask_compaction_timing(
+    used_percent: u8,
+    threshold_percent: u8,
+    checks_since_last_ask: u32,
+) -> bool {
+    used_percent >= 50 && used_percent < threshold_percent && checks_since_last_ask >= 8
+}
+
+#[cfg(test)]
+mod compaction_timing_gate_tests {
+    use super::should_ask_compaction_timing;
+
+    #[test]
+    fn timing_gate_requires_usage_headroom_and_eight_checks() {
+        assert!(!should_ask_compaction_timing(49, 85, 8));
+        assert!(!should_ask_compaction_timing(85, 85, 8));
+        assert!(!should_ask_compaction_timing(50, 85, 7));
+        assert!(should_ask_compaction_timing(50, 85, 8));
+    }
+}
+
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
 /// Human-readable "next fire" for a scheduled loop in the compaction reminder.
@@ -2463,6 +2485,57 @@ impl SessionActor {
                 trigger_info.context_window,
             );
             return Some(trigger_info);
+        }
+        let percentage = distill_token_estimation::usage_percentage_u8(estimated_total, cw);
+        let checks = self
+            .compaction
+            .checks_since_timing_ask
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        if crate::jev::lever_active(distill_workspace::jev::flags::JevLever::D4CompactionTiming)
+            && should_ask_compaction_timing(
+                percentage,
+                self.compaction.threshold_percent.get(),
+                checks,
+            )
+        {
+            self.compaction
+                .checks_since_timing_ask
+                .store(0, Ordering::Relaxed);
+            if let Some(request) = self.jev_last_human_request().await {
+                use distill_workspace::jev::catalog::compaction_timing;
+                if let Ok(questions) = compaction_timing::compaction_timing_questions() {
+                    let state = serde_json::json!({"request": request, "context_percent": percentage, "context_window": cw});
+                    if let Some(answers) = crate::jev::ask_item(
+                        distill_workspace::jev::flags::JevLever::D4CompactionTiming,
+                        state,
+                        questions,
+                    )
+                    .await
+                    {
+                        let decision = compaction_timing::compose_compaction_timing(&answers);
+                        crate::jev::record_item(
+                            distill_workspace::jev::flags::JevLever::D4CompactionTiming,
+                            if decision == Some(true) {
+                                "compact"
+                            } else {
+                                "defer"
+                            },
+                            &format!("{percentage}% context; next-step independence: {decision:?}"),
+                            answers.confidence(compaction_timing::COMPACTION_TIMING_QUESTION),
+                            Some(&answers),
+                        );
+                        if decision == Some(true) {
+                            return Some(AutoCompactTriggerInfo {
+                                tokens_used: estimated_total,
+                                context_window: cw,
+                                percentage,
+                                reason_override: Some("jev_early"),
+                            });
+                        }
+                    }
+                }
+            }
         }
         None
     }

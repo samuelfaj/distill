@@ -959,6 +959,42 @@ impl SessionActor {
         )
         .await?;
         log_condensation(range, attempt, &transcript.stats);
+        if crate::jev::lever_active(distill_workspace::jev::flags::JevLever::D5MemoryCaptureGate) {
+            use distill_workspace::jev::catalog::memory_capture;
+            let state = serde_json::json!({
+                "request": transcript.json.chars().take(600).collect::<String>(),
+                "reply": transcript.json.chars().rev().take(1500).collect::<String>().chars().rev().collect::<String>(),
+                "tools": [],
+            });
+            if let Ok(questions) = memory_capture::memory_capture_gate_questions() {
+                if let Some(answers) = crate::jev::ask_item(
+                    distill_workspace::jev::flags::JevLever::D5MemoryCaptureGate,
+                    state,
+                    questions,
+                )
+                .await
+                {
+                    let decision = memory_capture::compose_memory_capture_gate(&answers);
+                    crate::jev::record_item(
+                        distill_workspace::jev::flags::JevLever::D5MemoryCaptureGate,
+                        match decision {
+                            Some(false) => "skip",
+                            Some(true) => "capture",
+                            None => "defer",
+                        },
+                        "memory capture gate",
+                        answers.confidence(memory_capture::MEMORY_CAPTURE_GATE_QUESTION),
+                        Some(&answers),
+                    );
+                    if decision == Some(false) {
+                        return Ok((
+                            CaptureOutcomeDraft::Noop,
+                            distill_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                        ));
+                    }
+                }
+            }
+        }
         let Some(session_snapshot) = session.upgrade() else {
             return Err(CaptureExtractionFailure::retryable(
                 MemoryV2FailureClass::Convergence,

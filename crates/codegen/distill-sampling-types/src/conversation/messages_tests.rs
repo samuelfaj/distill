@@ -468,3 +468,146 @@ fn test_messages_request_cache_breakpoint_skips_lone_project_instructions() {
     // System plus the tip, which is the lone project-instructions message.
     assert_eq!(count_cache_control(&json), 2, "{json:#}");
 }
+
+fn per_message_effort_history() -> Vec<ConversationItem> {
+    let mut items = vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("Fix the bug"),
+    ];
+    items.extend(agent_turn(0));
+    items
+}
+
+fn per_message_effort_request(
+    model: &str,
+    items: Vec<ConversationItem>,
+    effort: crate::ReasoningEffort,
+) -> serde_json::Value {
+    let mut req = ConversationRequest::from_items(items).with_model(model);
+    req.reasoning_effort = Some(effort);
+    serde_json::to_value(build_messages_request(&req)).unwrap()
+}
+
+fn marker_json(effort: &str) -> serde_json::Value {
+    serde_json::json!({"role": "system", "content": [], "output_config": {"effort": effort}})
+}
+
+// A top-level effort change restarts the prompt cache, so a supported model carries it only in a marker the API applies to this request.
+#[test]
+fn per_message_effort_marker_follows_the_last_assistant_message() {
+    let json = per_message_effort_request(
+        "claude-opus-5-5",
+        per_message_effort_history(),
+        crate::ReasoningEffort::Low,
+    );
+    assert!(json.pointer("/output_config").is_none(), "{json:#}");
+    assert_eq!(
+        json.pointer("/thinking/type").and_then(|v| v.as_str()),
+        Some("adaptive"),
+        "{json:#}"
+    );
+    let messages = json["messages"].as_array().unwrap();
+    let last_assistant = messages
+        .iter()
+        .rposition(|m| m["role"] == "assistant")
+        .unwrap();
+    assert_eq!(messages[last_assistant + 1], marker_json("low"), "{json:#}");
+    assert_eq!(messages.last().unwrap()["role"], "user", "{json:#}");
+    assert_eq!(last_assistant + 3, messages.len(), "{json:#}");
+}
+
+// The effort must live only in the marker; any other difference would move the cached prefix when the effort changes.
+#[test]
+fn per_message_effort_is_the_only_difference_between_efforts() {
+    let strip_marker = |mut json: serde_json::Value| {
+        let messages = json["messages"].as_array_mut().unwrap();
+        let at = messages.iter().position(|m| m["role"] == "system").unwrap();
+        messages.remove(at);
+        json
+    };
+    let high = per_message_effort_request(
+        "claude-opus-5-5",
+        per_message_effort_history(),
+        crate::ReasoningEffort::High,
+    );
+    let low = per_message_effort_request(
+        "claude-opus-5-5",
+        per_message_effort_history(),
+        crate::ReasoningEffort::Low,
+    );
+    assert_ne!(high, low);
+    assert_eq!(strip_marker(high), strip_marker(low));
+}
+
+// With no assistant message yet, the marker leads the conversation so the first request still carries its effort.
+#[test]
+fn per_message_effort_marker_leads_the_first_request() {
+    let json = per_message_effort_request(
+        "claude-opus-5-5",
+        vec![
+            ConversationItem::system("You are a helpful assistant."),
+            ConversationItem::user("Hello"),
+        ],
+        crate::ReasoningEffort::High,
+    );
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(messages[0], marker_json("high"), "{json:#}");
+    assert_eq!(messages[1]["role"], "user", "{json:#}");
+}
+
+// Other models reject the system-role message, so they keep the top-level effort.
+#[test]
+fn unsupported_model_keeps_top_level_effort() {
+    let json = per_message_effort_request(
+        "claude-sonnet-5",
+        per_message_effort_history(),
+        crate::ReasoningEffort::Low,
+    );
+    assert_eq!(
+        json.pointer("/output_config/effort")
+            .and_then(|v| v.as_str()),
+        Some("low"),
+        "{json:#}"
+    );
+    assert!(
+        json["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["role"] != "system"),
+        "{json:#}"
+    );
+}
+
+// A wrong match would send the beta marker to a model that rejects it, or skip it on a snapshot id that accepts it.
+#[test]
+fn supports_per_message_effort_matches_exact_ids_and_dated_snapshots() {
+    use super::messages::supports_per_message_effort;
+    assert!(supports_per_message_effort("claude-opus-5-5"));
+    assert!(supports_per_message_effort("claude-opus-5-5-20260101"));
+    assert!(!supports_per_message_effort("claude-opus-5-1"));
+    assert!(!supports_per_message_effort("claude-sonnet-5"));
+    assert!(!supports_per_message_effort("claude-opus-5-5-2026"));
+    assert!(!supports_per_message_effort("claude-haiku-4-5-20251001"));
+    assert!(!supports_per_message_effort("anthropic/claude-opus-5.5"));
+}
+
+// The schema is not an effort, so it stays top-level while the effort moves to the marker.
+#[test]
+fn per_message_effort_keeps_json_schema_top_level() {
+    let schema = serde_json::json!({"type": "object"});
+    let mut req = ConversationRequest::from_items(per_message_effort_history())
+        .with_model("claude-opus-5-5")
+        .with_json_schema(schema);
+    req.reasoning_effort = Some(crate::ReasoningEffort::Low);
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert!(json.pointer("/output_config/format").is_some(), "{json:#}");
+    assert!(json.pointer("/output_config/effort").is_none(), "{json:#}");
+    assert!(
+        json["messages"]
+            .as_array()
+            .unwrap()
+            .contains(&marker_json("low")),
+        "{json:#}"
+    );
+}

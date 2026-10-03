@@ -54,6 +54,8 @@ pub enum OutputFormat {
 pub struct Message {
     pub role: MessageRole,
     pub content: MessageContent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +63,7 @@ pub struct Message {
 pub enum MessageRole {
     User,
     Assistant,
+    System,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

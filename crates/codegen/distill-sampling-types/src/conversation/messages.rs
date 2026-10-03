@@ -116,6 +116,26 @@ fn count_cache_breakpoints(
         + messages.iter().map(message_breakpoints).sum::<usize>()
 }
 
+/// Models that take the effort as a per-message `output_config` marker instead of a top-level one.
+/// The id is the bare name, optionally with a dated `-YYYYMMDD` snapshot suffix.
+pub fn supports_per_message_effort(model: &str) -> bool {
+    const MODELS: [&str; 5] = [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+    ];
+    MODELS.iter().any(|base| {
+        model.strip_prefix(base).is_some_and(|rest| {
+            rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+    })
+}
+
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
         ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
@@ -193,6 +213,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             msgs.push(Message {
                 role: MessageRole::Assistant,
                 content: MessageContent::Blocks(pending.clone()),
+                output_config: None,
             });
             pending.clear();
         }
@@ -203,6 +224,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             msgs.push(Message {
                 role: MessageRole::User,
                 content: MessageContent::Blocks(pending.clone()),
+                output_config: None,
             });
             pending.clear();
         }
@@ -226,6 +248,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 messages.push(Message {
                     role: MessageRole::User,
                     content: MessageContent::Blocks(blocks),
+                    output_config: None,
                 });
             }
             ConversationItem::Assistant(a) => {
@@ -366,7 +389,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         ConversationToolChoice::None => ToolChoiceParam::Auto, // ToolChoiceParam has no none variant, so fall back to the default
     });
 
-    let effort = req
+    let mut effort = req
         .reasoning_effort
         .and_then(|e| e.to_messages_api())
         .map(|s| s.to_string());
@@ -386,7 +409,37 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             display: Some(crate::messages::ThinkingDisplay::Summarized),
         });
 
-    let output_config = if effort.is_some() || format.is_some() {
+    // A top-level effort change restarts the prompt cache and a marker does not, so models that take one get the effort as a system-role marker after the last assistant message.
+    // A marker after the final user message would not apply to this request, hence the last-role check.
+    let per_message_effort = effort.is_some()
+        && req
+            .model
+            .as_deref()
+            .is_some_and(supports_per_message_effort)
+        && messages
+            .last()
+            .is_some_and(|m| matches!(m.role, MessageRole::User));
+    let output_config = if per_message_effort {
+        let at = messages
+            .iter()
+            .rposition(|m| matches!(m.role, MessageRole::Assistant))
+            .map_or(0, |i| i + 1);
+        messages.insert(
+            at,
+            Message {
+                role: MessageRole::System,
+                content: MessageContent::Blocks(Vec::new()),
+                output_config: Some(OutputConfig {
+                    effort: effort.take(),
+                    format: None,
+                }),
+            },
+        );
+        format.map(|format| OutputConfig {
+            effort: None,
+            format: Some(format),
+        })
+    } else if effort.is_some() || format.is_some() {
         Some(OutputConfig { effort, format })
     } else {
         None

@@ -128,6 +128,41 @@ impl CodexTurnAffinity {
 
 /// Beta flag under which the Messages API accepts a Claude subscription bearer.
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
+const MID_CONVERSATION_OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
+
+/// `existing` plus `flag`, comma-joined without duplicates.
+fn with_beta_flag(existing: Option<&str>, flag: &str) -> String {
+    let mut flags: Vec<&str> = existing
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .collect();
+    if !flags.contains(&flag) {
+        flags.push(flag);
+    }
+    flags.join(",")
+}
+
+/// A per-message effort marker needs its beta flag, merged into the flags the request already carries.
+fn add_effort_marker_beta(request: &mut reqwest::Request, messages: &[messages::Message]) {
+    let has_marker = messages
+        .iter()
+        .any(|m| matches!(m.role, messages::MessageRole::System) && m.output_config.is_some());
+    if !has_marker {
+        return;
+    }
+    let existing = request
+        .headers()
+        .get("anthropic-beta")
+        .and_then(|v| v.to_str().ok());
+    if let Ok(value) = HeaderValue::from_str(&with_beta_flag(
+        existing,
+        MID_CONVERSATION_OUTPUT_CONFIG_BETA,
+    )) {
+        request.headers_mut().insert("anthropic-beta", value);
+    }
+}
 
 /// A subscription bearer is only honoured for requests that open with this
 /// identity line, so it is always the first system block.
@@ -2048,9 +2083,10 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("messages"));
-        let built_request = self
+        let mut built_request = self
             .build_json_request(grok_headers.apply(builder), &request.inner)
             .await?;
+        add_effort_marker_beta(&mut built_request, &request.inner.messages);
         let response = self.send(built_request).await?;
 
         let status = response.status();
@@ -2178,9 +2214,10 @@ impl SamplingClient {
         let http_request = grok_headers
             .apply(builder)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        let built_request = self
+        let mut built_request = self
             .build_json_request(http_request, &request.inner)
             .await?;
+        add_effort_marker_beta(&mut built_request, &request.inner.messages);
 
         tracing::debug!(
             url = %built_request.url(),
@@ -3395,6 +3432,96 @@ mod tests {
         assert!(!SamplingClient::new(minimal_config())
             .unwrap()
             .uses_claude_subscription_bearer());
+    }
+
+    #[test]
+    fn with_beta_flag_merges_without_duplicates() {
+        let flag = MID_CONVERSATION_OUTPUT_CONFIG_BETA;
+        assert_eq!(with_beta_flag(None, flag), flag);
+        assert_eq!(
+            with_beta_flag(Some("claude-code-20250219, oauth-2025-04-20"), flag),
+            format!("claude-code-20250219,oauth-2025-04-20,{flag}"),
+        );
+        assert_eq!(with_beta_flag(Some(flag), flag), flag);
+    }
+
+    // The API rejects a marker without its beta flag, and dropping the subscription flags would fail auth.
+    #[tokio::test]
+    async fn effort_marker_adds_its_beta_flag_beside_the_oauth_flags() {
+        async fn sent_beta(with_marker: bool) -> String {
+            let (tx, rx) = oneshot::channel();
+            let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+            let app = Router::new().route(
+                "/v1/messages",
+                post(move |headers: axum::http::HeaderMap| {
+                    let tx = tx.clone();
+                    async move {
+                        let beta = headers
+                            .get("anthropic-beta")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_owned();
+                        let _ = tx.lock().unwrap().take().unwrap().send(beta);
+                        axum::response::Response::builder()
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(EMPTY_MESSAGE_JSON))
+                            .unwrap()
+                    }
+                }),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            let client = SamplingClient::new(SamplerConfig {
+                base_url: format!("http://{addr}/v1"),
+                api_backend: ApiBackend::Messages,
+                extra_headers: IndexMap::from([(
+                    "anthropic-beta".to_owned(),
+                    "claude-code-20250219,oauth-2025-04-20".to_owned(),
+                )]),
+                ..minimal_config()
+            })
+            .unwrap();
+            let mut inner = messages::MessagesRequest {
+                model: "test-model".to_owned(),
+                max_tokens: 1,
+                ..Default::default()
+            };
+            inner.messages.push(messages::Message {
+                role: messages::MessageRole::User,
+                content: messages::MessageContent::Text("hi".to_owned()),
+                output_config: None,
+            });
+            if with_marker {
+                inner.messages.insert(
+                    0,
+                    messages::Message {
+                        role: messages::MessageRole::System,
+                        content: messages::MessageContent::Blocks(Vec::new()),
+                        output_config: Some(messages::OutputConfig {
+                            effort: Some("low".to_owned()),
+                            format: None,
+                        }),
+                    },
+                );
+            }
+            client
+                .create_message(MessagesRequestWrapper::new(inner))
+                .await
+                .expect("request should succeed");
+            let beta = rx.await.unwrap();
+            server.abort();
+            beta
+        }
+
+        let with = sent_beta(true).await;
+        assert!(with.contains("oauth-2025-04-20"), "{with}");
+        assert!(with.contains(MID_CONVERSATION_OUTPUT_CONFIG_BETA), "{with}");
+        let without = sent_beta(false).await;
+        assert!(without.contains("oauth-2025-04-20"), "{without}");
+        assert!(!without.contains(MID_CONVERSATION_OUTPUT_CONFIG_BETA), "{without}");
     }
 
     async fn capture_response_body(streaming: bool) -> serde_json::Value {

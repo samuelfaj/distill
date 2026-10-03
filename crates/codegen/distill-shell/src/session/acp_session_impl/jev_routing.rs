@@ -343,8 +343,8 @@ impl SessionActor {
         let Some(picked) = routing::compose_micro_effort_for(answers, offered, question) else {
             crate::jev::record_item(
                 JevLever::B2MicroEffort,
-                "keep",
-                &format!("model {}: effort uncertain or unchanged", cfg.model),
+                "defer",
+                &format!("model {}: no usable effort answer", cfg.model),
                 confidence,
                 Some(answers),
             );
@@ -469,10 +469,7 @@ impl SessionActor {
                 .map(|option| EffortLevel {
                     id: option.id.clone(),
                     value: option.value,
-                    description: option
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| option.label.clone()),
+                    description: effort_level_description(&option),
                 })
                 .collect(),
         )
@@ -887,6 +884,44 @@ where
     store(&payload).map(|path| path.display().to_string())
 }
 
+/// Claude catalog levels carry no description; a bare level name left Jev
+/// unable to tell their cost apart.
+fn effort_level_description(option: &distill_sampling_types::ReasoningEffortOption) -> String {
+    match option.description.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() => text.to_owned(),
+        _ => standard_effort_description(option.value).to_owned(),
+    }
+}
+
+fn standard_effort_description(value: ReasoningEffort) -> &'static str {
+    match value {
+        ReasoningEffort::None => {
+            "No reasoning. Cheapest; enough for mechanical steps: relaying a tool result, a trivial command, a short status reply."
+        }
+        ReasoningEffort::Minimal => {
+            "Almost no reasoning. For mechanical steps whose next action is obvious."
+        }
+        ReasoningEffort::Low => {
+            "Light reasoning. Enough for routine steps: reading files or tool output, running known commands, small mechanical edits, short replies."
+        }
+        ReasoningEffort::Medium => {
+            "Moderate reasoning. Enough for most coding steps: writing or changing code with clear requirements, interpreting a failure with an obvious cause."
+        }
+        ReasoningEffort::High => {
+            "Deep reasoning; costs more than medium. For hard steps: subtle bugs, multi-file design, an unclear root cause, risky changes."
+        }
+        ReasoningEffort::Xhigh => {
+            "Very deep reasoning; much more expensive than medium. Only for very hard problems that need long, careful analysis."
+        }
+        ReasoningEffort::Max => {
+            "Maximum reasoning: the most expensive and slowest level, usually with small gains over high. Only when the step is exceptionally hard or lower levels already failed on it."
+        }
+        ReasoningEffort::Ultra => {
+            "Beyond max: the most expensive level. Only for exceptionally hard problems where max already failed."
+        }
+    }
+}
+
 /// Cost order of the effort ladder, cheapest first. The enum's own order is the
 /// cost order, and it deliberately does not derive `Ord` (semantic, not lexical).
 pub(crate) fn effort_rank(effort: ReasoningEffort) -> u8 {
@@ -1062,6 +1097,26 @@ fn effort_from_id(id: &str) -> Option<ReasoningEffort> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bare level name ("low", "medium") gave Jev no cost signal, so it could
+    /// not tell levels apart; catalog text still wins when it exists.
+    #[test]
+    fn effort_levels_without_a_catalog_description_get_the_standard_text() {
+        let option = |description: Option<&str>| distill_sampling_types::ReasoningEffortOption {
+            id: "medium".to_owned(),
+            value: ReasoningEffort::Medium,
+            label: "medium".to_owned(),
+            description: description.map(str::to_owned),
+            default: false,
+        };
+        let standard = standard_effort_description(ReasoningEffort::Medium);
+        assert_eq!(effort_level_description(&option(None)), standard);
+        assert_eq!(effort_level_description(&option(Some("  "))), standard);
+        assert_eq!(
+            effort_level_description(&option(Some("Catalog text"))),
+            "Catalog text"
+        );
+    }
 
     #[test]
     fn auto_effort_uses_lowest_model_menu_level() {

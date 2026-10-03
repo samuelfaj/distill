@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use crate::jev::error::JevError;
-use crate::jev::types::{JevAnswerSet, Json, MAX_CHOICE_OPTIONS, Question, QuestionId};
+use crate::jev::types::{Answer, JevAnswerSet, Json, MAX_CHOICE_OPTIONS, Question, QuestionId};
 
 /// Local alias so the family battery reads the same as the other packs.
 use crate::jev::types::Question as JevAnswerSetQuestion;
@@ -328,16 +328,6 @@ pub struct EffortChoice {
     pub description: String,
 }
 
-/// Confidence needed before the auto-effort decision is applied to a call.
-///
-/// Calibrated on live answers (2026-09-18, `deepseek-v4.1-flash`, six palette
-/// levels): a trivial list request answers `none` at 0.67 and 0.64; a hard
-/// request splits `medium` 0.40 / `high` 0.31; a long coding turn kept
-/// answering `low` at 0.40-0.43. With six levels the uniform prior is 0.167, so
-/// 0.40 is ~2.4x chance: above it the pick is applied, below it the call keeps
-/// the session's own effort.
-pub const MICRO_EFFORT_MIN_CONFIDENCE: f64 = 0.40;
-
 /// B2 (auto): one `choice` over the efforts **this model** offers for a single
 /// model call. The model's own name is part of the question: "how much thinking
 /// does this call need" is answered differently for a small fast model than for
@@ -358,7 +348,7 @@ pub fn micro_effort_questions_for(
     if offered.is_empty() {
         return Err(JevError::invalid("the model offers no reasoning efforts"));
     }
-    if offered.len() + 1 > MAX_CHOICE_OPTIONS {
+    if offered.len() > MAX_CHOICE_OPTIONS {
         return Err(JevError::invalid(format!(
             "{} efforts over the ceiling for one choice question",
             offered.len()
@@ -368,10 +358,6 @@ pub fn micro_effort_questions_for(
     for choice in offered {
         criteria.insert(choice.id.clone(), Json::String(choice.description.clone()));
     }
-    criteria.insert(
-        MICRO_EFFORT_FALLBACK_LABEL.to_owned(),
-        Json::String("Keep this candidate model's configured effort for this call".to_owned()),
-    );
     let mut questions = BTreeMap::new();
     questions.insert(
         question_id.to_owned(),
@@ -390,8 +376,6 @@ pub fn micro_effort_questions_for(
     Ok(questions)
 }
 
-/// Label used for "keep whatever the session already uses".
-pub const MICRO_EFFORT_FALLBACK_LABEL: &str = "keep_session_effort";
 /// Question id of the auto-effort choice.
 pub const MICRO_EFFORT_QUESTION: &str = "micro_effort";
 pub const UTILITY_EFFORT_QUESTION: &str = "utility_effort";
@@ -401,22 +385,45 @@ pub fn compose_micro_effort(answers: &JevAnswerSet, offered: &[EffortChoice]) ->
     compose_micro_effort_for(answers, offered, MICRO_EFFORT_QUESTION)
 }
 
+/// `offered` is cheapest first. The pick is the cheapest offered level holding
+/// at least half of the answer's probability mass (labels outside the menu are
+/// ignored), so a split answer lands in the middle instead of on the session's
+/// effort. Without a usable distribution the answer's own `choice` applies if
+/// offered. No confidence floor.
 pub fn compose_micro_effort_for(
     answers: &JevAnswerSet,
     offered: &[EffortChoice],
     question_id: &str,
 ) -> Option<String> {
-    let mut allowed: Vec<&str> = offered.iter().map(|c| c.id.as_str()).collect();
-    allowed.push(MICRO_EFFORT_FALLBACK_LABEL);
-    let pick = pick_one(answers, question_id, &allowed, MICRO_EFFORT_MIN_CONFIDENCE);
-    pick.choice
-        .filter(|choice| choice != MICRO_EFFORT_FALLBACK_LABEL)
+    let Some(Answer::Choice {
+        choice,
+        probabilities,
+        ..
+    }) = answers.answers.get(question_id)
+    else {
+        return None;
+    };
+    let mass = |id: &str| probabilities.get(id).copied().unwrap_or(0.0).max(0.0);
+    let total: f64 = offered.iter().map(|c| mass(&c.id)).sum();
+    if total > 0.0 {
+        let mut cumulative = 0.0;
+        for candidate in offered {
+            cumulative += mass(&candidate.id);
+            if cumulative / total >= 0.5 {
+                return Some(candidate.id.clone());
+            }
+        }
+    }
+    offered
+        .iter()
+        .any(|c| &c.id == choice)
+        .then(|| choice.clone())
 }
 
 /// B2 (auto): the offered efforts, cheapest first, from the model's own menu.
 ///
-/// The order is the cost order the wire uses; `keep_session_effort` is appended
-/// by [`micro_effort_questions`], never here.
+/// The order is the cost order the wire uses; the question offers exactly
+/// these levels.
 pub fn offered_effort_choices(
     menu: &[(String, String)],
     rank: impl Fn(&str) -> u8,
@@ -946,23 +953,28 @@ mod tests {
         );
     }
 
-    /// Auto effort: the pick must be one the model offers, must clear the
-    /// confidence floor, and must defer (keep the session's effort) on doubt.
+    fn effort(id: &str, description: &str) -> EffortChoice {
+        EffortChoice {
+            id: id.to_owned(),
+            description: description.to_owned(),
+        }
+    }
+
+    /// The question offers exactly the model's levels. A "keep session effort"
+    /// option is gone: its real meaning was the pinned max effort.
     #[test]
-    fn b2_auto_picks_an_offered_effort_and_defers_on_doubt() {
+    fn b2_auto_question_offers_only_the_models_levels() {
         let offered = vec![
-            EffortChoice {
-                id: "low".to_owned(),
-                description: "Faster, lighter reasoning".to_owned(),
-            },
-            EffortChoice {
-                id: "high".to_owned(),
-                description: "Heavy reasoning".to_owned(),
-            },
+            effort("low", "Faster, lighter reasoning"),
+            effort("high", "Heavy reasoning"),
         ];
         let questions =
             micro_effort_questions("DeepSeek V4.1 Flash", &offered).expect("battery builds");
-        let Some(Question::Choice { instructions, .. }) = questions.get(MICRO_EFFORT_QUESTION)
+        let Some(Question::Choice {
+            instructions,
+            criteria,
+            ..
+        }) = questions.get(MICRO_EFFORT_QUESTION)
         else {
             panic!("auto effort is one choice question");
         };
@@ -975,54 +987,69 @@ mod tests {
             effort_text.contains("Judge that step only, not the whole task"),
             "the effort is chosen for the step, not the task"
         );
+        let keys: Vec<&str> = criteria.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["high", "low"], "no keep option, only the menu");
+        assert!(micro_effort_questions("m", &[]).is_err());
+    }
 
-        let cheap = answers(vec![(
+    /// A confident answer is simply applied; there is no confidence floor that
+    /// sends the call back to the session's effort.
+    #[test]
+    fn b2_auto_applies_a_confident_answer() {
+        let offered = vec![effort("low", ""), effort("high", "")];
+        let a = answers(vec![(
             "micro_effort",
             choice("low", 0.92, &[("low", 0.92)]),
         )]);
-        assert_eq!(
-            compose_micro_effort(&cheap, &offered).as_deref(),
-            Some("low")
-        );
+        assert_eq!(compose_micro_effort(&a, &offered).as_deref(), Some("low"));
+    }
 
-        let keep = answers(vec![(
+    /// A spread answer takes the cheapest level holding half the mass, not a
+    /// session fallback: low 0.40 < 0.5, low+medium 0.65 >= 0.5.
+    #[test]
+    fn b2_auto_spread_answer_takes_the_cheapest_level_holding_half_the_mass() {
+        let offered = vec![
+            effort("low", ""),
+            effort("medium", ""),
+            effort("high", ""),
+            effort("max", ""),
+        ];
+        let a = answers(vec![(
             "micro_effort",
-            choice("keep_session_effort", 0.9, &[("keep_session_effort", 0.9)]),
+            choice(
+                "low",
+                0.40,
+                &[("low", 0.40), ("medium", 0.25), ("high", 0.20), ("max", 0.15)],
+            ),
         )]);
         assert_eq!(
-            compose_micro_effort(&keep, &offered),
-            None,
-            "the fallback label keeps the session's effort"
+            compose_micro_effort(&a, &offered).as_deref(),
+            Some("medium")
         );
+    }
 
-        // Below the floor the call keeps the session's effort.
-        let unsure = answers(vec![(
+    /// A label the model does not offer must never be applied or counted.
+    #[test]
+    fn b2_auto_ignores_labels_outside_the_menu() {
+        let offered = vec![effort("low", ""), effort("high", "")];
+        let a = answers(vec![(
             "micro_effort",
-            choice("low", 0.35, &[("low", 0.35)]),
+            choice("quantum", 0.9, &[("quantum", 0.9), ("high", 0.1)]),
         )]);
-        assert_eq!(compose_micro_effort(&unsure, &offered), None);
-        // At the floor it applies: with six levels the prior is 0.167, so a
-        // 0.40 verdict is a real signal, not noise.
-        let clear = answers(vec![(
-            "micro_effort",
-            choice("low", 0.40, &[("low", 0.40)]),
-        )]);
+        assert_eq!(compose_micro_effort(&a, &offered).as_deref(), Some("high"));
+    }
+
+    /// Without a distribution the answer's own choice is used only when offered.
+    #[test]
+    fn b2_auto_without_distribution_uses_the_choice_if_offered() {
+        let offered = vec![effort("low", ""), effort("high", "")];
+        let offered_choice = answers(vec![("micro_effort", choice("high", 0.9, &[]))]);
         assert_eq!(
-            compose_micro_effort(&clear, &offered).as_deref(),
-            Some("low")
+            compose_micro_effort(&offered_choice, &offered).as_deref(),
+            Some("high")
         );
-
-        let invented = answers(vec![(
-            "micro_effort",
-            choice("quantum", 0.99, &[("quantum", 0.99)]),
-        )]);
-        assert_eq!(
-            compose_micro_effort(&invented, &offered),
-            None,
-            "an effort the model does not offer must never be applied"
-        );
-
-        assert!(micro_effort_questions("m", &[]).is_err());
+        let invented = answers(vec![("micro_effort", choice("quantum", 0.9, &[]))]);
+        assert_eq!(compose_micro_effort(&invented, &offered), None);
     }
 
     #[test]

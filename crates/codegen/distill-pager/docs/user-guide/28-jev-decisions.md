@@ -127,11 +127,13 @@ Rules that hold in auto mode:
 
 * the pick is always **one of the levels that model offers** — an answer naming
   anything else is ignored;
-* the pick must clear **0.40** confidence. Below the floor, on a timeout, on an error, or with the lever off, the call
-  keeps the session's level (the fallback);
-* Jev may answer `keep_session_effort` explicitly, which means the same;
+* the pick is the **cheapest offered level that holds at least half of Jev's probability mass**, counted cheapest
+  first — a confident answer is simply its top level, and a split answer lands in the middle instead of on the
+  session's level;
+* levels without a catalog description reach Jev with a standard description of their cost and use;
+* the call keeps the session's level only when Jev gives no usable answer (a timeout, an error, or the lever off);
 * every decision is recorded with what it *wanted*, so the log shows a deferral
-  (`wanted low at 0.41 below the floor`) as clearly as an application
+  (`no usable effort answer`) as clearly as an application
   (`effort:none · applied to this call`);
 * turning it off is one command: `/effort <level>` (an explicit level always wins),
   or `[jev.ladder] b2_micro_effort = false` to keep the mode but disable the decision; the master switch (`GROK_JEV=0`) turns it off with everything else.

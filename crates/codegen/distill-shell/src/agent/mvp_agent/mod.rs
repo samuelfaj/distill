@@ -248,6 +248,8 @@ pub(crate) struct SessionSpawnOptions<'a> {
     pub initial_reasoning_effort: Option<ReasoningEffort>,
     /// Session-scoped Jev auto-effort flag; `None` seeds it from the configured default.
     pub jev_effort_auto: Option<bool>,
+    /// The session's worker choice, set before spawn so the first prompt render sees it.
+    pub worker_override: crate::session::handle::SessionWorkerState,
     pub session_yolo_mode: bool,
     pub session_auto_mode: bool,
     pub prompt_display_cwd: Option<String>,
@@ -392,6 +394,7 @@ pub(crate) fn chat_session_spawn_options<'a>(
         session_model_id,
         initial_reasoning_effort: None,
         jev_effort_auto: None,
+        worker_override: crate::session::handle::new_session_worker_state(),
         session_yolo_mode,
         session_auto_mode: false,
         prompt_display_cwd: None,

@@ -182,6 +182,82 @@ async fn turn_distribution_includes_nested_subagent_efforts_once() {
         .await;
 }
 
+/// A child whose spawning prompt already ended sends only its newly accepted
+/// slice to that prompt's usage row; a resent attempt sends an empty slice.
+#[tokio::test(flavor = "current_thread")]
+async fn late_child_usage_is_sent_to_spawning_prompt_row_once() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
+            let (persistence_tx, mut persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.signals_handle().increment_turn();
+            actor.signals_handle().increment_turn();
+            *actor.current_prompt_id.lock().unwrap() = Some("p-2".into());
+            let child = distill_chat_state::UsageAttribution {
+                attempt_id: "child-1".into(),
+                task_id: None,
+                turn_id: None,
+                request_id: None,
+                role: "main".into(),
+                model_id: "m".into(),
+                endpoint: None,
+                requested_effort: None,
+                applied_effort: None,
+                reason: None,
+                bytes_in: None,
+                bytes_out: None,
+                status: distill_chat_state::UsageCallStatus::Completed,
+                usage: Some(distill_sampling_types::TokenUsage {
+                    prompt_tokens: 40,
+                    completion_tokens: 1,
+                    ..Default::default()
+                }),
+                usage_complete: true,
+                api_duration_ms: None,
+                cost_usd_ticks: None,
+                cost_basis: distill_chat_state::UsageCostBasis::Unknown,
+            };
+
+            for expected_slice in [40, 0] {
+                let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+                actor
+                    .handle_record_subagent_usage_command_with_attributions_and_pending(
+                        &[],
+                        std::slice::from_ref(&child),
+                        &[],
+                        Some("p-1"),
+                        false,
+                        ack_tx,
+                    )
+                    .await;
+                assert!(ack_rx.await.is_ok());
+                let (prompt_id, turn_number, live, late) = loop {
+                    match persistence_rx.try_recv() {
+                        Ok(PersistenceMsg::LateSubagentUsage {
+                            prompt_id,
+                            turn_number,
+                            live,
+                            late,
+                        }) => break (prompt_id, turn_number, live, late),
+                        Ok(PersistenceMsg::UsageTurn { .. }) => {
+                            panic!("late child usage was billed to the current turn")
+                        }
+                        Ok(_) => {}
+                        Err(e) => panic!("no late usage message: {e:?}"),
+                    }
+                };
+                assert_eq!(prompt_id, "p-1");
+                assert_eq!(turn_number, 2);
+                assert_eq!(late.input_tokens, expected_slice);
+                assert_eq!(live.input_tokens, 40, "session ledger folds once");
+            }
+        })
+        .await;
+}
+
 /// The exact command sequence a timed-out child leaves queued on `cmd_rx`: `RecordSubagentUsage` then `MarkSubagentUsageNotApplied` for the same prompt, serviced in order when the parent wakes.
 /// The usage must fold exactly once, both commands must ack, and the sticky mark must stain the ledgers on top of the applied fold (never re-open or re-attribute it).
 #[tokio::test(flavor = "current_thread")]

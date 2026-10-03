@@ -417,3 +417,54 @@ fn upgrade_legacy_reasoning_singular_anthropic_no_id() {
     assert_eq!(r.id, "");
     assert_eq!(r.encrypted_content.as_deref(), Some("signature-bytes-here"));
 }
+
+#[test]
+fn test_messages_request_cache_breakpoint_marks_project_instructions_end() {
+    // A child's first request: siblings share system, tools and AGENTS.md up to this mark.
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::project_instructions("AGENTS.md rules"),
+        ConversationItem::user("task"),
+    ])
+    .with_model("messages-compatible-model");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let Some(messages) = json.get("messages").and_then(|v| v.as_array()) else {
+        panic!("expected messages array: {json:#}");
+    };
+    let Some(agents) = messages.first() else {
+        panic!("expected AGENTS.md message: {json:#}");
+    };
+    assert_eq!(marker_on_last_block(agents), Some("ephemeral"), "{json:#}");
+    assert_eq!(count_cache_control(&json), 3, "{json:#}");
+}
+
+#[test]
+fn test_messages_request_cache_breakpoint_keeps_fourth_slot_free() {
+    // A gateway with automatic caching adds one breakpoint and five are rejected,
+    // so AGENTS.md is not marked once system, tip and previous turn use three.
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::project_instructions("AGENTS.md rules"),
+        ConversationItem::user("task"),
+        ConversationItem::assistant("working"),
+        ConversationItem::user("follow up"),
+    ])
+    .with_model("messages-compatible-model");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert_eq!(count_cache_control(&json), 3, "{json:#}");
+}
+
+#[test]
+fn test_messages_request_cache_breakpoint_skips_lone_project_instructions() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::project_instructions("AGENTS.md rules"),
+    ])
+    .with_model("messages-compatible-model");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    // System plus the tip, which is the lone project-instructions message.
+    assert_eq!(count_cache_control(&json), 2, "{json:#}");
+}

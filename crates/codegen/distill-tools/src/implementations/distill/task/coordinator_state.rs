@@ -134,6 +134,8 @@ pub struct CompletionDisposition {
     pub waiter_delivered: bool,
     pub explicitly_killed: bool,
     pub should_surface: bool,
+    /// Another background child of the same parent can still surface its completion.
+    pub background_sibling_running: bool,
 }
 
 /// Terminal event delivered to the runtime adapter after state is committed.
@@ -197,6 +199,9 @@ pub trait ChildRunner: 'static {
     }
 
     fn running_count_changed(&self, _running: usize) {}
+
+    /// User Stop or session teardown cancelled the parent's children; drop any wake still held for it.
+    fn parent_session_cancelled(&self, _parent_session_id: &str) {}
 
     fn persisted_output_ref(&self, _completion_data: &Self::CompletionData) -> Option<String> {
         None
@@ -944,6 +949,7 @@ pub fn terminal_snapshot(
             tool_calls: result.tool_calls,
             turns: result.turns,
             worktree_path: result.worktree_path.clone(),
+            model: result.model.clone(),
         }
     } else {
         SubagentSnapshotStatus::Failed {
@@ -1018,12 +1024,14 @@ pub fn completion_summary(
             tool_calls,
             turns,
             worktree_path,
+            model,
             ..
         } => SubagentSnapshotStatus::Completed {
             output: String::new(),
             tool_calls: *tool_calls,
             turns: *turns,
             worktree_path: worktree_path.clone(),
+            model: model.clone(),
         },
         status => status.clone(),
     };

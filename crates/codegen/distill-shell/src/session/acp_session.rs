@@ -203,6 +203,7 @@ pub(crate) use jev_compaction::*;
 use sampler_turn::*;
 #[path = "acp_session_impl/tool_dispatch.rs"]
 mod tool_dispatch;
+pub(crate) use tool_dispatch::lock_path_for_args;
 use tool_dispatch::*;
 #[path = "acp_session_impl/mcp_snapshot.rs"]
 mod mcp_snapshot;
@@ -782,6 +783,8 @@ pub(crate) struct SessionActor {
     pub(crate) canonical_model_id: std::cell::RefCell<acp::ModelId>,
     /// Mutable explicit model-policy intent, separate from per-round routing.
     pub(crate) model_routing_locked: std::cell::Cell<bool>,
+    /// The `<orchestration>` section lags the session's worker: a turn was running when it changed.
+    pub(crate) worker_prompt_pending: std::cell::Cell<bool>,
     /// The event fires at each of the six `OaiCompatClient` 401 arms in `distill-sampler`.
     /// Threaded into every `SamplerConfig` reconstructed by `reconstruct_full_config`.
     /// `None` when the session was spawned without an `AuthManager` (BYOK direct mode, test fixtures).

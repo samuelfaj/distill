@@ -721,9 +721,11 @@ pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputRes
             tool_calls,
             turns,
             worktree_path,
+            model,
         } => {
+            let model = distill_tool_types::format_subagent_meta_model(model.as_deref());
             let mut output = format!(
-                "{output}\n\n<subagent_meta>id={}, type={}, tool_calls={tool_calls}, \
+                "{output}\n\n<subagent_meta>id={}, type={}{model}, tool_calls={tool_calls}, \
                  turns={turns}, duration_ms={}</subagent_meta>",
                 snap.subagent_id, snap.subagent_type, snap.duration_ms,
             );
@@ -2434,6 +2436,7 @@ mod tests {
                         tool_calls: 5,
                         turns: 2,
                         worktree_path: None,
+                        model: Some("worker-model".to_string()),
                     },
                     started_at_epoch_ms: 1_700_000_000_000,
                     duration_ms: 1500,
@@ -2460,6 +2463,15 @@ mod tests {
                 assert_eq!(r.task_id, "sub-done");
                 assert_eq!(r.status, "completed");
                 assert!(r.output.contains("Found 3 files"), "output: {}", r.output);
+                // The parent sees which model actually ran the child.
+                assert!(
+                    r.output.contains(
+                        "<subagent_meta>id=sub-done, type=explore, model=worker-model, \
+                         tool_calls=5, turns=2, duration_ms=1500</subagent_meta>"
+                    ),
+                    "output: {}",
+                    r.output
+                );
             }
             other => panic!("Expected Result(completed), got {:?}", other),
         }
@@ -2557,6 +2569,7 @@ mod tests {
                 tool_calls: 5,
                 turns: 2,
                 worktree_path: None,
+                model: None,
             },
             started_at_epoch_ms: 1_700_000_000_000,
             duration_ms: 1500,

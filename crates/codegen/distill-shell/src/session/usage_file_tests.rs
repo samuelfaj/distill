@@ -541,3 +541,80 @@ fn persistence_preserves_reported_free_cost_but_not_legacy_zero() {
     assert_eq!(model.cost_usd_ticks, None);
     assert!(model.cost_is_partial);
 }
+
+/// Two persisted turns plus the ledger that produced them; the child of turn 1
+/// reports while turn 2 is the current row.
+fn spawning_and_current_turn() -> (SessionUsageFile, UsageLedger, UsageSummary) {
+    let mut ledger = UsageLedger::default();
+    ledger.record_main_loop_call("parent", &tu(100, 10), Some(10), Some(5));
+    let first = UsageSummary::from_ledger(&ledger);
+    ledger.record_main_loop_call("parent", &tu(50, 5), Some(10), Some(5));
+    let second = UsageSummary::from_ledger(&ledger);
+    let mut file = SessionUsageFile::new("sess-1");
+    file.apply_turn(1, "t1", &first, None);
+    file.apply_turn(2, "t2", &second, Some(&first));
+    (file, ledger, second)
+}
+
+#[test]
+fn late_usage_lands_in_spawning_turn_once_with_unchanged_session_totals() {
+    let (mut file, mut ledger, second) = spawning_and_current_turn();
+    let child = completed_attribution("child-1", "main", "child", Some("1"), 7, 2, 3);
+    let slice = ledger.record_subagent_usage_slice(&[], &[child], &[], false);
+    let late = UsageSummary::from_ledger(&slice);
+    let live = UsageSummary::from_ledger(&ledger);
+    // Today's path: the next delta bills the child to the current turn.
+    let mut old = file.clone();
+    old.apply_turn(2, "t2-late", &live, Some(&second));
+
+    assert!(file.apply_late_usage(1, &late, &live));
+    assert!(
+        file.apply_late_usage(1, &late, &live),
+        "a resent attempt is ignored"
+    );
+    assert!(!file.apply_late_usage(9, &late, &live));
+
+    assert_eq!(file.turns[0].usage.input_tokens, 107);
+    assert_eq!(file.turns[0].usage.model_calls, 2);
+    assert_eq!(file.turns[0].usage.cost_usd_ticks, Some(8));
+    assert_eq!(file.turns[1].usage.input_tokens, 50);
+    assert_eq!(old.turns[0].usage.input_tokens, 100);
+    for summary in [&file.session, &old.session] {
+        assert_eq!(summary.input_tokens, live.input_tokens);
+        assert_eq!(summary.output_tokens, live.output_tokens);
+        assert_eq!(summary.model_calls, live.model_calls);
+        assert_eq!(summary.cost_usd_ticks, live.cost_usd_ticks);
+    }
+}
+
+#[test]
+fn late_usage_turn_stays_incomplete_until_its_last_pending_attempt() {
+    let (mut file, mut ledger, _) = spawning_and_current_turn();
+    let child = completed_attribution("child-1", "main", "child", None, 7, 2, 3);
+    let pending = ["child-title".to_owned(), "child-recap".to_owned()];
+    let slice = ledger.record_subagent_usage_slice(&[], &[child], &pending, false);
+    assert!(file.apply_late_usage(
+        1,
+        &UsageSummary::from_ledger(&slice),
+        &UsageSummary::from_ledger(&ledger),
+    ));
+    assert!(file.turns[0].usage.usage_is_incomplete);
+
+    for (attempt_id, still_pending) in [("child-title", true), ("child-recap", false)] {
+        let row = completed_attribution(attempt_id, "auxiliary", "child", None, 1, 1, 1);
+        let slice = ledger.record_subagent_usage_slice(&[], &[row], &[], false);
+        assert!(file.apply_late_usage(
+            1,
+            &UsageSummary::from_ledger(&slice),
+            &UsageSummary::from_ledger(&ledger),
+        ));
+        assert_eq!(
+            file.turns[0].usage.usage_is_incomplete,
+            still_pending,
+            "after {attempt_id}"
+        );
+        assert_eq!(file.session.usage_is_incomplete, still_pending);
+    }
+    assert_eq!(file.turns[0].usage.model_calls, 4);
+    assert!(!file.turns[1].usage.usage_is_incomplete);
+}

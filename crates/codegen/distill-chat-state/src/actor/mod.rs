@@ -249,14 +249,16 @@ impl ChatStateActor {
                 pending_attempts,
                 reply,
             } => {
-                self.record_subagent_usage(
+                let slice = self.record_subagent_usage(
                     &by_model,
                     &attributions,
                     &pending_attempts,
                     attribute_to_prompt,
                     incomplete,
                 );
-                let _ = reply.send(());
+                let _ = reply.send(
+                    (!attribute_to_prompt).then(|| (slice, self.state.session_usage.clone())),
+                );
             }
             ChatStateCommand::MarkUsageIncomplete {
                 prompt,

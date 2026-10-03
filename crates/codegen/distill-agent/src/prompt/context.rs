@@ -1092,6 +1092,41 @@ mod tests {
         );
     }
     #[test]
+    fn child_rendered_prompt_places_user_info_after_stable_body() {
+        let ctx = minijinja::context! {
+            os_name => "linux",
+            shell_path => "/bin/bash",
+            working_directory => "/workspace",
+            current_date => "2026-03-26",
+            memory_enabled => false,
+            role_instructions => "Follow Rust conventions",
+            persona_instructions => "You are a code reviewer",
+            tools => minijinja::context! {
+                by_kind => minijinja::context! {
+                    read => "hashline_read",
+                    execute => "run_terminal_cmd",
+                    background_task_action => "get_task_output",
+                }
+            },
+        };
+        let rendered = render_subagent_template(ctx);
+        let user_info = rendered.find("<user_info>").expect("user_info present");
+        for stable in [
+            "<project_instructions_spec>",
+            "</project_instructions_spec>",
+            "<background_tasks>",
+            "<role-instructions>",
+            "<persona>",
+        ] {
+            let at = rendered.find(stable).expect(stable);
+            assert!(at < user_info, "{stable} must precede <user_info>");
+        }
+        assert!(
+            rendered.trim_end().ends_with("</user_info>"),
+            "user_info must close the prompt"
+        );
+    }
+    #[test]
     fn child_rendered_prompt_includes_project_instructions_like_main_agent() {
         let rendered = render_subagent_template(base_template_ctx());
         assert!(

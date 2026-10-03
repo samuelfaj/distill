@@ -666,12 +666,11 @@ impl SessionActor {
             .filter_map(|(_, path)| path.clone())
             .collect();
         let file_locks = {
-            let mut map: std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>> =
+            let mut map: std::collections::HashMap<String, Arc<FileLock>> =
                 std::collections::HashMap::new();
             for path in lock_paths.iter().flatten() {
                 if write_paths.contains(path) {
-                    map.entry(path.clone())
-                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())));
+                    map.entry(path.clone()).or_insert_with(|| file_lock(path));
                 }
             }
             map

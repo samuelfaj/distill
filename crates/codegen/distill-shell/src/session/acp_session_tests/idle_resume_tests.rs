@@ -139,6 +139,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 canonical_model_id: std::cell::RefCell::new(acp::ModelId::new("test-model")),
                 model_routing_locked: std::cell::Cell::new(false),
+                worker_prompt_pending: std::cell::Cell::new(false),
                 auth_manager: {
                     let dir = tempfile::tempdir().unwrap();
                     let mgr = std::sync::Arc::new(distill_login::AuthManager::new(

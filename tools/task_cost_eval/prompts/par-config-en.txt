@@ -1,0 +1,5 @@
+Apply this release spec to three files in tools/task_cost_eval/fixtures/par_config, changing nothing else in them:
+1. config/app.json: set "port" to 8081 and "log_level" to "debug".
+2. config/db.ini: set `timeout` in [database] to 30.
+3. docs/CHANGELOG.md: add a new "## 1.4.0" section above "## 1.3.0" with two bullets, "- Raised database timeout to 30 seconds." and "- Moved app to port 8081."
+Edit the files rather than only describing the change.

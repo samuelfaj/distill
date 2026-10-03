@@ -1,0 +1,5 @@
+Add input validation and tests to two independent modules in
+tools/task_cost_eval/fixtures/par_validation.
+- temperature.py `to_fahrenheit(celsius)`: raise TypeError unless celsius is an int or float (bool is not accepted), and ValueError when it is below -273.15.
+- cart.py `add_item(cart, name, qty)`: raise ValueError unless name is a non-empty, non-blank str and qty is a positive int (bool is not accepted).
+Valid calls keep their current results. Extend test_temperature.py and test_cart.py so each file has at least 3 tests, including at least 2 that use assertRaises. The tests run with `python3 -m unittest test_temperature` and `python3 -m unittest test_cart` from the fixture directory and must pass.

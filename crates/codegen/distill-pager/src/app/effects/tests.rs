@@ -2929,3 +2929,56 @@ fn upload_trace_request_without_intent_keeps_legacy_wire_shape() {
             r#"{"sessionId":"sess-1"}"#
         );
 }
+/// `session/new` and `session/load` carry this instance's worker, so the shell
+/// never starts the session on a `[models].worker` another instance saved.
+#[tokio::test]
+async fn session_create_and_load_meta_carry_the_instance_worker() {
+    use distill_acp_lib::AcpAgentMessage;
+    crate::acp::ModelState::set_instance_worker(
+        Some(acp::ModelId::new("instance-worker")),
+        Some(distill_shell::sampling::types::ReasoningEffort::Medium),
+    );
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut tasks = JoinSet::new();
+    for effect in [
+        Effect::CreateSession {
+            agent_id: AgentId(0),
+            cwd: cwd.path().to_path_buf(),
+            model_id: None,
+            permission_mode_override: None,
+            preferred_session_id: None,
+            chat_kind: false,
+        },
+        Effect::LoadSession {
+            agent_id: AgentId(1),
+            session_id: "loaded-session".into(),
+            session_cwd: Some(cwd.path().to_path_buf()),
+            chat_kind: false,
+        },
+    ] {
+        execute(effect, &mut tasks, &tx, cwd.path(), &SessionFlags::default(), &progress_tx);
+    }
+    let (mut created, mut loaded) = (false, false);
+    while !(created && loaded) {
+        let request = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("session request in time")
+            .expect("session request");
+        let meta = match request {
+            AcpAgentMessage::NewSession(args) => {
+                created = true;
+                args.request.meta
+            }
+            AcpAgentMessage::LoadSession(args) => {
+                loaded = true;
+                args.request.meta
+            }
+            other => panic!("expected session/new or session/load, got {other:?}"),
+        }
+        .expect("session meta");
+        assert_eq!(meta.get("workerModelId"), Some(&serde_json::json!("instance-worker")));
+        assert_eq!(meta.get("workerEffort"), Some(&serde_json::json!("medium")));
+    }
+}

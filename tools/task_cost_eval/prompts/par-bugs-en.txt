@@ -1,0 +1,5 @@
+Fix three unrelated bugs in tools/task_cost_eval/fixtures/par_bugs. Keep every
+signature and edit the files rather than only describing the fix.
+- pager.py `page_count(total_items, per_page)` must round up: 11 items at 10 per page is 2 pages, 0 items is 0 pages.
+- money.py `split_evenly(cents, parts)` must return shares that sum to `cents`, with the leftover cents given one each to the earliest shares: (100, 3) gives [34, 33, 33].
+- words.py `top_word(text)` must ignore case and return the lowercase most frequent word, ties going to the alphabetically first word; empty text gives None.

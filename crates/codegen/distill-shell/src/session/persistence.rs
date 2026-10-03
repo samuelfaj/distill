@@ -283,7 +283,18 @@ pub enum PersistenceMsg {
     Signals(SessionSignals),
     UsageTurn {
         turn_number: u32,
+        /// Prompt running this turn; remembered so a late child fold can find its row.
+        prompt_id: Option<String>,
         live: crate::session::usage_file::UsageSummary,
+    },
+    /// Child usage the session ledger accepted after its spawning prompt's
+    /// turn ended. `late` moves to that prompt's row; `live` is the session
+    /// ledger right after the fold and is then persisted like `UsageTurn`.
+    LateSubagentUsage {
+        prompt_id: String,
+        turn_number: u32,
+        live: crate::session::usage_file::UsageSummary,
+        late: crate::session::usage_file::UsageSummary,
     },
     /// Refresh the durable usage snapshot from the canonical chat-state ledger
     /// after a detached side-call reaches a terminal attribution.
@@ -1487,6 +1498,9 @@ struct SessionPersistence {
     last_usage_turn: Option<u32>,
     last_incoming_turn: Option<u32>,
     pending_usage_live: Option<crate::session::usage_file::UsageSummary>,
+    /// Written usage row per prompt id, for late child folds.
+    usage_turn_by_prompt: std::collections::HashMap<String, u32>,
+    late_usage_unmatched_logged: bool,
 }
 
 impl SessionPersistence {
@@ -2354,7 +2368,34 @@ impl SessionPersistence {
                         tracing::warn!(?e, "failed to write session signals");
                     }
                 }
-                PersistenceMsg::UsageTurn { turn_number, live } => {
+                PersistenceMsg::UsageTurn {
+                    turn_number,
+                    prompt_id,
+                    live,
+                } => {
+                    let live = self.take_pending_usage_live(turn_number, live);
+                    match self.persist_usage_turn(turn_number, &live).await {
+                        Ok(()) => {
+                            if let (Some(prompt_id), Some(written)) =
+                                (prompt_id, self.last_usage_turn)
+                            {
+                                self.usage_turn_by_prompt.insert(prompt_id, written);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(?e, turn_number, "failed to write session usage");
+                        }
+                    }
+                }
+                PersistenceMsg::LateSubagentUsage {
+                    prompt_id,
+                    turn_number,
+                    live,
+                    late,
+                } => {
+                    if let Err(e) = self.persist_late_usage(&prompt_id, &late, &live).await {
+                        tracing::warn!(?e, turn_number, "failed to write late subagent usage");
+                    }
                     let live = self.take_pending_usage_live(turn_number, live);
                     if let Err(e) = self.persist_usage_turn(turn_number, &live).await {
                         tracing::warn!(?e, turn_number, "failed to write session usage");
@@ -2554,6 +2595,45 @@ impl SessionPersistence {
         self.last_usage_live = Some(live.clone());
         self.last_incoming_turn = incoming;
         self.last_usage_turn = written;
+        Ok(())
+    }
+
+    /// Move `late` into the row written for `prompt_id` and advance the delta
+    /// baseline by it, so the next snapshot does not bill it to the current
+    /// turn. Without that row the slice stays with the next delta (logged once).
+    async fn persist_late_usage(
+        &mut self,
+        prompt_id: &str,
+        late: &crate::session::usage_file::UsageSummary,
+        live: &crate::session::usage_file::UsageSummary,
+    ) -> io::Result<()> {
+        let mut file = self.storage.read_usage(&self.info).await?;
+        let target = self
+            .usage_turn_by_prompt
+            .get(prompt_id)
+            .copied()
+            .filter(|turn| file.as_ref().is_some_and(|file| file.turn(*turn).is_some()));
+        let (Some(turn), Some(file), Some(previous)) =
+            (target, file.as_mut(), self.last_usage_live.as_ref())
+        else {
+            if !self.late_usage_unmatched_logged {
+                self.late_usage_unmatched_logged = true;
+                tracing::warn!(
+                    prompt_id,
+                    "spawning turn usage row not found; late subagent usage stays on the current turn"
+                );
+            }
+            return Ok(());
+        };
+        // A snapshot taken after the fold may already have billed the slice
+        // with its own delta; moving it again would count it twice.
+        if !live.saturating_sub(late).covers(previous) {
+            return Ok(());
+        }
+        file.apply_late_usage(turn, late, live);
+        file.session_id = self.info.id.to_string();
+        self.storage.write_usage(&self.info, file).await?;
+        self.last_usage_live = Some(previous.saturating_add(late));
         Ok(())
     }
 }
@@ -2901,6 +2981,8 @@ pub(crate) async fn new(
             last_usage_turn: None,
             last_incoming_turn: None,
             pending_usage_live: None,
+            usage_turn_by_prompt: Default::default(),
+            late_usage_unmatched_logged: false,
         };
         persistence.run().await;
     });
@@ -3014,6 +3096,8 @@ pub(crate) async fn new_with_explicit_dir(
             last_usage_turn: None,
             last_incoming_turn: None,
             pending_usage_live: None,
+            usage_turn_by_prompt: Default::default(),
+            late_usage_unmatched_logged: false,
         };
         persistence.run().await;
     });
@@ -3155,6 +3239,8 @@ pub(crate) async fn load_light(
             last_usage_turn: None,
             last_incoming_turn: None,
             pending_usage_live: None,
+            usage_turn_by_prompt: Default::default(),
+            late_usage_unmatched_logged: false,
         };
         persistence.run().await;
     });

@@ -63,6 +63,7 @@ pub fn format_memory_reminder(results: &[MemorySearchResult]) -> Option<String> 
     Some(section)
 }
 
+#[derive(Clone)]
 pub struct V2InjectedContext {
     pub content: String,
     pub global_entry_count: usize,
@@ -102,6 +103,50 @@ pub fn format_v2_memory_context(
         global_entry_count: global.included_entries,
         workspace_entry_count: workspace.included_entries,
     })
+}
+
+/// Identifies the parent prompt whose children must see one manifest snapshot.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ManifestSnapshotKey {
+    pub parent_session_id: String,
+    pub parent_prompt_id: String,
+}
+
+type ManifestCacheKey = (ManifestSnapshotKey, std::path::PathBuf, std::path::PathBuf);
+
+const MANIFEST_SNAPSHOT_CAPACITY: usize = 32;
+
+static MANIFEST_SNAPSHOTS: std::sync::Mutex<
+    std::collections::VecDeque<(ManifestCacheKey, V2InjectedContext)>,
+> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// [`format_v2_memory_context`], reused for every child of one parent prompt so sibling system prompts stay byte-identical for prompt-cache sharing.
+/// A new parent prompt, or different scope roots, regenerate. Without a key the manifest is always regenerated.
+pub fn format_v2_memory_context_for_parent_prompt(
+    storage: &crate::session::memory::MemoryStorage,
+    snapshot: Option<ManifestSnapshotKey>,
+) -> Result<V2InjectedContext, String> {
+    let Some(snapshot) = snapshot else {
+        return format_v2_memory_context(storage);
+    };
+    let key = (
+        snapshot,
+        storage.global_dir().to_path_buf(),
+        storage.workspace_dir().to_path_buf(),
+    );
+    // The lock spans regeneration so concurrent siblings cannot render different snapshots.
+    let mut cache = MANIFEST_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, context)) = cache.iter().find(|(cached, _)| *cached == key) {
+        return Ok(context.clone());
+    }
+    let context = format_v2_memory_context(storage)?;
+    if cache.len() >= MANIFEST_SNAPSHOT_CAPACITY {
+        cache.pop_front();
+    }
+    cache.push_back((key, context.clone()));
+    Ok(context)
 }
 
 /// Check if a message looks like a greeting or generic opener.
@@ -181,6 +226,52 @@ mod tests {
         assert!(refreshed.content.contains("topics/new.md"));
         assert_ne!(empty.content, refreshed.content);
         assert!(refreshed.workspace_entry_count >= 1);
+    }
+
+    #[test]
+    fn test_v2_context_is_shared_within_one_parent_prompt() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cwd = temp.path().join("workspace");
+        let root = temp.path().join("memory-v2");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let storage = crate::session::memory::MemoryStorage::new_for_mode(
+            &cwd,
+            Some(&root),
+            crate::config::MemoryMode::V2,
+        );
+        for (dir, scope) in [
+            (storage.global_dir(), crate::session::memory::V2MemoryScope::Global),
+            (
+                storage.workspace_dir(),
+                crate::session::memory::V2MemoryScope::Workspace,
+            ),
+        ] {
+            crate::session::memory::v2::ensure_scope_initialized(&root, dir, scope).unwrap();
+        }
+        let key = |prompt: &str| {
+            Some(ManifestSnapshotKey {
+                parent_session_id: "parent-session".into(),
+                parent_prompt_id: prompt.into(),
+            })
+        };
+
+        let first = format_v2_memory_context_for_parent_prompt(&storage, key("prompt-1")).unwrap();
+        std::fs::write(
+            storage.workspace_dir().join("topics/new.md"),
+            "# New\n\nCurrent.",
+        )
+        .unwrap();
+        let sibling =
+            format_v2_memory_context_for_parent_prompt(&storage, key("prompt-1")).unwrap();
+        assert_eq!(first.content, sibling.content);
+        assert!(!sibling.content.contains("topics/new.md"));
+
+        let next_prompt =
+            format_v2_memory_context_for_parent_prompt(&storage, key("prompt-2")).unwrap();
+        assert!(next_prompt.content.contains("topics/new.md"));
+
+        let uncached = format_v2_memory_context_for_parent_prompt(&storage, None).unwrap();
+        assert_eq!(uncached.content, next_prompt.content);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+Three small modules in tools/task_cost_eval/fixtures/par_functions are stubs
+that raise NotImplementedError. Implement all three with the standard library
+only, keeping the signatures and following each docstring:
+- slug.py `slugify(text)`: lowercase, every run of characters outside a-z and 0-9 becomes one "-", no leading or trailing "-".
+- ranges.py `merge_ranges(ranges)`: merge inclusive integer (start, end) ranges that overlap or are adjacent; return a sorted list of tuples.
+- roman.py `to_roman(number)`: Roman numeral for ints 1 to 3999, ValueError for anything else.
+Edit the files rather than only describing the answer.

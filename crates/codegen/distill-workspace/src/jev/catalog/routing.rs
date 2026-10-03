@@ -34,6 +34,10 @@ pub const DEFAULT_AGENT_LABEL: &str = "use_default_agent";
 
 /// B6 — floor for the delegation hint.
 pub const DELEGATION_HINT_FLOOR: f64 = 0.60;
+/// B6 — "one tool call is enough" question.
+pub const DELEGATION_SINGLE_QUESTION: &str = "fits_single_call";
+/// B6 — "independent parts" question.
+pub const DELEGATION_PARALLEL_QUESTION: &str = "needs_parallel";
 
 /// B1: intent plus a complexity score, in one request.
 pub fn intent_questions() -> Result<BTreeMap<QuestionId, Question>, JevError> {
@@ -432,7 +436,7 @@ pub fn offered_effort_choices(
 pub fn delegation_questions() -> Result<BTreeMap<QuestionId, Question>, JevError> {
     let mut questions = BTreeMap::new();
     questions.insert(
-        "fits_single_call".to_owned(),
+        DELEGATION_SINGLE_QUESTION.to_owned(),
         Question::noul_with_criteria(
             "Can this task be completed with a single tool call (no iteration)?",
             "One call is enough",
@@ -440,7 +444,7 @@ pub fn delegation_questions() -> Result<BTreeMap<QuestionId, Question>, JevError
         ),
     );
     questions.insert(
-        "needs_parallel".to_owned(),
+        DELEGATION_PARALLEL_QUESTION.to_owned(),
         Question::noul_with_criteria(
             "Does this task contain independent parts that could run in parallel?",
             "Parts are independent",
@@ -461,8 +465,8 @@ pub struct DelegationHint {
 /// sequential; defers on any missing answer.
 pub fn compose_delegation(answers: &JevAnswerSet) -> DelegationHint {
     let (Some(single), Some(parallel)) = (
-        super::noul_of(answers, "fits_single_call"),
-        super::noul_of(answers, "needs_parallel"),
+        super::noul_of(answers, DELEGATION_SINGLE_QUESTION),
+        super::noul_of(answers, DELEGATION_PARALLEL_QUESTION),
     ) else {
         return DelegationHint {
             suggest_delegation: false,

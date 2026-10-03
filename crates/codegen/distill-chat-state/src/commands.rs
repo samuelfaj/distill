@@ -156,7 +156,9 @@ pub enum ChatStateCommand {
         incomplete: bool,
         /// Child calls admitted but not terminal at this fold boundary.
         pending_attempts: Vec<String>,
-        reply: oneshot::Sender<()>,
+        /// Session-only folds reply `(slice, session)`: what the session
+        /// ledger newly accepted and the session ledger right after the fold.
+        reply: oneshot::Sender<Option<(crate::usage::UsageLedger, crate::usage::UsageLedger)>>,
     },
 
     /// Mark open prompt and/or session ledgers incomplete.

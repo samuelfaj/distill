@@ -619,6 +619,10 @@ pub struct StartupHints {
     /// It matches the `SubagentStart`/`SubagentStop` events the parent emits, which also key off the task type, not the resolved agent name.
     #[serde(default)]
     pub subagent_type: Option<String>,
+    /// Id of the parent prompt that spawned this child; children of one parent prompt share one memory-manifest snapshot.
+    /// Transient spawn policy, never read from an attach payload.
+    #[serde(skip)]
+    pub parent_prompt_id: Option<String>,
     /// Set on a fork spawn so `install_system_prompt` does NOT overwrite the inherited System at `conversation[0]`.
     /// The verbatim parent copy already holds the parent's System, and overwriting it would bust the cache prefix.
     #[serde(default)]
@@ -636,6 +640,10 @@ pub struct StartupHints {
     /// input, so it is never read from an attach payload or persisted here.
     #[serde(skip)]
     pub explicit_model_override: bool,
+    /// Fresh task-tool child (not a fork, workflow or harness role): gets one
+    /// "report now" reminder when its turn runs long. Transient spawn policy.
+    #[serde(skip)]
+    pub report_budget: bool,
     #[serde(skip)]
     pub startup_traceparent: std::cell::RefCell<Option<String>>,
 }

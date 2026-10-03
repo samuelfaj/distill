@@ -289,6 +289,55 @@ mod tests {
         clear_test_decision_answers();
     }
 
+    /// B6 runs in shadow: it joins a request an active pack already makes and
+    /// never costs a request of its own.
+    #[tokio::test]
+    async fn a_shadow_pack_rides_along_but_never_asks_alone() {
+        use distill_workspace::jev::flags::JevLever;
+        use distill_workspace::jev::types::{Answer, JevAnswerSet, Question};
+        let flags = JevFlags::harness_default();
+        let pack = || {
+            Some(
+                [("q".to_owned(), Question::noul("Is it?"))]
+                    .into_iter()
+                    .collect(),
+            )
+        };
+        set_test_decision_answers([None]);
+        let [alone] = ask_items_with_flags(
+            serde_json::json!({}),
+            [(JevLever::B6DelegationHint, pack())],
+            &flags,
+        )
+        .await;
+        assert!(alone.is_none());
+        assert_eq!(test_decision_answers_remaining(), 1, "no request of its own");
+        set_test_decision_answers([Some(JevAnswerSet {
+            model: "test".to_owned(),
+            answers: [
+                ("0:q".to_owned(), Answer::Noul { noul: 0.2 }),
+                ("1:q".to_owned(), Answer::Noul { noul: 0.8 }),
+            ]
+            .into_iter()
+            .collect(),
+            usage: Default::default(),
+            latency_ms: 1,
+            request_id: None,
+        })]);
+        let [active, shadow] = ask_items_with_flags(
+            serde_json::json!({}),
+            [
+                (JevLever::B1IntentRouting, pack()),
+                (JevLever::B6DelegationHint, pack()),
+            ],
+            &flags,
+        )
+        .await;
+        assert_eq!(active.and_then(|a| a.noul("q")), Some(0.2));
+        assert_eq!(shadow.and_then(|a| a.noul("q")), Some(0.8));
+        clear_test_decision_answers();
+    }
+
     #[test]
     fn jev_config_cannot_enable_permission_decisions() {
         let config: JevConfig = toml::from_str(
@@ -475,6 +524,8 @@ fn decision_memo_key(
 /// Ask independent packs about the same state once. Each pack keeps its flag
 /// and answer ids. The first active pack owns the request's usage and latency;
 /// subsequent decision records carry zero usage so the total is counted once.
+/// A pack that only runs in shadow (B6) rides along on a request an active
+/// pack makes and never sends one alone.
 pub async fn ask_items<const N: usize>(
     state: serde_json::Value,
     items: [(
@@ -500,11 +551,13 @@ async fn ask_items_with_flags<const N: usize>(
     let mut first = None;
     let mut ids: [Vec<String>; N] = std::array::from_fn(|_| Vec::new());
     for (index, (lever, pack)) in items.into_iter().enumerate() {
-        if !flags.lever_active(lever) {
+        if !flags.lever_asks(lever) {
             continue;
         }
         for (id, question) in pack.into_iter().flatten() {
-            first.get_or_insert(lever);
+            if flags.lever_active(lever) {
+                first.get_or_insert(lever);
+            }
             questions.insert(format!("{index}:{id}"), question);
             ids[index].push(id);
         }
@@ -555,10 +608,11 @@ pub async fn ask_item(
     }
     #[cfg(test)]
     if let Some(answer) = TEST_DECISION_ANSWERS.with(|queue| {
-        queue
-            .borrow_mut()
-            .as_mut()
-            .map(|answers| answers.pop_front().unwrap_or(None))
+        queue.borrow_mut().as_mut().map(|answers| {
+            TEST_ASKED_QUESTIONS
+                .with(|asked| asked.borrow_mut().push(questions.keys().cloned().collect()));
+            answers.pop_front().unwrap_or(None)
+        })
     }) {
         return answer;
     }
@@ -640,6 +694,9 @@ thread_local! {
     static TEST_DECISION_ANSWERS: std::cell::RefCell<
         Option<std::collections::VecDeque<Option<distill_workspace::jev::types::JevAnswerSet>>>,
     > = const { std::cell::RefCell::new(None) };
+    /// Question ids of each request that consumed one of those answers.
+    static TEST_ASKED_QUESTIONS: std::cell::RefCell<Vec<Vec<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
@@ -654,6 +711,13 @@ pub(crate) fn set_test_decision_answers(
 #[cfg(test)]
 pub(crate) fn clear_test_decision_answers() {
     TEST_DECISION_ANSWERS.with(|queue| *queue.borrow_mut() = None);
+    TEST_ASKED_QUESTIONS.with(|asked| asked.borrow_mut().clear());
+}
+
+/// Drains the question ids of the requests answered from the test queue.
+#[cfg(test)]
+pub(crate) fn take_test_asked_questions() -> Vec<Vec<String>> {
+    TEST_ASKED_QUESTIONS.with(|asked| std::mem::take(&mut *asked.borrow_mut()))
 }
 
 #[cfg(test)]
@@ -1082,6 +1146,21 @@ pub fn turn_activity(since: Option<std::time::Instant>) -> JevTurnActivity {
     turn_activity_for_session("", since)
 }
 
+/// Lever and label of each decision recorded for one session, oldest first.
+#[cfg(test)]
+pub(crate) fn recorded_decisions_for_test(session_id: &str) -> Vec<(String, String)> {
+    let Ok(state) = activity_state().lock() else {
+        return Vec::new();
+    };
+    state.sessions.get(session_id).map_or_else(Vec::new, |session| {
+        session
+            .ring
+            .iter()
+            .map(|entry| (entry.lever.clone(), entry.decision.clone()))
+            .collect()
+    })
+}
+
 /// Reads the status for one session without relying on whichever async task is
 /// currently rendering the UI.
 pub fn turn_activity_for_session(
@@ -1181,6 +1260,8 @@ thread_local! {
     /// `Some(None)` pins the worker's effort to auto regardless of the disk config.
     static TEST_WORKER_EFFORT: std::cell::RefCell<Option<Option<distill_sampling_types::ReasoningEffort>>> =
         const { std::cell::RefCell::new(None) };
+    /// Pins the resolved flags regardless of the disk config.
+    static TEST_FLAGS: std::cell::Cell<Option<JevFlags>> = const { std::cell::Cell::new(None) };
 }
 
 /// Snapshot the configured utility model without reading disk on every call.
@@ -1271,6 +1352,16 @@ pub(crate) fn clear_test_worker_effort() {
     TEST_WORKER_EFFORT.with(|current| *current.borrow_mut() = None);
 }
 
+#[cfg(test)]
+pub(crate) fn set_test_flags(flags: JevFlags) {
+    TEST_FLAGS.with(|current| current.set(Some(flags)));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_flags() {
+    TEST_FLAGS.with(|current| current.set(None));
+}
+
 /// Whether a session starts in auto effort: the decision layer picks the effort
 /// for each model call, and an explicit level turns the mode off for the session.
 ///
@@ -1293,6 +1384,10 @@ pub fn lever_active(lever: distill_workspace::jev::flags::JevLever) -> bool {
 
 /// The flags resolved once per process (configuration does not change mid-run).
 fn flags_cached() -> distill_workspace::jev::flags::JevFlags {
+    #[cfg(test)]
+    if let Some(flags) = TEST_FLAGS.with(std::cell::Cell::get) {
+        return flags;
+    }
     static FLAGS: OnceLock<distill_workspace::jev::flags::JevFlags> = OnceLock::new();
     *FLAGS.get_or_init(|| flags_from(&resolve_config_from_disk()))
 }

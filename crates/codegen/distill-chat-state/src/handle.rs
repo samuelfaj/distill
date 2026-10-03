@@ -315,6 +315,31 @@ impl ChatStateHandle {
         .is_some()
     }
 
+    /// Session-only [`Self::record_subagent_usage_with_attributions_and_pending`].
+    /// Returns `(slice, session)`: what the session ledger newly accepted
+    /// (attempt-id deduplicated) and the session ledger right after the fold.
+    /// `None` if the actor did not acknowledge.
+    pub async fn record_session_only_subagent_usage(
+        &self,
+        by_model: Vec<(String, crate::usage::UsageTotals)>,
+        attributions: Vec<crate::usage::UsageAttribution>,
+        pending_attempts: Vec<String>,
+        incomplete: bool,
+    ) -> Option<(crate::usage::UsageLedger, crate::usage::UsageLedger)> {
+        self.query("RecordSubagentUsage", |reply| {
+            ChatStateCommand::RecordSubagentUsage {
+                by_model,
+                attributions,
+                attribute_to_prompt: false,
+                incomplete,
+                pending_attempts,
+                reply,
+            }
+        })
+        .await
+        .flatten()
+    }
+
     /// Mark open prompt and/or session ledgers incomplete.
     pub async fn mark_usage_incomplete(&self, prompt: bool, session: bool) -> bool {
         self.query("MarkUsageIncomplete", |reply| {

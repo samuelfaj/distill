@@ -42,7 +42,6 @@ a5_memory_rank        = true # A5: rank memory entries before injecting them
 a6_test_to_run        = true # A6: pick which test to run
 b1_intent_routing     = true # B1: classify the turn's intent and complexity
 b3_subagent_type      = true # B3: resolve an unknown subagent type
-b6_delegation_hint    = true # B6: one advisory line on the delegation tool
 c1_premature_stop     = true # C1: requested work still open
 c3_completion_check   = true # C3: something the user asked for is missing
 c4_diff_risk          = true # C4: flag a risky diff
@@ -56,6 +55,7 @@ b7_subagent_model     = true # B7: choose worker or main model for a subagent
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
+b6_delegation_hint    = false # B6: with a worker model, the turn-start request also asks whether the request has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request
 
 # Optional, with the defaults shown
 # base_url      = "https://api.typesafe.ai"

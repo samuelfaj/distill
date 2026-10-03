@@ -2209,8 +2209,21 @@ impl SessionActor {
             }
             let inject_start = std::time::Instant::now();
             let storage = self.memory.storage()?;
+            let snapshot = self
+                .startup_hints
+                .parent_session_id
+                .clone()
+                .zip(self.startup_hints.parent_prompt_id.clone())
+                .map(|(parent_session_id, parent_prompt_id)| {
+                    crate::session::helpers::memory_context::ManifestSnapshotKey {
+                        parent_session_id,
+                        parent_prompt_id,
+                    }
+                });
             let context = tokio::task::spawn_blocking(move || {
-                crate::session::helpers::memory_context::format_v2_memory_context(&storage)
+                crate::session::helpers::memory_context::format_v2_memory_context_for_parent_prompt(
+                    &storage, snapshot,
+                )
             })
             .await
             .map_err(|error| error.to_string())
@@ -2472,6 +2485,7 @@ impl SessionActor {
                     .persistence_tx
                     .send(PersistenceMsg::UsageTurn {
                         turn_number: signals.turn_count,
+                        prompt_id: self.current_prompt_id.lock().ok().and_then(|g| g.clone()),
                         live: crate::session::usage_file::UsageSummary::from_ledger(&ledger),
                     });
             }
@@ -2695,6 +2709,8 @@ impl SessionActor {
         let mut tool_turn_count: usize = 1;
         let mut last_progress_checkpoint: usize = 1;
         let mut loop_index: u32 = 0;
+        let mut last_prompt_tokens: Option<u32> = None;
+        let mut report_budget_sent = false;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
         let mut length_salvage_streak = LengthSalvageStreak::default();
@@ -2835,6 +2851,13 @@ impl SessionActor {
                 self.push_system_reminder(&reminder);
             }
             if !salvage.awaiting_continuation() {
+                self.jev_flush_delegation_hint().await;
+                self.flush_report_budget(
+                    loop_index.saturating_sub(1),
+                    last_prompt_tokens,
+                    &mut report_budget_sent,
+                )
+                .await;
                 self.drain_interjections_at_safe_point().await;
                 self.flush_pending_skill_reminders().await;
                 self.inject_pending_monitor_events().await;
@@ -2990,6 +3013,15 @@ impl SessionActor {
             );
             let mut request = request;
             request.x_grok_session_id = Some(self.session_info.id.to_string());
+            request.prompt_cache_key = crate::sampling::subagent_prompt_cache_key(
+                self.startup_hints.is_subagent,
+                self.startup_hints.preserve_inherited_system,
+                self.startup_hints.parent_session_id.as_deref(),
+                self.subagent_type_label().as_deref(),
+                sampling_config
+                    .as_ref()
+                    .and_then(|config| config.conversation_group_id.as_ref()),
+            );
             request.x_grok_turn_idx =
                 Some(self.chat_state_handle.get_prompt_index().await.to_string());
             request.x_grok_agent_id = Some(distill_telemetry::id::agent_id());
@@ -3310,6 +3342,7 @@ impl SessionActor {
             let model_elapsed_ms = model_timer.elapsed().as_millis() as u64;
             let usage = response.usage.as_ref();
             let prompt_tokens = usage.map(|u| u.prompt_tokens);
+            last_prompt_tokens = prompt_tokens;
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);

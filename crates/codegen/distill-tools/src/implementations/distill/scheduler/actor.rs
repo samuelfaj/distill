@@ -1179,6 +1179,7 @@ mod tests {
                                 tool_calls: 0,
                                 turns: 1,
                                 worktree_path: None,
+                                model: None,
                             },
                         )));
                     }
@@ -2269,6 +2270,7 @@ mod tests {
             tool_calls: 3,
             turns: 1,
             worktree_path: None,
+            model: None,
         };
         query2
             .respond_to
@@ -2397,6 +2399,7 @@ mod tests {
                     tool_calls: 1,
                     turns: 1,
                     worktree_path: None,
+                    model: None,
                 },
                 started_at_epoch_ms: 0,
                 duration_ms: 100,
@@ -2660,6 +2663,7 @@ mod tests {
                 tool_calls: 1,
                 turns: 1,
                 worktree_path: None,
+                model: None,
             },
         )
         .await;

@@ -93,6 +93,20 @@ fn apply_permission_mode_override(
     meta.insert("yoloMode".into(), serde_json::Value::Bool(mode.is_always_approve()));
     meta.insert("autoMode".into(), serde_json::Value::Bool(mode.is_auto()));
 }
+/// Stamp this instance's worker on `session/new|load` (`""` = no worker); without it the shell
+/// snapshots `[models].worker`, which another instance may have saved since.
+pub(crate) fn stamp_instance_worker_meta(meta: &mut acp::Meta) {
+    let model = crate::acp::ModelState::configured_worker_model();
+    let effort = model.as_ref().and_then(|_| crate::acp::ModelState::configured_worker_effort());
+    meta.insert(
+        "workerModelId".into(),
+        serde_json::json!(model.map_or_else(String::new, |id| id.0.to_string())),
+    );
+    meta.insert(
+        "workerEffort".into(),
+        serde_json::json!(crate::acp::model_state::effort_setting_label(effort)),
+    );
+}
 /// Send `session/new` inside the `session_create.backend_rpc` region and stamp that region's
 /// traceparent, so the agent-side leg nests under this round-trip, not the enclosing phase span.
 async fn create_session_in_backend_rpc(
@@ -343,6 +357,7 @@ pub(crate) fn execute(
                 meta.get_or_insert_with(acp::Meta::new)
                     .insert("modelId".into(), serde_json::json!(mid.0));
             }
+            stamp_instance_worker_meta(meta.get_or_insert_with(acp::Meta::new));
             if let Some(ref sid) = preferred_session_id {
                 meta.get_or_insert_with(acp::Meta::new)
                     .insert("sessionId".into(), serde_json::json!(sid));
@@ -453,6 +468,7 @@ pub(crate) fn execute(
                 meta.get_or_insert_with(acp::Meta::new)
                     .insert("modelId".into(), serde_json::json!(mid.0));
             }
+            stamp_instance_worker_meta(meta.get_or_insert_with(acp::Meta::new));
             let client_session_id = load_session_id
                 .is_none()
                 .then(|| preferred_session_id.clone().or(minted_session_id))
@@ -599,6 +615,7 @@ pub(crate) fn execute(
                 meta.get_or_insert_with(acp::Meta::new)
                     .insert("x.ai/restore_code".into(), serde_json::Value::Bool(rc));
             }
+            stamp_instance_worker_meta(meta.get_or_insert_with(acp::Meta::new));
             let cwd = session_cwd.unwrap_or_else(|| cwd.to_path_buf());
             let acp_session_id = acp::SessionId::new(session_id);
             tasks

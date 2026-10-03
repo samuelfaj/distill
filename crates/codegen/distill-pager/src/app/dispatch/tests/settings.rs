@@ -407,6 +407,7 @@ fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {
 /// `[models].worker` and must never switch the session off its main model.
 #[test]
 fn slash_worker_model_saves_worker_and_keeps_main_session() {
+    crate::acp::ModelState::set_instance_worker(None, None);
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
     let main = acp::ModelId::new("chatgpt/gpt-6-sol");
@@ -486,6 +487,7 @@ fn effort_capable(id: &acp::ModelId, name: &str) -> acp::ModelInfo {
 /// settings the worker's readers see, and the mirrors show the pick.
 #[test]
 fn slash_worker_model_with_an_effort_saves_both() {
+    crate::acp::ModelState::set_instance_worker(None, None);
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
     let main = acp::ModelId::new("chatgpt/gpt-6-sol");
@@ -528,11 +530,44 @@ fn slash_worker_model_with_an_effort_saves_both() {
     assert_eq!(agent.session.models.current, Some(main), "the main model is untouched");
 }
 
+/// Each TUI instance keeps its own worker: `/worker-model` is judged against
+/// this instance's worker, never the `[models].worker_effort` another instance
+/// saved, so the sessions get a new effort exactly when it changes.
+#[test]
+fn worker_model_change_is_judged_against_the_instance_worker() {
+    let mut app = test_app_with_agent();
+    let worker = acp::ModelId::new("instance-worker-x");
+    let medium = Some(distill_shell::sampling::types::ReasoningEffort::Medium);
+    {
+        let models = &mut app.agents.get_mut(&AgentId(0)).unwrap().session.models;
+        models.available.insert(worker.clone(), effort_capable(&worker, "Instance Worker X"));
+        models.worker_model = Some(worker.clone());
+    }
+    app.models.worker_model = Some(worker.clone());
+    crate::acp::ModelState::set_instance_worker(Some(worker.clone()), None);
+
+    let effects = dispatch(Action::SetWorkerModel(worker.clone(), medium), &mut app);
+    assert!(
+        effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SetSessionWorker { model_id, effort, .. }
+                if model_id == "instance-worker-x" && *effort == medium
+        )),
+        "auto -> medium must reach the session: {effects:?}"
+    );
+    assert_eq!(crate::acp::ModelState::configured_worker_effort(), medium);
+
+    crate::acp::ModelState::set_instance_worker(Some(worker.clone()), medium);
+    let effects = dispatch(Action::SetWorkerModel(worker, medium), &mut app);
+    assert!(effects.is_empty(), "already this instance's worker: {effects:?}");
+}
+
 /// The Model tiers screen takes `model [effort]` for the main model and the
 /// worker. The main model's level switches this session and is saved for new
 /// ones; the worker's `auto` is saved as the worker effort.
 #[test]
 fn tier_editor_saves_main_and_worker_efforts() {
+    crate::acp::ModelState::set_instance_worker(None, None);
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
     let main = acp::ModelId::new("chatgpt/gpt-6-sol");
@@ -589,7 +624,10 @@ fn tier_editor_saves_main_and_worker_efforts() {
 #[test]
 fn worker_effort_rollback_restores_the_previous_effort() {
     let mut app = test_app_with_agent();
-    app.models.worker_effort = Some(distill_shell::sampling::types::ReasoningEffort::High);
+    let worker = acp::ModelId::new("worker");
+    let high = Some(distill_shell::sampling::types::ReasoningEffort::High);
+    crate::acp::ModelState::set_instance_worker(Some(worker.clone()), high);
+    app.models.worker_effort = high;
     apply_setting_rollback(
         &mut app,
         "worker_effort",
@@ -597,6 +635,8 @@ fn worker_effort_rollback_restores_the_previous_effort() {
     );
     assert_eq!(app.models.worker_effort, None);
     assert_eq!(expect_agent(&app, AgentId(0)).session.models.worker_effort, None);
+    assert_eq!(crate::acp::ModelState::configured_worker_model(), Some(worker));
+    assert_eq!(crate::acp::ModelState::configured_worker_effort(), None);
 }
 
 /// A failed worker write restores the previous worker mirror and leaves the
@@ -628,6 +668,11 @@ fn worker_model_rollback_restores_only_the_worker_mirror() {
         Some(acp::ModelId::new("old-worker"))
     );
     assert_eq!(agent.session.models.current, Some(main));
+    assert_eq!(
+        crate::acp::ModelState::configured_worker_model(),
+        Some(acp::ModelId::new("old-worker")),
+        "the instance worker rolls back with the mirror"
+    );
 }
 
 #[test]

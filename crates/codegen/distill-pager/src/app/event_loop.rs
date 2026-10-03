@@ -297,6 +297,9 @@ fn plan_reconnect_load(
     let yolo = agent.session.is_yolo();
     let auto = super::dispatch::effective_auto(yolo, agent.session.is_auto());
     let mut meta = serde_json::json!({ "yoloMode": yolo, "autoMode": auto });
+    if let Some(obj) = meta.as_object_mut() {
+        effects::stamp_instance_worker_meta(obj);
+    }
     if let Some(ref cursor) = agent.last_seen_event_id
         && let Some(obj) = meta.as_object_mut()
     {
@@ -4756,6 +4759,18 @@ mod tests {
         let plan = plan_reconnect_load(&agent, std::path::Path::new("/pager/cwd")).unwrap();
         assert_eq!(j(&plan.meta, "yoloMode"), &serde_json::json!(true));
         assert_eq!(j(&plan.meta, "cursor"), &serde_json::json!("sess-1-42"));
+    }
+    /// A reconnect reload keeps this instance's worker instead of the saved `[models].worker`.
+    #[test]
+    fn plan_reconnect_load_meta_carries_the_instance_worker() {
+        crate::acp::ModelState::set_instance_worker(
+            Some(acp::ModelId::new("instance-worker")),
+            None,
+        );
+        let agent = crate::test_util::make_agent_view(Some("sess-1"), "/work");
+        let plan = plan_reconnect_load(&agent, std::path::Path::new("/pager/cwd")).unwrap();
+        assert_eq!(j(&plan.meta, "workerModelId"), &serde_json::json!("instance-worker"));
+        assert_eq!(j(&plan.meta, "workerEffort"), &serde_json::json!("auto"));
     }
     #[test]
     fn plan_reconnect_load_meta_carries_auto_mode_from_session() {

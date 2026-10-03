@@ -35,10 +35,12 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
 
 /// An entry is written only at a breakpoint, so marking the system prompt alone leaves the transcript uncached.
 /// The third covers a turn that appends more than the API's 20 block lookback.
+/// The leading project-instructions message, when more follows it, is marked only while one of the four slots stays free, so sibling subagents share system, tools and that message on their first request.
 /// The fourth slot stays free: a gateway that turns on automatic caching takes it, and five is rejected outright.
 fn apply_cache_breakpoints(
     system_blocks: &mut [crate::messages::TextBlock],
     messages: &mut [crate::messages::Message],
+    leading_project_instructions: bool,
 ) {
     use crate::messages::{CacheControl, MessageRole};
 
@@ -70,6 +72,48 @@ fn apply_cache_breakpoints(
     {
         mark_message_cache_breakpoint(msg);
     }
+
+    if leading_project_instructions && messages.len() > 1 {
+        let used = count_cache_breakpoints(system_blocks, messages);
+        let already_marked = messages.first().is_some_and(|m| message_breakpoints(m) > 0);
+        if used + 1 < MAX_CACHE_BREAKPOINTS
+            && !already_marked
+            && let Some(first) = messages.first_mut()
+        {
+            mark_message_cache_breakpoint(first);
+        }
+    }
+}
+
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+fn message_breakpoints(msg: &crate::messages::Message) -> usize {
+    use crate::messages::{ContentBlock, MessageContent};
+
+    match &msg.content {
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter(|block| match block {
+                ContentBlock::Text { cache_control, .. }
+                | ContentBlock::ToolResult { cache_control, .. }
+                | ContentBlock::Image { cache_control, .. }
+                | ContentBlock::ToolUse { cache_control, .. } => cache_control.is_some(),
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => false,
+            })
+            .count(),
+        MessageContent::Text(_) => 0,
+    }
+}
+
+fn count_cache_breakpoints(
+    system_blocks: &[crate::messages::TextBlock],
+    messages: &[crate::messages::Message],
+) -> usize {
+    system_blocks
+        .iter()
+        .filter(|block| block.cache_control.is_some())
+        .count()
+        + messages.iter().map(message_breakpoints).sum::<usize>()
 }
 
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
@@ -276,7 +320,19 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
-    apply_cache_breakpoints(&mut system_blocks, &mut messages);
+    // The leading project-instructions item becomes `messages[0]` because the system item precedes it.
+    let leading_project_instructions = matches!(
+        (req.items.first(), req.items.get(1)),
+        (
+            Some(ConversationItem::System(_)),
+            Some(ConversationItem::User(u)),
+        ) if u.synthetic_reason == SyntheticReason::ProjectInstructions
+    );
+    apply_cache_breakpoints(
+        &mut system_blocks,
+        &mut messages,
+        leading_project_instructions,
+    );
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None

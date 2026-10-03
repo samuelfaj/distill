@@ -527,6 +527,7 @@ impl ChatStateActor {
         self.state.session_usage.register_pending_attempt(attempt_id);
     }
 
+    /// Returns the slice the session ledger newly accepted.
     pub(super) fn record_subagent_usage(
         &mut self,
         by_model: &[(String, crate::usage::UsageTotals)],
@@ -534,13 +535,13 @@ impl ChatStateActor {
         pending_attempts: &[String],
         attribute_to_prompt: bool,
         incomplete: bool,
-    ) {
+    ) -> crate::usage::UsageLedger {
         if by_model.is_empty()
             && attributions.is_empty()
             && pending_attempts.is_empty()
             && !incomplete
         {
-            return;
+            return crate::usage::UsageLedger::default();
         }
         if attribute_to_prompt {
             self.state
@@ -555,14 +556,12 @@ impl ChatStateActor {
         }
         // The session ledger always folds, even when usage is not attributable to the open prompt.
         // Reporting that gap is the coordinator's sticky flag — never mark a different live prompt's ledger.
-        self.state
-            .session_usage
-            .record_subagent_usage_with_pending(
-                by_model,
-                attributions,
-                pending_attempts,
-                incomplete,
-            );
+        self.state.session_usage.record_subagent_usage_slice(
+            by_model,
+            attributions,
+            pending_attempts,
+            incomplete,
+        )
     }
 
     pub(super) fn mark_usage_incomplete(&mut self, prompt: bool, session: bool) {

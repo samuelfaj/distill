@@ -19,6 +19,7 @@ fn summary(
             tool_calls: tools,
             turns: 1,
             worktree_path: None,
+            model: None,
         }
     } else {
         SubagentSnapshotStatus::Failed {

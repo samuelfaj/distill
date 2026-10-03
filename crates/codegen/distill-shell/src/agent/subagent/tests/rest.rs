@@ -1515,6 +1515,7 @@ async fn reconcile_reemits_shared_actor_terminal_outcome() {
                                 tool_calls: 7,
                                 turns: 2,
                                 worktree_path: None,
+                                model: None,
                             },
                         ),
                     ),
@@ -1633,6 +1634,7 @@ async fn live_reconcile_reemitted_finish_has_will_wake_false() {
                                 tool_calls: 3,
                                 turns: 1,
                                 worktree_path: None,
+                                model: None,
                             },
                         ),
                     ),
@@ -1677,6 +1679,7 @@ async fn live_reconcile_persists_terminal_meta_so_second_tick_is_noop() {
             tool_calls: 4,
             turns: 2,
             worktree_path: None,
+            model: None,
         },
     );
     live_reconcile_with_inspections(
@@ -1745,6 +1748,7 @@ async fn live_reconcile_overlapping_ticks_emit_once() {
             tool_calls: 4,
             turns: 2,
             worktree_path: None,
+            model: None,
         },
     );
     let inspections = HashMap::from([(id.to_string(), Some(completed))]);
@@ -2548,7 +2552,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         ctx
     };
     let ctx = build_ctx();
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             Some("goal-model"),
             "explore",
             &ModelOverride::Inherit,
@@ -2561,7 +2565,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         );
     assert_eq!(model_id.0.as_ref(), "goal-model");
     let ctx = build_ctx();
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             None,
             "explore",
             &ModelOverride::Inherit,
@@ -2574,7 +2578,7 @@ async fn runtime_override_wins_over_subagents_models_pin_in_precedence_path() {
         );
     assert_eq!(model_id.0.as_ref(), "pinned-model");
     let ctx = build_ctx();
-    let (config, _) = resolve_effective_model_config(
+    let (config, _, _) = resolve_effective_model_config(
             Some("does-not-exist"),
             "explore",
             &ModelOverride::Inherit,
@@ -2772,33 +2776,125 @@ fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
         assert_eq!(body.as_deref(), Some("Existing agent instructions"));
     }
 }
+/// The review diffs only what this child changed: the files its edit tools
+/// targeted plus paths git status gained while it ran. A sibling's earlier
+/// change stays out, and a path with spaces and quotes reaches git intact.
 #[tokio::test]
-async fn worker_repository_review_captures_actual_changes_and_flags_truncation() {
+async fn worker_repository_review_covers_only_this_childs_changes() {
+    use distill_sampling_types::conversation::ToolCall;
     let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
     let git = |args: &[&str]| {
         let output = std::process::Command::new("git")
-            .current_dir(dir.path()).args(args).output().unwrap();
+            .current_dir(&root).args(args).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     };
+    let quoted = "a b/q\"x.txt";
     git(&["init", "-q"]);
-    std::fs::write(dir.path().join("tracked.txt"), "before\n").unwrap();
-    git(&["add", "tracked.txt"]);
+    std::fs::create_dir(root.join("a b")).unwrap();
+    for (name, body) in [("tracked.txt", "before\n"), ("sibling.txt", "sibling before\n"), (quoted, "quoted before\n")] {
+        std::fs::write(root.join(name), body).unwrap();
+    }
+    git(&["add", "."]);
     git(&["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "baseline"]);
-    std::fs::write(dir.path().join("tracked.txt"), "after\n").unwrap();
-    std::fs::write(dir.path().join("untracked.txt"), "untracked body\n").unwrap();
-    let cwd = distill_paths::AbsPathBuf::new(dir.path().to_path_buf()).unwrap();
-    let capture = worker_repository_review(
-        &crate::terminal::LocalTerminalRunner, cwd.clone(), HashMap::new(),
-    ).await;
+    // Dirty before the child starts: a sibling's edit, and the file the child edits again.
+    std::fs::write(root.join("sibling.txt"), "sibling after\n").unwrap();
+    std::fs::write(root.join(quoted), "quoted dirty\n").unwrap();
+    let cwd = distill_paths::AbsPathBuf::new(root.clone()).unwrap();
+    let terminal = crate::terminal::LocalTerminalRunner;
+    let started = worker_git_status(&terminal, cwd.clone(), HashMap::new()).await;
+    assert!(started.as_ref().is_ok_and(|paths| paths.contains("sibling.txt") && paths.contains(quoted)), "{started:?}");
+
+    // The child edits the quoted file with its edit tool and the rest through the shell.
+    std::fs::write(root.join(quoted), "quoted after\n").unwrap();
+    std::fs::write(root.join("tracked.txt"), "after\n").unwrap();
+    std::fs::write(root.join("untracked.txt"), "untracked body\n").unwrap();
+    let call = |name: &str, args: serde_json::Value| ConversationItem::assistant_tool_calls(vec![ToolCall {
+        id: Arc::from(name), name: name.into(), arguments: Arc::from(args.to_string()),
+    }]);
+    let conversation = vec![
+        call("search_replace", serde_json::json!({ "file_path": quoted })),
+        call("read_file", serde_json::json!({ "target_file": "sibling.txt" })),
+    ];
+    let edit_paths = edit_tool_paths(&conversation, |name, args| (name == "search_replace").then_some(args), &root);
+    assert_eq!(edit_paths, vec![root.join(quoted)]);
+
+    let capture = worker_repository_review(&terminal, cwd.clone(), HashMap::new(), &edit_paths, &started, 24_000).await;
     assert!(capture.contains("capture_complete=true"), "{capture}");
     assert!(capture.contains("-before") && capture.contains("+after"), "{capture}");
-    assert!(capture.contains("?? untracked.txt") && !capture.contains("untracked body"));
+    assert!(capture.contains("-quoted before") && capture.contains("+quoted after"), "{capture}");
+    assert!(capture.contains("?? untracked.txt") && !capture.contains("untracked body"), "{capture}");
+    assert!(!capture.contains("sibling"), "a sibling's change must stay out: {capture}");
 
-    std::fs::write(dir.path().join("tracked.txt"), "x".repeat(24_001)).unwrap();
-    let capture = worker_repository_review(
-        &crate::terminal::LocalTerminalRunner, cwd, HashMap::new(),
-    ).await;
-    assert!(capture.contains("capture_complete=false") && capture.contains("truncated=true"));
+    let unchanged = worker_git_status(&terminal, cwd.clone(), HashMap::new()).await;
+    assert_eq!(
+        worker_repository_review(&terminal, cwd.clone(), HashMap::new(), &[], &unchanged, 24_000).await,
+        "<repository_review>No file changes by this subagent were detected; no diff was run.</repository_review>",
+    );
+
+    std::fs::write(root.join("tracked.txt"), "x".repeat(24_001)).unwrap();
+    let capture = worker_repository_review(&terminal, cwd, HashMap::new(), &[], &started, 24_000).await;
+    assert!(capture.contains("capture_complete=false") && capture.contains("truncated=true"), "{capture}");
+}
+/// Interactive (TUI) parents also get the worker review blocks, with a smaller
+/// capture; children that are not fresh, foreground worker runs get none.
+#[test]
+fn worker_review_reaches_interactive_parents_with_a_smaller_capture() {
+    let mut request = bootstrap_test_request(false);
+    request.surface_completion = true;
+    let new = InitialContextSource::New;
+    assert_eq!(worker_review_byte_limit(&request, true, &new, false), Some(8_000));
+    assert_eq!(worker_review_byte_limit(&request, true, &new, true), Some(24_000));
+    assert_eq!(worker_review_byte_limit(&request, false, &new, false), None, "not on the worker");
+    assert_eq!(worker_review_byte_limit(&request, true, &InitialContextSource::Resumed, false), None);
+    let mut background = request.clone();
+    background.run_in_background = true;
+    assert_eq!(worker_review_byte_limit(&background, true, &new, false), None);
+    let mut schema = request.clone();
+    schema.runtime_overrides.output_schema = Some(serde_json::json!({ "type": "object" }));
+    assert_eq!(worker_review_byte_limit(&schema, true, &new, false), None);
+}
+/// A task-tool child's own report is capped (3 KB with edit or shell tools,
+/// 12 KB read-only) only after the full text is stored and named in the marker.
+/// Short reports and workflow, harness or structured-output children stay whole.
+#[test]
+fn task_report_cap_truncates_long_reports_after_storing_them() {
+    use distill_tools::implementations::distill::task::types::ModelOverrideProvenance;
+    use distill_tools::implementations::distill::task::types::SubagentOwner;
+    use distill_tools::implementations::distill::{BashTool, GrepTool, ReadFileTool};
+    use distill_tools::registry::types::ToolConfig;
+    let read_only: Vec<ToolConfig> = vec![(&ReadFileTool).into(), (&GrepTool).into()];
+    let mut runs_commands = read_only.clone();
+    runs_commands.push((&BashTool).into());
+    let mut request = bootstrap_test_request(false);
+    request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+    assert_eq!(task_report_cap(&request, &runs_commands), Some(3_000));
+    assert_eq!(task_report_cap(&request, &read_only), Some(12_000));
+    let mut workflow = request.clone();
+    workflow.owner = SubagentOwner::workflow("run-1");
+    assert_eq!(task_report_cap(&workflow, &runs_commands), None, "workflow child");
+    let mut schema = request.clone();
+    schema.runtime_overrides.output_schema = Some(serde_json::json!({ "type": "object" }));
+    assert_eq!(task_report_cap(&schema, &runs_commands), None, "structured output");
+    assert_eq!(task_report_cap(&bootstrap_test_request(false), &runs_commands), None, "harness child");
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = |text: &str| crate::jev_store::store_payload_in(dir.path(), text);
+    let report: String = (0..300).map(|line| format!("line {line} é ✓\n")).collect();
+    let capped = cap_task_report(&report, 3_000, store).expect("a long report is capped");
+    let (head, marker) = capped.rsplit_once('\n').unwrap();
+    assert!(head.len() <= 3_000 && head.ends_with('✓') && report.starts_with(head), "cut at a line: {head}");
+    let path = marker
+        .strip_prefix(&format!("[report truncated: {} of {} bytes shown; full report stored at ", head.len(), report.len()))
+        .and_then(|rest| rest.strip_suffix(" — read it for the rest]"))
+        .expect(marker);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), report);
+
+    let one_line = format!("a{}", "✓".repeat(1_500));
+    let capped = cap_task_report(&one_line, 3_000, store).expect("capped");
+    assert!(capped.starts_with(&format!("{}\n[report truncated: 2998 of 4501 bytes", &one_line[..2_998])), "char boundary");
+    assert_eq!(cap_task_report("short report", 3_000, store), None);
+    assert_eq!(cap_task_report(&report, 3_000, |_| None), None, "a report that cannot be stored stays whole");
 }
 #[test]
 fn worker_execution_evidence_uses_recorded_results_not_the_final_claim() {
@@ -2836,30 +2932,38 @@ async fn delegated_work_resolves_to_the_worker_model_unless_pinned() {
     ctx.available_models.insert("worker-model".to_string(), worker);
     ctx.parent_chat_state = Some(spawn_test_parent_chat_state("main-model"));
 
-    let (config, model) = resolve_effective_model_config(
+    let (config, model, unavailable) = resolve_effective_model_config(
         None, "general-purpose", &ModelOverride::Inherit, Some("worker-model"), &ctx,
     )
     .await;
     assert_eq!(model.0.as_ref(), "worker-model");
     assert_eq!(config.base_url, "https://worker.example/v1");
     assert_eq!(config.api_key.as_deref(), Some("worker-key"));
+    assert_eq!(unavailable, None);
 
-    let (_, review) =
+    let (_, review, _) =
         resolve_effective_model_config(None, "code-reviewer", &ModelOverride::Inherit, None, &ctx)
             .await;
     assert_eq!(review.0.as_ref(), "main-model", "no worker default: the main model reviews");
 
-    for unusable in ["main-model", "missing-model"] {
-        let (_, fallback) = resolve_effective_model_config(
+    // Only a worker that cannot be pinned is reported; the caller warns and
+    // prefixes the child's report with it.
+    for (unusable, reported) in [("main-model", None), ("missing-model", Some("missing-model"))] {
+        let (_, fallback, unavailable) = resolve_effective_model_config(
             None, "general-purpose", &ModelOverride::Inherit, Some(unusable), &ctx,
         )
         .await;
         assert_eq!(fallback.0.as_ref(), "main-model", "{unusable}");
+        assert_eq!(unavailable.as_deref(), reported, "{unusable}");
     }
+    assert_eq!(
+        with_worker_fallback_warning("Done.\nDetails", "missing-model", "main-model"),
+        "Warning: worker model `missing-model` was unavailable, so this subagent ran on `main-model`.\nDone.\nDetails",
+    );
 
     ctx.subagent_model_overrides
         .insert("general-purpose".to_owned(), "main-model".to_owned());
-    let (_, pinned) = resolve_effective_model_config(
+    let (_, pinned, _) = resolve_effective_model_config(
         None, "general-purpose", &ModelOverride::Inherit, Some("worker-model"), &ctx,
     )
     .await;
@@ -2891,7 +2995,7 @@ async fn fork_context_pins_parent_model_over_overrides() {
     if fork_context {
         runtime_override = Some(ctx.model_id.0.to_string());
     }
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             runtime_override.as_deref(),
             "general-purpose",
             &agent_def,
@@ -2904,7 +3008,7 @@ async fn fork_context_pins_parent_model_over_overrides() {
         );
     assert_eq!(model_id.0.as_ref(), "parent-model");
     let ctx = build_ctx();
-    let (config, model_id) = resolve_effective_model_config(
+    let (config, model_id, _) = resolve_effective_model_config(
             None,
             "general-purpose",
             &agent_def,
@@ -2926,7 +3030,7 @@ async fn resolve_subagent_inherits_parent_model_without_pins() {
         let mut ctx = ctx_with_toggle(HashMap::new());
         ctx.sampling_config.model = parent_model.to_string();
         ctx.model_id = acp::ModelId::new(parent_model);
-        let (config, model_id) = resolve_subagent_sampling_config(
+        let (config, model_id, _) = resolve_subagent_sampling_config(
                 "explore",
                 &ModelOverride::Inherit,
                 None, &ctx,
@@ -2951,7 +3055,7 @@ async fn resolve_subagent_config_override_pin_applies_for_any_parent() {
             .insert("pinned-model".to_string(), test_model_entry("pinned-model"));
         ctx.subagent_model_overrides
             .insert("explore".to_string(), "pinned-model".to_string());
-        let (config, model_id) = resolve_subagent_sampling_config(
+        let (config, model_id, _) = resolve_subagent_sampling_config(
                 "explore",
                 &ModelOverride::Inherit,
                 None, &ctx,
@@ -2974,7 +3078,7 @@ async fn resolve_subagent_agent_definition_pin_applies_for_light_parent() {
     ctx.available_models
         .insert("pinned-model".to_string(), test_model_entry("pinned-model"));
     let agent_model = ModelOverride::Override("pinned-model".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
             None, &ctx,
@@ -2996,7 +3100,7 @@ async fn resolve_subagent_config_override_wins_over_agent_definition() {
         .insert("agentdef-pin".to_string(), test_model_entry("agentdef-pin"));
     ctx.subagent_model_overrides.insert("explore".to_string(), "config-pin".to_string());
     let agent_model = ModelOverride::Override("agentdef-pin".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
             None, &ctx,
@@ -3028,7 +3132,7 @@ async fn resolve_subagent_config_override_unselectable_model_falls_through_to_in
             crate::config::RequirementSource::Unknown,
         );
     ctx.agent_config = Some(cfg);
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             None, &ctx,
@@ -3054,7 +3158,7 @@ async fn resolve_subagent_config_override_user_allowlist_still_applies() {
     ctx.agent_config = Some(
         crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap(),
     );
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             None, &ctx,
@@ -3076,7 +3180,7 @@ async fn resolve_subagent_config_override_none_agent_config_blocks_unselectable(
     ctx.subagent_model_overrides
         .insert("explore".to_string(), "blocked-model".to_string());
     assert!(ctx.agent_config.is_none());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             None, &ctx,
@@ -3094,7 +3198,7 @@ async fn resolve_subagent_config_override_unknown_model_falls_through_to_inherit
     ctx.model_id = acp::ModelId::new("grok-4.5");
     ctx.subagent_model_overrides
         .insert("explore".to_string(), "does-not-exist".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             None, &ctx,
@@ -3111,7 +3215,7 @@ async fn resolve_subagent_agent_definition_unknown_model_falls_through_to_inheri
     ctx.sampling_config.model = "grok-4.5".to_string();
     ctx.model_id = acp::ModelId::new("grok-4.5");
     let agent_model = ModelOverride::Override("does-not-exist".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &agent_model,
             None, &ctx,
@@ -3143,7 +3247,7 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
         ..Default::default()
     });
     ctx.subagent_model_overrides.insert("explore".to_string(), "proxied".to_string());
-    let (config, model_id) = resolve_subagent_sampling_config(
+    let (config, model_id, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             None, &ctx,
@@ -3155,7 +3259,7 @@ async fn subagent_override_provider_model_spawns_cache_only_credentials() {
             "a cold cache spawns with no key, never the parent session key"
         );
     provider.ensure_fresh_token(None).await.rotated().unwrap();
-    let (config, _) = resolve_subagent_sampling_config(
+    let (config, _, _) = resolve_subagent_sampling_config(
             "explore",
             &ModelOverride::Inherit,
             None, &ctx,

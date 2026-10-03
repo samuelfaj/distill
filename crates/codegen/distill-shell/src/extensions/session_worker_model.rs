@@ -135,6 +135,30 @@ pub(crate) fn effective_worker(state: &SessionWorkerState) -> EffectiveWorker {
     }
 }
 
+/// The worker the session's main prompt names in `<orchestration>`: the worker its
+/// delegated children run on, kept only for a primary prompt with subagents enabled,
+/// a catalog model, and not the catalog entry of the session's own main model.
+pub(crate) fn orchestration_worker(
+    state: &SessionWorkerState,
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    session_model: &str,
+    prompt_audience: distill_agent::prompt::context::PromptAudience,
+    subagents_enabled: bool,
+) -> Option<String> {
+    if prompt_audience != distill_agent::prompt::context::PromptAudience::Primary
+        || !subagents_enabled
+    {
+        return None;
+    }
+    let session_choice = state.read().as_ref().map(|worker| worker.model_id.clone());
+    let worker = session_choice.unwrap_or_else(crate::jev::worker_model)?;
+    let models = models_manager.models();
+    let worker_entry = crate::agent::config::find_model_by_id(&models, &worker)?;
+    let is_session_model = crate::agent::config::find_model_by_id(&models, session_model)
+        .is_some_and(|main| std::ptr::eq(main, worker_entry));
+    (!is_session_model).then_some(worker)
+}
+
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     if args.method.as_ref() != SET_METHOD {
         return Err(acp::Error::method_not_found());
@@ -153,6 +177,9 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         request.effort.as_deref(),
     )?;
     *handle.worker_override.write() = next;
+    let _ = handle
+        .cmd_tx
+        .send(crate::session::SessionCommand::RefreshWorkerPrompt);
     to_raw_response(&effective_worker(&handle.worker_override))
 }
 

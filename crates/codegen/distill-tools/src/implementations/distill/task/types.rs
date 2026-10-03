@@ -441,6 +441,8 @@ pub struct SubagentResult {
     pub tool_calls: u32,
     pub turns: u32,
     pub duration_ms: u64,
+    /// Effective model id the child ran on, when known.
+    pub model: Option<String>,
     pub tokens_used: u64,
     pub output_tokens_used: u64,
     pub total_tokens_used: u64,
@@ -465,6 +467,7 @@ impl Default for SubagentResult {
             tool_calls: 0,
             turns: 0,
             duration_ms: 0,
+            model: None,
             tokens_used: 0,
             output_tokens_used: 0,
             total_tokens_used: 0,
@@ -622,6 +625,8 @@ pub enum SubagentSnapshotStatus {
         tool_calls: u32,
         turns: u32,
         worktree_path: Option<String>,
+        /// Effective model id the child ran on, when known.
+        model: Option<String>,
     },
     /// Child session failed or crashed.
     Failed { error: String },
@@ -1413,6 +1418,7 @@ mod tests {
             tool_calls: 1,
             turns: 1,
             worktree_path: None,
+            model: None,
         };
         assert!(status.is_terminal());
     }
@@ -1515,6 +1521,7 @@ mod tests {
                     tool_calls: 7,
                     turns: 3,
                     worktree_path: None,
+                    model: None,
                 },
                 started_at_epoch_ms: 0,
                 duration_ms: 1500,
@@ -1571,6 +1578,7 @@ mod tests {
                     tool_calls: 3,
                     turns: 1,
                     worktree_path: None,
+                    model: None,
                 },
                 started_at_epoch_ms: 1000,
                 duration_ms: 500,

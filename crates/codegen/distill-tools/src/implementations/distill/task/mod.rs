@@ -765,6 +765,7 @@ impl distill_tool_runtime::Tool for TaskTool {
                 turns: result.turns,
                 duration_ms: result.duration_ms,
                 worktree_path: result.worktree_path,
+                model: result.model,
                 persona: None,
                 resume_from_hint,
                 persona_hint,
@@ -1037,6 +1038,7 @@ mod tests {
                     tool_calls: 5,
                     turns: 2,
                     duration_ms: 1234,
+                    model: Some("worker-model".to_string()),
                     ..Default::default()
                 })
                 .unwrap();
@@ -1070,6 +1072,16 @@ mod tests {
                 assert_eq!(sub.turns, 2);
                 assert_eq!(sub.duration_ms, 1234);
                 assert_eq!(sub.subagent_type, "explore");
+                // The parent sees which model actually ran the child.
+                let text = sub.to_model_text();
+                assert!(
+                    text.contains(&format!(
+                        "<subagent_meta>id={}, type=explore, model=worker-model, tool_calls=5, \
+                         turns=2, duration_ms=1234</subagent_meta>",
+                        sub.subagent_id
+                    )),
+                    "{text}"
+                );
             }
             other => panic!("Expected SubagentCompleted output, got {:?}", other),
         }

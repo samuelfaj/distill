@@ -534,6 +534,32 @@ pub fn format_subagent_completion(
     );
     neutralize_reminder_tags(&out)
 }
+/// One auto-wake body for completions held back while sibling subagents still ran: a count line,
+/// then each child exactly as [`format_subagent_completion`] renders it. A single completion renders unchanged.
+pub fn format_subagent_completion_batch(
+    completions: &[SubagentCompletionSummary],
+    task_output_name: Option<&str>,
+    scheduler_delete_name: Option<&str>,
+    scheduler_create_name: Option<&str>,
+) -> String {
+    let render = |c: &SubagentCompletionSummary| {
+        format_subagent_completion(
+            c,
+            task_output_name,
+            scheduler_delete_name,
+            scheduler_create_name,
+        )
+    };
+    if let [single] = completions {
+        return render(single);
+    }
+    let mut out = format!("{} background subagents completed:", completions.len());
+    for c in completions {
+        out.push_str("\n\n");
+        out.push_str(&render(c));
+    }
+    out
+}
 /// Format buffered between-turn subagent completions into a system-reminder
 /// string; each entry follows [`format_subagent_completion`]'s rules, neutralization included.
 pub fn format_between_turn_completions(
@@ -1818,6 +1844,22 @@ mod tests {
         };
         text
     }
+    /// The completion notice keeps the child's model through the buffered
+    /// summary, so the parent sees which model actually ran it.
+    #[test]
+    fn subagent_completion_meta_names_the_child_model() {
+        let request = test_request("sub-m");
+        let mut result = test_result("sub-m", true);
+        result.model = Some("worker-model".into());
+        let message = format_subagent_completion(&summarize(&request, &result), None, None, None);
+        assert!(
+            message.contains(
+                "<subagent_meta>id=sub-m, type=general-purpose, model=worker-model, \
+                 tool_calls=3, turns=2, duration_ms=5000</subagent_meta>"
+            ),
+            "{message}"
+        );
+    }
     #[tokio::test]
     async fn subagent_completion_surfaced() {
         let shared =
@@ -2142,6 +2184,34 @@ mod tests {
         assert!(
             body.ends_with("\n=== Output ===\nSubagent was cancelled"),
             "{body}"
+        );
+    }
+    /// A coalesced wake must carry each child exactly as its own wake would, cap included.
+    #[test]
+    fn format_subagent_completion_batch_keeps_each_child_body() {
+        let a = make_subagent_completion("sub-a", true);
+        let mut long = test_result("sub-b", true);
+        long.output = Arc::from("y".repeat(INLINE_SUBAGENT_OUTPUT_BYTES + 500));
+        let b = summarize(&test_request("sub-b"), &long);
+        let lone = format_subagent_completion(&a, Some("get_task_output"), None, None);
+        assert_eq!(
+            format_subagent_completion_batch(
+                std::slice::from_ref(&a),
+                Some("get_task_output"),
+                None,
+                None
+            ),
+            lone,
+            "one held child keeps the single-wake body"
+        );
+        let capped = format_subagent_completion(&b, Some("get_task_output"), None, None);
+        assert!(capped.contains(&format!(
+            "[output truncated: {INLINE_SUBAGENT_OUTPUT_BYTES} of {} bytes shown]",
+            INLINE_SUBAGENT_OUTPUT_BYTES + 500
+        )));
+        assert_eq!(
+            format_subagent_completion_batch(&[a, b], Some("get_task_output"), None, None),
+            format!("2 background subagents completed:\n\n{lone}\n\n{capped}")
         );
     }
     #[test]

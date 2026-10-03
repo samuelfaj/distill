@@ -598,6 +598,48 @@ impl SessionUsageFile {
         turn_number
     }
 
+    /// Fold a slice the session ledger accepted after `turn_number` ended into
+    /// that turn's row; the session total gains it once, as the foreground
+    /// delta would have. A slice is folded whole, so one already-persisted
+    /// `attempt_id` means it was billed and it is skipped. The row stays
+    /// incomplete while any of its pending attempts lacks a terminal row in
+    /// `live`. Returns false if the row does not exist.
+    pub(crate) fn apply_late_usage(
+        &mut self,
+        turn_number: u32,
+        late: &UsageSummary,
+        live: &UsageSummary,
+    ) -> bool {
+        if self.turn(turn_number).is_none() {
+            return false;
+        }
+        let persisted = self
+            .session
+            .attributions
+            .iter()
+            .filter(|attribution| !attribution.attempt_id.is_empty())
+            .map(|attribution| attribution.attempt_id.as_str())
+            .collect::<HashSet<_>>();
+        if late
+            .attributions
+            .iter()
+            .any(|attribution| persisted.contains(attribution.attempt_id.as_str()))
+        {
+            return true;
+        }
+        self.normalize_legacy_incomplete();
+        if let Some(turn) = self
+            .turns
+            .iter_mut()
+            .find(|turn| turn.turn_number == turn_number)
+        {
+            turn.usage = turn.usage.saturating_add(late);
+        }
+        self.session = self.session.saturating_add(late);
+        self.refresh_incomplete_flags_from_turns(live);
+        true
+    }
+
     fn refresh_incomplete_flags_from_turns(&mut self, live: &UsageSummary) {
         if self.turns.is_empty() {
             return;

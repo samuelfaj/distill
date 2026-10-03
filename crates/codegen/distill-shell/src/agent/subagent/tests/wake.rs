@@ -1506,3 +1506,390 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
         })
         .await;
 }
+
+/// Background children that finish when the test releases them (or on cancel). Completions take
+/// the shell runner's wake routing but present inline, so the parent queue reads in order.
+struct GatedChildRunner {
+    gates: std::rc::Rc<std::cell::RefCell<HashMap<String, oneshot::Receiver<()>>>>,
+    completion_data: ShellCompletionData,
+    holds: WakeHolds,
+    gateway: GatewaySender,
+}
+
+impl distill_tools::implementations::distill::task::coordinator::ChildRunner for GatedChildRunner {
+    type Control = ShellChildRuntime;
+    type RootControl = distill_tools::implementations::distill::task::root_control::NoRootControl;
+    type CompletionData = ShellCompletionData;
+    type RunFuture = distill_tools::implementations::distill::task::coordinator::LocalBoxFuture<
+        ChildRunOutput<ShellCompletionData>,
+    >;
+    type ValidateFuture =
+        distill_tools::implementations::distill::task::coordinator::LocalBoxFuture<
+            SubagentValidateTypeOutcome,
+        >;
+    type DescribeFuture =
+        distill_tools::implementations::distill::task::coordinator::LocalBoxFuture<
+            SubagentDescribeOutcome,
+        >;
+
+    fn run(
+        &self,
+        run: distill_tools::implementations::distill::task::coordinator::ChildRunRequest<
+            Self::Control,
+        >,
+    ) -> Self::RunFuture {
+        let gate = self
+            .gates
+            .borrow_mut()
+            .remove(&run.request.id)
+            .expect("every test child is gated");
+        let completion_data = self.completion_data.clone();
+        let id = run.request.id.clone();
+        let cancellation = run.cancellation.clone();
+        Box::pin(async move {
+            let result = tokio::select! {
+                _ = gate => SubagentResult {
+                    success: true,
+                    output: Arc::from(format!("{id} output")),
+                    subagent_id: id.clone(),
+                    child_session_id: id.clone(),
+                    ..Default::default()
+                },
+                () = cancellation.cancelled() => {
+                    SubagentResult::cancelled(id.clone(), id.clone(), "cancelled")
+                }
+            };
+            ChildRunOutput {
+                result,
+                completion_data,
+                snapshot_ref: None,
+            }
+        })
+    }
+
+    fn validate_type(
+        &self,
+        _subagent_type: String,
+        _parent_session_id: String,
+    ) -> Self::ValidateFuture {
+        Box::pin(std::future::ready(SubagentValidateTypeOutcome::Ok))
+    }
+
+    fn describe_type(
+        &self,
+        _subagent_type: String,
+        _harness_agent_type: Option<String>,
+        _parent_session_id: String,
+    ) -> Self::DescribeFuture {
+        Box::pin(std::future::ready(SubagentDescribeOutcome::Unavailable))
+    }
+
+    fn supports_wake(&self) -> bool {
+        false
+    }
+
+    fn on_completed(
+        &self,
+        completion: ChildCompletion<Self::CompletionData>,
+        terminal_published: Box<dyn FnOnce() + Send>,
+    ) {
+        completion_presenter(&self.holds, completion, self.gateway.clone())();
+        terminal_published();
+    }
+
+    fn parent_session_cancelled(&self, parent_session_id: &str) {
+        self.holds.cancel(parent_session_id);
+    }
+}
+
+/// A real coordinator for parent `"parent"` whose background children the test finishes one by one.
+struct GatedWakeHarness {
+    sender: distill_tools::implementations::distill::task::backend::SubagentCoordinatorSender,
+    backend: distill_tools::implementations::distill::task::backend::ChannelBackend,
+    gates: HashMap<String, oneshot::Sender<()>>,
+    pending_gates: std::rc::Rc<std::cell::RefCell<HashMap<String, oneshot::Receiver<()>>>>,
+    parent_cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
+    _results: Vec<oneshot::Receiver<SubagentResult>>,
+    _gateway_rx: mpsc::UnboundedReceiver<crate::test_support::lsp_runtime::GatewayOut>,
+}
+
+impl GatedWakeHarness {
+    /// Call inside a `LocalSet`.
+    fn start() -> Self {
+        use distill_tools::implementations::distill::task::coordinator::{
+            CoordinatorConfig, SubagentCoordinator,
+        };
+        let (gateway, gateway_rx) = test_gateway_with_receiver();
+        let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+        let pending_gates = std::rc::Rc::default();
+        let runner = GatedChildRunner {
+            gates: std::rc::Rc::clone(&pending_gates),
+            completion_data: ShellCompletionData {
+                auto_wake_enabled: true,
+                parent_cmd_tx: Some(parent_cmd_tx),
+                task_output_tool_name: "get_command_or_subagent_output".into(),
+                ..Default::default()
+            },
+            holds: WakeHolds::default(),
+            gateway,
+        };
+        let (sender, receiver) = SubagentCoordinator::<GatedChildRunner>::channel();
+        tokio::task::spawn_local(
+            SubagentCoordinator::from_channel(
+                receiver,
+                runner,
+                CoordinatorConfig {
+                    buffer_completions: true,
+                    ..Default::default()
+                },
+            )
+            .run(),
+        );
+        Self {
+            backend:
+                distill_tools::implementations::distill::task::backend::ChannelBackend::for_coordinator_session(
+                    sender.clone(),
+                    "parent",
+                ),
+            sender,
+            gates: HashMap::new(),
+            pending_gates,
+            parent_cmd_rx,
+            _results: Vec::new(),
+            _gateway_rx: gateway_rx,
+        }
+    }
+
+    async fn spawn_background(&mut self, id: &str) {
+        let (gate_tx, gate_rx) = oneshot::channel();
+        self.pending_gates
+            .borrow_mut()
+            .insert(id.to_owned(), gate_rx);
+        self.gates.insert(id.to_owned(), gate_tx);
+        let (result_tx, result_rx) = oneshot::channel();
+        let (registered_tx, registered_rx) = oneshot::channel();
+        self.sender
+            .send(SubagentEvent::Spawn(SubagentSpawnRequest {
+                request: Box::new(auto_wake_test_request(id)),
+                result_tx,
+                registered_tx: Some(registered_tx),
+            }))
+            .expect("coordinator open");
+        registered_rx.await.expect("background child registered");
+        self._results.push(result_rx);
+    }
+
+    /// Releases the child; returns what reached the parent up to and including its presentation.
+    async fn finish(&mut self, id: &str) -> Vec<SessionCommand> {
+        let _ = self.gates.remove(id).expect("gated child").send(());
+        self.commands_through_finish(id).await
+    }
+
+    async fn commands_through_finish(&mut self, id: &str) -> Vec<SessionCommand> {
+        let mut commands = Vec::new();
+        loop {
+            let command = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.parent_cmd_rx.recv(),
+            )
+            .await
+            .expect("the child's finish reaches the parent")
+            .expect("parent channel open");
+            let finished = matches!(
+                &command,
+                SessionCommand::XaiSessionNotification {
+                    notification: SessionNotification {
+                        update: SessionUpdate::SubagentFinished { subagent_id, .. },
+                        ..
+                    }
+                } if subagent_id == id
+            );
+            commands.push(command);
+            if finished {
+                break;
+            }
+        }
+        while let Ok(command) = self.parent_cmd_rx.try_recv() {
+            commands.push(command);
+        }
+        commands
+    }
+}
+
+/// `(prompt_id, text)` of every wake prompt among `commands`.
+fn wake_prompts(commands: Vec<SessionCommand>) -> Vec<(String, String)> {
+    commands
+        .into_iter()
+        .filter_map(|command| match command {
+            SessionCommand::Prompt {
+                prompt_id,
+                prompt_blocks,
+                ..
+            } => Some((prompt_id, prompt_text(&prompt_blocks))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each wake is a full main-model round, so a batch of background children must cost one.
+#[tokio::test(flavor = "current_thread")]
+async fn background_batch_wakes_parent_once_after_the_last_child() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut harness = GatedWakeHarness::start();
+            harness.spawn_background("sa-a").await;
+            harness.spawn_background("sa-b").await;
+            let early = wake_prompts(harness.finish("sa-a").await);
+            assert!(
+                early.is_empty(),
+                "sa-b still runs, so sa-a must not wake yet: {early:?}"
+            );
+            let wakes = wake_prompts(harness.finish("sa-b").await);
+            let [(prompt_id, body)] = wakes.as_slice() else {
+                panic!("one wake for the batch, got {wakes:?}");
+            };
+            assert_eq!(prompt_id, "subagent-completed-sa-b");
+            assert!(body.contains("2 background subagents completed:"), "{body}");
+            for id in ["sa-a", "sa-b"] {
+                assert!(
+                    body.contains(&format!("Background subagent \"{id}\"")),
+                    "{body}"
+                );
+                assert!(body.contains(&format!("{id} output")), "{body}");
+            }
+        })
+        .await;
+}
+
+/// The parent already has a block-waited child's result; the held wake carries only the other.
+#[tokio::test(flavor = "current_thread")]
+async fn block_waited_child_stays_out_of_the_held_wake() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut harness = GatedWakeHarness::start();
+            harness.spawn_background("sa-a").await;
+            harness.spawn_background("sa-b").await;
+            let early = wake_prompts(harness.finish("sa-a").await);
+            assert!(
+                early.is_empty(),
+                "sa-b still runs, so sa-a must not wake yet: {early:?}"
+            );
+            let (respond_to, waited) = oneshot::channel();
+            harness
+                .sender
+                .send(SubagentEvent::Query(SubagentQueryRequest {
+                    subagent_id: "sa-b".into(),
+                    parent_session_id: Some("parent".into()),
+                    block: true,
+                    timeout_ms: Some(60_000),
+                    respond_to,
+                }))
+                .expect("coordinator open");
+            // Commands run in order: once this answers, the blocking waiter is registered.
+            harness.backend.registry_counts().await;
+            let wakes = wake_prompts(harness.finish("sa-b").await);
+            assert!(
+                waited.await.expect("waiter answered").is_some(),
+                "sa-b's result went to the blocking caller"
+            );
+            let [(prompt_id, body)] = wakes.as_slice() else {
+                panic!("one wake for the held child, got {wakes:?}");
+            };
+            assert_eq!(prompt_id, "subagent-completed-sa-a");
+            assert!(body.contains("sa-a output"), "{body}");
+            assert!(!body.contains("sa-b"), "{body}");
+            assert!(!body.contains("background subagents completed:"), "{body}");
+        })
+        .await;
+}
+
+/// A sibling that outlives the hold must not starve the parent: the held part goes out alone.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn held_wake_goes_out_alone_when_a_sibling_outlives_the_hold() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut harness = GatedWakeHarness::start();
+            harness.spawn_background("sa-a").await;
+            harness.spawn_background("sa-b").await;
+            let early = wake_prompts(harness.finish("sa-a").await);
+            assert!(
+                early.is_empty(),
+                "sa-b still runs, so sa-a must not wake yet: {early:?}"
+            );
+            tokio::time::advance(WAKE_HOLD_MAX - std::time::Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+            assert!(
+                harness.parent_cmd_rx.try_recv().is_err(),
+                "the hold lasts WAKE_HOLD_MAX"
+            );
+            tokio::time::advance(std::time::Duration::from_secs(1)).await;
+            let partial = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                harness.parent_cmd_rx.recv(),
+            )
+            .await
+            .expect("the hold deadline delivers")
+            .expect("parent channel open");
+            let partial = wake_prompts(vec![partial]);
+            let [(prompt_id, body)] = partial.as_slice() else {
+                panic!("the held wake goes out at the deadline, got {partial:?}");
+            };
+            assert_eq!(prompt_id, "subagent-completed-sa-a");
+            assert!(
+                body.contains("sa-a output") && !body.contains("sa-b"),
+                "{body}"
+            );
+            let late = wake_prompts(harness.finish("sa-b").await);
+            let [(prompt_id, body)] = late.as_slice() else {
+                panic!("sa-b wakes on its own, got {late:?}");
+            };
+            assert_eq!(prompt_id, "subagent-completed-sa-b");
+            assert!(
+                body.contains("sa-b output") && !body.contains("sa-a"),
+                "{body}"
+            );
+        })
+        .await;
+}
+
+/// Stop means stop: a held wake must not fire once the cancelled siblings wind down.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_drops_held_wakes_without_waking() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut harness = GatedWakeHarness::start();
+            harness.spawn_background("sa-a").await;
+            harness.spawn_background("sa-b").await;
+            let early = wake_prompts(harness.finish("sa-a").await);
+            assert!(
+                early.is_empty(),
+                "sa-b still runs, so sa-a must not wake yet: {early:?}"
+            );
+            assert_eq!(
+                harness.backend.cancel_parent_session().await,
+                SubagentCancelOutcome::Cancelled
+            );
+            let after_stop = wake_prompts(harness.commands_through_finish("sa-b").await);
+            assert!(after_stop.is_empty(), "{after_stop:?}");
+        })
+        .await;
+}
+
+/// No siblings: the lone child's wake is sent at once, in the single-child shape.
+#[tokio::test(flavor = "current_thread")]
+async fn lone_background_child_still_wakes_on_its_own() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut harness = GatedWakeHarness::start();
+            harness.spawn_background("sa-a").await;
+            let wakes = wake_prompts(harness.finish("sa-a").await);
+            let [(prompt_id, body)] = wakes.as_slice() else {
+                panic!("one wake for the lone child, got {wakes:?}");
+            };
+            assert_eq!(prompt_id, "subagent-completed-sa-a");
+            assert!(body.contains("Background subagent \"sa-a\""), "{body}");
+            assert!(body.contains("sa-a output"), "{body}");
+            assert!(!body.contains("background subagents completed:"), "{body}");
+        })
+        .await;
+}

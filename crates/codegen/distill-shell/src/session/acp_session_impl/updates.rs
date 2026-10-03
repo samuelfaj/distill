@@ -187,12 +187,38 @@ impl SessionActor {
         parent_prompt_id: Option<&str>,
         incomplete: bool,
     ) -> Result<SubagentUsageApply, ()> {
+        self.fold_subagent_usage(
+            by_model,
+            attributions,
+            pending_attempts,
+            parent_prompt_id,
+            incomplete,
+        )
+        .await
+        .map(|(apply, _)| apply)
+    }
+
+    /// A session-only fold also returns chat-state's `(slice, session)` for the spawning turn's row.
+    async fn fold_subagent_usage(
+        &self,
+        by_model: &[(String, distill_chat_state::UsageTotals)],
+        attributions: &[distill_chat_state::UsageAttribution],
+        pending_attempts: &[String],
+        parent_prompt_id: Option<&str>,
+        incomplete: bool,
+    ) -> Result<
+        (
+            SubagentUsageApply,
+            Option<(distill_chat_state::UsageLedger, distill_chat_state::UsageLedger)>,
+        ),
+        (),
+    > {
         if by_model.is_empty()
             && attributions.is_empty()
             && pending_attempts.is_empty()
             && !incomplete
         {
-            return Ok(SubagentUsageApply::AttributedToPrompt);
+            return Ok((SubagentUsageApply::AttributedToPrompt, None));
         }
         let current = self
             .current_prompt_id
@@ -200,24 +226,62 @@ impl SessionActor {
             .expect("current_prompt_id mutex poisoned")
             .clone();
         let attributable = parent_prompt_id.is_some() && parent_prompt_id == current.as_deref();
+        if !attributable {
+            let late = self
+                .chat_state_handle
+                .record_session_only_subagent_usage(
+                    by_model.to_vec(),
+                    attributions.to_vec(),
+                    pending_attempts.to_vec(),
+                    incomplete,
+                )
+                .await
+                .ok_or(())?;
+            return Ok((SubagentUsageApply::SessionOnly, Some(late)));
+        }
         if !self
             .chat_state_handle
             .record_subagent_usage_with_attributions_and_pending(
                 by_model.to_vec(),
                 attributions.to_vec(),
                 pending_attempts.to_vec(),
-                attributable,
+                true,
                 incomplete,
             )
             .await
         {
             return Err(());
         }
-        Ok(if attributable {
-            SubagentUsageApply::AttributedToPrompt
-        } else {
-            SubagentUsageApply::SessionOnly
-        })
+        Ok((SubagentUsageApply::AttributedToPrompt, None))
+    }
+
+    /// Persist a session-only fold. A child whose spawning prompt is known
+    /// sends its slice to that prompt's turn row; otherwise the fold lands
+    /// with the current turn as before.
+    async fn persist_session_only_subagent_usage(
+        &self,
+        parent_prompt_id: Option<&str>,
+        late: Option<(distill_chat_state::UsageLedger, distill_chat_state::UsageLedger)>,
+    ) {
+        let (Some(prompt_id), Some((slice, session))) = (parent_prompt_id, late) else {
+            self.persist_live_usage().await;
+            return;
+        };
+        let Some(signals) = self.signals_handle().snapshot().await else {
+            return;
+        };
+        if signals.turn_count == 0 {
+            return;
+        }
+        let _ = self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::LateSubagentUsage {
+                prompt_id: prompt_id.to_owned(),
+                turn_number: signals.turn_count,
+                live: crate::session::usage_file::UsageSummary::from_ledger(&session),
+                late: crate::session::usage_file::UsageSummary::from_ledger(&slice),
+            });
     }
     /// `SessionCommand::RecordSubagentUsage` handler: fold the child's usage, then ack.
     /// A pin mismatch lands session-only and gets the report-level sticky (the stamped prompt's bill under-counts); an attributed fold needs no sticky since any nested incomplete is already on the ledger.
@@ -268,7 +332,7 @@ impl SessionActor {
         respond_to: tokio::sync::oneshot::Sender<()>,
     ) {
         match self
-            .record_subagent_usage_with_attributions_and_pending(
+            .fold_subagent_usage(
                 by_model,
                 attributions,
                 pending_attempts,
@@ -277,13 +341,14 @@ impl SessionActor {
             )
             .await
         {
-            Ok(SubagentUsageApply::AttributedToPrompt) => {
+            Ok((SubagentUsageApply::AttributedToPrompt, _)) => {
                 self.persist_live_usage().await;
                 let _ = respond_to.send(());
             }
-            Ok(SubagentUsageApply::SessionOnly) => {
+            Ok((SubagentUsageApply::SessionOnly, late)) => {
                 let _ = self.mark_subagent_usage_not_applied(parent_prompt_id).await;
-                self.persist_live_usage().await;
+                self.persist_session_only_subagent_usage(parent_prompt_id, late)
+                    .await;
                 let _ = respond_to.send(());
             }
             Err(()) => {}

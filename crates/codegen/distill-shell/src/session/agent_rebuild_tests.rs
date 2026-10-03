@@ -118,6 +118,7 @@ async fn child_rebuild_rejects_coordinator_authority() {
                 .build_agent(
                     AgentDefinition::default_distill(),
                     distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                    crate::test_support::TEST_MODEL,
                 )
                 .await;
             assert!(matches!(result, Err(AgentBuildError::InvalidConfig(_))));
@@ -138,9 +139,13 @@ async fn child_agent(
     fields.subagent_event_tx = Some(event_tx);
     fields.agent_message_sender = sender;
     fields.active_agent_messages_enabled = active_agent_messages_enabled;
-    spec.build_agent(definition, distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL)
-        .await
-        .unwrap()
+    spec.build_agent(
+        definition,
+        distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+        crate::test_support::TEST_MODEL,
+    )
+    .await
+    .unwrap()
 }
 
 async fn assert_no_child_messaging(agent: &Agent) {

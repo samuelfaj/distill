@@ -327,6 +327,7 @@ impl SubagentSnapshotDto {
                 tool_calls,
                 turns,
                 worktree_path,
+                ..
             } => {
                 dto.status = "completed".into();
                 dto.output = Some(output);
@@ -668,6 +669,7 @@ mod tests {
                 tool_calls: 8,
                 turns: 2,
                 worktree_path: None,
+                model: None,
             },
         };
         let dto =
@@ -814,6 +816,7 @@ mod tests {
                 tool_calls: 7,
                 turns: 2,
                 worktree_path: None,
+                model: None,
             },
         };
         let resp = GetSubagentResponse {

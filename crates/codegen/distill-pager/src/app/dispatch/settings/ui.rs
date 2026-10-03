@@ -967,18 +967,26 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 }
             }
         }
-        // worker_effort: restore only the mirror.
+        // worker_effort: restore the mirror and this instance's worker.
         ("worker_effort", SettingValue::String(s)) => {
             let previous = crate::acp::model_state::parse_effort_setting(s).unwrap_or(None);
+            crate::acp::ModelState::set_instance_worker(
+                crate::acp::ModelState::configured_worker_model(),
+                previous,
+            );
             app.models.worker_effort = previous;
             for agent in app.agents.values_mut() {
                 agent.session.models.worker_effort = previous;
             }
             refresh_open_settings_modals(app);
         }
-        // worker_model: restore only the mirror; the main model never changed.
+        // worker_model: restore the mirror and this instance's worker; the main model never changed.
         ("worker_model", SettingValue::String(s)) => {
             let previous = if s.is_empty() { None } else { Some(acp::ModelId::new(s.clone())) };
+            crate::acp::ModelState::set_instance_worker(
+                previous.clone(),
+                crate::acp::ModelState::configured_worker_effort(),
+            );
             app.models.worker_model = previous.clone();
             for agent in app.agents.values_mut() {
                 agent.session.models.worker_model = previous.clone();

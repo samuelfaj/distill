@@ -642,25 +642,182 @@ pub(crate) const WORKER_DISCIPLINE: &str = "You run on the worker model: the mai
 - Run the checks the assignment names, using the shortest command that proves the required behavior. For a localized change, cover one representative case and one relevant boundary unless the assignment requires more. Report each command with its exit status and the relevant output.\n\
 - End with a compact check report: changed relative file names once, check commands and exit statuses, relevant output, and anything left open. The main model independently inspects the actual diff; do not repeat patch hunks unless the assignment asks for them. Keep prose within 50 words unless the assignment requires more. Do not repeat the assignment.";
 
-/// Read the repository through the child's terminal, independently of its report.
-/// This lets Main review a small completed assignment without another model/tool round.
-pub(super) async fn worker_repository_review(
+/// Output byte limit for a worker child's repository review, or `None` when the
+/// child gets no review. Interactive parents get a smaller capture.
+pub(super) fn worker_review_byte_limit(
+    request: &SubagentRequest,
+    on_worker: bool,
+    context_source: &InitialContextSource,
+    parent_non_interactive: bool,
+) -> Option<usize> {
+    (on_worker
+        && *context_source == InitialContextSource::New
+        && !request.run_in_background
+        && request.surface_completion
+        && request.runtime_overrides.output_schema.is_none())
+    .then_some(if parent_non_interactive { 24_000 } else { 8_000 })
+}
+
+/// Paths `git status` reports as changed or untracked under `cwd`, relative to it.
+pub(super) async fn worker_git_status(
     terminal: &dyn AsyncTerminalRunner,
     cwd: distill_paths::AbsPathBuf,
     env: HashMap<String, String>,
-) -> String {
+) -> Result<std::collections::BTreeSet<String>, String> {
     let result = terminal
         .run(crate::terminal::TerminalRunRequest {
             tool_call_id: acp::ToolCallId::new(format!("worker-review:{}", uuid::Uuid::new_v4())),
-            command: "git --no-optional-locks -c core.fsmonitor=false diff --no-ext-diff --no-textconv HEAD && git --no-optional-locks -c core.fsmonitor=false status --short --untracked-files=all".to_owned(),
+            command: "git --no-optional-locks -c core.fsmonitor=false rev-parse --show-prefix && git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z --untracked-files=all".to_owned(),
             cwd,
             env,
             timeout: std::time::Duration::from_secs(5),
-            output_byte_limit: 24_000,
+            output_byte_limit: 1_000_000,
             stream: false,
             output_file: None,
         })
-        .await;
+        .await
+        .map_err(|error| format!("git status failed: {error}"))?;
+    if result.exit_code != Some(0) || result.truncated || result.timed_out {
+        return Err(format!(
+            "git status failed (exit={:?} truncated={} timed_out={})",
+            result.exit_code, result.truncated, result.timed_out
+        ));
+    }
+    // A login shell may print before the prefix line; NUL-separated entries follow it.
+    let output = result.combined_output;
+    let before_entries = output.find('\0').map_or(output.as_str(), |first| {
+        output.get(..first).unwrap_or_default()
+    });
+    let Some(prefix_end) = before_entries.rfind('\n') else {
+        return Err("git status printed no prefix line".to_owned());
+    };
+    let prefix = before_entries
+        .get(..prefix_end)
+        .unwrap_or_default()
+        .rsplit('\n')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('\r');
+    let mut fields = output.get(prefix_end + 1..).unwrap_or_default().split('\0');
+    let mut paths = std::collections::BTreeSet::new();
+    while let Some(entry) = fields.next() {
+        let (Some(status), Some(path)) = (entry.get(..2), entry.get(3..)) else {
+            continue;
+        };
+        let source = if status.contains('R') || status.contains('C') {
+            fields.next()
+        } else {
+            None
+        };
+        for path in std::iter::once(path).chain(source) {
+            if let Some(path) = path.strip_prefix(prefix).filter(|path| !path.is_empty()) {
+                paths.insert(path.to_owned());
+            }
+        }
+    }
+    Ok(paths)
+}
+
+/// Absolute paths this child's file-editing tool calls targeted. `edit_args`
+/// returns a call's canonical arguments when the named tool edits files.
+pub(super) fn edit_tool_paths(
+    conversation: &[ConversationItem],
+    edit_args: impl Fn(&str, serde_json::Value) -> Option<serde_json::Value>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    conversation
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::Assistant(assistant) => Some(&assistant.tool_calls),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|call| {
+            let args = edit_args(&call.name, serde_json::from_str(&call.arguments).ok()?)?;
+            crate::session::acp_session::lock_path_for_args(&args, cwd).map(PathBuf::from)
+        })
+        .collect()
+}
+
+/// Read the repository through the child's terminal, independently of its report.
+/// This lets Main review a small completed assignment without another model/tool round.
+/// The diff covers only files inside `cwd` this child changed: its `edit_paths`
+/// plus paths `git status` reports now but did not report in `started`.
+pub(super) async fn worker_repository_review(
+    terminal: &dyn AsyncTerminalRunner,
+    cwd: distill_paths::AbsPathBuf,
+    mut env: HashMap<String, String>,
+    edit_paths: &[PathBuf],
+    started: &Result<std::collections::BTreeSet<String>, String>,
+    output_byte_limit: usize,
+) -> String {
+    use std::io::Write as _;
+    let now = worker_git_status(terminal, cwd.clone(), env.clone()).await;
+    let shell_changes = match (started, &now) {
+        (Ok(started), Ok(now)) => Ok(now.difference(started).cloned().collect::<Vec<_>>()),
+        (Err(error), _) | (_, Err(error)) => Err(error.clone()),
+    };
+    let root = dunce::canonicalize(cwd.as_path()).unwrap_or_else(|_| cwd.to_path_buf());
+    let changed: std::collections::BTreeSet<String> = edit_paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(&root).ok())
+        .map(|path| {
+            path.components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .chain(shell_changes.iter().flatten().cloned())
+        .filter(|path| !path.is_empty())
+        .collect();
+    let shell_note = match &shell_changes {
+        Ok(_) => String::new(),
+        Err(error) => format!(" Shell edits could not be detected: {error}."),
+    };
+    if changed.is_empty() {
+        return format!(
+            "<repository_review>No file changes by this subagent were detected; no diff was run.{shell_note}</repository_review>"
+        );
+    }
+    // `git diff`/`status` have no `--pathspec-from-file`, so `xargs -0` passes
+    // the NUL-separated list as arguments; no path enters the command string.
+    let pathspecs = tempfile::NamedTempFile::new().and_then(|mut file| {
+        for path in &changed {
+            file.write_all(path.as_bytes())?;
+            file.write_all(b"\0")?;
+        }
+        file.flush()?;
+        Ok(file)
+    });
+    let result = match &pathspecs {
+        Ok(file) => {
+            env.insert(
+                "DISTILL_REVIEW_PATHSPECS".to_owned(),
+                file.path().to_string_lossy().into_owned(),
+            );
+            const GIT: &str =
+                "git --no-optional-locks --literal-pathspecs -c core.fsmonitor=false";
+            terminal
+                .run(crate::terminal::TerminalRunRequest {
+                    tool_call_id: acp::ToolCallId::new(format!(
+                        "worker-review:{}",
+                        uuid::Uuid::new_v4()
+                    )),
+                    command: format!(
+                        "xargs -0 {GIT} diff --no-ext-diff --no-textconv HEAD -- < \"$DISTILL_REVIEW_PATHSPECS\" && xargs -0 {GIT} status --short --untracked-files=all -- < \"$DISTILL_REVIEW_PATHSPECS\""
+                    ),
+                    cwd,
+                    env,
+                    timeout: std::time::Duration::from_secs(5),
+                    output_byte_limit,
+                    stream: false,
+                    output_file: None,
+                })
+                .await
+                .map_err(|error| error.to_string())
+        }
+        Err(error) => Err(format!("pathspec file: {error}")),
+    };
     let evidence = match result {
         Ok(result) => format!(
             "capture_complete={} exit={:?} truncated={} timed_out={}\n{}",
@@ -673,7 +830,65 @@ pub(super) async fn worker_repository_review(
         Err(error) => format!("capture_complete=false: {error}"),
     };
     format!(
-        "<repository_review>\nHarness-captured tracked diff against HEAD, followed by short status. May include pre-existing changes. Untracked file contents are not included.\n{evidence}\n</repository_review>"
+        "<repository_review>\nHarness-captured tracked diff against HEAD for the {} file(s) this subagent changed (its edit-tool paths plus paths new in git status since it started), followed by their short status. May include pre-existing or concurrent changes to those files. Untracked file contents are not included.{shell_note}\n{evidence}\n</repository_review>",
+        changed.len()
+    )
+}
+
+/// Byte cap for the own report of a child the model spawned with its task
+/// tool: tighter when the child can edit files or run commands. `None` for
+/// workflow, harness and structured-output children.
+pub(super) fn task_report_cap(
+    request: &SubagentRequest,
+    tools: &[distill_tools::registry::types::ToolConfig],
+) -> Option<usize> {
+    let model_spawned = !request.owner.is_workflow()
+        && request.runtime_overrides.model_override_provenance == ModelOverrideProvenance::Tool
+        && request.runtime_overrides.output_schema.is_none();
+    let edits_or_runs = tools.iter().any(|tool| {
+        matches!(
+            tool.kind,
+            Some(
+                ToolKind::Edit
+                    | ToolKind::Write
+                    | ToolKind::Delete
+                    | ToolKind::Move
+                    | ToolKind::Execute
+            )
+        )
+    });
+    model_spawned.then_some(if edits_or_runs { 3_000 } else { 12_000 })
+}
+
+/// Cut `report` to at most `cap` bytes, preferring a line boundary, after
+/// storing the full text. `None` when it fits or cannot be stored.
+pub(super) fn cap_task_report(
+    report: &str,
+    cap: usize,
+    store: impl FnOnce(&str) -> Option<PathBuf>,
+) -> Option<String> {
+    if report.len() <= cap {
+        return None;
+    }
+    let head = distill_tools::util::truncate::truncate_str(report, cap);
+    let head = head
+        .rfind('\n')
+        .filter(|end| *end >= cap / 2)
+        .and_then(|end| head.get(..end))
+        .unwrap_or(head);
+    let path = store(report)?;
+    Some(format!(
+        "{head}\n[report truncated: {} of {} bytes shown; full report stored at {} — read it for the rest]",
+        head.len(),
+        report.len(),
+        path.display()
+    ))
+}
+
+/// `output` behind a first line saying the requested worker model was unavailable.
+pub(super) fn with_worker_fallback_warning(output: &str, worker: &str, model: &str) -> String {
+    format!(
+        "Warning: worker model `{worker}` was unavailable, so this subagent ran on `{model}`.\n{output}"
     )
 }
 /// The latest tool batch and its recorded results, rather than the child's claim.
@@ -775,13 +990,14 @@ pub(crate) fn delegated_worker_model(
 }
 /// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the worker model for delegated work ([`delegated_worker_model`]) > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
+/// The third value names a requested worker model that could not be pinned, so the child fell back to the parent model.
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_subagent_sampling_config(
     agent_name: &str,
     agent_model: &distill_agent::config::ModelOverride,
     worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
-) -> (distill_sampler::SamplerConfig, acp::ModelId) {
+) -> (distill_sampler::SamplerConfig, acp::ModelId, Option<String>) {
     let (parent_config, parent_mid) = read_parent_sampling_config(ctx).await;
     let try_pin = |model_id: &str, source: &'static str, unknown_msg: &'static str| {
         match resolve_model_override_to_config(model_id, ctx) {
@@ -802,32 +1018,34 @@ async fn resolve_subagent_sampling_config(
         }
     };
     if let Some(model_id) = ctx.subagent_model_overrides.get(agent_name)
-        && let Some(resolved) = try_pin(
+        && let Some((config, id)) = try_pin(
             model_id,
             "config_override",
             "Subagent model override references unknown model, falling through to inherit",
         )
     {
-        return resolved;
+        return (config, id, None);
     }
     if let ModelOverride::Override(model_id) = agent_model
-        && let Some(resolved) = try_pin(
+        && let Some((config, id)) = try_pin(
             model_id,
             "agent_definition",
             "Agent definition model references unknown model, falling through to inherit",
         )
     {
-        return resolved;
+        return (config, id, None);
     }
-    if let Some(worker) = worker_model
-        && let Some(resolved) = try_pin(
+    let mut unavailable_worker = None;
+    if let Some(worker) = worker_model {
+        match try_pin(
             worker,
             "worker_model",
             "Worker model unavailable for delegated work, falling through to parent",
-        )
-        && resolved.1 != parent_mid
-    {
-        return resolved;
+        ) {
+            Some((config, id)) if id != parent_mid => return (config, id, None),
+            Some(_) => {}
+            None => unavailable_worker = Some(worker.to_owned()),
+        }
     }
     log_subagent_model_resolution(
         agent_name,
@@ -836,7 +1054,7 @@ async fn resolve_subagent_sampling_config(
         &parent_mid,
         &parent_config,
     );
-    (parent_config, parent_mid)
+    (parent_config, parent_mid, unavailable_worker)
 }
 /// Resolve a subagent's effective sampling config and model id, honoring the model-resolution precedence.
 /// An explicit `runtime_override_model` is the goal role model or a persona override carried on `effective_runtime.model`.
@@ -848,10 +1066,10 @@ async fn resolve_effective_model_config(
     definition_model: &distill_agent::config::ModelOverride,
     worker_model: Option<&str>,
     ctx: &SubagentSpawnContext,
-) -> (distill_sampler::SamplerConfig, acp::ModelId) {
+) -> (distill_sampler::SamplerConfig, acp::ModelId, Option<String>) {
     if let Some(model_id) = runtime_override_model {
-        if let Some(resolved) = resolve_model_override_to_config(model_id, ctx) {
-            return resolved;
+        if let Some((config, id)) = resolve_model_override_to_config(model_id, ctx) {
+            return (config, id, None);
         }
         tracing::warn!(
             model_id,

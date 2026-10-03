@@ -181,7 +181,76 @@ impl SessionActor {
                 tracing::error!(error = %e, "Family-switch compaction failed; switching anyway");
             }
         }
+        // The new main model may be the worker; a switch that leaves the prompt alone skips it too.
+        if apply_prompt_override {
+            self.refresh_worker_prompt().await;
+        }
         Ok(model_id)
+    }
+    /// Bring the `<orchestration>` section in line with the session's worker and main model, in the
+    /// agent's prompt and in the conversation head, which a resumed session keeps as it was saved.
+    /// A running turn pins `Ref<Agent>` and the head is its cached prefix, so the swap then waits for
+    /// the next turn's promotion.
+    pub(super) async fn refresh_worker_prompt(&self) {
+        let worker_model = crate::extensions::session_worker_model::orchestration_worker(
+            &self.rebuild_spec.worker_override,
+            &self.rebuild_spec.models_manager,
+            &self.canonical_model_id.borrow().0,
+            self.rebuild_spec.prompt_audience,
+            self.rebuild_spec.subagents_enabled,
+        );
+        let stale_agent = {
+            let agent = self.agent.borrow();
+            (agent.prompt_context().worker_model != worker_model).then(|| {
+                (
+                    agent.prompt_context().clone(),
+                    std::sync::Arc::clone(agent.tool_bridge()),
+                )
+            })
+        };
+        if let Some((mut prompt_context, tool_bridge)) = stale_agent {
+            if self.state.lock().await.running_task.is_some() {
+                self.worker_prompt_pending.set(true);
+                return;
+            }
+            prompt_context.worker_model = worker_model;
+            let Some(rendered) = prompt_context.render_paired(&tool_bridge).await else {
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    "system prompt re-render failed; the orchestration section is retried before the next turn"
+                );
+                self.worker_prompt_pending.set(true);
+                return;
+            };
+            if self.state.lock().await.running_task.is_some() {
+                self.worker_prompt_pending.set(true);
+                return;
+            }
+            self.agent.borrow_mut().set_rendered_prompt(rendered);
+            self.abort_and_clear_prefire().await;
+            let mut persisted_context = self.agent.borrow().prompt_context().clone();
+            persisted_context.normalize_for_persistence();
+            save_prompt_context(&self.session_info, &persisted_context);
+        }
+        let system_prompt = self.agent.borrow().system_prompt().to_owned();
+        let conversation = self.chat_state_handle.get_conversation().await;
+        if let Some(ConversationItem::System(sys)) = conversation.first()
+            && let Some(head) = reconciled_orchestration_head(&sys.content, &system_prompt)
+        {
+            if self.state.lock().await.running_task.is_some() {
+                self.worker_prompt_pending.set(true);
+                return;
+            }
+            self.abort_and_clear_prefire().await;
+            self.chat_state_handle.replace_system_head(&head).await;
+            save_system_prompt(&self.session_info, &head);
+            tracing::info!(
+                session_id = %self.session_info.id.0,
+                worker_model = ?self.agent.borrow().prompt_context().worker_model,
+                "orchestration section updated for the session's worker"
+            );
+        }
+        self.worker_prompt_pending.set(false);
     }
     /// `running_task` is re-checked with no await before the `borrow_mut`: a running turn pins `Ref<Agent>`.
     pub(super) async fn relabel_agent_system_prompt(&self, system_prompt_label: String) {
@@ -286,9 +355,10 @@ impl SessionActor {
             new_agent_type = %new_agent_name,
             "handle_rebuild_agent_for_definition: rebuilding harness"
         );
+        let session_model = self.canonical_model_id.borrow().clone();
         let new_agent = self
             .rebuild_spec
-            .build_agent(definition, system_prompt_label)
+            .build_agent(definition, system_prompt_label, &session_model.0)
             .await
             .map_err(|e| {
                 tracing::error!(

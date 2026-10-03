@@ -1101,6 +1101,7 @@ async fn subagent_completed_drops_matching_pending_input() {
                 turns: 1,
                 duration_ms: 500,
                 worktree_path: None,
+                model: None,
                 persona: None,
                 resume_from_hint: "sub-target".into(),
                 persona_hint: None,

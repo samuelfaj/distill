@@ -531,8 +531,10 @@ impl SessionActor {
 
         let plan_active = self.plan_mode.lock().is_active();
         let defs = filter_cursor_tools_by_plan_mode(defs, plan_active);
-        // Jev turn-start pass: intent (B1), family pruning (B4/P1), delegation
-        // hint (B6). Plan mode is left untouched inside the pass.
+        // Jev turn-start pass, one request: intent (B1), family pruning (B4/P1)
+        // and, with a worker model, delegation (B6: always recorded; its hint
+        // joins the turn's next model request only with the flag on). Plan mode
+        // is left untouched inside the pass.
         self.jev_filter_tool_definitions(defs, plan_active).await
     }
 

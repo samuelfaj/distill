@@ -250,6 +250,7 @@ pub(crate) async fn spawn_session_actor(
     session_yolo_mode: bool,
     session_auto_mode: bool,
     session_jev_effort_auto: bool,
+    worker_override: crate::session::handle::SessionWorkerState,
     session_client_identifier: Option<String>,
     inference_idle_timeout_secs: u64,
     max_retries: Option<u32>,
@@ -1166,6 +1167,7 @@ pub(crate) async fn spawn_session_actor(
         ask_user_question_enabled,
         persona_summaries: persona_summaries.clone(),
         prompt_audience,
+        worker_override: Arc::clone(&worker_override),
         role_instructions: role_instructions.clone(),
         persona_instructions: persona_instructions.clone(),
         skills_config: skills_config.clone(),
@@ -1213,6 +1215,7 @@ pub(crate) async fn spawn_session_actor(
                 .filter(|s| !s.announced_skill_names.is_empty())
                 .map(|s| s.announced_skill_names.clone()),
             preloaded_skills,
+            &session_model_id.0,
         )
         .instrument(tracing::info_span!("spawn.harness_build"))
         .await
@@ -1351,6 +1354,16 @@ pub(crate) async fn spawn_session_actor(
             memory_enabled = memory_storage_for_session.is_some(),
             "MEMORY_INIT: resumed system prompt's memory section did not match this session's \
              memory state; replaced with the fresh prompt"
+        );
+    }
+    if !is_subagent_spawn
+        && let Some(ConversationItem::System(sys)) = conversation.first_mut()
+        && let Some(head) = reconciled_orchestration_head(&sys.content, &system_prompt)
+    {
+        sys.content = std::sync::Arc::<str>::from(head);
+        tracing::info!(
+            session_id = %session_info.id.0,
+            "resumed system prompt's orchestration section did not name this session's worker; updated"
         );
     }
     if !startup_hints.preserve_inherited_system
@@ -1770,6 +1783,7 @@ pub(crate) async fn spawn_session_actor(
         model_routing_locked: std::cell::Cell::new(
             startup_hints.is_subagent && startup_hints.explicit_model_override,
         ),
+        worker_prompt_pending: std::cell::Cell::new(false),
         attribution_callback,
         auth_manager,
         is_chat_kind,
@@ -2417,7 +2431,7 @@ pub(crate) async fn spawn_session_actor(
         tool_context: tool_context_for_handle,
         model_id: session_model_id,
         reasoning_effort: sampling_config.reasoning_effort,
-        worker_override: crate::session::handle::new_session_worker_state(),
+        worker_override,
         jev_effort_auto,
         yolo_mode: session_yolo_mode,
         origin_client: origin_client.clone(),
@@ -2568,6 +2582,7 @@ pub(crate) async fn spawn_session_on_thread(
     session_yolo_mode: bool,
     session_auto_mode: bool,
     session_jev_effort_auto: bool,
+    worker_override: crate::session::handle::SessionWorkerState,
     session_client_identifier: Option<String>,
     inference_idle_timeout_secs: u64,
     max_retries: Option<u32>,
@@ -2783,6 +2798,7 @@ pub(crate) async fn spawn_session_on_thread(
                     session_yolo_mode,
                     session_auto_mode,
                     session_jev_effort_auto,
+                    worker_override,
                     session_client_identifier,
                     inference_idle_timeout_secs,
                     max_retries,

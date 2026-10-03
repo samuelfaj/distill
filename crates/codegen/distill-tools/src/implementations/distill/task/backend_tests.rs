@@ -177,6 +177,7 @@ async fn channel_backend_spawn_success() {
         surface_completion: true,
         await_to_completion: false,
         fork_context: false,
+        jev_worker_ok: false,
         owner: super::super::types::SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
@@ -211,6 +212,7 @@ async fn channel_backend_spawn_closed_channel() {
         surface_completion: true,
         await_to_completion: false,
         fork_context: false,
+        jev_worker_ok: false,
         owner: super::super::types::SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
@@ -240,6 +242,7 @@ async fn channel_backend_query_found() {
                     tool_calls: 2,
                     turns: 1,
                     worktree_path: None,
+                    model: None,
                 },
                 started_at_epoch_ms: 1000,
                 duration_ms: 200,
@@ -262,6 +265,7 @@ async fn channel_backend_query_found() {
             tool_calls,
             turns,
             worktree_path,
+            ..
         } => {
             assert_eq!(output, "result");
             assert_eq!(*tool_calls, 2);
@@ -622,6 +626,7 @@ async fn channel_backend_spawn_result_dropped() {
         surface_completion: true,
         await_to_completion: false,
         fork_context: false,
+        jev_worker_ok: false,
         owner: super::super::types::SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),

@@ -159,6 +159,7 @@ pub(super) async fn create_test_actor_with_memory(
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         canonical_model_id: std::cell::RefCell::new(acp::ModelId::new("test")),
         model_routing_locked: std::cell::Cell::new(false),
+        worker_prompt_pending: std::cell::Cell::new(false),
         attribution_callback: None,
         auth_manager: None,
         is_chat_kind: false,

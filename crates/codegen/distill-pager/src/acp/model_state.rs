@@ -61,6 +61,45 @@ pub fn parse_effort_setting(value: &str) -> Result<Option<ReasoningEffort>, Stri
         .map_err(|_| format!("unknown effort `{value}`"))
 }
 
+/// A worker model and its effort (`None` is auto).
+type InstanceWorker = (Option<acp::ModelId>, Option<ReasoningEffort>);
+
+/// This TUI process's worker. Several instances run at once and each keeps its
+/// own worker, so `[models].worker` / `worker_effort` only seed it; afterwards
+/// only this instance's worker commands change it. A static rather than a
+/// thread-local because effects run on other threads.
+#[cfg(not(test))]
+static INSTANCE_WORKER: std::sync::OnceLock<parking_lot::Mutex<InstanceWorker>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    /// Each test thread seeds its own worker so parallel tests never share it.
+    static TEST_INSTANCE_WORKER: std::cell::RefCell<Option<InstanceWorker>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The saved worker; its effort counts only when a model is set.
+fn saved_worker() -> InstanceWorker {
+    let model = distill_shell::jev::worker_model().map(acp::ModelId::new);
+    let effort = model.as_ref().and_then(|_| distill_shell::jev::worker_effort());
+    (model, effort)
+}
+
+/// Run `f` on this instance's worker, seeding it from the config on first use.
+fn with_instance_worker<R>(f: impl FnOnce(&mut InstanceWorker) -> R) -> R {
+    #[cfg(test)]
+    {
+        TEST_INSTANCE_WORKER.with(|worker| f(worker.borrow_mut().get_or_insert_with(saved_worker)))
+    }
+    #[cfg(not(test))]
+    {
+        f(&mut INSTANCE_WORKER
+            .get_or_init(|| parking_lot::Mutex::new(saved_worker()))
+            .lock())
+    }
+}
+
 /// Per-agent model state.
 #[derive(Debug, Clone, Default)]
 pub struct ModelState {
@@ -68,7 +107,7 @@ pub struct ModelState {
     pub current: Option<acp::ModelId>,
     /// The optional worker model; independent of the active (main) session model.
     pub worker_model: Option<acp::ModelId>,
-    /// The worker's saved effort; `None` is auto (Jev picks it per call).
+    /// The worker's effort; `None` is auto (Jev picks it per call).
     pub worker_effort: Option<ReasoningEffort>,
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Set when the user asked for **auto effort** (`/effort auto`): the harness
@@ -125,15 +164,22 @@ impl ModelState {
         })
     }
 
-    /// The saved worker model (`[models].worker`); `None` when the main model
-    /// does all the work.
+    /// This instance's worker model; `None` when the main model does all the
+    /// work. Seeded once from `[models].worker`, so another instance's save
+    /// never changes it.
     pub fn configured_worker_model() -> Option<acp::ModelId> {
-        distill_shell::jev::worker_model().map(acp::ModelId::new)
+        with_instance_worker(|worker| worker.0.clone())
     }
 
-    /// The saved worker effort (`[models].worker_effort`); `None` is auto.
+    /// This instance's worker effort; `None` is auto.
     pub fn configured_worker_effort() -> Option<ReasoningEffort> {
-        distill_shell::jev::worker_effort()
+        with_instance_worker(|worker| worker.1)
+    }
+
+    /// Replace this instance's worker; only its own worker commands (and their
+    /// rollbacks) call this.
+    pub fn set_instance_worker(model: Option<acp::ModelId>, effort: Option<ReasoningEffort>) {
+        with_instance_worker(|worker| *worker = (model, effort));
     }
 
     /// Machine-readable model ID string for the current model (e.g. "grok-4.5").
@@ -466,6 +512,17 @@ mod tests {
             distill_shell::jev::effort_auto_cached(),
             "the footer must name the mode the shell is in, not a level",
         );
+    }
+
+    /// Several TUI instances share `[models].worker`, so a session this instance
+    /// creates or loads must show this instance's worker, not the saved one.
+    #[test]
+    fn a_session_takes_the_instance_worker() {
+        let worker = acp::ModelId::new(Arc::from("instance-worker"));
+        ModelState::set_instance_worker(Some(worker.clone()), Some(ReasoningEffort::Medium));
+        let state = ModelState::from(Some(sample_session_model_state()));
+        assert_eq!(state.worker_model, Some(worker));
+        assert_eq!(state.worker_effort, Some(ReasoningEffort::Medium));
     }
 
     #[test]

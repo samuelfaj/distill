@@ -392,9 +392,12 @@ impl MvpAgent {
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         let session_started_at = std::time::Instant::now();
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
-        let worker_override =
-            crate::extensions::session_worker_model::worker_from_meta(arguments.meta.as_ref())?;
-        let worker_snapshot = crate::extensions::session_worker_model::config_worker_snapshot();
+        let worker_override = crate::session::handle::new_session_worker_state();
+        crate::extensions::session_worker_model::apply_meta_or_snapshot(
+            &worker_override,
+            crate::extensions::session_worker_model::worker_from_meta(arguments.meta.as_ref())?,
+            crate::extensions::session_worker_model::config_worker_snapshot(),
+        );
         tracing::debug!(config = ?self.sampling_config, "Received new session request {arguments:?}");
         let init = self.initialize_request.get().ok_or_else(|| {
             acp::Error::invalid_params().data("initialize must be called before new_session")
@@ -664,14 +667,17 @@ impl MvpAgent {
             let mut timer = crate::instrumentation_timer!("session.spawn_session_actor");
             timer.with_field("session_id", session_id.0.as_ref());
             let mut spawn_opts = if is_chat_kind {
-                chat_session_spawn_options(
-                    session_info.clone(),
-                    cwd.clone(),
-                    arguments.meta.as_ref(),
-                    model_agent_type.as_deref(),
-                    session_model_id,
-                    session_yolo_mode,
-                )
+                SessionSpawnOptions {
+                    worker_override,
+                    ..chat_session_spawn_options(
+                        session_info.clone(),
+                        cwd.clone(),
+                        arguments.meta.as_ref(),
+                        model_agent_type.as_deref(),
+                        session_model_id,
+                        session_yolo_mode,
+                    )
+                }
             } else {
                 SessionSpawnOptions {
                     session_info: session_info.clone(),
@@ -707,6 +713,7 @@ impl MvpAgent {
                     session_model_id,
                     initial_reasoning_effort: spawn_effort,
                     jev_effort_auto: Some(session_effort_auto),
+                    worker_override,
                     session_yolo_mode,
                     session_auto_mode: session_auto_mode && !session_yolo_mode,
                     prompt_display_cwd: None,
@@ -731,13 +738,6 @@ impl MvpAgent {
         }
         spawn_res?;
         tracing::debug!(session_id = %session_id.0, "new_session: spawn_session_actor");
-        if let Some(handle) = self.resident_handle(&session_id) {
-            crate::extensions::session_worker_model::apply_meta_or_snapshot(
-                &handle.worker_override,
-                worker_override,
-                worker_snapshot,
-            );
-        }
         if session_computer_sessions
             .as_ref()
             .is_some_and(|sessions| !sessions.is_empty())
@@ -1232,6 +1232,12 @@ impl MvpAgent {
                     .ok()
                     .map(|m| m.info().agent_type.clone())
             });
+            let worker_state = crate::session::handle::new_session_worker_state();
+            crate::extensions::session_worker_model::apply_meta_or_snapshot(
+                &worker_state,
+                worker_override,
+                worker_snapshot,
+            );
             let load_is_current = self
                 .spawn_and_register_session(
                     init,
@@ -1263,6 +1269,7 @@ impl MvpAgent {
                         session_model_id: summary.current_model_id.clone(),
                         initial_reasoning_effort: None,
                         jev_effort_auto: None,
+                        worker_override: worker_state,
                         session_yolo_mode,
                         session_auto_mode: session_auto_mode && !session_yolo_mode,
                         prompt_display_cwd,
@@ -1312,6 +1319,17 @@ impl MvpAgent {
                         respond_to: tx,
                     });
             });
+            if let Some(handle) = self.resident_handle(&session_id) {
+                let previous = handle.worker_override.read().clone();
+                crate::extensions::session_worker_model::apply_meta_or_snapshot(
+                    &handle.worker_override,
+                    worker_override,
+                    worker_snapshot,
+                );
+                if *handle.worker_override.read() != previous {
+                    let _ = handle.cmd_tx.send(SessionCommand::RefreshWorkerPrompt);
+                }
+            }
             false
         };
         if gateway_backed {
@@ -1345,13 +1363,6 @@ impl MvpAgent {
             && let Some(handle) = self.resident_handle(&session_id)
         {
             handle.set_client_hooks(hooks);
-        }
-        if let Some(handle) = self.resident_handle(&session_id) {
-            crate::extensions::session_worker_model::apply_meta_or_snapshot(
-                &handle.worker_override,
-                worker_override,
-                worker_snapshot,
-            );
         }
         #[allow(unused_variables)]
         let local_transcript_rendered = !no_replay

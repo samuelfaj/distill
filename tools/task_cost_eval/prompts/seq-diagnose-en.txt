@@ -1,0 +1,5 @@
+In tools/task_cost_eval/fixtures/seq_diagnose, `report.total_cents(["19.99", "0.29", "1,000.10"])`
+returns 102036 instead of 102038, and `format_total` prints 1020.36. Find the root
+cause and fix it so every money string is converted to exact integer cents,
+including negatives such as "-5.10". Keep the function signatures and edit the
+files rather than only describing the fix.

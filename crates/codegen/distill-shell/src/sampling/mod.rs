@@ -33,6 +33,25 @@ pub(crate) fn derive_conversation_group_id(root_session_id: &str) -> Conversatio
         .into()
 }
 
+/// Responses `prompt_cache_key` for a subagent child so siblings share one cache route.
+/// A verbatim fork shares the parent's prefix and routes with the parent session id; a fresh child routes by `{group}:{subagent_type}`.
+/// `None` keeps the default (the child's own session id).
+pub(crate) fn subagent_prompt_cache_key(
+    is_subagent: bool,
+    verbatim_fork: bool,
+    parent_session_id: Option<&str>,
+    subagent_type: Option<&str>,
+    group_id: Option<&ConversationGroupId>,
+) -> Option<String> {
+    if !is_subagent {
+        return None;
+    }
+    if verbatim_fork {
+        return parent_session_id.map(str::to_owned);
+    }
+    Some(format!("{}:{}", group_id?.as_ref(), subagent_type?))
+}
+
 #[cfg(test)]
 mod conversation_group_tests {
     use pretty_assertions::{assert_eq, assert_ne};
@@ -53,6 +72,29 @@ mod conversation_group_tests {
         assert_ne!(
             derive_conversation_group_id("root-a"),
             derive_conversation_group_id("root-b")
+        );
+    }
+
+    #[test]
+    fn subagent_cache_key_routes_siblings_and_forks() {
+        let group = derive_conversation_group_id("root");
+        let fresh_a =
+            subagent_prompt_cache_key(true, false, Some("parent"), Some("explore"), Some(&group));
+        let fresh_b =
+            subagent_prompt_cache_key(true, false, Some("parent"), Some("explore"), Some(&group));
+        assert_eq!(fresh_a, Some(format!("{}:explore", group.as_ref())));
+        assert_eq!(fresh_a, fresh_b);
+        assert_ne!(
+            fresh_a,
+            subagent_prompt_cache_key(true, false, Some("parent"), Some("plan"), Some(&group))
+        );
+        assert_eq!(
+            subagent_prompt_cache_key(true, true, Some("parent"), Some("explore"), Some(&group)),
+            Some("parent".to_string())
+        );
+        assert_eq!(
+            subagent_prompt_cache_key(false, false, None, None, Some(&group)),
+            None
         );
     }
 }

@@ -9,6 +9,7 @@
 //! 3. `run_shell_child` (worker pool, in `handle_request.rs`) prepares the child (toolset, optional worktree, context).
 //!    It starts the child on its own thread via `spawn_session_on_thread`.
 //! 4. `on_completed` then `present_child_completion` (worker pool): reports the child finished, persists the result, and may wake the parent.
+//!    A background wake waits in `WakeHolds` while the parent's other background children run, so a batch wakes the parent once.
 //!
 //! Stage timings are recorded in `subagent_spawn::SubagentSpawnPhase`.
 use super::ShellCompletionData;
@@ -20,8 +21,10 @@ use distill_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use distill_telemetry::region::Region;
 use distill_tools::implementations::distill::task::coordinator::{self, ChildCompletion};
 use distill_tools::implementations::distill::task::types::{
-    SubagentRequest, SubagentResult, SubagentSnapshot,
+    SubagentCompletionSummary, SubagentRequest, SubagentResult, SubagentSnapshot,
 };
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 /// Floor keeps the pool responsive when `available_parallelism` is tiny.
 const MIN_WORKER_THREADS: usize = 2;
@@ -65,6 +68,7 @@ struct ShellChildRunner {
     agent_ref: LocalRef<MvpAgent>,
     /// Owned: panics are logged, coordinator teardown aborts stragglers.
     presentations: std::cell::RefCell<Vec<tokio_util::task::AbortOnDropHandle<()>>>,
+    wake_holds: WakeHolds,
 }
 pub(crate) fn spawn_pipeline_parent(
     root_span: Option<&tracing::Span>,
@@ -281,14 +285,10 @@ impl coordinator::ChildRunner for ShellChildRunner {
             .get()
             .release_subagent_turn_number(&child_session_id);
         let gateway = self.agent_ref.get().gateway.clone();
-        let will_wake = will_wake_for(&completion);
         let subagent_id = completion.request.id.clone();
+        let present_completion = completion_presenter(&self.wake_holds, completion, gateway);
         let present = move || {
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                present_child_completion(completion, &gateway, will_wake)
-            }))
-            .is_err()
-            {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(present_completion)).is_err() {
                 tracing::error!(subagent_id, "subagent completion presentation panicked");
             }
             terminal_published();
@@ -309,6 +309,9 @@ impl coordinator::ChildRunner for ShellChildRunner {
             .activity
             .subagent_gauge()
             .store(running, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn parent_session_cancelled(&self, parent_session_id: &str) {
+        self.wake_holds.cancel(parent_session_id);
     }
     fn persisted_output_ref(&self, completion_data: &Self::CompletionData) -> Option<String> {
         completion_data
@@ -356,6 +359,7 @@ pub(crate) fn spawn_subagent_coordinator(
     let runner = ShellChildRunner {
         agent_ref,
         presentations: Default::default(),
+        wake_holds: WakeHolds::default(),
     };
     let limit_sink: coordinator::SubagentLimitSink = std::sync::Arc::new(log_limit_notice);
     let config = coordinator::CoordinatorConfig {
@@ -377,10 +381,34 @@ pub(crate) fn will_wake_for(completion: &ChildCompletion<ShellCompletionData>) -
     should_auto_wake_subagent(AutoWakeInputs::from_completion(completion))
         && completion.disposition.should_surface
 }
+/// Decides the wake on the coordinator thread, which sees a parent's completions in order; the returned closure presents it.
+pub(crate) fn completion_presenter(
+    holds: &WakeHolds,
+    completion: ChildCompletion<ShellCompletionData>,
+    gateway: GatewaySender,
+) -> impl FnOnce() + Send + 'static {
+    let will_wake = will_wake_for(&completion);
+    let route = holds.route(&completion, will_wake);
+    move || present_routed_completion(completion, &gateway, will_wake, route)
+}
 pub(crate) fn present_child_completion(
     completion: ChildCompletion<ShellCompletionData>,
     gateway: &GatewaySender,
     will_wake: bool,
+) {
+    let route = if will_wake {
+        WakeRoute::Own
+    } else {
+        WakeRoute::None
+    };
+    present_routed_completion(completion, gateway, will_wake, route);
+}
+/// `will_wake` is what the finish notification promises; `route` is what gets injected now.
+fn present_routed_completion(
+    completion: ChildCompletion<ShellCompletionData>,
+    gateway: &GatewaySender,
+    will_wake: bool,
+    route: WakeRoute,
 ) {
     let ChildCompletion {
         request,
@@ -409,8 +437,9 @@ pub(crate) fn present_child_completion(
             completion_data.parent_cmd_tx.as_ref(),
         );
     }
-    if will_wake {
-        inject_subagent_completed_prompt(InjectParams {
+    match route {
+        WakeRoute::None => {}
+        WakeRoute::Own => inject_subagent_completed_prompt(InjectParams {
             subagent_id: &request.id,
             result: &result,
             request: &request,
@@ -421,8 +450,165 @@ pub(crate) fn present_child_completion(
             scheduler_create_tool_name: completion_data.scheduler_create_tool_name.as_deref(),
             synthetic_trace_tx: &completion_data.synthetic_trace_tx,
             goal_loop_active: &completion_data.goal_loop_active,
-        });
+        }),
+        WakeRoute::Batch(wakes) => inject_held_wakes(&wakes),
     }
+}
+/// A wake held this long while siblings still run goes out without them.
+pub(crate) const WAKE_HOLD_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+/// What a presented completion injects into its parent.
+pub(crate) enum WakeRoute {
+    /// Nothing now: not wake-eligible, or held for the parent's running background children.
+    None,
+    /// Its own wake, exactly as a lone background child.
+    Own,
+    /// One wake for the parent's held completions, this one included when eligible.
+    Batch(Vec<HeldWake>),
+}
+/// A wake-eligible completion waiting for its background siblings.
+pub(crate) struct HeldWake {
+    summary: SubagentCompletionSummary,
+    parent_session_id: String,
+    data: ShellCompletionData,
+}
+impl HeldWake {
+    fn new(completion: &ChildCompletion<ShellCompletionData>) -> Self {
+        Self {
+            summary: distill_tools::implementations::distill::task::completion_summary(
+                &completion.request,
+                &completion.result,
+                &completion.snapshot,
+            ),
+            parent_session_id: completion.request.parent_session_id.clone(),
+            data: completion.completion_data.clone(),
+        }
+    }
+}
+/// Held wakes per parent session. Which background children still run comes from the coordinator
+/// (`CompletionDisposition::background_sibling_running`); this only keeps what waits on them.
+#[derive(Default)]
+pub(crate) struct WakeHolds(Arc<parking_lot::Mutex<HeldBatches>>);
+#[derive(Default)]
+struct HeldBatches {
+    next_id: u64,
+    by_parent: HashMap<String, HeldBatch>,
+}
+struct HeldBatch {
+    id: u64,
+    wakes: Vec<HeldWake>,
+    /// Delivers the batch after [`WAKE_HOLD_MAX`]; dropping the batch cancels it.
+    _deadline: tokio_util::task::AbortOnDropHandle<()>,
+}
+impl WakeHolds {
+    /// Holds an eligible wake while siblings run; once none run, releases the parent's held wakes plus this one as one batch.
+    /// Must run on the coordinator thread so a parent's completions arrive in order.
+    pub(crate) fn route(
+        &self,
+        completion: &ChildCompletion<ShellCompletionData>,
+        will_wake: bool,
+    ) -> WakeRoute {
+        let parent = &completion.request.parent_session_id;
+        let mut batches = self.0.lock();
+        if completion.disposition.background_sibling_running {
+            if will_wake {
+                let wake = HeldWake::new(completion);
+                match batches.by_parent.get_mut(parent) {
+                    Some(batch) => batch.wakes.push(wake),
+                    None => self.start_batch(&mut batches, parent, wake),
+                }
+            }
+            return WakeRoute::None;
+        }
+        let Some(batch) = batches.by_parent.remove(parent) else {
+            return if will_wake {
+                WakeRoute::Own
+            } else {
+                WakeRoute::None
+            };
+        };
+        drop(batches);
+        let mut wakes = batch.wakes;
+        if will_wake {
+            wakes.push(HeldWake::new(completion));
+        }
+        WakeRoute::Batch(wakes)
+    }
+    /// User Stop or teardown: drop the parent's held wakes without waking it.
+    pub(crate) fn cancel(&self, parent_session_id: &str) {
+        drop(self.0.lock().by_parent.remove(parent_session_id));
+    }
+    fn start_batch(&self, batches: &mut HeldBatches, parent: &str, wake: HeldWake) {
+        let id = batches.next_id;
+        batches.next_id += 1;
+        let holds = Arc::downgrade(&self.0);
+        let key = parent.to_owned();
+        let deadline = tokio::spawn(async move {
+            tokio::time::sleep(WAKE_HOLD_MAX).await;
+            let Some(holds) = holds.upgrade() else {
+                return;
+            };
+            let due = {
+                let mut batches = holds.lock();
+                let still_this_batch = batches
+                    .by_parent
+                    .get(&key)
+                    .is_some_and(|batch| batch.id == id);
+                if still_this_batch {
+                    batches.by_parent.remove(&key)
+                } else {
+                    None
+                }
+            };
+            if let Some(batch) = due {
+                tracing::info!(
+                    parent_session_id = %key,
+                    held = batch.wakes.len(),
+                    "delivering held subagent wakes before their siblings finish",
+                );
+                inject_held_wakes(&batch.wakes);
+            }
+        });
+        batches.by_parent.insert(
+            parent.to_owned(),
+            HeldBatch {
+                id,
+                wakes: vec![wake],
+                _deadline: tokio_util::task::AbortOnDropHandle::new(deadline),
+            },
+        );
+    }
+}
+/// One wake for a parent's held completions, named after the latest. The parent drops the wake once that one is reported,
+/// and its wake turn rebuilds the body from the completions still unreported, so consumed ones are not shown twice.
+fn inject_held_wakes(wakes: &[HeldWake]) {
+    let Some(latest) = wakes.last() else {
+        return;
+    };
+    let data = &latest.data;
+    if data
+        .goal_loop_active
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
+    let Some(cmd_tx) = data.parent_cmd_tx.as_ref() else {
+        return;
+    };
+    let summaries: Vec<SubagentCompletionSummary> =
+        wakes.iter().map(|wake| wake.summary.clone()).collect();
+    let message = distill_tools::reminders::task_completion::format_subagent_completion_batch(
+        &summaries,
+        Some(&data.task_output_tool_name),
+        data.scheduler_delete_tool_name.as_deref(),
+        data.scheduler_create_tool_name.as_deref(),
+    );
+    send_wake_prompt(
+        cmd_tx,
+        latest.summary.subagent_id(),
+        &latest.parent_session_id,
+        &message,
+        &data.synthetic_trace_tx,
+    );
 }
 /// Inputs to the auto-wake gate, one field per suppression reason.
 #[derive(Clone, Copy)]
@@ -510,7 +696,25 @@ pub(crate) fn inject_subagent_completed_prompt(params: InjectParams) {
         scheduler_delete_tool_name,
         scheduler_create_tool_name,
     );
-    let wrapped = distill_tools::reminders::wrap_reminder(&message);
+    send_wake_prompt(
+        cmd_tx,
+        subagent_id,
+        &request.parent_session_id,
+        &message,
+        synthetic_trace_tx,
+    );
+}
+/// Sends `message` as the `subagent-completed-{subagent_id}` wake prompt, traced when the parent uploads synthetic turns.
+fn send_wake_prompt(
+    cmd_tx: &mpsc::UnboundedSender<SessionCommand>,
+    subagent_id: &str,
+    parent_session_id: &str,
+    message: &str,
+    synthetic_trace_tx: &Option<
+        mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>,
+    >,
+) {
+    let wrapped = distill_tools::reminders::wrap_reminder(message);
     let prompt_id = format!("subagent-completed-{subagent_id}");
     let before_rx = if synthetic_trace_tx.is_some() {
         let (before_tx, before_rx) = tokio::sync::oneshot::channel();
@@ -548,7 +752,7 @@ pub(crate) fn inject_subagent_completed_prompt(params: InjectParams) {
     }
     if let Some(trace_tx) = synthetic_trace_tx {
         let _ = trace_tx.send(crate::upload::turn::SyntheticTurnTraceRequest {
-            session_id: acp::SessionId::new(request.parent_session_id.clone()),
+            session_id: acp::SessionId::new(parent_session_id),
             prompt_id,
             completion_rx,
             before_session_copy_rx: before_rx

@@ -94,6 +94,8 @@ fn test_actor_inner_with_recorder(
             last_usage_turn: None,
             last_incoming_turn: None,
             pending_usage_live: None,
+            usage_turn_by_prompt: Default::default(),
+            late_usage_unmatched_logged: false,
         }
         .run(),
     );
@@ -187,6 +189,7 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
         .tx
         .send(PersistenceMsg::UsageTurn {
             turn_number: 1,
+            prompt_id: None,
             live: pending_live.clone(),
         })
         .unwrap();
@@ -342,6 +345,7 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
         .tx
         .send(PersistenceMsg::UsageTurn {
             turn_number: 2,
+            prompt_id: None,
             live: mixed_turn2_live.clone(),
         })
         .unwrap();
@@ -377,6 +381,7 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
         .tx
         .send(PersistenceMsg::UsageTurn {
             turn_number: 2,
+            prompt_id: None,
             live: terminal_live,
         })
         .unwrap();
@@ -435,6 +440,7 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
         .tx
         .send(PersistenceMsg::UsageTurn {
             turn_number: 2,
+            prompt_id: None,
             live: mixed_turn2_live.clone(),
         })
         .unwrap();
@@ -443,6 +449,7 @@ async fn late_title_refresh_clears_pending_persisted_completeness_once() {
         .tx
         .send(PersistenceMsg::UsageTurn {
             turn_number: 2,
+            prompt_id: None,
             live: mixed_turn2_live,
         })
         .unwrap();
@@ -595,6 +602,7 @@ async fn title_refresh_before_first_usage_turn_is_reconciled() {
         .tx
         .send(PersistenceMsg::UsageTurn {
             turn_number: 1,
+            prompt_id: None,
             live: pending_live,
         })
         .unwrap();
@@ -629,6 +637,116 @@ async fn title_refresh_before_first_usage_turn_is_reconciled() {
 
     actor.stop().await;
     cancellation.cancel();
+}
+
+#[tokio::test]
+async fn late_subagent_usage_lands_in_spawning_turn_once() {
+    use crate::session::usage_file::UsageSummary;
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("late-subagent-usage"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let actor = test_actor(info.clone(), storage.clone());
+    let tokens = |prompt_tokens, completion_tokens| distill_sampling_types::TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        ..Default::default()
+    };
+    let usage_turn = |turn_number, prompt_id: &str, ledger: &distill_chat_state::UsageLedger| {
+        PersistenceMsg::UsageTurn {
+            turn_number,
+            prompt_id: Some(prompt_id.to_owned()),
+            live: UsageSummary::from_ledger(ledger),
+        }
+    };
+
+    let mut ledger = distill_chat_state::UsageLedger::default();
+    ledger.record_main_loop_call("parent", &tokens(100, 10), None, Some(5));
+    actor.handle.tx.send(usage_turn(1, "p-1", &ledger)).unwrap();
+    ledger.record_main_loop_call("parent", &tokens(50, 5), None, Some(5));
+    actor.handle.tx.send(usage_turn(2, "p-2", &ledger)).unwrap();
+
+    // A background child of p-1 reports while p-2 runs; the fold is resent once.
+    let child = distill_chat_state::UsageAttribution {
+        attempt_id: "child-1".to_owned(),
+        task_id: None,
+        turn_id: Some("1".to_owned()),
+        request_id: None,
+        role: "main".to_owned(),
+        model_id: "child".to_owned(),
+        endpoint: None,
+        requested_effort: None,
+        reason: None,
+        bytes_in: None,
+        bytes_out: None,
+        applied_effort: None,
+        status: distill_chat_state::UsageCallStatus::Completed,
+        usage: Some(tokens(7, 2)),
+        usage_complete: true,
+        api_duration_ms: None,
+        cost_usd_ticks: Some(3),
+        cost_basis: distill_chat_state::UsageCostBasis::Reported,
+    };
+    let slice = ledger.record_subagent_usage_slice(&[], &[child], &[], false);
+    for _ in 0..2 {
+        actor
+            .handle
+            .tx
+            .send(PersistenceMsg::LateSubagentUsage {
+                prompt_id: "p-1".to_owned(),
+                turn_number: 2,
+                live: UsageSummary::from_ledger(&ledger),
+                late: UsageSummary::from_ledger(&slice),
+            })
+            .unwrap();
+    }
+    ledger.record_main_loop_call("parent", &tokens(20, 2), None, Some(5));
+    actor.handle.tx.send(usage_turn(2, "p-2", &ledger)).unwrap();
+    // A prompt with no persisted row keeps today's path: the next delta bills it.
+    let unknown = ledger.record_subagent_usage_slice(
+        &[(
+            "child".to_owned(),
+            distill_chat_state::UsageTotals {
+                input_tokens: 4,
+                model_calls: 1,
+                ..Default::default()
+            },
+        )],
+        &[],
+        &[],
+        false,
+    );
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::LateSubagentUsage {
+            prompt_id: "p-unknown".to_owned(),
+            turn_number: 2,
+            live: UsageSummary::from_ledger(&ledger),
+            late: UsageSummary::from_ledger(&unknown),
+        })
+        .unwrap();
+    let _ = flush_ack(&actor.handle).await;
+
+    let file = storage.read_usage(&info).await.unwrap().unwrap();
+    assert_eq!(file.turns.len(), 2);
+    assert_eq!(file.turns[0].usage.input_tokens, 107);
+    assert_eq!(file.turns[0].usage.model_calls, 2);
+    assert_eq!(file.turns[1].usage.input_tokens, 74);
+    assert_eq!(file.session.input_tokens, ledger.totals.input_tokens);
+    assert_eq!(file.session.output_tokens, ledger.totals.output_tokens);
+    assert_eq!(file.session.model_calls, ledger.totals.model_calls);
+    assert_eq!(file.session.cost_usd_ticks, ledger.totals.cost_usd_ticks);
+    actor.stop().await;
 }
 
 #[tokio::test]

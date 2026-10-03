@@ -370,6 +370,48 @@ pub(super) fn reconcile_resumed_memory_section(
 fn has_memory_section(prompt: &str) -> bool {
     prompt.contains("\n<memory>\n")
 }
+const ORCHESTRATION_OPEN: &str = "\n\n<orchestration>\n";
+const ORCHESTRATION_CLOSE: &str = "\n</orchestration>";
+const WORK_POLICY_CLOSE: &str = "\n</work_policy>";
+/// `(before, body, after)` around the `<orchestration>` block `templates/prompt.md` renders right
+/// after `</work_policy>` when the prompt has a worker to delegate to.
+fn split_orchestration(prompt: &str) -> Option<(&str, &str, &str)> {
+    let (before, rest) = prompt.split_once(ORCHESTRATION_OPEN)?;
+    let (body, after) = rest.split_once(ORCHESTRATION_CLOSE)?;
+    Some((before, body, after))
+}
+/// The worker id the block's first line puts in backticks; empty when it names none.
+fn worker_named(body: &str) -> &str {
+    body.split('`').nth(1).unwrap_or_default()
+}
+/// A resumed head keeps the prompt it was saved with, but its `<orchestration>` section must name
+/// the worker this session's children run on, which the fresh prompt carries. Returns the head with
+/// only that section replaced, so saved rules, date and memory manifest stay. `None` when the head
+/// already agrees (it stays byte-identical, keeping the prompt cache) or is not a standard prompt,
+/// such as a client override or a concise head.
+pub(super) fn reconciled_orchestration_head(head: &str, fresh: &str) -> Option<String> {
+    let (head_prompt, manifest) = head
+        .find(distill_chat_state::MEMORY_CONTEXT_OPEN_TAG)
+        .map_or((head, ""), |start| head.split_at(start));
+    let head_block = split_orchestration(head_prompt);
+    let fresh_block = split_orchestration(fresh);
+    let head_worker = head_block.map(|(_, body, _)| worker_named(body));
+    let fresh_worker = fresh_block.map(|(_, body, _)| worker_named(body));
+    if head_worker == fresh_worker {
+        return None;
+    }
+    let section = fresh_block.map_or_else(String::new, |(_, body, _)| {
+        format!("{ORCHESTRATION_OPEN}{body}{ORCHESTRATION_CLOSE}")
+    });
+    let (before, after) = match head_block {
+        Some((before, _, after)) => (before.to_owned(), after),
+        None => {
+            let (before, after) = head_prompt.split_once(WORK_POLICY_CLOSE)?;
+            (format!("{before}{WORK_POLICY_CLOSE}"), after)
+        }
+    };
+    Some(format!("{before}{section}{after}{manifest}"))
+}
 #[cfg(test)]
 mod reconcile_resumed_memory_section_tests {
     use super::reconcile_resumed_memory_section;
@@ -418,6 +460,97 @@ mod reconcile_resumed_memory_section_tests {
             "{WITHOUT_MEMORY}\n\n{manifest}"
         ))];
         assert!(!reconcile_resumed_memory_section(&mut conv, WITHOUT_MEMORY));
+    }
+}
+#[cfg(test)]
+mod reconciled_orchestration_head_tests {
+    use super::reconciled_orchestration_head;
+    use distill_chat_state::MEMORY_CONTEXT_OPEN_TAG;
+    /// Shaped like `templates/prompt.md`: the section sits right after `</work_policy>`.
+    fn prompt(worker: Option<&str>) -> String {
+        let section = worker.map_or_else(String::new, |worker| {
+            format!(
+                "\n\n<orchestration>\nThe worker model `{worker}` costs little.\n- delegate\n</orchestration>"
+            )
+        });
+        format!(
+            "You are Distill.\n\n<work_policy>\n- keep scope\n</work_policy>{section}\n\n<memory>\nuse memory\n</memory>\n\ndate 2026-01-01"
+        )
+    }
+    #[test]
+    fn the_head_names_the_fresh_worker_and_nothing_else_changes() {
+        let fresh = prompt(Some("b"));
+        assert_eq!(
+            reconciled_orchestration_head(&prompt(Some("a")), &fresh),
+            Some(fresh.clone())
+        );
+        assert_eq!(
+            reconciled_orchestration_head(&prompt(None), &fresh),
+            Some(fresh.clone())
+        );
+        assert_eq!(
+            reconciled_orchestration_head(&prompt(Some("a")), &prompt(None)),
+            Some(prompt(None))
+        );
+        let saved = format!(
+            "{}\n\n<human_rules>\nbe terse\n</human_rules>",
+            prompt(Some("a")).replace("2026-01-01", "2025-12-31")
+        );
+        let head = reconciled_orchestration_head(&saved, &fresh).expect("stale section");
+        assert!(head.contains("`b`") && !head.contains("`a`"));
+        assert!(head.contains("2025-12-31") && head.ends_with("</human_rules>"));
+    }
+    #[test]
+    fn a_head_that_already_agrees_is_not_replaced() {
+        let saved = format!(
+            "{}\n\n<human_rules>\nbe terse\n</human_rules>",
+            prompt(Some("b"))
+        );
+        assert_eq!(
+            reconciled_orchestration_head(&saved, &prompt(Some("b"))),
+            None
+        );
+        assert_eq!(
+            reconciled_orchestration_head(&prompt(None), &prompt(None)),
+            None
+        );
+    }
+    #[test]
+    fn a_head_that_is_not_a_standard_prompt_is_left_alone() {
+        let fresh = prompt(Some("b"));
+        assert_eq!(
+            reconciled_orchestration_head("client override", &fresh),
+            None
+        );
+        assert_eq!(
+            reconciled_orchestration_head(
+                distill_agent::prompt::template::COMPACT_SYSTEM_PROMPT,
+                &fresh
+            ),
+            None
+        );
+    }
+    #[test]
+    fn the_memory_manifest_is_neither_searched_nor_changed() {
+        let manifest = format!(
+            "{MEMORY_CONTEXT_OPEN_TAG}\nnote\n\n<orchestration>\nThe worker model `z` x\n</orchestration>\n</memory-context>"
+        );
+        for saved in [prompt(Some("a")), prompt(None)] {
+            let head = reconciled_orchestration_head(
+                &format!("{saved}\n\n{manifest}"),
+                &prompt(Some("b")),
+            )
+            .expect("stale section");
+            assert_eq!(head, format!("{}\n\n{manifest}", prompt(Some("b"))));
+        }
+        assert_eq!(
+            reconciled_orchestration_head(
+                &format!("{}\n\n{manifest}", prompt(None)),
+                &prompt(None)
+            ),
+            None,
+            "a block inside the manifest is not the head's section"
+        );
     }
 }
 #[cfg(test)]

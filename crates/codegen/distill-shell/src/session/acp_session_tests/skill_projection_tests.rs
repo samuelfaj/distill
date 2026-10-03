@@ -1,6 +1,7 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
-//! Actor-level tests for the request-aware skill listing (Jev P6) and the
-//! per-turn `<skill_relevance>` hint.
+//! Actor-level tests for the request-aware skill listing (Jev P6), the
+//! per-turn `<skill_relevance>` hint and the turn-start pass (P1 families, B6
+//! delegation).
 use super::support::*;
 use super::*;
 
@@ -83,6 +84,7 @@ where
             seed_catalog(&actor).await;
             test(actor).await;
             crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_flags();
         })
         .await;
 }
@@ -235,6 +237,213 @@ async fn optional_tool_families_join_when_needed_and_never_leave() {
             "an included family never leaves"
         );
         assert!(!kept(&later).contains(&"scheduler_list".to_owned()));
+    })
+    .await;
+}
+
+fn optional_family_defs() -> Vec<ToolDefinition> {
+    ["read_file", "run_terminal_command", "image_gen", "scheduler_list"]
+        .map(tool_def)
+        .to_vec()
+}
+
+/// Turn-start answers: both optional families dropped, and B6 judging the
+/// request multi-step with independent parts at `parallel`.
+fn prelude_answers(parallel: f64) -> distill_workspace::jev::JevAnswerSet {
+    use distill_workspace::jev::Answer;
+    let mut answers = family_answers(0.02, 0.01);
+    answers
+        .answers
+        .insert("2:fits_single_call".to_owned(), Answer::Noul { noul: 0.1 });
+    answers
+        .answers
+        .insert("2:needs_parallel".to_owned(), Answer::Noul { noul: parallel });
+    answers
+}
+
+/// Gives the session a worker model (or none), as a primary session gets one.
+fn set_worker_model(actor: &SessionActor, worker: Option<&str>) {
+    let agent = {
+        let base = actor.agent.borrow();
+        let mut context = base.prompt_context().clone();
+        context.worker_model = worker.map(str::to_owned);
+        distill_agent::Agent::new(
+            base.definition().clone(),
+            context,
+            base.system_prompt().to_owned(),
+            base.tool_bridge().clone(),
+            base.reminder_policy().clone(),
+            base.compaction_policy().clone(),
+            base.hosted_tools().to_vec(),
+            base.backend_search_enabled(),
+        )
+    };
+    *actor.agent.borrow_mut() = agent;
+}
+
+fn ask_about(actor: &SessionActor, request: &str) {
+    actor.chat_state_handle.replace_conversation(vec![
+        ConversationItem::system("sys"),
+        ConversationItem::user(format!("<user_query>\n{request}\n</user_query>")),
+    ]);
+}
+
+fn asks_delegation(ids: &[String]) -> bool {
+    ids.iter().any(|id| id == "2:fits_single_call") && ids.iter().any(|id| id == "2:needs_parallel")
+}
+
+fn b6_decisions(session_id: &str) -> Vec<String> {
+    crate::jev::recorded_decisions_for_test(session_id)
+        .into_iter()
+        .filter(|(lever, _)| lever == "b6_delegation_hint")
+        .map(|(_, decision)| decision)
+        .collect()
+}
+
+async fn delegation_hints(actor: &SessionActor) -> Vec<String> {
+    actor
+        .chat_state_handle
+        .get_conversation()
+        .await
+        .iter()
+        .map(ConversationItem::text_content)
+        .filter(|text| text.contains("<delegation_hint>"))
+        .collect()
+}
+
+fn flags_with_b6(on: bool) -> distill_workspace::jev::JevFlags {
+    distill_workspace::jev::JevFlags {
+        b6_delegation_hint: on,
+        ..distill_workspace::jev::JevFlags::harness_default()
+    }
+}
+
+/// Shadow mode: with the flag off (the default) B6 still rides on the
+/// turn-start request and its answer is recorded, but the prompt is unchanged.
+#[tokio::test(flavor = "current_thread")]
+async fn jev_b6_is_asked_and_recorded_without_a_hint_while_the_flag_is_off() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-flag-off", async {
+            crate::jev::set_test_flags(flags_with_b6(false));
+            set_worker_model(&actor, Some("worker-model"));
+            ask_about(&actor, "fix the parser and, separately, update the docs");
+            crate::jev::set_test_decision_answers([Some(prelude_answers(0.9))]);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            let asked = crate::jev::take_test_asked_questions();
+            assert_eq!(asked.len(), 1, "one turn-start request: {asked:?}");
+            assert!(asks_delegation(&asked[0]), "{asked:?}");
+            assert_eq!(b6_decisions("b6-flag-off"), ["delegate"]);
+            actor.jev_flush_delegation_hint().await;
+            assert!(delegation_hints(&actor).await.is_empty());
+        })
+        .await;
+    })
+    .await;
+}
+
+/// With the flag on, a suggestion reaches the turn once: later rounds and a
+/// second pass over the same request add nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn jev_b6_suggestion_adds_the_hint_exactly_once_with_the_flag_on() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-flag-on", async {
+            crate::jev::set_test_flags(flags_with_b6(true));
+            set_worker_model(&actor, Some("worker-model"));
+            ask_about(&actor, "fix the parser and, separately, update the docs");
+            crate::jev::set_test_decision_answers([Some(prelude_answers(0.9))]);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            actor.jev_flush_delegation_hint().await;
+            actor.jev_flush_delegation_hint().await;
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            actor.jev_flush_delegation_hint().await;
+            assert_eq!(
+                delegation_hints(&actor).await,
+                ["<delegation_hint>This request has independent parts: split them into narrow subagent assignments and launch them together in one message.</delegation_hint>"]
+            );
+            assert_eq!(b6_decisions("b6-flag-on"), ["delegate"]);
+        })
+        .await;
+    })
+    .await;
+}
+
+/// Delegation needs a worker to delegate to: without one the same pass sends
+/// no B6 question, even with the flag on.
+#[tokio::test(flavor = "current_thread")]
+async fn jev_b6_without_a_worker_model_sends_no_delegation_questions() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-no-worker", async {
+            crate::jev::set_test_flags(flags_with_b6(true));
+            set_worker_model(&actor, Some("worker-model"));
+            ask_about(&actor, "fix the parser and, separately, update the docs");
+            crate::jev::set_test_decision_answers([Some(prelude_answers(0.9))]);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            set_worker_model(&actor, None);
+            ask_about(&actor, "now rename the module and update its tests");
+            crate::jev::set_test_decision_answers([Some(prelude_answers(0.9))]);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            let asked = crate::jev::take_test_asked_questions();
+            assert_eq!(asked.len(), 2, "{asked:?}");
+            assert!(asks_delegation(&asked[0]), "with a worker: {asked:?}");
+            assert!(
+                !asked[1].iter().any(|id| id.starts_with("2:")),
+                "without a worker: {asked:?}"
+            );
+            assert_eq!(
+                b6_decisions("b6-no-worker"),
+                ["delegate"],
+                "only the request with a worker"
+            );
+        })
+        .await;
+    })
+    .await;
+}
+
+async fn budget_reminders(actor: &SessionActor) -> usize {
+    actor
+        .chat_state_handle
+        .get_conversation()
+        .await
+        .iter()
+        .filter(|item| item.text_content().contains("Budget reached: stop exploring"))
+        .count()
+}
+
+/// Fresh child: one reminder per turn, by request count or by prompt size.
+#[tokio::test(flavor = "current_thread")]
+async fn report_budget_reminds_a_long_child_once() {
+    for (requests, tokens) in [(30, None), (3, Some(100_001))] {
+        with_actor(|mut actor| async move {
+            actor.startup_hints.report_budget = true;
+            let mut sent = false;
+            actor.flush_report_budget(2, Some(99_999), &mut sent).await;
+            assert_eq!(budget_reminders(&actor).await, 0);
+            actor.flush_report_budget(requests, tokens, &mut sent).await;
+            actor.flush_report_budget(requests + 1, tokens, &mut sent).await;
+            assert_eq!(budget_reminders(&actor).await, 1);
+        })
+        .await;
+    }
+}
+
+/// Main sessions and forks never get `report_budget`, so they never see it.
+#[tokio::test(flavor = "current_thread")]
+async fn report_budget_skips_sessions_that_are_not_fresh_children() {
+    with_actor(|actor| async move {
+        let mut sent = false;
+        actor.flush_report_budget(99, Some(500_000), &mut sent).await;
+        assert_eq!(budget_reminders(&actor).await, 0);
     })
     .await;
 }

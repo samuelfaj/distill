@@ -471,6 +471,13 @@ impl JevFlags {
             JevLever::B7SubagentModel => self.b7_subagent_model,
         }
     }
+
+    /// Whether a lever's questions may join a request: every active lever,
+    /// plus B6, which runs in shadow whenever the master switch is on — asked
+    /// and recorded, while its own flag only gates the hint it adds.
+    pub const fn lever_asks(&self, lever: JevLever) -> bool {
+        self.lever_active(lever) || (self.enabled && matches!(lever, JevLever::B6DelegationHint))
+    }
 }
 
 /// Addressable levers, so tests and telemetry can name one without a bool soup.
@@ -645,6 +652,20 @@ mod tests {
             );
         }
         assert!(!flags.is_off());
+    }
+
+    /// B6 is measured before it acts: its questions go out on the master
+    /// switch alone, and only its own flag lets the hint reach a prompt.
+    #[test]
+    fn b6_is_asked_in_shadow_while_its_hint_stays_off() {
+        let flags = JevFlags::harness_default();
+        assert!(!flags.lever_active(JevLever::B6DelegationHint));
+        assert!(flags.lever_asks(JevLever::B6DelegationHint));
+        assert!(
+            !flags.lever_asks(JevLever::C1PrematureStop),
+            "other levers that are off stay silent"
+        );
+        assert!(!flags.with_enabled(false).lever_asks(JevLever::B6DelegationHint));
     }
 
     #[test]

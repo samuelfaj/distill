@@ -3,7 +3,9 @@
 //! Covers `dispatch_tool` and its lock and display helpers, direct bash-mode execution, and tool argument parse-error formatting.
 
 use super::*;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Weak;
 
 /// Number of output lines to show in final bash mode output summary
 const BASH_MODE_FINAL_OUTPUT_LINES: usize = 10;
@@ -42,7 +44,7 @@ fn str_arg<'a>(args: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
 /// Extract the workspace path that a tool call targets, to serialize concurrent same-file edits inside `execute_tool_calls`.
 /// `file_path`: distill (`search_replace`), opencode (`EditTool`, `WriteTool`, `ReadTool`), codex (`read_file`).
 /// `target_directory` is deliberately omitted: a directory listing isn't an edit and must not share a file lock.
-pub(super) fn lock_path_for_args(args: &serde_json::Value, cwd: &Path) -> Option<String> {
+pub(crate) fn lock_path_for_args(args: &serde_json::Value, cwd: &Path) -> Option<String> {
     let input = Path::new(str_arg(args, &["file_path", "path", "target_file"])?);
     let absolute = if input.is_absolute() {
         input.to_path_buf()
@@ -74,6 +76,50 @@ fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
         }
         suffix.push(ancestor.file_name()?.to_owned());
         ancestor = ancestor.parent()?;
+    }
+}
+
+/// Edit lock for one [`lock_path_for_args`] key, shared by every session in the process.
+/// Subagent children run in the parent's process, so parent and sibling edits to one file serialize too.
+pub(super) struct FileLock {
+    path: String,
+    mutex: tokio::sync::Mutex<()>,
+}
+
+/// Live file locks by path; an entry is removed when the last `Arc<FileLock>` for it drops.
+static FILE_LOCKS: parking_lot::Mutex<BTreeMap<String, Weak<FileLock>>> =
+    parking_lot::Mutex::new(BTreeMap::new());
+
+/// The process-wide edit lock for `path`, created on first use.
+pub(super) fn file_lock(path: &str) -> Arc<FileLock> {
+    let mut locks = FILE_LOCKS.lock();
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(FileLock {
+        path: path.to_owned(),
+        mutex: tokio::sync::Mutex::new(()),
+    });
+    locks.insert(path.to_owned(), Arc::downgrade(&lock));
+    lock
+}
+
+impl FileLock {
+    pub(super) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutex.lock().await
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let mut locks = FILE_LOCKS.lock();
+        // A racing `file_lock` may already have replaced this dead entry with a live one.
+        if locks
+            .get(&self.path)
+            .is_some_and(|lock| lock.strong_count() == 0)
+        {
+            locks.remove(&self.path);
+        }
     }
 }
 
@@ -440,5 +486,70 @@ mod tests {
             backend_tool_call_status(None),
             acp::ToolCallStatus::Completed
         );
+    }
+
+    /// A parent and an in-process subagent each build their own batch locks for one file.
+    /// The child's edit must start only after the parent's ends, or one of the two updates is lost.
+    #[tokio::test(start_paused = true)]
+    async fn file_lock_serializes_same_path_across_sessions() {
+        let path = "/file-lock-tests/same.rs";
+        let parent = file_lock(path);
+        let child = file_lock(path);
+        let log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let parent_edit = tokio::spawn({
+            let log = Arc::clone(&log);
+            async move {
+                let _guard = parent.lock().await;
+                log.lock().push("parent start");
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+                log.lock().push("parent end");
+            }
+        });
+        entered_rx.await.expect("parent edit started");
+        let child_edit = tokio::spawn({
+            let log = Arc::clone(&log);
+            async move {
+                let _guard = child.lock().await;
+                log.lock().push("child start");
+            }
+        });
+        // Paused clock: the sleep returns only after the child has run until it blocks or finishes.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        release_tx.send(()).expect("parent edit waiting");
+        parent_edit.await.expect("parent edit");
+        child_edit.await.expect("child edit");
+        assert_eq!(*log.lock(), ["parent start", "parent end", "child start"]);
+    }
+
+    /// Edits to different files must not queue behind each other, or one slow write stalls every session.
+    #[tokio::test(start_paused = true)]
+    async fn file_lock_lets_different_paths_run_concurrently() {
+        let parent = file_lock("/file-lock-tests/parent.rs");
+        let child = file_lock("/file-lock-tests/child.rs");
+        let _parent_guard = parent.lock().await;
+        let child_guard =
+            tokio::time::timeout(std::time::Duration::from_secs(1), child.lock()).await;
+        assert!(child_guard.is_ok(), "an edit to another file waited");
+    }
+
+    /// The registry keeps an entry only while a session holds its lock, so it cannot grow with every path ever edited.
+    #[tokio::test]
+    async fn file_lock_registry_entry_is_removed_after_last_holder() {
+        let path = "/file-lock-tests/released.rs";
+        let parent = file_lock(path);
+        let child = file_lock(path);
+        assert!(FILE_LOCKS.lock().contains_key(path));
+        drop(parent.lock().await);
+        drop(parent);
+        assert!(
+            FILE_LOCKS.lock().contains_key(path),
+            "child still holds the lock"
+        );
+        drop(child.lock().await);
+        drop(child);
+        assert!(!FILE_LOCKS.lock().contains_key(path));
     }
 }

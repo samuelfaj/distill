@@ -1814,8 +1814,9 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
     }]
 }
 
-/// Save the optional worker model and its effort (`None` is auto) without
-/// changing the session's main model. The model and the effort persist as two
+/// Set this instance's optional worker model and its effort (`None` is auto)
+/// without changing the session's main model, and save them as the default
+/// for instances started later. The model and the effort persist as two
 /// settings, so each rolls back on its own.
 pub(in crate::app::dispatch) fn set_worker_model(
     app: &mut AppView,
@@ -1831,8 +1832,7 @@ pub(in crate::app::dispatch) fn set_worker_model(
         app.show_toast("Worker model is not in the catalog.");
         return vec![];
     }
-    let prev_id = app.models.worker_model.clone()
-        .or_else(crate::acp::ModelState::configured_worker_model);
+    let prev_id = crate::acp::ModelState::configured_worker_model();
     let prev_effort = crate::acp::ModelState::configured_worker_effort();
     let model_changed = prev_id.as_ref() != Some(&new_id);
     let effort_changed = prev_effort != effort;
@@ -1841,6 +1841,7 @@ pub(in crate::app::dispatch) fn set_worker_model(
         return vec![];
     }
     let new_display = models.display_name_for(&new_id);
+    crate::acp::ModelState::set_instance_worker(Some(new_id.clone()), effort);
     app.models.worker_model = Some(new_id.clone());
     app.models.worker_effort = effort;
     for agent in app.agents.values_mut() {
@@ -1892,12 +1893,16 @@ pub(in crate::app::dispatch) fn set_worker_model(
     effects
 }
 
-/// Remove the worker model: the main model then does all the work.
+/// Remove this instance's worker model: the main model then does all the work.
 /// Persists `[models].worker = ""`; does NOT mutate the active session's main model.
 pub(in crate::app::dispatch) fn clear_worker_model(app: &mut AppView) -> Vec<Effect> {
-    let prev_id_str = app.models.worker_model.take()
-        .or_else(crate::acp::ModelState::configured_worker_model)
+    let prev_id_str = crate::acp::ModelState::configured_worker_model()
         .map_or_else(String::new, |id| id.0.to_string());
+    crate::acp::ModelState::set_instance_worker(
+        None,
+        crate::acp::ModelState::configured_worker_effort(),
+    );
+    app.models.worker_model = None;
     for agent in app.agents.values_mut() {
         agent.session.models.worker_model = None;
     }
@@ -2180,11 +2185,7 @@ pub(in crate::app::dispatch) fn set_tier_editor(
             ),
         });
     }
-    let current_worker = app
-        .models
-        .worker_model
-        .clone()
-        .or_else(crate::acp::ModelState::configured_worker_model);
+    let current_worker = crate::acp::ModelState::configured_worker_model();
     effects.extend(match worker_pick {
         Some((id, effort))
             if current_worker.as_ref() != Some(&id)

@@ -871,14 +871,15 @@ pub(crate) async fn run_shell_child(
         resume_source.is_some() || request.resume_from.is_some(),
         ctx.parent_worker.as_ref(),
     );
-    let (mut effective_sampling_config, mut effective_model_id) = resolve_effective_model_config(
-        effective_runtime.model.as_deref(),
-        &request.subagent_type,
-        &definition.model,
-        worker_model.as_deref(),
-        &ctx,
-    )
-    .await;
+    let (mut effective_sampling_config, mut effective_model_id, unavailable_worker) =
+        resolve_effective_model_config(
+            effective_runtime.model.as_deref(),
+            &request.subagent_type,
+            &definition.model,
+            worker_model.as_deref(),
+            &ctx,
+        )
+        .await;
     let subagent_max_turns = resolve_subagent_max_turns(definition.max_turns, ctx.parent_max_turns);
     {
         let model_str = &effective_sampling_config.model;
@@ -901,6 +902,17 @@ pub(crate) async fn run_shell_child(
             effective_sampling_config = parent_config;
             effective_model_id = parent_mid;
         }
+    }
+    if let Some(worker) = unavailable_worker.as_deref() {
+        distill_telemetry::unified_log::warn(
+            "subagent worker model unavailable",
+            None,
+            Some(serde_json::json!({
+                "agent": &request.subagent_type,
+                "worker": worker,
+                "child_model": effective_model_id.0.as_ref(),
+            })),
+        );
     }
     let caller_effort_override = request.runtime_overrides.reasoning_effort.is_some();
     // A delegated child that landed on the worker model follows the worker's
@@ -1628,6 +1640,7 @@ pub(crate) async fn run_shell_child(
         mcp_owned_count,
         skills_inherited_count,
     });
+    let report_cap = super::task_report_cap(&request, &definition.tool_config.tools);
     let wake_model_id = effective_model_id.clone();
     let wake_agent_name = definition.name.clone();
     let wake_reasoning_effort = effective_sampling_config.reasoning_effort;
@@ -1676,9 +1689,14 @@ pub(crate) async fn run_shell_child(
             is_subagent: true,
             non_interactive: ctx.parent_non_interactive,
             parent_session_id: Some(ctx.parent_session_id.clone()),
+            parent_prompt_id: request.parent_prompt_id.clone(),
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
             explicit_model_override: model_routing_locked,
+            report_budget: context_source == InitialContextSource::New
+                && !request.owner.is_workflow()
+                && request.runtime_overrides.output_schema.is_none()
+                && request.runtime_overrides.harness_agent_type.is_none(),
             ..Default::default()
         },
         distill_workspace::permission::ClientType::Generic,
@@ -1749,6 +1767,7 @@ pub(crate) async fn run_shell_child(
             ),
         false,
         child_jev_effort_auto,
+        crate::session::handle::new_session_worker_state(),
         None,
         ctx.inference_idle_timeout_secs,
         None,
@@ -1857,6 +1876,25 @@ pub(crate) async fn run_shell_child(
         &child_handle.hunk_tracker_handle,
         &child_toolset,
     );
+    let review_byte_limit = super::worker_review_byte_limit(
+        &request,
+        on_worker,
+        &context_source,
+        ctx.parent_non_interactive,
+    );
+    // Taken before the first turn so the review can tell this child's shell
+    // edits from changes already in the worktree.
+    let review_started = match review_byte_limit {
+        Some(_) => Some(
+            super::worker_git_status(
+                child_handle.tool_context.terminal.as_ref(),
+                child_handle.tool_context.cwd.clone(),
+                child_handle.tool_context.session_env.as_ref().clone(),
+            )
+            .await,
+        ),
+        None => None,
+    };
     let ready_to_first_turn_span = phase_region(SubagentSpawnPhase::ReadyToFirstTurn);
     let (receipt_sink, receipt_stream) = mpsc::channel(ACTIVE_MESSAGE_RECEIPT_CAPACITY);
     let receipt_drain = PromptTurnReceiptDrain::start(
@@ -2206,27 +2244,54 @@ pub(crate) async fn run_shell_child(
     result.tool_calls = tool_calls;
     result.turns = turns;
     if result.success
-        && on_worker
-        && context_source == InitialContextSource::New
-        && ctx.parent_non_interactive
-        && !request.run_in_background
-        && request.surface_completion
-        && request.runtime_overrides.output_schema.is_none()
+        && let Some(cap) = report_cap
+        && let Some(capped) =
+            super::cap_task_report(&result.output, cap, crate::jev_store::store_payload)
     {
-        let review = super::worker_repository_review(
-            child_handle.tool_context.terminal.as_ref(),
-            child_handle.tool_context.cwd.clone(),
-            child_handle.tool_context.session_env.as_ref().clone(),
-        )
-        .await;
+        result.output = Arc::from(capped);
+    }
+    if result.success
+        && let (Some(output_byte_limit), Some(started)) =
+            (review_byte_limit, review_started.as_ref())
+    {
         let conversation = child_actor_query(
             "worker_execution_evidence",
             child_handle.chat_state_handle.get_conversation(),
             Vec::new(),
         )
         .await;
+        let tool_kinds = child_toolset.tool_kind_map();
+        let edit_paths = super::edit_tool_paths(
+            &conversation,
+            |name, args| {
+                matches!(
+                    tool_kinds.get(name),
+                    Some(ToolKind::Edit | ToolKind::Write | ToolKind::Delete | ToolKind::Move)
+                )
+                .then(|| child_toolset.remap_params(name, args))
+            },
+            child_handle.tool_context.cwd.as_path(),
+        );
+        let review = super::worker_repository_review(
+            child_handle.tool_context.terminal.as_ref(),
+            child_handle.tool_context.cwd.clone(),
+            child_handle.tool_context.session_env.as_ref().clone(),
+            &edit_paths,
+            started,
+            output_byte_limit,
+        )
+        .await;
         let execution = super::worker_execution_evidence(&conversation);
         result.output = Arc::from(format!("{}\n\n{execution}\n\n{review}", result.output));
+    }
+    if let Some(worker) = unavailable_worker.as_deref()
+        && request.runtime_overrides.output_schema.is_none()
+    {
+        result.output = Arc::from(super::with_worker_fallback_warning(
+            &result.output,
+            worker,
+            effective_model_id.0.as_ref(),
+        ));
     }
     result.duration_ms = start.elapsed().as_millis() as u64;
     let (model_tx, model_rx) = oneshot::channel();
@@ -2245,6 +2310,7 @@ pub(crate) async fn run_shell_child(
         .as_ref()
         .and_then(|model| model.canonical_id.clone())
         .or_else(|| Some(effective_model_id.0.to_string()));
+    result.model = final_model_id.clone();
     gcs_upload_ctx.model_id = final_model_id.clone();
     let final_model_routing_locked = final_model
         .as_ref()

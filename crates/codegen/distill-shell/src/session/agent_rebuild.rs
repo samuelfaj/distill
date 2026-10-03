@@ -123,6 +123,8 @@ pub(crate) struct AgentRebuildSpec {
     pub ask_user_question_enabled: bool,
     pub persona_summaries: Vec<String>,
     pub prompt_audience: PromptAudience,
+    /// The session's worker choice, shared with its handle; decides the `<orchestration>` section.
+    pub worker_override: crate::session::handle::SessionWorkerState,
     pub role_instructions: Option<String>,
     pub persona_instructions: Option<String>,
     pub skills_config: SkillsConfig,
@@ -161,14 +163,22 @@ pub(crate) struct AgentRebuildSpec {
 }
 impl AgentRebuildSpec {
     /// This is the canonical construction path; see module docs for the invariant.
+    /// `session_model` is the session's main model, which never doubles as its worker.
     #[deny(unused_variables)]
     pub(crate) async fn build_agent(
         self: &Arc<Self>,
         definition: AgentDefinition,
         system_prompt_label: impl Into<String>,
+        session_model: &str,
     ) -> Result<Agent, AgentBuildError> {
         let (agent, _build_elapsed) = self
-            .build_agent_inner(definition, system_prompt_label.into(), None, None)
+            .build_agent_inner(
+                definition,
+                system_prompt_label.into(),
+                None,
+                None,
+                session_model,
+            )
             .await?;
         Ok(agent)
     }
@@ -181,12 +191,14 @@ impl AgentRebuildSpec {
         system_prompt_label: impl Into<String>,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<distill_tools::implementations::skills::types::SkillInfo>>,
+        session_model: &str,
     ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
         self.build_agent_inner(
             definition,
             system_prompt_label.into(),
             persisted_skill_names,
             preloaded_skills,
+            session_model,
         )
         .await
     }
@@ -197,6 +209,7 @@ impl AgentRebuildSpec {
         system_prompt_label: String,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<distill_tools::implementations::skills::types::SkillInfo>>,
+        session_model: &str,
     ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
         let build_phase_start = std::time::Instant::now();
         let Self {
@@ -231,6 +244,7 @@ impl AgentRebuildSpec {
             ask_user_question_enabled,
             persona_summaries,
             prompt_audience,
+            worker_override,
             role_instructions,
             persona_instructions,
             skills_config,
@@ -291,15 +305,13 @@ impl AgentRebuildSpec {
             env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
             Arc::new(env)
         };
-        // The main model orchestrates only when it has a distinct worker to
-        // delegate to; a child is the one doing the delegated work.
-        let worker_model = (*prompt_audience == PromptAudience::Primary && *subagents_enabled)
-            .then(crate::jev::worker_model)
-            .flatten()
-            .filter(|worker| {
-                models_manager.model_in_catalog(worker)
-                    && worker.as_str() != models_manager.current_model_id().0.as_ref()
-            });
+        let worker_model = crate::extensions::session_worker_model::orchestration_worker(
+            worker_override,
+            models_manager,
+            session_model,
+            *prompt_audience,
+            *subagents_enabled,
+        );
         let mut builder = AgentBuilder::new(
             working_directory.clone(),
             terminal_backend.clone(),
@@ -514,6 +526,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         ask_user_question_enabled: true,
         persona_summaries: vec![],
         prompt_audience: PromptAudience::Primary,
+        worker_override: crate::session::handle::new_session_worker_state(),
         role_instructions: None,
         persona_instructions: None,
         skills_config: SkillsConfig::default(),
@@ -606,7 +619,11 @@ mod legacy_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let agent = spec_with(Some(configured.clone()))
-                    .build_agent(definition(), distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL)
+                    .build_agent(
+                        definition(),
+                        distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                        crate::test_support::TEST_MODEL,
+                    )
                     .await
                     .expect("agent build should succeed");
                 assert_eq!(
@@ -626,7 +643,11 @@ mod legacy_tests {
                     agent.hosted_tools()
                 );
                 let agent = spec_with(None)
-                    .build_agent(definition(), distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL)
+                    .build_agent(
+                        definition(),
+                        distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                        crate::test_support::TEST_MODEL,
+                    )
                     .await
                     .expect("agent build should succeed");
                 assert_eq!(
@@ -664,6 +685,7 @@ mod legacy_tests {
                     .build_agent(
                         AgentDefinition::default_distill(),
                         distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                        crate::test_support::TEST_MODEL,
                     )
                     .await
                     .expect("first agent build should succeed");
@@ -698,6 +720,7 @@ mod legacy_tests {
                     .build_agent(
                         AgentDefinition::default_distill(),
                         distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                        crate::test_support::TEST_MODEL,
                     )
                     .await
                     .expect("rebuilt agent should succeed");

@@ -65,13 +65,6 @@ Examples of what these files contain:
 - Direct user instructions in the chat always take precedence over any project instruction file content.
 - When working in a subdirectory below CWD, or in a directory outside the CWD path, you must check for additional project instruction files (AGENTS.md, Claude.md, etc.) that may apply to files you're editing.
 </project_instructions_spec>
-
-<user_info>
-OS: ${{ os_name }}
-Shell: ${{ shell_path }}
-Workspace Path: ${{ working_directory }}
-Current Date: ${{ current_date }}
-</user_info>
 ${%- if memory_enabled and tools.by_kind.memory_search and tools.by_kind.memory_get %}
 
 <memory>
@@ -90,3 +83,10 @@ ${%- if persona_instructions %}
 ${{ persona_instructions }}
 </persona>
 ${%- endif %}
+
+<user_info>
+OS: ${{ os_name }}
+Shell: ${{ shell_path }}
+Workspace Path: ${{ working_directory }}
+Current Date: ${{ current_date }}
+</user_info>

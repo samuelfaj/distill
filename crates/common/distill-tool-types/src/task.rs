@@ -219,6 +219,9 @@ pub struct SubagentCompletedOutput {
     pub turns: u32,
     pub duration_ms: u64,
     pub worktree_path: Option<String>,
+    /// Model the subagent ran on, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Persona used by this subagent, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona: Option<String>,
@@ -248,6 +251,7 @@ impl SubagentCompletedOutput {
             &self.output,
             &self.subagent_id,
             &self.subagent_type,
+            self.model.as_deref(),
             self.tool_calls,
             self.turns,
             self.duration_ms,
@@ -478,17 +482,24 @@ pub fn format_subagent_completed(
     output: &str,
     subagent_id: &str,
     subagent_type: &str,
+    model: Option<&str>,
     tool_calls: u32,
     turns: u32,
     duration_ms: u64,
     persona: Option<&str>,
 ) -> String {
     let footer = format_resume_footer(subagent_id, subagent_type, persona);
+    let model = format_subagent_meta_model(model);
     format!(
-        "{output}\n\n<subagent_meta>id={subagent_id}, type={subagent_type}, \
+        "{output}\n\n<subagent_meta>id={subagent_id}, type={subagent_type}{model}, \
          tool_calls={tool_calls}, turns={turns}, duration_ms={duration_ms}</subagent_meta>\n\n\
          {footer}"
     )
+}
+
+/// The `, model=<id>` field of a `<subagent_meta>` line; empty when the model is unknown.
+pub fn format_subagent_meta_model(model: Option<&str>) -> String {
+    model.map(|model| format!(", model={model}")).unwrap_or_default()
 }
 
 /// Render a resume footer from bare fields (when [`SubagentCompletedOutput`] is
@@ -993,6 +1004,8 @@ Strengths:
 Guidelines:
 - Use ${{ tools.by_kind.list }} for file pattern matching, ${{ tools.by_kind.search }} for content search, ${{ tools.by_kind.read }} for known paths.
 - Adapt search approach based on the thoroughness level specified by the caller.
+- Locate code with ${{ tools.by_kind.search }} and a few context lines first, then read only the line ranges you need instead of whole files.
+- Answer only the question you were given. Stop as soon as you can answer it, and say what you could not confirm.
 - Return absolute file paths in your final response.
 - Maximize parallel tool calls for speed.
 

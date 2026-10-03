@@ -1,0 +1,6 @@
+In tools/task_cost_eval/fixtures/seq_rename, rename `pricing.fmt_price(cents)` to
+`format_price(cents, currency="USD")`. "USD" keeps the current "$12.50" output and
+"EUR" gives "€12.50"; any other currency raises an exception. Update every caller
+to the new name. invoice.py must now format its prices in EUR, cart.py and
+receipt.py stay in USD. No file may mention `fmt_price` afterwards. Edit the
+files rather than only describing the change.

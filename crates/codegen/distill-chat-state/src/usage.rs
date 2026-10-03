@@ -302,6 +302,42 @@ impl UsageLedger {
         }
     }
 
+    /// [`Self::record_subagent_usage_with_pending`] that also returns the slice
+    /// this ledger newly accepted. Rows already folded (same `attempt_id`)
+    /// stay out of the slice, so it can be applied to one more record without
+    /// double counting.
+    pub fn record_subagent_usage_slice(
+        &mut self,
+        by_model: &[(String, UsageTotals)],
+        attributions: &[UsageAttribution],
+        pending_attempts: &[String],
+        incomplete: bool,
+    ) -> UsageLedger {
+        let folded = |attempt_id: &str| {
+            self.attributions
+                .iter()
+                .any(|existing| existing.attempt_id == attempt_id)
+        };
+        let pending = pending_attempts
+            .iter()
+            .filter(|attempt_id| !folded(attempt_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let fresh = attributions
+            .iter()
+            .filter(|attribution| !folded(&attribution.attempt_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut slice = UsageLedger::default();
+        if attributions.is_empty() {
+            slice.record_subagent_with_pending(by_model, &pending, incomplete);
+        } else {
+            slice.record_subagent_attributions_with_pending(&fresh, &pending, incomplete);
+        }
+        self.record_subagent_usage_with_pending(by_model, attributions, pending_attempts, incomplete);
+        slice
+    }
+
     fn record_attribution_inner(&mut self, attribution: UsageAttribution, count_main: bool) {
         self.pending_attempts.remove(&attribution.attempt_id);
         if self
@@ -736,6 +772,68 @@ mod tests {
         assert_eq!(parent.totals.model_calls, 2);
         assert_eq!(parent.totals.cost_usd_ticks, Some(12));
         assert_eq!(parent.attributions.len(), 1);
+    }
+
+    #[test]
+    fn subagent_usage_slice_counts_each_attempt_once() {
+        let row = UsageAttribution {
+            attempt_id: "child-1".to_owned(),
+            task_id: None,
+            turn_id: None,
+            request_id: None,
+            role: "main".to_owned(),
+            model_id: "child-model".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            reason: None,
+            bytes_in: None,
+            bytes_out: None,
+            applied_effort: None,
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(7, 2)),
+            usage_complete: true,
+            api_duration_ms: None,
+            cost_usd_ticks: Some(3),
+            cost_basis: UsageCostBasis::Reported,
+        };
+        let mut session = UsageLedger::default();
+        session.record_main_loop_call("parent-model", &tu(10, 1), None, Some(1));
+
+        let slice = session.record_subagent_usage_slice(
+            &[],
+            std::slice::from_ref(&row),
+            &["child-title".to_owned()],
+            false,
+        );
+        assert_eq!(slice.totals.input_tokens, 7);
+        assert_eq!(slice.attributions.len(), 1);
+        assert!(slice.pending_attempts.contains("child-title"));
+        assert_eq!(session.totals.input_tokens, 17);
+
+        // A resent attempt must not reach the spawning turn a second time.
+        let before = session.clone();
+        let duplicate = session.record_subagent_usage_slice(&[], &[row], &[], false);
+        assert_eq!(duplicate.totals, UsageTotals::default());
+        assert!(duplicate.attributions.is_empty());
+        assert_eq!(session.totals, before.totals);
+        assert_eq!(session.attributions, before.attributions);
+
+        // Aggregate-only folds carry no identity, so the slice is the fold itself.
+        let aggregate = session.record_subagent_usage_slice(
+            &[(
+                "child-model".to_owned(),
+                UsageTotals {
+                    input_tokens: 5,
+                    model_calls: 1,
+                    ..Default::default()
+                },
+            )],
+            &[],
+            &[],
+            false,
+        );
+        assert_eq!(aggregate.totals.input_tokens, 5);
+        assert_eq!(session.totals.input_tokens, 22);
     }
 
     #[test]

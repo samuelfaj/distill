@@ -202,6 +202,10 @@ impl SessionActor {
                  previous memory section"
             );
         }
+        // Likewise for a worker or main-model change that landed during the previous turn.
+        if self.worker_prompt_pending.get() {
+            self.refresh_worker_prompt().await;
+        }
 
         let mut state = self.state.lock().await;
         // Re-check after the await gap.

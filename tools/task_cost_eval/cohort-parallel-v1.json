@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "cohort_id": "parallel-v1",
+  "repetitions": 3,
+  "cases": [
+    {
+      "id": "par-functions-en",
+      "kind": "divisible",
+      "prompt_ref": "prompts/par-functions-en.txt",
+      "fixture_ref": "fixtures/par_functions",
+      "grader": {
+        "script_ref": "graders/grade_par_functions.py"
+      },
+      "reference_ref": "reference/par_functions"
+    },
+    {
+      "id": "par-bugs-en",
+      "kind": "divisible",
+      "prompt_ref": "prompts/par-bugs-en.txt",
+      "fixture_ref": "fixtures/par_bugs",
+      "grader": {
+        "script_ref": "graders/grade_par_bugs.py"
+      },
+      "reference_ref": "reference/par_bugs"
+    },
+    {
+      "id": "par-validation-en",
+      "kind": "divisible",
+      "prompt_ref": "prompts/par-validation-en.txt",
+      "fixture_ref": "fixtures/par_validation",
+      "grader": {
+        "script_ref": "graders/grade_par_validation.py"
+      },
+      "reference_ref": "reference/par_validation"
+    },
+    {
+      "id": "par-config-en",
+      "kind": "divisible",
+      "prompt_ref": "prompts/par-config-en.txt",
+      "fixture_ref": "fixtures/par_config",
+      "grader": {
+        "script_ref": "graders/grade_par_config.py"
+      },
+      "reference_ref": "reference/par_config"
+    },
+    {
+      "id": "seq-diagnose-en",
+      "kind": "sequential",
+      "prompt_ref": "prompts/seq-diagnose-en.txt",
+      "fixture_ref": "fixtures/seq_diagnose",
+      "grader": {
+        "script_ref": "graders/grade_seq_diagnose.py"
+      },
+      "reference_ref": "reference/seq_diagnose"
+    },
+    {
+      "id": "seq-rename-en",
+      "kind": "sequential",
+      "prompt_ref": "prompts/seq-rename-en.txt",
+      "fixture_ref": "fixtures/seq_rename",
+      "grader": {
+        "script_ref": "graders/grade_seq_rename.py"
+      },
+      "reference_ref": "reference/seq_rename"
+    }
+  ]
+}

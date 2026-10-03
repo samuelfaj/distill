@@ -3,8 +3,9 @@
 use super::*;
 use crate::session::SessionThread;
 use super::spawn::{
-    inject_subagent_completed_prompt, join_worker_task, present_child_completion,
-    should_auto_wake_subagent, will_wake_for, AutoWakeInputs, InjectParams,
+    completion_presenter, inject_subagent_completed_prompt, join_worker_task,
+    present_child_completion, should_auto_wake_subagent, will_wake_for, AutoWakeInputs,
+    InjectParams, WakeHolds, WAKE_HOLD_MAX,
 };
 use super::prompt_turn_receipt::{
     PromptTurnReceiptDisposition, PromptTurnSettlementInput,
@@ -124,6 +125,7 @@ async fn usage_ack_precedes_terminal_presentation() {
             waiter_delivered: false,
             explicitly_killed: false,
             should_surface: false,
+            background_sibling_running: false,
         },
     };
     let will_wake = will_wake_for(&completion);
@@ -795,6 +797,7 @@ fn completed_followup_wakes_parent_with_exactly_one_prompt() {
             waiter_delivered: false,
             explicitly_killed: false,
             should_surface: true,
+            background_sibling_running: false,
         },
     };
     let will_wake = will_wake_for(&completion);
@@ -837,6 +840,7 @@ fn inject_subagent_completed_prompt_sends_prompt() {
         output: std::sync::Arc::from("PING"),
         subagent_id: "sa-1".into(),
         child_session_id: "sa-1".into(),
+        model: Some("worker-model".into()),
         ..Default::default()
     };
     inject_subagent_completed_prompt(InjectParams {
@@ -857,8 +861,8 @@ fn inject_subagent_completed_prompt_sends_prompt() {
             assert!(verbatim);
             let prompt = prompt_text(&prompt_blocks);
             let block = prompt
-                .find("\n=== Output ===\nPING\n\n<subagent_meta>")
-                .expect("inlined task output");
+                .find("\n=== Output ===\nPING\n\n<subagent_meta>id=sa-1, type=general-purpose, model=worker-model, ")
+                .expect("inlined task output names the child's model");
             let cleanup = prompt
                 .find("If this schedule is no longer relevant")
                 .expect("cleanup hint");
@@ -2324,6 +2328,7 @@ async fn cancel_pending_shell_child_presents_one_cancelled_finish() {
             waiter_delivered: false,
             explicitly_killed: false,
             should_surface: false,
+            background_sibling_running: false,
         },
     };
     let will_wake = will_wake_for(&completion);
@@ -2551,6 +2556,7 @@ async fn startup_admission_timeout_is_failed_not_cancelled() {
             waiter_delivered: false,
             explicitly_killed: false,
             should_surface: false,
+            background_sibling_running: false,
         },
     };
     let will_wake = will_wake_for(&completion);
@@ -2867,6 +2873,7 @@ async fn panicked_announced_foreground_child_emits_one_typed_finish() {
                 waiter_delivered: false,
                 explicitly_killed: false,
                 should_surface: false,
+                background_sibling_running: false,
             },
         },
         &gateway,

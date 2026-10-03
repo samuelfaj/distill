@@ -34,7 +34,7 @@ pub use task::{
     TaskToolNaming, WaitMode, WaitTasksToolInput, WaitTasksToolNaming, build_kill_task_description,
     build_task_description, build_task_output_description, build_wait_tasks_description,
     builtin_subagent_by_name, default_subagent_type, format_resume_footer,
-    format_subagent_auto_backgrounded, format_subagent_completed,
+    format_subagent_auto_backgrounded, format_subagent_completed, format_subagent_meta_model,
     format_subagent_started_background, format_wait_cap_ms, is_not_sentinel, max_wait_block_ms,
     render_tool_access_fragment, resolve_task_ids, sanitize_optional_arg,
     should_continue_parent_work, task_output_waits, task_output_waits_from_json,

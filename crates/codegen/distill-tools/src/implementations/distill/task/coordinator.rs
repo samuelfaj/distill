@@ -952,6 +952,27 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             .count()
     }
 
+    /// `outstanding_reply`'s `background_live`, scoped to the whole parent session instead of one
+    /// prompt: a live background child that can still surface a completion to `parent_session_id`.
+    fn background_sibling_running(&self, parent_session_id: &str) -> bool {
+        let surfaces_to_parent = |request: &SubagentRequest| {
+            request.parent_session_id == parent_session_id
+                && request.surface_completion
+                && !request.owner.is_workflow()
+        };
+        self.pending
+            .values()
+            .any(|child| child.handle_only && surfaces_to_parent(&child.request))
+            || self.active.values().any(|child| {
+                (child.handle_only || child.definition_background)
+                    && surfaces_to_parent(&child.request)
+            })
+            || self.queued.iter().any(|queued| {
+                (queued.request.run_in_background || queued.caller.is_backgrounded())
+                    && surfaces_to_parent(&queued.request)
+            })
+    }
+
     fn live_turn_blocking_ids<'a>(
         &'a self,
         parent_session_id: &'a str,
@@ -1257,6 +1278,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             waiter_delivered,
             explicitly_killed,
             should_surface,
+            background_sibling_running: self.background_sibling_running(&request.parent_session_id),
         };
         let finished_session = completed.child_session_id.clone();
         self.completed.insert(id.to_owned(), completed);
@@ -1380,6 +1402,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             }
         }
         cancelled += self.remove_queued(|request| request.parent_session_id == parent_session_id);
+        self.runner.parent_session_cancelled(parent_session_id);
         if cancelled > 0 {
             tracing::info!(
                 parent_session_id,
@@ -1478,6 +1501,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             request.parent_session_id == parent_session_id && !request.owner.is_workflow()
         });
         self.reject_pending_wakes_for_session(parent_session_id);
+        self.runner.parent_session_cancelled(parent_session_id);
         SubagentCancelOutcome::Cancelled
     }
 

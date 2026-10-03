@@ -33,7 +33,12 @@ const MIN_BYTES: usize = 400;
 /// round-trip: the cited spans plus the recovery footer rarely come out shorter.
 pub(super) const CHEAP_COMPRESS_MIN_BYTES: usize = 4_000;
 const GREP_COMPRESS_MIN_BYTES: usize = 12_000;
-/// Whole-file reads below this stay verbatim even in read-only sessions.
+/// Exact-output commands (`cat`, `sed -n`, `git show`) and file-dump documents
+/// above this go through extractive utility selection: kept lines stay
+/// verbatim and the original is stored for `ask_stored_output` or a re-read.
+const EXACT_COMPRESS_MIN_BYTES: usize = 8_000;
+/// Whole-file reads below this stay verbatim. Above it the kept lines stay
+/// verbatim with their line numbers, so an edit can re-read the exact range.
 const READ_ONLY_COMPRESS_MIN_BYTES: usize = 16_000;
 
 fn mcp_compression_name(tool: &str, mcp_tool: Option<&str>) -> Option<String> {
@@ -85,7 +90,7 @@ fn compression_allows_exact(
         ExactKind::None => true,
         ExactKind::Window => body_len >= CHEAP_COMPRESS_MIN_BYTES,
         ExactKind::Matches => body_len >= GREP_COMPRESS_MIN_BYTES,
-        ExactKind::Exact => false,
+        ExactKind::Exact => body_len >= EXACT_COMPRESS_MIN_BYTES,
     }
 }
 /// At most this many advisory hints are appended, whatever the answers say.
@@ -474,6 +479,26 @@ fn task_output_result_metadata(result: &distill_tool_types::TaskOutputResult) ->
         result.truncation_hint,
         result.raw_output_bytes,
     )
+}
+
+/// The exact suffix the default rendering of a subagent result appends to its
+/// answer (worktree tag, resume footer), when `body` still ends with it after
+/// the earlier stages. Only the answer in front of it may be compressed.
+fn subagent_suffix_of(
+    body: &str,
+    sub: &distill_tool_types::SubagentCompletedOutput,
+) -> Option<String> {
+    let mut suffix = String::new();
+    if let Some(wt) = &sub.worktree_path {
+        suffix.push_str(&format!("\n\n<worktree_path>{wt}</worktree_path>"));
+    }
+    suffix.push_str("\n\n");
+    suffix.push_str(&sub.resume_footer());
+    (body.len() > suffix.len() && body.ends_with(&suffix)).then_some(suffix)
+}
+
+fn reassemble_subagent(compressed_answer: &str, suffix: &str) -> String {
+    format!("{}{suffix}", compressed_answer.trim_end())
 }
 
 fn typed_tool_metadata(
@@ -1246,6 +1271,14 @@ impl SessionActor {
         const EXTRACTIVE_TASK: &str = "select_units";
         let mcp_source = mcp_compression_name(tool, mcp_tool).is_some()
             && matches!(output, ToolOutput::MCP(mcp) if mcp.extracted_images.is_empty());
+        let subagent_suffix = match output {
+            ToolOutput::SubagentCompleted(sub) => subagent_suffix_of(&body, sub),
+            _ => None,
+        };
+        let subagent_source = subagent_suffix.is_some();
+        // Length of the part that may be compressed: the whole body, or a
+        // subagent's answer without its resume suffix.
+        let answer_len = body.len() - subagent_suffix.as_ref().map_or(0, String::len);
         let cheap_source = matches!(
             output,
             ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
@@ -1258,17 +1291,24 @@ impl SessionActor {
             )) if tool == "read_file"
                 && is_whole_file_read(file)
                 && file.raw_output.len() >= READ_ONLY_COMPRESS_MIN_BYTES
-                && !body.contains("<system-reminder>")
-                && self.model_tools_read_only.get() =>
+                && !body.contains("<system-reminder>") =>
             {
                 Some(file.raw_output.clone())
             }
             _ => None,
         };
         let cheap_eligible = tool != "search_tool"
-            && (cheap_source || task_output_source || mcp_source || read_only_file.is_some())
-            && (mcp_source || read_only_file.is_some() || !is_document)
-            && body.len() >= CHEAP_COMPRESS_MIN_BYTES
+            && (cheap_source
+                || task_output_source
+                || mcp_source
+                || subagent_source
+                || read_only_file.is_some())
+            && (mcp_source
+                || subagent_source
+                || read_only_file.is_some()
+                || !is_document
+                || answer_len >= EXACT_COMPRESS_MIN_BYTES)
+            && answer_len >= CHEAP_COMPRESS_MIN_BYTES
             && (read_only_file.is_some()
                 || compression_allows_exact(
                     distill_workspace::jev::crushers::exact_output_kind(tool, lane_command),
@@ -1279,6 +1319,7 @@ impl SessionActor {
             let source_kind = match output {
                 _ if read_only_file.is_some() => "read_file",
                 _ if mcp_source => "mcp",
+                _ if subagent_source => "subagent",
                 _ if tool == "grep" => "grep",
                 ToolOutput::Bash(bash)
                     if super::turn_facts::looks_like_check_command(&bash.command) =>
@@ -1324,7 +1365,7 @@ impl SessionActor {
                         Some(raw) => raw,
                         None => {
                             let Some(source) =
-                                compression_source_for_lane(output, &body, budget).await
+                                compression_source_for_lane(output, &body[..answer_len], budget).await
                             else {
                                 crate::jev::record_item(
                                     Lever::ECheapCompress,
@@ -1459,7 +1500,7 @@ impl SessionActor {
                         },
                         )
                     };
-                    if replacement.len() * 100 < body.len() * 70 {
+                    if replacement.len() * 100 < answer_len * 70 {
                         crate::jev::record_item(
                             Lever::ECheapCompress,
                             "compress",
@@ -1467,7 +1508,10 @@ impl SessionActor {
                             None,
                             None,
                         );
-                        body = replacement;
+                        body = match &subagent_suffix {
+                            Some(suffix) => reassemble_subagent(&replacement, suffix),
+                            None => replacement,
+                        };
                         compressed_by_utility = true;
                     } else {
                         crate::jev::record_item(
@@ -2053,6 +2097,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn subagent_resume_suffix_survives_compression_of_the_answer() {
+        let sub = distill_tool_types::SubagentCompletedOutput {
+            output: "answer".to_owned(),
+            subagent_id: "sa-1".to_owned(),
+            subagent_type: "explore".to_owned(),
+            tool_calls: 1,
+            turns: 1,
+            duration_ms: 1,
+            worktree_path: Some("/tmp/wt".to_owned()),
+            model: None,
+            persona: None,
+            resume_from_hint: "sa-1".to_owned(),
+            persona_hint: None,
+        };
+        let rendered = ToolOutput::SubagentCompleted(sub.clone()).to_prompt_format();
+        let suffix = subagent_suffix_of(&rendered, &sub).expect("default rendering ends with suffix");
+        assert!(suffix.contains("resume_from=\"sa-1\"") && suffix.contains("/tmp/wt"));
+        assert_eq!(&rendered[..rendered.len() - suffix.len()], "answer");
+
+        let rebuilt = reassemble_subagent("short\n[compressed; stored at h]\n", &suffix);
+        assert!(rebuilt.ends_with(&suffix), "resume instructions are never lost");
+        assert!(rebuilt.starts_with("short\n[compressed; stored at h]\n\n"));
+
+        assert!(subagent_suffix_of("answer without footer", &sub).is_none());
+    }
+
+    #[test]
     fn read_only_tool_names_require_no_editing_tools() {
         assert!(!session_is_read_only(["read_file", "edit"]));
         assert!(session_is_read_only(["read_file", "grep"]));
@@ -2501,10 +2572,13 @@ mod tests {
                         raw_output_bytes: 10_000,
                     }
                 };
+                // An exact-output body under EXACT_COMPRESS_MIN_BYTES stays verbatim.
+                let mut window = item("window", "sed -n 1,400p f", "completed");
+                window.output = window.output[..EXACT_COMPRESS_MIN_BYTES - 1].to_owned();
                 let results = vec![
                     item("alpha", "cargo test --lib", "completed"),
                     item("running", "cargo build", "running"),
-                    item("window", "sed -n 1,400p f", "completed"),
+                    window,
                     item("beta", "npm run build", "completed"),
                 ];
                 let terminal = SnapshotTerminal(
@@ -2906,7 +2980,9 @@ mod tests {
         assert!(compression_allows_exact(Window, 4_000));
         assert!(!compression_allows_exact(Matches, 11_999));
         assert!(compression_allows_exact(Matches, 12_000));
-        assert!(!compression_allows_exact(Exact, usize::MAX));
+        // Exact output is extractive-only and stored, so large dumps still shrink.
+        assert!(!compression_allows_exact(Exact, 7_999));
+        assert!(compression_allows_exact(Exact, 8_000));
         assert!(compression_allows_exact(None, 0));
     }
 }

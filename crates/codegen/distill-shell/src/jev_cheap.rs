@@ -44,7 +44,7 @@ const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
 /// Minimum confidence for a `reject` to veto: the candidate holds source units only and the original stays stored.
 const UTILITY_REVIEW_VETO_FLOOR: f64 = 0.70;
-const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units"];
+const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units", "ask_handle"];
 
 fn bounded_display_answer(answer: &str, max_chars: usize) -> Option<String> {
     (answer.chars().count() <= max_chars).then(|| answer.to_owned())
@@ -505,6 +505,17 @@ pub(crate) fn test_utility_review_answer(
 /// run on the shipped OpenRouter chain rather than staying off.
 pub fn default_model_spec() -> String {
     DEFAULT_MODELS.join(",")
+}
+
+/// The utility model spec: `[jev.local] model` when set, else the shipped chain.
+pub(crate) fn configured_model_spec() -> String {
+    crate::jev::local_config_cached()
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|spec| !spec.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(default_model_spec)
 }
 
 /// One cheap generation at a time, process-wide.

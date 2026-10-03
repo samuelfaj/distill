@@ -659,6 +659,49 @@ pub fn reduce_payload(
                 });
             }
         }
+
+        // Stack, test and HTML crushers drop lines that can carry literals
+        // (register dumps, banners); accepted only with the original stored.
+        let lossy = match reduce::classify_payload(&body) {
+            reduce::PayloadClass::Stack => Some((crushers::Crusher::Stack, crushers::crush_stack(&body))),
+            reduce::PayloadClass::TestReport => {
+                Some((crushers::Crusher::Test, crushers::crush_test_output(&body)))
+            }
+            reduce::PayloadClass::Html => Some((crushers::Crusher::Html, crushers::crush_html(&body))),
+            _ => None,
+        };
+        if let Some((crusher, Some(crushed))) = lossy
+            && crushed.len() * 10 < body.len() * 7
+        {
+            if let Some(handle) = store(&body) {
+                records.push(LaneRecord {
+                    lever: JevLever::ECrushers,
+                    lane: "e_crushers",
+                    decision: "crush_stored",
+                    detail: format!(
+                        "{} bytes -> {} bytes via {}; full output stored at {handle}",
+                        body.len(),
+                        crushed.len(),
+                        crusher.id()
+                    ),
+                });
+                body = format!(
+                    "{}\n[full output stored at {handle} — ask_stored_output with that path answers a question about the elided lines; read the file only for exact text]",
+                    crushed.trim_end()
+                );
+                store_handle = Some(handle);
+            } else {
+                records.push(LaneRecord {
+                    lever: JevLever::ECrushers,
+                    lane: "e_crushers",
+                    decision: "keep",
+                    detail: format!(
+                        "the {} would lose lines, but the store refused the original; keeping today's bytes",
+                        crusher.id()
+                    ),
+                });
+            }
+        }
     }
 
     // 3. Importance extraction: lossy, stored first, gated on the literals.
@@ -688,7 +731,7 @@ pub fn reduce_payload(
                     ),
                 });
                 body = format!(
-                    "{}\n[full output stored at {handle} — read that file for the elided lines]",
+                    "{}\n[full output stored at {handle} — ask_stored_output with that path answers a question about the elided lines; read the file only for exact text]",
                     extracted.text.trim_end()
                 );
                 store_handle = Some(handle);
@@ -1115,6 +1158,38 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             reduce::lost_literals(&stack, &outcome.body).is_empty(),
             "no literal goes with the dumps"
         );
+    }
+
+    /// A register dump carries addresses, so the literal gate refuses the stack
+    /// crusher; with the original stored the reduction is accepted instead, and
+    /// a diff never reaches that path.
+    #[test]
+    fn a_lossy_class_crusher_is_accepted_only_with_the_original_stored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = dir.path().to_path_buf();
+        let store = move |payload: &str| {
+            crate::jev_store::store_payload_in(&dir, payload).map(|path| path.display().to_string())
+        };
+        let flags = LaneFlags {
+            crushers: true,
+            importance: false,
+            read_reuse: false,
+        };
+
+        let stack = stack_with_addresses();
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(TOOL, COMMAND, &stack, flags, LIMITS, &mut reuse, &store);
+        let handle = outcome.store_handle.as_deref().expect("the original is stored");
+        assert!(outcome.body.len() < stack.len() * 7 / 10, "the dump is elided");
+        assert!(outcome.body.contains(&format!("[full output stored at {handle}")));
+        assert_eq!(outcome.records.last().map(|r| r.decision), Some("crush_stored"));
+        assert_eq!(std::fs::read_to_string(handle).expect("handle reads"), stack);
+
+        let diff = diff();
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(TOOL, COMMAND, &diff, flags, LIMITS, &mut reuse, &store);
+        assert_eq!(outcome.body, diff, "a diff is untouched");
+        assert!(outcome.store_handle.is_none());
     }
 
     /// The literal gate is what decides the aggressive class transforms, and it

@@ -47,6 +47,7 @@ pub mod jev_cheap;
 pub mod jev_lanes;
 mod jev_model_facts;
 pub mod jev_store;
+pub mod stored_output_ask;
 pub mod leader;
 pub mod managed_config;
 pub mod mcp_doctor;

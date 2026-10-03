@@ -277,6 +277,7 @@ fn distill_core_toolset_with(
         (&search_tool::SearchTool).into(),
         (&use_tool::UseTool).into(),
         (&distill::UpdateGoalTool).into(),
+        (&distill::AskStoredOutputTool).into(),
     ];
     if include_workflow {
         tools.push((&distill::WorkflowTool).into());
@@ -305,6 +306,7 @@ fn distill_concise_toolset() -> ToolServerConfig {
             (&distill::SchedulerListTool).into(),
             (&distill::MonitorTool).into(),
             (&distill::UpdateGoalTool).into(),
+            (&distill::AskStoredOutputTool).into(),
             (&distill::WorkflowTool).into(),
         ],
         behavior_preset: None,
@@ -332,6 +334,7 @@ pub fn distill_hashline_toolset(
         (&search_tool::SearchTool).into(),
         (&use_tool::UseTool).into(),
         (&distill::UpdateGoalTool).into(),
+        (&distill::AskStoredOutputTool).into(),
         (&distill::WorkflowTool).into(),
     ]);
     ToolServerConfig {
@@ -407,6 +410,7 @@ fn distill_plan_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&distill::UpdateGoalTool).into(),
+            (&distill::AskStoredOutputTool).into(),
             (&distill::WorkflowTool).into(),
             // Plan mode tools
             (&distill::EnterPlanModeTool).into(),
@@ -440,6 +444,7 @@ fn orchestrator_toolset() -> ToolServerConfig {
             (&distill::ExitPlanModeTool).into(),
             (&distill::AskUserQuestionTool).into(),
             (&distill::UpdateGoalTool).into(),
+            (&distill::AskStoredOutputTool).into(),
             (&distill::WorkflowTool).into(),
             // Scheduling and monitoring
             (&distill::SchedulerCreateTool).into(),
@@ -485,6 +490,7 @@ fn distill_plan_no_subagents_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&distill::UpdateGoalTool).into(),
+            (&distill::AskStoredOutputTool).into(),
             (&distill::WorkflowTool).into(),
             // Plan mode tools
             (&distill::EnterPlanModeTool).into(),
@@ -515,6 +521,7 @@ fn distill_ask_user_toolset() -> ToolServerConfig {
             (&search_tool::SearchTool).into(),
             (&use_tool::UseTool).into(),
             (&distill::UpdateGoalTool).into(),
+            (&distill::AskStoredOutputTool).into(),
             (&distill::WorkflowTool).into(),
             (&distill::AskUserQuestionTool).into(),
         ],

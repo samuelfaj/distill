@@ -493,6 +493,22 @@ impl std::fmt::Debug for ManagedGatewayToolClient {
         f.debug_struct("ManagedGatewayToolClient").finish()
     }
 }
+/// Answers a question about a stored (compressed or elided) tool output using the session's utility model.
+#[async_trait::async_trait]
+pub trait StoredOutputAsker: Send + Sync {
+    async fn ask(
+        &self,
+        path: &str,
+        question: &str,
+    ) -> Result<String, distill_tool_runtime::ToolError>;
+}
+#[derive(Clone)]
+pub struct StoredOutputAskerClient(pub Arc<dyn StoredOutputAsker>);
+impl std::fmt::Debug for StoredOutputAskerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredOutputAskerClient").finish()
+    }
+}
 /// Whether streaming output is enabled for this invocation.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamEnabled(pub bool);

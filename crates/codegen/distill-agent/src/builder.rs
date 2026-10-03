@@ -2297,7 +2297,7 @@ mod tests {
                 "Has access to: run_terminal_command, read_file, search_replace, list_dir, grep, \
                  kill_command_or_subagent, todo_write, get_command_or_subagent_output, \
                  wait_commands_or_subagents, scheduler_create, scheduler_delete, scheduler_list, \
-                 monitor, search_tool, use_tool, update_goal, and write."
+                 monitor, search_tool, use_tool, update_goal, ask_stored_output, and write."
             ),
             "{general_purpose}"
         );

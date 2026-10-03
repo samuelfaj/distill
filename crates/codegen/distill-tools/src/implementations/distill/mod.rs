@@ -11,6 +11,7 @@
 //! `AvailableSkills`, `BashParams`) and registers every built-in tool.
 #[path = "app_builder_stub.rs"]
 pub mod app_builder;
+pub mod ask_stored_output;
 pub mod ask_user_question;
 pub mod bash;
 #[path = "deploy_app_stub.rs"]
@@ -64,6 +65,7 @@ pub use scheduler::create::{
 pub use scheduler::delete::{SCHEDULER_DELETE_TOOL_NAME, SchedulerDeleteTool};
 pub use scheduler::list::SchedulerListTool;
 pub use search_replace::SearchReplaceTool;
+pub use ask_stored_output::{ASK_STORED_OUTPUT_TOOL_NAME, AskStoredOutputTool};
 pub use send_feedback::{SEND_FEEDBACK_TOOL_NAME, SendFeedbackTool};
 pub use send_subagent_message::{
     SEND_SUBAGENT_MESSAGE_TOOL_NAME, SendSubagentMessageDisposition, SendSubagentMessageTool,

@@ -395,13 +395,7 @@ impl SessionActor {
         if !crate::jev::lever_active(lever) {
             return None;
         }
-        let spec = crate::jev::local_config_cached()
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|spec| !spec.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(crate::jev_cheap::default_model_spec);
+        let spec = crate::jev_cheap::configured_model_spec();
         if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec).is_some() {
             let Some(mut cfg) = self.resolve_aux_sampler_config(&spec).await else {
                 if crate::jev::local_config_cached().model.is_some() {

@@ -185,6 +185,9 @@ pub(crate) struct CompactionConfig {
     /// evidence. The key is the actual backend, wire endpoint, and model, so a
     /// route's smaller cap never changes another route's preflight.
     pub route_context_caps: RefCell<HashMap<(String, String, String), u64>>,
+    /// Session-local output ceilings learned from context-overflow rejections of
+    /// unpinned output reservations, keyed like `route_context_caps`.
+    pub route_output_caps: RefCell<HashMap<(String, String, String), u32>>,
     pub prefire: PrefireState,
     /// Sticky once a forked session releases its inherited prefix under compaction pressure (see `run_compact_inner`), so it stops re-pinning it.
     pub prefix_released: AtomicBool,
@@ -217,6 +220,33 @@ impl CompactionConfig {
         model: &str,
     ) -> Option<u64> {
         self.route_context_caps
+            .borrow()
+            .get(&(backend.to_owned(), endpoint.to_owned(), model.to_owned()))
+            .copied()
+    }
+
+    pub(crate) fn remember_route_output_cap(
+        &self,
+        backend: &str,
+        endpoint: &str,
+        model: &str,
+        cap: u32,
+    ) {
+        let key = (backend.to_owned(), endpoint.to_owned(), model.to_owned());
+        self.route_output_caps
+            .borrow_mut()
+            .entry(key)
+            .and_modify(|known| *known = (*known).min(cap))
+            .or_insert(cap);
+    }
+
+    pub(crate) fn route_output_cap(
+        &self,
+        backend: &str,
+        endpoint: &str,
+        model: &str,
+    ) -> Option<u32> {
+        self.route_output_caps
             .borrow()
             .get(&(backend.to_owned(), endpoint.to_owned(), model.to_owned()))
             .copied()

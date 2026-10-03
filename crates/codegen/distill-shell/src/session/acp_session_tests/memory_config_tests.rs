@@ -206,6 +206,7 @@ pub(super) async fn create_test_actor_with_memory(
             verbatim_input: true,
             tool_choice: crate::util::config::CompactionToolChoice::Auto,
             route_context_caps: Default::default(),
+            route_output_caps: Default::default(),
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
             cancel: Default::default(),

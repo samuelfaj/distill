@@ -1383,6 +1383,7 @@ impl SessionActor {
             park,
             None,
             None,
+            true,
         )
         .await
     }
@@ -1396,6 +1397,7 @@ impl SessionActor {
         park: TurnParkState,
         route_config: Option<&SamplingConfig>,
         requested_output_tokens: Option<u32>,
+        output_pinned: bool,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         use distill_sampler::SamplingErrorKind;
 
@@ -1463,6 +1465,39 @@ impl SessionActor {
                 &message,
             );
             return Err(acp::Error::internal_error().data(message));
+        }
+
+        // An unpinned output reservation that overflowed the window is the cause; compacting history cannot fix it.
+        if !mid_salvage_continuation
+            && !output_pinned
+            && !matches!(error.kind, SamplingErrorKind::Auth | SamplingErrorKind::RateLimited)
+            && !matches!(error.status_code, Some(401 | 429))
+            && (error
+                .error_code
+                .as_ref()
+                .is_some_and(distill_sampling_types::ApiErrorCode::is_size_overflow)
+                || distill_sampling_types::is_context_length_error(&error.message))
+            && let (Some(route), Some(out)) = (route_config, requested_output_tokens)
+            // A smaller reported window means the route entry is wrong; the
+            // learned-cap path below compacts for that case.
+            && compaction::explicit_provider_context_window(&error.message)
+                .is_none_or(|cap| cap >= route.context_window)
+            && let Some(new_cap) = compaction::output_cap_after_context_overflow(&error.message, out)
+            && let Some(endpoint) = sampler_route_attribution_endpoint(route)
+        {
+            tracing::warn!(
+                model = %route.model,
+                old_output_cap = out,
+                new_output_cap = new_cap,
+                "context overflow from output reservation; lowering output cap and resubmitting"
+            );
+            self.compaction.remember_route_output_cap(
+                sampler_route_backend_key(route),
+                &endpoint,
+                &route.model,
+                new_cap,
+            );
+            return Ok(SamplerFailureRecovery::CompactAndResubmit);
         }
 
         // Never compact mid-salvage: the rewrite would drop the continue reminder and split the joined report
@@ -1985,10 +2020,20 @@ impl SessionActor {
         let Some(configured) = compaction::configured_output_token_budget(request, route) else {
             return;
         };
-        let Some(bounded) = compaction::bounded_output_token_budget(request, route, input_tokens)
+        let Some(mut bounded) =
+            compaction::bounded_output_token_budget(request, route, input_tokens)
         else {
             return;
         };
+        if let Some(endpoint) = sampler_route_attribution_endpoint(route)
+            && let Some(learned) = self.compaction.route_output_cap(
+                sampler_route_backend_key(route),
+                &endpoint,
+                &route.model,
+            )
+        {
+            bounded = bounded.min(learned);
+        }
         if bounded < configured {
             request.max_output_tokens = Some(bounded);
         }
@@ -2162,6 +2207,7 @@ impl SessionActor {
                                     park,
                                     route_config.as_ref(),
                                     route_output_tokens,
+                                    caller_output_tokens.is_some(),
                                 )
                                 .await
                             }
@@ -2176,6 +2222,7 @@ impl SessionActor {
                             park,
                             route_config.as_ref(),
                             route_output_tokens,
+                            caller_output_tokens.is_some(),
                         )
                         .await
                     }
@@ -2199,6 +2246,7 @@ impl SessionActor {
                         park,
                         route_config.as_ref(),
                         route_output_tokens,
+                        caller_output_tokens.is_some(),
                     )
                     .await
                 }
@@ -2256,6 +2304,7 @@ impl SessionActor {
                                 park,
                                 route_config.as_ref(),
                                 route_output_tokens,
+                                caller_output_tokens.is_some(),
                             )
                             .await;
                     };
@@ -2584,6 +2633,7 @@ impl SessionActor {
         park: TurnParkState,
         route_config: Option<&SamplingConfig>,
         requested_output_tokens: Option<u32>,
+        output_pinned: bool,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
         // Single funnel for every sampler-call failure.
         super::turn::record_failed_sample_on_turn_span(&tracing::Span::current(), info.kind);
@@ -2596,6 +2646,7 @@ impl SessionActor {
                 park,
                 route_config,
                 requested_output_tokens,
+                output_pinned,
             )
             .await?
         {

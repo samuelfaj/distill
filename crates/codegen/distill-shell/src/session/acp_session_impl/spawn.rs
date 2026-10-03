@@ -1834,6 +1834,7 @@ pub(crate) async fn spawn_session_actor(
             verbatim_input: compaction_verbatim_input,
             tool_choice: compaction_tool_choice,
             route_context_caps: Default::default(),
+            route_output_caps: Default::default(),
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
             cancel: Default::default(),

@@ -758,8 +758,8 @@ fn learned_route_cap_bounds_catalogue_output_on_the_real_builder_path() {
                     response_requests[0]
                         .get("max_output_tokens")
                         .and_then(|value| value.as_u64()),
-                    Some(79_378),
-                    "wire output must be 131072 - 49646 input - 2048 framing"
+                    Some(76_462),
+                    "wire output must be 131072 - 49646 input - 10% input margin"
                 );
                 assert_eq!(
                     response_requests[0]
@@ -1512,4 +1512,86 @@ mod subagent_sampling_gate_tests {
             })
             .await;
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn output_reservation_overflow_lowers_learned_cap_without_compacting() {
+    use super::super::support::{create_test_actor, transient_state};
+    use super::super::{SamplerFailureRecovery, TurnParkState};
+    use super::{sampler_route_attribution_endpoint, sampler_route_backend_key};
+    use distill_sampler::{SamplerConfig, SamplingErrorInfo, SamplingErrorKind};
+    use distill_sampling_types::ConversationRequest;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use tokio::task::LocalSet;
+
+    LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(1_000, 1_048_576, 85, gateway_tx, persistence_tx).await,
+            );
+            let route = SamplerConfig {
+                base_url: "https://openrouter.ai/api/v1".to_owned(),
+                model: "vendor/big-model".to_owned(),
+                context_window: 1_048_576,
+                max_completion_tokens: Some(943_718),
+                ..Default::default()
+            };
+            let error = SamplingErrorInfo {
+                kind: SamplingErrorKind::Api,
+                status_code: Some(400),
+                message: "This endpoint's maximum context length is 1048576 tokens. However, you requested about 1049190 tokens (114270 of text input, 3984 of tool input, 930936 in the output).".to_owned(),
+                is_retryable: false,
+                retry_after_secs: None,
+                should_retry: None,
+                error_code: None,
+                model_metadata: None,
+                empty_response_context: None,
+                doom_loop_triggers: None,
+                doom_loop_aborted_at_chunk: None,
+                credential: distill_sampling_types::SentCredential::Unknown,
+            };
+            let recover = |output_pinned: bool| {
+                actor.handle_sampling_failure_for_route(
+                    error.clone(),
+                    0,
+                    transient_state(0, true),
+                    false,
+                    TurnParkState::Fresh,
+                    Some(&route),
+                    Some(930_936),
+                    output_pinned,
+                )
+            };
+
+            // A caller-pinned output keeps the existing behavior: no learned cap.
+            let _ = recover(true).await;
+            assert!(actor.compaction.route_output_caps.borrow().is_empty());
+
+            let compactions = actor.compaction.count.load(Ordering::Relaxed);
+            let outcome = recover(false).await;
+            assert!(matches!(outcome, Ok(SamplerFailureRecovery::CompactAndResubmit)));
+            assert_eq!(actor.compaction.count.load(Ordering::Relaxed), compactions);
+            let learned = 930_936 - 614 - 930_936 / 20;
+            let endpoint = sampler_route_attribution_endpoint(&route).unwrap();
+            let backend = sampler_route_backend_key(&route);
+            assert_eq!(
+                actor.compaction.route_output_cap(backend, &endpoint, "vendor/big-model"),
+                Some(learned)
+            );
+            assert_eq!(
+                actor.compaction.route_output_cap(backend, &endpoint, "other-model"),
+                None,
+                "another model must not inherit the learned output cap"
+            );
+
+            let mut request = ConversationRequest::default();
+            actor
+                .bound_request_output_to_route(&mut request, None, Some(&route))
+                .await;
+            assert_eq!(request.max_output_tokens, Some(learned));
+        })
+        .await;
 }

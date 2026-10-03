@@ -121,10 +121,12 @@ pub(crate) fn bounded_output_token_budget(
     if route.context_window == 0 {
         return Some(configured);
     }
+    // Tokenizers differ from our estimate, so the margin grows with the input.
+    let margin = REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS.max(input_tokens / 10);
     let available = route
         .context_window
         .saturating_sub(input_tokens)
-        .saturating_sub(REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS);
+        .saturating_sub(margin);
     Some(
         configured
             .min(u32::try_from(available).unwrap_or(u32::MAX))
@@ -141,6 +143,69 @@ fn request_exceeds_route_context(
         .saturating_add(output_tokens.unwrap_or_default())
         .saturating_add(REQUEST_CONTEXT_SAFETY_MARGIN_TOKENS)
         > context_window
+}
+
+/// Smallest output cap a learned overflow shrink may reach.
+pub(crate) const MIN_LEARNED_OUTPUT_TOKENS: u32 = 1_024;
+
+/// Read `(requested, maximum)` total tokens from a provider context-overflow
+/// message: Anthropic `A + B > M` or OpenAI-style "maximum context length is M
+/// ... requested [about|a total of] R tokens".
+pub(crate) fn provider_overflow_requested_and_limit(message: &str) -> Option<(u64, u64)> {
+    let lower = message.to_ascii_lowercase();
+    if let Some(at) = lower.find("exceed context limit:") {
+        let rest = &message[at + "exceed context limit:".len()..];
+        let (input, rest) = leading_number(rest)?;
+        let (output, rest) = leading_number(rest.trim_start().strip_prefix('+')?)?;
+        let (limit, _) = leading_number(rest.trim_start().strip_prefix('>')?)?;
+        return Some((input.saturating_add(output), limit));
+    }
+    let limit = explicit_provider_context_window(message)?;
+    for (at, _) in lower.match_indices("requested") {
+        let rest = &message[at + "requested".len()..];
+        let Some(skipped) = rest.find(|ch: char| ch.is_ascii_digit()) else {
+            continue;
+        };
+        if skipped <= 16 && rest[..skipped].chars().all(|ch| ch.is_ascii_alphabetic() || ch == ' ')
+            && let Some((requested, _)) = leading_number(&rest[skipped..])
+        {
+            return Some((requested, limit));
+        }
+    }
+    None
+}
+
+fn leading_number(text: &str) -> Option<(u64, &str)> {
+    let text = text.trim_start();
+    let end = text
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(text.len());
+    let value = text[..end].parse::<u64>().ok().filter(|value| *value > 0)?;
+    Some((value, &text[end..]))
+}
+
+/// Output cap for the resubmit after a context overflow caused by the output
+/// reservation. `None` when the cap cannot shrink or the input alone overflows.
+pub(crate) fn output_cap_after_context_overflow(message: &str, output: u32) -> Option<u32> {
+    if output <= MIN_LEARNED_OUTPUT_TOKENS {
+        return None;
+    }
+    let out = u64::from(output);
+    let headroom = 2_048.max(out / 20);
+    let shrunk = match provider_overflow_requested_and_limit(message) {
+        Some((requested, limit)) if requested > limit => {
+            if requested.saturating_sub(out) >= limit {
+                return None;
+            }
+            out.saturating_sub(requested - limit).saturating_sub(headroom)
+        }
+        _ => out / 2,
+    };
+    Some(
+        u32::try_from(shrunk)
+            .unwrap_or(u32::MAX)
+            .clamp(MIN_LEARNED_OUTPUT_TOKENS, output - 1),
+    )
 }
 
 /// Read a provider-reported endpoint limit only when the error labels that
@@ -280,6 +345,82 @@ impl From<PrefireOutcome> for PrefirePass1Run {
             pass1_latency_ms: None,
             note1_chars: None,
         }
+    }
+}
+#[cfg(test)]
+mod output_cap_tests {
+    use super::*;
+
+    const OPENROUTER: &str = "This endpoint's maximum context length is 1048576 tokens. However, you requested about 1049190 tokens (114270 of text input, 3984 of tool input, 930936 in the output). Please reduce the length of either one, or use the \"middle-out\" transform to compress your prompt automatically.";
+    const ANTHROPIC: &str = "input length and `max_tokens` exceed context limit: 198000 + 64000 > 200000, decrease input length or `max_tokens` and try again";
+
+    #[test]
+    fn parses_openrouter_requested_and_limit() {
+        assert_eq!(
+            provider_overflow_requested_and_limit(OPENROUTER),
+            Some((1_049_190, 1_048_576))
+        );
+    }
+
+    #[test]
+    fn parses_anthropic_sum_and_limit() {
+        assert_eq!(
+            provider_overflow_requested_and_limit(ANTHROPIC),
+            Some((262_000, 200_000))
+        );
+    }
+
+    #[test]
+    fn parses_deepinfra_total() {
+        let raw = "Requested token count exceeds the model's maximum context length of 131072 tokens. You requested a total of 132509 tokens: 99741 tokens from the input messages and 32768 tokens for the completion.";
+        assert_eq!(
+            provider_overflow_requested_and_limit(raw),
+            Some((132_509, 131_072))
+        );
+    }
+
+    #[test]
+    fn unparseable_message_yields_none() {
+        assert_eq!(provider_overflow_requested_and_limit("context length exceeded"), None);
+        assert_eq!(provider_overflow_requested_and_limit(""), None);
+    }
+
+    #[test]
+    fn shrink_removes_overflow_and_keeps_headroom() {
+        let out = 930_936;
+        let cap = output_cap_after_context_overflow(OPENROUTER, out).unwrap();
+        // Overflow of 614 plus 5% headroom must be gone from the output reservation.
+        assert_eq!(cap, out - 614 - out / 20);
+        assert!(1_049_190 - out + cap + 614 <= 1_048_576);
+    }
+
+    #[test]
+    fn shrink_halves_when_unparseable_and_stops_at_floor() {
+        assert_eq!(output_cap_after_context_overflow("context length exceeded", 8_000), Some(4_000));
+        assert_eq!(output_cap_after_context_overflow("context length exceeded", 1_500), Some(1_024));
+        assert_eq!(output_cap_after_context_overflow("context length exceeded", 1_024), None);
+    }
+
+    #[test]
+    fn shrink_gives_up_when_input_alone_overflows() {
+        let raw = "maximum context length is 1000 tokens. However, you requested 5000 tokens (4900 in the input, 100 in the output)";
+        assert_eq!(output_cap_after_context_overflow(raw, 4_000), None);
+    }
+
+    #[test]
+    fn bounded_output_margin_scales_with_input() {
+        let route = distill_sampler::SamplerConfig {
+            context_window: 1_048_576,
+            max_completion_tokens: Some(943_718),
+            ..Default::default()
+        };
+        let request = ConversationRequest::default();
+        let input = 115_592;
+        let bounded = bounded_output_token_budget(&request, &route, input).unwrap();
+        assert!(u64::from(bounded) + input + input / 10 <= route.context_window);
+        // Small inputs keep the fixed margin.
+        let small = bounded_output_token_budget(&request, &route, 1_000).unwrap();
+        assert_eq!(u64::from(small), 943_718.min(1_048_576 - 1_000 - 2_048));
     }
 }
 #[cfg(test)]

@@ -2967,6 +2967,9 @@ impl SessionActor {
                 .set(super::jev_tool_result::session_is_read_only(
                     effective_tools.iter().map(|tool| tool.name.as_str()),
                 ));
+            self.model_tools_ask_stored_output.set(effective_tools.iter().any(|tool| {
+                tool.name == distill_tools::implementations::distill::ASK_STORED_OUTPUT_TOOL_NAME
+            }));
             self.persist_tool_definitions_artifact(&effective_tools)
                 .await;
             let build_req_start = std::time::Instant::now();

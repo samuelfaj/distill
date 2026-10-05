@@ -8939,3 +8939,45 @@ fn user_message_echo_session_meta_outranks_the_client_that_started_the_process()
     assert!(!wanted(Some(acp::Meta::new()), says_nothing()));
     assert!(!wanted(None, says_nothing()));
 }
+/// The title model falls back to the session's own config, which often runs
+/// at max effort: 743 of ~5k title calls in a week ran at max for a few words.
+/// The title client pins the model's lowest level (and its id) instead.
+#[tokio::test]
+async fn the_title_client_never_inherits_the_session_effort() {
+    use crate::agent::config::{EndpointsConfig, ModelEntry, ModelVariant};
+    use distill_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+    let agent = build_minimal_agent_for_tests();
+    let option = |value: ReasoningEffort| ReasoningEffortOption {
+        id: value.as_ref().to_string(),
+        value,
+        label: value.as_ref().to_string(),
+        description: None,
+        default: false,
+    };
+    let mut routed = ModelEntry::fallback("title-max", &EndpointsConfig::default());
+    routed.info.supports_reasoning_effort = true;
+    routed.info.reasoning_efforts = vec![
+        option(ReasoningEffort::Max),
+        option(ReasoningEffort::Low),
+        option(ReasoningEffort::High),
+    ];
+    routed.info.variants = vec![
+        ModelVariant { effort: ReasoningEffort::Low, model_id: "title-low".to_string() },
+        ModelVariant { effort: ReasoningEffort::Max, model_id: "title-max".to_string() },
+    ];
+    agent.models_manager.insert_test_entry("title-max", routed.clone());
+    let mut cfg = agent.prepare_sampling_config_for_model(&routed, None);
+    cfg.reasoning_effort = Some(ReasoningEffort::Max);
+    super::agent_ops::pin_lowest_title_effort(&agent.models_manager, &mut cfg);
+    assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::Low));
+    assert_eq!(cfg.model, "title-low");
+
+    // No menu in the catalog: no explicit effort, so never the session's max.
+    let plain = ModelEntry::fallback("plain-title", &EndpointsConfig::default());
+    agent.models_manager.insert_test_entry("plain-title", plain.clone());
+    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None);
+    plain_cfg.reasoning_effort = Some(ReasoningEffort::Max);
+    super::agent_ops::pin_lowest_title_effort(&agent.models_manager, &mut plain_cfg);
+    assert_eq!(plain_cfg.reasoning_effort, None);
+    assert_eq!(plain_cfg.model, "plain-title");
+}

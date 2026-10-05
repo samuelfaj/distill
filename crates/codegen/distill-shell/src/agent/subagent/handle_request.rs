@@ -302,6 +302,24 @@ impl WakePersistenceContext {
         }
     }
 }
+/// A child session's title: its spawn description (what the agent panel
+/// shows), else its agent type. No model is asked for a hidden session.
+fn subagent_title(description: &str, subagent_type: &str) -> String {
+    let description = description.trim();
+    if description.is_empty() {
+        subagent_type.trim().to_owned()
+    } else {
+        description.to_owned()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_subagent_is_titled_by_its_description_or_type() {
+    assert_eq!(subagent_title(" Audit recap path ", "explore"), "Audit recap path");
+    assert_eq!(subagent_title("  ", "explore"), "explore");
+}
+
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
     provenance: ModelOverrideProvenance,
@@ -1240,21 +1258,19 @@ pub(crate) async fn run_shell_child(
             completion_data,
         );
     }
-    let sampling_client = match crate::sampling::Client::new(effective_sampling_config.clone()) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!("Sampling client error: {e}");
-            return setup_failure_output(
-                &msg,
-                &request,
-                &child_session_id,
-                &subagent_meta_dir,
-                &early_gcs_ctx,
-                start_artifacts.terminal_persistence_allowed(),
-                completion_data,
-            );
-        }
-    };
+    // A config the sampler cannot build fails setup here, before persistence exists.
+    if let Err(e) = crate::sampling::Client::new(effective_sampling_config.clone()) {
+        let msg = format!("Sampling client error: {e}");
+        return setup_failure_output(
+            &msg,
+            &request,
+            &child_session_id,
+            &subagent_meta_dir,
+            &early_gcs_ctx,
+            start_artifacts.terminal_persistence_allowed(),
+            completion_data,
+        );
+    }
     #[cfg(test)]
     let persistence_dir = ctx
         .setup_failure
@@ -1289,8 +1305,7 @@ pub(crate) async fn run_shell_child(
         &child_session_info,
         persistence_dir,
         effective_model_id.clone(),
-        sampling_client,
-        effective_sampling_config.model.clone(),
+        subagent_title(&request.description, &request.subagent_type),
         if is_wake {
             crate::session::persistence::ExplicitSessionOpen::Wake
         } else {

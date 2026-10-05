@@ -538,6 +538,7 @@ async fn create_test_actor_inner(
         turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(0),
         model_tools_read_only: std::cell::Cell::new(false),
+        model_tools_ask_stored_output: std::cell::Cell::new(false),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
         turn_summary_task: std::cell::RefCell::new(None),

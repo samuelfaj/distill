@@ -108,6 +108,11 @@ pub struct CheapTask {
     pub payload: String,
     /// Answer ceiling in characters, enforced after the call.
     pub max_answer_chars: usize,
+    /// A completion-token ceiling below the client's, for a task whose valid
+    /// answers are short: a runaway answer stops early instead of paying for
+    /// the client's whole budget. Applied only with reasoning off, since
+    /// reasoning spends the same budget.
+    pub max_completion_tokens: Option<u32>,
 }
 
 impl CheapTask {
@@ -131,11 +136,17 @@ impl CheapTask {
             instruction: instruction.into(),
             payload: payload.into(),
             max_answer_chars: 4_000,
+            max_completion_tokens: None,
         }
     }
 
     pub fn with_max_answer_chars(mut self, max: usize) -> Self {
         self.max_answer_chars = max;
+        self
+    }
+
+    pub fn with_max_completion_tokens(mut self, max: u32) -> Self {
+        self.max_completion_tokens = Some(max);
         self
     }
 
@@ -273,13 +284,19 @@ impl CheapClient {
             ))
         })?;
 
+        let max_completion_tokens = match task.max_completion_tokens {
+            Some(cap) if self.config.reasoning_shape == ReasoningShape::Disabled => {
+                cap.clamp(1, self.config.max_completion_tokens.max(1))
+            }
+            _ => self.config.max_completion_tokens,
+        };
         let request = chat_message_body(
             &self.config.model,
             TASK_SYSTEM_PROMPT,
             &task.render(),
             self.config.reasoning_shape,
             &self.config.reasoning_effort,
-            self.config.max_completion_tokens,
+            max_completion_tokens,
         );
         let body = serde_json::to_vec(&request)
             .map_err(|error| JevError::invalid(format!("request serialization failed: {error}")))?;
@@ -300,7 +317,7 @@ impl CheapClient {
                 super::provider::JevProvider::OpenRouter,
                 self.config.reasoning_shape,
                 &self.config.reasoning_effort,
-                self.config.max_completion_tokens,
+                max_completion_tokens,
             ));
         }
         if let Some(guard) = attempt_guard.as_mut() {
@@ -661,6 +678,33 @@ mod tests {
         // The credential travelled in the header, never in the body.
         assert!(!bodies[0].contains(TEST_KEY));
         assert!(stub.auth.lock().expect("lock")[0].starts_with("Bearer "));
+    }
+
+    /// A unit-id selection never needs the client's whole answer budget: the
+    /// lower ceiling stops a runaway prose answer early, and it is not applied
+    /// when reasoning would spend the same budget.
+    #[tokio::test]
+    async fn a_task_ceiling_lowers_max_tokens_only_with_reasoning_off() {
+        let spec = crate::jev::tasks::spec(crate::jev::tasks::SELECT_UNITS_TASK).expect("select_units");
+        let task = crate::jev::tasks::task_for(spec, "[U1] line", "keep what matters");
+        let max_tokens_sent = |stub: &Stub| {
+            let sent: Json = serde_json::from_str(&stub.bodies()[0]).expect("json body");
+            sent["max_tokens"].as_u64()
+        };
+
+        let stub = make_stub((200, chat_reply("U1", (12, 2)), true));
+        let client = client_for(&stub, |_| {}).await;
+        client.ask(&task).await.expect("the call succeeds");
+        assert_eq!(max_tokens_sent(&stub), Some(256));
+
+        let stub = make_stub((200, chat_reply("U1", (12, 2)), true));
+        let client = client_for(&stub, |cfg| {
+            cfg.reasoning_shape = ReasoningShape::Effort;
+            cfg.reasoning_effort = "low".to_owned();
+        })
+        .await;
+        client.ask(&task).await.expect("the call succeeds");
+        assert_eq!(max_tokens_sent(&stub), Some(u64::from(DEFAULT_MAX_COMPLETION_TOKENS)));
     }
 
     #[tokio::test]

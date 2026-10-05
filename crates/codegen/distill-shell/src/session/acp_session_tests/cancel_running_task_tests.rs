@@ -39,14 +39,6 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 id: acp::SessionId::new("test-persist-ack"),
                 cwd: cwd.as_str().to_string(),
             };
-            let sampling_client = crate::sampling::Client::new(distill_sampler::SamplerConfig {
-                api_key: Some("test-key".to_string()),
-                base_url: "http://localhost".to_string(),
-                model: "test".to_string(),
-                context_window: 100_000,
-                ..Default::default()
-            })
-            .expect("sampling client should build for persistence actor");
             let persistence = crate::session::persistence::new_with_explicit_dir(
                 &crate::session::info::Info {
                     id: session_info.id.clone(),
@@ -54,8 +46,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 },
                 session_dir.clone(),
                 acp::ModelId::new("test-model"),
-                sampling_client,
-                crate::test_support::TEST_MODEL.to_owned(),
+                "test subagent".to_owned(),
                 crate::session::persistence::ExplicitSessionOpen::New {
                     identity: None,
                     next_trace_turn: None,
@@ -307,6 +298,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 turn_phases: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 model_tools_read_only: std::cell::Cell::new(false),
+                model_tools_ask_stored_output: std::cell::Cell::new(false),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
@@ -462,14 +454,6 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                 id: acp::SessionId::new("persist-memory"),
                 cwd: session_dir.path().to_string_lossy().to_string(),
             };
-            let sampling_client = crate::sampling::Client::new(distill_sampler::SamplerConfig {
-                    api_key: Some("test-key".to_string()),
-                    base_url: "http://localhost".to_string(),
-                    model: "test-model".to_string(),
-                    context_window: 100_000,
-                    ..Default::default()
-                })
-                .expect("sampling client should build for persistence actor");
             let persistence = crate::session::persistence::new_with_explicit_dir(
                     &crate::session::info::Info {
                         id: session_info.id.clone(),
@@ -477,8 +461,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
                     },
                     session_dir.path().to_path_buf(),
                     acp::ModelId::new("test-model"),
-                    sampling_client,
-                    crate::test_support::TEST_MODEL.to_owned(),
+                    "test subagent".to_owned(),
                     crate::session::persistence::ExplicitSessionOpen::New {
                         identity: None,
                         next_trace_turn: None,
@@ -568,14 +551,6 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             );
             let tool_context =
                 ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
-            let sampling_client = crate::sampling::Client::new(distill_sampler::SamplerConfig {
-                api_key: Some("test-key".to_string()),
-                base_url: "http://localhost".to_string(),
-                model: "test-model".to_string(),
-                context_window: 100_000,
-                ..Default::default()
-            })
-            .expect("sampling client should build for persistence actor");
             let persistence = crate::session::persistence::new_with_explicit_dir(
                 &crate::session::info::Info {
                     id: session_info.id.clone(),
@@ -583,8 +558,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 },
                 session_dir.path().to_path_buf(),
                 acp::ModelId::new("test-model"),
-                sampling_client,
-                crate::test_support::TEST_MODEL.to_owned(),
+                "test subagent".to_owned(),
                 crate::session::persistence::ExplicitSessionOpen::New {
                     identity: None,
                     next_trace_turn: None,
@@ -861,6 +835,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 turn_phases: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 model_tools_read_only: std::cell::Cell::new(false),
+                model_tools_ask_stored_output: std::cell::Cell::new(false),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
@@ -1191,6 +1166,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 turn_phases: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 model_tools_read_only: std::cell::Cell::new(false),
+                model_tools_ask_stored_output: std::cell::Cell::new(false),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
@@ -2716,6 +2692,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 turn_phases: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 model_tools_read_only: std::cell::Cell::new(false),
+                model_tools_ask_stored_output: std::cell::Cell::new(false),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),

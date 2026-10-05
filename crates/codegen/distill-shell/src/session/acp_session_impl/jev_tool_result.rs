@@ -65,6 +65,174 @@ fn is_whole_file_read(file: &distill_tools::types::output::FileContent) -> bool 
         && file.raw_output.lines().count() + 1 >= file.total_lines
 }
 
+/// Instruction files (AGENTS.md, SKILL.md, CLAUDE.md, anything in a `skills`
+/// directory) are followed, not looked up, so a read of one stays whole.
+fn is_instruction_file(path: &std::path::Path) -> bool {
+    matches!(
+        path.file_name().and_then(|s| s.to_str()),
+        Some("AGENTS.md" | "SKILL.md" | "CLAUDE.md")
+    ) || path.components().any(|part| part.as_os_str() == "skills")
+}
+
+/// A read from line 1 (the whole file, or the first window of a longer one)
+/// may be narrowed: kept lines keep their numbers, so an edit can re-read the
+/// exact range. Instruction files and reads carrying a reminder stay whole.
+fn narrowable_read(file: &distill_tools::types::output::FileContent, body: &str) -> bool {
+    file.offset.is_none()
+        && file.limit.is_none()
+        && file.raw_output.len() >= READ_ONLY_COMPRESS_MIN_BYTES
+        && !is_instruction_file(&file.absolute_path)
+        && !body.contains("<system-reminder>")
+}
+
+/// Under this percent of a file's bytes a read selection is thin: after one,
+/// the main model re-read the file about half the time.
+const READ_FILE_THIN_PERCENT: usize = 10;
+
+/// The lines a narrowed read keeps of the utility's `kept`, and whether the
+/// outline was added. A selection that picked nothing beyond the forced lines
+/// (`NONE`), or under [`READ_FILE_THIN_PERCENT`] of the bytes, gains the
+/// file's heading or declaration lines, so a follow-up can be a narrow
+/// offset/limit read. With no outline in the file it is `None`: the original
+/// stays.
+fn read_file_kept_lines(
+    lines: &[String],
+    mut kept: std::collections::BTreeSet<usize>,
+    required: &[bool],
+    markdown: bool,
+) -> Option<(std::collections::BTreeSet<usize>, bool)> {
+    let total: usize = lines.iter().map(|line| line.len() + 1).sum();
+    let kept_bytes: usize = kept.iter().map(|i| lines[*i].len() + 1).sum();
+    let picked = kept.iter().any(|i| !required[*i]);
+    if picked && kept_bytes * 100 >= total * READ_FILE_THIN_PERCENT {
+        return Some((kept, false));
+    }
+    let outline = crate::utility_select::outline_lines(lines, markdown);
+    // A thin pick that already holds the outline is the same text as one the
+    // outline was added to.
+    if outline.is_empty() {
+        return None;
+    }
+    kept.extend(outline);
+    Some((kept, true))
+}
+
+/// A narrowed read as it enters history: the kept lines with their numbers,
+/// where a first window of a longer file stops, and the footer.
+fn read_file_replacement(
+    lines: &[String],
+    kept: &std::collections::BTreeSet<usize>,
+    total_lines: usize,
+    outline: bool,
+    pointer: &str,
+) -> String {
+    let mut text = crate::utility_select::reconstruct_anchored_lines(lines, kept);
+    // `total_lines` counts the empty piece after a trailing newline.
+    if lines.len() + 1 < total_lines {
+        text.push_str(&format!(
+            "[… file continues past line {}; read_file with offset={} for the rest …]\n",
+            lines.len(),
+            lines.len() + 1
+        ));
+    }
+    let note = if outline {
+        "little was selected, so the outline (heading or declaration lines) was added; "
+    } else {
+        ""
+    };
+    format!("{text}[compressed by verified utility selection; {note}{pointer}]")
+}
+
+/// Whether the call reads back a stored original (a jev store file or a
+/// session terminal log), by `read_file`, a shell command or a grep path.
+fn reads_stored_original(
+    tool: &str,
+    command: &str,
+    args: &serde_json::Value,
+    output: &distill_tools::types::output::ToolOutput,
+) -> bool {
+    use distill_tools::types::output::{ReadFileOutput, ToolOutput};
+    match output {
+        ToolOutput::ReadFile(ReadFileOutput::FileContent(file)) => {
+            crate::stored_output_ask::is_stored_original(&file.absolute_path.display().to_string())
+        }
+        ToolOutput::Bash(_) | ToolOutput::TaskOutput(_) => {
+            crate::stored_output_ask::mentions_stored_original(
+                task_output_command(output).unwrap_or(command),
+            )
+        }
+        _ if tool == "grep" => args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(crate::stored_output_ask::mentions_stored_original),
+        _ => false,
+    }
+}
+
+/// Where a compression footer sends the model for the original. With `ask`
+/// it also names `ask_stored_output`, which answers a question with verbatim
+/// lines; read_file stays the way to exact text.
+fn stored_original_pointer(handle: &str, ask: bool) -> String {
+    if ask {
+        format!(
+            "full output stored at {handle} — ask_stored_output with that path answers a question about the omitted lines; read_file offset/limit gives exact text"
+        )
+    } else {
+        format!("full output stored at {handle}")
+    }
+}
+
+/// The footer pointer for a JSON selection whose stored original is one long
+/// line (a minified result): read_file, grep and `ask_stored_output` work by
+/// line and cannot narrow it, so the model is pointed at a JSON query, as the
+/// `mcp_truncate` note it replaces did.
+fn json_original_pointer(handle: &str) -> String {
+    format!(
+        "full output stored at {handle} — a single JSON line: query it with jq or a script, not read_file, grep or ask_stored_output"
+    )
+}
+
+/// Chunks one selection asks the utility about; past them a small tail is
+/// kept whole.
+const SELECTION_MAX_CHUNKS: usize = 8;
+
+/// Whether a JSON selection can be used, checked before anything is stored
+/// or sent: the forced bytes (envelope and required elements) under 60% of
+/// the result, every element fitting a chunk, and what any answer keeps
+/// (those plus a tail kept whole) under the 70% bar against `answer_len`, the
+/// result as it stands, which for a cut MCP result is the inline head, not
+/// the full JSON selected from. The deferral otherwise; the caller then keeps
+/// line units.
+fn json_selection_viable(
+    json: &crate::utility_select::JsonUnits,
+    source_len: usize,
+    cap: usize,
+    answer_len: usize,
+) -> Result<(), &'static str> {
+    let forced: usize = json.envelope_bytes
+        + json
+            .units
+            .iter()
+            .zip(&json.required)
+            .filter(|(_, required)| **required)
+            .map(|(unit, _)| unit.len())
+            .sum::<usize>();
+    if forced * 100 >= source_len.min(answer_len).saturating_mul(60) {
+        return Err("defer:required-dominates");
+    }
+    let floor = json.envelope_bytes
+        + crate::utility_select::kept_floor_bytes(
+            &json.units,
+            &json.required,
+            cap,
+            SELECTION_MAX_CHUNKS,
+        )?;
+    if floor * 100 >= answer_len.saturating_mul(70) {
+        return Err("defer:cannot-pay");
+    }
+    Ok(())
+}
+
 pub(super) fn session_is_read_only<'a>(tool_names: impl IntoIterator<Item = &'a str>) -> bool {
     !tool_names.into_iter().any(|name| {
         matches!(
@@ -328,6 +496,22 @@ pub(super) fn call_preamble(
     (!tail.is_empty()).then_some(tail)
 }
 
+/// Bytes the harness appends after the kept units: the metadata block and the
+/// recovery pointer in the footer.
+fn appended_bytes(metadata: Option<&str>, pointer: &str) -> usize {
+    metadata
+        .filter(|metadata| !metadata.trim().is_empty())
+        .map_or(0, |metadata| "[tool metadata]\n".len() + metadata.trim_end().len() + 1)
+        + pointer.len()
+}
+
+/// Whether a selection is used: the kept body under 70% of the original, and
+/// the whole replacement, `appended` bytes included, still shorter. The
+/// recovery footer is a fixed cost, so it does not decide whether a cut pays.
+fn selection_pays(replacement: usize, appended: usize, original: usize) -> bool {
+    replacement.saturating_sub(appended) * 100 < original * 70 && replacement < original
+}
+
 /// A search_tool selection pays when it drops at least one whole tool (the
 /// schemas are the bulk of the result) and the rebuilt JSON is shorter; a
 /// result of three to five tools could rarely clear the 70% bar.
@@ -352,8 +536,11 @@ fn forced_units_note(source_kind: &str, match_listing: bool) -> &'static str {
         "search_tool" => {
             "Nothing is kept automatically; the names of the tools left out stay listed."
         }
+        "json" => {
+            "Each unit is one element of the result's largest JSON array; the other fields, and focused or input elements, are kept automatically."
+        }
         _ if match_listing => {
-            "Error, failure and summary lines, result headers, and the first two and last two lines are kept automatically."
+            "The result headers and the first two and last two lines are kept automatically."
         }
         _ => {
             "Error, failure and summary lines and the first two and last two lines are kept automatically."
@@ -522,6 +709,67 @@ async fn compression_source_for_lane(
     crate::jev_lanes::bounded_tool_evidence(body, budget)
 }
 
+/// A JSON result selected element by element: the JSON it was parsed from,
+/// its units, and what follows the tool's own text in the body (reminders),
+/// which is kept verbatim.
+struct JsonSelectionSource {
+    source: String,
+    json: crate::utility_select::JsonUnits,
+    suffix: String,
+}
+
+/// The full MCP output `mcp_truncate` saved for `call_id`, when `text` is its
+/// inline head plus the truncation note and the saved file starts with that
+/// head. A note naming any other file is ignored.
+async fn mcp_saved_full_output(text: &str, call_id: &str) -> Option<String> {
+    let (head, note) = text.rsplit_once("\n\n[MCP output truncated: ")?;
+    let (_, rest) = note.split_once(" Full output written to: ")?;
+    let path = &rest[..rest.find(".json.")? + ".json".len()];
+    let path = std::path::Path::new(path);
+    let stem: String = call_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if call_id.is_empty()
+        || path.file_name()?.to_str()? != format!("{stem}.json")
+        || path.parent()?.file_name()?.to_str()? != "mcp"
+    {
+        return None;
+    }
+    let full = tokio::fs::read_to_string(path).await.ok()?;
+    full.starts_with(head).then_some(full)
+}
+
+/// The JSON behind an MCP result (its own text, or the full output saved when
+/// the inline text was cut) or behind a non-exact shell body, when it has an
+/// array worth selecting from. `None` keeps the line-based selection.
+async fn json_selection_source(
+    output: &ToolOutput,
+    body: &str,
+    call_id: &str,
+) -> Option<JsonSelectionSource> {
+    let (source, suffix) = match output {
+        ToolOutput::MCP(mcp) => {
+            let distill_tools::types::output::MCPOutputDetails::OkayOutput(text) = mcp.output()
+            else {
+                return None;
+            };
+            let suffix = body.strip_prefix(text.as_str())?.to_owned();
+            match mcp_saved_full_output(text, call_id).await {
+                Some(full) => (full, suffix),
+                None => (text.clone(), suffix),
+            }
+        }
+        _ => (body.to_owned(), String::new()),
+    };
+    let json = crate::utility_select::json_array_units(&source)?;
+    Some(JsonSelectionSource {
+        source,
+        json,
+        suffix,
+    })
+}
+
 fn compression_replacement_for_output(
     output: &distill_tools::types::output::ToolOutput,
     original: &str,
@@ -604,22 +852,24 @@ fn task_output_contains_exact_output(
     }
 }
 
+/// What a narrowed task result keeps of its envelope: the ids a follow-up
+/// needs (the retrieval call does not carry the command), and truncation only
+/// when there was some.
 fn task_output_result_metadata(result: &distill_tool_types::TaskOutputResult) -> String {
     let exit_code = result
         .exit_code
         .map_or_else(|| "none".to_owned(), |code| code.to_string());
-    format!(
-        "task_id: {}\ncommand: {}\nstatus: {}\nexit_code: {}\nduration_secs: {}\noutput_file: {}\ntruncated: {}\ntruncation_hint: {}\nraw_output_bytes: {}",
-        result.task_id,
-        result.command,
-        result.status,
-        exit_code,
-        result.duration_secs,
-        result.output_file,
-        result.truncated,
-        result.truncation_hint,
-        result.raw_output_bytes,
-    )
+    let mut metadata = format!(
+        "task_id: {}\ncommand: {}\nstatus: {}\nexit_code: {}\noutput_file: {}",
+        result.task_id, result.command, result.status, exit_code, result.output_file,
+    );
+    if result.truncated {
+        metadata.push_str(&format!(
+            "\ntruncated: true\ntruncation_hint: {}\nraw_output_bytes: {}",
+            result.truncation_hint, result.raw_output_bytes,
+        ));
+    }
+    metadata
 }
 
 /// The exact suffix the default rendering of a subagent result appends to its
@@ -649,15 +899,24 @@ fn typed_tool_metadata(
     use distill_tools::types::output::{ToolOutput, WebFetchOutput};
 
     match output {
-        ToolOutput::Bash(bash) => Some(format!(
-            "command: {}\nexit: {}\ntruncated: {}\ntimed_out: {}\nsignal: {}\noutput_file: {}",
-            bash.command,
-            bash.exit_code,
-            bash.truncated,
-            bash.timed_out,
-            bash.signal.as_deref().unwrap_or("none"),
-            bash.output_file,
-        )),
+        // The command is in the call's own arguments; only what is not the
+        // default is repeated, and the terminal log only when it holds more.
+        ToolOutput::Bash(bash) => {
+            let mut metadata = Vec::new();
+            if bash.exit_code != 0 {
+                metadata.push(format!("exit: {}", bash.exit_code));
+            }
+            if let Some(signal) = &bash.signal {
+                metadata.push(format!("signal: {signal}"));
+            }
+            if bash.timed_out {
+                metadata.push("timed_out: true".to_owned());
+            }
+            if bash.truncated {
+                metadata.push(format!("truncated: true\noutput_file: {}", bash.output_file));
+            }
+            (!metadata.is_empty()).then(|| metadata.join("\n"))
+        }
         ToolOutput::TaskOutput(TaskOutputOutput::Result(result)) => Some(format!(
             "[task metadata]\n{}",
             task_output_result_metadata(result)
@@ -871,8 +1130,13 @@ pub(super) async fn select_units_with_lane(
             miss: "keep:secret",
         };
     }
-    let chunks = match crate::utility_select::plan_chunks(units, cap, 8) {
-        Ok(chunks) => chunks,
+    // Past eight chunks the head is selected and a small tail kept whole.
+    let (chunks, tail) = match crate::utility_select::plan_chunks_with_tail(
+        units,
+        cap,
+        SELECTION_MAX_CHUNKS,
+    ) {
+        Ok(planned) => planned,
         Err(reason) => {
             crate::jev::record_item(Lever::ECheapCompress, reason, reason, None, None);
             return SelectedUnits {
@@ -882,12 +1146,41 @@ pub(super) async fn select_units_with_lane(
             };
         }
     };
-    let answers = futures::future::join_all(chunks.iter().map(|chunk| async {
+    if !tail.is_empty() {
+        crate::jev::record_item(
+            Lever::ECheapCompress,
+            "partial:verbatim-tail",
+            &format!("{} chunks selected, {} kept whole", chunks.len(), tail.len()),
+            None,
+            None,
+        );
+    }
+    let endpoint = utility.endpoint();
+    let mut answers = futures::future::join_all(chunks.iter().map(|chunk| async {
         let refs: Vec<&str> = units[chunk.clone()].iter().map(String::as_str).collect();
         let payload = distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
         let valid = chunk.start + 1..=chunk.end;
-        match utility
-            .run_task_with_acceptance(
+        let memo_key = crate::utility_select::selection_memo_key(
+            &endpoint,
+            utility.model(),
+            source_kind,
+            &payload,
+            question,
+        );
+        if crate::jev::lever_active(JevLever::ECheapCompress)
+            && let Some(answer) = crate::utility_select::selection_memo_get(&memo_key)
+        {
+            crate::jev::record_item(
+                Lever::ECheapCompress,
+                "memo",
+                "same units and question already answered in this process",
+                None,
+                None,
+            );
+            return answer;
+        }
+        let answer = match utility
+            .run_task_with_review(
                 JevLever::ECheapCompress,
                 distill_workspace::jev::tasks::SELECT_UNITS_TASK,
                 &payload,
@@ -901,32 +1194,38 @@ pub(super) async fn select_units_with_lane(
                         distill_workspace::jev::tasks::parse_unit_ids(answer, valid.clone())
                             .ok()?
                     };
-                    Some(match review {
+                    // The units this chunk keeps: the picked ones plus the
+                    // ones the harness always keeps.
+                    let kept: std::collections::BTreeSet<usize> = picked
+                        .iter()
+                        .map(|id| id - 1)
+                        .chain(chunk.clone().filter(|index| required[*index]))
+                        .collect();
+                    let kept_bytes: usize = kept.iter().map(|index| units[*index].len()).sum();
+                    let chunk_bytes: usize = units[chunk.clone()].iter().map(String::len).sum();
+                    // Kept units are verbatim and the original is stored, so
+                    // only a thin cut, where a dropped line most likely costs
+                    // a re-read, pays for the Jev review.
+                    if kept_bytes * 100 >= chunk_bytes * SELECTION_REVIEW_THIN_PERCENT {
+                        return Some(crate::jev_cheap::PostReview::Skip);
+                    }
+                    Some(crate::jev_cheap::PostReview::Read(match review {
                         SelectionReview::Selected => picked
                             .into_iter()
                             .filter_map(|id| units.get(id - 1))
                             .cloned()
                             .collect::<Vec<_>>()
                             .join("\n"),
-                        // Jev reviews what this chunk becomes: the picked units
-                        // plus the units the harness always keeps.
-                        SelectionReview::Rebuilt => {
-                            let kept: std::collections::BTreeSet<usize> = picked
-                                .into_iter()
-                                .map(|id| id - 1)
-                                .chain(chunk.clone().filter(|index| required[*index]))
-                                .map(|index| index - chunk.start)
-                                .collect();
-                            crate::utility_select::reconstruct(
-                                &units[chunk.clone()],
-                                &kept,
-                                kind,
-                                None,
-                                handle,
-                                format!("[compressed by verified utility selection; full output stored at {handle}]"),
-                            )
-                        }
-                    })
+                        // Jev reviews what this chunk becomes.
+                        SelectionReview::Rebuilt => crate::utility_select::reconstruct(
+                            &units[chunk.clone()],
+                            &kept.iter().map(|index| index - chunk.start).collect::<std::collections::BTreeSet<_>>(),
+                            kind,
+                            None,
+                            handle,
+                            format!("[compressed by verified utility selection; full output stored at {handle}]"),
+                        ),
+                    }))
                 },
             )
             .await
@@ -940,15 +1239,25 @@ pub(super) async fn select_units_with_lane(
                     .unwrap_or(crate::utility_select::ChunkAnswer::Failed)
             }
             None => crate::utility_select::ChunkAnswer::Failed,
-        }
+        };
+        crate::utility_select::selection_memo_put(memo_key, &answer);
+        answer
     }))
     .await;
+    let requests = chunks.len();
+    // The tail is kept whole, as a failed chunk is.
+    answers.extend(tail.iter().map(|_| crate::utility_select::ChunkAnswer::Failed));
+    let chunks: Vec<_> = chunks.into_iter().chain(tail).collect();
     SelectedUnits {
         kept: crate::utility_select::merge(&chunks, &answers, required),
-        chunks: chunks.len(),
+        chunks: requests,
         miss: "defer:all-chunks-failed",
     }
 }
+
+/// Under this percent of a chunk's bytes kept, a selection gets the Jev
+/// review; above it the verbatim selection is used as is.
+const SELECTION_REVIEW_THIN_PERCENT: usize = 10;
 
 /// A finished bash task with the exact command the result reports.
 /// A multi-task item the utility may compress: its output occurs once in the
@@ -1174,17 +1483,16 @@ impl SessionActor {
                 outcome(selected.miss, selected.chunks, bytes);
                 continue;
             };
+            let pointer = self.stored_original_pointer(&handle, &result.output);
             let replacement = crate::utility_select::reconstruct(
                 &units,
                 &kept,
                 kind,
                 None,
                 &handle,
-                format!(
-                    "[compressed by verified utility selection; full output stored at {handle}]"
-                ),
+                format!("[compressed by verified utility selection; {pointer}]"),
             );
-            if replacement.len() * 100 < result.output.len() * 70 {
+            if selection_pays(replacement.len(), appended_bytes(None, &pointer), result.output.len()) {
                 crate::jev::record_item(
                     Lever::ECheapCompress,
                     "compress",
@@ -1208,6 +1516,18 @@ impl SessionActor {
         body
     }
 
+    /// The footer pointer for `handle`, which stores `stored`:
+    /// `ask_stored_output` is named only when the model was given that tool,
+    /// it accepts this path, and it can answer about these lines.
+    fn stored_original_pointer(&self, handle: &str, stored: &str) -> String {
+        stored_original_pointer(
+            handle,
+            self.model_tools_ask_stored_output.get()
+                && crate::stored_output_ask::is_stored_original(handle)
+                && crate::stored_output_ask::answers_by_line(stored),
+        )
+    }
+
     /// Runs the Jev pass over a finished tool result and returns the text the
     /// model will see. See the module docs for the authority rules.
     pub(super) async fn jev_post_process_tool_result(
@@ -1220,6 +1540,19 @@ impl SessionActor {
         output: &distill_tools::types::output::ToolOutput,
         text: String,
     ) -> String {
+        // A read of a stored original is the model asking for the full text a
+        // footer pointed it to; narrowing it again would only point back at
+        // the same store, so it enters history as the tool returned it.
+        if reads_stored_original(tool, tool_command, tool_args, output) {
+            crate::jev::record_item(
+                JevLever::ECheapCompress,
+                "keep:stored-original",
+                &format!("tool_call_id={call_id}"),
+                None,
+                None,
+            );
+            return text;
+        }
         if let Some(compressed) = self.native_compress_tool_output(output, &text).await {
             return compressed;
         }
@@ -1573,18 +1906,10 @@ impl SessionActor {
             output,
             ToolOutput::Bash(_) | ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_)
         ) || tool == "grep";
-        // A session without edit or terminal tools never needs exact file text
-        // for an edit, so its whole-file reads may be narrowed (line numbers kept).
         let read_only_file = match output {
             ToolOutput::ReadFile(distill_tools::types::output::ReadFileOutput::FileContent(
                 file,
-            )) if tool == "read_file"
-                && is_whole_file_read(file)
-                && file.raw_output.len() >= READ_ONLY_COMPRESS_MIN_BYTES
-                && !body.contains("<system-reminder>") =>
-            {
-                Some(file.raw_output.clone())
-            }
+            )) if tool == "read_file" && narrowable_read(file, &body) => Some(file),
             _ => None,
         };
         let cheap_eligible = tool != "search_tool"
@@ -1593,10 +1918,15 @@ impl SessionActor {
                 || mcp_source
                 || subagent_source
                 || read_only_file.is_some())
+            // A document (JSON, HTML, a diff) waits for the exact floor,
+            // except from a shell command: there the floor belongs to true
+            // file dumps, which their exact kind already gives it, and an API
+            // dump or `git diff` is narrowed like any other output.
             && (mcp_source
                 || subagent_source
                 || read_only_file.is_some()
                 || !is_document
+                || matches!(output, ToolOutput::Bash(_) | ToolOutput::TaskOutput(_))
                 || answer_len >= EXACT_COMPRESS_MIN_BYTES)
             && answer_len >= CHEAP_COMPRESS_MIN_BYTES
             && (read_only_file.is_some()
@@ -1642,21 +1972,63 @@ impl SessionActor {
                     );
                     count_outcome("keep:lane-unavailable", 0, answer_len);
                 } else if let Some(utility) = utility {
+                    let exact_kind =
+                        distill_workspace::jev::crushers::exact_output_kind(tool, lane_command);
                     let match_listing =
-                        distill_workspace::jev::crushers::exact_output_kind(tool, lane_command)
-                            == distill_workspace::jev::crushers::ExactKind::Matches;
-                    let question = selection_question(
+                        exact_kind == distill_workspace::jev::crushers::ExactKind::Matches;
+                    // A JSON result with a large array is selected element by
+                    // element (a minified one is a single line); anything
+                    // else, or JSON that does not parse, keeps line units.
+                    let mut json_source = if exact_kind
+                        == distill_workspace::jev::crushers::ExactKind::None
+                        && matches!(source_kind, "mcp" | "shell" | "task_output")
+                    {
+                        json_selection_source(output, &body[..answer_len], call_id).await
+                    } else {
+                        None
+                    };
+                    let intent = CallIntent {
+                        tool,
+                        command: lane_command,
+                        args: tool_args,
+                        preamble: preamble.as_deref(),
+                    };
+                    let mut question = selection_question(
                         output,
                         &request,
-                        source_kind,
+                        if json_source.is_some() { "json" } else { source_kind },
                         match_listing,
-                        &CallIntent {
-                            tool,
-                            command: lane_command,
-                            args: tool_args,
-                            preamble: preamble.as_deref(),
-                        },
+                        &intent,
                     );
+                    // A JSON selection that could not be planned or could not
+                    // pay keeps today's line units, before anything is stored
+                    // or sent.
+                    if let Some(json) = &json_source {
+                        let cap = utility.max_payload_bytes().min(
+                            utility
+                                .max_input_bytes()
+                                .saturating_sub(question.len().saturating_add(512)),
+                        );
+                        if let Err(reason) =
+                            json_selection_viable(&json.json, json.source.len(), cap, answer_len)
+                        {
+                            crate::jev::record_item(
+                                Lever::ECheapCompress,
+                                reason,
+                                "JSON selection falls back to line units",
+                                None,
+                                None,
+                            );
+                            json_source = None;
+                            question = selection_question(
+                                output,
+                                &request,
+                                source_kind,
+                                match_listing,
+                                &intent,
+                            );
+                        }
+                    }
                     // Screened before anything is stored: the web fetch body a
                     // handle would store, and the raw file a read sends.
                     let fetched = match output {
@@ -1670,13 +2042,18 @@ impl SessionActor {
                         &body[..answer_len],
                         question.as_str(),
                         fetched,
-                        read_only_file.as_deref().unwrap_or_default(),
+                        read_only_file.map_or("", |file| file.raw_output.as_str()),
+                        json_source.as_ref().map_or("", |json| json.source.as_str()),
                     ]) {
                         count_outcome("keep:secret", 0, answer_len);
                         break 'utility;
                     }
                     let source_handle = if matches!(output, ToolOutput::WebFetch(_)) {
                         web_fetch_source_handle(output)
+                    } else if let Some(json) = &json_source {
+                        // The full JSON, which may be more than the inline text.
+                        crate::jev_store::store_payload(&json.source)
+                            .map(|path| path.display().to_string())
                     } else {
                         outcome.store_handle.clone().or_else(|| {
                             crate::jev_store::store_payload(&body)
@@ -1690,8 +2067,12 @@ impl SessionActor {
                     let budget = utility
                         .max_input_bytes()
                         .saturating_sub(question.len().saturating_add(512));
-                    let source = match read_only_file.clone() {
-                        Some(raw) => raw,
+                    let source = match read_only_file {
+                        Some(file) => file.raw_output.clone(),
+                        // Its elements are chunked whole; nothing is cut to fit.
+                        None if json_source.is_some() => {
+                            json_source.as_ref().map(|json| json.source.clone()).unwrap_or_default()
+                        }
                         None => {
                             let Some(source) =
                                 compression_source_for_lane(output, &body[..answer_len], budget).await
@@ -1718,14 +2099,34 @@ impl SessionActor {
                     // File lines keep blank lines so unit index + 1 is the line number.
                     let units = if read_only_file.is_some() {
                         source.lines().map(str::to_owned).collect()
+                    } else if let Some(json) = &json_source {
+                        json.json.units.clone()
                     } else {
                         crate::utility_select::build_units(&source, kind, 24 * 1024)
                     };
+                    // A long line of a non-exact source is cut into pieces, so
+                    // part of it can be kept; whole-file reads keep line units.
+                    let (units, joins) = if read_only_file.is_none()
+                        && json_source.is_none()
+                        && kind == crate::utility_select::UnitKind::Lines
+                        && exact_kind == distill_workspace::jev::crushers::ExactKind::None
+                    {
+                        crate::utility_select::split_long_units(
+                            units,
+                            crate::utility_select::LONG_LINE_UNIT_BYTES,
+                        )
+                    } else {
+                        (units, Vec::new())
+                    };
                     let evidence_source =
                         task_output_body_evidence(output).unwrap_or_else(|| source.clone());
+                    // A match listing is lines the model searched for, not a
+                    // run's status: only its result headers are kept (below).
                     let evidence: std::collections::HashSet<String> =
                         if mcp_source
                             || read_only_file.is_some()
+                            || json_source.is_some()
+                            || match_listing
                             || matches!(output, ToolOutput::WebSearch(_) | ToolOutput::WebFetch(_))
                         {
                             std::collections::HashSet::new()
@@ -1734,9 +2135,13 @@ impl SessionActor {
                                 .into_iter()
                                 .collect()
                         };
-                    let mut required =
-                        crate::utility_select::required_command_units(&units, &evidence);
-                    if mcp_source && !required.is_empty() {
+                    let mut required = match &json_source {
+                        Some(json) => json.json.required.clone(),
+                        None => crate::utility_select::required_split_units(&units, &joins, &evidence),
+                    };
+                    // The envelope of a JSON result is always kept.
+                    let envelope_bytes = json_source.as_ref().map_or(0, |json| json.json.envelope_bytes);
+                    if mcp_source && json_source.is_none() && !required.is_empty() {
                         required[0] = true;
                         let last = required.len() - 1;
                         required[last] = true;
@@ -1756,12 +2161,13 @@ impl SessionActor {
                             required[0] = true;
                         }
                     }
-                    let required_bytes: usize = units
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| required[*i])
-                        .map(|(_, u)| u.len())
-                        .sum();
+                    let required_bytes: usize = envelope_bytes
+                        + units
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| required[*i])
+                            .map(|(_, u)| u.len())
+                            .sum::<usize>();
                     if required_bytes * 100 >= source.len().saturating_mul(60) {
                         crate::jev::record_item(
                             Lever::ECheapCompress,
@@ -1803,32 +2209,73 @@ impl SessionActor {
                             }
                         }
                     }
-                    let replacement = if read_only_file.is_some() {
-                        format!(
-                            "{}[compressed by verified utility selection; full output stored at {handle}]",
-                            crate::utility_select::reconstruct_anchored_lines(&units, &kept)
+                    let mut outlined = false;
+                    let metadata = typed_tool_metadata(output);
+                    let pointer = match &json_source {
+                        Some(json) if !crate::stored_output_ask::answers_by_line(&json.source) => {
+                            json_original_pointer(&handle)
+                        }
+                        Some(json) => self.stored_original_pointer(&handle, &json.source),
+                        None => self.stored_original_pointer(&handle, &body),
+                    };
+                    let appended = appended_bytes(metadata.as_deref(), &pointer);
+                    let replacement = if let Some(file) = read_only_file {
+                        let markdown = matches!(
+                            file.absolute_path.extension().and_then(|s| s.to_str()),
+                            Some("md" | "mdx" | "markdown")
+                        );
+                        let Some((kept, outline)) =
+                            read_file_kept_lines(&units, kept, &required, markdown)
+                        else {
+                            crate::jev::record_item(
+                                Lever::ECheapCompress,
+                                "keep:thin-selection",
+                                "read_file selection too thin and no outline to add",
+                                None,
+                                None,
+                            );
+                            count_outcome("keep:thin-selection", selected.chunks, answer_len);
+                            break 'utility;
+                        };
+                        outlined = outline;
+                        read_file_replacement(
+                            &units,
+                            &kept,
+                            file.total_lines,
+                            outline,
+                            &pointer,
                         )
+                    } else if let Some(json) = json_source {
+                        let suffix = json.suffix;
+                        let Some(rebuilt) = crate::utility_select::rebuild_json_array(
+                            json.json,
+                            &kept,
+                            metadata.as_deref(),
+                            &pointer,
+                        ) else {
+                            count_outcome("keep:rebuild-failed", selected.chunks, answer_len);
+                            break 'utility;
+                        };
+                        format!("{rebuilt}{suffix}")
                     } else {
-                        crate::utility_select::reconstruct(
+                        crate::utility_select::reconstruct_joined(
                         &units,
+                        &joins,
                         &kept,
                         kind,
-                        typed_tool_metadata(output).as_deref(),
-                        &handle,
+                        metadata.as_deref(),
                         if match_listing {
                             format!(
-                                "[kept {} of {} match lines by verified utility selection; full output stored at {handle}]",
+                                "[kept {} of {} match lines by verified utility selection; {pointer}]",
                                 kept.len(),
-                                units.len()
+                                units.len(),
                             )
                         } else {
-                            format!(
-                                "[compressed by verified utility selection; full output stored at {handle}]"
-                            )
+                            format!("[compressed by verified utility selection; {pointer}]")
                         },
                         )
                     };
-                    if replacement.len() * 100 < answer_len * 70 {
+                    if selection_pays(replacement.len(), appended, answer_len) {
                         crate::jev::record_item(
                             Lever::ECheapCompress,
                             "compress",
@@ -1836,7 +2283,11 @@ impl SessionActor {
                             None,
                             None,
                         );
-                        count_outcome("compress", selected.chunks, replacement.len());
+                        count_outcome(
+                            if outlined { "compress:outline" } else { "compress" },
+                            selected.chunks,
+                            replacement.len(),
+                        );
                         body = match &subagent_suffix {
                             Some(suffix) => reassemble_subagent(&replacement, suffix),
                             None => replacement,
@@ -2031,8 +2482,13 @@ impl SessionActor {
                         format!("{bytes} bytes; secret-like output was not archived"),
                     )
                 } else if let Some(handle) = crate::jev_store::store_payload(&body) {
+                    let ask = if self.model_tools_ask_stored_output.get() {
+                        " — ask_stored_output with that path answers a question about it"
+                    } else {
+                        ""
+                    };
                     body = format!(
-                        "[large tool output dropped from the context by the local safety check: {bytes} bytes, judged informational only; full output stored at {}; read that file or re-run the command if you need it again]",
+                        "[large tool output dropped from the context by the local safety check: {bytes} bytes, judged informational only; full output stored at {}{ask}; read that file or re-run the command if you need it again]",
                         handle.display()
                     );
                     ("drop", format!("{bytes} bytes; full output stored at {}", handle.display()))
@@ -2668,6 +3124,211 @@ mod tests {
         assert!(rebuilt.starts_with("short\n[compressed; stored at h]\n\n"));
 
         assert!(subagent_suffix_of("answer without footer", &sub).is_none());
+    }
+
+    /// A footer names `ask_stored_output` only when the model can call it, so
+    /// a session without the tool is never sent to one it lacks; read_file
+    /// stays the way to exact text either way.
+    #[test]
+    fn footer_names_ask_stored_output_only_when_the_model_has_it() {
+        assert_eq!(
+            stored_original_pointer("/s/x.txt", false),
+            "full output stored at /s/x.txt"
+        );
+        let with_tool = stored_original_pointer("/s/x.txt", true);
+        assert!(with_tool.starts_with("full output stored at /s/x.txt — ask_stored_output"));
+        assert!(with_tool.ends_with("read_file offset/limit gives exact text"));
+    }
+
+    /// Reading a stored original back is the model asking for the text a
+    /// footer pointed it to; narrowing that read again would loop back to the
+    /// store. An ordinary file of the same content is still a candidate.
+    #[test]
+    fn a_read_of_a_stored_original_is_not_compressed_again() {
+        use distill_tools::types::output::{FileContent, ReadFileOutput};
+
+        let body = "line\n".repeat(4_000);
+        let stored = crate::jev_store::store_payload(&body).expect("store test payload");
+        let workspace = tempfile::NamedTempFile::new().expect("workspace file");
+        std::fs::write(workspace.path(), &body).expect("write workspace file");
+        let read = |path: &std::path::Path| {
+            ToolOutput::ReadFile(ReadFileOutput::FileContent(FileContent {
+                content: body.clone(),
+                content_concise: None,
+                absolute_path: path.to_path_buf(),
+                offset: None,
+                limit: None,
+                raw_output: body.clone(),
+                total_lines: 4_000,
+                extracted_images: Vec::new(),
+            }))
+        };
+        let args = serde_json::json!({});
+        let stored_read = reads_stored_original("read_file", "", &args, &read(&stored));
+        let workspace_read =
+            reads_stored_original("read_file", "", &args, &read(workspace.path()));
+        let cat = format!("cat {}", stored.display());
+        let shell: ToolOutput = serde_json::from_value(serde_json::json!({
+            "type": "Bash", "output": body.as_bytes(),
+            "output_for_prompt": body, "command": cat,
+            "exit_code": 0, "truncated": false, "timed_out": false,
+            "current_dir": "/tmp", "output_file": "", "total_bytes": body.len()
+        }))
+        .expect("typed shell output");
+        let shell_read = reads_stored_original("run_terminal_command", &cat, &args, &shell);
+        let _ = std::fs::remove_file(&stored);
+
+        assert!(stored_read);
+        assert!(!workspace_read);
+        assert!(shell_read);
+    }
+
+    fn file_read(path: &str, raw: &str, total_lines: usize, offset: Option<usize>) -> distill_tools::types::output::FileContent {
+        distill_tools::types::output::FileContent {
+            content: raw.to_owned(),
+            content_concise: None,
+            absolute_path: path.into(),
+            offset,
+            limit: None,
+            raw_output: raw.to_owned(),
+            total_lines,
+            extracted_images: Vec::new(),
+        }
+    }
+
+    /// Skills and agent instructions are procedures to follow; a selection
+    /// asked "what does this step need" cut a 41 KB review skill to its first
+    /// and last lines, and reviewers went on without the procedure.
+    #[test]
+    fn instruction_files_are_never_narrowed() {
+        let raw = "line of instructions\n".repeat(1_000);
+        for path in [
+            "/repo/AGENTS.md",
+            "/repo/CLAUDE.md",
+            "/home/u/.distill/bundled/skills/review/SKILL.md",
+            "/home/u/.claude/skills/deploy/references/steps.md",
+        ] {
+            assert!(!narrowable_read(&file_read(path, &raw, 1_001, None), &raw), "{path}");
+        }
+        assert!(narrowable_read(&file_read("/repo/docs/guide.md", &raw, 1_001, None), &raw));
+    }
+
+    /// A default read of a long file returns its first 1,000 lines: the
+    /// biggest reads were never "whole" and always entered raw. The window
+    /// starts at line 1, so its line numbers are exact and it is eligible; an
+    /// offset read and a small file are not.
+    #[test]
+    fn the_first_window_of_a_long_file_is_narrowable_and_says_it_continues() {
+        let raw = "let value = compute();\n".repeat(1_000);
+        assert!(narrowable_read(&file_read("/repo/src/big.rs", &raw, 5_000, None), &raw));
+        assert!(!narrowable_read(&file_read("/repo/src/big.rs", &raw, 5_000, Some(10)), &raw));
+        let small = "x\n".repeat(100);
+        assert!(!narrowable_read(&file_read("/repo/src/small.rs", &small, 101, None), &small));
+        let with_reminder = format!("{raw}<system-reminder>rules</system-reminder>");
+        assert!(!narrowable_read(&file_read("/repo/src/big.rs", &raw, 5_000, None), &with_reminder));
+
+        let lines: Vec<String> = raw.lines().map(str::to_owned).collect();
+        let kept = [0, 1, 500, 998, 999].into_iter().collect();
+        let window = read_file_replacement(&lines, &kept, 5_000, false, "full output stored at /s/f");
+        assert!(window.contains("[… file continues past line 1000; read_file with offset=1001 for the rest …]"), "{window}");
+        assert!(window.ends_with("[compressed by verified utility selection; full output stored at /s/f]"));
+        let whole = read_file_replacement(&lines, &kept, 1_001, false, "full output stored at /s/f");
+        assert!(!whole.contains("file continues"), "a whole file does not claim more lines");
+    }
+
+    fn rust_file() -> Vec<String> {
+        let mut lines = vec!["use std::fmt;".to_owned(), String::new()];
+        for i in 0..40 {
+            lines.push(format!("pub(crate) fn helper_{i}(value: usize) -> usize {{"));
+            lines.extend((0..8).map(|j| format!("    let step_{j} = value * {j} + {i};")));
+            lines.push("    value".to_owned());
+            lines.push("}".to_owned());
+        }
+        lines
+    }
+
+    /// NONE used to leave the first and last lines only, and half of those
+    /// reads were read again. The outline goes in instead: every declaration
+    /// verbatim with its line number, and each body an omitted range with an
+    /// offset/limit hint, so the follow-up can be a narrow read.
+    #[test]
+    fn a_none_read_selection_keeps_the_outline_with_line_numbers() {
+        let lines = rust_file();
+        let required = crate::utility_select::required_split_units(&lines, &[], &Default::default());
+        let none: std::collections::BTreeSet<usize> =
+            (0..lines.len()).filter(|i| required[*i]).collect();
+        let (kept, outline) = read_file_kept_lines(&lines, none, &required, false).expect("outline added");
+        assert!(outline);
+        let text = read_file_replacement(&lines, &kept, lines.len() + 1, outline, "full output stored at /s/f");
+        assert!(text.starts_with("1→use std::fmt;\n"), "{text}");
+        assert!(text.contains("3→pub(crate) fn helper_0(value: usize) -> usize {\n"), "{text}");
+        assert!(text.contains("14→pub(crate) fn helper_1(value: usize) -> usize {\n"), "{text}");
+        assert!(text.contains("[… lines 4-13 omitted; re-read with offset/limit …]"), "{text}");
+        assert_eq!(text.matches("fn helper_").count(), 40, "every declaration is listed");
+        assert!(!text.contains("let step_"), "bodies stay out");
+        assert!(text.contains("the outline (heading or declaration lines) was added"));
+    }
+
+    /// A thin pick (under 10% of the bytes) also gains the outline, and keeps
+    /// what the utility picked.
+    #[test]
+    fn a_thin_read_selection_keeps_its_picks_and_gains_the_outline() {
+        let lines = rust_file();
+        let required = crate::utility_select::required_split_units(&lines, &[], &Default::default());
+        let mut thin: std::collections::BTreeSet<usize> =
+            (0..lines.len()).filter(|i| required[*i]).collect();
+        thin.insert(20);
+        let (kept, outline) = read_file_kept_lines(&lines, thin, &required, false).expect("outline added");
+        assert!(outline && kept.contains(&20) && kept.contains(&2));
+    }
+
+    /// Whether a thin selection is used must not depend on whether the
+    /// utility happened to pick the declaration lines itself: the result is
+    /// the same outlined text either way.
+    #[test]
+    fn a_thin_read_selection_that_already_holds_the_outline_is_used() {
+        // Long bodies, so the declarations stay under the thin bar.
+        let mut lines = vec!["use std::fmt;".to_owned(), String::new()];
+        for i in 0..20 {
+            lines.push(format!("pub(crate) fn helper_{i}(value: usize) -> usize {{"));
+            lines.extend((0..40).map(|j| format!("    let step_{j} = value * {j} + {i};")));
+            lines.push("}".to_owned());
+        }
+        let required = crate::utility_select::required_split_units(&lines, &[], &Default::default());
+        let outline = crate::utility_select::outline_lines(&lines, false);
+        assert!(!outline.is_empty());
+        let mut thin: std::collections::BTreeSet<usize> =
+            (0..lines.len()).filter(|i| required[*i]).collect();
+        thin.extend(outline.iter().copied());
+        thin.insert(20);
+        let (kept, with_outline) =
+            read_file_kept_lines(&lines, thin.clone(), &required, false).expect("used");
+        assert!(with_outline);
+        assert_eq!(kept, thin);
+    }
+
+    /// A substantial selection is the utility's answer and is used as is.
+    #[test]
+    fn a_substantial_read_selection_is_not_padded() {
+        let lines = rust_file();
+        let required = crate::utility_select::required_split_units(&lines, &[], &Default::default());
+        let picked: std::collections::BTreeSet<usize> =
+            (0..lines.len()).filter(|i| required[*i] || (100..200).contains(i)).collect();
+        let (kept, outline) =
+            read_file_kept_lines(&lines, picked.clone(), &required, false).expect("used");
+        assert!(!outline);
+        assert_eq!(kept, picked);
+    }
+
+    /// A thin selection of a file with no outline would only keep its first
+    /// and last lines; the original stays instead (today's bytes, no re-read).
+    #[test]
+    fn a_thin_read_selection_without_an_outline_keeps_the_original() {
+        let lines: Vec<String> = (0..500).map(|i| format!("plain note number {i} about the release")).collect();
+        let required = crate::utility_select::required_split_units(&lines, &[], &Default::default());
+        let none: std::collections::BTreeSet<usize> =
+            (0..lines.len()).filter(|i| required[*i]).collect();
+        assert!(read_file_kept_lines(&lines, none, &required, true).is_none());
     }
 
     #[test]
@@ -3795,6 +4456,226 @@ mod tests {
             .await;
     }
 
+    /// The selection reads the full output `mcp_truncate` saved, not the 20 KB
+    /// head, but only the file named for this call whose bytes start with the
+    /// head: a note naming any other file is ignored.
+    #[tokio::test]
+    async fn the_saved_full_mcp_output_is_used_only_when_it_is_this_calls_file() {
+        let dir = tempfile::tempdir().expect("session folder");
+        let mcp = dir.path().join("mcp");
+        std::fs::create_dir_all(&mcp).expect("mcp dir");
+        let full = format!("{{\"elements\":[{}]}}", vec!["{\"ref\":\"r\"}"; 50].join(","));
+        let path = mcp.join("call_7.json");
+        std::fs::write(&path, &full).expect("saved output");
+        let inline = |head: &str, path: &std::path::Path| {
+            format!(
+                "{head}\n\n[MCP output truncated: showing first 20 bytes of 1 KB. Full output written to: {}. The full output is valid JSON with a very long line]",
+                path.display()
+            )
+        };
+        let text = inline(&full[..20], &path);
+        assert_eq!(mcp_saved_full_output(&text, "call_7").await.as_deref(), Some(full.as_str()));
+        assert!(mcp_saved_full_output(&text, "call_8").await.is_none(), "another call's file");
+        assert!(mcp_saved_full_output(&inline("{\"other\":1}", &path), "call_7").await.is_none());
+        let elsewhere = dir.path().join("call_7.json");
+        std::fs::write(&elsewhere, &full).expect("stray file");
+        assert!(mcp_saved_full_output(&inline(&full[..20], &elsewhere), "call_7").await.is_none());
+        assert!(mcp_saved_full_output(&full, "call_7").await.is_none(), "no note, no file");
+    }
+
+    /// A cut MCP result is selected from its full JSON but replaces only the
+    /// inline head: when what every answer keeps (envelope, forced elements,
+    /// the tail past eight chunks) already misses the 70% bar against that
+    /// head, no utility call is paid for and the line path runs instead. An
+    /// element too large for a chunk falls back the same way, so pretty JSON
+    /// the line path used to narrow is still narrowed.
+    #[test]
+    fn a_json_selection_that_cannot_plan_or_pay_keeps_line_units() {
+        let elements: Vec<String> = (0..3_000)
+            .map(|i| format!(r#"{{"ref":"e{i}","name":"{}"}}"#, "n".repeat(80)))
+            .collect();
+        let full = format!(r#"{{"elements":[{}]}}"#, elements.join(","));
+        let json = crate::utility_select::json_array_units(&full).expect("an array");
+        let cap = 24 * 1024;
+        assert_eq!(json_selection_viable(&json, full.len(), cap, 20_000), Err("defer:cannot-pay"));
+        assert_eq!(json_selection_viable(&json, full.len(), cap, full.len()), Ok(()));
+
+        let big: Vec<String> = (0..10)
+            .map(|i| format!(r#"{{"id":{i},"body":"{}"}}"#, "b".repeat(30_000)))
+            .collect();
+        let big = format!(r#"{{"items":[{}]}}"#, big.join(",\n"));
+        let json = crate::utility_select::json_array_units(&big).expect("an array");
+        assert_eq!(
+            json_selection_viable(&json, big.len(), cap, big.len()),
+            Err("defer:unit-too-large")
+        );
+    }
+
+    /// A minified JSON original is one line: the footer sends the model to a
+    /// JSON query, never to the line tools that cannot narrow it.
+    #[test]
+    fn a_single_line_json_original_points_at_a_json_query() {
+        let pointer = json_original_pointer("/s/x.txt");
+        assert!(pointer.starts_with("full output stored at /s/x.txt"));
+        assert!(pointer.contains("jq"));
+        assert!(!pointer.contains("ask_stored_output with that path"));
+    }
+
+    /// A one-line browser snapshot used to enter main whole (all its units
+    /// were forced). With a utility answer it enters as valid JSON holding the
+    /// envelope and the chosen elements, with the full output stored; when
+    /// the utility fails it enters exactly as before.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_one_line_mcp_snapshot_keeps_the_chosen_elements_and_fails_open() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_tools::types::output::MCPOutput;
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "snapshot-select",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "U4"}
+                            }],
+                            "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                        }),
+                    ),
+                );
+                // An answer that names no unit is a failed selection.
+                for _ in 0..3 {
+                    server.enqueue_response(
+                        "/v1/chat/completions",
+                        ScriptedResponse::json(
+                            200,
+                            serde_json::json!({
+                                "id": "snapshot-unparseable",
+                                "model": "utility-model",
+                                "choices": [{
+                                    "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": "the search box, probably"}
+                                }],
+                                "usage": {"prompt_tokens": 17, "completion_tokens": 5}
+                            }),
+                        ),
+                    );
+                }
+                crate::jev::set_test_flags(telemetry_flags());
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                set_utility_review_choices(&["accept"]);
+
+                let mut elements: Vec<serde_json::Value> = (0..60)
+                    .map(|i| serde_json::json!({
+                        "name": format!("Navigation link number {i} with a long label"),
+                        "ref": format!("tab.{i}"),
+                        "role": "a",
+                        "value": "",
+                    }))
+                    .collect();
+                elements[40]["role"] = "input".into();
+                let source = serde_json::json!({
+                    "elements": elements,
+                    "title": "Inbox",
+                    "url": "https://example.com/inbox",
+                })
+                .to_string();
+                assert_eq!(source.lines().count(), 1);
+                assert!(source.len() >= CHEAP_COMPRESS_MIN_BYTES);
+                let output = ToolOutput::MCP(MCPOutput::okay_output(
+                    "browser_snapshot".to_owned(),
+                    "mac-use".to_owned(),
+                    source.clone(),
+                ));
+                let args = serde_json::json!({"tool_name": "mac-use__browser_snapshot", "tool_input": {}});
+                let run = |call: &'static str| {
+                    crate::jev::with_session_scope_and_recorder(
+                        "mcp-snapshot",
+                        Some(actor.chat_state_handle.clone()),
+                        actor.jev_post_process_tool_result(
+                            "use_tool",
+                            "",
+                            &args,
+                            call,
+                            Some("mac-use__browser_snapshot"),
+                            &output,
+                            source.clone(),
+                        ),
+                    )
+                };
+                let selected = run("call-snapshot-1").await;
+                // Other call arguments make another question, so the answer
+                // the first call paid for is not reused.
+                let retry_args =
+                    serde_json::json!({"tool_name": "mac-use__browser_snapshot", "tool_input": {"depth": 2}});
+                let failed = crate::jev::with_session_scope_and_recorder(
+                    "mcp-snapshot",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "use_tool",
+                        "",
+                        &retry_args,
+                        "call-snapshot-2",
+                        Some("mac-use__browser_snapshot"),
+                        &output,
+                        source.clone(),
+                    ),
+                )
+                .await;
+                crate::jev::clear_test_flags();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                let (json, footer) = selected.split_once('\n').expect("excerpt then footer");
+                let value: serde_json::Value =
+                    serde_json::from_str(json).expect("the excerpt is valid JSON");
+                assert_eq!(value["url"], "https://example.com/inbox");
+                let refs: Vec<&str> = value["elements"]
+                    .as_array()
+                    .expect("elements kept as an array")
+                    .iter()
+                    .filter_map(|element| element["ref"].as_str())
+                    .collect();
+                assert_eq!(refs, ["tab.3", "tab.40"], "the chosen element and the input");
+                assert!(footer.contains("kept 2 of 60 `elements` elements"), "{footer}");
+                let stored = footer
+                    .split("full output stored at ")
+                    .nth(1)
+                    .and_then(|rest| rest.split([']', ' ']).next())
+                    .expect("footer names the stored original");
+                assert_eq!(std::fs::read_to_string(stored).ok().as_deref(), Some(source.as_str()));
+                assert_eq!(failed, source, "an unparseable utility answer keeps today's bytes");
+            })
+            .await;
+    }
+
     /// Ids the harness mints (UUIDv7 subagent and task ids), absolute paths,
     /// test-binary paths and git SHAs are ordinary heavy output: treating them
     /// as secrets would keep every subagent answer, task output and `cd /abs
@@ -4064,5 +4945,215 @@ mod tests {
         assert!(!compression_allows_exact(Exact, 7_999));
         assert!(compression_allows_exact(Exact, 8_000));
         assert!(compression_allows_exact(None, 0));
+    }
+
+    /// The 70% bar is about what the main model reads of the output: the
+    /// recovery footer and metadata are a fixed cost that must not turn a
+    /// good cut into "not shorter", but the whole replacement still has to
+    /// be smaller than the original or nothing is saved.
+    #[test]
+    fn the_seventy_percent_bar_measures_the_kept_body() {
+        // 6,900 kept of 10,000 with a 400-byte footer: the body passes.
+        assert!(selection_pays(7_300, 400, 10_000));
+        // The same replacement measured whole would have failed the bar.
+        assert!(7_300 * 100 >= 10_000 * 70);
+        assert!(!selection_pays(7_400, 400, 10_000), "a 7,000-byte body is not under 70%");
+        assert!(!selection_pays(4_100, 3_000, 4_000), "never longer than the original");
+        let metadata = "exit: 2";
+        assert_eq!(
+            appended_bytes(Some(metadata), "full output stored at /x"),
+            "[tool metadata]\nexit: 2\n".len() + "full output stored at /x".len()
+        );
+    }
+
+    /// A narrowed shell result does not repeat its command (it is in the call's
+    /// arguments) or default fields; what the kept lines cannot show stays.
+    #[test]
+    fn shell_metadata_keeps_only_what_is_not_the_default() {
+        use distill_tools::types::output::{BashOutput, ToolOutput};
+        let bash = |exit_code: i32, truncated: bool| {
+            ToolOutput::Bash(BashOutput {
+                output: Vec::new(),
+                output_for_prompt: String::new(),
+                exit_code,
+                command: "cargo test --lib 2>&1 | tail -80".to_owned(),
+                truncated,
+                signal: None,
+                timed_out: false,
+                description: None,
+                current_dir: "/tmp".to_owned(),
+                output_file: "/tmp/terminal.log".to_owned(),
+                total_bytes: 0,
+                output_delta: None,
+                was_bare_echo: false,
+            })
+        };
+        assert_eq!(typed_tool_metadata(&bash(0, false)), None);
+        let failed = typed_tool_metadata(&bash(101, true)).expect("a failure is metadata");
+        assert!(failed.contains("exit: 101"), "{failed}");
+        assert!(failed.contains("output_file: /tmp/terminal.log"), "{failed}");
+        assert!(!failed.contains("cargo test"), "the command is in the call: {failed}");
+
+        // A task result keeps the ids a follow-up needs.
+        let task = distill_tool_types::TaskOutputResult {
+            task_id: "t-1".to_owned(),
+            command: "npm run build".to_owned(),
+            status: "completed".to_owned(),
+            exit_code: Some(0),
+            output_file: "/tmp/t-1.log".to_owned(),
+            ..Default::default()
+        };
+        let metadata = task_output_result_metadata(&task);
+        for kept in ["task_id: t-1", "command: npm run build", "output_file: /tmp/t-1.log"] {
+            assert!(metadata.contains(kept), "{metadata}");
+        }
+        assert!(!metadata.contains("truncat"), "{metadata}");
+    }
+
+    /// A utility lane on a mock endpoint that answers `answers` in order.
+    async fn answering_lane(
+        answers: &[&str],
+    ) -> (distill_test_support::MockInferenceServer, crate::jev_cheap::CheapLane) {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start utility stub");
+        for answer in answers {
+            server.enqueue_response(
+                "/v1/chat/completions",
+                ScriptedResponse::json(
+                    200,
+                    serde_json::json!({
+                        "id": "utility-answer",
+                        "model": "utility-model",
+                        "choices": [{
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": answer}
+                        }],
+                        "usage": {"prompt_tokens": 40, "completion_tokens": 4}
+                    }),
+                ),
+            );
+        }
+        let client = distill_workspace::jev::cheap::CheapClient::with_key_resolver(
+            distill_workspace::jev::cheap::CheapConfig {
+                base_url: server.url(),
+                model: "utility-model".to_owned(),
+                ..Default::default()
+            },
+            std::sync::Arc::new(|_| Some("utility-test-key".to_owned())),
+        )
+        .expect("build utility client");
+        let lane = crate::jev_cheap::CheapLane {
+            transport: crate::jev_cheap::UtilityTransport::Closed(client),
+            slug: "utility-model".to_owned(),
+        };
+        (server, lane)
+    }
+
+    fn lines_selection<'a>(units: &'a [String], required: &'a [bool], question: &'a str) -> UnitSelection<'a> {
+        UnitSelection {
+            units,
+            required,
+            kind: crate::utility_select::UnitKind::Lines,
+            question,
+            source_kind: "shell",
+            handle: "/tmp/stored-original",
+            cap: 16 * 1024,
+            review: SelectionReview::Rebuilt,
+            attribute_to_prompt: false,
+        }
+    }
+
+    /// The Jev review cost more than the selection and almost never vetoed:
+    /// a verbatim selection over a stored original is used unreviewed, and
+    /// only a thin cut (under 10% of the chunk) is reviewed, where a veto
+    /// still keeps the original.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn only_a_thin_selection_pays_for_the_jev_review() {
+        crate::jev::set_test_flags(telemetry_flags());
+        let units: Vec<String> = (0..40).map(|i| format!("build step {i} finished")).collect();
+        let required = vec![false; units.len()];
+        let (_server, lane) = answering_lane(&["U3-U30"]).await;
+        set_utility_review_choices(&["reject"]);
+        let moderate =
+            select_units_with_lane(&lane, &lines_selection(&units, &required, "which steps ran")).await;
+        assert_eq!(moderate.kept.map(|kept| kept.len()), Some(28), "the selection is used");
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 1, "no review was asked");
+
+        let units: Vec<String> =
+            (0..200).map(|i| format!("progress line {i} of the long build")).collect();
+        let required = vec![false; units.len()];
+        let (_server, lane) = answering_lane(&["U5"]).await;
+        let thin =
+            select_units_with_lane(&lane, &lines_selection(&units, &required, "which line failed")).await;
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 0, "the thin cut was reviewed");
+        assert!(thin.kept.is_none(), "a veto keeps the original");
+        crate::jev::clear_test_decision_answers();
+        crate::jev::clear_test_flags();
+    }
+
+    /// Identical units and question from the same model are selected once per
+    /// process; a different question is a new selection.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn the_same_selection_is_paid_for_once() {
+        crate::jev::set_test_flags(telemetry_flags());
+        let units: Vec<String> = (0..40).map(|i| format!("skill section {i} text")).collect();
+        let required = vec![false; units.len()];
+        let (server, lane) = answering_lane(&["U1-U20", "U21-U30"]).await;
+        let first = select_units_with_lane(&lane, &lines_selection(&units, &required, "the setup steps")).await;
+        let again = select_units_with_lane(&lane, &lines_selection(&units, &required, "the setup steps")).await;
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+        assert_eq!(first.kept, again.kept);
+        assert_eq!(first.kept.map(|kept| kept.len()), Some(20));
+        let other = select_units_with_lane(&lane, &lines_selection(&units, &required, "the teardown steps")).await;
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 2);
+        assert_eq!(other.kept.map(|kept| kept.len()), Some(10));
+        crate::jev::clear_test_flags();
+    }
+
+    /// The lane permit covers the utility generation only: a Jev review in
+    /// progress does not hold up the next tool result's utility call (a local
+    /// endpoint has a single permit).
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_pending_review_does_not_hold_the_utility_lane() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(telemetry_flags());
+                set_utility_review_choices(&["accept"]);
+                let (_thin_server, thin_lane) = answering_lane(&["U5"]).await;
+                let (_server, lane) = answering_lane(&["U3-U30"]).await;
+                let (entered, release) = crate::jev_cheap::begin_test_post_review_pause();
+                let entered_wait = entered.notified();
+                let reviewed = tokio::task::spawn_local(async move {
+                    let units: Vec<String> =
+                        (0..200).map(|i| format!("progress line {i} of the long build")).collect();
+                    let required = vec![false; units.len()];
+                    select_units_with_lane(&thin_lane, &lines_selection(&units, &required, "which line failed"))
+                        .await
+                        .kept
+                });
+                entered_wait.await;
+                let units: Vec<String> = (0..40).map(|i| format!("build step {i} finished")).collect();
+                let required = vec![false; units.len()];
+                let next = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    select_units_with_lane(&lane, &lines_selection(&units, &required, "which steps ran")),
+                )
+                .await
+                .expect("the lane is free while the review waits");
+                assert!(next.kept.is_some());
+                release.notify_one();
+                assert!(reviewed.await.expect("review task").is_some());
+                crate::jev_cheap::clear_test_post_review_pause();
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_flags();
+            })
+            .await;
     }
 }

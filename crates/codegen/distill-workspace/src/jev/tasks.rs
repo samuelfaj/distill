@@ -50,7 +50,8 @@ pub enum Guard {
     /// The answer must consist of quoted evidence, with every quoted span a
     /// substring of the payload.
     Spans,
-    /// The answer must be short display text.
+    /// The answer must be non-empty display text (NONE included); its line and
+    /// length contract belongs to the consumer.
     DisplayText,
 }
 
@@ -313,6 +314,10 @@ pub fn task_for_payload(
 /// kind needs, and the guard is what must pass before the answer is used.
 pub const SELECT_UNITS_TASK: &str = "select_units";
 pub const DISPLAY_TEXT_TASK: &str = "display_text";
+/// A unit-id answer is short (p95 under 100 tokens, ranges accepted), while
+/// an answer that turned into prose ran to the 1024-token ceiling and was
+/// rejected anyway: this ceiling stops such an answer early.
+pub const SELECT_UNITS_MAX_COMPLETION_TOKENS: u32 = 256;
 
 pub const TASKS: &[TaskSpec] = &[
     TaskSpec { id: "display_text", kind: Kind::Digest, guard: Guard::DisplayText,
@@ -536,6 +541,9 @@ pub fn task_for(spec: &TaskSpec, payload: &str, question: &str) -> CheapTask {
         let ceiling = (payload.len() / 2).max(512);
         task = task.with_max_answer_chars(ceiling);
     }
+    if spec.id == SELECT_UNITS_TASK {
+        task = task.with_max_completion_tokens(SELECT_UNITS_MAX_COMPLETION_TOKENS);
+    }
     task
 }
 
@@ -607,7 +615,9 @@ pub fn gate(
 ) -> Result<String, Rejected> {
     let trimmed = answer.trim();
     if trimmed.eq_ignore_ascii_case("none") {
-        return if spec.id == SELECT_UNITS_TASK {
+        // For unit selection and display text NONE is an answer ("nothing to
+        // keep", "nothing to show"); the consumer decides whether it can use it.
+        return if spec.id == SELECT_UNITS_TASK || spec.id == DISPLAY_TEXT_TASK {
             Ok("NONE".to_owned())
         } else {
             Err(Rejected::Nothing)
@@ -635,7 +645,9 @@ pub fn gate(
                 }
                 cleaned = cleaned[first.len_utf8()..cleaned.len() - last.len_utf8()].trim();
             }
-            if cleaned.is_empty() || cleaned.contains(['\n', '\r']) {
+            // Line breaks are the consumer's call: a title must be one line,
+            // a recap paragraph joins its lines.
+            if cleaned.is_empty() {
                 return Err(Rejected::NoEvidence);
             }
             return Ok(cleaned.to_owned());
@@ -1024,12 +1036,23 @@ mod tests {
             gate(display, "payload", "`short title`", &[], &[]).unwrap(),
             "short title"
         );
-        for answer in ["", "a\nb"] {
-            assert_eq!(
-                gate(display, "payload", answer, &[], &[]),
-                Err(Rejected::NoEvidence)
-            );
-        }
+        assert_eq!(
+            gate(display, "payload", "", &[], &[]),
+            Err(Rejected::NoEvidence)
+        );
+    }
+
+    /// A recap paragraph arrives over several lines and a suggestion may be
+    /// NONE: both reach the consumer, which owns the line contract and decides
+    /// that NONE means "show nothing" instead of "ask a paid model".
+    #[test]
+    fn display_text_gate_leaves_lines_and_none_to_the_consumer() {
+        let display = spec(DISPLAY_TEXT_TASK).unwrap();
+        assert_eq!(
+            gate(display, "payload", "We fixed it.\nTests pass.", &[], &[]).unwrap(),
+            "We fixed it.\nTests pass."
+        );
+        assert_eq!(gate(display, "payload", " none ", &[], &[]).unwrap(), "NONE");
     }
 
     #[test]

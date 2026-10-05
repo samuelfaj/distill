@@ -78,14 +78,28 @@ what was asked for, so the pipeline leaves before any rewriting stage.
 - the dumper and matcher family: `rg`, `grep`, `egrep`, `fgrep`, `ag`, `ugrep`,
   `sed`, `awk`, `gawk`, `nawk`, `cut`, `tr`, `paste`, `cat`, `bat`, `head`,
   `tail`, `nl`, `tac`, `diff`, `cmp`, `od`, `hexdump`, `xxd`, `base64`, `jq`,
-  `yq`, wherever the program sits in a pipeline;
-- Git's own dumpers: `git grep`, `git show`, `git cat-file`, `git blame`;
+  `yq`, in command position: the first word of a pipeline stage after env
+  assignments and `sudo`/`time`/`xargs`/`parallel`/`bash -c` wrappers. A
+  runner counts as what it runs: `ssh HOST …`, `watch …`, `docker|podman
+  exec`, `kubectl exec … --`, `find -exec` and `fd -x`. Words in quotes,
+  substitutions and heredoc bodies are not programs, a quoted `>` is not a
+  redirection, and a stage whose stdout goes to a file does not count. A
+  command that does not parse, or holds a `case`, falls back to matching every
+  word;
+- Git's own dumpers: `git grep`, `git show`, `git cat-file`, `git blame`
+  (`git diff` is git, not `diff`: a document);
 - the exact-output tools: `grep`, `read_file`, `read`;
 - text that belongs to a skill, matched by a `/skills/` path or a `SKILL.md`
   name, because skill bodies stay verbatim whichever tool read them.
 
 A payload that hits this guard passes through byte for byte, and the decision
-record says `keep` with the reason.
+record says `keep` with the reason. `exact_output_kind` grades it by the stage
+that produced the bytes: a file dump (`cat`, `sed -n`, `git show`, a transform
+run on a file) is `Exact`; a grep-like producer or a positive `| grep` filter
+is `Matches`; `head`/`tail`, or any filter over another command's own output
+(`| grep -v`, `| jq`, `| sed`), is `Window`. A compound command takes the most
+exact of its parts, so `cd x && git diff | head -120` is a `Window` and
+`cmd; cat f` stays `Exact`.
 
 ## Preclean
 
@@ -188,17 +202,32 @@ The harness labels source units `[U12]`; utility returns IDs or ranges, and the
 harness copies those original units. It does not use generated replacement
 prose. Except for `search_tool`, the harness always retains the first two and
 last two units; terminal,
-task, grep and subagent output also keep error, failure and summary lines, grep
-listings their result headers, and web search its citation paragraphs. The
+task and subagent output also keep diagnostic lines (failure words such as
+`error`/`failed`/`panicked`, `TypeError:`-style labels, pytest `E` lines, TAP
+`not ok`, timeout, exit and not-found phrases, test summaries), grep listings
+only their result headers, and web search its citation paragraphs. Common words
+such as `not`, `run`, `out`, `expected` or `todo` are not markers. The
 question names only what that source forces. It also carries the call (tool
 name and bounded arguments, such as `target_file`, the grep pattern or the
 `search_tool` query) and the last 300 bytes of the assistant text that made the
 call, JSON-quoted as data; the session request follows as secondary context,
 and the whole stays within the 2 KiB question bound. Input is split into chunks
-of at most 24 KiB, with at most eight chunks. A replacement is accepted only
-when it is under 70% of the original; a `search_tool` result only needs to drop
-one whole tool and come out shorter. The original is always stored, and the footer
-names its stored path. A source or question that `utility_secret_presence` flags never
+of at most 24 KiB, with at most eight chunks; past eight, the head is selected
+and the rest kept whole when that tail is under half the bytes
+(`partial:verbatim-tail`). A replacement is accepted only when its kept body,
+without the metadata block and the recovery pointer, is under 70% of the
+original and the whole replacement is shorter; a `search_tool` result only needs
+to drop one whole tool and come out shorter. A compressed shell result repeats
+no command and only non-default metadata (a non-zero exit, a signal, a timeout,
+truncation with the terminal log); a task result keeps its task id, command,
+status, exit code and output file. A chunk answer is remembered per process by
+endpoint, model, source kind and the hashes of the chunk and question, so the
+same selection is paid for once (`memo`); a failed chunk is not remembered.
+On the closed client with reasoning off, a unit-id answer is capped at 256
+completion tokens, so an answer that turns into prose stops early. The original
+is always stored, and the footer names its stored path; when the model has `ask_stored_output`, the footer names
+that tool too, unless the original has a line over 4 KiB (a single-line JSON
+original points at jq instead). A source or question that `utility_secret_presence` flags never
 goes to the utility and is not stored: it keeps today's bytes (`keep:secret`).
 The screen checks only what is sent, so it does not check a subagent's resume
 footer. It flags key prefixes at a word start, private-key and bearer headers,
@@ -208,30 +237,72 @@ prepass applies the screen before it spends its chunk budget.
 `ask_stored_output` applies the same screen and tells the model to read the
 file directly.
 
+`ask_stored_output` takes a stored path (a store file or a session terminal log)
+and a question. The utility picks `[U#]` line ids with `select_units` over at
+most eight 24 KiB chunks, and the harness copies the picked lines verbatim with
+their line numbers, so there is no quoting contract to fail. An answer stops
+at 16 KiB of picked lines and says where the rest starts. `NONE` is reported
+as "no line answers". A file too large for eight chunks is narrowed to the lines
+holding the question's literal terms (quoted spans, paths, identifiers). With no
+lane, a failed call or an unusable answer, the model gets the old "read the file
+directly" message, plus the lines matching those terms (`grep_handle`, at most 40
+lines). A read of a stored original by `read_file`, a shell command or a grep
+path is never compressed again.
+
 The utility handles these sources:
 
-- Terminal output and task output at 4,000 bytes or more. `head` and `tail`
-  windows count; exact-output commands such as `sed`, `cat`, `jq` and `git show`
-  stay untouched.
+- Terminal output and task output at 4,000 bytes or more, documents (JSON, a
+  diff) included. Windows and filters over a command's own output count at
+  4,000 bytes, matches at 12,000, and file dumps such as `sed -n`, `cat` and
+  `git show` at 8,000.
 - Grep listings at 12,000 bytes or more. Their footer says `kept K of M match
   lines`.
 - Web search, and web fetch of any content type, using the full source.
 - MCP results at 4,000 bytes or more; file readers are excluded.
 - `search_tool`, where selected tool schemas remain JSON.
-- Whole-file `read_file` in read-only sessions at 16,000 bytes or more; line
-  numbers remain intact.
+- JSON results (MCP, or a non-exact shell or task body) with an array of 8 or
+  more elements: each element of the largest array is a unit, the other fields
+  and focused or input elements always stay, and the kept elements come back as
+  valid JSON with a `kept K of N … omitted` footer. An MCP result cut at 20 KB
+  is selected from the full output `mcp_truncate` saved for that call, and that
+  full output is what gets stored. JSON that does not parse, has a number that
+  would not survive re-serialising, or whose plan defers (an element over a
+  chunk, forced bytes over 60%, or what every answer keeps already over 70% of
+  the result as it stands) keeps line units, before anything is stored or sent.
+- In non-exact line sources, a line over 1 KiB is cut into byte-exact pieces, so
+  part of a minified line can be kept; the gap is marked `[… N bytes omitted …]`.
+- `read_file` from line 1 (the whole file, or the first 1,000-line window of a
+  longer one) at 16,000 bytes or more; line numbers remain intact, and a window
+  says where the file continues. AGENTS.md, SKILL.md, CLAUDE.md and files in a
+  `skills` directory are never narrowed. A selection that is `NONE` or under 10%
+  of the bytes gains the file's outline (Markdown headings, or declaration lines
+  by `is_signature_line`) verbatim with line numbers (`compress:outline`); a
+  file with no outline keeps the original (`keep:thin-selection`).
 - Memory capture: tool results of 4,000 bytes or more in the finished turn,
   at most 8 chunks per capture, skipped when the session model is the utility
   model. The extraction itself stays on the main model.
 
-There is no Jev pre-approval and no main-model fallback. Jev post-review reads
-the reconstructed text. It is skipped for `NONE` and over-size state. If Jev
-returns no answer, the verified candidate remains. Only a `reject` at
+There is no Jev pre-approval and no main-model fallback. A tool-result or
+memory-capture selection keeps verbatim units over a stored original, so it is
+used without a Jev review (`review:skip-verbatim`) unless it keeps under 10% of
+the chunk; then Jev post-review reads the reconstructed text. Other
+`select_units` answers (`ask_stored_output`, display picks) keep the review. The review is skipped for `NONE` and over-size
+state, and runs after the lane permit is released. If Jev returns no answer,
+the verified candidate remains. Only a `reject` at
 confidence 0.70 or higher discards the candidate; `defer` or a less confident
 `reject` keeps it.
 
 The utility can also write display text: initial title, shell autocomplete,
-prompt suggestion and recap. Each falls back to the old path.
+prompt suggestion and recap. Each falls back to the old path when the utility
+fails. The recap reads the newest 20 KB of the transcript, joins a multi-line
+answer into one paragraph and cuts it at a whole sentence, and retries an
+unusable answer once with a stricter instruction before the main-model recap;
+a lane that gave no answer is not retried. A utility `NONE` for a
+prompt suggestion is final: nothing is shown and no paid model is asked. The
+paid suggestion model keeps its own provider. When the utility title fails, the
+request's first words are the title, and the title model (at its lowest effort)
+runs only when those make no title. A subagent's title is its spawn
+description, with no model call.
 
 Utility usage rows carry `reason`, `bytes_in` and `bytes_out`. The end-of-turn
 report shows `Utility - Nx`.
@@ -342,11 +413,14 @@ Five levers stay off by default, each for a stated reason:
 Honesty about the rest. These transforms exist, have tests and a class each, and
 nothing on the live path invokes them:
 
-- `source_skeleton` (signatures without bodies), `crush_svg`,
-  `generated_asset_notice` and `crush_embedded_blobs` are genuinely lossy: they
-  need the original stored before they run, and the only stage that stores today
-  is the importance pass. They belong to a future stage that stores first, then
-  applies.
+- `source_skeleton` (signatures without bodies) and `generated_asset_notice`
+  are genuinely lossy. (Only `source_skeleton`'s line test, `is_signature_line`,
+  is live: it builds the outline of a thin `read_file` selection.) `generated_asset_notice` replaces the whole output, its
+  `minified` test matches every one-line JSON or HTML result, and its `binary`
+  test counts any non-ASCII character, so it stays unwired. (`crush_embedded_blobs`
+  and `crush_svg` run in the crusher stage on non-exact, non-document output at
+  2,000 bytes or more, with the original stored first, when they save at least
+  1 KiB; a secret-looking payload keeps its bytes.)
 - `crush_json`, `crush_html` and `crush_notebook` are behind the document guard,
   because each of those payloads *is* the document.
 - `crush_diff` is behind the same guard: a unified diff is a document.

@@ -1119,6 +1119,9 @@ pub(crate) struct SessionActor {
     /// Whether the tools sent to the model on the latest round include no edit
     /// or terminal tool, so whole-file reads may be narrowed by the utility.
     pub(crate) model_tools_read_only: std::cell::Cell<bool>,
+    /// Whether those tools include `ask_stored_output`, so a compression footer
+    /// may point the model at it.
+    pub(crate) model_tools_ask_stored_output: std::cell::Cell<bool>,
     /// True while a recap model call is in flight (auto or manual).
     /// Prevents concurrent `spawn_local` recaps from racing watermark restore.
     pub(crate) recap_in_flight: std::cell::Cell<bool>,

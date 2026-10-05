@@ -7,7 +7,8 @@
 //!
 //! 1. **read reuse** — bytes identical to something already sent become a pointer;
 //! 2. **crushers** — deterministic transforms (ANSI/progress/class), with the
-//!    lossy progress case stored before the reduced body is accepted;
+//!    lossy progress, class and blob-placeholder cases stored before the
+//!    reduced body is accepted;
 //! 3. **importance extraction** — lossy, so the original is stored first and the
 //!    marker names it, and only after the literal gate agrees.
 //!
@@ -20,6 +21,10 @@ use distill_workspace::jev::crushers;
 use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::reduce;
 use distill_workspace::jev::retention;
+
+/// Blob placeholders must save at least this much: less does not pay for the
+/// stored-original footer.
+const BLOB_MIN_SAVING_BYTES: usize = 1_024;
 
 /// The flags this pipeline reads, resolved once by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -334,6 +339,12 @@ fn summary_count<'a>(tokens: &[&'a str]) -> Option<(usize, &'a str)> {
 /// Lines that a tool-result consumer must not lose when it accepts an
 /// extractive answer. These are deliberately source lines, not facts inferred
 /// from them, so a worker cannot turn a failed run into a successful one.
+///
+/// Only diagnostic forms count: failure words, `TypeError:`-style labels,
+/// pytest `E` lines, TAP `not ok`, exit and timeout phrases, and test
+/// summaries. Common English words (`not`, `run`, `out`, `expected`, `todo`)
+/// are not markers: they made prose, test code and grep listings mostly
+/// "required", so those results were never narrowed.
 pub fn required_tool_evidence(text: &str) -> Vec<String> {
     let mut required = Vec::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
@@ -348,26 +359,37 @@ pub fn required_tool_evidence(text: &str) -> Vec<String> {
             "fail",
             "failed",
             "failure",
+            "failures",
             "panic",
-            "assert",
-            "expected",
-            "not",
-            "run",
+            "panicked",
             "incomplete",
-            "timed",
-            "out",
             "timeout",
             "skipped",
-            "skip",
-            "pending",
-            "todo",
             "fatal",
             "traceback",
             "denied",
             "exception",
         ]
         .iter()
-        .any(|marker| tokens.contains(marker));
+        .any(|marker| tokens.contains(marker))
+            // `TypeError: x`, `AssertionError: expected 1 to equal 2`.
+            || lowered
+                .split_whitespace()
+                .any(|word| word.ends_with("error:") || word.ends_with("exception:"))
+            // A pytest failure detail line, and a TAP failure.
+            || line.starts_with("E   ")
+            || lowered.starts_with("not ok")
+            || [
+                "timed out",
+                "not found",
+                "no such file",
+                "out of memory",
+                "exit code",
+                "exit status",
+                "exited with",
+            ]
+            .iter()
+            .any(|phrase| lowered.contains(phrase));
         let is_summary = summary_count(&trimmed.split_whitespace().collect::<Vec<_>>()).is_some()
             || lowered.contains("test result")
             || lowered.trim_start().starts_with("ran ")
@@ -700,6 +722,43 @@ pub fn reduce_payload(
                         crusher.id()
                     ),
                 });
+            }
+        }
+
+        // Base64/data-URI islands and SVG path data go behind typed
+        // placeholders, accepted only with the original stored and a saving
+        // that pays for the footer. A secret-looking payload is not archived,
+        // so it keeps its bytes.
+        if store_handle.is_none() && crushers::secret_presence(&body).is_none() {
+            let blobs = crushers::crush_embedded_blobs(&body);
+            let svg = crushers::crush_svg(blobs.as_deref().unwrap_or(&body));
+            if let Some(crushed) = svg.or(blobs)
+                && crushed.len() + BLOB_MIN_SAVING_BYTES <= body.len()
+            {
+                if let Some(handle) = store(&body) {
+                    records.push(LaneRecord {
+                        lever: JevLever::ECrushers,
+                        lane: "e_crushers",
+                        decision: "crush_stored",
+                        detail: format!(
+                            "{} bytes -> {} bytes via embedded_blob_crusher+svg_crusher; full output stored at {handle}",
+                            body.len(),
+                            crushed.len()
+                        ),
+                    });
+                    body = format!(
+                        "{}\n[full output stored at {handle} — read that file for the bytes behind each placeholder]",
+                        crushed.trim_end()
+                    );
+                    store_handle = Some(handle);
+                } else {
+                    records.push(LaneRecord {
+                        lever: JevLever::ECrushers,
+                        lane: "e_crushers",
+                        decision: "keep",
+                        detail: "the blob placeholders would lose bytes, but the store refused the original; keeping today's bytes".to_owned(),
+                    });
+                }
             }
         }
     }
@@ -1192,6 +1251,50 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
         assert!(outcome.store_handle.is_none());
     }
 
+    /// A data URI or base64 island is bytes no reader acts on: it goes behind a
+    /// typed placeholder only with the original stored, and stays when the
+    /// store refuses, the call is exact-output or the payload looks secret.
+    #[test]
+    fn a_blob_island_becomes_a_placeholder_only_with_the_original_stored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = dir.path().to_path_buf();
+        let store = move |payload: &str| {
+            crate::jev_store::store_payload_in(&dir, payload).map(|path| path.display().to_string())
+        };
+        let flags = LaneFlags {
+            crushers: true,
+            importance: false,
+            read_reuse: false,
+        };
+        let payload = format!(
+            "rendered thumbnail for report 42\ndata:image/png;base64,{}\nwrote 1 file in 0.4s\n",
+            "iVBORw0KGgo".repeat(400)
+        );
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(TOOL, COMMAND, &payload, flags, LIMITS, &mut reuse, &store);
+        let handle = outcome.store_handle.as_deref().expect("the original is stored");
+        assert!(outcome.body.contains("<blob sha="), "{}", outcome.body);
+        assert!(outcome.body.contains("rendered thumbnail for report 42"));
+        assert!(outcome.body.contains("wrote 1 file in 0.4s"));
+        assert!(outcome.body.len() + 1_024 < payload.len());
+        assert_eq!(std::fs::read_to_string(handle).expect("handle reads"), payload);
+
+        let refused = refusing_store();
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(TOOL, COMMAND, &payload, flags, LIMITS, &mut reuse, &refused);
+        assert_eq!(outcome.body, payload, "no stored original, no placeholder");
+
+        let mut reuse = no_reuse();
+        let outcome =
+            reduce_payload(TOOL, "cat thumb.txt", &payload, flags, LIMITS, &mut reuse, &store);
+        assert_eq!(outcome.body, payload, "an exact-output call keeps its bytes");
+
+        let secret = format!("OPENAI_API_KEY=sk-proj-FAKEKEYabcdefghijklmnopqrstuvwxyz0123456789\n{payload}");
+        let mut reuse = no_reuse();
+        let outcome = reduce_payload(TOOL, COMMAND, &secret, flags, LIMITS, &mut reuse, &store);
+        assert!(!outcome.body.contains("<blob sha="), "a secret-looking payload is not archived");
+    }
+
     /// The literal gate is what decides the aggressive class transforms, and it
     /// says no when the bytes it would drop carry something a reader may need:
     /// the addresses in a register dump, or a lockfile's versions.
@@ -1547,6 +1650,48 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
         assert!(required.iter().any(|line| line.contains("1 skipped")));
         let evidence = bounded_tool_evidence(output, 256).expect("all status evidence fits");
         assert!(required.iter().all(|line| evidence.contains(line)));
+    }
+
+    /// Required lines are the anti-fabrication guard: every failure, timeout,
+    /// exit and summary form stays mandatory, so a selection cannot turn a
+    /// failed run into a passing one. Ordinary prose and test code that only
+    /// share a common word with a failure are selectable, or results made of
+    /// them were deferred as "required-dominates" and never narrowed.
+    #[test]
+    fn required_evidence_is_diagnostic_lines_not_common_words() {
+        let diagnostics = [
+            "error[E0308]: mismatched types",
+            "src/a.ts(3,4): error TS2322: Type 'x' is not assignable",
+            "AssertionError: expected 1 to equal 2",
+            "TypeError: cannot read properties of undefined",
+            "thread 'main' panicked at src/lib.rs:3:5",
+            "E       assert 1 == 2",
+            "not ok 3 - parses the header",
+            "bash: foo: command not found",
+            "ls: missing: No such file or directory",
+            "the job timed out after 600s",
+            "Process exited with code 1",
+            "exit status 2",
+            "FAILED tests/test_a.py::test_b - assert 1 == 2",
+            "failures:",
+            "Traceback (most recent call last):",
+            "test result: ok. 3 passed; 0 failed",
+            "2 pending",
+        ];
+        let prose = [
+            "I did not run the full suite; the run was out of scope.",
+            "    assert_eq!(lane.kind(), expected);",
+            "// TODO: skip the cache when it is not warm",
+            "Run `cargo fix` to apply the pending suggestions.",
+        ];
+        let text = diagnostics.iter().chain(&prose).copied().collect::<Vec<_>>().join("\n");
+        let required = required_tool_evidence(&text);
+        for line in diagnostics {
+            assert!(required.iter().any(|kept| kept == line), "{line} must stay required");
+        }
+        for line in prose {
+            assert!(!required.iter().any(|kept| kept == line.trim()), "{line} is selectable");
+        }
     }
 
     #[test]

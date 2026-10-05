@@ -4,7 +4,7 @@ use distill_test_support::EnvGuard;
 use serial_test::serial;
 
 use super::{
-    ExplicitSessionIdentity, OaiCompatClient, Summary, default_model_id, new_with_explicit_dir,
+    ExplicitSessionIdentity, Summary, default_model_id, new_with_explicit_dir,
 };
 use crate::session::info::Info;
 
@@ -70,7 +70,6 @@ async fn new_with_explicit_dir_overrides_worktree_stamp_so_subagent_stays_hidden
     let cwd = worktree_cwd_under(home.path());
     let target_dir = home.path().join("child-session");
 
-    let sampling_client = OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap();
     let _persistence = new_with_explicit_dir(
         &Info {
             id: acp::SessionId::new("subagent-in-worktree"),
@@ -78,8 +77,7 @@ async fn new_with_explicit_dir_overrides_worktree_stamp_so_subagent_stays_hidden
         },
         target_dir.clone(),
         default_model_id(),
-        sampling_client,
-        "test-model".to_owned(),
+        "test subagent".to_owned(),
         crate::session::persistence::ExplicitSessionOpen::New {
             identity: None,
             next_trace_turn: None,
@@ -113,8 +111,7 @@ async fn new_with_explicit_dir_stores_requested_identity() {
         },
         target_dir.clone(),
         default_model_id(),
-        OaiCompatClient::new(distill_sampler::SamplerConfig::default()).unwrap(),
-        "test-model".to_owned(),
+        "test subagent".to_owned(),
         crate::session::persistence::ExplicitSessionOpen::New {
             identity: Some(ExplicitSessionIdentity {
                 agent_id: agent_id.clone(),
@@ -132,4 +129,58 @@ async fn new_with_explicit_dir_stores_requested_identity() {
     assert_eq!(summary.agent_id.as_deref(), Some(agent_id.as_str()));
     assert_eq!(summary.attempt_id.as_deref(), Some(attempt_id.as_str()));
     assert_eq!(summary.next_trace_turn, 3);
+}
+
+async fn flushed_summary(
+    persistence: &super::PersistenceHandle,
+    target_dir: &std::path::Path,
+) -> Summary {
+    let (respond_to, done) = tokio::sync::oneshot::channel();
+    persistence
+        .tx
+        .send(super::PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    done.await.unwrap().unwrap();
+    serde_json::from_slice(&std::fs::read(target_dir.join("summary.json")).unwrap()).unwrap()
+}
+
+/// A hidden child session is titled by its spawn description, with no model
+/// call; a wake keeps that title instead of asking for a new one.
+#[tokio::test]
+#[serial]
+async fn a_subagent_session_is_titled_by_its_description_without_a_model() {
+    let home = tempfile::TempDir::new().unwrap();
+    let target_dir = home.path().join("child-session");
+    let info = Info {
+        id: acp::SessionId::new("subagent-titled"),
+        cwd: home.path().to_string_lossy().into_owned(),
+    };
+    let persistence = new_with_explicit_dir(
+        &info,
+        target_dir.clone(),
+        default_model_id(),
+        "Audit the recap path".to_owned(),
+        crate::session::persistence::ExplicitSessionOpen::New {
+            identity: None,
+            next_trace_turn: None,
+        },
+    )
+    .await
+    .unwrap();
+    let summary = flushed_summary(&persistence, &target_dir).await;
+    assert_eq!(summary.generated_title.as_deref(), Some("Audit the recap path"));
+    assert!(!summary.title_is_manual);
+    drop(persistence);
+
+    let woken = new_with_explicit_dir(
+        &info,
+        target_dir.clone(),
+        default_model_id(),
+        "A different description".to_owned(),
+        crate::session::persistence::ExplicitSessionOpen::Wake,
+    )
+    .await
+    .unwrap();
+    let summary = flushed_summary(&woken, &target_dir).await;
+    assert_eq!(summary.generated_title.as_deref(), Some("Audit the recap path"));
 }

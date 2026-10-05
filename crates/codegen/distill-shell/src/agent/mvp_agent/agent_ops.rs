@@ -147,9 +147,10 @@ impl MvpAgent {
         primary: &SamplingConfig,
     ) -> Result<(OaiCompatClient, String), acp::Error> {
         let slug = self.resolve_session_summary_model();
-        let config = self
+        let mut config = self
             .resolve_aux_sampler_for_session(&slug, primary)
             .unwrap_or_else(|| primary.clone());
+        pin_lowest_title_effort(&self.models_manager, &mut config);
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
         Ok((client, model))
@@ -5307,5 +5308,25 @@ impl Drop for LocalWorkspaceReapGuard {
                 handle.shutdown().await;
             });
         }
+    }
+}
+
+/// A title is a few words: it never runs at the session's effort (often max)
+/// but at the lowest level the model's menu offers, or the provider default
+/// when the catalog lists none.
+pub(super) fn pin_lowest_title_effort(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    config: &mut SamplingConfig,
+) {
+    config.reasoning_effort = models_manager
+        .model_reasoning_efforts(&config.model)
+        .into_iter()
+        .min_by_key(|option| crate::session::acp_session::effort_rank(option.value))
+        .map(|option| option.value);
+    // A model that is a different id per effort sends the id of that level.
+    if let Some(effort) = config.reasoning_effort
+        && let Some(routed) = models_manager.model_for_effort(&config.model, effort)
+    {
+        config.model = routed;
     }
 }

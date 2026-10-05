@@ -44,7 +44,7 @@ const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
 /// Minimum confidence for a `reject` to veto: the candidate holds source units only and the original stays stored.
 const UTILITY_REVIEW_VETO_FLOOR: f64 = 0.70;
-const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units", "ask_handle"];
+const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units"];
 /// The whole-task deadline of a sampler-backed utility lane, the closed
 /// client's request timeout.
 #[cfg(not(test))]
@@ -115,8 +115,71 @@ fn record_utility_attempt(
     );
 }
 
+/// The one-line display contract (titles, ghost text): no line break, no
+/// NONE, at most `max_chars`.
 fn bounded_display_answer(answer: &str, max_chars: usize) -> Option<String> {
-    (answer.chars().count() <= max_chars).then(|| answer.to_owned())
+    (!answer.contains(['\n', '\r'])
+        && !answer.trim().eq_ignore_ascii_case("none")
+        && answer.chars().count() <= max_chars)
+        .then(|| answer.to_owned())
+}
+
+/// The paragraph display contract (a recap): line breaks and list markers
+/// become plain spacing, and an answer over `max_chars` ends at its last whole
+/// sentence inside the bound instead of being refused. `None` for NONE, an
+/// empty answer, or one with no sentence end inside the bound.
+fn paragraph_display_answer(answer: &str, max_chars: usize) -> Option<String> {
+    if answer.trim().eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let text = answer
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            ["- ", "* ", "• "]
+                .iter()
+                .find_map(|marker| line.strip_prefix(marker))
+                .unwrap_or(line)
+        })
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= max_chars {
+        return Some(text);
+    }
+    let limit = text
+        .char_indices()
+        .nth(max_chars)
+        .map_or(text.len(), |(index, _)| index);
+    let end = text[..limit]
+        .char_indices()
+        .filter(|(_, c)| matches!(c, '.' | '!' | '?' | '。' | '！' | '？'))
+        .map(|(index, c)| index + c.len_utf8())
+        .filter(|end| text[*end..].chars().next().is_none_or(char::is_whitespace))
+        .last()?;
+    Some(text[..end].to_owned())
+}
+
+/// A display answer the utility may give: text, or an explicit NONE ("nothing
+/// to show"), which is final and never a reason to ask a paid model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DisplayAnswer {
+    Text(String),
+    Nothing,
+}
+
+/// What [`CheapLane::display_paragraph`] got: the paragraph, an answer the
+/// contract rejected (a stricter retry may help), or no answer at all (no
+/// lane work, a transport failure, the deadline, a failure bound), where a
+/// retry would only wait again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParagraphAnswer {
+    Text(String),
+    Rejected,
+    NoAnswer,
 }
 
 /// Identity of one optional compression opportunity.
@@ -758,7 +821,8 @@ pub(crate) fn resolve_utility_lane(
     lane
 }
 
-/// One cheap generation at a time, process-wide.
+/// How many cheap generations run at once, process-wide: one on a local
+/// endpoint, four on a remote one.
 ///
 /// The app serialised its local model for the same reason this exists: several
 /// lanes can want the worker at once (the tool-result path, a routed round, a
@@ -780,6 +844,15 @@ fn lane_queue(endpoint: &str) -> &'static tokio::sync::Semaphore {
     } else {
         REMOTE.get_or_init(|| tokio::sync::Semaphore::new(4))
     }
+}
+
+/// What a consumer's acceptance asks of the Jev post-review.
+pub(crate) enum PostReview {
+    /// Review this view of the accepted answer.
+    Read(String),
+    /// Use the answer unreviewed: it keeps source units verbatim and the
+    /// original stays stored, so a dropped line is one read away.
+    Skip,
 }
 
 pub(crate) enum UtilityTransport {
@@ -988,6 +1061,73 @@ impl CheapLane {
         .await
     }
 
+    /// [`Self::display_text`] where NONE is an answer, not a failure: `None`
+    /// still means the lane failed and the caller keeps its previous path.
+    pub(crate) async fn display_text_or_none(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> Option<DisplayAnswer> {
+        let none = |answer: &str| answer.trim().eq_ignore_ascii_case("none");
+        let outcome = self
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                tasks::DISPLAY_TEXT_TASK,
+                payload,
+                question,
+                source_kind,
+                false,
+                |answer| {
+                    if none(answer) {
+                        Some(answer.to_owned())
+                    } else {
+                        bounded_display_answer(answer, max_chars)
+                    }
+                },
+            )
+            .await?;
+        Some(if none(&outcome.text) {
+            DisplayAnswer::Nothing
+        } else {
+            DisplayAnswer::Text(outcome.text)
+        })
+    }
+
+    /// Display text under the paragraph contract ([`paragraph_display_answer`]):
+    /// the returned text is already joined into one paragraph and bounded.
+    pub(crate) async fn display_paragraph(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> ParagraphAnswer {
+        // Set when a response reached the consumer contract, so a rejected
+        // answer can be told from a lane that gave none.
+        let answered = AtomicBool::new(false);
+        let outcome = self
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                tasks::DISPLAY_TEXT_TASK,
+                payload,
+                question,
+                source_kind,
+                false,
+                |answer| {
+                    answered.store(true, Ordering::Relaxed);
+                    paragraph_display_answer(answer, max_chars)
+                },
+            )
+            .await;
+        match outcome.and_then(|outcome| paragraph_display_answer(&outcome.text, max_chars)) {
+            Some(text) => ParagraphAnswer::Text(text),
+            None if answered.load(Ordering::Relaxed) => ParagraphAnswer::Rejected,
+            None => ParagraphAnswer::NoAnswer,
+        }
+    }
+
     /// Runs one task while letting the caller apply its consumer-specific
     /// acceptance contract before the physical attempt is recorded. A task
     /// guard can accept an answer that the final consumer still cannot use;
@@ -1007,6 +1147,33 @@ impl CheapLane {
     ) -> Option<tasks::TaskOutcome>
     where
         F: Fn(&str) -> Option<String>,
+    {
+        self.run_task_with_review(
+            lever,
+            task_id,
+            payload,
+            question,
+            source_kind,
+            attribute_to_prompt,
+            |answer| accepts(answer).map(PostReview::Read),
+        )
+        .await
+    }
+
+    /// [`Self::run_task_with_acceptance`] where the consumer also says whether
+    /// the accepted answer needs the Jev post-review.
+    pub(crate) async fn run_task_with_review<F>(
+        &self,
+        lever: JevLever,
+        task_id: &str,
+        payload: &str,
+        question: &str,
+        source_kind: &str,
+        attribute_to_prompt: bool,
+        accepts: F,
+    ) -> Option<tasks::TaskOutcome>
+    where
+        F: Fn(&str) -> Option<PostReview>,
     {
         if !crate::jev::lever_active(lever) {
             return None;
@@ -1084,8 +1251,10 @@ impl CheapLane {
                 source_kind,
             )
         });
-        // Serialised: one cheap generation at a time across the whole process.
-        let _one_at_a_time = lane_queue(&self.endpoint()).acquire().await.ok();
+        // At most the lane queue's width of cheap generations at once. The
+        // permit covers the generation only: it is released before the Jev
+        // post-review, which is not a utility call.
+        let lane_permit = lane_queue(&self.endpoint()).acquire().await.ok();
         if let Some(key) = optional_key.as_ref()
             && !optional_compression_allowed(key)
         {
@@ -1186,6 +1355,7 @@ impl CheapLane {
                 .await
                 .unwrap_or(Err("timeout")),
         };
+        drop(lane_permit);
         let mut task_reason = task_result.as_ref().err().copied();
         let mut outcome = task_result.ok();
         let review_view = outcome.as_ref().and_then(|outcome| accepts(&outcome.text));
@@ -1194,7 +1364,20 @@ impl CheapLane {
         let answered_none = outcome
             .as_ref()
             .is_some_and(|outcome| outcome.text.trim().eq_ignore_ascii_case("none"));
+        if matches!(review_view, Some(PostReview::Skip)) && !answered_none {
+            crate::jev::record_item(
+                lever,
+                "review:skip-verbatim",
+                "verbatim unit selection with the original stored; no Jev review",
+                None,
+                None,
+            );
+        }
         let post_review = review_view
+            .and_then(|view| match view {
+                PostReview::Read(text) => Some(text),
+                PostReview::Skip => None,
+            })
             .filter(|_| task_id != tasks::DISPLAY_TEXT_TASK && !answered_none)
             .zip(outcome.as_ref().map(|outcome| outcome.answer.model.clone()));
         let mut post_review_rejected = false;
@@ -1687,6 +1870,46 @@ mod tests {
             Some("短")
         );
         assert!(super::bounded_display_answer("too long", 3).is_none());
+    }
+
+    /// The gate now passes line breaks and NONE through, so the one-line
+    /// consumers (titles, ghost text) keep refusing them here: their accepted
+    /// answers are exactly what they were.
+    #[test]
+    fn one_line_display_refuses_line_breaks_and_none() {
+        assert!(super::bounded_display_answer("Fix parser\nand tests", 80).is_none());
+        assert!(super::bounded_display_answer("NONE", 80).is_none());
+        assert_eq!(
+            super::bounded_display_answer("Fix parser race", 80).as_deref(),
+            Some("Fix parser race")
+        );
+    }
+
+    /// A small model often splits a recap into lines or a short list, or runs
+    /// past the cap: that is a usable recap once joined and cut at a whole
+    /// sentence, not a reason to replay the conversation on the main model.
+    #[test]
+    fn a_recap_paragraph_is_joined_and_cut_at_a_sentence() {
+        assert_eq!(
+            super::paragraph_display_answer("We fixed the parser.\n- tests pass\n* docs updated", 200)
+                .as_deref(),
+            Some("We fixed the parser. tests pass docs updated")
+        );
+        let long = "We fixed the parser race in `lexer.rs`. Tests pass on CI. The docs still need the new flag.";
+        assert_eq!(
+            super::paragraph_display_answer(long, 60).as_deref(),
+            Some("We fixed the parser race in `lexer.rs`. Tests pass on CI.")
+        );
+        // A dotted identifier is not a sentence end.
+        assert_eq!(
+            super::paragraph_display_answer("Renamed cfg.rs and moved it. Next: tests.", 30)
+                .as_deref(),
+            Some("Renamed cfg.rs and moved it.")
+        );
+        // No whole sentence fits, nothing usable, or NONE: refused.
+        assert!(super::paragraph_display_answer(&"word ".repeat(50), 40).is_none());
+        assert!(super::paragraph_display_answer(" \n ", 40).is_none());
+        assert!(super::paragraph_display_answer("none", 40).is_none());
     }
 
     use super::*;
@@ -2397,5 +2620,99 @@ mod tests {
         .expect("the deadline, not the idle timeout, ends the task");
         assert!(outcome.is_none(), "a stalled lane is no answer");
         assert!(started.elapsed() >= SAMPLER_UTILITY_DEADLINE);
+    }
+
+    fn display_utility_answer(content: &str) -> distill_test_support::ScriptedResponse {
+        distill_test_support::ScriptedResponse::json(
+            200,
+            serde_json::json!({
+                "id": "display-text",
+                "model": "aux-model",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": content}
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 3}
+            }),
+        )
+    }
+
+    fn display_test_lane(base_url: String) -> CheapLane {
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+        CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+            api_key: Some("aux-key".to_owned()),
+            base_url,
+            model: "aux-model".to_owned(),
+            api_backend: distill_sampling_types::ApiBackend::ChatCompletions,
+            context_window: 48_000,
+            ..Default::default()
+        })
+        .expect("sampler lane")
+    }
+
+    /// A utility NONE is the answer "nothing to suggest": the caller shows
+    /// nothing and pays no fallback model. A refused answer is still `None`,
+    /// so the caller keeps its previous path.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_utility_none_is_an_answer_and_a_bad_answer_is_not() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start display stub");
+        server.enqueue_response("/v1/chat/completions", display_utility_answer("NONE"));
+        server.enqueue_response("/v1/chat/completions", display_utility_answer("run the tests"));
+        server.enqueue_response(
+            "/v1/chat/completions",
+            display_utility_answer("run the tests\nthen commit"),
+        );
+        let lane = display_test_lane(server.url());
+
+        let none = lane
+            .display_text_or_none("User: hi\n\nAgent: done", "Predict.", 400, "prompt_suggest")
+            .await;
+        let text = lane
+            .display_text_or_none("User: hi\n\nAgent: done", "Predict.", 400, "prompt_suggest")
+            .await;
+        let two_lines = lane
+            .display_text_or_none("User: hi\n\nAgent: done", "Predict.", 400, "prompt_suggest")
+            .await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(none, Some(DisplayAnswer::Nothing));
+        assert_eq!(text, Some(DisplayAnswer::Text("run the tests".to_owned())));
+        assert_eq!(two_lines, None, "a one-line consumer still refuses two lines");
+    }
+
+    /// A multi-line recap from the utility is used as one paragraph instead
+    /// of falling through to a whole-conversation replay on the main model.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_multi_line_recap_is_one_paragraph() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start display stub");
+        server.enqueue_response(
+            "/v1/chat/completions",
+            display_utility_answer("We fixed the parser race.\nTests pass; docs are open."),
+        );
+        let lane = display_test_lane(server.url());
+
+        let recap = lane
+            .display_paragraph("User: fix it\n\nAgent: fixed", "Recap it.", 700, "recap")
+            .await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(
+            recap,
+            ParagraphAnswer::Text("We fixed the parser race. Tests pass; docs are open.".to_owned())
+        );
     }
 }

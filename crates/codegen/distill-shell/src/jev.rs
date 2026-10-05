@@ -924,6 +924,28 @@ pub(crate) fn record_workspace_attempt(
     recorder: distill_chat_state::ChatStateHandle,
     attribute_to_prompt: bool,
 ) {
+    record_tagged_workspace_attempt(
+        attempt,
+        role,
+        task_id,
+        turn_id,
+        recorder,
+        attribute_to_prompt,
+        None,
+    );
+}
+
+/// [`record_workspace_attempt`] for a utility attempt: `tags` is the source
+/// kind and the final decision the row carries (see `UsageAttribution`).
+pub(crate) fn record_tagged_workspace_attempt(
+    attempt: distill_workspace::jev::types::AttemptRecord,
+    role: &str,
+    task_id: Option<String>,
+    turn_id: Option<String>,
+    recorder: distill_chat_state::ChatStateHandle,
+    attribute_to_prompt: bool,
+    tags: Option<(&str, &str)>,
+) {
     use distill_chat_state::{UsageAttribution, UsageCallStatus, UsageCostBasis};
 
     let usage = attempt.usage.as_ref().and_then(|usage| {
@@ -976,6 +998,8 @@ pub(crate) fn record_workspace_attempt(
             applied_effort: attempt.applied_effort,
             reason: attempt.reason,
             bytes_in: attempt.bytes_in,
+            source_kind: tags.map(|(source_kind, _)| source_kind.to_owned()),
+            final_decision: tags.map(|(_, decision)| decision.to_owned()),
             bytes_out: attempt.bytes_out,
             status,
             usage,
@@ -1059,6 +1083,38 @@ where
             ),
         )
         .await
+}
+
+/// Installs only the usage recorder: a display side call (recap, suggestion)
+/// reaches usage.json without joining the session's activity ring, turn id or
+/// optional-compression scope, so the turn-status row never shows it.
+pub(crate) async fn with_usage_recorder<F>(
+    recorder: distill_chat_state::ChatStateHandle,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    ACTIVE_USAGE_RECORDER
+        .scope(std::cell::RefCell::new(Some(recorder)), future)
+        .await
+}
+
+/// Installs `recorder` only when no usage recorder is active, so a call made
+/// from a detached task is attributed without resetting a running turn's scope.
+pub(crate) async fn with_recorder_unless_scoped<F>(
+    session_id: impl Into<String>,
+    recorder: Option<distill_chat_state::ChatStateHandle>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    if recorder.is_none() || active_usage_recorder().is_some() {
+        future.await
+    } else {
+        with_session_scope_and_recorder(session_id, recorder, future).await
+    }
 }
 
 /// Remembers one decision for the turn-status row. Never fails the caller.

@@ -1199,6 +1199,7 @@ pub(crate) async fn spawn_session_actor(
         } else {
             None
         },
+        usage_recorder: Some(chat_state_handle.downgrade()),
     });
     use distill_telemetry::subagent_spawn::SubagentSpawnPhase;
     let builder_started_at = std::time::Instant::now();

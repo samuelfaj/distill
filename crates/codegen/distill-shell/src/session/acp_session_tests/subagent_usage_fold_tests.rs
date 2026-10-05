@@ -110,6 +110,8 @@ async fn turn_distribution_includes_nested_subagent_efforts_once() {
                 applied_effort: Some(format!("effort:{effort}")),
                 reason: None,
                 bytes_in: None,
+                source_kind: None,
+                final_decision: None,
                 bytes_out: None,
                 status: UsageCallStatus::Completed,
                 usage: Some(TokenUsage {
@@ -208,6 +210,8 @@ async fn late_child_usage_is_sent_to_spawning_prompt_row_once() {
                 applied_effort: None,
                 reason: None,
                 bytes_in: None,
+                source_kind: None,
+                final_decision: None,
                 bytes_out: None,
                 status: distill_chat_state::UsageCallStatus::Completed,
                 usage: Some(distill_sampling_types::TokenUsage {

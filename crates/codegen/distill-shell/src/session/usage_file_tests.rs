@@ -26,6 +26,8 @@ fn attribution(id: &str) -> distill_chat_state::UsageAttribution {
         requested_effort: None,
         reason: None,
         bytes_in: None,
+        source_kind: None,
+        final_decision: None,
         bytes_out: None,
         applied_effort: None,
         status: distill_chat_state::UsageCallStatus::Failed,
@@ -85,6 +87,39 @@ fn first_turn_writes_session_and_one_turn() {
     assert_eq!(file.session.cost_usd_ticks, Some(50));
     assert_eq!(file.session.primary_model_id.as_deref(), Some("grok-4"));
     assert_eq!(file.updated_at, "2026-08-26T00:00:00Z");
+}
+
+/// Utility outcomes reach usage.json without GROK_LOG_JEV, per turn as a delta,
+/// and a turn whose only news is a counter (no tokens) still writes it.
+#[test]
+fn utility_outcomes_persist_as_turn_deltas_without_moving_billing() {
+    let mut ledger = UsageLedger::default();
+    ledger.record_main_loop_call("grok-4", &tu(100, 20), Some(10), Some(50));
+    ledger.record_utility_outcome("shell", "compress", 2, 10_000, 3_000);
+    let first = UsageSummary::from_ledger(&ledger);
+    let mut file = SessionUsageFile::new("sess-1");
+    file.apply_turn(1, "t1", &first, None);
+
+    ledger.record_utility_outcome("shell", "defer:required-dominates", 0, 6_000, 6_000);
+    let second = UsageSummary::from_ledger(&ledger);
+    file.apply_turn(2, "t2", &second, Some(&first));
+
+    let [t1, t2] = file.turns.as_slice() else {
+        panic!("expected two turns: {:?}", file.turns);
+    };
+    assert_eq!(t1.usage.utility_outcomes["shell"].decisions["compress"], 1);
+    let delta = &t2.usage.utility_outcomes["shell"];
+    assert_eq!(delta.decisions.get("compress"), None, "turn 2 carries only its own decision");
+    assert_eq!(delta.decisions["defer:required-dominates"], 1);
+    assert_eq!((delta.bytes_in, delta.bytes_out), (6_000, 6_000));
+    let session = &file.session.utility_outcomes["shell"];
+    assert_eq!(session.decisions.values().sum::<u64>(), 2);
+    assert_eq!((session.chunks, session.bytes_in, session.bytes_out), (2, 16_000, 9_000));
+    assert_eq!(file.session.input_tokens, 100);
+    assert_eq!(t2.usage.model_calls, 0);
+    assert_eq!(file.session.cost_usd_ticks, Some(50));
+    let json = serde_json::to_value(&file).expect("serialize usage file");
+    assert_eq!(json["session"]["utilityOutcomes"]["shell"]["bytes_in"], 16_000);
 }
 
 #[test]

@@ -2025,23 +2025,38 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(result);
                             });
                         }
+                        // Display side calls run with the usage recorder only, so their
+                        // utility attempts (failed, rejected or NONE too) reach usage.json
+                        // without showing in the session's Jev activity.
                         SessionCommand::Recap { auto } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
-                                s.handle_recap(auto).await;
+                                crate::jev::with_usage_recorder(
+                                    s.chat_state_handle.clone(),
+                                    s.handle_recap(auto),
+                                )
+                                .await;
                             });
                         }
                         SessionCommand::AISuggest { prefix, cwd, model_override, respond_to } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
-                                let result = s.handle_ai_suggest(&prefix, &cwd, model_override.as_deref()).await;
+                                let result = crate::jev::with_usage_recorder(
+                                    s.chat_state_handle.clone(),
+                                    s.handle_ai_suggest(&prefix, &cwd, model_override.as_deref()),
+                                )
+                                .await;
                                 let _ = respond_to.send(result);
                             });
                         }
                         SessionCommand::SuggestPrompt { model_override, respond_to } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
-                                let result = s.handle_suggest_prompt(model_override.as_deref()).await;
+                                let result = crate::jev::with_usage_recorder(
+                                    s.chat_state_handle.clone(),
+                                    s.handle_suggest_prompt(model_override.as_deref()),
+                                )
+                                .await;
                                 let _ = respond_to.send(result);
                             });
                         }

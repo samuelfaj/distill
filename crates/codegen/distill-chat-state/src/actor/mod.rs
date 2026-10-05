@@ -235,6 +235,21 @@ impl ChatStateActor {
             } => {
                 self.record_usage_attribution(attribution, attribute_to_prompt);
             }
+            ChatStateCommand::RecordUtilityOutcome {
+                source_kind,
+                decision,
+                chunks,
+                bytes_in,
+                bytes_out,
+            } => {
+                self.state.session_usage.record_utility_outcome(
+                    &source_kind,
+                    &decision,
+                    chunks,
+                    bytes_in,
+                    bytes_out,
+                );
+            }
             ChatStateCommand::RegisterPendingUsageAttempt {
                 attempt_id,
                 attribute_to_prompt,

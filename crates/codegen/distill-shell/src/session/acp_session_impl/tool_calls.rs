@@ -2930,6 +2930,7 @@ impl SessionActor {
             self.jev_post_process_tool_result(
                 requested_tool_name,
                 tool_command,
+                tool_parsed_args,
                 &call_id.to_string(),
                 mcp_tool,
                 &result.output,

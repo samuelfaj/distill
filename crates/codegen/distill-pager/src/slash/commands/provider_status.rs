@@ -106,7 +106,7 @@ pub fn cheap_lane_status() -> String {
         ),
         Some(spec) => format!("Utility model: {spec}"),
         None => format!(
-            "Utility model: (default chain: {})",
+            "Utility model: (unset: the [models] session_summary or prompt_suggestion pin, else the default chain: {}, else the worker model)",
             distill_shell::jev_cheap::default_model_spec().replace(',', ", "),
         ),
     };

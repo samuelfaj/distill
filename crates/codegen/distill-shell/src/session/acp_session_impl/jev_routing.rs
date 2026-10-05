@@ -10,7 +10,6 @@
 //! list (slash commands, discovery, and lossless bodies) remains untouched.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use distill_sampling_types::ReasoningEffort;
 use distill_workspace::jev::catalog::routing;
@@ -23,13 +22,6 @@ use super::*;
 const REQUEST_CHARS: usize = 600;
 /// Conversation items scanned for the next step's description.
 const RECENT_ITEMS: usize = 12;
-static UTILITY_LANE_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
-
-fn warn_utility_lane_once(model: &str, reason: &str) {
-    if !UTILITY_LANE_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
-        tracing::warn!(model, reason, "utility model lane unavailable");
-    }
-}
 /// Calls of the previous step described to the battery.
 const MAX_STEP_CALLS: usize = 6;
 /// Results of the previous step described to the battery.
@@ -380,49 +372,39 @@ impl SessionActor {
 
     /// The cheap worker for a lane.
     ///
-    /// `[jev.local] model` holds either a catalog entry id — whose transport,
-    /// key and limits are the owner's — or a comma-separated priority list of
-    /// OpenRouter model ids, which rides on the shipped OpenRouter defaults.
-    /// Unset means the shipped chain: the cheap lanes are on out of the box.
-    ///
-    /// The catalog is consulted first and explicitly: the aux resolver answers
-    /// with the session's own provider when an id is unknown, and a slug list
-    /// must never be sent to the wrong endpoint.
-    ///
-    /// One place resolves it so every cheap lane reaches the same model with the
-    /// same settings, and so a lane cannot quietly use a different one.
+    /// Resolved by [`crate::jev_cheap::resolve_utility_lane`], the one resolver
+    /// the title lane and `ask_stored_output` use too: an explicit `[jev.local]
+    /// model` alone, else the `[models] session_summary` / `prompt_suggestion`
+    /// pins, then the shipped OpenRouter chain. A candidate that is this
+    /// session's own model is passed over. `None` keeps every caller on its
+    /// previous path.
     pub(super) async fn cheap_lane(&self, lever: JevLever) -> Option<crate::jev_cheap::CheapLane> {
+        self.cheap_lane_excluding(lever, None).await
+    }
+
+    /// [`Self::cheap_lane`] that also passes over `fallback`, the model the
+    /// caller falls back to when the utility answer is unusable: a utility
+    /// attempt on it would pay that model twice for one answer.
+    pub(super) async fn cheap_lane_excluding(
+        &self,
+        lever: JevLever,
+        fallback: Option<&str>,
+    ) -> Option<crate::jev_cheap::CheapLane> {
         if !crate::jev::lever_active(lever) {
             return None;
         }
-        let spec = crate::jev_cheap::configured_model_spec();
-        if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec).is_some() {
-            let Some(mut cfg) = self.resolve_aux_sampler_config(&spec).await else {
-                if crate::jev::local_config_cached().model.is_some() {
-                    warn_utility_lane_once(&spec, "no sampler configuration");
-                }
-                return None;
-            };
-            if crate::jev::local_config_cached()
-                .effort
-                .as_deref()
-                .is_none_or(|effort| effort == "auto")
-            {
-                cfg.reasoning_effort = self
-                    .model_effort_menu(&cfg.model)
-                    .and_then(|menu| Self::lowest_effort_level(&menu));
-            }
-            let lane = crate::jev_cheap::CheapLane::from_sampler_config(&cfg);
-            if lane.is_none() && crate::jev::local_config_cached().model.is_some() {
-                warn_utility_lane_once(&spec, "sampler configuration rejected");
-            }
-            return lane;
-        }
-        let lane = crate::jev_cheap::CheapLane::from_spec(&spec);
-        if lane.is_none() && crate::jev::local_config_cached().model.is_some() {
-            warn_utility_lane_once(&spec, "no usable transport or credential");
-        }
-        lane
+        let main_model = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.model);
+        let excluded: Vec<&str> = main_model.as_deref().into_iter().chain(fallback).collect();
+        let creds = self.chat_state_handle.get_credentials().await;
+        crate::jev_cheap::resolve_utility_lane(
+            &self.models_manager,
+            &excluded,
+            &|slug| self.aux_sampler_config_with(slug, &creds),
+        )
     }
 
     fn lowest_effort_level(menu: &[EffortLevel]) -> Option<ReasoningEffort> {
@@ -824,6 +806,21 @@ impl SessionActor {
         let text = self.jev_latest_real_human_request().await?;
         let bounded = bounded_request(&text);
         (!bounded.is_empty()).then_some(bounded)
+    }
+
+    /// [`Self::jev_last_human_request`] (empty when there is none) and the
+    /// text of the message that made `call_id`, from one conversation snapshot.
+    pub(super) async fn jev_request_and_call_preamble(
+        &self,
+        call_id: &str,
+    ) -> (String, Option<String>) {
+        let conversation = self.chat_state_handle.get_conversation().await;
+        let request = self
+            .jev_request_anchor(&conversation)
+            .map(|(_, text)| bounded_request(&text))
+            .unwrap_or_default();
+        let preamble = super::jev_tool_result::call_preamble(&conversation, call_id);
+        (request, preamble)
     }
 
     async fn jev_latest_real_human_request(&self) -> Option<String> {

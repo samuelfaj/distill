@@ -177,15 +177,36 @@ would go cannot.
 The utility model runs on any catalog transport, including a ChatGPT-subscription
 model such as `chatgpt/gpt-6-luna` through Responses and OAuth via the sampler
 stack. In `auto` effort mode it uses the lowest level in that model's menu. Up
-to four calls run concurrently; localhost endpoints allow one.
+to four calls run concurrently; localhost endpoints allow one. An
+explicit `[jev.local] model` is the only choice. When it is unset, the utility
+uses the shipped OpenRouter chain, then the `[models] session_summary` /
+`prompt_suggestion` pin when that chain has no key. It never uses the worker, the session's own model, or the
+caller's fallback model, and a sampler-backed lane gives up after 20 s (see
+`docs/jev-routing.md`).
 
 The harness labels source units `[U12]`; utility returns IDs or ranges, and the
 harness copies those original units. It does not use generated replacement
-prose. Error, failure and summary lines, first and last lines, web headers and
-citations are always retained by the harness. Input is split into chunks of at
-most 24 KiB, with at most eight chunks. A replacement is accepted only when it
-is under 70% of the original. The original is always stored, and the footer
-names its stored path.
+prose. Except for `search_tool`, the harness always retains the first two and
+last two units; terminal,
+task, grep and subagent output also keep error, failure and summary lines, grep
+listings their result headers, and web search its citation paragraphs. The
+question names only what that source forces. It also carries the call (tool
+name and bounded arguments, such as `target_file`, the grep pattern or the
+`search_tool` query) and the last 300 bytes of the assistant text that made the
+call, JSON-quoted as data; the session request follows as secondary context,
+and the whole stays within the 2 KiB question bound. Input is split into chunks
+of at most 24 KiB, with at most eight chunks. A replacement is accepted only
+when it is under 70% of the original; a `search_tool` result only needs to drop
+one whole tool and come out shorter. The original is always stored, and the footer
+names its stored path. A source or question that `utility_secret_presence` flags never
+goes to the utility and is not stored: it keeps today's bytes (`keep:secret`).
+The screen checks only what is sent, so it does not check a subagent's resume
+footer. It flags key prefixes at a word start, private-key and bearer headers,
+secret-named keys with a literal value, and dense tokens that mix case and
+digits. Paths, UUIDs, git SHAs and checksums do not trigger it. The memory
+prepass applies the screen before it spends its chunk budget.
+`ask_stored_output` applies the same screen and tells the model to read the
+file directly.
 
 The utility handles these sources:
 
@@ -289,6 +310,14 @@ confidence. The reduction steps use the labels `reuse`, `crush`, `extract` and
 `local` or `cloud`. That is how you find out which layer is doing the work in a
 real session.
 
+Utility outcomes are kept without that variable. Each session's `usage.json`
+has `utilityOutcomes` per source kind (`shell`, `mcp`, `recap`, …): the final
+decision per eligible result (`compress`, `not_shorter`,
+`defer:required-dominates`, `keep:lane-unavailable`, …), requests refused before
+dispatch (`request:defer:failure-bound`, …), chunks, and bytes in and out. Every
+utility attempt row also carries `source_kind` and `final_decision`. Sizes and
+labels only, never content.
+
 ## Turning levers off
 
 `[jev] enabled = false` or `GROK_JEV=0` disables everything at once. Each lever
@@ -321,9 +350,10 @@ nothing on the live path invokes them:
 - `crush_json`, `crush_html` and `crush_notebook` are behind the document guard,
   because each of those payloads *is* the document.
 - `crush_diff` is behind the same guard: a unified diff is a document.
-- `secret_redacted_view`, `secret_presence`, `pii_presence` and
-  `injection_presence` are safety transforms, not savings: they mask or flag a
-  value by decision rather than by gain.
+- `secret_redacted_view`, `pii_presence` and `injection_presence` are safety
+  transforms, not savings: they mask or flag a value by decision rather than by
+  gain. (`secret_presence` is live: retention and D2 use it. The utility screen uses
+  the narrower `utility_secret_presence`.)
 - `store_stats`, `search_store`, `validate_json`, `estimate_tokens`,
   `repo_map_budget`, `write_ack`, `error_site_refs`, `test_baseline_diff`,
   `alias_identifiers`, `volatile_tokens` and `compact_span` are pure functions

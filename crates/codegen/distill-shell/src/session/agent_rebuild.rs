@@ -160,6 +160,9 @@ pub(crate) struct AgentRebuildSpec {
     pub owner_session_id: Option<String>,
     pub parent_scheduler_handle:
         Option<distill_tools::implementations::distill::scheduler::types::SchedulerHandle>,
+    /// The session's usage ledger, weak so the tool resource cannot keep the
+    /// chat-state actor alive; `ask_stored_output` attributes its utility calls to it.
+    pub usage_recorder: Option<distill_chat_state::WeakChatStateHandle>,
 }
 impl AgentRebuildSpec {
     /// This is the canonical construction path; see module docs for the invariant.
@@ -273,6 +276,7 @@ impl AgentRebuildSpec {
             is_non_interactive,
             owner_session_id,
             parent_scheduler_handle,
+            usage_recorder,
         } = self.as_ref();
         let _ = mcp_state;
         if (*prompt_audience == PromptAudience::Subagent || agent_message_sender.is_some())
@@ -480,6 +484,8 @@ impl AgentRebuildSpec {
                 resources.insert(distill_tools::types::resources::StoredOutputAskerClient(
                     Arc::new(crate::stored_output_ask::ShellStoredOutputAsker {
                         models_manager: models_manager.clone(),
+                        session_id: session_id_str.clone(),
+                        usage_recorder: usage_recorder.clone(),
                     }),
                 ));
                 {
@@ -562,6 +568,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         is_non_interactive: false,
         owner_session_id: Some("test-session".to_string()),
         parent_scheduler_handle: None,
+        usage_recorder: None,
     })
 }
 #[cfg(test)]

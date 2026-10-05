@@ -621,6 +621,16 @@ impl SessionActor {
             )
             .await?;
         let summary = session_recap::clean_recap_text(&raw);
+        if summary.is_empty() {
+            // The attempt row says `used`; count that the recap fell back anyway.
+            crate::jev_cheap::record_utility_outcome(
+                "recap",
+                "fallback:cleaned-empty",
+                1,
+                raw.len(),
+                0,
+            );
+        }
         (!summary.is_empty()).then_some(summary)
     }
 
@@ -869,7 +879,10 @@ impl SessionActor {
 
         if model_override.is_none()
             && let Some(lane) = self
-                .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+                .cheap_lane_excluding(
+                    distill_workspace::jev::flags::JevLever::ECheapCompress,
+                    Some(model.as_str()),
+                )
                 .await
         {
             let cwd = self
@@ -887,9 +900,18 @@ impl SessionActor {
                     "prompt_suggest",
                 )
                 .await
-                && let Some(suggestion) = prompt_suggest::sanitize_suggestion(&raw)
             {
-                return Some(suggestion);
+                if let Some(suggestion) = prompt_suggest::sanitize_suggestion(&raw) {
+                    return Some(suggestion);
+                }
+                // The attempt row says `used`; count that the suggestion fell back anyway.
+                crate::jev_cheap::record_utility_outcome(
+                    "prompt_suggest",
+                    "fallback:sanitized",
+                    1,
+                    raw.len(),
+                    0,
+                );
             }
         }
 

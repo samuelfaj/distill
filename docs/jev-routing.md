@@ -193,6 +193,19 @@ A comma-separated chain is tried in order. Model availability and charges come
 from the provider. Keep API keys in the environment or use provider login;
 do not paste them into this example.
 
+An explicit `[jev.local] model` is the only candidate: if it cannot run, there
+is no utility lane. When it is unset, the utility model is the first of these
+that can run: the shipped OpenRouter chain (so an install that already had a
+utility keeps it), then the `[models] session_summary` or `prompt_suggestion`
+pin (a catalog id, often on a subscription) when that chain has no key. The
+worker is never used, because it is priced like a main model. A candidate that
+is the session's own model is skipped. So is the model a caller falls back to:
+the summary model for the title, the suggest model for a prompt suggestion. The
+session title and `ask_stored_output` use the same resolver. When nothing
+resolves, utility work keeps its previous path and the log says so once. A
+sampler-backed lane gives up after 20 s, the closed client's request timeout,
+and the caller keeps today's bytes.
+
 The `b2_local_model` route can also hand an entire call to the Utility model
 when the capacity checks and context limit allow it. This is separate from the
 bounded utility tasks. The `e_retention` route breaks large outputs into blocks
@@ -253,4 +266,6 @@ GROK_LOG_JEV=1 distill
 This compatibility-named variable enables `logs/jev.jsonl` inside the active
 profile. Entries record the route, decision, confidence, latency, model, and
 whether the requested choice was applied. See [the decision inventory](../list.md)
-for implementation pointers.
+for implementation pointers. Utility outcomes per source kind are always in the
+session's `usage.json` (`utilityOutcomes`, and `source_kind`/`final_decision` on
+utility attempt rows), with no content.

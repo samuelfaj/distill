@@ -503,7 +503,8 @@ async fn utility_prepass_capture_items(
     mut items: Vec<ConversationItem>,
 ) -> Option<Vec<ConversationItem>> {
     use super::jev_tool_result::{
-        CHEAP_COMPRESS_MIN_BYTES, SelectionReview, UnitSelection, select_units_with_lane,
+        CHEAP_COMPRESS_MIN_BYTES, SelectionReview, UnitSelection, secret_blocks_utility,
+        select_units_with_lane,
     };
     use crate::utility_select::{UnitKind, build_units, plan_chunks, reconstruct};
     use distill_workspace::jev::flags::JevLever;
@@ -557,6 +558,13 @@ async fn utility_prepass_capture_items(
             );
             continue;
         }
+        // Screened before planning, so an item that is never sent spends none
+        // of the chunk budget the clean items after it need.
+        if secret_blocks_utility(
+            units.iter().map(String::as_str).chain([CAPTURE_PREPASS_QUESTION]),
+        ) {
+            continue;
+        }
         let cap = lane.max_payload_bytes();
         let chunks = match plan_chunks(&units, cap, CAPTURE_PREPASS_MAX_CHUNKS) {
             Ok(chunks) => chunks.len(),
@@ -584,6 +592,7 @@ async fn utility_prepass_capture_items(
             },
         )
         .await
+        .kept
         else {
             continue;
         };
@@ -2513,6 +2522,126 @@ mod tests {
                 assert!(replaced.content.len() * 100 < big.len() * 70);
                 assert_eq!(serde_json::to_string(&shrunk[0]).unwrap(), before[0]);
                 assert_eq!(serde_json::to_string(&shrunk[2]).unwrap(), before[2]);
+            })
+            .await;
+    }
+
+    /// A secret-bearing item is never sent, so it must not spend the prepass
+    /// chunk budget either: the clean item after it is still pre-digested
+    /// instead of reaching the main-model extractor at full size.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_secret_item_spends_none_of_the_prepass_budget() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_workspace::jev::flags::JevLever;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                    e_crushers: false,
+                    e_importance: false,
+                    e_read_reuse: false,
+                    d2_big_output_retention: false,
+                    ..distill_workspace::jev::JevFlags::harness_default()
+                });
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "capture-select",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "U3"}
+                            }],
+                            "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                        }),
+                    ),
+                );
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_decision_answers([Some(
+                    crate::jev_cheap::test_utility_review_answer("accept"),
+                )]);
+                let lane = actor
+                    .cheap_lane(JevLever::ECheapCompress)
+                    .await
+                    .expect("utility lane");
+
+                // Large enough to plan the whole budget, so it is tried first.
+                let cap = lane.max_payload_bytes();
+                let mut secret =
+                    "OPENAI_API_KEY=sk-proj-FAKEKEYabcdefghijklmnopqrstuvwxyz0123456789\n"
+                        .to_owned();
+                let planned = |text: &str| {
+                    let units = crate::utility_select::build_units(
+                        text,
+                        crate::utility_select::UnitKind::Lines,
+                        24 * 1024,
+                    );
+                    crate::utility_select::plan_chunks(&units, cap, CAPTURE_PREPASS_MAX_CHUNKS)
+                        .map(|chunks| chunks.len())
+                };
+                let mut i = 0;
+                while planned(&secret) != Ok(CAPTURE_PREPASS_MAX_CHUNKS) {
+                    assert!(planned(&secret).is_ok(), "grown past the plan");
+                    for _ in 0..20 {
+                        secret.push_str(&format!("filler line number {i} with padding text\n"));
+                        i += 1;
+                    }
+                }
+                let kept_line = "decision: keep the cache in sqlite because of locking";
+                let clean: String = (0..200)
+                    .map(|i| {
+                        if i == 2 {
+                            format!("{kept_line}\n")
+                        } else {
+                            format!("progress line number {i} with padding text\n")
+                        }
+                    })
+                    .collect();
+                let items = vec![
+                    ConversationItem::tool_result("call-secret", secret.as_str()),
+                    ConversationItem::tool_result("call-clean", clean.as_str()),
+                ];
+
+                let shrunk = utility_prepass_capture_items(&lane, "main-model", items).await;
+                crate::jev::clear_test_flags();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                let shrunk = shrunk.expect("the clean item is still pre-digested");
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                let ConversationItem::ToolResult(untouched) = &shrunk[0] else {
+                    panic!("item 0 must stay a tool result");
+                };
+                assert_eq!(&*untouched.content, secret.as_str(), "the secret item stays as it was");
+                let ConversationItem::ToolResult(replaced) = &shrunk[1] else {
+                    panic!("item 1 must stay a tool result");
+                };
+                assert!(replaced.content.contains(kept_line), "{}", replaced.content);
+                assert!(replaced.content.len() * 100 < clean.len() * 70);
             })
             .await;
     }

@@ -619,7 +619,7 @@ impl MvpAgent {
         );
         spawn_sampler_transport_prewarm(&session_sampling.base_url);
         let (summary_client, summary_model) = self.build_summary_client(&session_sampling)?;
-        let title_utility_lane = self.build_title_utility_lane(&session_sampling);
+        let title_utility_lane = self.build_title_utility_lane(&session_sampling, &summary_model);
         let relay_sync = self.start_relay_sync(&session_id, &session_info);
         let model_id = match &session_initial_model {
             Some(chat_model) => acp::ModelId::new(chat_model.clone()),
@@ -1042,7 +1042,8 @@ impl MvpAgent {
             crate::sampling::derive_conversation_group_id(session_id.0.as_ref()),
         );
         let (summary_client, summary_model) = self.build_summary_client(&load_session_sampling)?;
-        let title_utility_lane = self.build_title_utility_lane(&load_session_sampling);
+        let title_utility_lane =
+            self.build_title_utility_lane(&load_session_sampling, &summary_model);
         let relay_sync = self.start_relay_sync(&session_id, &session_info);
         let mut persistence_timer = crate::instrumentation_timer!("session.load");
         persistence_timer.with_field("session_id", session_id.0.as_ref());

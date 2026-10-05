@@ -139,6 +139,15 @@ pub enum ChatStateCommand {
         attribute_to_prompt: bool,
     },
 
+    /// Count one content-free utility outcome in the session ledger.
+    RecordUtilityOutcome {
+        source_kind: String,
+        decision: String,
+        chunks: u64,
+        bytes_in: u64,
+        bytes_out: u64,
+    },
+
     /// Admit a provider attempt before its detached request starts.
     RegisterPendingUsageAttempt {
         attempt_id: String,

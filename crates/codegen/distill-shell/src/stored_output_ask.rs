@@ -85,24 +85,72 @@ fn join_answers(path: &str, answers: &[Option<String>]) -> Option<String> {
 
 pub(crate) struct ShellStoredOutputAsker {
     pub(crate) models_manager: crate::agent::remote_config::ModelsManager,
+    pub(crate) session_id: String,
+    /// Where the utility attempts are billed when the tool runs outside the
+    /// turn's recorder scope. `None` (or a closed session) records nothing.
+    pub(crate) usage_recorder: Option<distill_chat_state::WeakChatStateHandle>,
 }
 
 impl ShellStoredOutputAsker {
-    /// ponytail: only non-catalog specs (the default OpenRouter chain) resolve here.
-    /// A catalog model id needs the session's credentials (`SessionActor::cheap_lane`),
-    /// which this holder does not carry; those sessions get the read-directly message.
-    fn lane(&self) -> Option<crate::jev_cheap::CheapLane> {
-        let spec = crate::jev_cheap::configured_model_spec();
-        if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec).is_some() {
-            return None;
-        }
-        crate::jev_cheap::CheapLane::from_spec(&spec)
+    /// The session's utility lane, from the same resolver as `SessionActor::cheap_lane`,
+    /// so catalog and subscription utility models work here too. The session's
+    /// own model and credentials come from its chat state; with the session gone,
+    /// the agent's current model stands in for the same-model check.
+    async fn lane(&self) -> Option<crate::jev_cheap::CheapLane> {
+        let chat = self
+            .usage_recorder
+            .as_ref()
+            .and_then(distill_chat_state::WeakChatStateHandle::upgrade);
+        let (main_model, creds) = match &chat {
+            Some(chat) => (
+                chat.get_sampling_config().await.map(|config| config.model),
+                chat.get_credentials().await,
+            ),
+            None => (None, distill_chat_state::Credentials::default()),
+        };
+        let main_model =
+            main_model.unwrap_or_else(|| self.models_manager.current_model_id().0.to_string());
+        let auth = self.models_manager.auth_manager();
+        let session_key = auth.current_or_expired().map(|a| a.key.clone());
+        let disable_api_key_auth = auth.grok_com_config().api_key_auth_disabled();
+        let models = self.models_manager.models();
+        let endpoints = self.models_manager.endpoints();
+        crate::jev_cheap::resolve_utility_lane(&self.models_manager, &[&main_model], &|slug| {
+            crate::agent::config::resolve_aux_model_sampling_config(
+                slug,
+                &models,
+                &endpoints,
+                session_key.as_deref(),
+                disable_api_key_auth,
+                creds.alpha_test_key.clone(),
+                creds.client_version.clone(),
+            )
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl distill_tools::types::resources::StoredOutputAsker for ShellStoredOutputAsker {
     async fn ask(
+        &self,
+        path: &str,
+        question: &str,
+    ) -> Result<String, distill_tool_runtime::ToolError> {
+        let recorder = self
+            .usage_recorder
+            .as_ref()
+            .and_then(distill_chat_state::WeakChatStateHandle::upgrade);
+        crate::jev::with_recorder_unless_scoped(
+            self.session_id.clone(),
+            recorder,
+            self.ask_in_scope(path, question),
+        )
+        .await
+    }
+}
+
+impl ShellStoredOutputAsker {
+    async fn ask_in_scope(
         &self,
         path: &str,
         question: &str,
@@ -120,10 +168,34 @@ impl distill_tools::types::resources::StoredOutputAsker for ShellStoredOutputAsk
                 "Utility model unavailable or gave no answer for {display}; read the file directly with read_file (offset/limit) or grep."
             )
         };
-        let Some(lane) = self.lane() else {
-            return Ok(unavailable());
+        let record = |decision: &str, chunks: usize, bytes_out: usize| {
+            crate::jev_cheap::record_utility_outcome(
+                "stored_output",
+                decision,
+                chunks,
+                text.len(),
+                bytes_out,
+            );
         };
+        let Some(lane) = self.lane().await else {
+            let message = unavailable();
+            record("keep:lane-unavailable", 0, message.len());
+            return Ok(message);
+        };
+        // A terminal log is stored unscreened; a secret in it, or in the
+        // question, never goes to the utility model.
+        if [text.as_str(), question]
+            .iter()
+            .any(|part| distill_workspace::jev::crushers::utility_secret_presence(part).is_some())
+        {
+            let message = format!(
+                "{display} looks secret-bearing, so it stays off the utility model; read the file directly with read_file (offset/limit) or grep."
+            );
+            record("keep:secret", 0, message.len());
+            return Ok(message);
+        }
         let Some(chunks) = chunk_lines(&text, lane.max_payload_bytes(), MAX_CHUNKS) else {
+            record("defer:too-many-chunks", 0, 0);
             return Err(ToolError::invalid_arguments(format!(
                 "{display} is too large for ask_stored_output (over {MAX_CHUNKS} chunks); use read_file with offset/limit or grep on the path."
             )));
@@ -145,7 +217,11 @@ impl distill_tools::types::resources::StoredOutputAsker for ShellStoredOutputAsk
                 .await;
             answers.push(outcome.map(|o| o.text));
         }
-        Ok(join_answers(&display, &answers).unwrap_or_else(unavailable))
+        let answer = join_answers(&display, &answers);
+        let decision = if answer.is_some() { "answered" } else { "nothing" };
+        let answer = answer.unwrap_or_else(unavailable);
+        record(decision, chunks.len(), answer.len());
+        Ok(answer)
     }
 }
 
@@ -218,5 +294,115 @@ mod tests {
         );
         assert_eq!(joined.as_deref(), Some("/s/x.txt\nfirst\n---\nthird"));
         assert!(join_answers("/s/x.txt", &[None, None]).is_none());
+    }
+
+    /// A catalog utility model (a subscription one, say) serves `ask_stored_output`
+    /// through the same resolver as the session's other utility work, instead of
+    /// every call answering "unavailable"; the session's own model never does.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_catalog_utility_model_answers_stored_output_questions() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("aux-model".to_owned()),
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        crate::jev::set_test_worker_model(None);
+        let home = tempfile::tempdir().expect("auth home");
+        let models_manager = crate::agent::remote_config::ModelsManager::new(
+            None,
+            indexmap::IndexMap::new(),
+            agent_client_protocol::ModelId::new("main-model"),
+            std::sync::Arc::new(distill_login::AuthManager::new(
+                home.path(),
+                distill_login::GrokComConfig::default(),
+            )),
+            crate::agent::config::Config::default(),
+        );
+        let mut entry = crate::agent::config::ModelEntry::fallback(
+            "aux-model",
+            &crate::agent::config::EndpointsConfig::default(),
+        );
+        entry.info.base_url = "https://aux.example/v1".to_owned();
+        entry.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+        entry.api_key = Some("aux-key".to_owned());
+        models_manager.insert_test_entry("aux-model", entry);
+        let asker = ShellStoredOutputAsker {
+            models_manager: models_manager.clone(),
+            session_id: "stored-output-lane".to_owned(),
+            usage_recorder: None,
+        };
+        let lane = asker.lane().await.expect("the catalog utility model serves");
+        assert_eq!(lane.model(), "aux-model");
+
+        models_manager.set_current_model_id(agent_client_protocol::ModelId::new("aux-model"));
+        assert!(
+            asker.lane().await.is_none(),
+            "the session's own model is not its utility; the read-directly message applies"
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// Terminal logs and stored outputs are not screened when written, so a
+    /// secret in one must not reach the utility model through a question: the
+    /// main model is told to read the file itself, as when no lane exists.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_secret_bearing_stored_output_stays_off_the_utility() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("aux-model".to_owned()),
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        crate::jev::set_test_worker_model(None);
+        let home = tempfile::tempdir().expect("auth home");
+        let models_manager = crate::agent::remote_config::ModelsManager::new(
+            None,
+            indexmap::IndexMap::new(),
+            agent_client_protocol::ModelId::new("main-model"),
+            std::sync::Arc::new(distill_login::AuthManager::new(
+                home.path(),
+                distill_login::GrokComConfig::default(),
+            )),
+            crate::agent::config::Config::default(),
+        );
+        let mut entry = crate::agent::config::ModelEntry::fallback(
+            "aux-model",
+            &crate::agent::config::EndpointsConfig::default(),
+        );
+        // A dispatch would fail fast here instead of answering.
+        entry.info.base_url = "http://127.0.0.1:9/v1".to_owned();
+        entry.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+        entry.api_key = Some("aux-key".to_owned());
+        models_manager.insert_test_entry("aux-model", entry);
+        let asker = ShellStoredOutputAsker {
+            models_manager,
+            session_id: "stored-output-secret".to_owned(),
+            usage_recorder: None,
+        };
+        let key = "sk-proj-FAKEKEYabcdefghijklmnopqrstuvwxyz0123456789";
+        let path = crate::jev_store::store_payload(&format!("db: ok\nOPENAI_API_KEY={key}\n"))
+            .expect("store test payload");
+        let path = path.display().to_string();
+
+        let has_lane = asker.lane().await.is_some();
+        let answer = distill_tools::types::resources::StoredOutputAsker::ask(
+            &asker,
+            &path,
+            "which key is configured?",
+        )
+        .await;
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(has_lane, "the lane resolves, so only the secret keeps it off");
+        let answer = answer.expect("a secret is an answer, not a tool error");
+        assert!(answer.contains("secret-bearing"), "{answer}");
+        assert!(answer.contains("read_file"), "{answer}");
+        assert!(!answer.contains(key), "{answer}");
     }
 }

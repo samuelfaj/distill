@@ -294,6 +294,8 @@ impl InitialTitleAttempt {
                 applied_effort: self.applied_effort.clone(),
                 reason: None,
                 bytes_in: None,
+                source_kind: None,
+                final_decision: None,
                 bytes_out: None,
                 status,
                 usage: usage.clone(),

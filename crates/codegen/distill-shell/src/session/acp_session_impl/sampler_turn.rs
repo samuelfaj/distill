@@ -1092,6 +1092,16 @@ impl SessionActor {
         slug: &str,
     ) -> Option<distill_sampler::SamplerConfig> {
         let creds = self.chat_state_handle.get_credentials().await;
+        self.aux_sampler_config_with(slug, &creds)
+    }
+
+    /// [`Self::resolve_aux_sampler_config`] with the session credentials already
+    /// in hand, for a resolver that tries several slugs synchronously.
+    pub(super) fn aux_sampler_config_with(
+        &self,
+        slug: &str,
+        creds: &distill_chat_state::Credentials,
+    ) -> Option<distill_sampler::SamplerConfig> {
         let session_key = self
             .auth_manager
             .as_ref()

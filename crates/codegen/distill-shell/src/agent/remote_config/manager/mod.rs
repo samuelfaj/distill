@@ -634,6 +634,16 @@ impl ModelsManager {
         self.inner.cfg.read().prompt_suggest_model_pin.clone()
     }
 
+    /// The resolved session title model (the compiled default when unset).
+    pub(crate) fn session_summary_model(&self) -> Option<String> {
+        self.inner.cfg.read().session_summary_model.clone()
+    }
+
+    /// The auth manager the catalog is fetched with, for resolvers that hold no session.
+    pub(crate) fn auth_manager(&self) -> Arc<AuthManager> {
+        self.inner.auth_manager.clone()
+    }
+
     /// Whether `model_id` resolves in the current catalog, as a config key or a routing slug.
     pub(crate) fn model_in_catalog(&self, model_id: &str) -> bool {
         let cat = self.inner.catalog.read();

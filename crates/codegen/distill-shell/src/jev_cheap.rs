@@ -38,16 +38,148 @@ const WORKER_FRAMING_BYTES: usize = 4 * 1024;
 const OPTIONAL_COMPRESSION_FAILURE_LIMIT: u8 = 2;
 /// The direct utility lane is for tiny closed tasks, never whole-agent work.
 const UTILITY_MAX_PAYLOAD_BYTES: usize = 24 * 1024;
-const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
+pub(crate) const UTILITY_MAX_QUESTION_BYTES: usize = 2 * 1024;
 const UTILITY_MAX_DECISION_STATE_BYTES: usize = 32 * 1024;
 const UTILITY_POST_REVIEW: &str = "post_review";
 const UTILITY_DECISION_ID: &str = "decision";
 /// Minimum confidence for a `reject` to veto: the candidate holds source units only and the original stays stored.
 const UTILITY_REVIEW_VETO_FLOOR: f64 = 0.70;
-const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units", "ask_handle"];
+const UTILITY_TASK_ALLOWLIST: &[&str] = &["display_text", "select_units"];
+/// The whole-task deadline of a sampler-backed utility lane, the closed
+/// client's request timeout.
+#[cfg(not(test))]
+const SAMPLER_UTILITY_DEADLINE: Duration = distill_workspace::jev::cheap::DEFAULT_TIMEOUT;
+#[cfg(test)]
+const SAMPLER_UTILITY_DEADLINE: Duration = Duration::from_secs(2);
 
+/// Counts one utility decision for `source_kind` in the session's usage.json,
+/// with sizes and labels only. No recorder in scope means nothing is counted;
+/// the caller's bytes never depend on this.
+pub(crate) fn record_utility_outcome(
+    source_kind: &str,
+    decision: &str,
+    chunks: usize,
+    bytes_in: usize,
+    bytes_out: usize,
+) {
+    if let Some(recorder) = crate::jev::active_usage_recorder() {
+        recorder.record_utility_outcome(
+            source_kind,
+            decision,
+            chunks as u64,
+            bytes_in as u64,
+            bytes_out as u64,
+        );
+    }
+}
+
+/// The closed `final_decision` label a utility attempt row carries.
+fn utility_final_decision(attempt: &distill_workspace::jev::types::AttemptRecord) -> &'static str {
+    use distill_workspace::jev::types::AttemptStatus;
+    match attempt.status {
+        AttemptStatus::Completed if attempt.reason.as_deref() == Some("nothing") => "nothing",
+        AttemptStatus::Completed => "used",
+        AttemptStatus::Rejected => match attempt.reason.as_deref() {
+            // NONE is an answer ("nothing to keep"), even where a consumer cannot use it.
+            Some("none" | "nothing") => "nothing",
+            Some("consumer_rejected") => "consumer_rejected",
+            Some("review_rejected") => "review_rejected",
+            _ => "rejected",
+        },
+        AttemptStatus::Failed => "failed",
+        AttemptStatus::Cancelled => "cancelled",
+    }
+}
+
+/// Records one utility attempt with its source kind, final decision and the
+/// payload size it was sent.
+fn record_utility_attempt(
+    mut attempt: distill_workspace::jev::types::AttemptRecord,
+    task_id: &str,
+    turn_id: &str,
+    source_kind: &str,
+    payload_bytes: usize,
+    recorder: distill_chat_state::ChatStateHandle,
+    attribute_to_prompt: bool,
+) {
+    attempt.bytes_in = attempt.bytes_in.or(Some(payload_bytes as u64));
+    let decision = utility_final_decision(&attempt);
+    crate::jev::record_tagged_workspace_attempt(
+        attempt,
+        "utility",
+        Some(task_id.to_owned()),
+        Some(turn_id.to_owned()),
+        recorder,
+        attribute_to_prompt,
+        Some((source_kind, decision)),
+    );
+}
+
+/// The one-line display contract (titles, ghost text): no line break, no
+/// NONE, at most `max_chars`.
 fn bounded_display_answer(answer: &str, max_chars: usize) -> Option<String> {
-    (answer.chars().count() <= max_chars).then(|| answer.to_owned())
+    (!answer.contains(['\n', '\r'])
+        && !answer.trim().eq_ignore_ascii_case("none")
+        && answer.chars().count() <= max_chars)
+        .then(|| answer.to_owned())
+}
+
+/// The paragraph display contract (a recap): line breaks and list markers
+/// become plain spacing, and an answer over `max_chars` ends at its last whole
+/// sentence inside the bound instead of being refused. `None` for NONE, an
+/// empty answer, or one with no sentence end inside the bound.
+fn paragraph_display_answer(answer: &str, max_chars: usize) -> Option<String> {
+    if answer.trim().eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let text = answer
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            ["- ", "* ", "• "]
+                .iter()
+                .find_map(|marker| line.strip_prefix(marker))
+                .unwrap_or(line)
+        })
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= max_chars {
+        return Some(text);
+    }
+    let limit = text
+        .char_indices()
+        .nth(max_chars)
+        .map_or(text.len(), |(index, _)| index);
+    let end = text[..limit]
+        .char_indices()
+        .filter(|(_, c)| matches!(c, '.' | '!' | '?' | '。' | '！' | '？'))
+        .map(|(index, c)| index + c.len_utf8())
+        .filter(|end| text[*end..].chars().next().is_none_or(char::is_whitespace))
+        .last()?;
+    Some(text[..end].to_owned())
+}
+
+/// A display answer the utility may give: text, or an explicit NONE ("nothing
+/// to show"), which is final and never a reason to ask a paid model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DisplayAnswer {
+    Text(String),
+    Nothing,
+}
+
+/// What [`CheapLane::display_paragraph`] got: the paragraph, an answer the
+/// contract rejected (a stricter retry may help), or no answer at all (no
+/// lane work, a transport failure, the deadline, a failure bound), where a
+/// retry would only wait again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParagraphAnswer {
+    Text(String),
+    Rejected,
+    NoAnswer,
 }
 
 /// Identity of one optional compression opportunity.
@@ -362,6 +494,8 @@ struct CompletedUtilityAttemptGuard {
     recorder: Option<distill_chat_state::ChatStateHandle>,
     task_id: String,
     turn_id: String,
+    source_kind: String,
+    payload_bytes: usize,
     attribute_to_prompt: bool,
 }
 
@@ -373,6 +507,8 @@ impl CompletedUtilityAttemptGuard {
         recorder: Option<distill_chat_state::ChatStateHandle>,
         task_id: String,
         turn_id: String,
+        source_kind: String,
+        payload_bytes: usize,
         attribute_to_prompt: bool,
     ) -> Self {
         Self {
@@ -380,6 +516,8 @@ impl CompletedUtilityAttemptGuard {
             recorder,
             task_id,
             turn_id,
+            source_kind,
+            payload_bytes,
             attribute_to_prompt,
         }
     }
@@ -397,11 +535,12 @@ impl CompletedUtilityAttemptGuard {
             return;
         };
         for attempt in attempts {
-            crate::jev::record_workspace_attempt(
+            record_utility_attempt(
                 attempt,
-                "utility",
-                Some(self.task_id.clone()),
-                Some(self.turn_id.clone()),
+                &self.task_id,
+                &self.turn_id,
+                &self.source_kind,
+                self.payload_bytes,
                 recorder.clone(),
                 self.attribute_to_prompt,
             );
@@ -507,18 +646,213 @@ pub fn default_model_spec() -> String {
     DEFAULT_MODELS.join(",")
 }
 
-/// The utility model spec: `[jev.local] model` when set, else the shipped chain.
-pub(crate) fn configured_model_spec() -> String {
-    crate::jev::local_config_cached()
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|spec| !spec.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(default_model_spec)
+const SOURCE_LOCAL: &str = "[jev.local] model";
+const SOURCE_SUMMARY: &str = "[models] session_summary";
+const SOURCE_SUGGEST: &str = "[models] prompt_suggestion";
+const SOURCE_SHIPPED: &str = "shipped OpenRouter chain";
+pub(crate) const SKIP_NO_LANE: &str = "no usable transport or credential";
+pub(crate) const SKIP_NOT_IN_CATALOG: &str = "not a catalog model";
+pub(crate) const SKIP_MAIN_MODEL: &str =
+    "same model as the session's main model or the caller's fallback";
+
+static UTILITY_LANE_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+
+/// One log line per process when the utility lane is off; the lane is
+/// resolved per call and must not spam.
+fn warn_utility_lane_once(model: &str, reason: &str) {
+    if !UTILITY_LANE_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
+        tracing::warn!(model, reason, "utility model lane unavailable");
+    }
 }
 
-/// One cheap generation at a time, process-wide.
+/// One place the utility model can come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UtilityCandidate {
+    pub(crate) spec: String,
+    pub(crate) source: &'static str,
+    /// `[jev.local] model` and the shipped chain may be raw OpenRouter slugs.
+    /// The `[models]` pins are catalog ids: one missing from the catalog is
+    /// skipped, never sent to OpenRouter as a slug.
+    pub(crate) raw_allowed: bool,
+}
+
+/// The utility sources in resolution order. An explicit `[jev.local] model` is
+/// the owner's whole choice: it is the only candidate, so a lane it cannot
+/// build is no lane rather than a fall to a provider the owner opted out of.
+/// Unset, the shipped OpenRouter chain comes first, so an install that already
+/// had a utility keeps the same one; the `[models] session_summary` /
+/// `prompt_suggestion` pins (auxiliary models the owner already chose, often
+/// on a subscription) are the fallback when that chain has no credential. The
+/// worker is never a candidate: it is priced like a main model, so no lane
+/// keeps the previous path instead.
+pub(crate) fn utility_candidates(
+    local: Option<&str>,
+    summary_pin: Option<&str>,
+    suggest_pin: Option<&str>,
+) -> Vec<UtilityCandidate> {
+    if let Some(local) = local.map(str::trim).filter(|spec| !spec.is_empty()) {
+        return vec![UtilityCandidate {
+            spec: local.to_owned(),
+            source: SOURCE_LOCAL,
+            raw_allowed: true,
+        }];
+    }
+    let mut out: Vec<UtilityCandidate> = Vec::new();
+    let shipped = default_model_spec();
+    for (spec, source, raw_allowed) in [
+        (Some(shipped.as_str()), SOURCE_SHIPPED, true),
+        (summary_pin, SOURCE_SUMMARY, false),
+        (suggest_pin, SOURCE_SUGGEST, false),
+    ] {
+        let Some(spec) = spec.map(str::trim).filter(|spec| !spec.is_empty()) else {
+            continue;
+        };
+        if out.iter().all(|candidate| candidate.spec != spec) {
+            out.push(UtilityCandidate {
+                spec: spec.to_owned(),
+                source,
+                raw_allowed,
+            });
+        }
+    }
+    out
+}
+
+/// The lane for one candidate, or why it is not usable.
+fn candidate_lane(
+    candidate: &UtilityCandidate,
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    catalog: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> Result<CheapLane, &'static str> {
+    let lane = if crate::agent::config::find_model_by_id(catalog, &candidate.spec).is_some() {
+        // The catalog first and explicitly: the aux resolver answers with the
+        // session's own provider for an unknown id, and a slug list must never
+        // reach the wrong endpoint.
+        let mut cfg = resolve_catalog(&candidate.spec).ok_or(SKIP_NO_LANE)?;
+        if crate::jev::local_config_cached()
+            .effort
+            .as_deref()
+            .is_none_or(|effort| effort == "auto")
+        {
+            cfg.reasoning_effort = models_manager
+                .model_reasoning_efforts(&cfg.model)
+                .into_iter()
+                .min_by_key(|option| crate::session::acp_session::effort_rank(option.value))
+                .map(|option| option.value);
+        }
+        CheapLane::from_sampler_config(&cfg)
+    } else if candidate.raw_allowed {
+        CheapLane::from_spec(&candidate.spec)
+    } else {
+        return Err(SKIP_NOT_IN_CATALOG);
+    }
+    .ok_or(SKIP_NO_LANE)?;
+    // Utility work on the session's own model costs main tokens and saves none;
+    // on the caller's fallback model a rejected answer pays that model twice.
+    if excluded
+        .iter()
+        .any(|model| *model == lane.model() || *model == candidate.spec)
+    {
+        return Err(SKIP_MAIN_MODEL);
+    }
+    Ok(lane)
+}
+
+/// [`resolve_utility_lane`] without the log line: the lane, and every candidate
+/// tried before it with the reason it was passed over.
+pub(crate) fn resolve_utility_lane_traced(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> (Option<CheapLane>, Vec<(UtilityCandidate, &'static str)>) {
+    let (winner, skipped) = resolve_utility_candidate(models_manager, excluded, resolve_catalog);
+    (winner.map(|(_, lane)| lane), skipped)
+}
+
+/// [`resolve_utility_lane_traced`] that also names the candidate that won.
+fn resolve_utility_candidate(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> (
+    Option<(UtilityCandidate, CheapLane)>,
+    Vec<(UtilityCandidate, &'static str)>,
+) {
+    let local = crate::jev::local_config_cached();
+    let summary_pin = models_manager
+        .session_summary_model()
+        .filter(|model| model != crate::models::default_session_summary_model());
+    let suggest_pin = match models_manager.prompt_suggest_model_pin() {
+        crate::config::PromptSuggestModelPin::Env(model)
+        | crate::config::PromptSuggestModelPin::Pinned(model) => Some(model),
+        crate::config::PromptSuggestModelPin::Unpinned => None,
+    };
+    let catalog = models_manager.models();
+    let mut skipped = Vec::new();
+    let candidates = utility_candidates(
+        local.model.as_deref(),
+        summary_pin.as_deref(),
+        suggest_pin.as_deref(),
+    );
+    for candidate in candidates {
+        match candidate_lane(&candidate, models_manager, &catalog, excluded, resolve_catalog) {
+            Ok(lane) => return (Some((candidate, lane)), skipped),
+            Err(reason) => skipped.push((candidate, reason)),
+        }
+    }
+    (None, skipped)
+}
+
+/// The utility model as a catalog id a whole child round can run on (E6): the
+/// candidate [`resolve_utility_lane`] picks, when it is a catalog entry. A raw
+/// OpenRouter chain has no entry to give a session its endpoint, window and
+/// credentials, so it gives `None`, as does no lane: the child keeps its own
+/// model.
+pub(crate) fn utility_catalog_model(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> Option<String> {
+    let (winner, _) = resolve_utility_candidate(models_manager, excluded, resolve_catalog);
+    let (candidate, _) = winner?;
+    crate::agent::config::find_model_by_id(&models_manager.models(), &candidate.spec)
+        .is_some()
+        .then_some(candidate.spec)
+}
+
+/// The utility lane, resolved the same way for every consumer
+/// (`SessionActor::cheap_lane`, the session title, `ask_stored_output`): the
+/// first candidate of [`utility_candidates`] that builds a lane and is none of
+/// `excluded` (the session's main model, and a caller's own fallback model).
+/// `resolve_catalog` turns a catalog id into the caller's sampler config (its
+/// credentials). `None` means no utility: every caller keeps its previous
+/// path, and one warning names why.
+pub(crate) fn resolve_utility_lane(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> Option<CheapLane> {
+    let (lane, skipped) = resolve_utility_lane_traced(models_manager, excluded, resolve_catalog);
+    if lane.is_none() {
+        let tried = skipped
+            .iter()
+            .map(|(candidate, reason)| {
+                format!("{} ({}): {reason}", candidate.spec, candidate.source)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        warn_utility_lane_once(
+            &tried,
+            "no utility model resolved; utility work keeps the previous path",
+        );
+    }
+    lane
+}
+
+/// How many cheap generations run at once, process-wide: one on a local
+/// endpoint, four on a remote one.
 ///
 /// The app serialised its local model for the same reason this exists: several
 /// lanes can want the worker at once (the tool-result path, a routed round, a
@@ -540,6 +874,15 @@ fn lane_queue(endpoint: &str) -> &'static tokio::sync::Semaphore {
     } else {
         REMOTE.get_or_init(|| tokio::sync::Semaphore::new(4))
     }
+}
+
+/// What a consumer's acceptance asks of the Jev post-review.
+pub(crate) enum PostReview {
+    /// Review this view of the accepted answer.
+    Read(String),
+    /// Use the answer unreviewed: it keeps source units verbatim and the
+    /// original stays stored, so a dropped line is one read away.
+    Skip,
 }
 
 pub(crate) enum UtilityTransport {
@@ -748,6 +1091,73 @@ impl CheapLane {
         .await
     }
 
+    /// [`Self::display_text`] where NONE is an answer, not a failure: `None`
+    /// still means the lane failed and the caller keeps its previous path.
+    pub(crate) async fn display_text_or_none(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> Option<DisplayAnswer> {
+        let none = |answer: &str| answer.trim().eq_ignore_ascii_case("none");
+        let outcome = self
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                tasks::DISPLAY_TEXT_TASK,
+                payload,
+                question,
+                source_kind,
+                false,
+                |answer| {
+                    if none(answer) {
+                        Some(answer.to_owned())
+                    } else {
+                        bounded_display_answer(answer, max_chars)
+                    }
+                },
+            )
+            .await?;
+        Some(if none(&outcome.text) {
+            DisplayAnswer::Nothing
+        } else {
+            DisplayAnswer::Text(outcome.text)
+        })
+    }
+
+    /// Display text under the paragraph contract ([`paragraph_display_answer`]):
+    /// the returned text is already joined into one paragraph and bounded.
+    pub(crate) async fn display_paragraph(
+        &self,
+        payload: &str,
+        question: &str,
+        max_chars: usize,
+        source_kind: &str,
+    ) -> ParagraphAnswer {
+        // Set when a response reached the consumer contract, so a rejected
+        // answer can be told from a lane that gave none.
+        let answered = AtomicBool::new(false);
+        let outcome = self
+            .run_task_with_acceptance(
+                JevLever::ECheapCompress,
+                tasks::DISPLAY_TEXT_TASK,
+                payload,
+                question,
+                source_kind,
+                false,
+                |answer| {
+                    answered.store(true, Ordering::Relaxed);
+                    paragraph_display_answer(answer, max_chars)
+                },
+            )
+            .await;
+        match outcome.and_then(|outcome| paragraph_display_answer(&outcome.text, max_chars)) {
+            Some(text) => ParagraphAnswer::Text(text),
+            None if answered.load(Ordering::Relaxed) => ParagraphAnswer::Rejected,
+            None => ParagraphAnswer::NoAnswer,
+        }
+    }
+
     /// Runs one task while letting the caller apply its consumer-specific
     /// acceptance contract before the physical attempt is recorded. A task
     /// guard can accept an answer that the final consumer still cannot use;
@@ -768,10 +1178,43 @@ impl CheapLane {
     where
         F: Fn(&str) -> Option<String>,
     {
+        self.run_task_with_review(
+            lever,
+            task_id,
+            payload,
+            question,
+            source_kind,
+            attribute_to_prompt,
+            |answer| accepts(answer).map(PostReview::Read),
+        )
+        .await
+    }
+
+    /// [`Self::run_task_with_acceptance`] where the consumer also says whether
+    /// the accepted answer needs the Jev post-review.
+    pub(crate) async fn run_task_with_review<F>(
+        &self,
+        lever: JevLever,
+        task_id: &str,
+        payload: &str,
+        question: &str,
+        source_kind: &str,
+        attribute_to_prompt: bool,
+        accepts: F,
+    ) -> Option<tasks::TaskOutcome>
+    where
+        F: Fn(&str) -> Option<PostReview>,
+    {
         if !crate::jev::lever_active(lever) {
             return None;
         }
+        // A request refused before dispatch is counted per source, so a bound
+        // that keeps results raw is visible; the caller keeps today's bytes.
+        let refuse = |label: &str| {
+            record_utility_outcome(source_kind, &format!("request:{label}"), 0, 0, 0);
+        };
         if !UTILITY_TASK_ALLOWLIST.contains(&task_id) {
+            refuse("defer:task-bound");
             crate::jev::record_item(
                 lever,
                 "defer:task-bound",
@@ -784,6 +1227,7 @@ impl CheapLane {
         if payload.len() > UTILITY_MAX_PAYLOAD_BYTES
             || question.len() > UTILITY_MAX_QUESTION_BYTES
         {
+            refuse("defer:input-bound");
             crate::jev::record_item(
                 lever,
                 "defer:input-bound",
@@ -796,6 +1240,7 @@ impl CheapLane {
             return None;
         }
         let Some(task_spec) = tasks::spec(task_id) else {
+            refuse("defer:task-bound");
             crate::jev::record_item(
                 lever,
                 "defer:task-bound",
@@ -806,6 +1251,7 @@ impl CheapLane {
             return None;
         };
         let Some(prepared_payload) = tasks::prepare(task_spec, payload) else {
+            refuse("defer:input-bound");
             crate::jev::record_item(
                 lever,
                 "defer:input-bound",
@@ -816,6 +1262,7 @@ impl CheapLane {
             return None;
         };
         if !tasks::task_for(task_spec, &prepared_payload, question).fits(self.max_input_bytes()) {
+            refuse("defer:input-bound");
             crate::jev::record_item(
                 lever,
                 "defer:input-bound",
@@ -834,11 +1281,14 @@ impl CheapLane {
                 source_kind,
             )
         });
-        // Serialised: one cheap generation at a time across the whole process.
-        let _one_at_a_time = lane_queue(&self.endpoint()).acquire().await.ok();
+        // At most the lane queue's width of cheap generations at once. The
+        // permit covers the generation only: it is released before the Jev
+        // post-review, which is not a utility call.
+        let lane_permit = lane_queue(&self.endpoint()).acquire().await.ok();
         if let Some(key) = optional_key.as_ref()
             && !optional_compression_allowed(key)
         {
+            refuse("defer:failure-bound");
             crate::jev::record_item(
                 lever,
                 "defer:failure-bound",
@@ -863,6 +1313,8 @@ impl CheapLane {
             recorder.clone(),
             task_id.to_owned(),
             turn_id.clone(),
+            source_kind.to_owned(),
+            payload.len(),
             attribute_to_prompt,
         );
         let physical_attempt = std::sync::Arc::new(AtomicBool::new(false));
@@ -872,6 +1324,8 @@ impl CheapLane {
             let observer_recorder = recorder.clone();
             let task_id = task_id.to_owned();
             let turn_id = turn_id.clone();
+            let source_kind = source_kind.to_owned();
+            let payload_bytes = payload.len();
             let optional_key = optional_key.clone();
             let physical_attempt = physical_attempt.clone();
             let optional_failure_recorded = optional_failure_recorded.clone();
@@ -899,11 +1353,12 @@ impl CheapLane {
                         // immediately so fallback chains and cancellation do
                         // not disappear behind the consumer gate.
                         if let Some(recorder) = observer_recorder.as_ref() {
-                            crate::jev::record_workspace_attempt(
+                            record_utility_attempt(
                                 attempt,
-                                "utility",
-                                Some(task_id.clone()),
-                                Some(turn_id.clone()),
+                                &task_id,
+                                &turn_id,
+                                &source_kind,
+                                payload_bytes,
                                 recorder.clone(),
                                 attribute_to_prompt,
                             );
@@ -916,11 +1371,21 @@ impl CheapLane {
             self.transport
                 .with_call_observer(std::sync::Arc::new(|_| {}))
         });
-        let task_result = tracing::Instrument::instrument(
+        let task = tracing::Instrument::instrument(
             tasks::run(&request_transport, task_id, payload, question),
             span,
-        )
-        .await;
+        );
+        // The closed client gives up after its own request timeout; a
+        // sampler-backed lane has only an idle timeout, so a stalled backend
+        // would hold the turn for minutes. Past the deadline the request is
+        // dropped (recorded as cancelled) and the caller keeps today's bytes.
+        let task_result = match &self.transport {
+            UtilityTransport::Closed(_) => task.await,
+            UtilityTransport::Sampler(_) => tokio::time::timeout(SAMPLER_UTILITY_DEADLINE, task)
+                .await
+                .unwrap_or(Err("timeout")),
+        };
+        drop(lane_permit);
         let mut task_reason = task_result.as_ref().err().copied();
         let mut outcome = task_result.ok();
         let review_view = outcome.as_ref().and_then(|outcome| accepts(&outcome.text));
@@ -929,7 +1394,20 @@ impl CheapLane {
         let answered_none = outcome
             .as_ref()
             .is_some_and(|outcome| outcome.text.trim().eq_ignore_ascii_case("none"));
+        if matches!(review_view, Some(PostReview::Skip)) && !answered_none {
+            crate::jev::record_item(
+                lever,
+                "review:skip-verbatim",
+                "verbatim unit selection with the original stored; no Jev review",
+                None,
+                None,
+            );
+        }
         let post_review = review_view
+            .and_then(|view| match view {
+                PostReview::Read(text) => Some(text),
+                PostReview::Skip => None,
+            })
             .filter(|_| task_id != tasks::DISPLAY_TEXT_TASK && !answered_none)
             .zip(outcome.as_ref().map(|outcome| outcome.answer.model.clone()));
         let mut post_review_rejected = false;
@@ -1199,6 +1677,8 @@ impl MainLane {
             json_schema: None,
             prompt_cache_key: None,
             length_policy: LengthPolicy::Fail,
+            // Each task is its own payload behind the shared task prompt.
+            one_shot: true,
         })
     }
 
@@ -1422,6 +1902,46 @@ mod tests {
             Some("短")
         );
         assert!(super::bounded_display_answer("too long", 3).is_none());
+    }
+
+    /// The gate now passes line breaks and NONE through, so the one-line
+    /// consumers (titles, ghost text) keep refusing them here: their accepted
+    /// answers are exactly what they were.
+    #[test]
+    fn one_line_display_refuses_line_breaks_and_none() {
+        assert!(super::bounded_display_answer("Fix parser\nand tests", 80).is_none());
+        assert!(super::bounded_display_answer("NONE", 80).is_none());
+        assert_eq!(
+            super::bounded_display_answer("Fix parser race", 80).as_deref(),
+            Some("Fix parser race")
+        );
+    }
+
+    /// A small model often splits a recap into lines or a short list, or runs
+    /// past the cap: that is a usable recap once joined and cut at a whole
+    /// sentence, not a reason to replay the conversation on the main model.
+    #[test]
+    fn a_recap_paragraph_is_joined_and_cut_at_a_sentence() {
+        assert_eq!(
+            super::paragraph_display_answer("We fixed the parser.\n- tests pass\n* docs updated", 200)
+                .as_deref(),
+            Some("We fixed the parser. tests pass docs updated")
+        );
+        let long = "We fixed the parser race in `lexer.rs`. Tests pass on CI. The docs still need the new flag.";
+        assert_eq!(
+            super::paragraph_display_answer(long, 60).as_deref(),
+            Some("We fixed the parser race in `lexer.rs`. Tests pass on CI.")
+        );
+        // A dotted identifier is not a sentence end.
+        assert_eq!(
+            super::paragraph_display_answer("Renamed cfg.rs and moved it. Next: tests.", 30)
+                .as_deref(),
+            Some("Renamed cfg.rs and moved it.")
+        );
+        // No whole sentence fits, nothing usable, or NONE: refused.
+        assert!(super::paragraph_display_answer(&"word ".repeat(50), 40).is_none());
+        assert!(super::paragraph_display_answer(" \n ", 40).is_none());
+        assert!(super::paragraph_display_answer("none", 40).is_none());
     }
 
     use super::*;
@@ -1846,6 +2366,430 @@ mod tests {
             narrow
                 .task_request("select_units", "[U1] error", "status")
                 .is_none()
+        );
+    }
+
+    /// A catalog of `ids`, each a Chat Completions entry with its own key, and
+    /// the `[models]` pins the owner set.
+    fn utility_test_manager(
+        ids: &[&str],
+        summary: Option<&str>,
+        suggest: Option<&str>,
+    ) -> (tempfile::TempDir, crate::agent::remote_config::ModelsManager) {
+        let home = tempfile::tempdir().expect("auth home");
+        let mut cfg = crate::agent::config::Config::default();
+        cfg.session_summary_model = summary.map(str::to_owned);
+        if let Some(model) = suggest {
+            cfg.prompt_suggest_model_pin =
+                crate::config::PromptSuggestModelPin::Pinned(model.to_owned());
+        }
+        let manager = crate::agent::remote_config::ModelsManager::new(
+            None,
+            indexmap::IndexMap::new(),
+            agent_client_protocol::ModelId::new("main-model"),
+            std::sync::Arc::new(distill_login::AuthManager::new(
+                home.path(),
+                distill_login::GrokComConfig::default(),
+            )),
+            cfg,
+        );
+        for id in ids {
+            let mut entry = crate::agent::config::ModelEntry::fallback(
+                id,
+                &crate::agent::config::EndpointsConfig::default(),
+            );
+            entry.api_key = Some("catalog-key".to_owned());
+            manager.insert_test_entry(*id, entry);
+        }
+        (home, manager)
+    }
+
+    /// What the caller's credentials make of a catalog id: a keyed Chat
+    /// Completions config for every id the test catalog holds.
+    fn keyed_catalog_config(slug: &str) -> Option<distill_sampler::SamplerConfig> {
+        Some(distill_sampler::SamplerConfig {
+            api_key: Some("catalog-key".to_owned()),
+            base_url: "https://catalog.example/v1".to_owned(),
+            model: slug.to_owned(),
+            ..Default::default()
+        })
+    }
+
+    fn no_effort_lookup() {
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        crate::jev::set_test_worker_model(None);
+    }
+
+    /// An explicit `[jev.local] model` is the owner's whole choice; unset, the
+    /// shipped chain comes first so an existing utility does not change, and
+    /// the auxiliary models they already pinned are the keyless fallback. Only
+    /// the local model and the shipped chain may be raw OpenRouter slugs; a pin
+    /// is a catalog id.
+    #[test]
+    fn utility_candidates_keep_the_shipped_chain_and_fall_back_to_the_owners_pins() {
+        let explicit = utility_candidates(
+            Some(" local-model "),
+            Some("chatgpt/gpt-6-luna"),
+            Some("chatgpt/gpt-6-luna"),
+        );
+        assert_eq!(
+            explicit,
+            vec![UtilityCandidate {
+                spec: "local-model".to_owned(),
+                source: SOURCE_LOCAL,
+                raw_allowed: true,
+            }],
+            "an explicit local model is the only candidate"
+        );
+        let candidates =
+            utility_candidates(None, Some("chatgpt/gpt-6-luna"), Some("chatgpt/gpt-6-luna"));
+        let order: Vec<(&str, &str, bool)> = candidates
+            .iter()
+            .map(|c| (c.spec.as_str(), c.source, c.raw_allowed))
+            .collect();
+        let shipped = default_model_spec();
+        assert_eq!(
+            order,
+            vec![
+                (shipped.as_str(), SOURCE_SHIPPED, true),
+                ("chatgpt/gpt-6-luna", SOURCE_SUMMARY, false),
+            ],
+            "the shipped chain keeps an existing utility; a pin repeated in both slots is tried once"
+        );
+        let unset = utility_candidates(Some("  "), Some("  "), None);
+        assert_eq!(unset.len(), 1, "blank values are not candidates");
+        assert_eq!(unset[0].source, SOURCE_SHIPPED);
+    }
+
+    /// An install without an OpenRouter key still gets a utility lane from the
+    /// session-summary model the owner pinned, instead of the whole utility
+    /// tier switching off without a word.
+    #[test]
+    #[serial_test::serial]
+    fn a_keyless_install_runs_the_utility_on_the_summary_pin() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        no_effort_lookup();
+        let (_home, manager) = utility_test_manager(&["aux-model"], Some("aux-model"), None);
+        let (lane, skipped) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert_eq!(lane.expect("the summary pin serves").model(), "aux-model");
+        assert_eq!(
+            skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
+            vec![(SOURCE_SHIPPED, SKIP_NO_LANE)],
+            "only the keyless shipped chain is passed over"
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// Utility work on the session's own model costs main tokens and saves
+    /// nothing, so that candidate is passed over and the next one serves; an
+    /// explicit local model that is the main model means no lane at all, and
+    /// callers keep the previous path.
+    #[test]
+    #[serial_test::serial]
+    fn the_sessions_own_model_is_never_its_utility_lane() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        no_effort_lookup();
+        let (_home, manager) = utility_test_manager(
+            &["main-model", "aux-model"],
+            Some("main-model"),
+            Some("aux-model"),
+        );
+        let (lane, skipped) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert_eq!(lane.expect("the next candidate serves").model(), "aux-model");
+        assert_eq!(
+            skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
+            vec![(SOURCE_SHIPPED, SKIP_NO_LANE), (SOURCE_SUMMARY, SKIP_MAIN_MODEL)]
+        );
+
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("main-model".to_owned()),
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        let (lane, skipped) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert!(lane.is_none(), "no lane rather than a utility call on main");
+        assert_eq!(
+            skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
+            vec![(SOURCE_LOCAL, SKIP_MAIN_MODEL)]
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// A caller's own fallback model is excluded too: the title and the prompt
+    /// suggestion fall back to their pin, so a utility attempt on that same pin
+    /// would pay it twice for one answer. The next candidate serves instead.
+    #[test]
+    #[serial_test::serial]
+    fn a_callers_fallback_model_is_not_its_utility_lane() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        no_effort_lookup();
+        let (_home, manager) = utility_test_manager(
+            &["summary-model", "suggest-model"],
+            Some("summary-model"),
+            Some("suggest-model"),
+        );
+        let (lane, _) = resolve_utility_lane_traced(
+            &manager,
+            &["main-model", "summary-model"],
+            &keyed_catalog_config,
+        );
+        assert_eq!(lane.expect("the other pin serves").model(), "suggest-model");
+        let (lane, _) = resolve_utility_lane_traced(
+            &manager,
+            &["main-model", "summary-model", "suggest-model"],
+            &keyed_catalog_config,
+        );
+        assert!(lane.is_none(), "no lane: the caller goes straight to its fallback");
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// An explicit `[jev.local] model` that cannot build a lane (a logged-out
+    /// subscription) is no lane: tool output never falls through to the
+    /// OpenRouter free tiers the owner chose to avoid, even with a key present.
+    #[test]
+    #[serial_test::serial]
+    fn an_unusable_explicit_local_model_never_falls_back_to_openrouter() {
+        let _key = distill_test_support::env::EnvGuard::set("OPENROUTER_API_KEY", "sk-test");
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("aux-model".to_owned()),
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        crate::jev::set_test_worker_model(None);
+        let (_home, manager) =
+            utility_test_manager(&["aux-model", "summary-model"], Some("summary-model"), None);
+        let (lane, skipped) = resolve_utility_lane_traced(&manager, &["main-model"], &|_| None);
+        assert!(lane.is_none(), "{:?}", lane.map(|lane| lane.model().to_owned()));
+        assert_eq!(
+            skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
+            vec![(SOURCE_LOCAL, SKIP_NO_LANE)]
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// A pinned catalog id the catalog does not hold (a logged-out
+    /// subscription) is skipped, never sent to OpenRouter as a slug; with the
+    /// shipped chain keyless too, there is no lane and callers keep the
+    /// previous path.
+    #[test]
+    #[serial_test::serial]
+    fn a_pin_missing_from_the_catalog_never_reaches_openrouter_as_a_slug() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        no_effort_lookup();
+        let (_home, manager) = utility_test_manager(&[], Some("chatgpt/gpt-6-luna"), None);
+        let (lane, skipped) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert!(lane.is_none(), "{:?}", lane.map(|lane| lane.model().to_owned()));
+        assert_eq!(
+            skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
+            vec![(SOURCE_SHIPPED, SKIP_NO_LANE), (SOURCE_SUMMARY, SKIP_NOT_IN_CATALOG)]
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// The worker is priced like a main model, so it is never a utility
+    /// candidate: a keyless install with no pins has no lane and keeps the
+    /// previous path instead of paying worker tokens on every tool result.
+    #[test]
+    #[serial_test::serial]
+    fn the_worker_is_never_a_utility_candidate() {
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        no_effort_lookup();
+        crate::jev::set_test_worker_model(Some("worker-model".to_owned()));
+        let (_home, manager) = utility_test_manager(&["worker-model"], None, None);
+        let (lane, skipped) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert!(lane.is_none());
+        assert_eq!(
+            skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
+            vec![(SOURCE_SHIPPED, SKIP_NO_LANE)]
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// E6 runs whole child rounds on the utility, which needs a catalog
+    /// entry's endpoint, window and credentials. A catalog pin serves; a raw
+    /// OpenRouter slug, the child's own model or no lane gives no route, so
+    /// the child keeps the model it has without the lever.
+    #[test]
+    #[serial_test::serial]
+    fn a_utility_child_route_needs_a_catalog_entry() {
+        {
+            let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+            no_effort_lookup();
+            let (_home, manager) = utility_test_manager(&["aux-model"], Some("aux-model"), None);
+            assert_eq!(
+                utility_catalog_model(&manager, &["main-model"], &keyed_catalog_config).as_deref(),
+                Some("aux-model")
+            );
+            assert_eq!(
+                utility_catalog_model(&manager, &["aux-model"], &keyed_catalog_config),
+                None,
+                "a route to the child's own model saves nothing"
+            );
+            assert_eq!(
+                utility_catalog_model(&manager, &["main-model"], &|_| None),
+                None,
+                "no lane, no route"
+            );
+        }
+        let _key = distill_test_support::env::EnvGuard::set("OPENROUTER_API_KEY", "sk-test");
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("vendor/raw-utility".to_owned()),
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        let (_home, manager) = utility_test_manager(&["aux-model"], Some("aux-model"), None);
+        let (lane, _) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert_eq!(lane.expect("the raw slug is a utility lane").model(), "vendor/raw-utility");
+        assert_eq!(
+            utility_catalog_model(&manager, &["main-model"], &keyed_catalog_config),
+            None,
+            "a raw slug has no entry for a whole round, and the pin is not the utility"
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// A sampler-backed utility lane has only an idle timeout, so a stalled
+    /// backend must not hold the turn: past the deadline the task fails open
+    /// (`None`, the caller keeps today's bytes) instead of waiting minutes.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_stalled_sampler_lane_fails_open_at_the_deadline() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("responses"),
+        ])
+        .await
+        .expect("start stall stub");
+        server.enqueue_response("/v1/responses", ScriptedResponse::hang());
+        let lane = CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+            api_key: Some("aux-key".to_owned()),
+            base_url: server.url(),
+            model: "aux-model".to_owned(),
+            api_backend: distill_sampling_types::ApiBackend::Responses,
+            context_window: 48_000,
+            ..Default::default()
+        })
+        .expect("sampler lane");
+        assert!(matches!(lane.transport, UtilityTransport::Sampler(_)));
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            SAMPLER_UTILITY_DEADLINE * 5,
+            lane.display_text("a long tool result", "Summarize it.", 400, "recap"),
+        )
+        .await
+        .expect("the deadline, not the idle timeout, ends the task");
+        assert!(outcome.is_none(), "a stalled lane is no answer");
+        assert!(started.elapsed() >= SAMPLER_UTILITY_DEADLINE);
+    }
+
+    fn display_utility_answer(content: &str) -> distill_test_support::ScriptedResponse {
+        distill_test_support::ScriptedResponse::json(
+            200,
+            serde_json::json!({
+                "id": "display-text",
+                "model": "aux-model",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": content}
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 3}
+            }),
+        )
+    }
+
+    fn display_test_lane(base_url: String) -> CheapLane {
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+        CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+            api_key: Some("aux-key".to_owned()),
+            base_url,
+            model: "aux-model".to_owned(),
+            api_backend: distill_sampling_types::ApiBackend::ChatCompletions,
+            context_window: 48_000,
+            ..Default::default()
+        })
+        .expect("sampler lane")
+    }
+
+    /// A utility NONE is the answer "nothing to suggest": the caller shows
+    /// nothing and pays no fallback model. A refused answer is still `None`,
+    /// so the caller keeps its previous path.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_utility_none_is_an_answer_and_a_bad_answer_is_not() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start display stub");
+        server.enqueue_response("/v1/chat/completions", display_utility_answer("NONE"));
+        server.enqueue_response("/v1/chat/completions", display_utility_answer("run the tests"));
+        server.enqueue_response(
+            "/v1/chat/completions",
+            display_utility_answer("run the tests\nthen commit"),
+        );
+        let lane = display_test_lane(server.url());
+
+        let none = lane
+            .display_text_or_none("User: hi\n\nAgent: done", "Predict.", 400, "prompt_suggest")
+            .await;
+        let text = lane
+            .display_text_or_none("User: hi\n\nAgent: done", "Predict.", 400, "prompt_suggest")
+            .await;
+        let two_lines = lane
+            .display_text_or_none("User: hi\n\nAgent: done", "Predict.", 400, "prompt_suggest")
+            .await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(none, Some(DisplayAnswer::Nothing));
+        assert_eq!(text, Some(DisplayAnswer::Text("run the tests".to_owned())));
+        assert_eq!(two_lines, None, "a one-line consumer still refuses two lines");
+    }
+
+    /// A multi-line recap from the utility is used as one paragraph instead
+    /// of falling through to a whole-conversation replay on the main model.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_multi_line_recap_is_one_paragraph() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start display stub");
+        server.enqueue_response(
+            "/v1/chat/completions",
+            display_utility_answer("We fixed the parser race.\nTests pass; docs are open."),
+        );
+        let lane = display_test_lane(server.url());
+
+        let recap = lane
+            .display_paragraph("User: fix it\n\nAgent: fixed", "Recap it.", 700, "recap")
+            .await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(
+            recap,
+            ParagraphAnswer::Text("We fixed the parser race. Tests pass; docs are open.".to_owned())
         );
     }
 }

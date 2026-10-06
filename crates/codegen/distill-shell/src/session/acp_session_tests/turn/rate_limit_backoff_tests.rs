@@ -102,6 +102,7 @@ pub(super) async fn actor_under_test(
         retry_policy,
         transient_retry_enabled,
         false,
+        false,
         None,
     )
     .await
@@ -121,6 +122,7 @@ pub(super) async fn actor_under_test_with_subagents(
         sampler_surfaces_429(),
         false,
         false,
+        false,
         Some(subagents),
     )
     .await
@@ -133,6 +135,7 @@ async fn actor_under_test_with_startup_policy(
     retry_policy: distill_sampler::RetryPolicy,
     transient_retry_enabled: bool,
     explicit_model_override: bool,
+    cheap_agent: bool,
     subagents: Option<
         tokio::sync::mpsc::UnboundedSender<
             distill_tools::implementations::distill::task::types::SubagentEvent,
@@ -163,6 +166,7 @@ async fn actor_under_test_with_startup_policy(
     actor.sampler_handle = sampler_handle;
     actor.startup_hints.is_subagent = matches!(session, SessionKind::Subagent);
     actor.startup_hints.explicit_model_override = explicit_model_override;
+    actor.startup_hints.cheap_agent = cheap_agent;
     if subagents.is_some() {
         actor.tool_context.subagent_event_tx = subagents;
     }
@@ -230,38 +234,6 @@ fn controlled_effort_answer(effort: &str) -> distill_workspace::jev::JevAnswerSe
         answers,
         usage: Default::default(),
         request_id: Some("test-decision".to_owned()),
-        latency_ms: 0,
-    }
-}
-
-fn controlled_local_capable_answer() -> distill_workspace::jev::JevAnswerSet {
-    let answers = [
-        (
-            distill_workspace::jev::catalog::routing::LOCAL_CAPABLE_QUESTION,
-            0.99,
-        ),
-        (
-            distill_workspace::jev::catalog::routing::LOCAL_CONTEXT_QUESTION,
-            0.01,
-        ),
-        (
-            distill_workspace::jev::catalog::routing::LOCAL_FRONTIER_QUESTION,
-            0.01,
-        ),
-    ]
-    .into_iter()
-    .map(|(question, noul)| {
-        (
-            question.to_owned(),
-            distill_workspace::jev::Answer::Noul { noul },
-        )
-    })
-    .collect();
-    distill_workspace::jev::JevAnswerSet {
-        model: "test-decision-model".to_owned(),
-        answers,
-        usage: Default::default(),
-        request_id: Some("test-local-decision".to_owned()),
         latency_ms: 0,
     }
 }
@@ -554,8 +526,33 @@ async fn zero_or_single_effort_menus_do_not_invoke_auto_routing() {
         .await;
 }
 
+/// A fresh `explore` child with E6 on: its rounds may run on the utility
+/// model, with the session model as its fallback.
+async fn utility_child_under_test(
+    server: &MockInferenceServer,
+) -> (Arc<SessionActor>, CapturedRetries) {
+    let mut flags = distill_workspace::jev::JevFlags::harness_default();
+    flags.e_cheap_agent = true;
+    crate::jev::set_test_flags(flags);
+    actor_under_test_with_startup_policy(
+        server,
+        SessionKind::Subagent,
+        sampler_surfaces_429(),
+        false,
+        false,
+        true,
+        None,
+    )
+    .await
+}
+
+/// E6: a utility `explore` child's round that the utility endpoint fails (here
+/// rate-limited) is resubmitted at once on the child's own model, with fresh
+/// attribution, and the rest of the child stays there: no wait on the
+/// utility's limits and no second try, so the child is never worse off than
+/// without the lever.
 #[tokio::test(flavor = "current_thread")]
-async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
+async fn failed_utility_child_round_resubmits_on_its_own_model_and_stays_there() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -571,22 +568,13 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                     .expect("local mock inference server");
             local_server.enqueue_response(
                 "/v1/responses",
-                ScriptedResponse::text(400, "local endpoint rejected reasoning payload"),
+                ScriptedResponse::text(429, "utility endpoint rate limited"),
             );
             base_server.enqueue_response(
                 "/v1/responses",
                 ScriptedResponse::sse(responses_api_script_exact("done", "main-model")),
             );
-            let (actor, _retries) = actor_under_test(
-                &base_server,
-                SessionKind::Main,
-                sampler_surfaces_429(),
-                false,
-            )
-            .await;
-            actor
-                .jev_effort_auto
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let (actor, _retries) = utility_child_under_test(&base_server).await;
             actor.models_manager.insert_test_entry(
                 "local-model",
                 routing_entry_with_window("local-model", &local_server.url(), Vec::new(), 64_000),
@@ -596,7 +584,6 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 max_context_tokens: Some(256_000),
                 ..Default::default()
             });
-            crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
             let mut config = actor
                 .chat_state_handle
                 .get_sampling_config()
@@ -615,7 +602,6 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 .expect("signals actor should be alive");
             assert_eq!(signals.active_model_id.as_deref(), Some("local-model"));
             assert_eq!(signals.active_context_window_tokens, Some(64_000));
-            assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
             let request = conversation_request(&actor).await;
             let mut budget = actor.rate_limit_wait_budget(None);
             let outcome = actor
@@ -628,7 +614,7 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
                 )
                 .await;
             if let Err(error) = outcome {
-                panic!("local rejection must fall back to the base model: {error}");
+                panic!("a failed utility round must fall back to the child's model: {error}");
             }
             let local_requests: Vec<_> = local_server
                 .request_bodies()
@@ -663,17 +649,28 @@ async fn rejected_local_route_resubmits_base_model_with_fresh_attribution() {
             assert!(rows.iter().any(|row| {
                 row.model == "main-model" && row.effort.as_deref() == Some("high")
             }));
-            crate::jev::clear_test_decision_answers();
+            actor.prepare_sampler_for_turn().await;
+            let signals = actor
+                .signals_handle()
+                .snapshot()
+                .await
+                .expect("signals actor should be alive");
+            assert_eq!(
+                signals.active_model_id.as_deref(),
+                Some("main-model"),
+                "after a failed utility round the child stays on its own model"
+            );
+            crate::jev::clear_test_flags();
             crate::jev::clear_test_local_config();
         })
         .await;
 }
 
-/// A rejected local round must resubmit the session model's thinking payload.
+/// A rejected utility round must resubmit the session model's thinking payload.
 /// DeepSeek 400s with "reasoning_content must be passed back" if fallback
 /// drops the Reasoning sibling that folds onto the tool-call assistant.
 #[tokio::test(flavor = "current_thread")]
-async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model() {
+async fn rejected_utility_child_round_resubmits_reasoning_content_to_its_own_model() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -699,16 +696,7 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
                 "/v1/responses",
                 ScriptedResponse::sse(responses_api_script_exact("done", "main-model")),
             );
-            let (actor, _retries) = actor_under_test(
-                &base_server,
-                SessionKind::Main,
-                sampler_surfaces_429(),
-                false,
-            )
-            .await;
-            actor
-                .jev_effort_auto
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let (actor, _retries) = utility_child_under_test(&base_server).await;
             actor.models_manager.insert_test_entry(
                 "local-model",
                 routing_entry_with_window("local-model", &local_server.url(), Vec::new(), 64_000),
@@ -718,7 +706,6 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
                 max_context_tokens: Some(256_000),
                 ..Default::default()
             });
-            crate::jev::set_test_decision_answers([Some(controlled_local_capable_answer())]);
             let mut config = actor
                 .chat_state_handle
                 .get_sampling_config()
@@ -789,7 +776,91 @@ async fn rejected_local_route_resubmits_reasoning_content_to_the_session_model()
                 "fallback to the session model must pass reasoning_content back: {}",
                 base_requests[0]
             );
-            crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_flags();
+            crate::jev::clear_test_local_config();
+        })
+        .await;
+}
+
+/// A secret the child read must never reach the utility: the round stays on
+/// the child's own model, and so does the rest of the child, since the secret
+/// stays in its history.
+#[tokio::test(flavor = "current_thread")]
+async fn a_utility_child_with_a_secret_in_its_history_stays_on_its_own_model() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let base_server = MockInferenceServer::start_with_models(vec![
+                MockModelEntry::new("test"),
+                MockModelEntry::new("main-model"),
+            ])
+            .await
+            .expect("base mock inference server");
+            let local_server =
+                MockInferenceServer::start_with_models(vec![MockModelEntry::new("local-model")])
+                    .await
+                    .expect("local mock inference server");
+            let (actor, _retries) = utility_child_under_test(&base_server).await;
+            actor.models_manager.insert_test_entry(
+                "local-model",
+                routing_entry_with_window("local-model", &local_server.url(), Vec::new(), 64_000),
+            );
+            crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                model: Some("local-model".to_owned()),
+                ..Default::default()
+            });
+            let mut config = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            config.model = "main-model".to_owned();
+            actor.chat_state_handle.update_sampling_config(config);
+            actor
+                .chat_state_handle
+                .push_user_message(ConversationItem::user("find the deploy config"));
+            let active_model = || async {
+                let model = actor
+                    .signals_handle()
+                    .snapshot()
+                    .await
+                    .expect("signals actor should be alive")
+                    .active_model_id;
+                actor.jev_ledger.borrow_mut().take_pending_route();
+                model
+            };
+            actor.prepare_sampler_for_turn().await;
+            assert_eq!(
+                active_model().await.as_deref(),
+                Some("local-model"),
+                "a clean explore child runs on the utility"
+            );
+            actor
+                .chat_state_handle
+                .push_model_output(ConversationItem::assistant_tool_calls(vec![
+                    distill_sampling_types::ToolCall {
+                        id: "call_read".into(),
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":".env"}"#.into(),
+                    },
+                ]));
+            actor.chat_state_handle.push_tool_result(ConversationItem::tool_result(
+                "call_read",
+                "OPENAI_API_KEY=sk-proj-FAKEKEYabcdefghijklmnopqrstuvwxyz0123456789",
+            ));
+
+            for _ in 0..2 {
+                actor.prepare_sampler_for_turn().await;
+                assert_eq!(active_model().await.as_deref(), Some("main-model"));
+            }
+            assert!(
+                !local_server
+                    .request_bodies()
+                    .iter()
+                    .any(|body| body.get("model").is_some()),
+                "nothing was sent to the utility"
+            );
+            crate::jev::clear_test_flags();
             crate::jev::clear_test_local_config();
         })
         .await;
@@ -821,6 +892,7 @@ async fn explicit_child_model_and_effort_survive_all_routing_passes() {
                 sampler_surfaces_429(),
                 false,
                 true,
+                false,
                 None,
             )
             .await;
@@ -912,6 +984,7 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 sampler_surfaces_429(),
                 false,
                 true,
+                false,
                 None,
             )
             .await;

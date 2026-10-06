@@ -62,11 +62,24 @@ Model choice for subagents:
 | A fresh subagent the main model delegates (`general-purpose`, `explore`, a user agent without a `model:`) | the worker model; the main model when none is set |
 | `plan` and `code-reviewer` | the main model, unless Jev routes a simple task to the worker |
 | A full-context fork, a resumed subagent, or one spawned with an explicit `model` | its own model (the parent's for a fork) |
-| Harness roles (a goal's planner, verifiers, strategist, summarizer) | the main model |
+| Harness roles (a goal's planner, verifiers, strategist, summarizer) | the main model; the summarizer tries the utility first, and the progress checkpoint skips its call when the harness sees new work (see `docs/token-saver.md`) |
 
 An explicit `[subagents.models]` pin or an agent definition's `model:` wins over
 the worker default. A worker model missing from the catalog falls back to the
 main model.
+
+With `[jev.ladder] e_cheap_agent = true` (off by default), a fresh `explore`
+child the main model delegates with no model of its own runs its rounds on the
+utility model when that model is a catalog entry (a raw OpenRouter chain does
+not qualify). The child keeps the model the table gives it as its fallback: a
+failed utility request (rejection, rate limit, timeout, server error), a utility
+that is missing, lists no tool calling, or whose window the conversation outgrows,
+or a conversation that carries a secret, moves the round and the rest of the child back to it; a round
+the user cancelled or rewound is not resent. Workflow children and children with an output budget stay
+on their model. After a utility child
+fails, the parent's later children skip the utility. A child that answers that
+it cannot do the task is not retried yet; its report reaches the main model as
+it is.
 
 A delegated worker cannot delegate further (the subagent depth limit is one). Its
 final message is the report the main model receives: the outcome, then the
@@ -119,7 +132,8 @@ model reviews it. The built-in `code-reviewer` inspects a substantive code
 checkpoint with a fresh, read-only context on the main model, unless pinned
 through `[subagents.models]`. Give it the diff, acceptance criteria and test
 evidence. Goal completion still uses its existing verifier; a goal's planner and
-progress evaluator run on the main model.
+round-end evaluation run on the main model, and the mid-turn progress
+checkpoint skips its call when the harness sees new work, else runs on main.
 
 ```toml
 [subagents.models]
@@ -171,14 +185,28 @@ on the replica that holds its cached prefix; a new turn starts without one.
 This does not guarantee a cache hit; compare cache-read tokens and total cost
 before changing cache TTL or context-pruning behavior.
 
+A main model OpenRouter serves from several providers can alternate cache hits
+and misses within one session (muse-spark measured about 40% of prompt tokens
+cached, with half of its calls at zero). That is provider routing, not a prefix
+change. A `[model.<id>]` entry has no field for OpenRouter's `provider` request
+object, so pinning one provider is a setting on your OpenRouter account
+(allowed or ignored providers), not in Distill. Compare `cachedReadTokens` in
+`usage.json` before and after. Distill does not rewrite history on an observed
+hit rate: on an alternating pattern that would destroy the hits that remain.
+
 ## Utility work
 
-Utility tasks extract literal values, digest logs, compress text, answer
-questions about a supplied payload, pick candidate IDs, or classify content.
-Each task checks the result before the harness uses it. Depending on the task,
-checks preserve literal paths and error messages, require quoted spans, or
-reject labels and IDs outside the supplied set. A rejected result falls back
-to the normal path.
+Two utility tasks are allowed. `select_units` picks the IDs of labelled source
+units (lines, JSON elements, skills, tool families) that answer a question, and
+the harness copies those units verbatim; an ID outside the supplied set rejects
+the answer. `display_text` writes text a person reads and the main model never
+relies on: a title, a shell completion, a prompt suggestion, a recap, a goal's
+closing summary. The laziness classifier sends its own request to the utility
+model and keeps only a verdict that parses; opt-in `explore` children run whole rounds on it.
+Every rejected, failed or late answer falls back to the normal path (the table
+in [Where the token savings come from](token-saver.md#every-utility-use-at-a-glance)
+names each fallback). The other tasks in `jev/tasks.rs` are registered but not
+wired.
 
 You can configure a single model entry or an ordered OpenRouter fallback chain:
 
@@ -193,11 +221,27 @@ A comma-separated chain is tried in order. Model availability and charges come
 from the provider. Keep API keys in the environment or use provider login;
 do not paste them into this example.
 
-The `b2_local_model` route can also hand an entire call to the Utility model
-when the capacity checks and context limit allow it. This is separate from the
-bounded utility tasks. The `e_retention` route breaks large outputs into blocks
+An explicit `[jev.local] model` is the only candidate: if it cannot run, there
+is no utility lane. When it is unset, the utility model is the first of these
+that can run: the shipped OpenRouter chain (so an install that already had a
+utility keeps it), then the `[models] session_summary` or `prompt_suggestion`
+pin (a catalog id, often on a subscription) when that chain has no key. The
+worker is never used, because it is priced like a main model. A candidate that
+is the session's own model is skipped. So is the model a caller falls back to:
+the summary model for the title, the suggest model for a prompt suggestion. The
+session title and `ask_stored_output` use the same resolver. When nothing
+resolves, utility work keeps its previous path and the log says so once. A
+sampler-backed lane gives up after 20 s, the closed client's request timeout,
+and the caller keeps today's bytes.
+
+No route hands a whole main-session call to the utility model: a round on
+another model replays the history uncached. `b2_local_model` is off and reads
+nothing; only the `e_cheap_agent` explore children above run whole rounds on
+it. The `e_retention` route breaks large outputs into blocks
 and decides what to retain before discarding the original text, with special
-handling for secrets. The utility transport supports catalog models on the sampler stack as well as the closed client. Missing decisions keep the existing behavior.
+handling for secrets. It is off by default and, when on, runs only on a result
+utility selection (`e_cheap_compress`) left as it was, so a result pays for one
+selection. The utility transport supports catalog models on the sampler stack as well as the closed client. Missing decisions keep the existing behavior.
 
 ## New routing and context levers
 
@@ -207,12 +251,14 @@ handling for secrets. The utility transport supports catalog models on the sampl
 | `d5_memory_capture_gate` | Whether the turn produced durable knowledge to capture | 0.70 |
 | `b7_subagent_model` | Whether the worker model can do a subagent task as well as the main model | 0.75 |
 
-A missing or uncertain answer keeps today's behavior. P3 now sends previews to
-Jev before compaction. C4 sends the change once for review. B1's intent reaches
+A missing or uncertain answer keeps today's behavior. D4 also reads the end of
+the last assistant message and the todo statuses. P3 now sends previews to Jev
+before compaction, only for an input that is cold anyway and will be sampled. C4 sends the change once for review. B1's intent reaches
 B2 as `turn_intent`.
 
 Retired levers are `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
-`c2_failure_triage` and `c7_change_type`. Their configuration keys are ignored.
+`c2_failure_triage` and `c7_change_type`. Their configuration keys are ignored,
+and config load warns once per key that it is retired.
 
 ## Other decisions
 
@@ -236,8 +282,7 @@ effort_auto = true
 
 [jev.ladder]
 b2_micro_effort = true
-b2_local_model = true
-e_retention = true
+e_cheap_agent = true             # opt-in: utility explore children
 ```
 
 Jev needs credentials for its configured decision endpoint. Without them, the
@@ -253,4 +298,7 @@ GROK_LOG_JEV=1 distill
 This compatibility-named variable enables `logs/jev.jsonl` inside the active
 profile. Entries record the route, decision, confidence, latency, model, and
 whether the requested choice was applied. See [the decision inventory](../list.md)
-for implementation pointers.
+for implementation pointers. Utility outcomes per source kind are always in the
+session's `usage.json` (`utilityOutcomes`, and `source_kind`/`final_decision` on
+utility attempt rows), with no content; [Where the token savings come
+from](token-saver.md#the-decision-layer-on-top) says how to read them.

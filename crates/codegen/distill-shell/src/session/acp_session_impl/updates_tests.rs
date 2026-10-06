@@ -118,17 +118,6 @@ fn persisted_finishes(
         .collect()
 }
 
-fn test_persistence_sampling_client() -> crate::sampling::Client {
-    crate::sampling::Client::new(distill_sampler::SamplerConfig {
-        api_key: Some("test-key".to_owned()),
-        base_url: "http://localhost".to_owned(),
-        model: "test-model".to_owned(),
-        context_window: 256_000,
-        ..Default::default()
-    })
-    .expect("sampling client")
-}
-
 async fn actor_with_goal() -> (
     SessionActor,
     tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
@@ -163,8 +152,7 @@ async fn orphan_finish_without_token_record_persists_once_and_stops_reheal() {
                 &info,
                 session_dir.path().to_path_buf(),
                 acp::ModelId::new("test-model"),
-                test_persistence_sampling_client(),
-                "test-model".to_owned(),
+                "test subagent".to_owned(),
                 crate::session::persistence::ExplicitSessionOpen::New {
                     identity: None,
                     next_trace_turn: None,
@@ -261,8 +249,7 @@ async fn duplicate_spawn_after_finish_is_not_persisted_or_rehealed() {
                 &info,
                 session_dir.path().to_path_buf(),
                 acp::ModelId::new("test-model"),
-                test_persistence_sampling_client(),
-                "test-model".to_owned(),
+                "test subagent".to_owned(),
                 crate::session::persistence::ExplicitSessionOpen::New {
                     identity: None,
                     next_trace_turn: None,

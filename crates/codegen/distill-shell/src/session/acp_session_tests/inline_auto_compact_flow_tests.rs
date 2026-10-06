@@ -47,6 +47,7 @@ async fn create_test_actor(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
     let chat_state_handle = distill_chat_state::ChatStateActor::spawn(
@@ -273,6 +274,7 @@ async fn create_test_actor(
         turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(0),
         model_tools_read_only: std::cell::Cell::new(false),
+        model_tools_ask_stored_output: std::cell::Cell::new(false),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
         turn_summary_task: std::cell::RefCell::new(None),
@@ -479,6 +481,7 @@ async fn create_test_actor_with_memory(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
     let chat_state_handle = distill_chat_state::ChatStateActor::spawn(
@@ -721,6 +724,7 @@ async fn create_test_actor_with_memory(
         turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(0),
         model_tools_read_only: std::cell::Cell::new(false),
+        model_tools_ask_stored_output: std::cell::Cell::new(false),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
         turn_summary_task: std::cell::RefCell::new(None),

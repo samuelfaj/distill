@@ -643,6 +643,10 @@ pub fn family_decisions(
 pub struct ToolFamilySelection {
     included: std::collections::BTreeSet<String>,
     asked_for: Option<String>,
+    /// A subagent's ceiling: the optional families its parent session offers.
+    /// The parent already judged the human request, so a child never asks
+    /// about (or adds) a family the parent left out.
+    parent_families: Option<std::collections::BTreeSet<String>>,
 }
 
 impl ToolFamilySelection {
@@ -655,12 +659,25 @@ impl ToolFamilySelection {
                 && !CORE_FAMILIES.contains(&family)
                 && (mcp_prunable || family != "mcp")
                 && !self.included.contains(family)
+                && self.parent_families.as_ref().is_none_or(|parent| parent.contains(family))
                 && !pending.contains(&family)
             {
                 pending.push(family);
             }
         }
         pending
+    }
+
+    /// Bounds a subagent's families by its parent's. The parent's set only
+    /// grows, so the child's candidates only grow too.
+    pub fn limit_to_parent(&mut self, families: std::collections::BTreeSet<String>) {
+        self.parent_families = Some(families);
+    }
+
+    /// Whether a human request has been judged, so the optional families this
+    /// session offers are a decision rather than the empty default.
+    pub fn decided(&self) -> bool {
+        self.asked_for.is_some()
     }
 
     /// Whether `request` still needs an answer about the pending families.
@@ -854,6 +871,28 @@ mod tests {
         let mut offline = ToolFamilySelection::default();
         offline.record("anything", &offline.pending(&names, false), None);
         assert!(offline.keeps("image_gen", false) && offline.keeps("scheduler_list", false));
+    }
+
+    /// A subagent works for a request its parent already judged: a family the
+    /// parent left out is neither asked about nor offered, even when the child
+    /// gets no answer, while the parent's own families stay open to the child.
+    #[test]
+    fn a_child_never_offers_a_family_its_parent_left_out() {
+        let names: Vec<String> = ["read_file", "image_gen", "scheduler_list", "send_feedback"]
+            .map(str::to_owned)
+            .to_vec();
+        let mut child = ToolFamilySelection::default();
+        child.limit_to_parent(["schedule".to_owned()].into());
+        let pending = child.pending(&names, false);
+        assert_eq!(pending, ["schedule"]);
+        child.record("watch the deploy every hour", &pending, None);
+        assert!(child.keeps("scheduler_list", false), "no answer keeps the parent's family");
+        assert!(!child.keeps("image_gen", false) && !child.keeps("send_feedback", false));
+        assert!(child.keeps("read_file", false));
+
+        child.limit_to_parent(["schedule".to_owned(), "media".to_owned()].into());
+        assert_eq!(child.pending(&names, false), ["media"], "the parent's set only grows");
+        assert!(!ToolFamilySelection::default().decided() && child.decided());
     }
 
     #[test]

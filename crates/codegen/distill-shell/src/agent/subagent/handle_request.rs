@@ -302,6 +302,66 @@ impl WakePersistenceContext {
         }
     }
 }
+/// A child session's title: its spawn description (what the agent panel
+/// shows), else its agent type. No model is asked for a hidden session.
+fn subagent_title(description: &str, subagent_type: &str) -> String {
+    let description = description.trim();
+    if description.is_empty() {
+        subagent_type.trim().to_owned()
+    } else {
+        description.to_owned()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_subagent_is_titled_by_its_description_or_type() {
+    assert_eq!(subagent_title(" Audit recap path ", "explore"), "Audit recap path");
+    assert_eq!(subagent_title("  ", "explore"), "explore");
+}
+
+/// A resumed child's history already holds its MCP announcements, so its
+/// `announcement_state.json` is restored the way a resumed main session's is:
+/// a server with an unchanged fingerprint is not announced again. Only the MCP
+/// half; the child's skill listing keeps its own spawn rules. A missing or
+/// unreadable file keeps today's fresh announcement.
+fn resumed_mcp_announcements(
+    child_session_dir: &Path,
+) -> Option<crate::session::announcement_state::AnnouncementState> {
+    let bytes = std::fs::read(
+        child_session_dir.join(crate::session::storage::ANNOUNCEMENT_STATE_FILE),
+    )
+    .ok()?;
+    let mut state: crate::session::announcement_state::AnnouncementState =
+        serde_json::from_slice(&bytes).ok()?;
+    state.announced_skill_names.clear();
+    Some(state)
+}
+
+/// Each resume used to append another byte-identical MCP announcement; the
+/// restored fingerprints stop that, and a broken file falls back to announcing.
+#[cfg(test)]
+#[test]
+fn a_resumed_child_restores_only_its_mcp_announcements() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(resumed_mcp_announcements(dir.path()).is_none());
+    let file = dir.path().join(crate::session::storage::ANNOUNCEMENT_STATE_FILE);
+    std::fs::write(&file, b"{not json").unwrap();
+    assert!(resumed_mcp_announcements(dir.path()).is_none());
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&serde_json::json!({
+            "mcp_server_fingerprints": {"mac-use": {"tool_count": 3, "description_hash": 1, "tool_names_hash": 2}},
+            "announced_skill_names": ["pdf"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let restored = resumed_mcp_announcements(dir.path()).expect("state restores");
+    assert!(restored.mcp_server_fingerprints.contains_key("mac-use"));
+    assert!(restored.announced_skill_names.is_empty());
+}
+
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
     provenance: ModelOverrideProvenance,
@@ -880,6 +940,16 @@ pub(crate) async fn run_shell_child(
             &ctx,
         )
         .await;
+    let cheap_agent = crate::agent::subagent::cheap_agent_eligible(
+        &request,
+        !is_wake && resume_source.is_none() && request.resume_from.is_none(),
+        effective_runtime.model.is_some()
+            || matches!(definition.model, ModelOverride::Override(_))
+            || ctx
+                .subagent_model_overrides
+                .contains_key(&request.subagent_type),
+        &ctx.parent_session_id,
+    );
     let subagent_max_turns = resolve_subagent_max_turns(definition.max_turns, ctx.parent_max_turns);
     {
         let model_str = &effective_sampling_config.model;
@@ -1240,21 +1310,19 @@ pub(crate) async fn run_shell_child(
             completion_data,
         );
     }
-    let sampling_client = match crate::sampling::Client::new(effective_sampling_config.clone()) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!("Sampling client error: {e}");
-            return setup_failure_output(
-                &msg,
-                &request,
-                &child_session_id,
-                &subagent_meta_dir,
-                &early_gcs_ctx,
-                start_artifacts.terminal_persistence_allowed(),
-                completion_data,
-            );
-        }
-    };
+    // A config the sampler cannot build fails setup here, before persistence exists.
+    if let Err(e) = crate::sampling::Client::new(effective_sampling_config.clone()) {
+        let msg = format!("Sampling client error: {e}");
+        return setup_failure_output(
+            &msg,
+            &request,
+            &child_session_id,
+            &subagent_meta_dir,
+            &early_gcs_ctx,
+            start_artifacts.terminal_persistence_allowed(),
+            completion_data,
+        );
+    }
     #[cfg(test)]
     let persistence_dir = ctx
         .setup_failure
@@ -1289,8 +1357,7 @@ pub(crate) async fn run_shell_child(
         &child_session_info,
         persistence_dir,
         effective_model_id.clone(),
-        sampling_client,
-        effective_sampling_config.model.clone(),
+        subagent_title(&request.description, &request.subagent_type),
         if is_wake {
             crate::session::persistence::ExplicitSessionOpen::Wake
         } else {
@@ -1693,6 +1760,7 @@ pub(crate) async fn run_shell_child(
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
             explicit_model_override: model_routing_locked,
+            cheap_agent,
             report_budget: context_source == InitialContextSource::New
                 && !request.owner.is_workflow()
                 && request.runtime_overrides.output_schema.is_none()
@@ -1740,7 +1808,9 @@ pub(crate) async fn run_shell_child(
         None,
         None,
         Vec::new(),
-        None,
+        (context_source == InitialContextSource::Resumed)
+            .then(|| resumed_mcp_announcements(&child_session_dir))
+            .flatten(),
         if verbatim_mirror_fork {
             None
         } else if let Some(scope) = agent_memory_scope {
@@ -2283,6 +2353,9 @@ pub(crate) async fn run_shell_child(
         .await;
         let execution = super::worker_execution_evidence(&conversation);
         result.output = Arc::from(format!("{}\n\n{execution}\n\n{review}", result.output));
+    }
+    if cheap_agent && !result.success && !result.cancelled {
+        crate::agent::subagent::trip_cheap_agent(&ctx.parent_session_id);
     }
     if let Some(worker) = unavailable_worker.as_deref()
         && request.runtime_overrides.output_schema.is_none()

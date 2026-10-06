@@ -664,6 +664,10 @@ pub struct ConversationRequest {
     pub prompt_cache_key: Option<String>,
     /// What the sampler does when the response stops with `Length`.
     pub length_policy: LengthPolicy,
+    /// Sent once and never again with this prefix (a one-shot side call).
+    /// The Messages mapping then marks no conversation breakpoint: it would pay the cache-write premium for an entry nobody reads.
+    /// The system prompt and a leading instructions message keep theirs, since the next call of the same kind shares them.
+    pub one_shot: bool,
 }
 
 impl ConversationRequest {
@@ -1733,6 +1737,12 @@ impl ConversationRequest {
 
     pub fn with_json_schema(mut self, schema: serde_json::Value) -> Self {
         self.json_schema = Some(schema);
+        self
+    }
+
+    /// Mark the request one-shot (see [`ConversationRequest::one_shot`]).
+    pub fn one_shot(mut self) -> Self {
+        self.one_shot = true;
         self
     }
 }

@@ -36,6 +36,27 @@ pub trait ChatPersistence: Send + 'static {
         None
     }
 
+    /// Store one old tool output (a result, or a large argument value of the
+    /// call) before history eviction replaces it, and return the stored path.
+    ///
+    /// The path must be readable by the model's existing file tool and hold
+    /// `payload` byte for byte. Implementations return `None` for anything
+    /// that must stay whole (a secret-like payload, a skill or instruction
+    /// file, a user's answer) and on storage failure; the caller then keeps
+    /// the bytes as they are.
+    fn archive_evicted_text(
+        &mut self,
+        _tool_name: &str,
+        _tool_arguments: &str,
+        _payload: &str,
+    ) -> Option<String> {
+        None
+    }
+
+    /// History eviction just replaced items, so anything that remembers what
+    /// the model has already seen (a read-reuse index) must forget it.
+    fn history_evicted(&mut self) {}
+
     /// Persist one working-directory switch generation and report commit status.
     fn persist_working_directory_switch_and_ack(
         &mut self,
@@ -233,6 +254,15 @@ impl ChatPersistence for MockChatPersistence {
                 self.archive_body_range.clone().unwrap_or(0..payload.len()),
             )
         })
+    }
+
+    fn archive_evicted_text(
+        &mut self,
+        _tool_name: &str,
+        _tool_arguments: &str,
+        _payload: &str,
+    ) -> Option<String> {
+        self.archive_path.clone()
     }
 
     fn persist_working_directory_switch_and_ack(

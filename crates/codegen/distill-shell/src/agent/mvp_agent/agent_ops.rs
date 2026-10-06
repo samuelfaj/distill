@@ -147,46 +147,32 @@ impl MvpAgent {
         primary: &SamplingConfig,
     ) -> Result<(OaiCompatClient, String), acp::Error> {
         let slug = self.resolve_session_summary_model();
-        let config = self
+        let mut config = self
             .resolve_aux_sampler_for_session(&slug, primary)
             .unwrap_or_else(|| primary.clone());
+        pin_lowest_title_effort(&self.models_manager, &mut config);
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
         Ok((client, model))
     }
-    /// The utility lane for the initial session title, resolved like the session's `cheap_lane`.
+    /// The utility lane for the initial session title, from the same resolver as the session's `cheap_lane`.
+    /// `summary_model` is the title's fallback model; a utility attempt on it
+    /// would pay that model twice for one title.
     pub(super) fn build_title_utility_lane(
         &self,
         primary: &SamplingConfig,
+        summary_model: &str,
     ) -> Option<std::sync::Arc<crate::jev_cheap::CheapLane>> {
         if !crate::jev::lever_active(distill_workspace::jev::flags::JevLever::ECheapCompress) {
             return None;
         }
-        let local = crate::jev::local_config_cached();
-        let spec = local
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|spec| !spec.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(crate::jev_cheap::default_model_spec);
-        let lane = if crate::agent::config::find_model_by_id(&self.models_manager.models(), &spec)
-            .is_some()
-        {
-            let mut cfg = self.resolve_aux_sampler_for_session(&spec, primary)?;
-            if local.effort.as_deref().is_none_or(|effort| effort == "auto") {
-                cfg.reasoning_effort = self
-                    .models_manager
-                    .model_reasoning_efforts(&cfg.model)
-                    .into_iter()
-                    .min_by_key(|option| crate::session::acp_session::effort_rank(option.value))
-                    .map(|option| option.value);
-            }
-            crate::jev_cheap::CheapLane::from_sampler_config(&cfg)
-        } else {
-            crate::jev_cheap::CheapLane::from_spec(&spec)
-        };
-        lane.map(std::sync::Arc::new)
+        let summary_slug = self.resolve_session_summary_model();
+        crate::jev_cheap::resolve_utility_lane(
+            &self.models_manager,
+            &[primary.model.as_str(), summary_model, summary_slug.as_str()],
+            &|slug| self.resolve_aux_sampler_for_session(slug, primary),
+        )
+        .map(std::sync::Arc::new)
     }
     fn has_proxy_credentials(&self) -> bool {
         self.cfg.borrow().endpoints.deployment_key.is_some()
@@ -5322,5 +5308,25 @@ impl Drop for LocalWorkspaceReapGuard {
                 handle.shutdown().await;
             });
         }
+    }
+}
+
+/// A title is a few words: it never runs at the session's effort (often max)
+/// but at the lowest level the model's menu offers, or the provider default
+/// when the catalog lists none.
+pub(super) fn pin_lowest_title_effort(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    config: &mut SamplingConfig,
+) {
+    config.reasoning_effort = models_manager
+        .model_reasoning_efforts(&config.model)
+        .into_iter()
+        .min_by_key(|option| crate::session::acp_session::effort_rank(option.value))
+        .map(|option| option.value);
+    // A model that is a different id per effort sends the id of that level.
+    if let Some(effort) = config.reasoning_effort
+        && let Some(routed) = models_manager.model_for_effort(&config.model, effort)
+    {
+        config.model = routed;
     }
 }

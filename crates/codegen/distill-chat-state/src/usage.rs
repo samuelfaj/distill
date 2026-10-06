@@ -34,7 +34,7 @@
 use distill_sampling_types::TokenUsage;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Outcome of one dispatched provider attempt. Rejected responses still count;
 /// they are distinct from a local preflight refusal, which never creates one.
@@ -86,6 +86,13 @@ pub struct UsageAttribution {
     pub bytes_in: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes_out: Option<u64>,
+    /// Utility attempts only: what the request was about (`shell`, `recap`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    /// Utility attempts only: `used`, `nothing`, `consumer_rejected`,
+    /// `review_rejected`, `rejected`, `failed` or `cancelled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_decision: Option<String>,
     pub status: UsageCallStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
@@ -198,6 +205,71 @@ fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     }
 }
 
+/// Content-free utility outcome counters for one source kind. Sizes and labels
+/// only, so a secret in a tool result can never reach the ledger.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UtilityOutcomeCounts {
+    /// Final decision per eligible result (`compress`, `not_shorter`,
+    /// `defer:required-dominates`, `keep:lane-unavailable`, …). Keys starting
+    /// with `request:` count single utility requests refused before dispatch.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub decisions: BTreeMap<String, u64>,
+    /// Utility requests the results planned.
+    #[serde(default)]
+    pub chunks: u64,
+    /// Bytes before the decision.
+    #[serde(default)]
+    pub bytes_in: u64,
+    /// Bytes that entered the context after it (the original when kept).
+    #[serde(default)]
+    pub bytes_out: u64,
+}
+
+impl UtilityOutcomeCounts {
+    pub fn is_empty(&self) -> bool {
+        self.decisions.is_empty() && self.chunks == 0 && self.bytes_in == 0 && self.bytes_out == 0
+    }
+
+    pub fn saturating_add(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for (decision, count) in &other.decisions {
+            let entry = out.decisions.entry(decision.clone()).or_default();
+            *entry = entry.saturating_add(*count);
+        }
+        out.chunks = out.chunks.saturating_add(other.chunks);
+        out.bytes_in = out.bytes_in.saturating_add(other.bytes_in);
+        out.bytes_out = out.bytes_out.saturating_add(other.bytes_out);
+        out
+    }
+
+    pub fn saturating_sub(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for (decision, count) in &other.decisions {
+            if let Some(entry) = out.decisions.get_mut(decision) {
+                *entry = entry.saturating_sub(*count);
+            }
+        }
+        out.decisions.retain(|_, count| *count > 0);
+        out.chunks = out.chunks.saturating_sub(other.chunks);
+        out.bytes_in = out.bytes_in.saturating_sub(other.bytes_in);
+        out.bytes_out = out.bytes_out.saturating_sub(other.bytes_out);
+        out
+    }
+
+    /// Element-wise maximum: two snapshots of the same monotonic ledger.
+    pub fn max(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for (decision, count) in &other.decisions {
+            let entry = out.decisions.entry(decision.clone()).or_default();
+            *entry = (*entry).max(*count);
+        }
+        out.chunks = out.chunks.max(other.chunks);
+        out.bytes_in = out.bytes_in.max(other.bytes_in);
+        out.bytes_out = out.bytes_out.max(other.bytes_out);
+        out
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageLedger {
     pub totals: UsageTotals,
@@ -212,6 +284,9 @@ pub struct UsageLedger {
     /// Admitted provider attempts whose terminal attribution has not arrived.
     /// This is part of the canonical ledger lifecycle, not a second accounting store.
     pub pending_attempts: BTreeSet<String>,
+    /// Utility outcomes per source kind. Not billing: it never changes totals.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub utility_outcomes: BTreeMap<String, UtilityOutcomeCounts>,
 }
 
 impl UsageLedger {
@@ -445,6 +520,23 @@ impl UsageLedger {
         }
     }
 
+    /// Count one utility decision for `source_kind` (see [`UtilityOutcomeCounts`]).
+    pub fn record_utility_outcome(
+        &mut self,
+        source_kind: &str,
+        decision: &str,
+        chunks: u64,
+        bytes_in: u64,
+        bytes_out: u64,
+    ) {
+        let row = self.utility_outcomes.entry(source_kind.to_owned()).or_default();
+        let count = row.decisions.entry(decision.to_owned()).or_default();
+        *count = count.saturating_add(1);
+        row.chunks = row.chunks.saturating_add(chunks);
+        row.bytes_in = row.bytes_in.saturating_add(bytes_in);
+        row.bytes_out = row.bytes_out.saturating_add(bytes_out);
+    }
+
     pub fn mark_incomplete(&mut self) {
         self.incomplete = true;
     }
@@ -521,6 +613,8 @@ mod tests {
             requested_effort: None,
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Completed,
@@ -559,6 +653,8 @@ mod tests {
             requested_effort: Some("low".to_owned()),
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: Some("effort:low".to_owned()),
             status: UsageCallStatus::Completed,
@@ -579,6 +675,8 @@ mod tests {
             requested_effort: None,
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: Some("absent".to_owned()),
             status: UsageCallStatus::Failed,
@@ -619,6 +717,8 @@ mod tests {
                 requested_effort: None,
                 reason: None,
                 bytes_in: None,
+                source_kind: None,
+                final_decision: None,
                 bytes_out: None,
                 applied_effort: Some("absent".to_owned()),
                 status: if role == "main" {
@@ -669,6 +769,8 @@ mod tests {
             requested_effort: Some("low".to_owned()),
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Rejected,
@@ -704,6 +806,8 @@ mod tests {
             requested_effort: None,
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Completed,
@@ -750,6 +854,8 @@ mod tests {
             requested_effort: None,
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: Some("absent".to_owned()),
             status: UsageCallStatus::Completed,
@@ -787,6 +893,8 @@ mod tests {
             requested_effort: None,
             reason: None,
             bytes_in: None,
+            source_kind: None,
+            final_decision: None,
             bytes_out: None,
             applied_effort: None,
             status: UsageCallStatus::Completed,
@@ -850,6 +958,8 @@ mod tests {
             applied_effort: None,
             reason: Some("defer:consumer-rejected".to_owned()),
             bytes_in: Some(321),
+            source_kind: None,
+            final_decision: None,
             bytes_out: Some(88),
             status: UsageCallStatus::Rejected,
             usage: None,
@@ -870,5 +980,70 @@ mod tests {
         row.remove("bytes_in");
         row.remove("bytes_out");
         serde_json::from_value::<UsageLedger>(old).expect("old usage ledger format");
+    }
+
+    /// Why eligible results stay raw must be answerable from the ledger alone,
+    /// and the counters are telemetry: they must never move a bill.
+    #[test]
+    fn utility_outcomes_count_per_source_without_touching_billing() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_utility_outcome("shell", "compress", 2, 10_000, 3_000);
+        ledger.record_utility_outcome("shell", "not_shorter", 1, 5_000, 5_000);
+        ledger.record_utility_outcome("shell", "compress", 1, 8_000, 2_000);
+        ledger.record_utility_outcome("mcp", "keep:lane-unavailable", 0, 4_096, 4_096);
+
+        let shell = &ledger.utility_outcomes["shell"];
+        assert_eq!(shell.decisions["compress"], 2);
+        assert_eq!(shell.decisions["not_shorter"], 1);
+        assert_eq!((shell.chunks, shell.bytes_in, shell.bytes_out), (4, 23_000, 10_000));
+        assert_eq!(ledger.utility_outcomes["mcp"].decisions["keep:lane-unavailable"], 1);
+        assert_eq!(ledger.totals, UsageTotals::default());
+        assert!(!ledger.is_incomplete());
+
+        let json = serde_json::to_value(&ledger).expect("serialize outcomes");
+        assert_eq!(json["utility_outcomes"]["shell"]["bytes_in"], 23_000);
+        let mut old = json.clone();
+        old.as_object_mut().expect("ledger").remove("utility_outcomes");
+        let old: UsageLedger = serde_json::from_value(old).expect("ledger without outcomes");
+        assert!(old.utility_outcomes.is_empty());
+
+        let later = ledger.utility_outcomes["shell"].saturating_add(&shell.clone());
+        assert_eq!(later.saturating_sub(shell), *shell, "a delta is what was added");
+        assert_eq!(shell.max(&later), later);
+    }
+
+    /// A utility row says which source it served and how it ended, so
+    /// acceptance per source is measurable without the opt-in decision log.
+    #[test]
+    fn utility_attribution_tags_round_trip_and_stay_optional() {
+        let mut row = UsageAttribution {
+            attempt_id: "tagged".to_owned(),
+            task_id: Some("select_units".to_owned()),
+            turn_id: None,
+            request_id: None,
+            role: "utility".to_owned(),
+            model_id: "utility-model".to_owned(),
+            endpoint: None,
+            requested_effort: None,
+            applied_effort: None,
+            reason: None,
+            bytes_in: Some(2_048),
+            bytes_out: Some(512),
+            source_kind: Some("shell".to_owned()),
+            final_decision: Some("used".to_owned()),
+            status: UsageCallStatus::Completed,
+            usage: Some(tu(10, 2)),
+            usage_complete: true,
+            api_duration_ms: None,
+            cost_usd_ticks: None,
+            cost_basis: UsageCostBasis::Unknown,
+        };
+        let json = serde_json::to_value(&row).expect("serialize tagged row");
+        assert_eq!(json["source_kind"], "shell");
+        assert_eq!(json["final_decision"], "used");
+        row.source_kind = None;
+        row.final_decision = None;
+        let json = serde_json::to_value(&row).expect("serialize untagged row");
+        assert!(json.get("source_kind").is_none() && json.get("final_decision").is_none());
     }
 }

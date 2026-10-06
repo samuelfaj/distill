@@ -272,6 +272,13 @@ pub(crate) struct InitialTitleGeneration {
     pub(crate) response: Option<ConversationResponse>,
 }
 
+/// Whether the first words of the request make a title by themselves: they
+/// pass the same display gate a model title does, and are not the empty
+/// placeholder. When they do, no title model is asked.
+pub(crate) fn usable_fallback_title(fallback: &str) -> bool {
+    fallback != "New session" && title_display_text(fallback).is_some()
+}
+
 pub(crate) fn initial_title_from_utility(utility: Option<String>, fallback: String) -> String {
     utility
         .and_then(|text| title_display_text(&text))
@@ -324,7 +331,9 @@ Just generate the session_title and nothing else"#,
     // initial-title call failed on the ChatGPT Codex backend and on OpenRouter
     // Muse while their other requests succeeded). With `Auto` the model still
     // calls the only tool, and a plain-text title is accepted below.
-    .with_tool_choice(ConversationToolChoice::Auto);
+    .with_tool_choice(ConversationToolChoice::Auto)
+    // Asked once per session, so a tip breakpoint would write a cache nobody reads.
+    .one_shot();
 
     let (response_result, rejected_response) = client
         .conversation_collect_with_idle_timeout_and_rejection(
@@ -445,6 +454,20 @@ mod tests {
             initial_title_from_utility(Some("\n".to_owned()), "Fallback".to_owned()),
             "Fallback"
         );
+    }
+
+    /// The first words of the request are the title whenever they read as
+    /// one, so a failed utility title costs no main-model call; only a request
+    /// whose opening makes no title (one long path, no text) still asks.
+    #[test]
+    fn the_request_opening_is_the_title_unless_it_makes_none() {
+        use super::usable_fallback_title;
+        assert!(usable_fallback_title(&title_fallback_from_user_text(
+            "fix the flaky parser test in the tokenizer module please"
+        )));
+        assert!(!usable_fallback_title(&title_fallback_from_user_text("   ")));
+        let path = format!("/{}", "deeply/nested/".repeat(10));
+        assert!(!usable_fallback_title(&title_fallback_from_user_text(&path)));
     }
 
     #[test]

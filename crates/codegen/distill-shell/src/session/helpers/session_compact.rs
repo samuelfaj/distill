@@ -434,6 +434,76 @@ where
 #[path = "session_compact_compact_cancel_await_tests.rs"]
 mod compact_cancel_await_tests;
 
+/// Smallest output budget worth sending; below it the request keeps the
+/// route's own reservation and its overflow walks the input ladder.
+const MIN_COMPACTION_OUTPUT_TOKENS: u64 = 1_024;
+
+/// The output budget a compaction request reserves when the route's ceiling
+/// would not fit next to `input_tokens`: the window minus the input and a
+/// margin that grows with it. `None` keeps the route's own value. Without it a
+/// 943K catalogue ceiling plus a 600K summary input overflowed a 1M window, so
+/// every two-pass pass 1 failed with a tokenless 400.
+fn compaction_output_cap(config: &SamplingConfig, input_tokens: u64) -> Option<u32> {
+    let configured = distill_sampler::effective_conversation_output_tokens(
+        config,
+        &ConversationRequest::default(),
+    )?;
+    if config.context_window == 0 {
+        return None;
+    }
+    let margin = 2_048u64.max(input_tokens / 10);
+    let available = config
+        .context_window
+        .saturating_sub(input_tokens)
+        .saturating_sub(margin);
+    if available < MIN_COMPACTION_OUTPUT_TOKENS {
+        return None;
+    }
+    let bounded = configured.min(u32::try_from(available).unwrap_or(u32::MAX));
+    (bounded < configured).then_some(bounded)
+}
+
+#[cfg(test)]
+mod output_cap_tests {
+    use super::*;
+
+    fn route(context_window: u64, ceiling: Option<u32>) -> SamplingConfig {
+        SamplingConfig {
+            context_window,
+            max_completion_tokens: ceiling,
+            ..Default::default()
+        }
+    }
+
+    /// The muse-spark failure: 627K of input plus the 943K catalogue ceiling
+    /// asked for 1.58M tokens of a 1M window. The cap must make input plus
+    /// output fit, with room for estimator drift.
+    #[test]
+    fn a_ceiling_that_cannot_fit_beside_the_input_is_bounded() {
+        let config = route(1_048_576, Some(943_718));
+        let input = 636_227;
+        let cap = compaction_output_cap(&config, input).expect("bounded");
+        assert!(input + u64::from(cap) + input / 10 <= 1_048_576, "cap {cap}");
+        assert!(cap >= 300_000, "a summary still has ample room: {cap}");
+    }
+
+    /// Fallback: when the ceiling already fits, the request is exactly today's.
+    #[test]
+    fn a_ceiling_that_fits_is_left_alone() {
+        assert_eq!(compaction_output_cap(&route(1_048_576, Some(32_768)), 600_000), None);
+        assert_eq!(compaction_output_cap(&route(0, Some(943_718)), 600_000), None);
+        assert_eq!(compaction_output_cap(&route(1_048_576, None), 600_000), None);
+    }
+
+    /// An input that alone fills the window keeps today's request: its
+    /// overflow error is what steps the input ladder down, and a 1-token
+    /// budget would only come back truncated.
+    #[test]
+    fn an_input_that_fills_the_window_keeps_the_overflow_path() {
+        assert_eq!(compaction_output_cap(&route(200_000, Some(64_000)), 199_000), None);
+    }
+}
+
 /// `chat_history` must already include the summarization prompt as its final user message.
 /// The split lets callers persist the exact request payload before issuing it.
 /// Omitting them would shift the entire prefix and force a full prefill on the summarizer call.
@@ -465,6 +535,7 @@ pub(crate) async fn generate_session_compact(
         tool_choice,
         cancel,
         None,
+        false,
     )
     .await
 }
@@ -484,6 +555,7 @@ pub(crate) async fn generate_session_compact_with_observer(
     tool_choice: crate::util::config::CompactionToolChoice,
     cancel: &tokio_util::sync::CancellationToken,
     observer: Option<&AttemptObserver>,
+    one_shot: bool,
 ) -> Result<CompactOutput, CompactFailure> {
     if cancel.is_cancelled() {
         return Err(CompactFailure::Cancelled);
@@ -502,6 +574,11 @@ pub(crate) async fn generate_session_compact_with_observer(
     }
     let chat_history = prepared_history.items;
     let num_messages = chat_history.len();
+    let output_cap = compaction_output_cap(
+        sampling_config,
+        distill_chat_state::estimate_conversation_tokens(&chat_history)
+            .saturating_add(compaction_tool_tokens),
+    );
     let wire_tool_choice = match tool_choice {
         crate::util::config::CompactionToolChoice::Auto => ToolChoice::auto(),
         crate::util::config::CompactionToolChoice::None => ToolChoice::none(),
@@ -519,6 +596,7 @@ pub(crate) async fn generate_session_compact_with_observer(
             let mut message =
                 ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
                     .with_temperature(1.0);
+            message.max_tokens = output_cap.or(message.max_tokens);
             // Prefix-cache alignment (see doc comment)
             // `tool_choice` is set only when tools are present; Chat Completions rejects it otherwise
             if !tools.is_empty() {
@@ -701,10 +779,12 @@ pub(crate) async fn generate_session_compact_with_observer(
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
+                max_output_tokens: output_cap,
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                one_shot,
                 ..Default::default()
             };
             let request_id = request.x_grok_req_id.clone().unwrap_or_default();
@@ -937,10 +1017,12 @@ pub(crate) async fn generate_session_compact_with_observer(
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
+                max_output_tokens: output_cap,
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                one_shot,
                 ..Default::default()
             };
             let request_id = request.x_grok_req_id.clone().unwrap_or_default();

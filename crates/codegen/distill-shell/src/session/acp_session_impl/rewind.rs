@@ -380,6 +380,8 @@ impl SessionActor {
             self.cancel_active_sampling_requests();
             self.cancel_pending_image_strips_for_rewind();
             self.chat_state_handle.replace_conversation(conversation);
+            // A reuse note or a rerun fold must never point at a copy the rewind dropped.
+            crate::jev::invalidate_payload_reads_for_session(&self.session_info.id.0.to_string());
             // Use a snapshot to set the correct prompt_index and truncated prompt_texts.
             // The actor's TruncateToPromptIndex doesn't apply here because the conversation was already truncated locally
             // Instead, snapshot and restore with the corrected fields

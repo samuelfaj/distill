@@ -525,6 +525,7 @@ impl SessionActor {
             x_grok_req_id: Some(format!("xai-dream-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(session_id),
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+            one_shot: true,
             ..Default::default()
         };
         let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
@@ -617,6 +618,28 @@ impl SessionActor {
                 chat_history,
                 20,
             );
+            let model = match self.memory.flush_config.flush_model.clone() {
+                Some(m) => m,
+                None => self.chat_state_handle.get_sampling_config().await
+                    .map(|c| c.model)
+                    .unwrap_or_default(),
+            };
+            // The flush itself stays on its model; the utility only pre-digests
+            // bulky text, as for memory capture. No lane or no saving keeps the
+            // window as it was.
+            let recent = match self
+                .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+                .await
+            {
+                Some(lane) => super::memory_capture::utility_prepass_capture_items(
+                    &lane,
+                    &model,
+                    recent.clone(),
+                )
+                .await
+                .unwrap_or(recent),
+                None => recent,
+            };
 
             let flush_count = self.memory.flush_count.load(std::sync::atomic::Ordering::Relaxed);
             let system_prompt = if flush_count > 0 {
@@ -641,12 +664,6 @@ impl SessionActor {
                 "Now write the memory summary as described in the system prompt.",
             ));
 
-            let model = match self.memory.flush_config.flush_model.clone() {
-                Some(m) => m,
-                None => self.chat_state_handle.get_sampling_config().await
-                    .map(|c| c.model)
-                    .unwrap_or_default(),
-            };
             tracing::info!(
                 target: distill_telemetry::memory_log::TARGET,
                 "MEMORY_FLUSH: using model={model}"
@@ -659,6 +676,7 @@ impl SessionActor {
                 x_grok_req_id: Some(format!("xai-flush-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.clone()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                one_shot: true,
                 ..Default::default()
             };
 

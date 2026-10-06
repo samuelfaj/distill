@@ -424,6 +424,17 @@ pub struct GoalOrchestration {
         skip_serializing_if = "crate::session::goal_evaluator::GoalSeenWork::is_empty"
     )]
     pub(crate) seen_work: crate::session::goal_evaluator::GoalSeenWork,
+    /// Work a skipped checkpoint already counted as progress, so no
+    /// later evaluation counts it again. `seen_work` keeps it unweighed for the
+    /// main evaluator.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::session::goal_evaluator::GoalSeenWork::is_empty"
+    )]
+    pub(crate) credited_work: crate::session::goal_evaluator::GoalSeenWork,
+    /// The evaluator's excerpt of each pinned skill, chosen once per goal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) skill_excerpts: Vec<crate::session::goal_evaluator::GoalSkillExcerpt>,
     /// Stall escalations since the goal last made observable progress.
     #[serde(default)]
     pub escalation_runs: u32,
@@ -858,6 +869,8 @@ impl GoalTracker {
             evaluator_blocked_streak: 0,
             progress: Default::default(),
             seen_work: Default::default(),
+            credited_work: Default::default(),
+            skill_excerpts: Vec::new(),
             escalation_runs: 0,
             verifier_id,
             classifier_runs_attempted: 0,
@@ -1265,6 +1278,8 @@ pub(crate) fn make_base_orchestration() -> GoalOrchestration {
         evaluator_blocked_streak: 0,
         progress: Default::default(),
         seen_work: Default::default(),
+        credited_work: Default::default(),
+        skill_excerpts: Vec::new(),
         escalation_runs: 0,
         verifier_id: generate_verifier_id(),
         classifier_runs_attempted: 0,

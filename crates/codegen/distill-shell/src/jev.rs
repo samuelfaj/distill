@@ -84,6 +84,8 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             d3_post_compaction: cfg.ladder.d3_post_compaction,
             d4_compaction_timing: cfg.ladder.d4_compaction_timing,
             d5_memory_capture_gate: cfg.ladder.d5_memory_capture_gate,
+            d6_history_eviction: cfg.ladder.d6_history_eviction,
+            d6_warm_batches: cfg.ladder.d6_warm_batches,
             b7_subagent_model: cfg.ladder.b7_subagent_model,
         },
     )
@@ -863,10 +865,104 @@ pub fn invalidate_payload_reads_for_active_session() {
     if let Some(client) = client_cached() {
         client.clear_memo_for_session(&session_id);
     }
+    forget_test_failures(&session_id);
     let Ok(mut index) = read_index().lock() else {
         return;
     };
     index.retain(|(owner, _), _| owner != &session_id);
+}
+
+/// Forgets only `session_id`'s read index, after a history eviction replaced
+/// copies a reuse note could point at. Utility answers stay valid, so the
+/// selection memo is kept.
+pub fn invalidate_payload_reads_for_session(session_id: &str) {
+    forget_test_failures(session_id);
+    let Ok(mut index) = read_index().lock() else {
+        return;
+    };
+    index.retain(|(owner, _), _| owner != session_id);
+}
+
+/// Failure blocks of a test run, by test name, with a hash of each block.
+pub(crate) type TestFailures = std::collections::BTreeMap<String, String>;
+
+/// The failure blocks the latest filtered run of each test command showed the
+/// model, keyed like the read index and forgotten with it: after a compaction
+/// or an eviction the copy a rerun would point at may be gone.
+fn test_failure_index()
+-> &'static std::sync::Mutex<std::collections::HashMap<(String, String), TestFailures>> {
+    static INDEX: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), TestFailures>>,
+    > = OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// The failure blocks the previous filtered run of `command` showed; empty
+/// when there was none or the index is poisoned, so every block stays.
+pub(crate) fn previous_test_failures(command: &str) -> TestFailures {
+    test_failure_index()
+        .lock()
+        .ok()
+        .and_then(|index| {
+            index
+                .get(&(active_session_id(), command.to_owned()))
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+/// Records the failure blocks the model has now seen for `command`.
+pub(crate) fn note_test_failures(command: &str, failures: TestFailures) {
+    if let Ok(mut index) = test_failure_index().lock() {
+        index.insert((active_session_id(), command.to_owned()), failures);
+    }
+}
+
+/// Forgets `command`'s baseline: its latest run reached the model verbatim,
+/// so a fold against an older run would describe text the model did not see last.
+pub(crate) fn forget_test_failures_of(command: &str) {
+    if let Ok(mut index) = test_failure_index().lock() {
+        index.remove(&(active_session_id(), command.to_owned()));
+    }
+}
+
+fn forget_test_failures(session_id: &str) {
+    if let Ok(mut index) = test_failure_index().lock() {
+        index.retain(|(owner, _), _| owner != session_id);
+    }
+}
+
+/// The `file:line` sites the latest failing terminal output cited, per session.
+/// Nothing is quoted from them: they only count how often a read follows.
+fn error_site_index()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, Vec<(String, usize)>>> {
+    static INDEX: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Vec<(String, usize)>>>,
+    > = OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Replaces the session's cited error sites.
+pub(crate) fn note_error_sites(sites: Vec<(String, usize)>) {
+    if let Ok(mut index) = error_site_index().lock() {
+        index.insert(active_session_id(), sites);
+    }
+}
+
+/// Removes and reports the first cited site `covers` accepts, so a site
+/// counts once.
+pub(crate) fn take_error_site(covers: impl Fn(&str, usize) -> bool) -> bool {
+    let Ok(mut index) = error_site_index().lock() else {
+        return false;
+    };
+    let Some(sites) = index.get_mut(&active_session_id()) else {
+        return false;
+    };
+    let Some(position) = sites.iter().position(|(path, line)| covers(path, *line)) else {
+        return false;
+    };
+    sites.remove(position);
+    true
 }
 
 /// How many payloads the process remembers (tests, and a bound on the map).
@@ -924,6 +1020,28 @@ pub(crate) fn record_workspace_attempt(
     recorder: distill_chat_state::ChatStateHandle,
     attribute_to_prompt: bool,
 ) {
+    record_tagged_workspace_attempt(
+        attempt,
+        role,
+        task_id,
+        turn_id,
+        recorder,
+        attribute_to_prompt,
+        None,
+    );
+}
+
+/// [`record_workspace_attempt`] for a utility attempt: `tags` is the source
+/// kind and the final decision the row carries (see `UsageAttribution`).
+pub(crate) fn record_tagged_workspace_attempt(
+    attempt: distill_workspace::jev::types::AttemptRecord,
+    role: &str,
+    task_id: Option<String>,
+    turn_id: Option<String>,
+    recorder: distill_chat_state::ChatStateHandle,
+    attribute_to_prompt: bool,
+    tags: Option<(&str, &str)>,
+) {
     use distill_chat_state::{UsageAttribution, UsageCallStatus, UsageCostBasis};
 
     let usage = attempt.usage.as_ref().and_then(|usage| {
@@ -976,6 +1094,8 @@ pub(crate) fn record_workspace_attempt(
             applied_effort: attempt.applied_effort,
             reason: attempt.reason,
             bytes_in: attempt.bytes_in,
+            source_kind: tags.map(|(source_kind, _)| source_kind.to_owned()),
+            final_decision: tags.map(|(_, decision)| decision.to_owned()),
             bytes_out: attempt.bytes_out,
             status,
             usage,
@@ -1061,6 +1181,38 @@ where
         .await
 }
 
+/// Installs only the usage recorder: a display side call (recap, suggestion)
+/// reaches usage.json without joining the session's activity ring, turn id or
+/// optional-compression scope, so the turn-status row never shows it.
+pub(crate) async fn with_usage_recorder<F>(
+    recorder: distill_chat_state::ChatStateHandle,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    ACTIVE_USAGE_RECORDER
+        .scope(std::cell::RefCell::new(Some(recorder)), future)
+        .await
+}
+
+/// Installs `recorder` only when no usage recorder is active, so a call made
+/// from a detached task is attributed without resetting a running turn's scope.
+pub(crate) async fn with_recorder_unless_scoped<F>(
+    session_id: impl Into<String>,
+    recorder: Option<distill_chat_state::ChatStateHandle>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    if recorder.is_none() || active_usage_recorder().is_some() {
+        future.await
+    } else {
+        with_session_scope_and_recorder(session_id, recorder, future).await
+    }
+}
+
 /// Remembers one decision for the turn-status row. Never fails the caller.
 pub fn note_decision(lever: &str, decision: &str, latency_ms: u64) {
     let Ok(mut state) = activity_state().lock() else {
@@ -1102,6 +1254,55 @@ pub(crate) fn register_child_session(child: &str, parent: &str) {
     }
     if let Ok(mut state) = activity_state().lock() {
         state.parents.insert(child.to_owned(), parent.to_owned());
+    }
+}
+
+/// Sessions kept in [`offered_tool_families`]; past this the map starts over,
+/// and a child whose parent fell out keeps today's ask-and-fail-open path.
+const MAX_FAMILY_SESSIONS: usize = 1024;
+
+fn offered_tool_families_map()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeSet<String>>>
+{
+    static MAP: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    > = OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+/// P1: records the optional tool families `session` offers after its
+/// turn-start pass judged a human request, for its subagents to start from.
+pub(crate) fn note_offered_tool_families(
+    session: &str,
+    families: std::collections::BTreeSet<String>,
+) {
+    if let Ok(mut map) = offered_tool_families_map().lock() {
+        if map.len() >= MAX_FAMILY_SESSIONS && !map.contains_key(session) {
+            map.clear();
+        }
+        map.insert(session.to_owned(), families);
+    }
+}
+
+/// The optional tool families `session` offers, or `None` when it has not
+/// judged a request in this process (the child then decides on its own).
+pub(crate) fn offered_tool_families(session: &str) -> Option<std::collections::BTreeSet<String>> {
+    offered_tool_families_map()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(session).cloned())
+}
+
+/// Why an [`ask_item`] for `lever` came back empty, for the decision log:
+/// the lever is off, there is no credential, or the request failed or timed
+/// out. Test answer queues report as the last case.
+pub(crate) fn unanswered_reason(lever: distill_workspace::jev::flags::JevLever) -> &'static str {
+    if !flags_cached().lever_active(lever) {
+        "lever_off"
+    } else if client_cached().is_none_or(|client| !client.credential_present()) {
+        "no_credential"
+    } else {
+        "error_or_timeout"
     }
 }
 
@@ -1380,6 +1581,11 @@ pub fn effort_auto_cached() -> bool {
 /// not need, and it stays off with the same flag.
 pub fn lever_active(lever: distill_workspace::jev::flags::JevLever) -> bool {
     flags_cached().lever_active(lever)
+}
+
+/// D6 also evicts in warm batches (`d6_warm_batches`); off by default.
+pub(crate) fn history_eviction_warm() -> bool {
+    flags_cached().d6_warm_batches
 }
 
 /// The flags resolved once per process (configuration does not change mid-run).

@@ -166,6 +166,18 @@ pub(super) fn is_client_rejection(error: &distill_sampler::SamplingErrorInfo) ->
         .is_some_and(|status| (400..500).contains(&status) && status != 408 && status != 429)
 }
 
+/// Whether a routed round's failed request goes back to the session model. A
+/// client rejection always does; on an E6 utility child any failure does
+/// (timeout, transport, rate limit, server error), because the route is only an
+/// optimization and the child must do no worse than on its own model. A result
+/// a cancel or rewind revoked never does: the user ended that round.
+pub(super) fn local_route_falls_back(
+    error: &distill_sampler::SamplingErrorInfo,
+    cheap_agent: bool,
+) -> bool {
+    !is_revoked_sampling(error) && (cheap_agent || is_client_rejection(error))
+}
+
 pub(super) fn transient_retry_eligible(error: &distill_sampler::SamplingErrorInfo) -> bool {
     use distill_sampler::SamplingErrorKind;
     if error.should_retry == Some(false)
@@ -376,11 +388,17 @@ fn error_after_stream_drain(
     }
 }
 
+const REVOKED_SAMPLING_MESSAGE: &str = "sampling result revoked by turn cancellation or rewind";
+
+fn is_revoked_sampling(error: &distill_sampler::SamplingErrorInfo) -> bool {
+    error.status_code.is_none() && error.message == REVOKED_SAMPLING_MESSAGE
+}
+
 fn revoked_sampling_info() -> distill_sampler::SamplingErrorInfo {
     distill_sampler::SamplingErrorInfo {
         kind: distill_sampler::SamplingErrorKind::Api,
         status_code: None,
-        message: "sampling result revoked by turn cancellation or rewind".to_string(),
+        message: REVOKED_SAMPLING_MESSAGE.to_string(),
         is_retryable: false,
         retry_after_secs: None,
         should_retry: None,
@@ -1092,6 +1110,16 @@ impl SessionActor {
         slug: &str,
     ) -> Option<distill_sampler::SamplerConfig> {
         let creds = self.chat_state_handle.get_credentials().await;
+        self.aux_sampler_config_with(slug, &creds)
+    }
+
+    /// [`Self::resolve_aux_sampler_config`] with the session credentials already
+    /// in hand, for a resolver that tries several slugs synchronously.
+    pub(super) fn aux_sampler_config_with(
+        &self,
+        slug: &str,
+        creds: &distill_chat_state::Credentials,
+    ) -> Option<distill_sampler::SamplerConfig> {
         let session_key = self
             .auth_manager
             .as_ref()
@@ -1179,15 +1207,19 @@ impl SessionActor {
             session_id, turn_id, round_id, requested_model = sampler_config.model,
             requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
             "model round before Jev routing");
-        // The main model runs this call; auto effort picks from its own menu and
-        // an explicit effort stays fixed.
-        self.jev_choose_effort(&mut sampler_config).await;
-        // B2 (money lever): a routine turn may run at a cheaper setting; the
-        // pass can only lower effort, and it is off until its gate passes.
-        self.jev_apply_model_tier(&mut sampler_config).await;
-        // A redo the change review asked for runs at the setting it asked for:
-        // the floor wins over anything cheaper chosen above.
-        self.jev_apply_effort_floor(&mut sampler_config).await;
+        // E6: a utility `explore` child runs this round on the utility model at
+        // its own effort; the effort passes below belong to the session model.
+        if !self.jev_route_cheap_agent(&mut sampler_config).await {
+            // The main model runs this call; auto effort picks from its own menu and
+            // an explicit effort stays fixed.
+            self.jev_choose_effort(&mut sampler_config).await;
+            // B2 (money lever): a routine turn may run at a cheaper setting; the
+            // pass can only lower effort, and it is off until its gate passes.
+            self.jev_apply_model_tier(&mut sampler_config).await;
+            // A redo the change review asked for runs at the setting it asked for:
+            // the floor wins over anything cheaper chosen above.
+            self.jev_apply_effort_floor(&mut sampler_config).await;
+        }
         if self.tool_context.task_output_token_budget.is_some()
             || self.tool_context.sampler_retry_only_before_output
         {
@@ -2172,7 +2204,9 @@ impl SessionActor {
                     .await
                 {
                     Ok(outcome) => Ok(outcome),
-                    Err(info) if is_client_rejection(&info) => {
+                    Err(info)
+                        if local_route_falls_back(&info, self.startup_hints.cheap_agent) =>
+                    {
                         route_config = Some(self.undo_local_route(&mut request, &info).await);
                         self.bound_request_output_to_route(
                             &mut request,
@@ -2271,7 +2305,8 @@ impl SessionActor {
                     // model's reasoning payload). The routing is an optimization,
                     // so the round goes back to the session model and the rest
                     // of the turn stays there.
-                    if routed_local && is_client_rejection(&info) {
+                    let cheap_agent = self.startup_hints.cheap_agent;
+                    if routed_local && local_route_falls_back(&info, cheap_agent) {
                         route_config = Some(self.undo_local_route(&mut request, &info).await);
                         routed_local = false;
                         self.bound_request_output_to_route(

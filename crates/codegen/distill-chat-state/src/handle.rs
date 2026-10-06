@@ -240,6 +240,25 @@ impl ChatStateHandle {
         });
     }
 
+    /// Count one content-free utility outcome (sizes and labels only) in the
+    /// session ledger. Fire-and-forget like the other usage mutations.
+    pub fn record_utility_outcome(
+        &self,
+        source_kind: &str,
+        decision: &str,
+        chunks: u64,
+        bytes_in: u64,
+        bytes_out: u64,
+    ) {
+        let _ = self.cmd_tx.send(ChatStateCommand::RecordUtilityOutcome {
+            source_kind: source_kind.to_owned(),
+            decision: decision.to_owned(),
+            chunks,
+            bytes_in,
+            bytes_out,
+        });
+    }
+
     /// Admit one provider attempt before dispatch so an early usage snapshot
     /// remains explicitly incomplete until its terminal attribution arrives.
     pub fn register_pending_usage_attempt(

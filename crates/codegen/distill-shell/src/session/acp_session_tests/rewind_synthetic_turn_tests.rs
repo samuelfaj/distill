@@ -94,6 +94,50 @@ async fn run_rewind_over_synthetic_turn(mark_turn_starts: bool) {
     assert_eq!(actor.chat_state_handle.get_prompt_index().await, 2);
 }
 
+/// A rewind can drop the turn whose filtered test run is the rerun baseline;
+/// a later run folded against it would point at failure text that is gone.
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_forgets_the_test_rerun_baseline() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
+            let session_id = actor.session_info.id.0.to_string();
+            let failures =
+                crate::jev::TestFailures::from([("suite::a".to_owned(), "h".to_owned())]);
+            crate::jev::with_session_scope(session_id.clone(), async {
+                crate::jev::note_test_failures("\ncargo test", failures);
+            })
+            .await;
+            let mut snap = actor.chat_state_handle.snapshot().await.expect("snapshot");
+            snap.conversation = seed_conversation(true);
+            snap.prompt_index = 3;
+            snap.prompt_texts = vec![
+                "P0".into(),
+                "Background task abc completed".into(),
+                "P2".into(),
+            ];
+            actor.chat_state_handle.restore_snapshot(snap);
+            let resp = actor
+                .handle_rewind(RewindRequest {
+                    target_prompt_index: 2,
+                    force: true,
+                    mode: RewindMode::ConversationOnly,
+                })
+                .await
+                .expect("handle_rewind ok");
+            assert!(resp.success, "{resp:?}");
+            let baseline = crate::jev::with_session_scope(session_id, async {
+                crate::jev::previous_test_failures("\ncargo test")
+            })
+            .await;
+            assert!(baseline.is_empty(), "the rewound run is no baseline");
+        })
+        .await;
+}
+
 /// Marker-less items come from sessions persisted before `UserItem.prompt_index` existed.
 /// The counting fallback must classify the synthetic auto-wake item as a turn start.
 #[tokio::test(flavor = "current_thread")]

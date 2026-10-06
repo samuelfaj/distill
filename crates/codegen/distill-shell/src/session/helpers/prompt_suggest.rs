@@ -170,6 +170,24 @@ pub(crate) fn build_transcript(conversation: &[ConversationItem]) -> Option<Stri
     Some(lines.join("\n\n"))
 }
 
+/// The newest `max_bytes` of a transcript for a bounded utility call,
+/// starting at a message boundary when one is in reach. Keeping the head
+/// instead would drop exactly the turns a recap or a next-prompt guess is about.
+pub(crate) fn transcript_tail(transcript: &str, max_bytes: usize) -> &str {
+    if transcript.len() <= max_bytes {
+        return transcript;
+    }
+    let mut start = transcript.len() - max_bytes;
+    while !transcript.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = transcript.get(start..).unwrap_or_default();
+    tail.find("\n\n")
+        .and_then(|boundary| tail.get(boundary + 2..))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(tail)
+}
+
 pub(crate) fn suggest_prompt_user_message(transcript: &str, cwd: &str) -> String {
     format!(
         "CWD: {cwd}\n\nTranscript:\n\n{transcript}\n\n\
@@ -455,6 +473,45 @@ mod tests {
             "long message must be truncated: {}",
             t.len()
         );
+    }
+
+    /// The utility used to get the transcript's first 20 KB, so on a long
+    /// session it recapped the older turns and never saw the latest one.
+    #[test]
+    fn transcript_tail_keeps_the_newest_turns() {
+        let filler = "b".repeat(MESSAGE_CAP_CHARS);
+        let mut conv = vec![user("oldest ask"), assistant(&filler)];
+        for _ in 0..7 {
+            conv.push(user(&filler));
+            conv.push(assistant(&filler));
+        }
+        conv.push(user("newest question"));
+        conv.push(assistant("newest answer"));
+        let transcript = build_transcript(&conv).unwrap();
+        assert!(transcript.len() > 20_000 && transcript.contains("oldest ask"));
+
+        let tail = transcript_tail(&transcript, 20_000);
+        assert!(tail.len() <= 20_000);
+        assert!(tail.ends_with("Agent: newest answer"), "the newest turn survives");
+        assert!(tail.starts_with("User: ") || tail.starts_with("Agent: "), "starts at a message");
+        assert!(!tail.contains("oldest ask"));
+        // A transcript that fits is sent whole.
+        assert_eq!(transcript_tail("User: a\n\nAgent: b", 20_000), "User: a\n\nAgent: b");
+    }
+
+    /// The closing instruction sits after the transcript: built from a
+    /// window, the utility message always keeps it.
+    #[test]
+    fn the_suggestion_message_keeps_its_instruction() {
+        let transcript = format!("User: {}\n\nAgent: done", "x".repeat(40_000));
+        let frame = suggest_prompt_user_message("", "/repo").len();
+        let message = suggest_prompt_user_message(
+            transcript_tail(&transcript, 20_000 - frame),
+            "/repo",
+        );
+        assert!(message.len() <= 20_000);
+        assert!(message.ends_with("Reply with ONLY the suggestion text."));
+        assert!(message.contains("Agent: done"));
     }
 
     #[test]

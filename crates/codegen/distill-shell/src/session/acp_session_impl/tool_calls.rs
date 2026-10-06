@@ -43,11 +43,25 @@ fn is_mcp_error_result(output: &ToolsToolOutput) -> bool {
     matches!(output, ToolsToolOutput::MCP(_)) && output.is_error()
 }
 
-/// Harness notices are protocol instructions, not disposable tool prose.  A
-/// result carrying one must bypass Jev's body replacement so deterministic
-/// status extraction and generic reducers cannot erase the notice.
-fn should_bypass_jev_post_process(prompt_text: &str, output_replaced: bool) -> bool {
-    output_replaced || prompt_text.contains("<system-reminder>")
+/// Harness notices are protocol instructions, not disposable tool prose: Jev
+/// may narrow only the tool's own text in front of them. `rendered` is the
+/// result as it will enter history, `own` the tool's own text (or a hook's
+/// replacement) and `appended` what the harness put after it before
+/// rendering. The split is `(body, notices)` with the notices verbatim; a
+/// reminder tag left in the body must come from the tool's own text (a read
+/// of a file that holds one). `None` keeps the whole result as it is, as when
+/// rendering changed the notices.
+fn split_harness_reminders(
+    rendered: &str,
+    own: &str,
+    appended: Option<&str>,
+) -> Option<(String, String)> {
+    const TAG: &str = "<system-reminder>";
+    let suffix = appended.filter(|suffix| rendered.ends_with(*suffix)).unwrap_or_default();
+    let body = &rendered[..rendered.len() - suffix.len()];
+    let placed = appended.is_some_and(|appended| appended == suffix);
+    (!body.contains(TAG) || (placed && own.contains(TAG)))
+        .then(|| (body.to_owned(), suffix.to_owned()))
 }
 /// One `tool.execution` span, wrapping a single dispatch attempt.
 /// Outcome fields are declared `Empty` here because `record` on a field the span never declared is silently dropped.
@@ -2858,6 +2872,12 @@ impl SessionActor {
                 .await;
         }
         let output_replaced = model_output_override.is_some();
+        // The tool's own text, or the hook's replacement, that the harness
+        // notices follow.
+        let own_text = match &model_output_override {
+            Some(replacement) => replacement.clone(),
+            None => result.output.to_prompt_format(),
+        };
         if let Some(replacement) = model_output_override {
             result.prompt_text =
                 substitute_rendered_output(&result.prompt_text, &result.output, replacement);
@@ -2880,6 +2900,7 @@ impl SessionActor {
         } else {
             result.prompt_text
         };
+        let appended_notices = prompt_text.strip_prefix(own_text.as_str()).map(str::to_owned);
         let (prompt_text, inline_images, extracted_images) = if output_replaced {
             (
                 maybe_rewrite(path_rewriter.as_ref(), prompt_text),
@@ -2915,27 +2936,50 @@ impl SessionActor {
             .borrow_mut()
             .facts
             .note_tool_result(&call_id.to_string(), &result.output);
-        let prompt_text = if should_bypass_jev_post_process(&prompt_text, output_replaced) {
-            prompt_text
-        } else {
-            let mcp_tool = if requested_tool_name == "use_tool" {
-                tool_parsed_args
-                    .get("tool_name")
-                    .and_then(|value| value.as_str())
-            } else if requested_tool_name.contains("__") {
-                Some(requested_tool_name)
-            } else {
-                None
-            };
-            self.jev_post_process_tool_result(
-                requested_tool_name,
-                tool_command,
-                &call_id.to_string(),
-                mcp_tool,
-                &result.output,
-                prompt_text,
-            )
-            .await
+        let prompt_text = match split_harness_reminders(
+            &prompt_text,
+            &own_text,
+            appended_notices.as_deref(),
+        ) {
+            None => prompt_text,
+            // A hook chose this text: only a large one is narrowed, by the
+            // utility alone.
+            Some((body, notices)) if output_replaced => {
+                let body = self
+                    .select_hook_output(
+                        requested_tool_name,
+                        tool_command,
+                        tool_parsed_args,
+                        &call_id.to_string(),
+                        &result.output,
+                        body,
+                    )
+                    .await;
+                format!("{body}{notices}")
+            }
+            Some((body, notices)) => {
+                let mcp_tool = if requested_tool_name == "use_tool" {
+                    tool_parsed_args
+                        .get("tool_name")
+                        .and_then(|value| value.as_str())
+                } else if requested_tool_name.contains("__") {
+                    Some(requested_tool_name)
+                } else {
+                    None
+                };
+                let body = self
+                    .jev_post_process_tool_result(
+                        requested_tool_name,
+                        tool_command,
+                        tool_parsed_args,
+                        &call_id.to_string(),
+                        mcp_tool,
+                        &result.output,
+                        body,
+                    )
+                    .await;
+                format!("{body}{notices}")
+            }
         };
         let tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
@@ -3251,30 +3295,55 @@ mod mcp_error_routing_tests {
 
 #[cfg(test)]
 mod jev_prompt_preservation_tests {
-    use super::should_bypass_jev_post_process;
+    use super::split_harness_reminders;
 
+    const NOTICE: &str = "\n\n<system-reminder>\nonly one operation executed; make separate tool calls\n</system-reminder>";
+
+    /// A notice the harness appended (a finished background task, a
+    /// concatenated call) is an instruction: Jev narrows only the tool's text
+    /// in front of it, and the notice reaches the model byte for byte.
     #[test]
-    fn bun_success_with_a_harness_notice_bypasses_body_replacement_byte_for_byte() {
-        let prompt = concat!(
-            "bun test v1.3.13\n",
-            "1 pass\n0 fail\nRan 1 test across 1 file.\n",
-            "\n<system-reminder>\n",
-            "only one operation executed; make separate tool calls",
-            "\n</system-reminder>",
-        );
-        assert!(should_bypass_jev_post_process(prompt, false));
-        let preserved = if should_bypass_jev_post_process(prompt, false) {
-            prompt
-        } else {
-            "<jev replacement>"
-        };
-        assert_eq!(preserved.as_bytes(), prompt.as_bytes());
+    fn a_harness_notice_stays_byte_for_byte_while_the_body_is_narrowed() {
+        let own = "bun test v1.3.13\n1 pass\n0 fail\nRan 1 test across 1 file.";
+        let prompt = format!("{own}{NOTICE}");
+        let (body, notices) =
+            split_harness_reminders(&prompt, own, Some(NOTICE)).expect("the notice is placed");
+        assert_eq!(body, own);
+        assert_eq!(notices, NOTICE);
+        let delivered = format!("{}{notices}", "<jev replacement>");
+        assert!(delivered.ends_with(NOTICE), "{delivered}");
     }
 
+    /// A read of a source file that quotes the tag is the tool's own text,
+    /// not a harness notice, so it is no longer kept out of the Jev pass.
     #[test]
-    fn ordinary_tool_text_still_reaches_jev_post_process() {
-        assert!(!should_bypass_jev_post_process("bun test: PASS", false));
-        assert!(should_bypass_jev_post_process("ordinary", true));
+    fn a_tag_in_the_tools_own_text_is_not_a_harness_notice() {
+        let own = "fn notice() -> &'static str {\n    \"<system-reminder>\"\n}";
+        let (body, notices) = split_harness_reminders(own, own, Some("")).expect("processed");
+        assert_eq!((body.as_str(), notices.as_str()), (own, ""));
+        let prompt = format!("{own}{NOTICE}");
+        let (body, notices) = split_harness_reminders(&prompt, own, Some(NOTICE)).expect("placed");
+        assert_eq!((body.as_str(), notices.as_str()), (own, NOTICE));
+    }
+
+    /// When the notices cannot be told apart from the body (rendering changed
+    /// them, or the result did not start with the tool's text), the whole
+    /// result keeps today's bypass rather than risk narrowing a notice.
+    #[test]
+    fn a_notice_the_split_cannot_place_keeps_the_whole_result() {
+        let own = "1 pass\n0 fail";
+        let rewritten = format!("{own}{}", NOTICE.replace("operation", "op"));
+        assert!(split_harness_reminders(&rewritten, own, Some(NOTICE)).is_none());
+        assert!(split_harness_reminders(&format!("{own}{NOTICE}"), own, None).is_none());
+        let quoted = "fn f() { \"<system-reminder>\" }";
+        assert!(
+            split_harness_reminders(&format!("{quoted}{NOTICE}"), quoted, None).is_none(),
+            "a tag in the body with unplaced notices keeps the bypass"
+        );
+        assert_eq!(
+            split_harness_reminders("ordinary", "ordinary", Some("")),
+            Some(("ordinary".to_owned(), String::new()))
+        );
     }
 }
 #[cfg(test)]

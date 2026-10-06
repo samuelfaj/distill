@@ -988,6 +988,45 @@ pub(crate) fn delegated_worker_model(
         None => crate::jev::worker_model(),
     }
 }
+/// E6: whether a child may run its rounds on the utility model. Only a fresh
+/// `explore` child (read-only) that the parent model spawned with no model of
+/// its own: a fork, resume or wake keeps its conversation's model, and an
+/// explicit, role, `[subagents.models]` or definition model is the owner's
+/// choice. A workflow child or one with an output budget is out too: its
+/// failed request fails closed once output began, and a resend on its own
+/// model would overspend or undercount the grant. The child's own model is
+/// still resolved as without the lever and is its fallback. After a utility
+/// child of this parent fails, the parent's later children stay on their own model.
+pub(crate) fn cheap_agent_eligible(
+    request: &SubagentRequest,
+    fresh: bool,
+    model_chosen: bool,
+    parent_session_id: &str,
+) -> bool {
+    fresh
+        && !model_chosen
+        && request.subagent_type == "explore"
+        && !request.fork_context
+        && request.runtime_overrides.model.is_none()
+        && request.runtime_overrides.model_override_provenance == ModelOverrideProvenance::Tool
+        && !request.owner.is_workflow()
+        && request.runtime_overrides.output_token_budget.is_none()
+        && !cheap_agent_tripped(parent_session_id)
+        && crate::jev::lever_active(distill_workspace::jev::flags::JevLever::ECheapAgent)
+}
+/// Parent sessions whose utility child failed.
+fn cheap_agent_trips() -> &'static parking_lot::Mutex<std::collections::HashSet<String>> {
+    static TRIPS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    TRIPS.get_or_init(Default::default)
+}
+fn cheap_agent_tripped(parent_session_id: &str) -> bool {
+    cheap_agent_trips().lock().contains(parent_session_id)
+}
+/// Keeps `parent_session_id`'s later children off the utility model.
+pub(crate) fn trip_cheap_agent(parent_session_id: &str) {
+    cheap_agent_trips().lock().insert(parent_session_id.to_owned());
+}
 /// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the worker model for delegated work ([`delegated_worker_model`]) > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
 /// The third value names a requested worker model that could not be pinned, so the child fell back to the parent model.

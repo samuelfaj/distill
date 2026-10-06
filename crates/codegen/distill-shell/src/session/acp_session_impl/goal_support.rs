@@ -1663,7 +1663,7 @@ impl SessionActor {
         };
 
         // Snapshot inputs under one scoped lock, dropped before the awaits.
-        let (objective, plan_file, details_file) = {
+        let (objective, plan_file, details_file, criteria) = {
             let tracker = self.goal_tracker.lock();
             let Some(o) = tracker.snapshot() else {
                 return;
@@ -1672,8 +1672,10 @@ impl SessionActor {
                 o.objective.clone(),
                 tracker.plan_path(),
                 o.last_classifier_details_path.clone(),
+                o.progress.criteria.clone(),
             )
         };
+        let utility = self.goal_utility_lane().await;
 
         let session_traces_dir = crate::session::persistence::session_dir(&self.session_info);
         let model_id = self
@@ -1714,6 +1716,8 @@ impl SessionActor {
                 attempt,
                 model_id: &model_id,
                 tool_names: &tool_names,
+                utility: utility.as_ref(),
+                criteria: &criteria,
             },
             &|e| self.events.emit(e),
         )

@@ -827,3 +827,198 @@ async fn compact_reseed_skips_turn_end_drain_and_round_count() {
         })
         .await;
 }
+
+/// A git worktree with an uncommitted edit and its recorded baseline.
+fn edited_delivery(tmp: &TempDir) -> crate::session::goal_evaluator::GoalVerificationTarget {
+    let delivery = tmp.path().join("delivery");
+    std::fs::create_dir(&delivery).unwrap();
+    std::fs::write(delivery.join("cors.rs"), "before\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "baseline",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new(crate::util::subprocess::git_bin())
+                .args(args)
+                .current_dir(&delivery)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let head = std::process::Command::new(crate::util::subprocess::git_bin())
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&delivery)
+        .output()
+        .unwrap();
+    std::fs::write(delivery.join("cors.rs"), "after\n").unwrap();
+    crate::session::goal_evaluator::GoalVerificationTarget {
+        workspace_root: delivery.to_string_lossy().into_owned(),
+        baseline_commit: String::from_utf8(head.stdout).unwrap().trim().to_owned(),
+    }
+}
+
+fn evaluation_log(tmp: &TempDir) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(tmp.path().join("goal/evaluations.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// A checkpoint that sees new work and no pending blocker costs no model
+/// call: new work is all a checkpoint evaluation would record. The same work
+/// is never credited twice, so a worker that stops after one edit still meets
+/// a real evaluation at the next checkpoint.
+#[tokio::test(flavor = "current_thread")]
+async fn a_checkpoint_with_new_work_makes_no_model_call() {
+    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let server = MockInferenceServer::start().await.unwrap();
+            let (actor, _) =
+                actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+            let tmp = TempDir::new().unwrap();
+            *actor.goal_tracker.lock() =
+                crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf());
+            set_goal_harness_for_tests(&actor);
+            start_device_test_goal(&actor);
+            let target = edited_delivery(&tmp);
+            {
+                let mut tracker = actor.goal_tracker.lock();
+                let goal = tracker.snapshot_mut().unwrap();
+                goal.progress.verification_target = Some(target);
+                goal.progress.no_progress_rounds = 1;
+            }
+            assert!(matches!(
+                actor.run_goal_progress_checkpoint().await,
+                GoalRoundDecision::Continue(_)
+            ));
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                0,
+                "no model call"
+            );
+            {
+                let tracker = actor.goal_tracker.lock();
+                let goal = tracker.snapshot().unwrap();
+                assert_eq!(goal.progress.no_progress_rounds, 0, "new work is progress");
+                assert!(
+                    goal.seen_work.is_empty(),
+                    "the main evaluator still weighs it"
+                );
+                assert!(!goal.credited_work.is_empty());
+            }
+
+            let verdict = serde_json::json!({
+                "decision": "continue", "evidence": "same edit as before",
+                "next_step": "run the tests", "blocker_key": "", "blocker_kind": "",
+                "progress_evidence": "", "needs_review_panel": false,
+                "observations": [], "verification_target": null, "criteria": []
+            });
+            server.enqueue_response(
+                "/v1/responses",
+                ScriptedResponse::sse(responses_api_script_exact(&verdict.to_string(), "test")),
+            );
+            assert!(matches!(
+                actor.run_goal_progress_checkpoint().await,
+                GoalRoundDecision::Continue(_)
+            ));
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                1,
+                "credited work is not new again"
+            );
+            assert_eq!(
+                actor
+                    .goal_tracker
+                    .lock()
+                    .snapshot()
+                    .unwrap()
+                    .progress
+                    .no_progress_rounds,
+                1
+            );
+            let log = evaluation_log(&tmp);
+            assert_eq!(log[0]["evaluator"], "skipped");
+            assert_eq!(log[0]["workspace_changed"], true);
+            assert_eq!(log[1]["evaluator"], "main");
+        })
+        .await;
+}
+
+/// A checkpoint the harness cannot settle runs on main even with a utility
+/// configured: without new harness work only main can tell progress from a
+/// stall (a utility observation would reset the stall count unchecked), and a
+/// pending blocker is main's to confirm, which may pause the goal.
+#[tokio::test(flavor = "current_thread")]
+async fn a_checkpoint_the_harness_cannot_settle_runs_on_main() {
+    use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, sampler_surfaces_429};
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        let utility = MockInferenceServer::start().await.unwrap();
+        let (actor, _) = actor_under_test(&server, SessionKind::Main, sampler_surfaces_429(), false).await;
+        let tmp = TempDir::new().unwrap();
+        *actor.goal_tracker.lock() =
+            crate::session::goal_tracker::GoalTracker::new(tmp.path().to_path_buf());
+        set_goal_harness_for_tests(&actor);
+        start_device_test_goal(&actor);
+        {
+            let mut tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot_mut().unwrap();
+            goal.progress.criteria.push(serde_json::from_value(serde_json::json!({
+                "id":"register", "requirement":"register a new user", "source":"user: prove registration",
+                "status":"pending", "evidence":"", "scope":"", "invalidated_by":""
+            })).unwrap());
+        }
+        let verdict = serde_json::json!({
+            "decision": "continue", "evidence": "e2e/register passed",
+            "next_step": "deploy", "blocker_key": "", "blocker_kind": "",
+            "progress_evidence": "", "needs_review_panel": false,
+            "observations": [], "verification_target": null, "criteria": []
+        })
+        .to_string();
+        let main_reply = || ScriptedResponse::sse(responses_api_script_exact(&verdict, "test"));
+        crate::session::goal_evaluator::set_test_goal_utility(Some(utility.url()));
+
+        // No new work: main judges whether the goal stalled.
+        server.enqueue_response("/v1/responses", main_reply());
+        assert!(matches!(actor.run_goal_progress_checkpoint().await, GoalRoundDecision::Continue(_)));
+        assert_eq!(server.request_count_for("/v1/responses"), 1);
+
+        // New work with a blocker pending: main may confirm the blocker.
+        let target = edited_delivery(&tmp);
+        {
+            let mut tracker = actor.goal_tracker.lock();
+            let goal = tracker.snapshot_mut().unwrap();
+            goal.progress.verification_target = Some(target);
+            goal.evaluator_blocker_key = Some("no_access".into());
+        }
+        server.enqueue_response("/v1/responses", main_reply());
+        actor.run_goal_progress_checkpoint().await;
+        crate::session::goal_evaluator::set_test_goal_utility(None);
+        assert_eq!(server.request_count_for("/v1/responses"), 2);
+        assert_eq!(utility.request_count_for("/v1/chat/completions"), 0, "never asked");
+        let log = evaluation_log(&tmp);
+        let evaluators: Vec<&str> = log.iter().map(|r| r["evaluator"].as_str().unwrap()).collect();
+        assert_eq!(evaluators, ["main", "main"]);
+    }).await;
+}

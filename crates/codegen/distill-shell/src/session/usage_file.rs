@@ -1,10 +1,10 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Turn deltas come from this process's last applied live ledger, not from persisted session totals (those stay large after resume).
 
-use distill_chat_state::{UsageAttribution, UsageCostBasis, UsageLedger};
+use distill_chat_state::{UsageAttribution, UsageCostBasis, UsageLedger, UtilityOutcomeCounts};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +63,10 @@ pub struct UsageSummary {
     /// from an older row whose incompleteness is already permanent/unknown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_attempt_ids: Vec<String>,
+    /// Content-free utility outcome counters per source kind. Telemetry, not
+    /// billing: no token, cost or completeness rule reads them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub utility_outcomes: BTreeMap<String, UtilityOutcomeCounts>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -90,6 +94,7 @@ impl UsageSummary {
         summary.model_usage = model_usage;
         summary.attributions = ledger.attributions.clone();
         summary.pending_attempt_ids = pending_attempt_ids;
+        summary.utility_outcomes = ledger.utility_outcomes.clone();
         summary
     }
 
@@ -115,6 +120,7 @@ impl UsageSummary {
             model_usage: IndexMap::new(),
             attributions: Vec::new(),
             pending_attempt_ids: Vec::new(),
+            utility_outcomes: BTreeMap::new(),
         }
     }
 
@@ -148,6 +154,11 @@ impl UsageSummary {
         }
         let mut out = self.saturating_add_row(other);
         out.attributions = merge_attributions(&self.attributions, &other.attributions);
+        out.utility_outcomes = combine_outcomes(
+            &self.utility_outcomes,
+            &other.utility_outcomes,
+            UtilityOutcomeCounts::saturating_add,
+        );
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out.turn_count = self.turn_count.saturating_add(other.turn_count);
@@ -182,6 +193,7 @@ impl UsageSummary {
                 &self.pending_attempt_ids,
                 &other.pending_attempt_ids,
             ),
+            utility_outcomes: BTreeMap::new(),
         }
     }
 
@@ -221,6 +233,15 @@ impl UsageSummary {
         }
         let mut out = self.saturating_sub_row(other);
         out.attributions = delta_attributions;
+        out.utility_outcomes = self
+            .utility_outcomes
+            .iter()
+            .map(|(source, row)| {
+                let previous = other.utility_outcomes.get(source).cloned().unwrap_or_default();
+                (source.clone(), row.saturating_sub(&previous))
+            })
+            .filter(|(_, row)| !row.is_empty())
+            .collect();
         out.cost_usd_ticks = sub_cost_ticks(self, other, &out.attributions, out.model_calls);
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
@@ -257,6 +278,7 @@ impl UsageSummary {
             model_usage: IndexMap::new(),
             attributions: Vec::new(),
             pending_attempt_ids: self.pending_attempt_ids.clone(),
+            utility_outcomes: BTreeMap::new(),
         }
     }
 
@@ -270,6 +292,7 @@ impl UsageSummary {
             && self.cost_usd_ticks.is_none()
             && self.attributions.is_empty()
             && self.pending_attempt_ids.is_empty()
+            && self.utility_outcomes.is_empty()
     }
 
     fn normalize_legacy_incomplete(&mut self) {
@@ -356,6 +379,12 @@ impl UsageSummary {
         let mut baseline = self.clone();
         baseline.normalize_legacy_incomplete();
         let mut projected = baseline.saturating_add(&late);
+        // Counters are snapshots of one monotonic ledger, never late slices.
+        projected.utility_outcomes = combine_outcomes(
+            &baseline.utility_outcomes,
+            &live.utility_outcomes,
+            UtilityOutcomeCounts::max,
+        );
         projected
             .pending_attempt_ids
             .retain(|attempt_id| !terminal_attempt_ids.contains(attempt_id.as_str()));
@@ -766,6 +795,19 @@ fn merge_attributions(
         .collect()
 }
 
+fn combine_outcomes(
+    first: &BTreeMap<String, UtilityOutcomeCounts>,
+    second: &BTreeMap<String, UtilityOutcomeCounts>,
+    combine: fn(&UtilityOutcomeCounts, &UtilityOutcomeCounts) -> UtilityOutcomeCounts,
+) -> BTreeMap<String, UtilityOutcomeCounts> {
+    let mut out = first.clone();
+    for (source, row) in second {
+        let merged = combine(out.get(source).unwrap_or(&UtilityOutcomeCounts::default()), row);
+        out.insert(source.clone(), merged);
+    }
+    out
+}
+
 fn merge_pending_attempt_ids(first: &[String], second: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     first
@@ -790,6 +832,7 @@ fn aggregate_residual(live: &UsageSummary, attributed: &UsageSummary) -> UsageSu
     let mut residual = live.saturating_sub(attributed);
     residual.attributions.clear();
     residual.pending_attempt_ids.clear();
+    residual.utility_outcomes.clear();
     residual.usage_is_incomplete = residual.permanent_incomplete;
     for row in residual.model_usage.values_mut() {
         row.attributions.clear();

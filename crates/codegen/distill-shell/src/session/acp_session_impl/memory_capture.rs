@@ -339,6 +339,8 @@ fn build_extraction_request(
         x_grok_conv_id: Some(format!("memory-capture-{}", uuid::Uuid::new_v4())),
         x_grok_req_id: Some(format!("xai-memory-capture-{}", uuid::Uuid::new_v4())),
         x_grok_session_id: Some(session_id.to_owned()),
+        // The transcript is this capture's alone: a tip breakpoint writes it to a cache nobody reads.
+        one_shot: true,
         ..Default::default()
     }
 }
@@ -494,16 +496,153 @@ const CAPTURE_PREPASS_QUESTION: &str = "Memory capture after a finished turn. Ke
 const CAPTURE_PREPASS_HANDLE: &str = "the session transcript";
 const CAPTURE_PREPASS_FOOTER: &str = "[memory capture: lines omitted by verified utility selection; the full output stays in the session transcript]";
 
-/// Shrinks large tool results of a finished turn with verified utility unit
-/// selection before the main model extracts memory from them. `None` means no
-/// item changed. The full output stays in the session transcript.
-async fn utility_prepass_capture_items(
+/// Where a bulky text of a finished turn sits, so its digest goes back there.
+enum CaptureSlot {
+    ToolResult,
+    AssistantText,
+    /// A string inside one tool call's JSON arguments, by JSON pointer, so the
+    /// arguments stay valid JSON.
+    ToolArgument {
+        call: usize,
+        pointer: String,
+    },
+}
+
+impl CaptureSlot {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::ToolResult => "memory capture tool result",
+            Self::AssistantText => "memory capture assistant text",
+            Self::ToolArgument { .. } => "memory capture tool arguments",
+        }
+    }
+}
+
+/// The string values of `value` at least `min_bytes` long, by JSON pointer.
+fn bulky_json_strings(
+    value: &serde_json::Value,
+    pointer: String,
+    min_bytes: usize,
+    out: &mut Vec<(String, String)>,
+) {
+    match value {
+        serde_json::Value::String(text) if text.len() >= min_bytes => {
+            out.push((pointer, text.clone()));
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                bulky_json_strings(item, format!("{pointer}/{index}"), min_bytes, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                let key = key.replace('~', "~0").replace('/', "~1");
+                bulky_json_strings(item, format!("{pointer}/{key}"), min_bytes, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Bulky texts of a finished turn: tool results, assistant text and string
+/// tool arguments. The user's own words are never candidates.
+fn capture_prepass_candidates(items: &[ConversationItem]) -> Vec<(usize, CaptureSlot, String)> {
+    use super::jev_tool_result::CHEAP_COMPRESS_MIN_BYTES;
+
+    let mut candidates = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            ConversationItem::ToolResult(result)
+                if result.content.len() >= CHEAP_COMPRESS_MIN_BYTES =>
+            {
+                candidates.push((index, CaptureSlot::ToolResult, result.content.to_string()));
+            }
+            ConversationItem::Assistant(assistant) => {
+                if assistant.content.len() >= CHEAP_COMPRESS_MIN_BYTES {
+                    candidates.push((
+                        index,
+                        CaptureSlot::AssistantText,
+                        assistant.content.to_string(),
+                    ));
+                }
+                for (call, tool_call) in assistant.tool_calls.iter().enumerate() {
+                    if tool_call.arguments.len() < CHEAP_COMPRESS_MIN_BYTES {
+                        continue;
+                    }
+                    // Arguments that are not JSON stay as they are.
+                    let Ok(arguments) =
+                        serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+                    else {
+                        continue;
+                    };
+                    let mut strings = Vec::new();
+                    bulky_json_strings(
+                        &arguments,
+                        String::new(),
+                        CHEAP_COMPRESS_MIN_BYTES,
+                        &mut strings,
+                    );
+                    candidates.extend(strings.into_iter().map(|(pointer, text)| {
+                        (index, CaptureSlot::ToolArgument { call, pointer }, text)
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+    candidates.sort_by_key(|(_, _, text)| std::cmp::Reverse(text.len()));
+    candidates
+}
+
+/// Puts `replacement` where `slot` of `item` was. `false` when the slot is
+/// gone, which leaves the item as it was.
+fn replace_capture_slot(
+    item: &mut ConversationItem,
+    slot: &CaptureSlot,
+    replacement: String,
+) -> bool {
+    match (item, slot) {
+        (ConversationItem::ToolResult(result), CaptureSlot::ToolResult) => {
+            result.content = std::sync::Arc::from(replacement);
+            true
+        }
+        (ConversationItem::Assistant(assistant), CaptureSlot::AssistantText) => {
+            assistant.content = std::sync::Arc::from(replacement);
+            true
+        }
+        (ConversationItem::Assistant(assistant), CaptureSlot::ToolArgument { call, pointer }) => {
+            let Some(tool_call) = assistant.tool_calls.get_mut(*call) else {
+                return false;
+            };
+            let Ok(mut arguments) = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+            else {
+                return false;
+            };
+            let Some(value) = arguments.pointer_mut(pointer) else {
+                return false;
+            };
+            *value = serde_json::Value::String(replacement);
+            let Ok(arguments) = serde_json::to_string(&arguments) else {
+                return false;
+            };
+            tool_call.arguments = std::sync::Arc::from(arguments);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Shrinks the bulky texts of a finished turn (tool results, assistant text
+/// and tool-call string arguments) with verified utility unit selection
+/// before the main model extracts memory from them. `None` means no item
+/// changed. The full text stays in the session transcript.
+pub(super) async fn utility_prepass_capture_items(
     lane: &crate::jev_cheap::CheapLane,
     extraction_model: &str,
     mut items: Vec<ConversationItem>,
 ) -> Option<Vec<ConversationItem>> {
     use super::jev_tool_result::{
-        CHEAP_COMPRESS_MIN_BYTES, SelectionReview, UnitSelection, select_units_with_lane,
+        SelectionReview, UnitSelection, secret_blocks_utility, select_units_with_lane,
     };
     use crate::utility_select::{UnitKind, build_units, plan_chunks, reconstruct};
     use distill_workspace::jev::flags::JevLever;
@@ -512,29 +651,12 @@ async fn utility_prepass_capture_items(
     if lane.model() == extraction_model {
         return None;
     }
-    let mut candidates: Vec<(usize, usize)> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| match item {
-            ConversationItem::ToolResult(result)
-                if result.content.len() >= CHEAP_COMPRESS_MIN_BYTES =>
-            {
-                Some((index, result.content.len()))
-            }
-            _ => None,
-        })
-        .collect();
-    candidates.sort_by_key(|&(_, len)| std::cmp::Reverse(len));
     let mut chunks_left = CAPTURE_PREPASS_MAX_CHUNKS;
     let mut changed = false;
-    for (index, _) in candidates {
+    for (index, slot, content) in capture_prepass_candidates(&items) {
         if chunks_left == 0 {
             break;
         }
-        let ConversationItem::ToolResult(result) = &items[index] else {
-            continue;
-        };
-        let content = std::sync::Arc::clone(&result.content);
         let units = build_units(&content, UnitKind::Lines, 24 * 1024);
         let evidence: std::collections::HashSet<String> =
             crate::jev_lanes::required_tool_evidence(&content)
@@ -555,6 +677,13 @@ async fn utility_prepass_capture_items(
                 None,
                 None,
             );
+            continue;
+        }
+        // Screened before planning, so an item that is never sent spends none
+        // of the chunk budget the clean items after it need.
+        if secret_blocks_utility(
+            units.iter().map(String::as_str).chain([CAPTURE_PREPASS_QUESTION]),
+        ) {
             continue;
         }
         let cap = lane.max_payload_bytes();
@@ -584,6 +713,7 @@ async fn utility_prepass_capture_items(
             },
         )
         .await
+        .kept
         else {
             continue;
         };
@@ -599,19 +729,16 @@ async fn utility_prepass_capture_items(
             crate::jev::record_item(
                 JevLever::ECheapCompress,
                 "compress",
-                "memory capture tool result",
+                slot.label(),
                 None,
                 None,
             );
-            if let ConversationItem::ToolResult(result) = &mut items[index] {
-                result.content = std::sync::Arc::from(replacement);
-                changed = true;
-            }
+            changed |= replace_capture_slot(&mut items[index], &slot, replacement);
         } else {
             crate::jev::record_item(
                 JevLever::ECheapCompress,
                 "not_shorter",
-                "memory capture tool result",
+                slot.label(),
                 None,
                 None,
             );
@@ -1696,6 +1823,30 @@ mod tests {
         assert!(request.temperature.is_none());
     }
 
+    /// The transcript is this capture's alone, so on the Messages API it must
+    /// not pay the cache-write premium: only the shared system prompt may
+    /// carry a breakpoint.
+    #[test]
+    fn extractor_request_writes_no_transcript_cache_entry() {
+        let request = build_extraction_request(
+            "session",
+            distill_memory::CaptureRange::try_new(2, 4).unwrap(),
+            CondensedTranscript {
+                json: "[{\"user\":\"remember this\"}]".to_owned(),
+                stats: CondensationStats::default(),
+            },
+            "claude-opus-5-5".to_owned(),
+            None,
+        );
+        assert!(request.one_shot);
+        let wire =
+            serde_json::to_value(distill_sampling_types::build_messages_request(&request)).unwrap();
+        assert!(
+            wire["messages"][0]["content"][0]["cache_control"].is_null(),
+            "{wire}"
+        );
+    }
+
     #[test]
     fn extractor_prompt_names_condensation() {
         let plain = build_extraction_request(
@@ -2513,6 +2664,259 @@ mod tests {
                 assert!(replaced.content.len() * 100 < big.len() * 70);
                 assert_eq!(serde_json::to_string(&shrunk[0]).unwrap(), before[0]);
                 assert_eq!(serde_json::to_string(&shrunk[2]).unwrap(), before[2]);
+            })
+            .await;
+    }
+
+    /// A secret-bearing item is never sent, so it must not spend the prepass
+    /// chunk budget either: the clean item after it is still pre-digested
+    /// instead of reaching the main-model extractor at full size.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_secret_item_spends_none_of_the_prepass_budget() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_workspace::jev::flags::JevLever;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                    e_crushers: false,
+                    e_importance: false,
+                    e_read_reuse: false,
+                    d2_big_output_retention: false,
+                    ..distill_workspace::jev::JevFlags::harness_default()
+                });
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "capture-select",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "U3"}
+                            }],
+                            "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                        }),
+                    ),
+                );
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_decision_answers([Some(
+                    crate::jev_cheap::test_utility_review_answer("accept"),
+                )]);
+                let lane = actor
+                    .cheap_lane(JevLever::ECheapCompress)
+                    .await
+                    .expect("utility lane");
+
+                // Large enough to plan the whole budget, so it is tried first.
+                let cap = lane.max_payload_bytes();
+                let mut secret =
+                    "OPENAI_API_KEY=sk-proj-FAKEKEYabcdefghijklmnopqrstuvwxyz0123456789\n"
+                        .to_owned();
+                let planned = |text: &str| {
+                    let units = crate::utility_select::build_units(
+                        text,
+                        crate::utility_select::UnitKind::Lines,
+                        24 * 1024,
+                    );
+                    crate::utility_select::plan_chunks(&units, cap, CAPTURE_PREPASS_MAX_CHUNKS)
+                        .map(|chunks| chunks.len())
+                };
+                let mut i = 0;
+                while planned(&secret) != Ok(CAPTURE_PREPASS_MAX_CHUNKS) {
+                    assert!(planned(&secret).is_ok(), "grown past the plan");
+                    for _ in 0..20 {
+                        secret.push_str(&format!("filler line number {i} with padding text\n"));
+                        i += 1;
+                    }
+                }
+                let kept_line = "decision: keep the cache in sqlite because of locking";
+                let clean: String = (0..200)
+                    .map(|i| {
+                        if i == 2 {
+                            format!("{kept_line}\n")
+                        } else {
+                            format!("progress line number {i} with padding text\n")
+                        }
+                    })
+                    .collect();
+                let items = vec![
+                    ConversationItem::tool_result("call-secret", secret.as_str()),
+                    ConversationItem::tool_result("call-clean", clean.as_str()),
+                ];
+
+                let shrunk = utility_prepass_capture_items(&lane, "main-model", items).await;
+                crate::jev::clear_test_flags();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                let shrunk = shrunk.expect("the clean item is still pre-digested");
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+                let ConversationItem::ToolResult(untouched) = &shrunk[0] else {
+                    panic!("item 0 must stay a tool result");
+                };
+                assert_eq!(&*untouched.content, secret.as_str(), "the secret item stays as it was");
+                let ConversationItem::ToolResult(replaced) = &shrunk[1] else {
+                    panic!("item 1 must stay a tool result");
+                };
+                assert!(replaced.content.contains(kept_line), "{}", replaced.content);
+                assert!(replaced.content.len() * 100 < clean.len() * 70);
+            })
+            .await;
+    }
+
+    /// Bulky assistant text and string tool arguments cost the main-model
+    /// extractor as much as tool output, so they are pre-digested the same
+    /// way: the durable line stays, the user's own words never change, the
+    /// arguments stay valid JSON, and a failed utility keeps today's bytes.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_prepass_digests_assistant_text_and_tool_arguments() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+        use distill_workspace::jev::flags::JevLever;
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                    e_crushers: false,
+                    e_importance: false,
+                    e_read_reuse: false,
+                    d2_big_output_retention: false,
+                    ..distill_workspace::jev::JevFlags::harness_default()
+                });
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("utility-model").with_api_backend("chat_completions"),
+                ])
+                .await
+                .expect("start inference stub");
+                let select = || {
+                    ScriptedResponse::json(
+                        200,
+                        serde_json::json!({
+                            "id": "capture-select",
+                            "model": "utility-model",
+                            "choices": [{
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "U3"}
+                            }],
+                            "usage": {"prompt_tokens": 17, "completion_tokens": 3}
+                        }),
+                    )
+                };
+                server.enqueue_response("/v1/chat/completions", select());
+                server.enqueue_response("/v1/chat/completions", select());
+                let actor = super::super::support::plain_actor().await;
+                let mut utility = crate::agent::config::ModelEntry::fallback(
+                    "utility-model",
+                    &crate::agent::config::EndpointsConfig::default(),
+                );
+                utility.info.base_url = server.url();
+                utility.info.context_window =
+                    std::num::NonZeroU64::new(48_000).expect("utility window");
+                utility.info.api_backend = distill_sampling_types::ApiBackend::ChatCompletions;
+                utility.api_key = Some("utility-test-key".to_owned());
+                actor
+                    .models_manager
+                    .insert_test_entry("utility-model", utility);
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some("utility-model".to_owned()),
+                    ..Default::default()
+                });
+                crate::jev::set_test_decision_answers([
+                    Some(crate::jev_cheap::test_utility_review_answer("accept")),
+                    Some(crate::jev_cheap::test_utility_review_answer("accept")),
+                ]);
+                let lane = actor
+                    .cheap_lane(JevLever::ECheapCompress)
+                    .await
+                    .expect("utility lane");
+
+                let kept_line = "decision: keep the cache in sqlite because of locking";
+                let bulky = |filler: &str| -> String {
+                    (0..200)
+                        .map(|i| {
+                            if i == 2 {
+                                format!("{kept_line}\n")
+                            } else {
+                                format!("{filler} line number {i} with padding text\n")
+                            }
+                        })
+                        .collect()
+                };
+                let (said, written) = (bulky("progress"), bulky("notes"));
+                let arguments =
+                    serde_json::json!({"path": "notes.md", "content": written}).to_string();
+                let items = vec![
+                    ConversationItem::user(said.as_str()),
+                    ConversationItem::assistant(said.as_str()),
+                    ConversationItem::assistant_tool_calls(vec![
+                        distill_sampling_types::ToolCall {
+                            id: "call-write".into(),
+                            name: "write_file".to_owned(),
+                            arguments: arguments.as_str().into(),
+                        },
+                    ]),
+                ];
+                let user_before = serde_json::to_string(&items[0]).unwrap();
+
+                let shrunk = utility_prepass_capture_items(&lane, "main-model", items)
+                    .await
+                    .expect("bulky assistant text and arguments are shrunk");
+                assert_eq!(server.request_count_for("/v1/chat/completions"), 2);
+                assert_eq!(serde_json::to_string(&shrunk[0]).unwrap(), user_before);
+                let ConversationItem::Assistant(text) = &shrunk[1] else {
+                    panic!("item 1 must stay assistant text");
+                };
+                assert!(text.content.contains(kept_line), "{}", text.content);
+                assert!(text.content.len() * 100 < said.len() * 70);
+                let ConversationItem::Assistant(call) = &shrunk[2] else {
+                    panic!("item 2 must stay a tool call");
+                };
+                let digested: serde_json::Value =
+                    serde_json::from_str(&call.tool_calls[0].arguments)
+                        .expect("arguments stay valid JSON");
+                assert_eq!(digested["path"], "notes.md");
+                let content = digested["content"]
+                    .as_str()
+                    .expect("content stays a string");
+                assert!(content.contains(kept_line), "{content}");
+                assert!(content.len() * 100 < written.len() * 70);
+
+                // A failed utility call changes nothing: the extractor reads today's bytes.
+                server.enqueue_response(
+                    "/v1/chat/completions",
+                    ScriptedResponse::json(500, serde_json::json!({"error": "down"})),
+                );
+                // Fresh text, so no earlier verified selection is reused.
+                let fresh = vec![ConversationItem::assistant(bulky("later").as_str())];
+                let failed = utility_prepass_capture_items(&lane, "main-model", fresh).await;
+                crate::jev::clear_test_flags();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+                assert!(failed.is_none(), "a failed utility keeps every item as it was");
             })
             .await;
     }

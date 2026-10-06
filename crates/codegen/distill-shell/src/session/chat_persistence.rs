@@ -12,11 +12,21 @@ use super::persistence::PersistenceMsg;
 /// Production `ChatPersistence` that sends to the existing session persistence channel.
 pub(crate) struct ChannelChatPersistence {
     tx: mpsc::UnboundedSender<PersistenceMsg>,
+    /// The session whose read-reuse index a history eviction invalidates.
+    session_id: Option<String>,
 }
 
 impl ChannelChatPersistence {
     pub(crate) fn new(tx: mpsc::UnboundedSender<PersistenceMsg>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            session_id: None,
+        }
+    }
+
+    pub(crate) fn with_session_id(mut self, session_id: String) -> Self {
+        self.session_id = Some(session_id);
+        self
     }
 }
 
@@ -37,6 +47,27 @@ impl ChatPersistence for ChannelChatPersistence {
             payload,
             &crate::jev_store::store_dir(),
         )
+    }
+
+    fn archive_evicted_text(
+        &mut self,
+        tool_name: &str,
+        tool_arguments: &str,
+        payload: &str,
+    ) -> Option<String> {
+        archive_evicted_text_at(
+            tool_name,
+            tool_arguments,
+            payload,
+            &crate::jev_store::store_dir(),
+        )
+    }
+
+    fn history_evicted(&mut self) {
+        // A reuse note must never point at a copy that is no longer in history.
+        if let Some(session_id) = &self.session_id {
+            crate::jev::invalidate_payload_reads_for_session(session_id);
+        }
     }
 
     fn persist_working_directory_switch_and_ack(
@@ -140,6 +171,44 @@ fn archive_tool_result_at(
     let path = crate::jev_store::store_payload_in(store_dir, payload)?;
     (std::fs::read(&path).ok()?.as_slice() == payload.as_bytes())
         .then(|| (path.display().to_string(), body_range))
+}
+
+/// Stores an old tool output before history eviction replaces it. What the
+/// model works from rather than looks up stays whole: a user's answer, the
+/// plan, the goal and the todo list, a skill and an instruction file (read by
+/// any tool), and anything the utility path's secret screen flags, which is
+/// never written to the store (the same rule as a utility-stored original).
+/// Compaction stores what it digests in an already-cold input the same way.
+pub(crate) fn archive_evicted_text_at(
+    tool_name: &str,
+    tool_arguments: &str,
+    payload: &str,
+    store_dir: &Path,
+) -> Option<String> {
+    let tool = tool_name
+        .rsplit([':', '/'])
+        .next()
+        .unwrap_or(tool_name)
+        .to_ascii_lowercase();
+    if matches!(
+        tool.as_str(),
+        "ask_user_question"
+            | "skill"
+            | "todo_write"
+            | "todowrite"
+            | "update_goal"
+            | "enter_plan_mode"
+            | "exit_plan_mode"
+    ) || ["/skills/", "SKILL.md", "AGENTS.md", "CLAUDE.md"]
+        .iter()
+        .any(|marker| tool_arguments.contains(marker))
+        || distill_workspace::jev::crushers::utility_secret_presence(payload).is_some()
+    {
+        return None;
+    }
+    let path = crate::jev_store::store_payload_in(store_dir, payload)?;
+    (std::fs::read(&path).ok()?.as_slice() == payload.as_bytes())
+        .then(|| path.display().to_string())
 }
 
 const NATIVE_CONCISE_PREFIX: &str = "Exit code: 0\n\nCommand output:\n\n```\n";
@@ -279,6 +348,42 @@ mod tests {
         .expect("eligible native concise build progress should have a recovery path");
         assert_eq!(payload.get(body_range).unwrap(), body);
         assert_eq!(std::fs::read_to_string(path).unwrap(), payload);
+    }
+
+    /// History eviction may replace an old output only after the original is
+    /// stored byte for byte; what must stay whole is refused, so the caller
+    /// keeps today's bytes.
+    #[test]
+    fn evicted_output_is_stored_byte_identically_and_protected_text_is_refused() {
+        let dir = tempfile::tempdir().expect("temp store");
+        let payload = "src/lib.rs:1 fn main() {}\n".repeat(400);
+        let path = archive_evicted_text_at(
+            "read_file",
+            r#"{"target_file":"src/lib.rs"}"#,
+            &payload,
+            dir.path(),
+        )
+        .expect("an ordinary read is stored");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), payload);
+
+        for (tool, args) in [
+            ("ask_user_question", r#"{"question":"which db?"}"#),
+            ("skill", r#"{"name":"review"}"#),
+            ("todo_write", r#"{"todos":[]}"#),
+            ("read_file", r#"{"target_file":"/home/u/.claude/skills/x/SKILL.md"}"#),
+            ("read_file", r#"{"target_file":"AGENTS.md"}"#),
+        ] {
+            assert!(
+                archive_evicted_text_at(tool, args, &payload, dir.path()).is_none(),
+                "{tool} {args} must stay whole"
+            );
+        }
+        let secret = format!("{payload}OPENAI_API_KEY=sk-proj-AbCdEf1234567890GhIjKlMnOpQr\n");
+        assert!(
+            archive_evicted_text_at("run_terminal_command", r#"{"command":"env"}"#, &secret, dir.path())
+                .is_none(),
+            "a secret never reaches the store"
+        );
     }
 
     #[tokio::test]

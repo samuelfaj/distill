@@ -394,7 +394,8 @@ impl SessionActor {
         {
             let bridge = self.agent.borrow().tool_bridge().clone();
             let snapshot = self.tool_metadata_snapshot.clone();
-            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot);
+            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot)
+                .with_server_instructions(self.startup_hints.is_subagent);
             bridge
                 .update_resource(distill_tools::types::tool_index::ToolIndex(
                     std::sync::Arc::new(tool_index),

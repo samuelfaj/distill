@@ -737,12 +737,14 @@ impl SessionActor {
             classify_failed_servers(&mcp_state, &connected_names)
         };
         let hint = self.rendered_mcp_hint().await;
+        let brief = self.mcp_announcement_is_brief().await;
         let announcements_changed = self.latch_and_push_mcp_reminder(
             &server_summaries,
             new_fingerprints,
             currently_failed,
             &unconnected_configured,
             hint.as_deref(),
+            brief,
         );
         rearm_on_drop.0 = None;
         if announcements_changed {
@@ -762,13 +764,18 @@ impl SessionActor {
         currently_failed: Vec<crate::session::announcement_state::FailedServer>,
         unconnected_configured: &std::collections::HashSet<String>,
         hint: Option<&str>,
+        brief: bool,
     ) -> bool {
         use distill_tools::implementations::search_tool::{
-            build_delta_reminder, build_server_reminder,
+            build_delta_reminder, build_delta_reminder_brief, build_server_reminder,
+            build_server_reminder_brief,
         };
         let (mut reminder_text, announcements_changed, to_announce) = {
             let mut announced = self.mcp_announcements.lock();
             let text = match self.mcp_reminder_mode {
+                McpReminderMode::Delta if brief => {
+                    build_delta_reminder_brief(&announced.fingerprints, server_summaries)
+                }
                 McpReminderMode::Delta => {
                     build_delta_reminder(&announced.fingerprints, server_summaries)
                 }
@@ -777,6 +784,8 @@ impl SessionActor {
                         None
                     } else if server_summaries.is_empty() {
                         Some("All MCP servers have disconnected.".to_string())
+                    } else if brief {
+                        build_server_reminder_brief(server_summaries)
                     } else {
                         build_server_reminder(server_summaries)
                     }
@@ -798,6 +807,9 @@ impl SessionActor {
         }
         if let (Some(text), Some(hint)) = (reminder_text.as_mut(), hint) {
             text.push_str(hint);
+            if brief {
+                text.push_str(MCP_BRIEF_INSTRUCTIONS_NOTE);
+            }
         }
         if let Some(text) = reminder_text {
             self.push_system_reminder_with_tag(&text, self.reminder_wrapper_tag());
@@ -1479,6 +1491,27 @@ impl SessionActor {
         crate::session::tool_index::Bm25ToolSearchIndex::new(self.tool_metadata_snapshot.clone())
             .list_server_summaries()
     }
+    /// Whether this session announces MCP servers by name only: a subagent
+    /// that has `search_tool`, whose results carry each server's instructions
+    /// (see `Bm25ToolSearchIndex::with_server_instructions`), and that cannot
+    /// call an MCP tool without it (see [`mcp_brief_allowed`]). Few children
+    /// use MCP at all, and the instructions run to 2 KB per server.
+    pub(crate) async fn mcp_announcement_is_brief(&self) -> bool {
+        self.startup_hints.is_subagent
+            && mcp_brief_allowed(
+                crate::jev::lever_active(distill_workspace::jev::flags::JevLever::P1ToolFamily),
+                self.startup_hints
+                    .parent_session_id
+                    .as_deref()
+                    .and_then(crate::jev::offered_tool_families)
+                    .as_ref(),
+            )
+            && self
+                .tool_bridge_handle()
+                .tool_for_kind(distill_tools::types::tool::ToolKind::SearchTool)
+                .await
+                .is_some()
+    }
     /// Render the tool usage hint appended to every injected MCP reminder body, with the session's tool names substituted.
     /// Shared by the injector and the `/context` estimate.
     /// `None` when the template fails to render.
@@ -1504,6 +1537,19 @@ impl SessionActor {
         })
     }
 }
+/// A child's tools array holds no MCP tool it could call directly (without
+/// `search_tool`, whose results carry the instructions) only when P1 bounds
+/// it by a parent whose offered families leave MCP out. Otherwise (P1 off,
+/// no recorded parent set, or a parent that offers MCP) its servers keep
+/// their instructions in the announcement.
+fn mcp_brief_allowed(
+    p1_active: bool,
+    parent_families: Option<&std::collections::BTreeSet<String>>,
+) -> bool {
+    p1_active && parent_families.is_some_and(|families| !families.contains("mcp"))
+}
+/// Appended after the usage hint when servers are announced by name only.
+pub(super) const MCP_BRIEF_INSTRUCTIONS_NOTE: &str = "\nEach server's own instructions (usage and safety rules) come with its search results; follow them when you use its tools.";
 /// The MCP server announcement as rendered by `mcp_announcement_snapshot`.
 /// The MCP counterpart of `SkillListingSnapshot`.
 pub(super) struct McpAnnouncementSnapshot {
@@ -1543,4 +1589,26 @@ pub(super) fn format_mcp_connecting_reminder(
         ));
     }
     text
+}
+
+#[cfg(test)]
+mod brief_announcement_tests {
+    use super::mcp_brief_allowed;
+
+    /// Server instructions carry usage and safety rules. A child that can call
+    /// an MCP tool straight from its tools array would never see them in
+    /// search results, so it keeps them in the announcement: whenever P1 is
+    /// off, the parent's families are unknown (every family joins), or the
+    /// parent offers MCP.
+    #[test]
+    fn only_a_child_without_direct_mcp_tools_gets_the_brief_announcement() {
+        let families = |names: &[&str]| -> std::collections::BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        assert!(mcp_brief_allowed(true, Some(&families(&["media"]))));
+        assert!(mcp_brief_allowed(true, Some(&families(&[]))));
+        assert!(!mcp_brief_allowed(true, Some(&families(&["mcp"]))));
+        assert!(!mcp_brief_allowed(true, None));
+        assert!(!mcp_brief_allowed(false, Some(&families(&["media"]))));
+    }
 }

@@ -644,6 +644,10 @@ pub struct StartupHints {
     /// "report now" reminder when its turn runs long. Transient spawn policy.
     #[serde(skip)]
     pub report_budget: bool,
+    /// E6: a fresh `explore` child whose rounds may run on the utility model,
+    /// with this session's own model as the fallback. Transient spawn policy.
+    #[serde(skip)]
+    pub cheap_agent: bool,
     #[serde(skip)]
     pub startup_traceparent: std::cell::RefCell<Option<String>>,
 }

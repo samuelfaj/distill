@@ -3,6 +3,12 @@
 
 use super::*;
 
+/// A utility classification slower than this runs on the session model instead.
+const LAZINESS_UTILITY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+/// After this many utility failures or timeouts in a row the session stops
+/// asking the utility, so a hung endpoint does not add its deadline to every fire.
+const LAZINESS_UTILITY_FAILURE_LIMIT: u32 = 2;
+
 /// Per-fire metadata captured at the top of `maybe_fire_laziness_check` when `--laziness-debug-log` is set.
 /// Passed through `maybe_write_laziness_debug_log` so every JSONL line references the same snapshot point.
 pub(crate) struct LazinessFireMeta {
@@ -272,6 +278,88 @@ impl SessionActor {
         }
     }
 
+    /// The classifier response from the utility model and that model, or
+    /// `None` to classify on the session model as before: no utility, the
+    /// utility is the session model, a secret in the transcript, a transport
+    /// failure or timeout (the last [`LAZINESS_UTILITY_FAILURE_LIMIT`] in a row
+    /// stop further attempts this session), or an answer that is not a valid
+    /// verdict. A valid verdict then passes the same confidence floor and nudge
+    /// cap as one from the session model.
+    async fn utility_laziness_response(
+        &self,
+        request: &ConversationRequest,
+    ) -> Option<(distill_sampling_types::ConversationResponse, String)> {
+        const SOURCE: &str = "laziness_classifier";
+        if self.state.lock().await.laziness_utility_failures >= LAZINESS_UTILITY_FAILURE_LIMIT {
+            return None;
+        }
+        let (client, model) = self.goal_utility_sampler().await?;
+        if request.model.as_deref() == Some(model.as_str()) {
+            return None;
+        }
+        let bytes_in: usize = request
+            .items
+            .iter()
+            .map(|item| item.text_content().len())
+            .sum();
+        let outcome = |decision: &str, bytes_out: usize| {
+            crate::jev_cheap::record_utility_outcome(SOURCE, decision, 1, bytes_in, bytes_out);
+        };
+        if request.items.iter().any(|item| {
+            distill_workspace::jev::crushers::utility_secret_presence(&item.text_content())
+                .is_some()
+        }) {
+            outcome("keep:secret", 0);
+            return None;
+        }
+        let mut request = request.clone();
+        request.model = Some(model.clone());
+        // A separate provider: no session headers ride along.
+        let request_id = format!("{LAZINESS_REQ_ID_PREFIX}utility-{}", uuid::Uuid::new_v4());
+        request.x_grok_conv_id = Some(request_id.clone());
+        request.x_grok_req_id = Some(request_id);
+        request.x_grok_session_id = None;
+        request.x_grok_agent_id = None;
+        let attempt = super::side_call::auxiliary_attempt(&client, &request);
+        let started = std::time::Instant::now();
+        let response = match tokio::time::timeout(
+            LAZINESS_UTILITY_DEADLINE,
+            client.conversation_collect(request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) | Err(_) => {
+                super::side_call::record_auxiliary_failures(
+                    self,
+                    std::slice::from_ref(&attempt),
+                    false,
+                );
+                outcome("fallback:transport", 0);
+                let mut state = self.state.lock().await;
+                state.laziness_utility_failures = state.laziness_utility_failures.saturating_add(1);
+                return None;
+            }
+        };
+        self.state.lock().await.laziness_utility_failures = 0;
+        super::side_call::record_auxiliary_response(
+            self,
+            "laziness_classifier_utility",
+            &model,
+            &attempt,
+            &response,
+            Some(started.elapsed().as_millis() as u64),
+            false,
+        );
+        let text = response.assistant_text();
+        if parse_classifier_output(&text).is_err() {
+            outcome("fallback:main", text.len());
+            return None;
+        }
+        outcome("used", text.len());
+        Some((response, model))
+    }
+
     /// The sampler call goes through `prepare_chat_completion().conversation_collect()`, which never publishes on the per-session sampler channel.
     /// A stalled verdict only queues a `<system-reminder>` via `push_system_reminder`; nothing enters `pending_inputs`, so no synthetic turn fires.
     /// Debug mode adds logging; it does not bypass the production decision logic.
@@ -431,52 +519,67 @@ impl SessionActor {
             x_grok_req_id: Some(format!("{LAZINESS_REQ_ID_PREFIX}{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(session_id_str),
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+            // The transcript window is new every fire; only the classifier prompt is reused.
+            one_shot: true,
             ..ConversationRequest::default()
         };
 
-        // Build a fresh `SamplingClient` via `prepare_chat_completion` and call `conversation_collect` directly, keeping the fire invisible `run_memory_flush`, `run_dream_model_call`, and `image_describe` use the same pattern.
-        // The per-session `sampler_handle` would forward streaming events on the shared sampler channel.
-        // Every `ChannelToken { Text }` becomes an ACP `AgentMessageChunk`, so the pager UI would render mid-classifier reasoning and text deltas `conversation_collect` never publishes on that channel, so the client sees nothing.
-        let sampling_client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
-            Err(err) => {
-                let detail = err.to_string();
-                tracing::debug!(error = %detail, "laziness classifier: prepare_chat_completion failed");
-                let elapsed_ms = started.elapsed().as_millis() as u64;
-                self.maybe_write_laziness_debug_log(
-                    meta.take(),
-                    &model_id,
-                    items_count_after_trim,
-                    elapsed_ms,
-                    LazinessFireOutcome::Aborted {
-                        reason: LazinessAbortReason::ClassifierError,
-                        error_detail: Some(detail),
-                    },
-                )
-                .await;
-                self.emit_laziness_abort(LazinessAbortReason::ClassifierError);
-                return;
-            }
-        };
-
-        // The sampler call is wrapped in a generation-poll loop and a wall-clock timeout
-        // Dropping the `conversation_collect` future on abort cancels the HTTP request, so no actor-side cleanup is needed
+        // One wall-clock budget covers the utility attempt and the session-model call.
         let timeout = tokio::time::sleep(std::time::Duration::from_millis(
             LAZINESS_CLASSIFIER_TIMEOUT_MS,
         ));
         tokio::pin!(timeout);
-        let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
-        let sampler_future = sampling_client.conversation_collect(request);
-        tokio::pin!(sampler_future);
-        let response = loop {
-            tokio::select! {
-                biased;
-                out = &mut sampler_future => match out {
-                    Ok(response) => break response,
+        // The utility model classifies first; anything it cannot settle runs on
+        // the session model as before. Debug mode collects the session model's
+        // own verdicts, so it never asks the utility (and has no debug log to
+        // write on the aborts below).
+        let utility_response = if debug_mode {
+            None
+        } else {
+            let utility_future = self.utility_laziness_response(&request);
+            tokio::pin!(utility_future);
+            // User input or a model switch ends the fire here as it would the
+            // session-model call; dropping the future cancels the request.
+            let outcome = loop {
+                tokio::select! {
+                    biased;
+                    out = &mut utility_future => break Ok(out),
+                    _ = &mut timeout => break Err(LazinessAbortReason::Timeout),
+                    _ = tokio::time::sleep(poll_interval) => {
+                        if let Some(reason) = self.laziness_abort_check(abort_snapshot) {
+                            break Err(reason);
+                        }
+                    }
+                }
+            };
+            // A failed utility attempt must not start the session model after
+            // the fire was already moot.
+            let outcome = outcome.and_then(|out| match out {
+                None => self
+                    .laziness_abort_check(abort_snapshot)
+                    .map_or(Ok(None), Err),
+                answered => Ok(answered),
+            });
+            match outcome {
+                Ok(out) => out,
+                Err(reason) => {
+                    self.emit_laziness_abort(reason);
+                    return;
+                }
+            }
+        };
+        // `verdict_model` is the model whose verdict this is, for the fired and nudge events.
+        let (response, verdict_model) = match utility_response {
+            Some(answered) => answered,
+            None => {
+                // Build a fresh `SamplingClient` via `prepare_chat_completion` and call `conversation_collect` directly, keeping the fire invisible `run_memory_flush`, `run_dream_model_call`, and `image_describe` use the same pattern.
+                // The per-session `sampler_handle` would forward streaming events on the shared sampler channel.
+                // Every `ChannelToken { Text }` becomes an ACP `AgentMessageChunk`, so the pager UI would render mid-classifier reasoning and text deltas `conversation_collect` never publishes on that channel, so the client sees nothing.
+                let sampling_client = match self.prepare_chat_completion(false).await {
+                    Ok(c) => c,
                     Err(err) => {
                         let detail = err.to_string();
-                        tracing::debug!(error = %detail, "laziness classifier sampler call failed");
-                        super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
+                        tracing::debug!(error = %detail, "laziness classifier: prepare_chat_completion failed");
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         self.maybe_write_laziness_debug_log(
                             meta.take(),
@@ -492,56 +595,91 @@ impl SessionActor {
                         self.emit_laziness_abort(LazinessAbortReason::ClassifierError);
                         return;
                     }
-                },
-                _ = &mut timeout => {
-                    super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
-                    let elapsed_ms = started.elapsed().as_millis() as u64;
-                    self.maybe_write_laziness_debug_log(
-                        meta.take(),
-                        &model_id,
-                        items_count_after_trim,
-                        elapsed_ms,
-                        LazinessFireOutcome::Aborted {
-                            reason: LazinessAbortReason::Timeout,
-                            error_detail: None,
+                };
+
+                // The sampler call is wrapped in a generation-poll loop and the wall-clock timeout above
+                // Dropping the `conversation_collect` future on abort cancels the HTTP request, so no actor-side cleanup is needed
+                let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);
+                let sampler_future = sampling_client.conversation_collect(request);
+                tokio::pin!(sampler_future);
+                let response = loop {
+                    tokio::select! {
+                        biased;
+                        out = &mut sampler_future => match out {
+                            Ok(response) => break response,
+                            Err(err) => {
+                                let detail = err.to_string();
+                                tracing::debug!(error = %detail, "laziness classifier sampler call failed");
+                                super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
+                                let elapsed_ms = started.elapsed().as_millis() as u64;
+                                self.maybe_write_laziness_debug_log(
+                                    meta.take(),
+                                    &model_id,
+                                    items_count_after_trim,
+                                    elapsed_ms,
+                                    LazinessFireOutcome::Aborted {
+                                        reason: LazinessAbortReason::ClassifierError,
+                                        error_detail: Some(detail),
+                                    },
+                                )
+                                .await;
+                                self.emit_laziness_abort(LazinessAbortReason::ClassifierError);
+                                return;
+                            }
                         },
-                    )
-                    .await;
-                    self.emit_laziness_abort(LazinessAbortReason::Timeout);
-                    return;
-                }
-                _ = tokio::time::sleep(poll_interval) => {
-                    if let Some(reason) = self.laziness_abort_check(abort_snapshot) {
-                        super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
-                        let elapsed_ms = started.elapsed().as_millis() as u64;
-                        self.maybe_write_laziness_debug_log(
-                            meta.take(),
-                            &model_id,
-                            items_count_after_trim,
-                            elapsed_ms,
-                            LazinessFireOutcome::Aborted {
-                                reason,
-                                error_detail: None,
-                            },
-                        )
-                        .await;
-                        self.emit_laziness_abort(reason);
-                        return;
+                        _ = &mut timeout => {
+                            super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
+                            let elapsed_ms = started.elapsed().as_millis() as u64;
+                            self.maybe_write_laziness_debug_log(
+                                meta.take(),
+                                &model_id,
+                                items_count_after_trim,
+                                elapsed_ms,
+                                LazinessFireOutcome::Aborted {
+                                    reason: LazinessAbortReason::Timeout,
+                                    error_detail: None,
+                                },
+                            )
+                            .await;
+                            self.emit_laziness_abort(LazinessAbortReason::Timeout);
+                            return;
+                        }
+                        _ = tokio::time::sleep(poll_interval) => {
+                            if let Some(reason) = self.laziness_abort_check(abort_snapshot) {
+                                super::side_call::record_auxiliary_failures(&self, std::slice::from_ref(&attempt), false);
+                                let elapsed_ms = started.elapsed().as_millis() as u64;
+                                self.maybe_write_laziness_debug_log(
+                                    meta.take(),
+                                    &model_id,
+                                    items_count_after_trim,
+                                    elapsed_ms,
+                                    LazinessFireOutcome::Aborted {
+                                        reason,
+                                        error_detail: None,
+                                    },
+                                )
+                                .await;
+                                self.emit_laziness_abort(reason);
+                                return;
+                            }
+                        }
                     }
-                }
+                };
+
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                super::side_call::record_auxiliary_response(
+                    &self,
+                    "laziness_classifier",
+                    &attempt.model_id,
+                    &attempt,
+                    &response,
+                    Some(elapsed_ms),
+                    false,
+                );
+                (response, model_id.clone())
             }
         };
-
         let elapsed_ms = started.elapsed().as_millis() as u64;
-        super::side_call::record_auxiliary_response(
-            &self,
-            "laziness_classifier",
-            &attempt.model_id,
-            &attempt,
-            &response,
-            Some(elapsed_ms),
-            false,
-        );
         let raw_text = response.assistant_text();
         let parsed = match parse_classifier_output(&raw_text) {
             Ok(p) => p,
@@ -601,16 +739,16 @@ impl SessionActor {
             // No nudge. Telemetry still shows why: the `LazinessClassifierFired` category and the absence of a paired `LazinessNudgeFired`.
             self.events
                 .emit(crate::session::events::Event::LazinessClassifierFired {
-                    model_id,
+                    model_id: verdict_model,
                     category: category.as_const_str(),
                     confidence,
                 });
             return;
         };
-        // Nudge branch: clone once because both `LazinessClassifierFired` here and `LazinessNudgeFired` below need `model_id`
+        // Nudge branch: clone once because both `LazinessClassifierFired` here and `LazinessNudgeFired` below need the verdict's model
         self.events
             .emit(crate::session::events::Event::LazinessClassifierFired {
-                model_id: model_id.clone(),
+                model_id: verdict_model.clone(),
                 category: category.as_const_str(),
                 confidence,
             });
@@ -650,7 +788,7 @@ impl SessionActor {
             .saturating_sub(state.nudges_used_this_session);
         self.events
             .emit(crate::session::events::Event::LazinessNudgeFired {
-                model_id,
+                model_id: verdict_model,
                 category: category.as_const_str(),
                 nudges_remaining,
             });

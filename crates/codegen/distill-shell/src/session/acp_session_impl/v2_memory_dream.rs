@@ -1144,6 +1144,8 @@ impl SessionActor {
             x_grok_req_id: Some(format!("xai-dream-v2-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(self.session_info.id.to_string()),
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+            // The dream input is new every run; a tip breakpoint would write a cache nobody reads.
+            one_shot: true,
             ..Default::default()
         };
         let attempt = super::side_call::auxiliary_attempt(&sampling_client, &request);

@@ -154,8 +154,16 @@ pub fn looks_structured(command: &str, output: &str) -> bool {
     }
     let simple = simple_command(command);
     if simple.is_empty() {
-        // A compound command that mentions a document producer is treated the
-        // same way: `find . | head` and `cmd && cat x` both end in a document.
+        // A compound command that runs a document producer is treated the
+        // same way: `cmd && cat x` ends in a document. Only programs in
+        // command position count, not words in quotes or heredoc bodies; a
+        // command that does not parse keeps the word scan.
+        if let Some(programs) = crushers::output_programs(command) {
+            return programs.iter().any(|program| {
+                DOCUMENT_COMMANDS.contains(&program.as_str())
+                    || matches!(program.as_str(), "git diff" | "git show" | "git cat-file")
+            });
+        }
         return command
             .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&'))
             .any(|token| DOCUMENT_COMMANDS.contains(&token.rsplit('/').next().unwrap_or(token)));
@@ -541,7 +549,15 @@ mod tests {
 
         // A search or a build is *not* a document: that is the case this lane is
         // for, and the one the plugin prunes too.
-        for command in ["find . -name '*.rs' | head -50", "cargo build", "pytest -q"] {
+        for command in [
+            "find . -name '*.rs' | head -50",
+            "cargo build",
+            "pytest -q",
+            // A document program named in a script body or a written file is
+            // not what produced the output.
+            "python3 - <<'EOF'\nprint('cat or jq')\nEOF",
+            "cat > notes.md <<'EOF'\nnotes\nEOF\ncargo build",
+        ] {
             assert_eq!(gate(command, &build_output()), Gate::Prune, "{command}");
         }
 

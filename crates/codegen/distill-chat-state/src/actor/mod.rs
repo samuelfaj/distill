@@ -6,6 +6,7 @@
 //! - `mutations`: State mutation handlers (push_user_message, replace_conversation, etc.)
 //! - `queries`: Read-only query handlers (get_conversation, snapshot, etc.)
 
+pub(crate) mod history_eviction;
 mod mutations;
 mod queries;
 pub(crate) mod request_builder;
@@ -33,6 +34,8 @@ pub struct ChatStateActor {
     state: ChatState,
     /// Pruning configuration for tool-result trimming.
     pruning_config: PruningConfig,
+    /// Batch and cold-moment bookkeeping for history eviction.
+    eviction: history_eviction::EvictionState,
     /// Persistence implementation — owned exclusively, called with `&mut self`.
     persistence: Box<dyn ChatPersistence>,
     /// Channel to receive commands from handles.
@@ -80,9 +83,14 @@ impl ChatStateActor {
     ) -> ChatStateHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
+        let eviction = history_eviction::EvictionState {
+            last_batch_rounds: history_eviction::count_rounds(&initial_conversation),
+            ..Default::default()
+        };
         let actor = ChatStateActor {
             state: ChatState::new(initial_conversation, sampling_config),
             pruning_config,
+            eviction,
             persistence,
             cmd_rx,
             event_tx,
@@ -235,6 +243,21 @@ impl ChatStateActor {
             } => {
                 self.record_usage_attribution(attribution, attribute_to_prompt);
             }
+            ChatStateCommand::RecordUtilityOutcome {
+                source_kind,
+                decision,
+                chunks,
+                bytes_in,
+                bytes_out,
+            } => {
+                self.state.session_usage.record_utility_outcome(
+                    &source_kind,
+                    &decision,
+                    chunks,
+                    bytes_in,
+                    bytes_out,
+                );
+            }
             ChatStateCommand::RegisterPendingUsageAttempt {
                 attempt_id,
                 attribute_to_prompt,
@@ -272,6 +295,11 @@ impl ChatStateActor {
                 self.increment_prompt_index();
             }
             ChatStateCommand::UpdateSamplingConfig { config } => {
+                // A different model has no cache for this history: evicting
+                // old output before its first request costs nothing extra.
+                if config.model != self.state.sampling_config.model {
+                    self.mark_history_cold(history_eviction::ColdReason::ModelSwitch);
+                }
                 self.state.sampling_config = *config;
             }
             ChatStateCommand::RecordAgentEditedPath { path } => {

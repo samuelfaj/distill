@@ -46,15 +46,17 @@ c1_premature_stop     = true # C1: requested work still open
 c3_completion_check   = true # C3: something the user asked for is missing
 c4_diff_risk          = true # C4: flag a risky diff
 c5_error_priority     = true # C5: order errors by importance
-d2_big_output_retention = true # D2: drop a large inert output
 d3_post_compaction    = true # D3: re-inject only still-relevant memory
 d4_compaction_timing  = true # D4: compact early when the next step no longer needs the history
 d5_memory_capture_gate = true # D5: gate durable memory capture
+d6_history_eviction   = true # D6: evict old large tool output from history at cold moments (no Jev call)
 b7_subagent_model     = true # B7: choose worker or main model for a subagent
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
+d2_big_output_retention = false # D2: asked at ingest, before the model read the output; it never dropped one
+d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
 b6_delegation_hint    = false # B6: with a worker model, the turn-start request also asks whether the request has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request
 
 # Optional, with the defaults shown
@@ -96,7 +98,8 @@ decides whether the worker can do a subagent task as well as the main model
 C4 sends the change once. B1 intent reaches B2 as `turn_intent`.
 
 Retired levers `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
-`c2_failure_triage` and `c7_change_type` are ignored in configuration.
+`c2_failure_triage` and `c7_change_type` are ignored in configuration; config
+load warns once per key that it is retired (`grok inspect` lists it).
 
 ## Kill switch and how to revert
 
@@ -143,8 +146,11 @@ still shows the `jev …` chip per turn.
 
 ## Local model first (oMLX, Ollama, any OpenAI-compatible server)
 
-The local model is free, so it takes a call whenever it can fully do it. Configure the endpoint like any custom
-model and point `[jev.local]` at it:
+Whole main rounds no longer move to the local model: a round on another model replays the history uncached, so
+that route was removed, and `b2_local_model` is off and switches nothing. `[jev.local]` names the utility model for
+bounded utility tasks and, with `[jev.ladder] e_cheap_agent = true`, for the rounds of a fresh `explore` subagent
+when it is a catalog entry (see `docs/token-saver.md`). Configure the endpoint like any custom model and point
+`[jev.local]` at it:
 
 ```toml
 [model.qwen38-local]
@@ -163,23 +169,6 @@ notes = "tool calling OK, no reasoning effort; weak at proofs and counting."
 context_reserve_tokens = 8192
 # min_capability = 0.70
 ```
-
-Per model call:
-
-1. **Code guard** — the conversation estimate plus the reserve must fit the local window; if not, the call stays
-   on the session model and the record says why.
-2. **Decision** — three `noul` questions: *can the local model fully do this call?*, *does it need more context
-   than its window?*, *does it need frontier-level reasoning?*. Local wins only with `capable ≥ min_capability`
-   (0.70 by default) and no red flag at or above 0.40. Any missing answer, error or timeout means cloud.
-3. **Apply** — the round runs with the local endpoint, credential, backend and window; session attribution is
-   kept, and the turn row marks `jev ×N ·local`.
-
-Watch the window: this harness's base prompt (system prompt plus the turn's history) is already **~29k tokens**,
-and the tool definitions ride on top. A 32k local window therefore rarely fits — raise it on the server (oMLX:
-*Settings → model → max context window*, then restart the server so it re-reads its settings) and keep
-`[model.<local>] context_window` at the same number, or point `[jev.local]` at a larger local model. Measured
-once the window was 128k: a trivial turn ran **entirely** on the local model (126.4k tokens, 3m25s) instead of the
-cloud (about 9s) — free tokens, slower work. Disable it with `[jev.ladder] b2_local_model = false`.
 
 ## Reviewing a change
 

@@ -45,6 +45,11 @@ impl ChatStateActor {
             }
             self.rebase_turn_capture_offset();
         }
+        self.evict_old_history(
+            tool_definitions
+                .iter()
+                .any(|tool| tool.name == "ask_stored_output"),
+        );
         let budgeted = apply_image_budget(self.state.conversation.clone());
         let ImageBudgetOutcome {
             body_bytes,
@@ -101,6 +106,7 @@ impl ChatStateActor {
             // Execute completed tool calls on a Length-truncated turn instead
             // of failing it; text-only salvage stays behind `CompletePartial`.
             length_policy: distill_sampling_types::LengthPolicy::CompleteToolCalls,
+            one_shot: false,
         }
     }
 

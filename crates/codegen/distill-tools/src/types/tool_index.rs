@@ -62,6 +62,13 @@ pub trait ToolSearchIndex: Send + Sync {
     /// system-reminder listing connected servers, so the model knows which integrations are
     /// available.
     fn list_server_summaries(&self) -> Vec<ServerSummary>;
+
+    /// The server's own instructions to return with its `search_tool` results,
+    /// for a session whose MCP announcement lists servers by name only.
+    /// `None` (the default) when the announcement already carries them.
+    fn server_instructions(&self, _server: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Resource wrapper for injecting a `ToolSearchIndex` into `Resources`. Same pattern as

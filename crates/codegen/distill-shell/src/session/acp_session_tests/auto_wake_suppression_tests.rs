@@ -166,6 +166,7 @@ fn pending_notification_cap_keeps_newest_entries() {
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     };
     for index in 0..(MAX_PENDING_NOTIFICATIONS + 3) {
         SessionActor::push_pending_notification(

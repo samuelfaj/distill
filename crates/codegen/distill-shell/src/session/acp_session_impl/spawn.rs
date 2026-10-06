@@ -587,15 +587,20 @@ pub(crate) async fn spawn_session_actor(
         soft_trim_head: session_pruning_config.soft_trim_head,
         soft_trim_tail: session_pruning_config.soft_trim_tail,
         hard_clear_age_turns: session_pruning_config.hard_clear_age_turns,
+        history_eviction: crate::jev::lever_active(
+            distill_workspace::jev::flags::JevLever::D6HistoryEviction,
+        ),
+        history_eviction_warm: crate::jev::history_eviction_warm(),
     };
     let (chat_state_event_tx, chat_state_event_rx) = mpsc::unbounded_channel();
     let chat_state_handle = distill_chat_state::ChatStateActor::spawn_with_pruning(
         conversation.clone(),
         chat_state_sampling_config,
         actor_pruning_config,
-        Box::new(super::chat_persistence::ChannelChatPersistence::new(
-            persistence.tx.clone(),
-        )),
+        Box::new(
+            super::chat_persistence::ChannelChatPersistence::new(persistence.tx.clone())
+                .with_session_id(session_info.id.0.to_string()),
+        ),
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -637,6 +642,7 @@ pub(crate) async fn spawn_session_actor(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let mcp_strategy = startup_hints.resolve_mcp_strategy();
     let file_state_tracker = Arc::new(match rewind_points_path {
@@ -1199,6 +1205,7 @@ pub(crate) async fn spawn_session_actor(
         } else {
             None
         },
+        usage_recorder: Some(chat_state_handle.downgrade()),
     });
     use distill_telemetry::subagent_spawn::SubagentSpawnPhase;
     let builder_started_at = std::time::Instant::now();
@@ -2047,6 +2054,7 @@ pub(crate) async fn spawn_session_actor(
         turn_phases: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(initial_last_recap_main_turn),
         model_tools_read_only: std::cell::Cell::new(false),
+        model_tools_ask_stored_output: std::cell::Cell::new(false),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
         turn_summary_task: std::cell::RefCell::new(None),
@@ -2119,7 +2127,8 @@ pub(crate) async fn spawn_session_actor(
         }
         {
             let snapshot = session.tool_metadata_snapshot.clone();
-            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot);
+            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot)
+                .with_server_instructions(session.startup_hints.is_subagent);
             session
                 .agent
                 .borrow()

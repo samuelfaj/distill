@@ -97,6 +97,86 @@ fn build_side_question_attempt(base: &ConversationRequest) -> ConversationReques
     request.x_grok_req_id = Some(format!("xai-btw-{}", uuid::Uuid::new_v4()));
     request
 }
+
+/// Transcript bytes the utility recap reads, newest turns first: they are
+/// what a returning user needs.
+const UTILITY_RECAP_TRANSCRIPT_BYTES: usize = 20_000;
+/// The utility recap's display bound; a longer answer ends at its last whole sentence.
+const UTILITY_RECAP_MAX_CHARS: usize = 700;
+const UTILITY_RECAP_QUESTION: &str = "Write a recap of this coding session for the user returning to it: what was asked, what was done, and what is still open. One plain paragraph, no markdown.";
+/// The one retry after an unusable first answer.
+const UTILITY_RECAP_STRICT_QUESTION: &str = "Recap this coding session for the user returning to it in ONE or TWO plain sentences, under 500 characters, on a single line. Start with \"You asked\" or \"We\" plus a past-tense verb. No lists, markdown, labels or quotes.";
+
+/// Bytes of the utility's next-prompt message (transcript tail plus framing).
+const UTILITY_SUGGEST_MESSAGE_BYTES: usize = 20_000;
+
+/// The sampler config for the paid suggestion model. Only the session's own
+/// model rides the session config; another model keeps its own provider and
+/// auth, so a ChatGPT id is never sent to the Anthropic endpoint. A model the
+/// catalog cannot route on its own keeps today's request.
+fn suggest_sampler_config(
+    active: distill_sampler::SamplerConfig,
+    model: &str,
+    aux: Option<distill_sampler::SamplerConfig>,
+    client_identifier: Option<String>,
+) -> distill_sampler::SamplerConfig {
+    if active.model == model {
+        return active;
+    }
+    match aux {
+        Some(mut cfg) => {
+            crate::agent::config::stamp_session_local_sampler_fields(
+                &mut cfg,
+                &active,
+                client_identifier,
+                active.max_retries,
+            );
+            cfg
+        }
+        None => distill_sampler::SamplerConfig {
+            model: model.to_owned(),
+            ..active
+        },
+    }
+}
+
+/// The utility recap: one try, then, when its answer was unusable, one retry
+/// with a stricter instruction. `None` when both fail, or the first got no
+/// answer at all, and the caller keeps the main side-call recap.
+async fn utility_recap_text(
+    lane: &crate::jev_cheap::CheapLane,
+    transcript: &str,
+) -> Option<String> {
+    use crate::session::helpers::{prompt_suggest, session_recap};
+
+    let payload = prompt_suggest::transcript_tail(transcript, UTILITY_RECAP_TRANSCRIPT_BYTES);
+    for question in [UTILITY_RECAP_QUESTION, UTILITY_RECAP_STRICT_QUESTION] {
+        let raw = match lane
+            .display_paragraph(payload, question, UTILITY_RECAP_MAX_CHARS, "recap")
+            .await
+        {
+            crate::jev_cheap::ParagraphAnswer::Text(raw) => raw,
+            crate::jev_cheap::ParagraphAnswer::Rejected => continue,
+            // A lane that is down or stalled would only cost a second
+            // deadline: stricter wording cannot help a transport failure.
+            crate::jev_cheap::ParagraphAnswer::NoAnswer => return None,
+        };
+        let summary = session_recap::clean_recap_text(&raw);
+        if !summary.is_empty() {
+            return Some(summary);
+        }
+        // The attempt row says `used`; count that this answer was dropped anyway.
+        crate::jev_cheap::record_utility_outcome(
+            "recap",
+            "fallback:cleaned-empty",
+            1,
+            raw.len(),
+            0,
+        );
+    }
+    None
+}
+
 impl SessionActor {
     /// Answers a `/btw` side question with one model call over the parent session's context.
     /// The exchange is saved to `btw_history.jsonl` under a new btw session ID.
@@ -380,7 +460,8 @@ impl SessionActor {
         let clear_in_flight = || self.recap_in_flight.set(false);
 
         // A recap is display-only: the utility model writes it from a bounded
-        // transcript before the main model would replay the whole conversation.
+        // transcript (with one stricter retry) before the main model would
+        // replay the whole conversation.
         if let Some(summary) = self.utility_recap(&conversation).await {
             if self.recap_was_cancelled(recap_epoch) {
                 self.drop_recap_after_cancel(auto).await;
@@ -606,22 +687,11 @@ impl SessionActor {
     }
 
     async fn utility_recap(&self, conversation: &[ConversationItem]) -> Option<String> {
-        use crate::session::helpers::{prompt_suggest, session_recap};
-
         let lane = self
             .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
             .await?;
-        let transcript = prompt_suggest::build_transcript(conversation)?;
-        let raw = lane
-            .display_text(
-                distill_sampling_types::truncate_bytes(&transcript, 20_000),
-                "Write a recap of this coding session for the user returning to it: what was asked, what was done, and what is still open. One plain paragraph, no markdown.",
-                700,
-                "recap",
-            )
-            .await?;
-        let summary = session_recap::clean_recap_text(&raw);
-        (!summary.is_empty()).then_some(summary)
+        let transcript = crate::session::helpers::prompt_suggest::build_transcript(conversation)?;
+        utility_recap_text(&lane, &transcript).await
     }
 
     pub(crate) fn recap_was_cancelled(&self, epoch: u64) -> bool {
@@ -869,7 +939,10 @@ impl SessionActor {
 
         if model_override.is_none()
             && let Some(lane) = self
-                .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+                .cheap_lane_excluding(
+                    distill_workspace::jev::flags::JevLever::ECheapCompress,
+                    Some(model.as_str()),
+                )
                 .await
         {
             let cwd = self
@@ -878,24 +951,57 @@ impl SessionActor {
                 .as_path()
                 .to_string_lossy()
                 .into_owned();
-            let message = prompt_suggest::suggest_prompt_user_message(&transcript, &cwd);
-            if let Some(raw) = lane
-                .display_text(
-                    distill_sampling_types::truncate_bytes(&message, 20_000),
+            // The newest turns and the closing instruction always fit: the
+            // transcript is cut from the front, never the message's tail.
+            let frame = prompt_suggest::suggest_prompt_user_message("", &cwd).len();
+            let message = prompt_suggest::suggest_prompt_user_message(
+                prompt_suggest::transcript_tail(
+                    &transcript,
+                    UTILITY_SUGGEST_MESSAGE_BYTES.saturating_sub(frame),
+                ),
+                &cwd,
+            );
+            match lane
+                .display_text_or_none(
+                    &message,
                     prompt_suggest::SUGGEST_PROMPT_SYSTEM,
                     400,
                     "prompt_suggest",
                 )
                 .await
-                && let Some(suggestion) = prompt_suggest::sanitize_suggestion(&raw)
             {
-                return Some(suggestion);
+                // The prompt prefers NONE to a wrong line: that is the answer.
+                Some(crate::jev_cheap::DisplayAnswer::Nothing) => return None,
+                Some(crate::jev_cheap::DisplayAnswer::Text(raw)) => {
+                    if let Some(suggestion) = prompt_suggest::sanitize_suggestion(&raw) {
+                        return Some(suggestion);
+                    }
+                    // The attempt row says `used`; count that the suggestion fell back anyway.
+                    crate::jev_cheap::record_utility_outcome(
+                        "prompt_suggest",
+                        "fallback:sanitized",
+                        1,
+                        raw.len(),
+                        0,
+                    );
+                }
+                None => {}
             }
         }
 
         self.refresh_token_if_expired().await;
-        let mut sampling_config = self.reconstruct_full_config().await;
-        sampling_config.model = model.clone();
+        let active_config = self.reconstruct_full_config().await;
+        let aux_config = if active_config.model == model {
+            None
+        } else {
+            self.resolve_aux_sampler_config(&model).await
+        };
+        let mut sampling_config = suggest_sampler_config(
+            active_config,
+            &model,
+            aux_config,
+            self.client_identifier.clone(),
+        );
         sampling_config.reasoning_effort = None;
         let supports_reasoning = self.models_manager.model_supports_reasoning_effort(&model);
         let suggest_reasoning = prompt_suggest::resolve_suggest_reasoning(
@@ -1148,5 +1254,169 @@ mod tests {
         assert_ne!(a_id, b_id, "each attempt must get a fresh req_id");
         // Everything except the request id is byte-identical to the base.
         assert_eq!(a.x_grok_conv_id, base.x_grok_conv_id);
+    }
+
+    fn utility_reply(content: &str) -> distill_test_support::ScriptedResponse {
+        distill_test_support::ScriptedResponse::json(
+            200,
+            serde_json::json!({
+                "id": "utility-recap",
+                "model": "aux-model",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": content}
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 9}
+            }),
+        )
+    }
+
+    fn recap_lane(base_url: String) -> crate::jev_cheap::CheapLane {
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+        crate::jev_cheap::CheapLane::from_sampler_config(&distill_sampler::SamplerConfig {
+            api_key: Some("aux-key".to_owned()),
+            base_url,
+            model: "aux-model".to_owned(),
+            api_backend: distill_sampling_types::ApiBackend::ChatCompletions,
+            context_window: 48_000,
+            ..Default::default()
+        })
+        .expect("utility lane")
+    }
+
+    fn user_contents(server: &distill_test_support::MockInferenceServer) -> Vec<String> {
+        server
+            .requests()
+            .into_iter()
+            .filter(|request| request.path == "/v1/chat/completions")
+            .filter_map(|request| request.body)
+            .map(|body| body["messages"].to_string())
+            .collect()
+    }
+
+    /// An unusable first answer gets one stricter retry on the utility before
+    /// the caller replays the whole conversation on the main model, and the
+    /// utility reads the newest turns, not the session's first 20 KB.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_recap_retries_once_with_a_stricter_instruction() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start utility stub");
+        server.enqueue_response("/v1/chat/completions", utility_reply("NONE"));
+        server.enqueue_response(
+            "/v1/chat/completions",
+            utility_reply("We fixed the parser race.\nDocs are still open."),
+        );
+        let lane = recap_lane(server.url());
+        let transcript = format!(
+            "User: oldest ask\n\nAgent: {}\n\nUser: newest ask\n\nAgent: newest answer",
+            "x".repeat(30_000)
+        );
+
+        let recap = utility_recap_text(&lane, &transcript).await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(
+            recap.as_deref(),
+            Some("We fixed the parser race. Docs are still open.")
+        );
+        let sent = user_contents(&server);
+        assert_eq!(sent.len(), 2, "one try and one retry");
+        assert!(sent[1].contains("ONE or TWO plain sentences"), "{}", sent[1]);
+        assert!(sent[0].contains("newest answer") && !sent[0].contains("oldest ask"));
+    }
+
+    /// When both utility answers are unusable the recap is `None`, and the
+    /// caller keeps today's main side-call recap.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_recap_gives_way_to_the_main_recap_after_two_failures() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start utility stub");
+        server.enqueue_response("/v1/chat/completions", utility_reply("NONE"));
+        server.enqueue_response("/v1/chat/completions", utility_reply(&"word ".repeat(300)));
+        let lane = recap_lane(server.url());
+
+        let recap = utility_recap_text(&lane, "User: fix it\n\nAgent: fixed").await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(recap, None);
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 2);
+    }
+
+    /// A utility that gives no answer (here an HTTP error) is not asked again
+    /// with stricter wording: a stalled endpoint would cost a second deadline
+    /// before the main recap, and wording cannot fix a transport failure.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn utility_recap_does_not_retry_a_lane_that_gave_no_answer() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ])
+        .await
+        .expect("start utility stub");
+        server.enqueue_response(
+            "/v1/chat/completions",
+            distill_test_support::ScriptedResponse::json(
+                400,
+                serde_json::json!({"error": {"message": "bad request", "type": "invalid_request_error"}}),
+            ),
+        );
+        server.enqueue_response("/v1/chat/completions", utility_reply("We fixed it."));
+        let lane = recap_lane(server.url());
+
+        let recap = utility_recap_text(&lane, "User: fix it\n\nAgent: fixed").await;
+        crate::jev::clear_test_flags();
+
+        assert_eq!(recap, None);
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 1, "no retry");
+    }
+
+    fn sampler(model: &str, base_url: &str) -> distill_sampler::SamplerConfig {
+        distill_sampler::SamplerConfig {
+            model: model.to_owned(),
+            base_url: base_url.to_owned(),
+            api_key: Some(format!("{model}-key")),
+            max_retries: Some(1),
+            ..Default::default()
+        }
+    }
+
+    /// A suggestion model from another provider used to ride the session's
+    /// config with only the model swapped, so `gpt-6-luna` went to the
+    /// Anthropic endpoint and failed every time. It keeps its own route now;
+    /// the session's own model and an unroutable model keep today's request.
+    #[test]
+    fn the_suggestion_model_keeps_its_own_provider() {
+        let session = sampler("claude-opus-5-5", "https://api.anthropic.com/v1");
+        let routed = suggest_sampler_config(
+            session.clone(),
+            "chatgpt/gpt-6-luna",
+            Some(sampler("gpt-6-luna", "https://chatgpt.example/v1")),
+            Some("client".to_owned()),
+        );
+        assert_eq!(routed.base_url, "https://chatgpt.example/v1");
+        assert_eq!(routed.api_key.as_deref(), Some("gpt-6-luna-key"));
+        assert_eq!(routed.client_identifier.as_deref(), Some("client"));
+
+        let own = suggest_sampler_config(session.clone(), "claude-opus-5-5", None, None);
+        assert_eq!(own.base_url, session.base_url);
+        assert_eq!(own.model, "claude-opus-5-5");
+
+        let unroutable = suggest_sampler_config(session.clone(), "other-model", None, None);
+        assert_eq!(unroutable.base_url, session.base_url);
+        assert_eq!(unroutable.model, "other-model");
     }
 }

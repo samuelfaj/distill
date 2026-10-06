@@ -79,6 +79,12 @@ pub struct PruningConfig {
     pub soft_trim_tail: usize,
     /// Turn age after which tool results are hard-cleared (replaced with placeholder).
     pub hard_clear_age_turns: usize,
+    /// Batched round-age eviction of old large tool output in the retained
+    /// history (`d6_history_eviction`); independent of `enabled`.
+    pub history_eviction: bool,
+    /// Also evict in warm batches that pay for their cache break
+    /// (`d6_warm_batches`, off by default); otherwise only at cold moments.
+    pub history_eviction_warm: bool,
 }
 
 impl Default for PruningConfig {
@@ -90,6 +96,8 @@ impl Default for PruningConfig {
             soft_trim_head: 1500,
             soft_trim_tail: 1500,
             hard_clear_age_turns: 10,
+            history_eviction: false,
+            history_eviction_warm: false,
         }
     }
 }

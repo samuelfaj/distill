@@ -415,6 +415,9 @@ pub(crate) struct State {
     /// Reset to 0 by the actor's main `select!` loop when its `model_switch_rx` watch channel fires.
     /// See the `model_switch_rx.changed()` arm in `run_session`.
     pub(crate) nudges_used_this_session: u32,
+    /// Utility laziness classifications that failed or timed out in a row;
+    /// at the limit the session classifies on its own model only.
+    pub(crate) laziness_utility_failures: u32,
 }
 /// Queue hold after a prompt-gate block; see [`State::hook_block_hold`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1117,8 +1120,12 @@ pub(crate) struct SessionActor {
     /// Recap rate-limit watermark (`main_turns` of last finished recap; `0` means none).
     pub(crate) last_recap_main_turn: std::cell::Cell<usize>,
     /// Whether the tools sent to the model on the latest round include no edit
-    /// or terminal tool, so whole-file reads may be narrowed by the utility.
+    /// or terminal tool. Nothing reads it: large reads are narrowed by the
+    /// utility in every session, editing or not.
     pub(crate) model_tools_read_only: std::cell::Cell<bool>,
+    /// Whether those tools include `ask_stored_output`, so a compression footer
+    /// may point the model at it.
+    pub(crate) model_tools_ask_stored_output: std::cell::Cell<bool>,
     /// True while a recap model call is in flight (auto or manual).
     /// Prevents concurrent `spawn_local` recaps from racing watermark restore.
     pub(crate) recap_in_flight: std::cell::Cell<bool>,

@@ -3000,12 +3000,13 @@ pub(crate) enum ExplicitSessionOpen {
 
 /// Used for subagent child sessions (top-level `sessions/<cwd>/<id>` dirs; only their metadata nests under the parent's session dir).
 /// Skips remote and relay sync; lifecycle notifications are handled by the coordinator.
+/// `title` (the spawn description) becomes a new child's title: a hidden
+/// session never spends a model call on one, at spawn or at wake.
 pub(crate) async fn new_with_explicit_dir(
     info: &Info,
     target_dir: PathBuf,
     model_id: acp::ModelId,
-    sampling_client: OaiCompatClient,
-    session_summary_model: String,
+    title: String,
     open: ExplicitSessionOpen,
 ) -> io::Result<PersistenceHandle> {
     let storage = JsonlStorageAdapter::with_explicit_session_dir(target_dir);
@@ -3062,7 +3063,13 @@ pub(crate) async fn new_with_explicit_dir(
         summary.next_trace_turn = next_trace_turn;
     }
 
-    let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
+    let (handle, rx, _summary_tx, disk_full_tx) = actor_channel();
+    // Through the actor's own title path, so an existing title is never overwritten.
+    if !is_wake && !title.trim().is_empty() {
+        let _ = handle
+            .tx
+            .send(PersistenceMsg::GeneratedTitle(title.trim().to_owned()));
+    }
 
     let info_clone = info.clone();
     let storage: Arc<dyn StorageAdapter> = Arc::new(storage);
@@ -3075,14 +3082,7 @@ pub(crate) async fn new_with_explicit_dir(
             remote_sync: None,
             created_fresh: false,
             relay_sync: None,
-            summary: crate::session::summary::SummaryGenerator::new(
-                crate::session::summary::SummaryConfig {
-                    sampling_client,
-                    utility_lane: None,
-                    model: session_summary_model,
-                    persistence_tx: summary_tx,
-                },
-            ),
+            summary: crate::session::summary::SummaryGenerator::without_model(),
             registry_title_sync: None,
             gateway: None,
             // A bootstrap never sees a subagent session: `list_sessions_sync` drops hidden summaries, and a subagent kind is hidden

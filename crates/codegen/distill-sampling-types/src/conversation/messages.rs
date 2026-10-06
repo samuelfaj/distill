@@ -37,10 +37,12 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
 /// The third covers a turn that appends more than the API's 20 block lookback.
 /// The leading project-instructions message, when more follows it, is marked only while one of the four slots stays free, so sibling subagents share system, tools and that message on their first request.
 /// The fourth slot stays free: a gateway that turns on automatic caching takes it, and five is rejected outright.
+/// A `one_shot` request is never resent, so it marks neither the tip nor the previous turn.
 fn apply_cache_breakpoints(
     system_blocks: &mut [crate::messages::TextBlock],
     messages: &mut [crate::messages::Message],
     leading_project_instructions: bool,
+    one_shot: bool,
 ) {
     use crate::messages::{CacheControl, MessageRole};
 
@@ -48,11 +50,15 @@ fn apply_cache_breakpoints(
         last.cache_control = Some(CacheControl::ephemeral());
     }
 
-    let tip = (0..messages.len()).rev().find(|&i| {
-        messages
-            .get_mut(i)
-            .is_some_and(mark_message_cache_breakpoint)
-    });
+    let tip = if one_shot {
+        None
+    } else {
+        (0..messages.len()).rev().find(|&i| {
+            messages
+                .get_mut(i)
+                .is_some_and(mark_message_cache_breakpoint)
+        })
+    };
 
     // Where the previous request ended
     // A turn can append several user messages in a row, so skip the whole trailing run rather than a neighbour of the tip
@@ -355,6 +361,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         &mut system_blocks,
         &mut messages,
         leading_project_instructions,
+        req.one_shot,
     );
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {

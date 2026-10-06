@@ -90,13 +90,31 @@ pub fn fingerprint_servers(
 pub fn build_server_reminder(
     servers: &[crate::types::tool_index::ServerSummary],
 ) -> Option<String> {
+    server_reminder(servers, true)
+}
+
+/// [`build_server_reminder`] without each server's instructions, for a session
+/// whose `search_tool` results carry them (see
+/// [`ToolSearchIndex::server_instructions`]): `- name (N tools)` per server.
+///
+/// [`ToolSearchIndex::server_instructions`]: crate::types::tool_index::ToolSearchIndex::server_instructions
+pub fn build_server_reminder_brief(
+    servers: &[crate::types::tool_index::ServerSummary],
+) -> Option<String> {
+    server_reminder(servers, false)
+}
+
+fn server_reminder(
+    servers: &[crate::types::tool_index::ServerSummary],
+    instructions: bool,
+) -> Option<String> {
     if servers.is_empty() {
         return None;
     }
 
     let mut text = format!("Connected MCP servers:\n",);
     for server in servers {
-        text.push_str(&format_server_line(server));
+        text.push_str(&format_server_line(server, instructions));
     }
 
     Some(text)
@@ -107,6 +125,24 @@ pub fn build_server_reminder(
 pub fn build_delta_reminder(
     old: &std::collections::HashMap<String, ServerFingerprint>,
     new_summaries: &[crate::types::tool_index::ServerSummary],
+) -> Option<String> {
+    delta_reminder(old, new_summaries, true)
+}
+
+/// [`build_delta_reminder`] without each server's instructions (see
+/// [`build_server_reminder_brief`]). Change detection still compares the full
+/// fingerprints, instructions included.
+pub fn build_delta_reminder_brief(
+    old: &std::collections::HashMap<String, ServerFingerprint>,
+    new_summaries: &[crate::types::tool_index::ServerSummary],
+) -> Option<String> {
+    delta_reminder(old, new_summaries, false)
+}
+
+fn delta_reminder(
+    old: &std::collections::HashMap<String, ServerFingerprint>,
+    new_summaries: &[crate::types::tool_index::ServerSummary],
+    instructions: bool,
 ) -> Option<String> {
     let new_map = fingerprint_servers(new_summaries);
 
@@ -141,7 +177,7 @@ pub fn build_delta_reminder(
         let s = if added.len() == 1 { "" } else { "s" };
         text.push_str(&format!("MCP server{s} connected:\n"));
         for server in &added {
-            text.push_str(&format_server_line(server));
+            text.push_str(&format_server_line(server, instructions));
         }
     }
 
@@ -152,7 +188,7 @@ pub fn build_delta_reminder(
         let s = if updated.len() == 1 { "" } else { "s" };
         text.push_str(&format!("MCP server{s} updated:\n"));
         for server in &updated {
-            text.push_str(&format_server_line(server));
+            text.push_str(&format_server_line(server, instructions));
         }
     }
 
@@ -172,10 +208,14 @@ pub fn build_delta_reminder(
     Some(text)
 }
 
-fn format_server_line(server: &crate::types::tool_index::ServerSummary) -> String {
+fn format_server_line(
+    server: &crate::types::tool_index::ServerSummary,
+    instructions: bool,
+) -> String {
     let desc = server
         .description
         .as_deref()
+        .filter(|_| instructions)
         .map(sanitize_description)
         .map(|s| truncate_description(&s));
     format_server_line_inner(&server.name, server.tool_count, &desc)
@@ -305,13 +345,22 @@ impl distill_tool_runtime::Tool for SearchTool {
         }
         groups.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+        // A session that announces servers by name only gets each server's own
+        // instructions (usage and safety rules) here, next to its tools.
         let result_groups: Vec<serde_json::Value> = groups
             .into_iter()
             .map(|(server, _, tools)| {
-                serde_json::json!({
-                    "server": server,
-                    "tools": tools,
-                })
+                match tool_index.server_instructions(&server) {
+                    Some(instructions) => serde_json::json!({
+                        "server": server,
+                        "server_instructions": instructions,
+                        "tools": tools,
+                    }),
+                    None => serde_json::json!({
+                        "server": server,
+                        "tools": tools,
+                    }),
+                }
             })
             .collect();
 
@@ -425,6 +474,10 @@ mod tests {
         assert_eq!(
             json.pointer("/results/0/tools/0/input_schema/properties/query/type"),
             Some(&serde_json::json!("string"))
+        );
+        assert!(
+            json.pointer("/results/0/server_instructions").is_none(),
+            "a full announcement already carries the instructions"
         );
     }
 
@@ -651,6 +704,85 @@ mod tests {
         let old = fingerprint_servers(&servers);
         let text = build_delta_reminder(&old, &[]).unwrap();
         assert!(text.contains("disconnected: calendar"), "got: {text}");
+    }
+
+    /// A name-only announcement drops each server's instructions but still
+    /// lists every server, and its change detection is the full one: an
+    /// unchanged server is never announced again.
+    #[test]
+    fn brief_reminders_name_servers_without_their_instructions() {
+        let servers = vec![ServerSummary {
+            name: "mac-use".into(),
+            description: Some("Clean up every window you open.".into()),
+            tool_count: 24,
+            tool_names: vec!["click".into()],
+        }];
+        let text = build_server_reminder_brief(&servers).unwrap();
+        assert!(text.contains("- mac-use (24 tools)\n"), "got: {text}");
+        assert!(!text.contains("Clean up"), "got: {text}");
+        let added = build_delta_reminder_brief(&Default::default(), &servers).unwrap();
+        assert!(added.contains("- mac-use (24 tools)\n") && !added.contains("Clean up"));
+        let old = fingerprint_servers(&servers);
+        assert!(build_delta_reminder_brief(&old, &servers).is_none());
+    }
+
+    struct InstructedIndex;
+
+    impl ToolSearchIndex for InstructedIndex {
+        fn search_snapshot(&self, _query: &str, _limit: usize) -> SearchSnapshot {
+            SearchSnapshot {
+                results: vec![ToolSearchResult {
+                    tool_name: "mac-use__click".into(),
+                    server_name: "mac-use".into(),
+                    description: "Click an element".into(),
+                    score: 1.0,
+                    parameters: vec![],
+                    input_schema: serde_json::json!({"type": "object"}),
+                }],
+                total_hidden_tools: 1,
+                is_ready: true,
+            }
+        }
+
+        fn list_server_summaries(&self) -> Vec<ServerSummary> {
+            Vec::new()
+        }
+
+        fn server_instructions(&self, server: &str) -> Option<String> {
+            (server == "mac-use").then(|| "Clean up every window you open.".to_owned())
+        }
+    }
+
+    /// Instructions left out of a name-only announcement reach the model with
+    /// the server's search results, before any of its tools can be called.
+    #[tokio::test]
+    async fn search_results_carry_the_server_instructions_the_index_provides() {
+        let resources = crate::types::resources::Resources::default().into_shared();
+        resources
+            .lock()
+            .await
+            .insert(ToolIndex(std::sync::Arc::new(InstructedIndex)));
+        let mut ctx =
+            distill_tool_runtime::ToolCallContext::new(distill_tool_protocol::ToolCallId::new_v7());
+        ctx.extensions.insert(resources);
+        let output = SearchTool
+            .run(
+                ctx,
+                SearchToolInput {
+                    query: "click".into(),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .unwrap();
+        let ToolOutput::SearchTool(output) = output else {
+            panic!("expected search tool output");
+        };
+        let json: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(
+            json.pointer("/results/0/server_instructions"),
+            Some(&serde_json::json!("Clean up every window you open."))
+        );
     }
 
     #[test]

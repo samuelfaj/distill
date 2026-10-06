@@ -64,8 +64,8 @@ pub struct JevLadderOverlay {
     /// for, and use its answer only if the task's own guard accepts it.
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: Option<bool>,
-    /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
-    /// E6 — hand a non-critical micro-task to a cheap-model subagent.
+    /// E6 — run a fresh `explore` child's rounds on the utility model, falling
+    /// back to the child's own model on any failed request.
     pub e_cheap_agent: Option<bool>,
     /// E9 — send only the standing-prompt blocks this turn needs.
     pub e_prompt_blocks: Option<bool>,
@@ -89,7 +89,7 @@ pub struct JevLadderOverlay {
     pub b2_model_tier: Option<bool>,
     /// B2 (auto): the per-model-call effort the user opts into with `/effort auto`.
     pub b2_micro_effort: Option<bool>,
-    /// B2 (local): prefer the configured local model for calls it can fully do.
+    /// B2 (local): retired whole-round routing to the utility model.
     pub b2_local_model: Option<bool>,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: Option<bool>,
@@ -113,6 +113,10 @@ pub struct JevLadderOverlay {
     pub d3_post_compaction: Option<bool>,
     pub d4_compaction_timing: Option<bool>,
     pub d5_memory_capture_gate: Option<bool>,
+    /// D6: evict old large tool output from the retained history in batches.
+    pub d6_history_eviction: Option<bool>,
+    /// D6 also in warm batches that pay for their cache break.
+    pub d6_warm_batches: Option<bool>,
     pub b7_subagent_model: Option<bool>,
 }
 
@@ -148,7 +152,9 @@ impl JevFlags {
             b1_intent_routing: true,
             b2_model_tier: false,
             b2_micro_effort: true,
-            b2_local_model: true,
+            // Nothing routes a whole main round to the utility any more: a
+            // round on another model replays the history uncached.
+            b2_local_model: false,
             b3_subagent_type: true,
             b6_delegation_hint: false,
             c1_premature_stop: false,
@@ -161,12 +167,21 @@ impl JevFlags {
             e_importance: true,
             e_cheap_compress: true,
             e_read_reuse: true,
+            // Opt-in until utility explore reports are measured against the
+            // worker's.
             e_cheap_agent: false,
             e_prompt_blocks: false,
-            d2_big_output_retention: true,
+            // Measured: it asks at ingest, judging a 4 KB+ output by its first
+            // 1,200 characters before the model has read it, and kept every
+            // output it judged (74 keep, 0 drop) while paying a Jev call each.
+            d2_big_output_retention: false,
             d3_post_compaction: true,
             d4_compaction_timing: true,
             d5_memory_capture_gate: true,
+            d6_history_eviction: true,
+            // Rewriting sent history on a warm cache waits until the
+            // history_batch / history_reread counts show it pays.
+            d6_warm_batches: false,
             b7_subagent_model: true,
         }
     }
@@ -255,6 +270,10 @@ impl JevFlags {
                 None,
                 self.d5_memory_capture_gate,
             );
+        self.d6_history_eviction = self.enabled
+            && resolve_switch(ladder.d6_history_eviction, None, self.d6_history_eviction);
+        self.d6_warm_batches = self.d6_history_eviction
+            && resolve_switch(ladder.d6_warm_batches, None, self.d6_warm_batches);
         self.b7_subagent_model =
             self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self
@@ -280,8 +299,8 @@ pub struct JevFlags {
     /// E5 — run a registered cheap task (classify/extract/digest) on a tool result and use its answer.
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: bool,
-    /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
-    /// E6 — hand a non-critical micro-task to a cheap-model subagent.
+    /// E6 — run a fresh `explore` child's rounds on the utility model, falling
+    /// back to the child's own model on any failed request.
     pub e_cheap_agent: bool,
     /// E9 — send only the standing-prompt blocks this turn needs.
     pub e_prompt_blocks: bool,
@@ -309,7 +328,8 @@ pub struct JevFlags {
     pub b2_model_tier: bool,
     /// B2 (auto): pick the effort for every model call (only runs in auto mode).
     pub b2_micro_effort: bool,
-    /// B2 (local): prefer the configured local model when it can fully do the call.
+    /// B2 (local): retired whole-round routing to the utility model; nothing
+    /// reads it, and it defaults off.
     pub b2_local_model: bool,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: bool,
@@ -333,6 +353,11 @@ pub struct JevFlags {
     pub d3_post_compaction: bool,
     pub d4_compaction_timing: bool,
     pub d5_memory_capture_gate: bool,
+    /// D6: evict old large tool output from the retained history in batches.
+    pub d6_history_eviction: bool,
+    /// D6 also in warm batches that pay for their cache break (off by
+    /// default: it rewrites sent history on a warm cache).
+    pub d6_warm_batches: bool,
     pub b7_subagent_model: bool,
 }
 
@@ -372,6 +397,8 @@ impl JevFlags {
             d3_post_compaction: false,
             d4_compaction_timing: false,
             d5_memory_capture_gate: false,
+            d6_history_eviction: false,
+            d6_warm_batches: false,
             b7_subagent_model: false,
         }
     }
@@ -468,6 +495,7 @@ impl JevFlags {
             JevLever::D3PostCompaction => self.d3_post_compaction,
             JevLever::D4CompactionTiming => self.d4_compaction_timing,
             JevLever::D5MemoryCaptureGate => self.d5_memory_capture_gate,
+            JevLever::D6HistoryEviction => self.d6_history_eviction,
             JevLever::B7SubagentModel => self.b7_subagent_model,
         }
     }
@@ -514,6 +542,7 @@ pub enum JevLever {
     D3PostCompaction,
     D4CompactionTiming,
     D5MemoryCaptureGate,
+    D6HistoryEviction,
 }
 
 impl JevLever {
@@ -551,6 +580,7 @@ impl JevLever {
             Self::D3PostCompaction => "d3_post_compaction",
             Self::D4CompactionTiming => "d4_compaction_timing",
             Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
+            Self::D6HistoryEviction => "d6_history_eviction",
         }
     }
 }
@@ -585,6 +615,7 @@ mod tests {
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
             JevLever::D5MemoryCaptureGate,
+            JevLever::D6HistoryEviction,
             JevLever::B7SubagentModel,
         ] {
             assert!(!flags.lever_active(lever), "{} must be off", lever.as_str());
@@ -621,9 +652,11 @@ mod tests {
             JevLever::B3SubagentType,
             JevLever::C4DiffRisk,
             JevLever::C5ErrorPriority,
-            JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
             JevLever::D5MemoryCaptureGate,
+            // Deterministic: stores the original first, and breaks the cache
+            // only in batches that pay for it or at moments it is cold.
+            JevLever::D6HistoryEviction,
             JevLever::B7SubagentModel,
             // The token-saving lanes, including the three that spend a utility
             // call: the crushers and the importance pass are free, and the
@@ -639,6 +672,22 @@ mod tests {
         assert!(
             !flags.e_retention,
             "the retention lane asks one question per chunk; its cost is unmeasured, so it waits"
+        );
+        assert!(
+            !flags.d2_big_output_retention,
+            "D2 asked at ingest and never dropped (74 keep, 0 drop): a Jev call per big output for nothing"
+        );
+        assert!(
+            !flags.d6_warm_batches,
+            "D6 rewrites sent history on a warm cache only once its payback is measured"
+        );
+        assert!(
+            !flags.b2_local_model,
+            "no code routes a main round to the utility, so the lever must not claim a saving"
+        );
+        assert!(
+            !flags.e_cheap_agent,
+            "utility explore children are opt-in until their reports are measured"
         );
         for lever in [
             JevLever::B6DelegationHint,

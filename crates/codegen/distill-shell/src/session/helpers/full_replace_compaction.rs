@@ -162,6 +162,7 @@ impl CompactionSampler for ShellCompactionSampler {
             self.tool_choice,
             &self.cancel,
             Some(&observer),
+            false,
         )
         .await
         {

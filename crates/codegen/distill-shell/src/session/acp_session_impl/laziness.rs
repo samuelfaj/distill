@@ -529,6 +529,7 @@ impl SessionActor {
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
             // The transcript window is new every fire; only the classifier prompt is reused.
             one_shot: true,
+            shared_prefix: true,
             ..ConversationRequest::default()
         };
 

@@ -1563,6 +1563,13 @@ impl SessionActor {
                     if u.synthetic_reason == SyntheticReason::GoalSummary
             ) && item.text_content().contains(GOAL_CONTINUATION_SENTINEL)
         }
+        // Deleting an earlier directive rewrites history the provider has
+        // cached, re-billing everything after it; at a cold moment (a
+        // compaction, a model switch, a long idle) that costs nothing extra.
+        // Until then the stale directives stay, each superseded by the latest.
+        if !self.chat_state_handle.history_is_cold().await {
+            return;
+        }
         let conv = self.chat_state_handle.get_conversation().await;
         if !conv.iter().any(is_goal_continuation_directive) {
             return;

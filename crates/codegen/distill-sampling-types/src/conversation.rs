@@ -9,7 +9,10 @@ mod messages;
 mod responses;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
-pub use messages::{build_messages_request, supports_per_message_effort};
+pub use messages::{
+    MessagesCacheOptions, build_messages_request, build_messages_request_with,
+    supports_per_message_effort,
+};
 pub use responses::{
     extra_tool_entries, patch_input_item_ids, patch_reasoning_text_types,
     response_to_conversation_items,
@@ -665,9 +668,14 @@ pub struct ConversationRequest {
     /// What the sampler does when the response stops with `Length`.
     pub length_policy: LengthPolicy,
     /// Sent once and never again with this prefix (a one-shot side call).
-    /// The Messages mapping then marks no conversation breakpoint: it would pay the cache-write premium for an entry nobody reads.
-    /// The system prompt and a leading instructions message keep theirs, since the next call of the same kind shares them.
+    /// The Messages mapping then marks no breakpoint at all: it would pay the cache-write premium for an entry nobody reads.
     pub one_shot: bool,
+    /// With `one_shot`: the system prompt and a leading instructions message repeat on the next call of the same
+    /// purpose soon enough to read them (the goal evaluator every round), so those keep their breakpoints.
+    pub shared_prefix: bool,
+    /// A long wait (a blocking task or subagent wait) likely follows this request, longer than the default
+    /// five-minute cache lifetime. Where the endpoint takes it, the request's breakpoints get the one-hour lifetime.
+    pub long_cache_ttl: bool,
 }
 
 impl ConversationRequest {

@@ -1048,7 +1048,8 @@ async fn compaction_overhead_unaffected_by_pruning_after_last_response() {
     let provider_total = estimate_at_response + estimate_at_response / 2;
     h.handle.record_token_usage(provider_total);
 
-    // Triggers pruning: old tool results are hard-cleared in place.
+    // Triggers pruning at a cold moment: old tool results are hard-cleared in place.
+    make_history_cold(&h.handle);
     h.handle.push_user_message(ConversationItem::user("new q"));
     let pruned_estimate = crate::estimate_conversation_tokens(&h.handle.get_conversation().await);
     assert!(
@@ -4039,6 +4040,14 @@ async fn push_turns(handle: &crate::handle::ChatStateHandle, turns: usize, conte
     let _ = handle.get_conversation_len().await;
 }
 
+/// A model switch: the next request misses the cache anyway, the moment the
+/// retained hard clear waits for.
+fn make_history_cold(handle: &crate::handle::ChatStateHandle) {
+    let mut config = test_config();
+    config.model = "another-model".to_string();
+    handle.update_sampling_config(config);
+}
+
 fn append_complete_tool_group(
     items: &mut Vec<ConversationItem>,
     id: &str,
@@ -4294,6 +4303,8 @@ async fn prune_retained_no_op_when_session_is_young() {
         token,
     );
 
+    // Cold, so only the age gate can hold the clear back.
+    make_history_cold(&handle);
     // Push 5 turns — below the hard_clear_age_turns threshold of 10.
     push_turns(&handle, 5, 10_000).await;
 
@@ -4335,6 +4346,7 @@ async fn prune_retained_hard_clears_old_tool_results() {
         token,
     );
 
+    make_history_cold(&handle);
     // Push 8 turns — turns 0..2 will be older than hard_clear_age_turns=5.
     push_turns(&handle, 8, 5_000).await;
 
@@ -4363,6 +4375,72 @@ async fn prune_retained_hard_clears_old_tool_results() {
     );
 }
 
+/// Clearing a result many turns back rewrites history the provider has cached:
+/// every request after it re-bills the whole suffix at full price. So a warm
+/// session keeps old results as sent; the clear waits for a moment the cache is
+/// cold anyway (here a model switch), and the request built after that moment
+/// consumes it, so the following turns are warm again even with history
+/// eviction off.
+#[tokio::test]
+async fn prune_retained_waits_for_a_cold_moment() {
+    use crate::actor::ChatStateActor;
+    use crate::persistence::MockChatPersistence;
+    use crate::types::PruningConfig;
+
+    fn cleared(conv: &[ConversationItem]) -> usize {
+        conv.iter()
+            .filter(|item| {
+                matches!(item, ConversationItem::ToolResult(tr)
+                    if tr.content.as_ref() == "[Tool result omitted — too old]")
+            })
+            .count()
+    }
+
+    let (mock, _rx) = MockChatPersistence::new();
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let handle = ChatStateActor::spawn_with_pruning(
+        vec![],
+        test_config(),
+        PruningConfig {
+            hard_clear_age_turns: 3,
+            keep_last_n_turns: 1,
+            ..Default::default()
+        },
+        Box::new(mock),
+        event_tx,
+        tokio_util::sync::CancellationToken::new(),
+    );
+
+    push_turns(&handle, 8, 2_000).await;
+    assert_eq!(
+        cleared(&handle.get_conversation().await),
+        0,
+        "warm: history stays as sent"
+    );
+    assert!(!handle.history_is_cold().await);
+
+    make_history_cold(&handle);
+    assert!(handle.history_is_cold().await);
+    push_turns(&handle, 1, 2_000).await;
+    let after_cold = cleared(&handle.get_conversation().await);
+    assert!(after_cold > 0, "the cold user turn clears the old results");
+
+    handle
+        .build_request(vec![], None, false, None, "conv".into(), "req".into())
+        .await
+        .expect("request should build");
+    assert!(
+        !handle.history_is_cold().await,
+        "the request consumed the cold moment"
+    );
+    push_turns(&handle, 3, 2_000).await;
+    assert_eq!(
+        cleared(&handle.get_conversation().await),
+        after_cold,
+        "warm again: newly aged results wait for the next cold moment"
+    );
+}
+
 /// Pruning is a no-op when `enabled = false`.
 #[tokio::test]
 async fn prune_retained_disabled_is_noop() {
@@ -4388,6 +4466,7 @@ async fn prune_retained_disabled_is_noop() {
         token,
     );
 
+    make_history_cold(&handle);
     push_turns(&handle, 6, 10_000).await;
 
     let conv = handle.get_conversation().await;
@@ -4585,6 +4664,7 @@ async fn prune_retained_bounds_long_session_footprint() {
         token,
     );
 
+    make_history_cold(&handle);
     push_turns(&handle, TURNS, CONTENT_LEN).await;
 
     let conv = handle.get_conversation().await;
@@ -4653,6 +4733,7 @@ async fn prune_retained_rewind_still_correct() {
         token,
     );
 
+    make_history_cold(&handle);
     // Push 6 turns: [User, Assistant, ToolResult] * 6 = 18 items.
     push_turns(&handle, 6, 1_000).await;
 
@@ -4716,6 +4797,8 @@ async fn prune_retained_synthetic_user_does_not_advance_age() {
         token,
     );
 
+    // Cold, so only the real-turn age can hold the clear back.
+    make_history_cold(&handle);
     // Three real turns, each with a large tool result.
     for i in 0..3usize {
         handle.push_user_message(ConversationItem::user(format!("real q{i}")));

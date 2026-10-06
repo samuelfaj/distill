@@ -926,6 +926,8 @@ pub(crate) fn build_goal_evaluator_request(
         // The round message differs every round, so only the goal message is
         // marked: a tip breakpoint would write a cache entry nobody reads.
         one_shot: true,
+        // The next round follows within minutes and reads system + goal.
+        shared_prefix: true,
         ..ConversationRequest::default()
     }
 }

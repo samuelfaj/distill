@@ -1,5 +1,6 @@
 use super::test_support::*;
 use super::*;
+use crate::conversation::messages::ANCHOR_ROUNDS;
 
 fn messages_test_request(reasoning_effort: Option<crate::ReasoningEffort>) -> ConversationRequest {
     ConversationRequest {
@@ -469,11 +470,12 @@ fn test_messages_request_cache_breakpoint_skips_lone_project_instructions() {
     assert_eq!(count_cache_control(&json), 2, "{json:#}");
 }
 
-/// A one-shot side call is never resent, so a tip or previous-turn breakpoint
-/// would only pay the cache-write premium on its whole prompt. The system
-/// prompt stays marked: the next call of the same kind reads it.
+/// A one-shot side call is never resent, and its system prompt is not read by
+/// another call before it expires (an initial title, a memory capture whose
+/// system prompt carries the capture's own note). Any breakpoint would only
+/// pay the cache-write premium, so none is sent.
 #[test]
-fn a_one_shot_request_writes_no_conversation_breakpoint() {
+fn a_one_shot_request_writes_no_breakpoint() {
     let req = ConversationRequest::from_items(vec![
         ConversationItem::system("Extract durable observations."),
         ConversationItem::user("transcript"),
@@ -484,34 +486,213 @@ fn a_one_shot_request_writes_no_conversation_breakpoint() {
     .one_shot();
 
     let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert_eq!(count_cache_control(&json), 0, "{json:#}");
     assert_eq!(
-        json.pointer("/system/0/cache_control/type")
-            .and_then(|v| v.as_str()),
-        Some("ephemeral"),
-        "{json:#}",
+        json.get("system").and_then(|v| v.as_str()),
+        Some("Extract durable observations."),
+        "an unmarked lone system prompt goes as plain text: {json:#}",
     );
-    assert_eq!(count_cache_control(&json), 1, "{json:#}");
 }
 
-/// A one-shot call with a stable leading message (the goal evaluator's goal)
-/// keeps that breakpoint, so the next round still reads it from cache.
+/// The goal evaluator runs every round behind the same system prompt and
+/// goal: those keep their breakpoints so the next round reads them, while the
+/// round message, new every time, stays unmarked.
 #[test]
-fn a_one_shot_request_keeps_its_stable_leading_message_breakpoint() {
-    let req = ConversationRequest::from_items(vec![
+fn a_one_shot_request_with_a_shared_prefix_keeps_system_and_leading_message() {
+    let mut req = ConversationRequest::from_items(vec![
         ConversationItem::system("You are the evaluator."),
         ConversationItem::project_instructions("the goal"),
         ConversationItem::user("this round"),
     ])
     .with_model("messages-compatible-model")
     .one_shot();
+    req.shared_prefix = true;
 
     let json = serde_json::to_value(build_messages_request(&req)).unwrap();
     let Some(messages) = json.get("messages").and_then(|v| v.as_array()) else {
         panic!("expected messages array: {json:#}");
     };
-    assert_eq!(marker_on_last_block(&messages[0]), Some("ephemeral"), "{json:#}");
+    assert_eq!(
+        json.pointer("/system/0/cache_control/type")
+            .and_then(|v| v.as_str()),
+        Some("ephemeral"),
+        "{json:#}",
+    );
+    assert_eq!(
+        marker_on_last_block(&messages[0]),
+        Some("ephemeral"),
+        "{json:#}"
+    );
     assert_eq!(marker_on_last_block(&messages[1]), None, "tip: {json:#}");
     assert_eq!(count_cache_control(&json), 2, "{json:#}");
+}
+
+fn rounds_history(rounds: usize) -> Vec<ConversationItem> {
+    let mut items = vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("Fix the bug"),
+    ];
+    for n in 0..rounds {
+        items.extend(agent_turn(n));
+    }
+    items
+}
+
+fn anchored(items: Vec<ConversationItem>) -> crate::messages::MessagesRequest {
+    build_messages_request_with(
+        &ConversationRequest::from_items(items).with_model("messages-compatible-model"),
+        MessagesCacheOptions {
+            anchor: true,
+            extended_ttl: false,
+        },
+    )
+}
+
+fn marked_message_indices(request: &crate::messages::MessagesRequest) -> Vec<usize> {
+    let json = serde_json::to_value(request).unwrap();
+    json["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| count_cache_control(m) > 0)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// An edit older than the previous tip (a pruned directive, a cleared result)
+/// would otherwise re-bill everything after the system prompt. The anchor is
+/// only worth its slot if it names a position an earlier request already
+/// wrote: the tip of that request, i.e. its last message. It must also hold
+/// still between moves, or each request would write a new entry for it.
+#[test]
+fn the_anchor_sits_on_a_former_tip_and_moves_every_ten_rounds() {
+    let mut previous_anchor = None;
+    for rounds in 2..45 {
+        let request = anchored(rounds_history(rounds));
+        assert!(count_cache_control(&serde_json::to_value(&request).unwrap()) <= 4);
+        let marked = marked_message_indices(&request);
+        // system + anchor + previous tip + tip; the anchor is the oldest message mark.
+        let anchor = marked[0];
+        let round = (rounds - 2) / ANCHOR_ROUNDS * ANCHOR_ROUNDS;
+        // The request that produced assistant round `round` ended right before it.
+        let earlier = build_messages_request(
+            &ConversationRequest::from_items(rounds_history(round))
+                .with_model("messages-compatible-model"),
+        );
+        assert_eq!(anchor, earlier.messages.len() - 1, "rounds={rounds}");
+        assert!(
+            serde_json::to_value(&earlier.messages[anchor]).unwrap()["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .get("cache_control")
+                .is_some(),
+            "the earlier request wrote an entry exactly there (rounds={rounds})"
+        );
+        if let Some(previous) = previous_anchor
+            && previous != anchor
+        {
+            assert_eq!(
+                (rounds - 2) % ANCHOR_ROUNDS,
+                0,
+                "moves only on a boundary: rounds={rounds}"
+            );
+        }
+        previous_anchor = Some(anchor);
+    }
+}
+
+/// Without the option (a gateway that may add automatic caching, which takes
+/// a slot itself) the fourth slot stays free, and a one-shot request still
+/// marks nothing.
+#[test]
+fn the_anchor_needs_its_option_and_never_marks_a_one_shot() {
+    let plain = build_messages_request(
+        &ConversationRequest::from_items(rounds_history(30))
+            .with_model("messages-compatible-model"),
+    );
+    assert_eq!(
+        count_cache_control(&serde_json::to_value(&plain).unwrap()),
+        3
+    );
+
+    let one_shot = build_messages_request_with(
+        &ConversationRequest::from_items(rounds_history(30))
+            .with_model("messages-compatible-model")
+            .one_shot(),
+        MessagesCacheOptions {
+            anchor: true,
+            extended_ttl: true,
+        },
+    );
+    assert_eq!(
+        count_cache_control(&serde_json::to_value(&one_shot).unwrap()),
+        0
+    );
+}
+
+fn ttl_values(request: &crate::messages::MessagesRequest) -> Vec<Option<String>> {
+    fn walk(value: &serde_json::Value, out: &mut Vec<Option<String>>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(cc) = map.get("cache_control") {
+                    out.push(cc.get("ttl").and_then(|v| v.as_str()).map(str::to_owned));
+                }
+                map.values().for_each(|v| walk(v, out));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&serde_json::to_value(request).unwrap(), &mut out);
+    out
+}
+
+/// A round that is about to block on a long wait outlives the five-minute
+/// entry, so every breakpoint gets the hour (one lifetime for all keeps the
+/// API's longer-before-shorter rule). The lifetime costs 2x to write against
+/// 1.25x, so it is sent only when the caller expects the wait and the client
+/// knows the endpoint takes it; otherwise the wire keeps no `ttl` key.
+#[test]
+fn a_long_wait_marks_every_breakpoint_one_hour_only_where_the_endpoint_takes_it() {
+    let mut req =
+        ConversationRequest::from_items(rounds_history(25)).with_model("messages-compatible-model");
+    req.long_cache_ttl = true;
+    let options = MessagesCacheOptions {
+        anchor: true,
+        extended_ttl: true,
+    };
+    let long = build_messages_request_with(&req, options);
+    assert_eq!(ttl_values(&long), vec![Some("1h".to_owned()); 4]);
+
+    let unsupported = build_messages_request_with(
+        &req,
+        MessagesCacheOptions {
+            extended_ttl: false,
+            ..options
+        },
+    );
+    assert!(ttl_values(&unsupported).iter().all(Option::is_none));
+    assert!(
+        !serde_json::to_string(&unsupported)
+            .unwrap()
+            .contains("\"ttl\"")
+    );
+
+    req.long_cache_ttl = false;
+    assert!(
+        ttl_values(&build_messages_request_with(&req, options))
+            .iter()
+            .all(Option::is_none)
+    );
+
+    // The rejection fallback strips the lifetime and keeps every breakpoint.
+    let mut stripped = long.clone();
+    assert_eq!(stripped.set_cache_ttl(None), 4);
+    assert_eq!(ttl_values(&stripped), vec![None; 4]);
 }
 
 fn per_message_effort_history() -> Vec<ConversationItem> {

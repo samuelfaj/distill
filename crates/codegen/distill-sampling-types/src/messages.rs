@@ -93,13 +93,54 @@ pub struct TextBlock {
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub r#type: String, // "ephemeral"
+    /// Entry lifetime; absent is the API default of five minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
 }
+
+/// The one-hour cache lifetime (billed at 2x the input price to write, against 1.25x for the default).
+pub const EXTENDED_CACHE_TTL: &str = "1h";
 
 impl CacheControl {
     pub fn ephemeral() -> Self {
         Self {
             r#type: "ephemeral".to_owned(),
+            ttl: None,
         }
+    }
+}
+
+impl MessagesRequest {
+    /// Sets `ttl` on every breakpoint the request carries and returns how many it touched.
+    /// One lifetime for all of them keeps the API's rule that a longer-lived entry never follows a shorter one.
+    pub fn set_cache_ttl(&mut self, ttl: Option<&str>) -> usize {
+        let mut touched = 0;
+        let mut set = |cache_control: &mut Option<CacheControl>| {
+            if let Some(cache_control) = cache_control {
+                cache_control.ttl = ttl.map(str::to_owned);
+                touched += 1;
+            }
+        };
+        if let Some(SystemParam::Blocks(blocks)) = &mut self.system {
+            for block in blocks {
+                set(&mut block.cache_control);
+            }
+        }
+        for message in &mut self.messages {
+            let MessageContent::Blocks(blocks) = &mut message.content else {
+                continue;
+            };
+            for block in blocks {
+                match block {
+                    ContentBlock::Text { cache_control, .. }
+                    | ContentBlock::Image { cache_control, .. }
+                    | ContentBlock::ToolUse { cache_control, .. }
+                    | ContentBlock::ToolResult { cache_control, .. } => set(cache_control),
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
+                }
+            }
+        }
+        touched
     }
 }
 

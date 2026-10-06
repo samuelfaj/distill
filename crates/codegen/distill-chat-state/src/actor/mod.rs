@@ -434,6 +434,9 @@ impl ChatStateActor {
             ChatStateCommand::GetTotalTokens { reply } => {
                 let _ = reply.send(self.state.total_tokens);
             }
+            ChatStateCommand::IsHistoryCold { reply } => {
+                let _ = reply.send(self.history_is_cold());
+            }
             ChatStateCommand::GetLastTurnUsage { reply } => {
                 let _ = reply.send(self.state.last_turn_usage.clone());
             }

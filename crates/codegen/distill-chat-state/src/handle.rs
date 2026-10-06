@@ -627,6 +627,16 @@ impl ChatStateHandle {
         .flatten()
     }
 
+    /// Whether the next request misses the provider cache anyway (a model switch, a
+    /// compaction that rebuilt the prefix, a long idle gap). False when the actor is gone.
+    pub async fn history_is_cold(&self) -> bool {
+        self.query("IsHistoryCold", |reply| ChatStateCommand::IsHistoryCold {
+            reply,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// Get total accumulated tokens.
     pub async fn get_total_tokens(&self) -> u64 {
         self.query("GetTotalTokens", |reply| ChatStateCommand::GetTotalTokens {

@@ -342,7 +342,8 @@ fn build_extraction_request(
         prompt_cache_key: Some(cache_key),
         x_grok_req_id: Some(format!("xai-memory-capture-{}", uuid::Uuid::new_v4())),
         x_grok_session_id: Some(session_id.to_owned()),
-        // The transcript is this capture's alone: a tip breakpoint writes it to a cache nobody reads.
+        // The transcript is this capture's alone, and the system prompt carries this capture's
+        // stats note: any breakpoint writes a cache entry nobody reads.
         one_shot: true,
         ..Default::default()
     }

@@ -816,18 +816,12 @@ impl ChatStateActor {
     /// ledger: `history_batch` per batch (its `bytes_in` is the suffix the
     /// batch re-bills), `history_evict` per item (original and new bytes).
     pub(super) fn evict_old_history(&mut self, ask_stored_output: bool) {
+        // Every request consumes the cold mark, evicting or not: the user-turn
+        // hard clear and the goal-directive prune read it until then.
+        let cold = self.take_history_cold();
         if !self.pruning_config.history_eviction {
             return;
         }
-        if self.eviction.cold.is_none()
-            && self
-                .eviction
-                .last_model_output
-                .is_some_and(|at| at.elapsed() >= COLD_IDLE)
-        {
-            self.eviction.cold = Some(ColdReason::Idle);
-        }
-        let cold = self.eviction.cold.take();
         let warm_batches = self.pruning_config.history_eviction_warm;
         let rounds = count_rounds(&self.state.conversation);
         if cold.is_none()
@@ -915,6 +909,28 @@ impl ChatStateActor {
                 .session_usage
                 .record_utility_outcome("history_reread", decision, 0, 0, 0);
         }
+    }
+
+    /// Whether the next request misses the provider cache anyway (a model
+    /// switch, a compaction that rebuilt the prefix, or an idle gap past
+    /// [`COLD_IDLE`]), so rewriting old history costs nothing extra now.
+    /// Peeks: the next request build consumes it.
+    pub(super) fn history_is_cold(&self) -> bool {
+        self.eviction.cold.is_some() || self.idle_past_cache_lifetime()
+    }
+
+    fn idle_past_cache_lifetime(&self) -> bool {
+        self.eviction
+            .last_model_output
+            .is_some_and(|at| at.elapsed() >= COLD_IDLE)
+    }
+
+    /// The cold reason for the request being built; the one after it starts warm.
+    fn take_history_cold(&mut self) -> Option<ColdReason> {
+        if self.eviction.cold.is_none() && self.idle_past_cache_lifetime() {
+            self.eviction.cold = Some(ColdReason::Idle);
+        }
+        self.eviction.cold.take()
     }
 
     /// Marks the next request cold (a model switch).

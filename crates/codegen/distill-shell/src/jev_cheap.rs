@@ -1679,6 +1679,8 @@ impl MainLane {
             length_policy: LengthPolicy::Fail,
             // Each task is its own payload behind the shared task prompt.
             one_shot: true,
+            shared_prefix: true,
+            long_cache_ttl: false,
         })
     }
 

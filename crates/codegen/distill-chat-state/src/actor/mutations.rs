@@ -262,7 +262,7 @@ impl ChatStateActor {
     }
 
     /// Push a user message, repairing dangling tool calls first so cancel/crash tails stay consistent.
-    /// Also runs [`prune_retained_conversation`] to hard-clear very old tool results in memory.
+    /// Also runs [`prune_retained_conversation`] to hard-clear very old tool results in memory at a cold moment.
     pub(super) fn push_user_message(&mut self, item: ConversationItem) {
         self.push_user_message_with_repair_reason(item, DanglingToolCallReason::UserCancelled);
     }
@@ -309,11 +309,13 @@ impl ChatStateActor {
         self.prune_retained_conversation();
     }
 
-    /// Eagerly hard-clear tool results from very old turns in the retained conversation.
-    /// Unlike API-copy pruning, this mutates `self.state.conversation` after every user turn.
+    /// Hard-clear tool results from very old turns in the retained conversation.
+    /// Unlike API-copy pruning, this mutates `self.state.conversation`, so it runs only on a user
+    /// message at a cold moment ([`Self::history_is_cold`]): clearing a result many rounds back on
+    /// a warm cache re-bills everything after it, which costs more than the bytes it removes.
     /// `updates.jsonl` is never touched, so replay stays intact; synthetic User items raise the age threshold.
     pub(super) fn prune_retained_conversation(&mut self) -> usize {
-        if !self.pruning_config.enabled {
+        if !self.pruning_config.enabled || !self.history_is_cold() {
             return 0;
         }
         // Fast exit: not enough turns have elapsed for any hard-clear to apply.

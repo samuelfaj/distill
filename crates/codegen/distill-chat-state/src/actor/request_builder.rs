@@ -107,6 +107,8 @@ impl ChatStateActor {
             // of failing it; text-only salvage stays behind `CompletePartial`.
             length_policy: distill_sampling_types::LengthPolicy::CompleteToolCalls,
             one_shot: false,
+            shared_prefix: false,
+            long_cache_ttl: false,
         }
     }
 

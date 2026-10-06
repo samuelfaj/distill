@@ -31,9 +31,9 @@ use distill_sampling_types::error::{
 use distill_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
-    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper, ReasoningEffort,
-    ReasoningShape, ResponseModelMetadata, Result, SamplingError, SentCredential,
-    build_messages_request, is_check_event, messages, rs,
+    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesCacheOptions,
+    MessagesRequestWrapper, ReasoningEffort, ReasoningShape, ResponseModelMetadata, Result,
+    SamplingError, SentCredential, build_messages_request_with, is_check_event, messages, rs,
 };
 
 use crate::config::{AuthScheme, OriginClientInfo, RequestCompression, SamplerConfig};
@@ -193,6 +193,51 @@ fn prepend_claude_code_identity(system: &mut Option<messages::SystemParam>) {
             SystemParam::Blocks(blocks)
         }
     });
+}
+
+/// Anthropic's own endpoint, with an API key or a Claude subscription bearer alike.
+/// Nothing between it and the API adds automatic caching (which would take a breakpoint slot),
+/// and it takes the one-hour cache lifetime without a beta flag.
+fn is_direct_anthropic_base_url(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
+}
+
+/// Set once the API refused a one-hour cache lifetime: the rest of the process sends the default.
+static EXTENDED_CACHE_TTL_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// A client error that names the cache lifetime or the breakpoint it sits on.
+fn is_cache_ttl_rejection(error: &SamplingError) -> bool {
+    match error {
+        SamplingError::Api {
+            status, message, ..
+        } => {
+            let message = message.to_ascii_lowercase();
+            status.is_client_error()
+                && *status != reqwest::StatusCode::UNAUTHORIZED
+                && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                && (message.contains("ttl") || message.contains("cache_control"))
+        }
+        _ => false,
+    }
+}
+
+/// The Messages wrapper for `request`, carrying its routing headers and trace.
+fn messages_wrapper(
+    request: &ConversationRequest,
+    cache: MessagesCacheOptions,
+    trace: Option<Box<dyn distill_sampling_types::TraceContext>>,
+) -> MessagesRequestWrapper {
+    let mut wrapper = MessagesRequestWrapper::new(build_messages_request_with(request, cache));
+    wrapper.x_grok_conv_id = request.x_grok_conv_id.clone();
+    wrapper.x_grok_req_id = request.x_grok_req_id.clone();
+    wrapper.x_grok_session_id = request.x_grok_session_id.clone();
+    wrapper.x_grok_turn_idx = request.x_grok_turn_idx.clone();
+    wrapper.x_grok_transient_retry = request.x_grok_transient_retry.clone();
+    wrapper.x_grok_agent_id = request.x_grok_agent_id.clone();
+    wrapper.traceparent = request.traceparent.clone();
+    wrapper.trace = trace;
+    wrapper
 }
 
 fn is_openrouter_base_url(base_url: &str) -> bool {
@@ -2485,6 +2530,29 @@ impl SamplingClient {
         self.create_response(wrapper).await
     }
 
+    /// Cache options for this client's endpoint (see [`is_direct_anthropic_base_url`]).
+    fn messages_cache_options(&self) -> MessagesCacheOptions {
+        let direct = is_direct_anthropic_base_url(&self.base_url);
+        MessagesCacheOptions {
+            anchor: direct,
+            extended_ttl: direct && !EXTENDED_CACHE_TTL_REFUSED.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Whether `error` refused a request that carried the one-hour lifetime; if so the
+    /// lifetime is off for the rest of the process and the caller resends once without it.
+    fn cache_ttl_refused(&self, sent_ttl: bool, error: &SamplingError) -> bool {
+        if !sent_ttl || !is_cache_ttl_rejection(error) {
+            return false;
+        }
+        EXTENDED_CACHE_TTL_REFUSED.store(true, Ordering::Relaxed);
+        tracing::warn!(
+            error = %error,
+            "messages API refused the one-hour cache lifetime; resending with the default"
+        );
+        true
+    }
+
     /// Send a conversation request using the Anthropic Messages API (streaming).
     pub async fn conversation_stream_messages(
         &self,
@@ -2496,29 +2564,20 @@ impl SamplingClient {
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
-        let x_grok_conv_id = request.x_grok_conv_id.clone();
-        let x_grok_req_id = request.x_grok_req_id.clone();
-        let x_grok_session_id = request.x_grok_session_id.clone();
-        let x_grok_turn_idx = request.x_grok_turn_idx.clone();
-        let x_grok_transient_retry = request.x_grok_transient_retry.clone();
-        let x_grok_agent_id = request.x_grok_agent_id.clone();
-
-        let messages_request = build_messages_request(&request);
-
-        let mut wrapper = MessagesRequestWrapper::new(messages_request);
-        wrapper.x_grok_conv_id = x_grok_conv_id;
-        wrapper.x_grok_req_id = x_grok_req_id;
-        wrapper.x_grok_session_id = x_grok_session_id;
-        wrapper.x_grok_turn_idx = x_grok_turn_idx;
-        wrapper.x_grok_transient_retry = x_grok_transient_retry;
-        wrapper.x_grok_agent_id = x_grok_agent_id;
-        wrapper.traceparent = request.traceparent;
-
-        if let Some(trace) = trace {
-            wrapper.trace = Some(trace);
+        let cache = self.messages_cache_options();
+        let sent_ttl = cache.extended_ttl && request.long_cache_ttl;
+        let first = messages_wrapper(&request, cache, trace.as_ref().map(|t| t.clone_box()));
+        match self.create_message_stream(first).await {
+            Err(error) if self.cache_ttl_refused(sent_ttl, &error) => {
+                let cache = MessagesCacheOptions {
+                    extended_ttl: false,
+                    ..cache
+                };
+                self.create_message_stream(messages_wrapper(&request, cache, trace))
+                    .await
+            }
+            result => result,
         }
-
-        self.create_message_stream(wrapper).await
     }
 
     /// Send a conversation request using the Anthropic Messages API (non-streaming).
@@ -2529,28 +2588,20 @@ impl SamplingClient {
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
-        let x_grok_conv_id = request.x_grok_conv_id.clone();
-        let x_grok_req_id = request.x_grok_req_id.clone();
-        let x_grok_session_id = request.x_grok_session_id.clone();
-        let x_grok_turn_idx = request.x_grok_turn_idx.clone();
-        let x_grok_transient_retry = request.x_grok_transient_retry.clone();
-        let x_grok_agent_id = request.x_grok_agent_id.clone();
-
-        let messages_request = build_messages_request(&request);
-
-        let mut wrapper = MessagesRequestWrapper::new(messages_request);
-        wrapper.x_grok_conv_id = x_grok_conv_id;
-        wrapper.x_grok_req_id = x_grok_req_id;
-        wrapper.x_grok_session_id = x_grok_session_id;
-        wrapper.x_grok_turn_idx = x_grok_turn_idx;
-        wrapper.x_grok_transient_retry = x_grok_transient_retry;
-        wrapper.x_grok_agent_id = x_grok_agent_id;
-
-        if let Some(trace) = trace {
-            wrapper.trace = Some(trace);
+        let cache = self.messages_cache_options();
+        let sent_ttl = cache.extended_ttl && request.long_cache_ttl;
+        let first = messages_wrapper(&request, cache, trace.as_ref().map(|t| t.clone_box()));
+        match self.create_message(first).await {
+            Err(error) if self.cache_ttl_refused(sent_ttl, &error) => {
+                let cache = MessagesCacheOptions {
+                    extended_ttl: false,
+                    ..cache
+                };
+                self.create_message(messages_wrapper(&request, cache, trace))
+                    .await
+            }
+            result => result,
         }
-
-        self.create_message(wrapper).await
     }
 
     /// Backend-aware streaming call that collects the full response.
@@ -3396,6 +3447,7 @@ mod tests {
             text: text.to_owned(),
             cache_control: Some(messages::CacheControl {
                 r#type: "ephemeral".to_owned(),
+                ttl: None,
             }),
         };
         let mut blocks = Some(messages::SystemParam::Blocks(vec![block("agent prompt")]));
@@ -4668,5 +4720,106 @@ mod tests {
         let mut request = CreateResponseWrapper::new(rs::CreateResponse::default());
         without.apply_response_defaults(&mut request).unwrap();
         assert_eq!(request.inner.reasoning, None);
+    }
+}
+
+#[cfg(test)]
+mod cache_ttl_tests {
+    use super::*;
+
+    fn client(base_url: &str) -> SamplingClient {
+        SamplingClient::new(SamplerConfig {
+            api_key: Some("test-key".to_string()),
+            base_url: base_url.to_string(),
+            model: "test-model".to_string(),
+            context_window: 8192,
+            api_backend: ApiBackend::Messages,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn api_error(status: reqwest::StatusCode, message: &str) -> SamplingError {
+        SamplingError::Api {
+            status,
+            message: message.to_owned(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        }
+    }
+
+    /// The anchor slot and the hour are only safe where nothing between us and the
+    /// API adds automatic caching (a fifth breakpoint is a 400) and the lifetime is
+    /// accepted: Anthropic's own host, which a key and a subscription bearer share.
+    /// A gateway or a lookalike host keeps today's three breakpoints and five minutes.
+    #[test]
+    fn only_anthropics_own_endpoint_gets_the_anchor_and_the_hour() {
+        for url in ["https://api.anthropic.com/v1", "https://api.anthropic.com"] {
+            assert!(is_direct_anthropic_base_url(url), "{url}");
+        }
+        for url in [
+            "http://api.anthropic.com/v1",
+            "https://api.anthropic.com.evil.test/v1",
+            "https://openrouter.ai/api/v1",
+            "https://example.test",
+        ] {
+            assert!(!is_direct_anthropic_base_url(url), "{url}");
+            assert_eq!(
+                client(url).messages_cache_options(),
+                MessagesCacheOptions::default()
+            );
+        }
+    }
+
+    /// A refusal of the lifetime must not fail the round or recur on every request:
+    /// it is recognised from the error text, resent once without it, and the rest of
+    /// the process sends the default while keeping the anchor. Other client errors,
+    /// and a refusal of a request that sent no lifetime, change nothing.
+    #[test]
+    fn a_refused_hour_is_resent_once_without_it_and_stays_off() {
+        use reqwest::StatusCode;
+
+        let refusal = api_error(
+            StatusCode::BAD_REQUEST,
+            "messages.3.content.0.cache_control.ttl: Extra inputs are not permitted",
+        );
+        for (status, message) in [
+            (StatusCode::BAD_REQUEST, "max_tokens too large"),
+            (StatusCode::TOO_MANY_REQUESTS, "ttl"),
+            (StatusCode::UNAUTHORIZED, "cache_control"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "ttl"),
+        ] {
+            assert!(
+                !is_cache_ttl_rejection(&api_error(status, message)),
+                "{status} {message}"
+            );
+        }
+        assert!(is_cache_ttl_rejection(&refusal));
+
+        let direct = client("https://api.anthropic.com/v1");
+        assert_eq!(
+            direct.messages_cache_options(),
+            MessagesCacheOptions {
+                anchor: true,
+                extended_ttl: true,
+            }
+        );
+        assert!(
+            !direct.cache_ttl_refused(false, &refusal),
+            "no lifetime was sent"
+        );
+        assert!(direct.messages_cache_options().extended_ttl);
+
+        assert!(direct.cache_ttl_refused(true, &refusal));
+        assert_eq!(
+            direct.messages_cache_options(),
+            MessagesCacheOptions {
+                anchor: true,
+                extended_ttl: false,
+            }
+        );
+        EXTENDED_CACHE_TTL_REFUSED.store(false, Ordering::Relaxed);
     }
 }

@@ -382,6 +382,8 @@ async fn the_user_turn_hard_clear_keeps_eviction_digests() {
         event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
+    // The hard clear runs only at a cold moment.
+    handle.update_sampling_config(test_config("model-b"));
     for i in 0..5 {
         handle.push_user_message(ConversationItem::user(format!("u{i}")));
         handle.increment_prompt_index();
@@ -528,6 +530,8 @@ async fn the_user_turn_hard_clear_keeps_the_copy_a_reuse_note_names() {
         true,
         conversation,
     );
+    // The hard clear runs only at a cold moment.
+    handle.update_sampling_config(test_config("model-b"));
     let mut copy_outlived_its_neighbour = false;
     for i in 0..8 {
         handle.push_user_message(ConversationItem::user(format!("u{i}")));

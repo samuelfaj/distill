@@ -83,6 +83,9 @@ pub(crate) struct JevTurnLedger {
     /// request extends, i.e. what an effort switch would re-read uncached.
     /// Session-scoped, like the cache it describes.
     last_main_prompt_tokens: Option<u64>,
+    /// Item hashes of the last main Messages request, to name where a later
+    /// cache read broke. Session-scoped, like the cache it traces.
+    pub(crate) prefix_trace: super::prompt_cache::PrefixTrace,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.

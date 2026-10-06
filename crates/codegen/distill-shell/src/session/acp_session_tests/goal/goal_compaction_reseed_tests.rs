@@ -828,6 +828,50 @@ async fn compact_reseed_skips_turn_end_drain_and_round_count() {
         .await;
 }
 
+/// Deleting an earlier continuation directive rewrites cached history: every
+/// later request re-bills from that point at full price. A warm session keeps
+/// the stale directive (the newest one is still last); at a cold moment (here
+/// a model switch) the earlier ones are pruned.
+#[tokio::test(flavor = "current_thread")]
+async fn earlier_goal_directives_are_pruned_only_at_a_cold_moment() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _tmp) = make_goal_actor().await;
+            let directives = |conv: Vec<ConversationItem>| {
+                conv.iter()
+                    .filter(|item| {
+                        matches!(
+                            item,
+                            ConversationItem::User(u)
+                                if u.synthetic_reason == SyntheticReason::GoalSummary
+                        ) && item.text_content().contains(GOAL_CONTINUATION_SENTINEL)
+                    })
+                    .map(ConversationItem::text_content)
+                    .collect::<Vec<_>>()
+            };
+            let directive = |step: u32| format!("{GOAL_CONTINUATION_SENTINEL}\nstep {step}");
+
+            actor.inject_goal_continuation_message(directive(1)).await;
+            actor.inject_goal_continuation_message(directive(2)).await;
+            let warm = directives(actor.chat_state_handle.get_conversation().await);
+            assert_eq!(warm.len(), 2, "warm: the earlier directive stays: {warm:?}");
+
+            let mut config = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("sampling config");
+            config.model = format!("{}-other", config.model);
+            actor.chat_state_handle.update_sampling_config(config);
+            actor.inject_goal_continuation_message(directive(3)).await;
+            let cold = directives(actor.chat_state_handle.get_conversation().await);
+            assert_eq!(cold.len(), 1, "cold: only the newest remains: {cold:?}");
+            assert!(cold[0].contains("step 3"), "{cold:?}");
+        })
+        .await;
+}
+
 /// A git worktree with an uncommitted edit and its recorded baseline.
 fn edited_delivery(tmp: &TempDir) -> crate::session::goal_evaluator::GoalVerificationTarget {
     let delivery = tmp.path().join("delivery");

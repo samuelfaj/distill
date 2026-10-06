@@ -288,6 +288,10 @@ pub enum ChatStateCommand {
     /// Get total accumulated tokens.
     GetTotalTokens { reply: oneshot::Sender<u64> },
 
+    /// Whether the next request misses the provider cache anyway, so old
+    /// history may be rewritten now without re-billing a warm prefix.
+    IsHistoryCold { reply: oneshot::Sender<bool> },
+
     /// Retrieve the most recent stashed per-turn `TokenUsage`. Returns
     /// `None` until at least one `RecordLastTurnUsage` has been processed.
     GetLastTurnUsage {
@@ -517,6 +521,9 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetTotalTokens { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::IsHistoryCold { reply: tx };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetEstimatedTotalTokens { reply: tx };

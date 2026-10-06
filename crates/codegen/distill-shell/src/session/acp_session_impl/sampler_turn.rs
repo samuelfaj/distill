@@ -81,6 +81,13 @@ fn sampler_route_backend_key(config: &SamplingConfig) -> &'static str {
     }
 }
 
+/// A request to a Messages (`/messages`) endpoint, the backend whose cache usage the prefix trace reads.
+fn is_messages_endpoint(endpoint: Option<&str>) -> bool {
+    endpoint
+        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+        .is_some_and(|url| url.path().ends_with("/messages"))
+}
+
 fn usage_is_complete(usage: Option<&distill_sampling_types::TokenUsage>) -> bool {
     usage.is_some()
 }
@@ -2415,6 +2422,10 @@ impl SessionActor {
         let usage_context = self
             .sampler_usage_context(&request_id_str, &request, route_config)
             .await;
+        // Honoured by the client only where the endpoint takes the one-hour lifetime.
+        request.long_cache_ttl = super::prompt_cache::long_wait_likely(&request.items);
+        let sent_prefix = is_messages_endpoint(usage_context.endpoint.as_deref())
+            .then(|| super::prompt_cache::SentPrefix::of(&request.items));
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
         let stream_drained_rx = {
@@ -2464,6 +2475,20 @@ impl SessionActor {
         }
         match collected.result {
             Ok((response, metrics)) => {
+                if let (Some(sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
+                    let report = self
+                        .jev_ledger
+                        .borrow_mut()
+                        .prefix_trace
+                        .observe(sent, usage);
+                    if let Some(report) = report {
+                        distill_telemetry::unified_log::debug(
+                            "prompt cache: read far below the previous prompt",
+                            Some(self.session_info.id.0.as_ref()),
+                            Some(report),
+                        );
+                    }
+                }
                 // Current span is the turn span (this fn is inline-awaited from process_conversation_turn, no own #[instrument])
                 let span = tracing::Span::current();
                 span.record("request_id", request_id_str.as_str());

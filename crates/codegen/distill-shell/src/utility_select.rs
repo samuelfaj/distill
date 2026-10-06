@@ -307,6 +307,60 @@ pub(crate) fn required_split_units(
     required
 }
 
+/// Bytes of a report's opening paragraph a report selection always keeps.
+pub(crate) const REPORT_LEAD_BYTES: usize = 1_024;
+
+/// A `status` or `verdict` line (`Status: done`, `- **Verdict**: …`,
+/// `"status": "ok",`): the word opens the line, after list, heading, quote
+/// and emphasis marks.
+fn is_status_line(line: &str) -> bool {
+    let word = line
+        .trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '-' | '*' | '#' | '"' | '>' | '`' | '_')
+        })
+        .to_ascii_lowercase();
+    ["status", "verdict"].iter().any(|key| {
+        word.strip_prefix(key)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    })
+}
+
+/// What a report selection (a subagent's answer, a workflow result) keeps
+/// whatever the utility answers, over `pieces` of `source` from
+/// [`split_long_units`]: the first two and last two pieces, the opening
+/// paragraph's lines up to [`REPORT_LEAD_BYTES`] (the verdict, by the report
+/// convention) and every status or verdict line. Prose gets no shell
+/// failure-marker evidence: a report's `failed` or `error` is a claim about
+/// the work, and keeping each such line kept nearly all of a report.
+pub(crate) fn required_report_units(source: &str, pieces: &[String], joins: &[bool]) -> Vec<bool> {
+    let mut lead_lines = 0;
+    let mut lead_bytes = 0;
+    for line in source.trim_start().lines().take_while(|line| !line.trim().is_empty()) {
+        lead_bytes += line.len() + 1;
+        if lead_bytes > REPORT_LEAD_BYTES {
+            break;
+        }
+        lead_lines += 1;
+    }
+    let mut required = vec![false; pieces.len()];
+    let (mut start, mut line) = (0, 0);
+    while start < pieces.len() {
+        let mut end = start;
+        while joins.get(end).copied().unwrap_or(false) && end + 1 < pieces.len() {
+            end += 1;
+        }
+        if line < lead_lines || is_status_line(&pieces[start]) {
+            required[start..=end].iter_mut().for_each(|r| *r = true);
+        }
+        start = end + 1;
+        line += 1;
+    }
+    for (i, r) in required.iter_mut().enumerate() {
+        *r |= i < 2 || i + 2 >= pieces.len();
+    }
+    required
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnitKind {
     Lines,
@@ -613,13 +667,18 @@ pub(crate) fn reconstruct_joined(
     output
 }
 
-/// File lines in order with their 1-based numbers; the first and last line
-/// are always kept and each omitted run names its line range.
-pub(crate) fn reconstruct_anchored_lines(lines: &[String], kept: &BTreeSet<usize>) -> String {
+/// File lines in order with their 1-based numbers, the first being `first`
+/// (a window's start line); the first and last line are always kept and each
+/// omitted run names its line range.
+pub(crate) fn reconstruct_anchored_lines(
+    lines: &[String],
+    kept: &BTreeSet<usize>,
+    first: usize,
+) -> String {
     let mut output = String::new();
     let mut omitted_start = None;
     for (index, line) in lines.iter().enumerate() {
-        let number = index + 1;
+        let number = first + index;
         if !kept.contains(&index) && index != 0 && index + 1 != lines.len() {
             omitted_start.get_or_insert(number);
             continue;
@@ -635,7 +694,7 @@ pub(crate) fn reconstruct_anchored_lines(lines: &[String], kept: &BTreeSet<usize
     if let Some(start) = omitted_start {
         output.push_str(&format!(
             "[… lines {start}-{} omitted; re-read with offset/limit …]\n",
-            lines.len()
+            first - 1 + lines.len()
         ));
     }
     output
@@ -666,9 +725,62 @@ pub(crate) fn outline_lines(lines: &[String], markdown: bool) -> BTreeSet<usize>
         .collect()
 }
 
+/// Adds to `kept` the directory lines above every kept entry or subtree
+/// summary of a `list_dir` tree (two spaces per level, entries as `- name`),
+/// so a kept file still shows where it lives.
+pub(crate) fn keep_tree_parents(lines: &[String], kept: &mut BTreeSet<usize>) {
+    let indent = |line: &str| line.len() - line.trim_start_matches(' ').len();
+    let tree_line = |line: &str| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("- ") || trimmed.starts_with('[')
+    };
+    for index in kept.clone() {
+        if !tree_line(&lines[index]) {
+            continue;
+        }
+        let mut depth = indent(&lines[index]);
+        for parent in (0..index).rev() {
+            if depth == 0 {
+                break;
+            }
+            let line = &lines[parent];
+            if indent(line) < depth && line.trim_start().starts_with("- ") {
+                kept.insert(parent);
+                depth = indent(line);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pruned listing that kept `src/jev/tasks.rs` without `src/` and
+    /// `jev/` would read as a file at the root: every kept entry keeps its
+    /// directories, and nothing else is added.
+    #[test]
+    fn a_kept_tree_entry_keeps_its_parent_directories_only() {
+        let lines: Vec<String> = [
+            "- /repo/",
+            "  - Cargo.toml",
+            "  - docs/",
+            "    - guide.md",
+            "  - src/",
+            "    - main.rs",
+            "    - jev/",
+            "      - cheap.rs",
+            "      - tasks.rs",
+            "      [2 files in subtree: 2 *.rs]",
+            "  - tests/",
+            "    ...",
+        ]
+        .map(str::to_owned)
+        .into();
+        let mut kept: BTreeSet<usize> = [8, 11].into_iter().collect();
+        keep_tree_parents(&lines, &mut kept);
+        assert_eq!(kept.into_iter().collect::<Vec<_>>(), [0, 4, 6, 8, 11]);
+    }
 
     /// The outline is what a thin read selection falls back to, so it must
     /// find the structure the model re-reads by: headings in prose (not a
@@ -685,11 +797,47 @@ mod tests {
         assert_eq!(outline_lines(&source, false).into_iter().collect::<Vec<_>>(), [0, 2]);
     }
 
+    /// A report is prose: its verdict paragraph and status lines survive any
+    /// selection, while `failed` or `error` in a sentence is a claim, not a
+    /// status line, and must not pin the line. An opening paragraph longer
+    /// than the lead bound pins only its first pieces.
+    #[test]
+    fn a_report_keeps_its_verdict_and_status_lines_but_not_every_failure_word() {
+        let source = "Verdict: the fix works.\nAll 12 tests pass.\n\nThe old test failed with an error.\n- **Status**: done\nmore prose\nstatus_bar is unrelated\n\"status\": \"ok\",\nnotes\nend of report\n";
+        let (pieces, joins) =
+            split_long_units(build_units(source, UnitKind::Lines, 1024), LONG_LINE_UNIT_BYTES);
+        let required = required_report_units(source, &pieces, &joins);
+        let kept: Vec<&str> = pieces
+            .iter()
+            .zip(&required)
+            .filter(|(_, r)| **r)
+            .map(|(p, _)| p.as_str())
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                "Verdict: the fix works.",
+                "All 12 tests pass.",
+                "- **Status**: done",
+                "\"status\": \"ok\",",
+                "notes",
+                "end of report"
+            ]
+        );
+
+        let long = format!("{}\n\n{}", "opening words ".repeat(300), "detail\n".repeat(20));
+        let (pieces, joins) =
+            split_long_units(build_units(&long, UnitKind::Lines, 1024), LONG_LINE_UNIT_BYTES);
+        let required = required_report_units(&long, &pieces, &joins);
+        assert!(pieces.len() > 20 && joins[0], "the opening line is cut into pieces");
+        assert_eq!(required.iter().filter(|r| **r).count(), 4, "only the first and last two pieces");
+    }
+
     #[test]
     fn anchored_lines_render_exact_omission_ranges() {
         let lines: Vec<String> = (1..=30).map(|n| format!("line {n}")).collect();
         let kept = [2, 24, 25].into_iter().collect();
-        let rendered = reconstruct_anchored_lines(&lines, &kept);
+        let rendered = reconstruct_anchored_lines(&lines, &kept, 1);
         assert!(rendered.starts_with("1→line 1\n"));
         assert!(rendered.contains("[… lines 2-2 omitted; re-read with offset/limit …]"));
         assert!(rendered.contains("25→line 25\n26→line 26\n"));

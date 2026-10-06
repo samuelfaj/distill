@@ -178,6 +178,9 @@ pub(crate) fn date_rollover_reminder(
     ))
 }
 const WORKFLOW_RESULT_SUMMARY_REMINDER_CAP: usize = 4 * 1024;
+/// Over this, a workflow completion reminder selects each result it would cut
+/// with the utility instead; under it the cut is too small to pay for a call.
+const WORKFLOW_UTILITY_REMINDER_BYTES: usize = 8 * 1024;
 pub(super) const WORKFLOW_OBJECTIVE_REMINDER_CAP: usize = 256;
 fn workflow_completion_detail(detail: &str) -> std::borrow::Cow<'_, str> {
     let normalized = detail.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -707,6 +710,7 @@ impl SessionActor {
             subagent_ids = ?ids,
             "draining between-turn subagent completions"
         );
+        self.select_completion_outputs(&mut completions).await;
         let bridge = self.agent.borrow().tool_bridge().clone();
         let reminder =
             distill_tools::reminders::task_completion::format_between_turn_completion_reminder(
@@ -775,6 +779,7 @@ impl SessionActor {
             subagent_ids = ?ids,
             "wake turn digests buffered subagent completions"
         );
+        self.select_completion_outputs(&mut completions).await;
         let bridge = self.agent.borrow().tool_bridge().clone();
         let reminder =
             distill_tools::reminders::task_completion::format_between_turn_completion_reminder(
@@ -791,7 +796,7 @@ impl SessionActor {
         if goal_loop_active {
             return;
         }
-        let (restored, fresh) = {
+        let (restored, mut fresh) = {
             let tracker = self.workflow_tracker().await;
             let mut tracker = tracker.lock();
             tracker.take_unreported_terminal_runs()
@@ -807,7 +812,7 @@ impl SessionActor {
             fresh = ?names(&fresh),
             "draining between-turn workflow completions"
         );
-        let restored: Vec<_> = restored
+        let mut restored: Vec<_> = restored
             .into_iter()
             .filter(|r| {
                 r.status.is_terminal()
@@ -821,6 +826,10 @@ impl SessionActor {
         let bridge = self.tool_bridge_handle();
         let read_tool_name =
             distill_tools::reminders::task_completion::resolve_read_tool_name(&bridge).await;
+        for runs in [&mut restored, &mut fresh] {
+            self.select_workflow_results(runs, &session_dir, read_tool_name.as_deref())
+                .await;
+        }
         for runs in [&restored, &fresh] {
             if runs.is_empty() {
                 continue;
@@ -831,6 +840,94 @@ impl SessionActor {
                 read_tool_name.as_deref(),
             ));
         }
+    }
+    /// Over [`WORKFLOW_UTILITY_REMINDER_BYTES`], each run result the reminder
+    /// would cut at [`WORKFLOW_RESULT_SUMMARY_REMINDER_CAP`] is selected from
+    /// the full result by the utility instead: verbatim units within the same
+    /// bytes, its opening, last lines and status or verdict lines kept, the
+    /// full result stored. No lane, a secret or any failed or unusable answer
+    /// keeps today's cut.
+    pub(super) async fn select_workflow_results(
+        &self,
+        runs: &mut [crate::session::workflow::tracker::WorkflowRunState],
+        session_dir: &std::path::Path,
+        read_tool_name: Option<&str>,
+    ) {
+        let cut = |run: &crate::session::workflow::tracker::WorkflowRunState| {
+            run.result_summary
+                .as_ref()
+                .is_some_and(|summary| summary.len() > WORKFLOW_RESULT_SUMMARY_REMINDER_CAP)
+        };
+        if !crate::jev::lever_active(distill_workspace::jev::flags::JevLever::ECheapCompress)
+            || !runs.iter().any(cut)
+            || format_workflow_completion_reminder(runs, session_dir, read_tool_name).len()
+                <= WORKFLOW_UTILITY_REMINDER_BYTES
+        {
+            return;
+        }
+        crate::jev::with_recorder_unless_scoped(
+            self.session_id_string(),
+            Some(self.chat_state_handle.clone()),
+            async {
+                let utility = self
+                    .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+                    .await;
+                let (request, _) = self.jev_request_and_call_preamble("").await;
+                for run in runs.iter_mut().filter(|run| cut(run)) {
+                    let Some(summary) = run.result_summary.clone() else {
+                        continue;
+                    };
+                    let shown = distill_tools::util::truncate_str(
+                        &summary,
+                        WORKFLOW_RESULT_SUMMARY_REMINDER_CAP,
+                    )
+                    .len();
+                    let count = |decision: &str, chunks: usize, bytes_out: usize| {
+                        crate::jev_cheap::record_utility_outcome(
+                            "workflow_result",
+                            decision,
+                            chunks,
+                            shown,
+                            bytes_out,
+                        );
+                    };
+                    let Some(utility) = &utility else {
+                        count("keep:lane-unavailable", 0, shown);
+                        continue;
+                    };
+                    let question = super::jev_tool_result::report_selection_question(
+                        "this workflow run's result",
+                        "Workflow",
+                        &super::jev_tool_result::delegated_task(&run.name, Some(&run.objective)),
+                        Some(shown),
+                        None,
+                        &request,
+                    );
+                    let selected = super::jev_tool_result::select_report(
+                        utility,
+                        &super::jev_tool_result::ReportSelection {
+                            full: &summary,
+                            shown,
+                            cut: true,
+                            within: shown,
+                            stored: None,
+                            question: &question,
+                            ask: self.model_tools_ask_stored_output.get(),
+                            source_kind: "workflow_result",
+                        },
+                    )
+                    .await;
+                    match selected {
+                        Ok((replacement, chunks)) => {
+                            count("compress:cut-report", chunks, replacement.len());
+                            run.result_summary = Some(replacement);
+                        }
+                        Err((decision, chunks)) => count(decision, chunks, shown),
+                    }
+                }
+            },
+        )
+        .await;
     }
     pub(super) async fn persist_resume_status(&self) {
         if self.startup_hints.is_subagent {

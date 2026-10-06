@@ -238,7 +238,7 @@ Catálogo: **188** funções — 129 implemented, 0 planned,
 | 10 | Slim de schema de tools por turno | poda de tools (P1) | `P1 (existente)` | mapped | P1 já poda famílias; poda de parâmetros é o segundo nível — deferred (risco de remover obrigatório) |
 | 11 | Resumo da compactação no modelo barato | session/compaction | ``e_cheap_task`` | planned | NÃO LIGADO: a compactação continua no modelo da sessão |
 | 12 | Título/resumo de sessão, changelog, mensagem de commit | registro de tarefas | ``e_cheap_task`` | implemented | `commit_message_draft`, `release_notes_draft`, `pr_description_draft` registradas com guarda; ligação à UI pendente |
-| 13 | Imagens/screenshots/anexos | — | `—` | deferred | precisa de Vision; não há modelo local nem visão no provider barato |
+| 13 | Imagens/screenshots/anexos | — | `—` | deferred | o utility padrão (ling-3.0-flash-vl) tem visão, mas legendar na entrada perde os pixels da automação de UI, trocar imagem já enviada quebra o cache, e a compactação já remove todas as imagens |
 | 14 | Extração de dados estruturados de saída (paths, PASS/FAIL, JSON, status) | tool result | ``e_cheap_task`` | implemented | `test_verdict` rodou ao vivo no caminho do tool result e a resposta foi usada |
 | 15 | Pré-computar o que o próximo turno vai pedir (prefetch) | — | `—` | deferred | só leitura, mas exige fila do turno; sem seam seguro aqui hoje |
 | 16 | "Isso que eu li responde à pergunta?" por trecho | suficiência (noul por trecho) | `e_lane_choice` | planned | 4 nouls, ≥2/3 excluídos |

@@ -32,6 +32,9 @@ pub struct LaneFlags {
     pub crushers: bool,
     pub importance: bool,
     pub read_reuse: bool,
+    /// Whether the main model has `ask_stored_output`: an elision footer
+    /// names it only then.
+    pub ask_stored_output: bool,
 }
 
 impl LaneFlags {
@@ -41,7 +44,25 @@ impl LaneFlags {
             crushers: false,
             importance: false,
             read_reuse: false,
+            ask_stored_output: false,
         }
+    }
+}
+
+/// The footer of a lossy stage whose original `stored` was stored at
+/// `handle`. It names `ask_stored_output` only when the model has the tool, it
+/// accepts this path and it can answer about these lines, as the utility
+/// selection footers do.
+fn elided_footer(handle: &str, stored: &str, ask: bool) -> String {
+    if ask
+        && crate::stored_output_ask::is_stored_original(handle)
+        && crate::stored_output_ask::answers_by_line(stored)
+    {
+        format!(
+            "[full output stored at {handle} — ask_stored_output with that path answers a question about the elided lines; read the file only for exact text]"
+        )
+    } else {
+        format!("[full output stored at {handle} — read that file for the elided lines]")
     }
 }
 
@@ -708,8 +729,9 @@ pub fn reduce_payload(
                     ),
                 });
                 body = format!(
-                    "{}\n[full output stored at {handle} — ask_stored_output with that path answers a question about the elided lines; read the file only for exact text]",
-                    crushed.trim_end()
+                    "{}\n{}",
+                    crushed.trim_end(),
+                    elided_footer(&handle, &body, flags.ask_stored_output)
                 );
                 store_handle = Some(handle);
             } else {
@@ -790,8 +812,9 @@ pub fn reduce_payload(
                     ),
                 });
                 body = format!(
-                    "{}\n[full output stored at {handle} — ask_stored_output with that path answers a question about the elided lines; read the file only for exact text]",
-                    extracted.text.trim_end()
+                    "{}\n{}",
+                    extracted.text.trim_end(),
+                    elided_footer(&handle, &body, flags.ask_stored_output)
                 );
                 store_handle = Some(handle);
             } else {
@@ -1014,6 +1037,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: true,
             read_reuse: true,
+            ask_stored_output: false,
         };
 
         // A payload with nothing to collapse is left alone, on purpose.
@@ -1092,6 +1116,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
                 crushers: false,
                 importance: true,
                 read_reuse: false,
+                ask_stored_output: false,
             },
             LIMITS,
             &mut reuse,
@@ -1129,6 +1154,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
                 crushers: false,
                 importance: true,
                 read_reuse: false,
+                ask_stored_output: false,
             },
             LIMITS,
             &mut reuse,
@@ -1153,6 +1179,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: false,
             read_reuse: false,
+            ask_stored_output: false,
         };
         let store = refusing_store();
 
@@ -1233,6 +1260,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: false,
             read_reuse: false,
+            ask_stored_output: false,
         };
 
         let stack = stack_with_addresses();
@@ -1265,6 +1293,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: false,
             read_reuse: false,
+            ask_stored_output: false,
         };
         let payload = format!(
             "rendered thumbnail for report 42\ndata:image/png;base64,{}\nwrote 1 file in 0.4s\n",
@@ -1304,6 +1333,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: false,
             read_reuse: false,
+            ask_stored_output: false,
         };
         let store = refusing_store();
         let stack = stack_with_addresses();
@@ -1329,6 +1359,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: true,
             read_reuse: true,
+            ask_stored_output: false,
         };
         let store = refusing_store();
         for (tool, command) in [
@@ -1366,6 +1397,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
                 crushers: true,
                 importance: true,
                 read_reuse: true,
+                ask_stored_output: false,
             },
             LIMITS,
             &mut reuse,
@@ -1399,6 +1431,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
                 crushers: true,
                 importance: false,
                 read_reuse: false,
+                ask_stored_output: false,
             },
             LIMITS,
             &mut reuse,
@@ -1419,6 +1452,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
                 crushers: true,
                 importance: false,
                 read_reuse: false,
+                ask_stored_output: false,
             },
             LaneLimits {
                 crushers_bytes: 1,
@@ -1439,6 +1473,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: true,
             read_reuse: true,
+            ask_stored_output: false,
         };
         let store = refusing_store();
         let payload = build_log();
@@ -1469,6 +1504,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: true,
             read_reuse: true,
+            ask_stored_output: false,
         };
         let store = refusing_store();
         let payload = padded_listing();
@@ -1510,6 +1546,7 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
             crushers: true,
             importance: true,
             read_reuse: true,
+            ask_stored_output: false,
         };
 
         let mut reuse = |hash: &str| match &seen {
@@ -1709,5 +1746,27 @@ would rather skip it than read it twice, which is the whole point of the pass.\n
     fn bounded_tool_evidence_defers_when_required_source_line_cannot_fit() {
         let output = format!("error: {}", "x".repeat(100));
         assert!(bounded_tool_evidence(&output, 32).is_none());
+    }
+
+    /// A model without `ask_stored_output` would call a tool it does not have
+    /// if an elision footer named it: the footer names the tool only when the
+    /// model has it and the stored original is one the tool accepts.
+    #[test]
+    fn an_elision_footer_names_ask_stored_output_only_when_the_model_has_it() {
+        let original = "stack frame line\n".repeat(50);
+        let handle = crate::jev_store::store_payload(&original)
+            .expect("store the original")
+            .display()
+            .to_string();
+        let asked = elided_footer(&handle, &original, true);
+        assert!(asked.contains("ask_stored_output with that path"), "{asked}");
+        for footer in [
+            elided_footer(&handle, &original, false),
+            elided_footer("/tmp/not-a-stored-original.txt", &original, true),
+        ] {
+            assert!(!footer.contains("ask_stored_output"), "{footer}");
+            assert!(footer.contains("read that file for the elided lines"), "{footer}");
+        }
+        assert!(asked.contains(&handle));
     }
 }

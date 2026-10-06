@@ -170,7 +170,8 @@ This step is lossy, so it carries two rules:
 - **The original is stored before the body is replaced.** `store_payload` writes
   the full output to a file under the harness home and returns its path. The
   elided text is sent with a line naming that file, so the model can read the raw
-  bytes when it needs them. A store that refuses means the stage does not run: no
+  bytes when it needs them; it names `ask_stored_output` only when the model has
+  that tool. A store that refuses means the stage does not run: no
   byte is ever dropped without somewhere to get it back.
 - **A reduction that would drop a literal is refused.** `preserves_literals`
   compares the result against the original. If a path, a `file:line`, a number or
@@ -201,8 +202,8 @@ caller's fallback model, and a sampler-backed lane gives up after 20 s (see
 The harness labels source units `[U12]`; utility returns IDs or ranges, and the
 harness copies those original units. It does not use generated replacement
 prose. Except for `search_tool`, the harness always retains the first two and
-last two units; terminal,
-task and subagent output also keep diagnostic lines (failure words such as
+last two units; terminal
+and task output also keep diagnostic lines (failure words such as
 `error`/`failed`/`panicked`, `TypeError:`-style labels, pytest `E` lines, TAP
 `not ok`, timeout, exit and not-found phrases, test summaries), grep listings
 only their result headers, and web search its citation paragraphs. Common words
@@ -257,6 +258,15 @@ The utility handles these sources:
   `git show` at 8,000.
 - Grep listings at 12,000 bytes or more. Their footer says `kept K of M match
   lines`.
+- In a top-level session, which replays a result on far more later calls than
+  a subagent, generic output (shell, MCP, web, task output, and windows over a
+  command's own output) counts from 3,000 bytes and match listings (the grep
+  tool, shell `rg`/`grep`) from 6,000; file dumps and reads keep their floors.
+  A result only these floors admit is skipped before the call when its forced
+  units and the footer reach half of it (`defer:small-cannot-pay`).
+- `list_dir` listings at 6,000 bytes or more, as tree lines: every kept entry
+  keeps its parent directory lines, and the footer says `kept K of M listing
+  lines`.
 - Web search, and web fetch of any content type, using the full source.
 - MCP results at 4,000 bytes or more; file readers are excluded.
 - `search_tool`, where selected tool schemas remain JSON.
@@ -278,6 +288,53 @@ The utility handles these sources:
   of the bytes gains the file's outline (Markdown headings, or declaration lines
   by `is_signature_line`) verbatim with line numbers (`compress:outline`); a
   file with no outline keeps the original (`keep:thin-selection`).
+- `read_file` offset/limit windows of 16,000 bytes or more with no limit or a
+  limit over 300 lines (`read_range`): the window's first and last 20 lines and
+  its outline are always kept, numbered from the window's start. Shorter or
+  smaller windows, and tail reads by negative offset, stay whole.
+- Subagent reports: a foreground result, a subagent item of a multi-wait,
+  and a background completion in a wake digest or between-turn reminder, at
+  4,000 bytes or more. A single finished subagent's `get_task_output` is where
+  the completion notice's pointer leads, so it stays whole. The question quotes the spawn
+  call's description and prompt (a background child's prompt is found by the
+  spawn result that names it). The opening paragraph up to 1 KiB, status and
+  verdict lines and the first and last two lines are kept; the prose gets no
+  failure-marker lines. Worker evidence, the repository review, the meta line
+  and the resume footer stay verbatim. A background report must end within
+  the 16,000-byte inline cap (the last picks drop to fit), and the poll
+  pointer stays. A worker report `cap_task_report` cut to 3 KB is selected
+  from the full stored report within the bytes the cut took, and one cut to
+  12 KB within 70% of them, the bar its head's own selection had to clear
+  (the last picks drop to fit). When the full report is too big for the
+  utility, the head is selected on its own; any other failure keeps the cut.
+- Multi-wait envelopes whose items add up to 4,000 bytes: each finished bash
+  or subagent item of 2,000 bytes or more is selected on its own.
+- Polls of a still-running bash task (one task or a multi-wait item). First,
+  without a model (`e_read_reuse`), the leading lines an earlier poll of the
+  same task put into history become one `[… first N lines of this output
+  already shown in call … …]` line in the new result only. Only the leading
+  run in stream order counts, each named call must still hold its lines
+  verbatim in history, and the last six lines always stay. What is left, at
+  4,000 bytes or more, is selected with a progress question (`task_poll`),
+  keeping error lines and the last six lines over a stored copy of the whole
+  window. The poll that finds the task finished takes the terminal path.
+- Truncated shell and task results whose session terminal log fits eight
+  chunks: selected from the whole log instead of the head and tail window,
+  within 70% of the bytes the window took (the bar the window's own selection
+  must clear), with the footer pointing at the log (`full_log`). Any failure
+  leaves the window to the usual selection.
+- PostToolUse hook replacements of 4,000 bytes or more (`hook`), except a
+  re-read of a stored original, a read `read_file` would keep whole, an
+  edit's result and a subagent's result.
+- Reminders the harness appends to a result (a finished background task, LSP
+  diagnostics, skill discovery, a concatenated-call notice) are split off
+  before the Jev pass and re-appended verbatim. A result whose notices cannot
+  be told apart from its text keeps the old whole-result bypass; a reminder tag
+  inside the tool's own text (a read of a file that quotes one) does not.
+- Idle workflow-completion reminders over 8 KB: each run result the reminder
+  would cut at 4 KiB is selected from the whole result within 4 KiB and the
+  original stored; otherwise the cut stays. Background completions reported
+  inside a tool result mid-turn are not covered yet.
 - Memory capture: tool results of 4,000 bytes or more in the finished turn,
   at most 8 chunks per capture, skipped when the session model is the utility
   model. The extraction itself stays on the main model.
@@ -384,7 +441,10 @@ real session.
 Utility outcomes are kept without that variable. Each session's `usage.json`
 has `utilityOutcomes` per source kind (`shell`, `mcp`, `recap`, …): the final
 decision per eligible result (`compress`, `not_shorter`,
-`defer:required-dominates`, `keep:lane-unavailable`, …), requests refused before
+`defer:required-dominates`, `keep:lane-unavailable`, …), large results a guard
+keeps out (`keep:exact-floor` under an exact-output floor, `keep:read-window`
+for an offset/limit read that is not a large window, `keep:read-floor` for a whole read under 16,000
+bytes), requests refused before
 dispatch (`request:defer:failure-bound`, …), chunks, and bytes in and out. Every
 utility attempt row also carries `source_kind` and `final_decision`. Sizes and
 labels only, never content.
@@ -433,6 +493,12 @@ nothing on the live path invokes them:
   `alias_identifiers`, `volatile_tokens` and `compact_span` are pure functions
   waiting for a caller.
 - The task registry still contains other utility tasks, but tool-result compression now selects source units instead of mapping payloads through `task_for_payload`.
+- The image-describe pipeline (`session/image_describe.rs`, `transcribe_user_images`)
+  runs only under `is_cursor_harness()`, which is always false in this build. User
+  images and tool screenshots reach the main model as images. They are not
+  captioned by the utility model, even though the shipped utility has vision: a
+  caption at entry loses the pixels UI work needs. Swapping an image already in
+  history would bust the cache, and compaction already removes every image.
 
 `TODO.md` at the repository root is the full inventory, with a status and a
 reason per entry, cross-referenced to `list.md`.

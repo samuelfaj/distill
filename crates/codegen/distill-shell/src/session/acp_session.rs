@@ -1117,7 +1117,8 @@ pub(crate) struct SessionActor {
     /// Recap rate-limit watermark (`main_turns` of last finished recap; `0` means none).
     pub(crate) last_recap_main_turn: std::cell::Cell<usize>,
     /// Whether the tools sent to the model on the latest round include no edit
-    /// or terminal tool, so whole-file reads may be narrowed by the utility.
+    /// or terminal tool. Nothing reads it: large reads are narrowed by the
+    /// utility in every session, editing or not.
     pub(crate) model_tools_read_only: std::cell::Cell<bool>,
     /// Whether those tools include `ask_stored_output`, so a compression footer
     /// may point the model at it.

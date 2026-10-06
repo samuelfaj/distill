@@ -68,6 +68,9 @@ pub struct SkillUpdateEffects {
     /// Why this update was produced. Lets harnesses suppress one kind
     /// without suppressing the other — see [`SkillUpdateKind`].
     pub kind: SkillUpdateKind,
+    /// The skills `system_reminder` lists (newly announced ones), so the
+    /// session can narrow a mid-session announcement without parsing it.
+    pub announced_skills: Vec<SkillInfo>,
 }
 
 /// Authoritative state for the full skill lifecycle. The session never stores skill state; it triggers state transitions here and executes the
@@ -551,6 +554,7 @@ impl SkillManager {
         };
         let skills = skills_owned.as_deref().unwrap_or(&self.discovered_skills);
 
+        let previously_announced = announced.clone();
         let mut system_reminder = render_listing(skills, &mut announced, &self.render_params());
         if let Some(text) = system_reminder.as_ref() {
             let hash = listing_content_hash(text);
@@ -569,10 +573,24 @@ impl SkillManager {
         // `format_announcement_xml`. Do not append a separate "must not be used" name footer — it
         // wastes tokens and looks like skills with no description.
 
+        let mut announced_skills = Vec::new();
+        if system_reminder.is_some() {
+            let mut seen = HashSet::new();
+            for skill in skills {
+                let key = skill.dedup_key();
+                if self.announced_names.contains(&key)
+                    && !previously_announced.contains(&key)
+                    && seen.insert(key)
+                {
+                    announced_skills.push(skill.clone());
+                }
+            }
+        }
         let effects = SkillUpdateEffects {
             system_reminder,
             send_available_commands: true,
             kind,
+            announced_skills,
         };
 
         Some((runtime_skills, effects))
@@ -975,6 +993,29 @@ mod tests {
         // New path: new pending.
         tracker.add_discovered(vec![make_skill("beta", "/b/SKILL.md")]);
         assert!(tracker.take_pending_reconciliation().is_some());
+    }
+
+    /// The session narrows a mid-session announcement from the skills it
+    /// lists, so those must be exactly the newly announced ones, never the
+    /// skills an earlier reminder already listed.
+    #[test]
+    fn effects_carry_exactly_the_skills_the_reminder_lists() {
+        let mut tracker = SkillManager::new();
+        tracker.add_discovered(vec![make_skill("alpha", "/a/SKILL.md")]);
+        let first = tracker.take_pending_reconciliation().expect("first discovery");
+        assert_eq!(first.effects.announced_skills.len(), 1);
+
+        tracker.add_discovered(vec![make_skill("beta", "/b/SKILL.md")]);
+        let second = tracker.take_pending_reconciliation().expect("second discovery");
+        let text = second.effects.system_reminder.expect("reminder");
+        let names: Vec<&str> = second
+            .effects
+            .announced_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
+        assert_eq!(names, ["beta"]);
+        assert!(text.contains("beta") && !text.contains("alpha"), "{text}");
     }
 
     #[test]

@@ -168,14 +168,36 @@ fn signal_terms(text: &str) -> HashSet<String> {
     terms
 }
 
-fn request_name_tokens(request: &str) -> impl Iterator<Item = String> + '_ {
+/// How a request spelled a token that may name a skill.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NameMark {
+    /// A plain word: "review", "implement".
+    Bare,
+    /// `$name` or a backticked name.
+    Marked,
+    /// `/name`, the slash-command form.
+    Slash,
+}
+
+fn request_name_tokens(request: &str) -> impl Iterator<Item = (String, NameMark)> + '_ {
     request.split_whitespace().filter_map(|raw| {
+        let outer = raw.trim_matches(|c: char| {
+            matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ';')
+        });
+        let backticked = outer.len() > 1 && outer.starts_with('`') && outer.ends_with('`');
         let token = raw.trim_matches(|c: char| {
             matches!(c, '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ';')
         });
-        let token = token.strip_prefix('/').unwrap_or(token);
-        let token = token.strip_prefix('$').unwrap_or(token);
-        (!token.is_empty()).then(|| token.to_ascii_lowercase())
+        let (token, mark) = if let Some(name) = token.strip_prefix('/') {
+            (name, NameMark::Slash)
+        } else if let Some(name) = token.strip_prefix('$') {
+            (name, NameMark::Marked)
+        } else if backticked {
+            (token, NameMark::Marked)
+        } else {
+            (token, NameMark::Bare)
+        };
+        (!token.is_empty()).then(|| (token.to_ascii_lowercase(), mark))
     })
 }
 
@@ -186,12 +208,21 @@ fn skill_name_matches(skill: &SkillInfo, name: &str) -> bool {
 }
 
 /// Explicit skill names in a user request, returned as stable dedup keys.
-/// Slash names, backtick names, and bare exact skill names are all pins. A
-/// description match is never treated as an explicit pin.
+/// Only `/name`, `$name` and backticked names are pins: a bare word such as
+/// "review" or "implement" is ordinary prose and is left to the ranking. A
+/// manual-only (`disable_model_invocation`) skill is pinned only by its slash
+/// form. A description match is never treated as an explicit pin.
 pub fn explicit_skill_pins(request: &str, catalog: &[SkillInfo]) -> Vec<String> {
     let mut pins = Vec::new();
-    for token in request_name_tokens(request) {
-        for skill in catalog.iter().filter(|skill| skill.enabled) {
+    for (token, mark) in request_name_tokens(request) {
+        if mark == NameMark::Bare {
+            continue;
+        }
+        for skill in catalog
+            .iter()
+            .filter(|skill| skill.enabled)
+            .filter(|skill| !skill.disable_model_invocation || mark == NameMark::Slash)
+        {
             if skill_name_matches(skill, &token) && !pins.contains(&skill.dedup_key()) {
                 pins.push(skill.dedup_key());
             }
@@ -1898,12 +1929,12 @@ mod tests {
             manual,
         ];
         let dollar_pins = explicit_skill_pins(
-            "run $sam-orchestrate and $team:manual-only",
+            "run $sam-orchestrate and /team:manual-only",
             &dollar_catalog,
         );
         assert_eq!(dollar_pins, vec!["sam-orchestrate", "team:manual-only"]);
         let manual_selected = select_model_skills(
-            "run $sam-orchestrate and $team:manual-only",
+            "run $sam-orchestrate and /team:manual-only",
             &dollar_catalog,
             &dollar_pins,
             &[],
@@ -1931,6 +1962,42 @@ mod tests {
         assert!(recovery.contains("normal discovery"));
         assert!(recovery.contains("not disabled"));
         assert!(recovery.contains("/tmp/skills.json"));
+    }
+
+    /// "Implement DEV-1 and review the diff" is a task, not a skill request:
+    /// a bare word that happens to be a skill name pinned 40-70 KB skill
+    /// bodies into every such turn. Only a marked name pins.
+    #[test]
+    fn a_bare_word_never_pins_a_skill() {
+        let catalog = vec![
+            make_skill("review", "/skills/review/SKILL.md"),
+            make_skill("docs", "/skills/docs/SKILL.md"),
+        ];
+        assert!(
+            explicit_skill_pins("Implement DEV-1, then review the docs.", &catalog).is_empty(),
+            "plain prose names no skill"
+        );
+        assert!(explicit_skill_pins("please \"review\" it", &catalog).is_empty());
+        for marked in ["use /review", "use $review", "use `review`.", "(`/review`)"] {
+            assert_eq!(explicit_skill_pins(marked, &catalog), vec!["review"], "{marked}");
+        }
+    }
+
+    /// A manual-only skill (e.g. an orchestrator loop) is run only when the
+    /// user types its slash command; a backticked or `$` mention must not hand
+    /// its body to the model.
+    #[test]
+    fn a_manual_only_skill_is_pinned_only_by_its_slash_command() {
+        let mut implement = make_skill("implement", "/skills/implement/SKILL.md");
+        implement.disable_model_invocation = true;
+        let catalog = vec![implement];
+        for mention in ["implement it", "run `implement`", "run $implement"] {
+            assert!(explicit_skill_pins(mention, &catalog).is_empty(), "{mention}");
+        }
+        assert_eq!(
+            explicit_skill_pins("/implement DEV-1", &catalog),
+            vec!["implement"]
+        );
     }
 
     #[test]

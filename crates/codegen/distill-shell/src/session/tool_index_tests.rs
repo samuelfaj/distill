@@ -2278,3 +2278,23 @@ fn score_comparison_combined_best() {
         );
     }
 }
+
+/// A subagent's announcement names servers without their instructions, so its
+/// search results must carry them, rendered as the full announcement would;
+/// a main session's index adds nothing (its announcement already has them).
+#[test]
+fn server_instructions_come_with_results_only_when_enabled() {
+    let servers = vec![ServerMetadata {
+        name: "linear".into(),
+        description: Some("Use team keys.\n  Never delete issues.".into()),
+    }];
+    let main = Bm25ToolSearchIndex::new(make_snapshot_with_servers(linear_tools(), servers.clone()));
+    assert_eq!(main.server_instructions("linear"), None);
+    let child = Bm25ToolSearchIndex::new(make_snapshot_with_servers(linear_tools(), servers))
+        .with_server_instructions(true);
+    assert_eq!(
+        child.server_instructions("linear").as_deref(),
+        Some("Use team keys. Never delete issues.")
+    );
+    assert_eq!(child.server_instructions("demo-mcp"), None, "no instructions, no field");
+}

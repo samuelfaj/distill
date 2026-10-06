@@ -21,6 +21,15 @@ pub fn conversation_has_memory_context(items: &[ConversationItem]) -> bool {
     )
 }
 
+/// Whether `system` (the leading system item a compaction keeps) already holds
+/// `context` byte for byte, so the post-compaction reminder need not repeat it.
+/// A different (older or newer) manifest is not a match: the reminder then
+/// still carries the fresh one.
+pub fn system_item_holds_memory_context(system: &ConversationItem, context: &str) -> bool {
+    !context.is_empty()
+        && matches!(system, ConversationItem::System(sys) if sys.content.contains(context))
+}
+
 /// Format memory search results as a markdown section for system-reminder injection.
 /// Each result is formatted with score, source, file path, line range, and the snippet in a fenced code block (preserving newlines/markdown).
 /// Returns `None` if results are empty.
@@ -416,6 +425,20 @@ mod tests {
     #[test]
     fn test_no_block_for_empty_conversation() {
         assert!(!conversation_has_memory_context(&[]));
+    }
+
+    /// After a compaction the system item keeps its manifest; a byte-identical
+    /// reminder copy would be sent twice on every request, while a manifest
+    /// that changed since must still reach the model.
+    #[test]
+    fn a_compaction_skips_only_a_manifest_the_system_item_already_holds() {
+        let manifest = "<memory-context>\n## Global memory manifest\n- prefers rust\n</memory-context>";
+        let system = ConversationItem::system(format!("You are a helpful assistant.\n\n{manifest}"));
+        assert!(system_item_holds_memory_context(&system, manifest));
+        let newer = manifest.replace("prefers rust", "prefers rust and tests");
+        assert!(!system_item_holds_memory_context(&system, &newer));
+        assert!(!system_item_holds_memory_context(&ConversationItem::user(manifest), manifest));
+        assert!(!system_item_holds_memory_context(&system, ""));
     }
 
     // -----------------------------------------------------------------------

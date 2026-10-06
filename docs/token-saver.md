@@ -19,7 +19,7 @@ which calls one pipeline function so that the tested code is the shipped code:
 | Step | What it removes | Runs when | Default |
 |---|---|---|---|
 | Native command filters | Passing test records, Cargo build progress and Git status boilerplate | Complete terminal results of 512 bytes or more; only when the stored, final replacement is smaller | Always |
-| Read reuse | A second copy of bytes already in the conversation | 2000 bytes or more, and hash-identical to a payload already sent | On |
+| Read reuse | A second copy of bytes already in the conversation | 2000 bytes or more, and hash-identical to a payload already sent, or a whole `read_file` identical to a copy still in history | On |
 | Exact-output guard | Nothing. This step stops the rest | The call is line-addressed, or the text belongs to a skill | Always |
 | Preclean | Terminal noise, and content the payload itself repeats | 2000 bytes or more, and not a document | On |
 | Importance extraction | The unreadable middle of a long payload | 4000 bytes or more, and not a document | On |
@@ -66,6 +66,15 @@ already sent in this conversation. If they were, the payload becomes a note
 naming where the earlier copy came from and its hash. Only identical bytes
 qualify. A file that changed is never reused, because the model would otherwise
 be reasoning about a version it never saw.
+
+A whole-file `read_file` (no offset or limit) is checked against the history
+itself instead, before the exact-output guard: when the latest earlier whole
+read of the same file is still in history byte for byte (not narrowed, evicted
+or compacted), and no edit, write or shell call naming the file came after it,
+the new result is one `[unchanged since call …]` line naming that call. An
+offset/limit read repeats the lines. Instruction and skill files, and a read
+carrying a reminder, stay whole. The note's target is pinned against history
+eviction.
 
 ## The guard that stops everything: exact output
 
@@ -379,28 +388,142 @@ model that does not never pays for them.
 
 ## Context pruning
 
-Seven levers affect what reaches the model:
+Eight levers affect what reaches the model:
 
 - `p1_tool_family` keeps rarely used tool families (image and video generation,
   scheduling, feedback, and MCP tools when `search_tool` can find them again) out
   of the tools array until a human request needs them. Tool schemas are resent
   every round, which makes them a recurring cost rather than a one-off. A family
   that joins never leaves: the tools array opens the cached prompt prefix, so a
-  family that came and went would re-bill the whole conversation.
+  family that came and went would re-bill the whole conversation. A subagent
+  starts from the families its parent offers and never adds one the parent left
+  out. When Jev gives no answer the utility model answers the same questions for
+  media, scheduling and feedback (verified `select_units`, NONE is an answer);
+  without either answer every pending family joins, as before. When its parent
+  offers no MCP family (so no MCP tool sits in its own tools array), a
+  subagent's MCP announcement names servers and tool counts only; each server's
+  instructions come with its `search_tool` results instead. A child that may
+  call an MCP tool directly keeps the instructions. With P1 on, the spawn
+  roster of a child type leaves out media, scheduling and feedback, which a
+  child gets only when its parent's request needs them.
 - `p6_skill_suggestion` has Jev rank the whole skill catalog against the request.
   The listing keeps full descriptors only for the skills that request needs,
   names every other skill next to a full-catalog index file, and is rebuilt only
-  when the prefix is (the first prompt and each compaction). Each human turn also
-  gets one `<skill_relevance>` line that names the skill to read, or says none
-  applies, without touching earlier messages.
+  when the prefix is (the first prompt and each compaction). When Jev gives no
+  answer the utility model picks instead (verified `select_units`, one line per
+  skill); without either answer the lexical selection stays. A mid-session
+  discovery of more than eight skills is narrowed the same way, as its own new
+  item. Each human turn also gets one `<skill_relevance>` line that names the
+  skill to read, or says none applies, without touching earlier messages. Only
+  `/name`, `$name` or a backticked name pins a skill (a manual-only skill only
+  as `/name`); a bare word like "review" and a subagent's assignment go to the
+  ranking.
 - `p2_read_shortlist` picks line and segment windows instead of whole files.
-- `p3_compaction_recorte` decides which segments the compactor must see.
-- `d2_big_output_retention` drops a large tool result once it is no longer
-  needed.
+- `p3_compaction_recorte` decides which segments the compactor must see. It
+  runs only on a compaction input that is cold anyway (fitted or lossy) and
+  not when a two-pass summary is used: dropping a middle segment of the warm,
+  cache-aligned input re-bills every cached token after it.
+- `d2_big_output_retention` asks whether a large tool result is inert enough
+  to drop. It is off by default: it asked at ingest, judging a 4 KB output by
+  its first 1,200 characters before the model had read it, and dropped none.
+- `d6_history_eviction` evicts old large tool output from the history, below.
 - `d3_post_compaction` re-injects only the chunks still relevant after a
   compaction.
+- `d4_compaction_timing` asks, between 50% and the threshold, whether to
+  compact early. It reads the request, the fill level, the end of the last
+  assistant message (left out when it looks secret-bearing) and the todo
+  statuses; `usage.json` counts each answer under `compaction_timing`.
 - `e_retention` keeps only the payload chunks a task still needs, asking one
-  question per chunk. It is off by default because its own cost is unmeasured.
+  question per chunk. It is off by default, and runs only on an output utility
+  selection left as it was (no lane, a failed or unpaying selection): its
+  questions never carried the chunk text (60 logged runs, no trim), and
+  utility selection already keeps a result's edges and failure lines.
+
+### History eviction
+
+Every main call resends the history, so an output read 40 rounds ago is paid
+for on each of those calls. `d6_history_eviction` rewrites old output in the
+retained history (and `chat_history.jsonl`; `updates.jsonl` keeps the
+original), deterministically, with no model call:
+
+- A tool result of 4 KiB or more, 20 or more tool rounds old, keeps its first
+  and last 8 lines (at most 300 bytes each end, lines cut at 160 bytes) under a
+  line naming the stored original.
+- A result a later identical call superseded (the same path, offset and limit,
+  or the same shell command in the same directory) becomes that one line after
+  10 rounds, but only when the later result holds the output itself: not a
+  reuse note, a digest or a utility selection, and at least half the size.
+- In call arguments 20 or more rounds old, a `write` body of 4 KiB or more
+  becomes a stub naming the file and the stored body, and a shell command of 4
+  KiB or more keeps its first 600 bytes. The arguments stay valid JSON.
+
+The original is stored first and the line names it (and `ask_stored_output`
+when the model has it). A store that refuses keeps the bytes: a user's answer,
+the plan, the goal, the todo list, a skill or instruction file read by any
+tool, and anything `utility_secret_presence` flags. A digest is never
+rewritten, so each item breaks the prompt cache once.
+
+Rewriting an old item breaks the cache from that item on, so the pass runs in
+batches, never per request, and by default only when the next call is cold
+anyway: a model switch, a compaction, or no model output for an hour. A
+compaction that kept a cached prefix with tool rounds in it (a fork re-pins
+its parent's) is not cold. Warm batches wait for `d6_warm_batches` (off): at
+most once per 25 tool rounds, and only when the bytes removed, replayed for
+25 rounds, are at least ten times the suffix re-billed; those thresholds are
+estimates until `history_batch` and `history_reread` show they pay. Inherited
+history (a fork, a resume) counts as already batched. A resumed session gets
+no idle check, and there is no observed-hit-rate trigger: on a provider whose
+hits alternate, a rewrite would destroy the hits that remain. A history where
+a tool call id repeats is left alone. After a batch the read-reuse index of
+that session is cleared. The old user-turn hard clear
+(`[Tool result omitted — too old]`) leaves eviction digests, and the copy a
+whole-read reuse note names, alone. A cached two-pass pass 1 survives a batch:
+its fingerprint reads a tool result by its call id, since a result is only
+ever shortened in place.
+
+`usage.json` counts it under `utilityOutcomes`: `history_batch` per batch
+(`batch:warm`, `batch:cold-model-switch`, …; `bytes_in` is the suffix
+re-billed), `history_evict` per item (`evict:head-tail`, `evict:superseded`,
+`evict:write-content`, `evict:command`, `keep:unstored`; original and new
+bytes), and `history_reread` for a later call that reads an evicted path or
+runs an evicted command again (`reread:stored`, `reread:source`). Whether a
+utility `select_units` digest beats head and tail here is not measured, so
+there is none.
+
+### Compaction input
+
+Compaction still writes its summary on the session model; the utility never
+writes summary text. When the input has to be fitted (the verbatim estimate
+leaves no room for the tools and the summary, the provider rejected it as too
+large, a two-pass pass 1 would not fit, or a fallback model has a smaller
+window), it is cold anyway, so before the oldest turns are dropped each tool
+result of 4 KiB or more before the newest human turn is stored and replaced:
+by a verbatim utility selection (`select_units`, at most four chunks per
+compaction, run at once under one 30 s deadline, used when it keeps under
+70%), or by its first and last lines. A cached two-pass summary skips this:
+it never reads the input. Pass 1's own fit keeps its trailing compaction
+prompt out of the digest, so the turn in progress stays verbatim. Both name the stored copy. A store that refuses keeps the bytes, and a
+missing, failed or slow selection keeps head and tail. The warm verbatim input
+and the lossy stage are untouched. `usage.json` counts it under
+`compaction_input` (`digest:selected`, `digest:head-tail`, `keep:unstored`).
+Whether the selection reduces rejected or failed compactions is not measured.
+
+A compaction request reserves at most the output the window leaves after its
+input (and a margin of a tenth of the input): a 943K catalogue ceiling beside
+a 600K summary input overflowed muse-spark's 1M window, so every two-pass pass
+1 failed with a tokenless 400. A pass 1 that fails twice in a row is not
+resent each round (one failure, a 429 or a timeout, is retried); the next
+compaction or a model switch lets it try again. A summary the session
+model rejects (degenerate, empty or failing after its retries) gets one try on
+the policy's compaction model or the worker before the failure stands.
+
+After a compaction the reminder can carry `## Working Set Excerpts`: for up to
+three files this session edited, the lines of their latest read in the current
+turn that the utility says the next edit needs, verbatim, naming the stored
+read, at most 4 KiB per file and 8 KiB in all. A read with a later call naming
+the file is stale and skipped; the selections run at once under one 30 s
+deadline, and no lane, NONE or a failure leaves the reminder as it was. `usage.json` counts it under `post_compaction_excerpt`. Whether it
+cuts re-reads is not measured: an edit still needs a prior read by default.
 
 Two commands line up with this. `/compact` reclaims window space on demand.
 `/context` shows where the window is going, including what the tool definitions,
@@ -458,13 +581,14 @@ defaults is `JevFlags::harness_default()` in
 `crates/codegen/distill-workspace/src/jev/flags.rs`. Do not confuse it with
 `JevFlags::default()`, an inert all-off value used by tests.
 
-Five levers stay off by default, each for a stated reason:
+Six levers stay off by default, each for a stated reason:
 
 | Lever | Why it is off |
 |---|---|
-| `e_retention` | One question per chunk; the cost of those calls is unmeasured |
+| `e_retention` | One question per chunk, and the questions never carried the chunk text; with utility selection on it does not run at all |
+| `d2_big_output_retention` | Asked at ingest from a 1,200-character head, before the model read the output; it kept every output it judged |
 | `e_cheap_agent` | The cheap-subagent lane is not wired, so a decision that asks for one defers instead of pretending |
-| `e_prompt_blocks` | Cutting the standing prompt needs a whitelist of blocks that must always travel |
+| `e_prompt_blocks` | The skills part is already cut per request by `p6_skill_suggestion`; cutting AGENTS.md and user rules needs a whitelist of lines that must always travel, and no safe one exists yet, so it would need opt-in and a rule-adherence measurement first |
 | `b2_model_tier` | A money lever waiting for its own cost gate |
 | `c6_injection_screen` | Waiting for a measurement of what the screen itself costs |
 
@@ -508,7 +632,9 @@ reason per entry, cross-referenced to `list.md`.
 These are rules, not features, and they come from the catalogue that defines this
 work:
 
-- A tool result on an exact-output call is never rewritten.
+- A tool result on an exact-output call is never rewritten when it enters the
+  conversation. Twenty rounds later, history eviction may replace it with its
+  edges and a pointer to the stored original.
 - A document is never rewritten.
 - A user-authored message is never compressed or rewritten. The pipeline only
   ever receives a tool result.

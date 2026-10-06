@@ -1334,6 +1334,10 @@ pub struct JevLadderConfig {
     pub d3_post_compaction: Option<bool>,
     pub d4_compaction_timing: Option<bool>,
     pub d5_memory_capture_gate: Option<bool>,
+    /// D6: evict old large tool output from the retained history in batches.
+    pub d6_history_eviction: Option<bool>,
+    /// D6 also in warm batches that pay for their cache break (default off).
+    pub d6_warm_batches: Option<bool>,
     pub b7_subagent_model: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;

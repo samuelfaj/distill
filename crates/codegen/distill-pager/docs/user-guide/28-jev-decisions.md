@@ -46,15 +46,17 @@ c1_premature_stop     = true # C1: requested work still open
 c3_completion_check   = true # C3: something the user asked for is missing
 c4_diff_risk          = true # C4: flag a risky diff
 c5_error_priority     = true # C5: order errors by importance
-d2_big_output_retention = true # D2: drop a large inert output
 d3_post_compaction    = true # D3: re-inject only still-relevant memory
 d4_compaction_timing  = true # D4: compact early when the next step no longer needs the history
 d5_memory_capture_gate = true # D5: gate durable memory capture
+d6_history_eviction   = true # D6: evict old large tool output from history at cold moments (no Jev call)
 b7_subagent_model     = true # B7: choose worker or main model for a subagent
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
+d2_big_output_retention = false # D2: asked at ingest, before the model read the output; it never dropped one
+d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
 b6_delegation_hint    = false # B6: with a worker model, the turn-start request also asks whether the request has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request
 
 # Optional, with the defaults shown

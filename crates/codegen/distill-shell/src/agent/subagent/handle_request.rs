@@ -320,6 +320,48 @@ fn a_subagent_is_titled_by_its_description_or_type() {
     assert_eq!(subagent_title("  ", "explore"), "explore");
 }
 
+/// A resumed child's history already holds its MCP announcements, so its
+/// `announcement_state.json` is restored the way a resumed main session's is:
+/// a server with an unchanged fingerprint is not announced again. Only the MCP
+/// half; the child's skill listing keeps its own spawn rules. A missing or
+/// unreadable file keeps today's fresh announcement.
+fn resumed_mcp_announcements(
+    child_session_dir: &Path,
+) -> Option<crate::session::announcement_state::AnnouncementState> {
+    let bytes = std::fs::read(
+        child_session_dir.join(crate::session::storage::ANNOUNCEMENT_STATE_FILE),
+    )
+    .ok()?;
+    let mut state: crate::session::announcement_state::AnnouncementState =
+        serde_json::from_slice(&bytes).ok()?;
+    state.announced_skill_names.clear();
+    Some(state)
+}
+
+/// Each resume used to append another byte-identical MCP announcement; the
+/// restored fingerprints stop that, and a broken file falls back to announcing.
+#[cfg(test)]
+#[test]
+fn a_resumed_child_restores_only_its_mcp_announcements() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(resumed_mcp_announcements(dir.path()).is_none());
+    let file = dir.path().join(crate::session::storage::ANNOUNCEMENT_STATE_FILE);
+    std::fs::write(&file, b"{not json").unwrap();
+    assert!(resumed_mcp_announcements(dir.path()).is_none());
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&serde_json::json!({
+            "mcp_server_fingerprints": {"mac-use": {"tool_count": 3, "description_hash": 1, "tool_names_hash": 2}},
+            "announced_skill_names": ["pdf"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let restored = resumed_mcp_announcements(dir.path()).expect("state restores");
+    assert!(restored.mcp_server_fingerprints.contains_key("mac-use"));
+    assert!(restored.announced_skill_names.is_empty());
+}
+
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
     provenance: ModelOverrideProvenance,
@@ -1755,7 +1797,9 @@ pub(crate) async fn run_shell_child(
         None,
         None,
         Vec::new(),
-        None,
+        (context_source == InitialContextSource::Resumed)
+            .then(|| resumed_mcp_announcements(&child_session_dir))
+            .flatten(),
         if verbatim_mirror_fork {
             None
         } else if let Some(scope) = agent_memory_scope {

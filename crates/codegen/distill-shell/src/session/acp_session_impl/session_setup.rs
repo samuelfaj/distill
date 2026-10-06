@@ -181,6 +181,7 @@ impl SessionActor {
                 UserMessageTemplate::Custom(_)
             )
         };
+        let mut skill_projection_applied = is_templated_user_message;
         let prefix = match model_skill_projection.as_ref() {
             Some(projection) if is_templated_user_message => {
                 // Custom templates own the surrounding envelope and receive
@@ -188,16 +189,19 @@ impl SessionActor {
                 self.build_user_message_prefix_with_skill_rows(Some(&projection.rows))
                     .await
             }
-            Some(projection) => trusted_skill_listing
-                .as_ref()
-                .and_then(|original| {
-                    distill_agent::prompt::context::replace_skill_projection(
-                        &prefix,
-                        original,
-                        &projection.envelope,
-                    )
-                })
-                .unwrap_or(prefix),
+            Some(projection) => match trusted_skill_listing.as_ref().and_then(|original| {
+                distill_agent::prompt::context::replace_skill_projection(
+                    &prefix,
+                    original,
+                    &projection.envelope,
+                )
+            }) {
+                Some(narrowed) => {
+                    skill_projection_applied = true;
+                    narrowed
+                }
+                None => prefix,
+            },
             None => prefix,
         };
         let mut conversation = self.chat_state_handle.get_conversation().await;
@@ -219,10 +223,14 @@ impl SessionActor {
                             )
                         {
                             *item = ConversationItem::system_reminder(narrowed);
+                            skill_projection_applied = true;
                         }
                     }
                 }
             }
+        if model_skill_projection.is_some() && !skill_projection_applied {
+            self.log_skill_projection_skipped("listing_not_found");
+        }
         let insert_at = conversation.len().min(1);
         conversation.insert(insert_at, ConversationItem::user(prefix));
         if !self.startup_hints.preserve_inherited_system
@@ -374,7 +382,9 @@ impl SessionActor {
         let text = effects.system_reminder.as_deref()?;
         // B5: the announcement keeps only the skill this request needs; the
         // session's skill catalog is untouched.
-        let narrowed = self.jev_narrow_skill_announcement(text).await;
+        let narrowed = self
+            .jev_narrow_skill_announcement(text, &effects.announced_skills)
+            .await;
         let tag = self.reminder_wrapper_tag();
         Some(ConversationItem::system_reminder(format!(
             "<{tag}>\n{narrowed}\n</{tag}>"

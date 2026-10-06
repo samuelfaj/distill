@@ -78,6 +78,8 @@ pub struct AgentBuilder {
     subagents_enabled: bool,
     /// Whether a depth-1 child may itself spawn; decides whether the child previews keep the Task tool.
     child_nested_subagents_allowed: bool,
+    /// Whether a child gets media, scheduling and feedback only when its parent's request needs them (P1), so the child previews leave them out.
+    child_optional_families_on_demand: bool,
     background_workflows_enabled: bool,
     ask_user_question_enabled: bool,
     subagent_toggle: HashMap<String, bool>,
@@ -213,6 +215,7 @@ impl AgentBuilder {
             active_agent_messages_enabled: false,
             subagents_enabled: false,
             child_nested_subagents_allowed: false,
+            child_optional_families_on_demand: false,
             background_workflows_enabled: false,
             ask_user_question_enabled: true,
             subagent_toggle: HashMap::new(),
@@ -491,6 +494,10 @@ impl AgentBuilder {
         self.child_nested_subagents_allowed = allowed;
         self
     }
+    pub fn with_child_optional_families_on_demand(mut self, on_demand: bool) -> Self {
+        self.child_optional_families_on_demand = on_demand;
+        self
+    }
     pub fn with_background_workflows_enabled(mut self, enabled: bool) -> Self {
         self.background_workflows_enabled = enabled;
         self
@@ -646,7 +653,13 @@ impl AgentBuilder {
         for tool in bridge.tool_definitions_builtins_only().await {
             let kind = bridge.tool_kind(&tool.function.name);
             read_only &= kind.is_some_and(|kind| read_only_kinds.contains(&kind));
-            names.push(tool.function.name);
+            // With P1, media, scheduling and feedback join a child only when its
+            // parent's request needs them, so the roster lists the tools it always has.
+            if !(self.child_optional_families_on_demand
+                && is_optional_family_tool(kind, &tool.function.name))
+            {
+                names.push(tool.function.name);
+            }
         }
         Ok(ChildToolPreview { names, read_only })
     }
@@ -1402,6 +1415,20 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
          model/context semantics."
     )
 }
+/// Tools of the optional families (media, scheduling, feedback) the
+/// turn-start pass keeps out of a session until a request needs them.
+fn is_optional_family_tool(kind: Option<ToolKind>, name: &str) -> bool {
+    matches!(
+        kind,
+        Some(
+            ToolKind::ImageGen
+                | ToolKind::VideoGen
+                | ToolKind::ImageToVideo
+                | ToolKind::ReferenceToVideo
+                | ToolKind::Feedback
+        )
+    ) || name.starts_with("scheduler_")
+}
 /// Longest description kept for a user-level, bundled or plugin agent type in
 /// the task tool. Project agents and built-ins keep theirs in full.
 const USER_AGENT_DESCRIPTION_CHARS: usize = 100;
@@ -1485,6 +1512,19 @@ fn resolve_shell_for_prompt() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A child gets media, scheduling and feedback only when its parent's
+    /// request needs them, so the spawn roster never advertises them; every
+    /// other tool, unknown ones included, stays listed.
+    #[test]
+    fn the_child_roster_leaves_out_optional_family_tools() {
+        assert!(is_optional_family_tool(Some(ToolKind::ImageGen), "image_edit"));
+        assert!(is_optional_family_tool(Some(ToolKind::ReferenceToVideo), "reference_to_video"));
+        assert!(is_optional_family_tool(Some(ToolKind::Other), "scheduler_create"));
+        assert!(is_optional_family_tool(Some(ToolKind::Feedback), "send_feedback"));
+        assert!(!is_optional_family_tool(Some(ToolKind::Execute), "run_terminal_command"));
+        assert!(!is_optional_family_tool(Some(ToolKind::Monitor), "monitor"));
+        assert!(!is_optional_family_tool(None, "brand_new_tool"));
+    }
     use crate::config::AgentScope;
     use distill_tools::types::definition::ToolDefinition;
     use distill_tools::types::template_renderer::unresolved_template_markers;
@@ -2365,8 +2405,36 @@ mod tests {
         let explore = task_type_line(&defs, "explore");
         assert!(!explore.contains("image_gen"), "{explore}");
         assert!(explore.contains("Read-only"), "{explore}");
+        // Without P1 every general-purpose child has media, so the roster says so.
         let general_purpose = task_type_line(&defs, "general-purpose");
         assert!(general_purpose.contains("image_gen"), "{general_purpose}");
+    }
+    /// With P1 a child gets media, scheduling and feedback only when its
+    /// parent's request needs them, so the roster lists what every child has;
+    /// without P1 every child has them and the roster keeps them (above).
+    #[tokio::test]
+    async fn with_families_on_demand_the_roster_leaves_out_optional_families() {
+        use distill_tools::implementations::distill::image_gen::ImageGenConfig;
+        let image_gen = ImageGenConfig::Enabled {
+            api_key: "test-key".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: Default::default(),
+            image_gen_enabled: true,
+            image_edit_enabled: false,
+            model_override: None,
+            edit_model_override: None,
+            tier_restricted: false,
+        };
+        let defs = previewing_primary(|builder| {
+            builder
+                .with_image_gen_config(image_gen)
+                .with_child_optional_families_on_demand(true)
+        })
+        .await;
+        let general_purpose = task_type_line(&defs, "general-purpose");
+        assert!(!general_purpose.contains("image_gen"), "{general_purpose}");
+        assert!(!general_purpose.contains("scheduler_create"), "{general_purpose}");
+        assert!(general_purpose.contains("run_terminal_command"), "{general_purpose}");
     }
     /// Write follows the edit tool and plan mode never reaches a child, whatever the built-in type's toolset.
     /// Children are built at the default depth, so nested subagents stay disabled as in production.

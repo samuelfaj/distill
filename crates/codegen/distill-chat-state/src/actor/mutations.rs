@@ -256,6 +256,7 @@ impl ChatStateActor {
     }
 
     fn persist_and_push_message(&mut self, item: ConversationItem) {
+        self.observe_model_item(&item);
         self.persistence.persist_message(&item);
         self.state.conversation.push(item);
     }
@@ -336,6 +337,13 @@ impl ChatStateActor {
             .saturating_add(synthetic_count);
 
         let before_bytes = self.conversation_content_bytes();
+        // A copy a whole-read reuse note names stays: the note says the model
+        // holds those bytes, and nothing stored them.
+        let pinned: std::collections::BTreeSet<String> =
+            super::history_eviction::reuse_note_targets(&self.state.conversation)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
         let (cleared, _) = self.rewrite_history(HistoryRewrite::RetainedPrune, |conversation| {
             let mut cleared = 0usize;
             let mut turn_from_end: usize = 0;
@@ -355,6 +363,14 @@ impl ChatStateActor {
                 };
 
                 if turn_from_end < effective_threshold {
+                    continue;
+                }
+                // An eviction digest is small and names its stored original;
+                // clearing it would drop the only pointer back.
+                if tr.content.starts_with(super::history_eviction::EVICTED_MARKER)
+                    || tr.content.starts_with(super::history_eviction::SUPERSEDED_MARKER)
+                    || pinned.contains(tr.tool_call_id.as_str())
+                {
                     continue;
                 }
 
@@ -614,6 +630,7 @@ impl ChatStateActor {
         if is_compaction && let Some(cap) = &mut self.state.turn_capture {
             cap.compaction_occurred = true;
         }
+        self.note_history_replaced(&items, is_compaction);
         // `harness_trace_buffer` / `harness_trace_turns` intentionally untouched:
         // the planner/verifier subagents ran, so their sealed trace turns survive
         // a conversation replace (same intent as the `TruncateToPromptIndex` arm).

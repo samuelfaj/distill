@@ -2780,6 +2780,7 @@ async fn skill_reminder_deferred_while_turn_running_flushed_when_idle() {
             system_reminder: Some("New skill: pdf-tools".into()),
             send_available_commands: false,
             kind: SkillUpdateKind::Discovery,
+            announced_skills: Vec::new(),
         }
     }
     async fn reminders_in_conversation(actor: &SessionActor) -> usize {

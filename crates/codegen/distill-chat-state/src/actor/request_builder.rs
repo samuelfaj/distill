@@ -45,6 +45,11 @@ impl ChatStateActor {
             }
             self.rebase_turn_capture_offset();
         }
+        self.evict_old_history(
+            tool_definitions
+                .iter()
+                .any(|tool| tool.name == "ask_stored_output"),
+        );
         let budgeted = apply_image_budget(self.state.conversation.clone());
         let ImageBudgetOutcome {
             body_bytes,

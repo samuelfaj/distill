@@ -105,6 +105,92 @@ fn negative_read_offset(args: &serde_json::Value) -> bool {
     }
 }
 
+/// The call whose result in `conversation` is still, verbatim, the same
+/// whole-file read of `path` as `text`, with no call since then that could
+/// have changed that file (an edit or write tool, or a shell command, naming
+/// it). `None` when there is no such copy: the latest earlier whole read of
+/// the path differs, was narrowed, evicted or compacted, or an edit came after.
+/// A reuse note in between is followed back to the copy it names.
+fn earlier_identical_whole_read(
+    conversation: &[distill_sampling_types::ConversationItem],
+    current_call: &str,
+    path: &std::path::Path,
+    text: &str,
+) -> Option<String> {
+    use distill_sampling_types::ConversationItem;
+    let kind = |name: &str| {
+        let name = name.rsplit([':', '/']).next().unwrap_or(name);
+        name.rsplit("__").next().unwrap_or(name).to_ascii_lowercase()
+    };
+    let arg_path = |arguments: &str| -> Option<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments).ok()?;
+        let bounded = ["offset", "limit"]
+            .iter()
+            .any(|key| args.get(*key).is_some_and(|value| !value.is_null()));
+        if bounded {
+            return None;
+        }
+        ["target_file", "file_path", "path"]
+            .iter()
+            .find_map(|key| args.get(*key)?.as_str().map(str::to_owned))
+    };
+    let file_name = path.file_name()?.to_str()?;
+    let mut calls: Vec<(usize, &distill_sampling_types::ToolCall)> = Vec::new();
+    for (index, item) in conversation.iter().enumerate() {
+        if let ConversationItem::Assistant(assistant) = item {
+            calls.extend(assistant.tool_calls.iter().map(|call| (index, call)));
+        }
+    }
+    let result_of = |id: &str| {
+        conversation.iter().find_map(|item| match item {
+            ConversationItem::ToolResult(tr) if tr.tool_call_id == id => Some(tr.content.as_ref()),
+            _ => None,
+        })
+    };
+    // The latest earlier whole read of this path.
+    let (earlier_index, earlier) = calls.iter().rev().find(|(_, call)| {
+        call.id.as_ref() != current_call
+            && matches!(kind(&call.name).as_str(), "read_file" | "read")
+            && arg_path(&call.arguments).is_some_and(|arg| {
+                let arg = std::path::Path::new(&arg);
+                arg == path || path.ends_with(arg)
+            })
+    })?;
+    let mut copy_id = earlier.id.to_string();
+    let mut copy = result_of(&copy_id)?;
+    if let Some(named) = copy
+        .strip_prefix(distill_chat_state::READ_REUSE_NOTE_PREFIX)
+        .and_then(|rest| rest.split_whitespace().next())
+    {
+        copy_id = named.to_owned();
+        copy = result_of(&copy_id)?;
+    }
+    // Exactly the same bytes; the only thing allowed after them is a reminder
+    // the harness appended to that result (a shorter file is a prefix too).
+    let rest = copy.strip_prefix(text)?;
+    if !(rest.is_empty() || rest.trim_start().starts_with("<system-reminder>")) {
+        return None;
+    }
+    let copy_index = calls
+        .iter()
+        .find(|(_, call)| call.id.as_ref() == copy_id)
+        .map_or(*earlier_index, |(index, _)| *index);
+    let edited = calls.iter().any(|(index, call)| {
+        let name = kind(&call.name);
+        *index > copy_index
+            && call.id.as_ref() != current_call
+            && (["edit", "write", "patch", "replace"]
+                .iter()
+                .any(|verb| name.contains(verb))
+                || matches!(
+                    name.as_str(),
+                    "run_terminal_command" | "run_terminal_cmd" | "bash" | "shell"
+                ))
+            && call.arguments.contains(file_name)
+    });
+    (!edited).then_some(copy_id)
+}
+
 /// An offset/limit window this short is deliberate narrowing, usually right
 /// before an edit, and stays whole.
 const READ_RANGE_MIN_LIMIT: usize = 300;
@@ -2680,6 +2766,51 @@ impl SessionActor {
         .await;
     }
 
+    /// A whole-file read that returned exactly the bytes an earlier whole read
+    /// of the same file still shows verbatim in history, with no edit of it
+    /// in between, becomes a note naming that call. The model holds those
+    /// bytes, so the note loses nothing; an offset/limit read repeats them.
+    /// Instruction and skill files, and a read carrying a reminder, stay
+    /// whole; any doubt keeps the bytes.
+    async fn reuse_identical_whole_read(
+        &self,
+        tool_args: &serde_json::Value,
+        call_id: &str,
+        output: &distill_tools::types::output::ToolOutput,
+        text: &str,
+    ) -> Option<String> {
+        use distill_tools::types::output::ReadFileOutput;
+        let ToolOutput::ReadFile(ReadFileOutput::FileContent(file)) = output else {
+            return None;
+        };
+        if text.len() < READ_REUSE_BYTES
+            || file.offset.is_some()
+            || file.limit.is_some()
+            || negative_read_offset(tool_args)
+            || is_instruction_file(&file.absolute_path)
+            || text.contains("<system-reminder>")
+            || !crate::jev::lever_active(JevLever::EReadReuse)
+        {
+            return None;
+        }
+        let conversation = self.chat_state_handle.get_conversation().await;
+        let earlier =
+            earlier_identical_whole_read(&conversation, call_id, &file.absolute_path, text)?;
+        let bytes = text.len();
+        crate::jev::record_item(
+            JevLever::EReadReuse,
+            "reuse",
+            &format!("{bytes} bytes of a whole read identical to call {earlier}, still in history"),
+            None,
+            None,
+        );
+        Some(format!(
+            "{}{earlier} — this read of {} returned the same {bytes} bytes that call {earlier} already shows above, and nothing edited the file since. Read with offset/limit if you need lines repeated.]",
+            distill_chat_state::READ_REUSE_NOTE_PREFIX,
+            file.absolute_path.display(),
+        ))
+    }
+
     /// Runs the Jev pass over a finished tool result and returns the text the
     /// model will see. See the module docs for the authority rules.
     pub(super) async fn jev_post_process_tool_result(
@@ -2707,6 +2838,12 @@ impl SessionActor {
         }
         if let Some(compressed) = self.native_compress_tool_output(output, &text).await {
             return compressed;
+        }
+        if let Some(note) = self
+            .reuse_identical_whole_read(tool_args, call_id, output, &text)
+            .await
+        {
+            return note;
         }
         // A change review is about the *edit*, not about a long output, and an
         // edit's result is a one-line summary: the size guard must not swallow
@@ -2846,118 +2983,6 @@ impl SessionActor {
         }
         let is_document = outcome.is_document;
         body = outcome.body;
-
-        // ---- retention: which chunks does the task still need? ----
-        //
-        // The deterministic lanes above decide by shape; this one asks. One noul
-        // per chunk travels in one request (batched under the request ceiling),
-        // the original is archived before the first question, and every rule that
-        // protects a reader is a property of the code: a document is never
-        // touched, an unscored chunk is never dropped, the first and last chunks
-        // and anything carrying a failure always stay.
-        if !is_document
-            && crate::jev::lever_active(JevLever::ERetention)
-            && matches!(
-                distill_workspace::jev::retention::gate(lane_command, &body),
-                distill_workspace::jev::retention::Gate::Prune
-            )
-        {
-            let chunks = distill_workspace::jev::retention::chunk(&body);
-            let category = distill_workspace::jev::retention::classify(lane_command, &body);
-            let mut scored = vec![false; chunks.len()];
-            let mut answers: Option<distill_workspace::jev::types::JevAnswerSet> = None;
-            if let Ok(questions) =
-                distill_workspace::jev::retention::retention_questions(&chunks, category)
-            {
-                // One request per batch: the questions are coalesced per decision
-                // point (this payload), not one request per chunk.
-                for batch in distill_workspace::jev::retention::batches(
-                    &chunks,
-                    (body.len() / 4) as u64,
-                    category,
-                ) {
-                    let mut battery = std::collections::BTreeMap::new();
-                    for index in &batch {
-                        if let Some(question) = questions.get(&chunks[*index].id) {
-                            battery.insert(chunks[*index].id.clone(), question.clone());
-                        }
-                    }
-                    let state = serde_json::json!({
-                        "request": request,
-                        "command": lane_command,
-                        "category": category.as_str(),
-                        "chunks_total": chunks.len(),
-                        "chunks_in_this_request": battery.len(),
-                    });
-                    if let Some(batch_answers) =
-                        crate::jev::ask_item(JevLever::ERetention, state, battery).await
-                    {
-                        for index in &batch {
-                            if batch_answers.answers.contains_key(&chunks[*index].id) {
-                                scored[*index] = true;
-                            }
-                        }
-                        answers = Some(match answers.take() {
-                            Some(mut merged) => {
-                                merged.answers.extend(batch_answers.answers);
-                                merged
-                            }
-                            None => batch_answers,
-                        });
-                    }
-                }
-            }
-            let retention = distill_workspace::jev::retention::compose_retention(
-                answers.as_ref(),
-                &chunks,
-                &scored,
-                distill_workspace::jev::retention::KEEP_THRESHOLD,
-            );
-            if retention.drops_anything() {
-                // Store-before-loss, with the secret rule: a payload that looks
-                // secret-bearing is not archived, and its marker says to re-run
-                // the command instead of pointing at a file that will not exist.
-                let archive = if distill_workspace::jev::crushers::secret_presence(&body).is_some()
-                {
-                    None
-                } else {
-                    crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
-                };
-                let rebuilt = distill_workspace::jev::retention::apply(
-                    &chunks,
-                    &retention,
-                    archive.as_deref(),
-                    lane_command,
-                );
-                crate::jev::record_item(
-                    JevLever::ERetention,
-                    if archive.is_some() {
-                        "trim"
-                    } else {
-                        "trim-no-archive"
-                    },
-                    &format!(
-                        "{} chunks, {} dropped ({} lines), {} unscored kept, {} scored",
-                        chunks.len(),
-                        retention.keep.iter().filter(|keep| !**keep).count(),
-                        retention.dropped_lines,
-                        retention.unscored.len(),
-                        scored.iter().filter(|s| **s).count()
-                    ),
-                    None,
-                    answers.as_ref(),
-                );
-                body = rebuilt;
-            } else {
-                crate::jev::record_item(
-                    JevLever::ERetention,
-                    "keep",
-                    &format!("{} chunks, nothing dropped", chunks.len()),
-                    None,
-                    answers.as_ref(),
-                );
-            }
-        }
 
         let mut compressed_by_utility = false;
         if tool == "search_tool"
@@ -3650,6 +3675,123 @@ impl SessionActor {
             {
                 body = reassemble_subagent(&answer, suffix);
                 compressed_by_utility = true;
+            }
+        }
+
+        // ---- retention: which chunks does the task still need? ----
+        //
+        // The deterministic lanes above decide by shape; this one asks. One noul
+        // per chunk travels in one request (batched under the request ceiling),
+        // the original is archived before the first question, and every rule that
+        // protects a reader is a property of the code: a document is never
+        // touched, an unscored chunk is never dropped, the first and last chunks
+        // and anything carrying a failure always stay.
+        // It runs after utility selection, only on what that left as it was:
+        // a selection already kept what the task needs (first and last units,
+        // failure lines, verbatim over a stored original), and with no lane or
+        // a failed selection this lane runs exactly as before.
+        if !is_document
+            && !compressed_by_utility
+            && crate::jev::lever_active(JevLever::ERetention)
+            && matches!(
+                distill_workspace::jev::retention::gate(lane_command, &body),
+                distill_workspace::jev::retention::Gate::Prune
+            )
+        {
+            let chunks = distill_workspace::jev::retention::chunk(&body);
+            let category = distill_workspace::jev::retention::classify(lane_command, &body);
+            let mut scored = vec![false; chunks.len()];
+            let mut answers: Option<distill_workspace::jev::types::JevAnswerSet> = None;
+            if let Ok(questions) =
+                distill_workspace::jev::retention::retention_questions(&chunks, category)
+            {
+                // One request per batch: the questions are coalesced per decision
+                // point (this payload), not one request per chunk.
+                for batch in distill_workspace::jev::retention::batches(
+                    &chunks,
+                    (body.len() / 4) as u64,
+                    category,
+                ) {
+                    let mut battery = std::collections::BTreeMap::new();
+                    for index in &batch {
+                        if let Some(question) = questions.get(&chunks[*index].id) {
+                            battery.insert(chunks[*index].id.clone(), question.clone());
+                        }
+                    }
+                    let state = serde_json::json!({
+                        "request": request,
+                        "command": lane_command,
+                        "category": category.as_str(),
+                        "chunks_total": chunks.len(),
+                        "chunks_in_this_request": battery.len(),
+                    });
+                    if let Some(batch_answers) =
+                        crate::jev::ask_item(JevLever::ERetention, state, battery).await
+                    {
+                        for index in &batch {
+                            if batch_answers.answers.contains_key(&chunks[*index].id) {
+                                scored[*index] = true;
+                            }
+                        }
+                        answers = Some(match answers.take() {
+                            Some(mut merged) => {
+                                merged.answers.extend(batch_answers.answers);
+                                merged
+                            }
+                            None => batch_answers,
+                        });
+                    }
+                }
+            }
+            let retention = distill_workspace::jev::retention::compose_retention(
+                answers.as_ref(),
+                &chunks,
+                &scored,
+                distill_workspace::jev::retention::KEEP_THRESHOLD,
+            );
+            if retention.drops_anything() {
+                // Store-before-loss, with the secret rule: a payload that looks
+                // secret-bearing is not archived, and its marker says to re-run
+                // the command instead of pointing at a file that will not exist.
+                let archive = if distill_workspace::jev::crushers::secret_presence(&body).is_some()
+                {
+                    None
+                } else {
+                    crate::jev_store::store_payload(&body).map(|path| path.display().to_string())
+                };
+                let rebuilt = distill_workspace::jev::retention::apply(
+                    &chunks,
+                    &retention,
+                    archive.as_deref(),
+                    lane_command,
+                );
+                crate::jev::record_item(
+                    JevLever::ERetention,
+                    if archive.is_some() {
+                        "trim"
+                    } else {
+                        "trim-no-archive"
+                    },
+                    &format!(
+                        "{} chunks, {} dropped ({} lines), {} unscored kept, {} scored",
+                        chunks.len(),
+                        retention.keep.iter().filter(|keep| !**keep).count(),
+                        retention.dropped_lines,
+                        retention.unscored.len(),
+                        scored.iter().filter(|s| **s).count()
+                    ),
+                    None,
+                    answers.as_ref(),
+                );
+                body = rebuilt;
+            } else {
+                crate::jev::record_item(
+                    JevLever::ERetention,
+                    "keep",
+                    &format!("{} chunks, nothing dropped", chunks.len()),
+                    None,
+                    answers.as_ref(),
+                );
             }
         }
 
@@ -4540,6 +4682,91 @@ mod tests {
             total_lines,
             extracted_images: Vec::new(),
         }
+    }
+
+    fn read_call(id: &str, args: serde_json::Value) -> distill_sampling_types::ConversationItem {
+        distill_sampling_types::ConversationItem::assistant_tool_calls(vec![
+            distill_sampling_types::ToolCall {
+                id: id.into(),
+                name: "read_file".to_owned(),
+                arguments: args.to_string().into(),
+            },
+        ])
+    }
+
+    /// A byte-identical whole re-read of a file the model already holds
+    /// verbatim is a pointer, not a second copy; anything that could make the
+    /// earlier copy wrong or absent keeps the bytes.
+    #[test]
+    fn an_identical_whole_reread_points_at_the_copy_still_in_history() {
+        use distill_sampling_types::ConversationItem;
+        let text = "     1\tfn main() {}\n".repeat(200);
+        let path = std::path::Path::new("/repo/src/main.rs");
+        let base = vec![
+            ConversationItem::system("sys"),
+            read_call("r1", serde_json::json!({"target_file": "src/main.rs"})),
+            ConversationItem::tool_result("r1", text.clone()),
+        ];
+        let reread = |mut items: Vec<ConversationItem>| {
+            items.push(read_call("r2", serde_json::json!({"target_file": "/repo/src/main.rs"})));
+            earlier_identical_whole_read(&items, "r2", path, &text)
+        };
+        assert_eq!(reread(base.clone()).as_deref(), Some("r1"));
+
+        // A reminder appended to the earlier result is not part of the file.
+        let mut reminded = base.clone();
+        reminded[2] = ConversationItem::tool_result(
+            "r1",
+            format!("{text}\n<system-reminder>task done</system-reminder>"),
+        );
+        assert_eq!(reread(reminded).as_deref(), Some("r1"));
+
+        // An edit of the file in between: the model may hold a stale picture.
+        let mut edited = base.clone();
+        edited.push(ConversationItem::assistant_tool_calls(vec![distill_sampling_types::ToolCall {
+            id: "e1".into(),
+            name: "search_replace".to_owned(),
+            arguments: r#"{"file_path":"src/main.rs","old_string":"a","new_string":"b"}"#.into(),
+        }]));
+        edited.push(ConversationItem::tool_result("e1", "ok"));
+        assert_eq!(reread(edited), None);
+
+        // The earlier copy was narrowed or evicted: it no longer holds the bytes.
+        let mut narrowed = base.clone();
+        narrowed[2] = ConversationItem::tool_result("r1", "[evicted from history …]");
+        assert_eq!(reread(narrowed), None);
+
+        // A longer earlier file is not "the same bytes" because it starts with them.
+        let mut longer = base.clone();
+        longer[2] = ConversationItem::tool_result("r1", format!("{text}   201\tfn extra() {{}}\n"));
+        assert_eq!(reread(longer), None);
+
+        // A ranged earlier read, or another file, is not a whole read of this one.
+        let ranged = vec![
+            ConversationItem::system("sys"),
+            read_call("r1", serde_json::json!({"target_file": "src/main.rs", "offset": 1, "limit": 200})),
+            ConversationItem::tool_result("r1", text.clone()),
+        ];
+        assert_eq!(reread(ranged), None);
+        let other = vec![
+            ConversationItem::system("sys"),
+            read_call("r1", serde_json::json!({"target_file": "src/other.rs"})),
+            ConversationItem::tool_result("r1", text.clone()),
+        ];
+        assert_eq!(reread(other), None);
+
+        // A third read follows the second's note back to the verbatim copy.
+        let mut chained = base;
+        chained.push(read_call("r2", serde_json::json!({"target_file": "src/main.rs"})));
+        chained.push(ConversationItem::tool_result(
+            "r2",
+            format!("{}r1 — same bytes", distill_chat_state::READ_REUSE_NOTE_PREFIX),
+        ));
+        chained.push(read_call("r3", serde_json::json!({"target_file": "src/main.rs"})));
+        assert_eq!(
+            earlier_identical_whole_read(&chained, "r3", path, &text).as_deref(),
+            Some("r1")
+        );
     }
 
     /// Skills and agent instructions are procedures to follow; a selection
@@ -5607,6 +5834,77 @@ mod tests {
                 assert!(ledger.attributions.iter().all(|row| row.role != "utility"));
                 let json = serde_json::to_string(&ledger).expect("serialize ledger");
                 assert!(!json.contains("row of data"), "counters carry no content");
+            })
+            .await;
+    }
+
+    /// Fallback: with no utility lane, utility selection cannot run, so the
+    /// retention lane (when the user turned it on) runs on the output exactly
+    /// as it did before selection took its place.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn retention_still_runs_when_utility_selection_has_no_lane() {
+        use distill_tools::types::output::{BashOutput, ToolOutput};
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                    e_retention: true,
+                    ..telemetry_flags()
+                });
+                crate::jev::set_test_decision_answers([]);
+                let actor = super::super::support::plain_actor().await;
+                let main_model = actor
+                    .chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .map(|config| config.model)
+                    .expect("the actor has a main model");
+                crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+                    model: Some(main_model),
+                    ..Default::default()
+                });
+                assert!(actor.cheap_lane(JevLever::ECheapCompress).await.is_none());
+                let source: String = (0..2_000)
+                    .map(|i| format!("compiling unit {i} of the retention fixture\n"))
+                    .collect();
+                let output = ToolOutput::Bash(BashOutput {
+                    output: source.as_bytes().to_vec(),
+                    output_for_prompt: source.clone(),
+                    exit_code: 0,
+                    command: "./scripts/build.sh".to_owned(),
+                    truncated: false,
+                    signal: None,
+                    timed_out: false,
+                    description: None,
+                    current_dir: "/tmp".to_owned(),
+                    output_file: "/tmp/retention-no-lane".to_owned(),
+                    total_bytes: source.len(),
+                    output_delta: None,
+                    was_bare_echo: false,
+                });
+                let result = crate::jev::with_session_scope_and_recorder(
+                    "retention-no-lane",
+                    Some(actor.chat_state_handle.clone()),
+                    actor.jev_post_process_tool_result(
+                        "run_terminal_command",
+                        "./scripts/build.sh",
+                        &serde_json::Value::Null,
+                        "call-retention-no-lane",
+                        None,
+                        &output,
+                        source.clone(),
+                    ),
+                )
+                .await;
+                let asked = crate::jev::take_test_asked_questions();
+                crate::jev::clear_test_flags();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_decision_answers();
+
+                assert!(!asked.is_empty(), "the retention lane asked about the chunks");
+                assert_eq!(result, source, "unanswered, retention drops nothing");
             })
             .await;
     }

@@ -135,11 +135,22 @@ pub(crate) struct ToolMetadataSnapshot {
 /// `search_snapshot()` is a sync trait method called from async context.
 pub(crate) struct Bm25ToolSearchIndex {
     snapshot: Arc<Mutex<ToolMetadataSnapshot>>,
+    /// Return each server's instructions with its search results: set for a
+    /// subagent, whose MCP announcement names servers without them.
+    server_instructions: bool,
 }
 
 impl Bm25ToolSearchIndex {
     pub(crate) fn new(snapshot: Arc<Mutex<ToolMetadataSnapshot>>) -> Self {
-        Self { snapshot }
+        Self {
+            snapshot,
+            server_instructions: false,
+        }
+    }
+
+    pub(crate) fn with_server_instructions(mut self, on: bool) -> Self {
+        self.server_instructions = on;
+        self
     }
 }
 
@@ -244,6 +255,25 @@ impl ToolSearchIndex for Bm25ToolSearchIndex {
                 }
             })
             .collect()
+    }
+
+    /// The text the full announcement would show for `server` (sanitized and
+    /// truncated the same way), so a name-only announcement loses nothing.
+    fn server_instructions(&self, server: &str) -> Option<String> {
+        use distill_tools::implementations::search_tool::{
+            sanitize_description, truncate_description,
+        };
+        if !self.server_instructions {
+            return None;
+        }
+        let snapshot = self.snapshot.lock().unwrap();
+        snapshot
+            .servers
+            .iter()
+            .find(|s| s.name == server)
+            .and_then(|s| s.description.as_deref())
+            .map(|d| truncate_description(&sanitize_description(d)))
+            .filter(|d| !d.is_empty())
     }
 }
 

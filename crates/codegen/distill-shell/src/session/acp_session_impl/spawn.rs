@@ -587,15 +587,20 @@ pub(crate) async fn spawn_session_actor(
         soft_trim_head: session_pruning_config.soft_trim_head,
         soft_trim_tail: session_pruning_config.soft_trim_tail,
         hard_clear_age_turns: session_pruning_config.hard_clear_age_turns,
+        history_eviction: crate::jev::lever_active(
+            distill_workspace::jev::flags::JevLever::D6HistoryEviction,
+        ),
+        history_eviction_warm: crate::jev::history_eviction_warm(),
     };
     let (chat_state_event_tx, chat_state_event_rx) = mpsc::unbounded_channel();
     let chat_state_handle = distill_chat_state::ChatStateActor::spawn_with_pruning(
         conversation.clone(),
         chat_state_sampling_config,
         actor_pruning_config,
-        Box::new(super::chat_persistence::ChannelChatPersistence::new(
-            persistence.tx.clone(),
-        )),
+        Box::new(
+            super::chat_persistence::ChannelChatPersistence::new(persistence.tx.clone())
+                .with_session_id(session_info.id.0.to_string()),
+        ),
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -2121,7 +2126,8 @@ pub(crate) async fn spawn_session_actor(
         }
         {
             let snapshot = session.tool_metadata_snapshot.clone();
-            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot);
+            let tool_index = crate::session::tool_index::Bm25ToolSearchIndex::new(snapshot)
+                .with_server_instructions(session.startup_hints.is_subagent);
             session
                 .agent
                 .borrow()

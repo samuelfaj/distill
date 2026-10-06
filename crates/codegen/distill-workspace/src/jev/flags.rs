@@ -113,6 +113,10 @@ pub struct JevLadderOverlay {
     pub d3_post_compaction: Option<bool>,
     pub d4_compaction_timing: Option<bool>,
     pub d5_memory_capture_gate: Option<bool>,
+    /// D6: evict old large tool output from the retained history in batches.
+    pub d6_history_eviction: Option<bool>,
+    /// D6 also in warm batches that pay for their cache break.
+    pub d6_warm_batches: Option<bool>,
     pub b7_subagent_model: Option<bool>,
 }
 
@@ -163,10 +167,17 @@ impl JevFlags {
             e_read_reuse: true,
             e_cheap_agent: false,
             e_prompt_blocks: false,
-            d2_big_output_retention: true,
+            // Measured: it asks at ingest, judging a 4 KB+ output by its first
+            // 1,200 characters before the model has read it, and kept every
+            // output it judged (74 keep, 0 drop) while paying a Jev call each.
+            d2_big_output_retention: false,
             d3_post_compaction: true,
             d4_compaction_timing: true,
             d5_memory_capture_gate: true,
+            d6_history_eviction: true,
+            // Rewriting sent history on a warm cache waits until the
+            // history_batch / history_reread counts show it pays.
+            d6_warm_batches: false,
             b7_subagent_model: true,
         }
     }
@@ -255,6 +266,10 @@ impl JevFlags {
                 None,
                 self.d5_memory_capture_gate,
             );
+        self.d6_history_eviction = self.enabled
+            && resolve_switch(ladder.d6_history_eviction, None, self.d6_history_eviction);
+        self.d6_warm_batches = self.d6_history_eviction
+            && resolve_switch(ladder.d6_warm_batches, None, self.d6_warm_batches);
         self.b7_subagent_model =
             self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self
@@ -333,6 +348,11 @@ pub struct JevFlags {
     pub d3_post_compaction: bool,
     pub d4_compaction_timing: bool,
     pub d5_memory_capture_gate: bool,
+    /// D6: evict old large tool output from the retained history in batches.
+    pub d6_history_eviction: bool,
+    /// D6 also in warm batches that pay for their cache break (off by
+    /// default: it rewrites sent history on a warm cache).
+    pub d6_warm_batches: bool,
     pub b7_subagent_model: bool,
 }
 
@@ -372,6 +392,8 @@ impl JevFlags {
             d3_post_compaction: false,
             d4_compaction_timing: false,
             d5_memory_capture_gate: false,
+            d6_history_eviction: false,
+            d6_warm_batches: false,
             b7_subagent_model: false,
         }
     }
@@ -468,6 +490,7 @@ impl JevFlags {
             JevLever::D3PostCompaction => self.d3_post_compaction,
             JevLever::D4CompactionTiming => self.d4_compaction_timing,
             JevLever::D5MemoryCaptureGate => self.d5_memory_capture_gate,
+            JevLever::D6HistoryEviction => self.d6_history_eviction,
             JevLever::B7SubagentModel => self.b7_subagent_model,
         }
     }
@@ -514,6 +537,7 @@ pub enum JevLever {
     D3PostCompaction,
     D4CompactionTiming,
     D5MemoryCaptureGate,
+    D6HistoryEviction,
 }
 
 impl JevLever {
@@ -551,6 +575,7 @@ impl JevLever {
             Self::D3PostCompaction => "d3_post_compaction",
             Self::D4CompactionTiming => "d4_compaction_timing",
             Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
+            Self::D6HistoryEviction => "d6_history_eviction",
         }
     }
 }
@@ -585,6 +610,7 @@ mod tests {
             JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
             JevLever::D5MemoryCaptureGate,
+            JevLever::D6HistoryEviction,
             JevLever::B7SubagentModel,
         ] {
             assert!(!flags.lever_active(lever), "{} must be off", lever.as_str());
@@ -621,9 +647,11 @@ mod tests {
             JevLever::B3SubagentType,
             JevLever::C4DiffRisk,
             JevLever::C5ErrorPriority,
-            JevLever::D2BigOutputRetention,
             JevLever::D3PostCompaction,
             JevLever::D5MemoryCaptureGate,
+            // Deterministic: stores the original first, and breaks the cache
+            // only in batches that pay for it or at moments it is cold.
+            JevLever::D6HistoryEviction,
             JevLever::B7SubagentModel,
             // The token-saving lanes, including the three that spend a utility
             // call: the crushers and the importance pass are free, and the
@@ -639,6 +667,14 @@ mod tests {
         assert!(
             !flags.e_retention,
             "the retention lane asks one question per chunk; its cost is unmeasured, so it waits"
+        );
+        assert!(
+            !flags.d2_big_output_retention,
+            "D2 asked at ingest and never dropped (74 keep, 0 drop): a Jev call per big output for nothing"
+        );
+        assert!(
+            !flags.d6_warm_batches,
+            "D6 rewrites sent history on a warm cache only once its payback is measured"
         );
         for lever in [
             JevLever::B6DelegationHint,

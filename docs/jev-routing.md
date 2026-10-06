@@ -210,7 +210,8 @@ The `b2_local_model` route can also hand an entire call to the Utility model
 when the capacity checks and context limit allow it. This is separate from the
 bounded utility tasks. The `e_retention` route breaks large outputs into blocks
 and decides what to retain before discarding the original text, with special
-handling for secrets. The utility transport supports catalog models on the sampler stack as well as the closed client. Missing decisions keep the existing behavior.
+handling for secrets. It runs only while utility selection (`e_cheap_compress`)
+is off, so a result pays for one selection. The utility transport supports catalog models on the sampler stack as well as the closed client. Missing decisions keep the existing behavior.
 
 ## New routing and context levers
 
@@ -220,8 +221,9 @@ handling for secrets. The utility transport supports catalog models on the sampl
 | `d5_memory_capture_gate` | Whether the turn produced durable knowledge to capture | 0.70 |
 | `b7_subagent_model` | Whether the worker model can do a subagent task as well as the main model | 0.75 |
 
-A missing or uncertain answer keeps today's behavior. P3 now sends previews to
-Jev before compaction. C4 sends the change once for review. B1's intent reaches
+A missing or uncertain answer keeps today's behavior. D4 also reads the end of
+the last assistant message and the todo statuses. P3 now sends previews to Jev
+before compaction, only for an input that is cold anyway and will be sampled. C4 sends the change once for review. B1's intent reaches
 B2 as `turn_intent`.
 
 Retired levers are `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,

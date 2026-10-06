@@ -84,6 +84,8 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             d3_post_compaction: cfg.ladder.d3_post_compaction,
             d4_compaction_timing: cfg.ladder.d4_compaction_timing,
             d5_memory_capture_gate: cfg.ladder.d5_memory_capture_gate,
+            d6_history_eviction: cfg.ladder.d6_history_eviction,
+            d6_warm_batches: cfg.ladder.d6_warm_batches,
             b7_subagent_model: cfg.ladder.b7_subagent_model,
         },
     )
@@ -869,6 +871,16 @@ pub fn invalidate_payload_reads_for_active_session() {
     index.retain(|(owner, _), _| owner != &session_id);
 }
 
+/// Forgets only `session_id`'s read index, after a history eviction replaced
+/// copies a reuse note could point at. Utility answers stay valid, so the
+/// selection memo is kept.
+pub fn invalidate_payload_reads_for_session(session_id: &str) {
+    let Ok(mut index) = read_index().lock() else {
+        return;
+    };
+    index.retain(|(owner, _), _| owner != session_id);
+}
+
 /// How many payloads the process remembers (tests, and a bound on the map).
 pub fn remembered_reads() -> usize {
     read_index().lock().map(|index| index.len()).unwrap_or(0)
@@ -1161,6 +1173,55 @@ pub(crate) fn register_child_session(child: &str, parent: &str) {
     }
 }
 
+/// Sessions kept in [`offered_tool_families`]; past this the map starts over,
+/// and a child whose parent fell out keeps today's ask-and-fail-open path.
+const MAX_FAMILY_SESSIONS: usize = 1024;
+
+fn offered_tool_families_map()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeSet<String>>>
+{
+    static MAP: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    > = OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+/// P1: records the optional tool families `session` offers after its
+/// turn-start pass judged a human request, for its subagents to start from.
+pub(crate) fn note_offered_tool_families(
+    session: &str,
+    families: std::collections::BTreeSet<String>,
+) {
+    if let Ok(mut map) = offered_tool_families_map().lock() {
+        if map.len() >= MAX_FAMILY_SESSIONS && !map.contains_key(session) {
+            map.clear();
+        }
+        map.insert(session.to_owned(), families);
+    }
+}
+
+/// The optional tool families `session` offers, or `None` when it has not
+/// judged a request in this process (the child then decides on its own).
+pub(crate) fn offered_tool_families(session: &str) -> Option<std::collections::BTreeSet<String>> {
+    offered_tool_families_map()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(session).cloned())
+}
+
+/// Why an [`ask_item`] for `lever` came back empty, for the decision log:
+/// the lever is off, there is no credential, or the request failed or timed
+/// out. Test answer queues report as the last case.
+pub(crate) fn unanswered_reason(lever: distill_workspace::jev::flags::JevLever) -> &'static str {
+    if !flags_cached().lever_active(lever) {
+        "lever_off"
+    } else if client_cached().is_none_or(|client| !client.credential_present()) {
+        "no_credential"
+    } else {
+        "error_or_timeout"
+    }
+}
+
 /// Sets the routing of the call that is about to run, as the row shows it.
 ///
 /// Called once per model call, after the decision layer. `engine` names the
@@ -1436,6 +1497,11 @@ pub fn effort_auto_cached() -> bool {
 /// not need, and it stays off with the same flag.
 pub fn lever_active(lever: distill_workspace::jev::flags::JevLever) -> bool {
     flags_cached().lever_active(lever)
+}
+
+/// D6 also evicts in warm batches (`d6_warm_batches`); off by default.
+pub(crate) fn history_eviction_warm() -> bool {
+    flags_cached().d6_warm_batches
 }
 
 /// The flags resolved once per process (configuration does not change mid-run).

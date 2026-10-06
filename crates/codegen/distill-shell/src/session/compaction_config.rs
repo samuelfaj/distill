@@ -112,15 +112,38 @@ pub(crate) struct PrefireState {
     cache: RefCell<Option<AsyncCompactionCache>>,
     /// Pass-2 awaits this when compaction fires before prefire finished, so a still-running pass-1 is used rather than discarded for a single-pass.
     handle: RefCell<Option<tokio::task::JoinHandle<()>>>,
+    /// Failed pass-1 samples since the last compaction or model switch. The
+    /// trigger fires every round, and a deterministic failure (an overflow)
+    /// fails the same way each time, so after [`PREFIRE_MAX_FAILURES`] pass-1
+    /// waits; one transient failure (a 429, a timeout) is retried next round.
+    /// Compaction itself still runs single-pass.
+    failures: Cell<u8>,
 }
+
+/// Failed pass-1 samples in a row that stop the per-round retry.
+const PREFIRE_MAX_FAILURES: u8 = 2;
 
 impl PrefireState {
     /// Try to claim the single in-flight slot.
     /// Returns `true` iff this caller won the race and should spawn pass-1 (the caller must later call [`Self::finish`]).
     pub(crate) fn try_begin(&self) -> bool {
-        self.in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
+        self.failures.get() < PREFIRE_MAX_FAILURES
+            && self
+                .in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+    }
+
+    /// Counts a failed pass-1 sample; the second in a row stops re-firing
+    /// until [`Self::unblock`].
+    pub(crate) fn record_failure(&self) {
+        self.failures.set(self.failures.get().saturating_add(1));
+    }
+
+    /// Allow pass-1 again: a compaction ran, the model changed, or a pass-1
+    /// succeeded.
+    pub(crate) fn unblock(&self) {
+        self.failures.set(0);
     }
 
     /// Release the in-flight slot (call exactly once after a `try_begin` win).
@@ -153,6 +176,7 @@ impl PrefireState {
     /// Drop any cached async pass-1 result (invalidation: model switch, rewind, apply, edits).
     pub(crate) fn clear(&self) {
         self.cache.replace(None);
+        self.unblock();
     }
 
     pub(crate) fn has_cache(&self) -> bool {
@@ -310,6 +334,27 @@ mod prefire_state_tests {
         let state = PrefireState::default();
         assert!(state.take_handle().is_none());
         assert!(state.take().is_none());
+    }
+
+    /// A failed pass-1 must not be re-sent every round: 129 identical failed
+    /// requests in one session. One transient failure is retried; a second
+    /// waits for the next compaction or a model switch.
+    #[test]
+    fn a_failed_pass1_blocks_refire_until_unblocked() {
+        let state = PrefireState::default();
+        state.record_failure();
+        assert!(state.try_begin(), "one failure (a 429, a timeout) is retried");
+        state.finish();
+        state.record_failure();
+        assert!(!state.try_begin(), "blocked after a second failure");
+        assert!(!state.is_in_flight(), "a refused begin claims nothing");
+        state.unblock();
+        assert!(state.try_begin(), "a compaction re-enables pass-1");
+        state.finish();
+        state.record_failure();
+        state.record_failure();
+        state.clear();
+        assert!(state.try_begin(), "a model switch clears the block too");
     }
 }
 

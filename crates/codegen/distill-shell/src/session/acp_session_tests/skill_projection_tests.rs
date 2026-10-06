@@ -157,6 +157,125 @@ async fn relevance_hint_names_the_skill_or_says_none_applies() {
     .await;
 }
 
+/// A subagent's assignment is written by a model: a skill named in it, even
+/// as `/name`, is not the user's choice, so the hint comes from the ranking
+/// (which never offers a manual-only skill) instead of a forced read.
+#[tokio::test(flavor = "current_thread")]
+async fn a_subagent_assignment_is_ranked_not_pinned() {
+    with_actor(|mut actor| async move {
+        actor.startup_hints.is_subagent = true;
+        crate::jev::set_test_decision_answers([Some(ranking("graphify", 0.85, [0.9, 0.9, 0.1]))]);
+        let hint = actor
+            .jev_skill_relevance_hint("Implement DEV-1, then run /graphify on the docs")
+            .await
+            .expect("hint");
+        assert!(!hint.contains("The user named"), "{hint}");
+        assert!(hint.contains("Relevant to the current request: `graphify`"), "{hint}");
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 0, "Jev ranked it");
+    })
+    .await;
+}
+
+/// "review the graphify output" mentions a skill name as a plain word: it is
+/// ranked like any request instead of forcing the skill body into the turn.
+#[tokio::test(flavor = "current_thread")]
+async fn a_bare_skill_word_goes_to_the_ranking() {
+    with_actor(|actor| async move {
+        crate::jev::set_test_decision_answers([Some(ranking("graphify", 0.85, [0.1, 0.1, 0.9]))]);
+        let hint = actor
+            .jev_skill_relevance_hint("review the graphify output and explain it")
+            .await
+            .expect("hint");
+        assert!(!hint.contains("The user named"), "{hint}");
+        assert!(hint.contains("No skill in the catalog appears relevant"), "{hint}");
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+    })
+    .await;
+}
+
+fn discovered_skills(count: usize) -> Vec<distill_tools::implementations::skills::types::SkillInfo> {
+    (0..count)
+        .map(|index| distill_tools::implementations::skills::types::SkillInfo {
+            name: format!("repo-{index:02}"),
+            description: format!("Repo workflow {index}."),
+            path: format!("/repo/.claude/skills/repo-{index:02}/SKILL.md"),
+            enabled: true,
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn discovery_text(skills: &[distill_tools::implementations::skills::types::SkillInfo]) -> String {
+    let rows: Vec<String> = skills
+        .iter()
+        .map(|skill| format!("- {}: {}\n  Absolute path: {}", skill.name, skill.description, skill.path))
+        .collect();
+    format!("The following skills are available for use:\n\n{}", rows.join("\n"))
+}
+
+/// A Jev answer naming one skill of the delta.
+fn delta_ranking(top: &str) -> distill_workspace::jev::JevAnswerSet {
+    let mut answers = ranking("pdf", 0.0, [0.9, 0.9, 0.1]);
+    answers.answers.insert(
+        "best_skill".to_owned(),
+        distill_workspace::jev::Answer::Choice {
+            choice: top.to_owned(),
+            probabilities: [(top.to_owned(), 0.9), ("none".to_owned(), 0.1)]
+                .into_iter()
+                .collect(),
+            confidence: Some(0.9),
+        },
+    );
+    answers
+}
+
+/// Entering a repo with many skills mid-session announced all of them in
+/// full (~7 KB, resent on every later call). The announcement keeps full
+/// descriptors only for what the request needs, names the rest, and points
+/// at an archived index of the new skills.
+#[tokio::test(flavor = "current_thread")]
+async fn a_large_mid_session_discovery_is_narrowed_to_the_request() {
+    with_actor(|actor| async move {
+        ask_about(&actor, "export the quarterly report as a PDF");
+        let delta = discovered_skills(12);
+        let text = discovery_text(&delta);
+        crate::jev::set_test_decision_answers([Some(delta_ranking("repo-03"))]);
+        let narrowed = actor.jev_narrow_skill_announcement(&text, &delta).await;
+        assert!(narrowed.contains("/repo/.claude/skills/repo-03/SKILL.md"), "{narrowed}");
+        assert!(!narrowed.contains("/repo/.claude/skills/repo-05/SKILL.md"), "{narrowed}");
+        assert!(narrowed.contains("<other_skills"), "{narrowed}");
+        assert!(narrowed.contains("repo-05"), "omitted skills stay listed by name");
+        assert!(narrowed.contains("Full catalog index for recovery"), "{narrowed}");
+        assert!(narrowed.len() < text.len());
+    })
+    .await;
+}
+
+/// A small discovery is kept as rendered without asking anyone, and with no
+/// Jev and no utility answer a large one is kept as rendered too.
+#[tokio::test(flavor = "current_thread")]
+async fn a_discovery_without_a_ranking_keeps_its_announcement() {
+    with_actor(|actor| async move {
+        // No utility lane: the utility lever is off.
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+            e_cheap_compress: false,
+            ..distill_workspace::jev::JevFlags::harness_default()
+        });
+        ask_about(&actor, "export the quarterly report as a PDF");
+        let small = discovered_skills(3);
+        let small_text = discovery_text(&small);
+        crate::jev::set_test_decision_answers([Some(delta_ranking("repo-01"))]);
+        assert_eq!(actor.jev_narrow_skill_announcement(&small_text, &small).await, small_text);
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 1, "no Jev call");
+
+        let large = discovered_skills(12);
+        let large_text = discovery_text(&large);
+        crate::jev::set_test_decision_answers([None]);
+        assert_eq!(actor.jev_narrow_skill_announcement(&large_text, &large).await, large_text);
+    })
+    .await;
+}
+
 fn tool_def(name: &str) -> ToolDefinition {
     ToolDefinition::function(name, None::<&str>, serde_json::json!({"type": "object"}))
 }
@@ -237,6 +356,40 @@ async fn optional_tool_families_join_when_needed_and_never_leave() {
             "an included family never leaves"
         );
         assert!(!kept(&later).contains(&"scheduler_list".to_owned()));
+    })
+    .await;
+}
+
+/// A subagent works for a request its parent already judged: a family the
+/// parent left out is never asked about or offered, even when the child gets
+/// no answer at all, while the parent's own families keep today's fail-open
+/// path. The child's set is then what its own subagents start from.
+#[tokio::test(flavor = "current_thread")]
+async fn a_subagent_starts_from_its_parents_tool_families() {
+    with_actor(|mut actor| async move {
+        // No utility lane: the child's own pass falls back to "keep pending".
+        let mut flags = distill_workspace::jev::JevFlags::harness_default();
+        flags.e_cheap_compress = false;
+        crate::jev::set_test_flags(flags);
+        actor.startup_hints.parent_session_id = Some("family-parent".to_owned());
+        crate::jev::note_offered_tool_families("family-parent", ["schedule".to_owned()].into());
+        ask_about(&actor, "watch the deploy and tell me when it is done");
+        crate::jev::set_test_decision_answers([None]);
+        let _ = crate::jev::take_test_asked_questions();
+        let kept = actor
+            .jev_filter_tool_definitions(optional_family_defs(), false)
+            .await;
+        let kept: Vec<String> = kept.iter().map(|d| d.function.name.clone()).collect();
+        assert_eq!(kept, ["read_file", "run_terminal_command", "scheduler_list"]);
+        let asked = crate::jev::take_test_asked_questions().concat();
+        assert!(
+            !asked.iter().any(|id| id.ends_with("family_media")),
+            "the parent left media out, so the child never asks: {asked:?}"
+        );
+        assert_eq!(
+            crate::jev::offered_tool_families(actor.session_info.id.0.as_ref()),
+            Some(["schedule".to_owned()].into())
+        );
     })
     .await;
 }

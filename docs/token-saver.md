@@ -22,6 +22,7 @@ which calls one pipeline function so that the tested code is the shipped code:
 | Read reuse | A second copy of bytes already in the conversation | 2000 bytes or more, and hash-identical to a payload already sent, or a whole `read_file` identical to a copy still in history | On |
 | Exact-output guard | Nothing. This step stops the rest | The call is line-addressed, or the text belongs to a skill | Always |
 | Preclean | Terminal noise, and content the payload itself repeats | 2000 bytes or more, and not a document | On |
+| Stored crushers | Stack register dumps, test runner banners, HTML chrome, embedded base64 and SVG data | 2000 bytes or more, not a document, and only with the original stored | On |
 | Importance extraction | The unreadable middle of a long payload | 4000 bytes or more, and not a document | On |
 | Utility selection | Selects source units worth keeping | Source-specific size thresholds; originals remain stored | On |
 
@@ -39,9 +40,22 @@ Supported direct invocations are Cargo `test/build/check/clippy`, Bun/npm/pnpm/y
 `test` or `run test`, Jest/Vitest (also through `npx`), pytest (also through
 `python -m pytest`), `go test`, and human-readable `git status`. Completed single
 background terminal results use the same filters after their origin is checked
-against the terminal backend. Mixed task results, running/interrupted commands,
-truncated output, compound shell commands, structured documents and exact-output
-reads stay on the existing path.
+against the terminal backend. The usual wrapping counts as a direct invocation:
+one leading `cd <dir> &&`, a trailing `2>&1` and one trailing `| tail -N` or
+`| head -N` are set aside before matching. Mixed task results, running/interrupted
+commands, truncated output, other compound shell commands (chains, real
+pipelines, substitutions), structured documents and exact-output reads stay on
+the existing path.
+
+A rerun of the same Cargo test command folds the failures that did not change.
+Each `---- name stdout ----` block is kept with a hash of its text, per session
+and per command (directory plus invocation). On the next filtered run, a block
+whose name and text match the previous run becomes one line, `[still failing
+with the same output as the previous run of this command: <names>]`. A new
+failure, a changed message, the `failures:` list and the summary stay verbatim,
+and the whole run is stored as usual. A compaction or a history eviction forgets
+the baseline, so the next run shows every failure again. Folds are counted in
+usage.json under `test_rerun`.
 
 Only recognized routine lines are removed. Unknown lines, failure blocks, skip
 counts and test summaries stay; command/status/exit-code metadata and the raw
@@ -137,7 +151,8 @@ table:
 | Stack trace | `crush_stack`: the frames that say where it broke stay, register and memory dumps go |
 | Lockfile | `crush_lockfile` reduces the resolution graph to top-level names and a count; if that would lose a version or a checksum, the chain falls through to the repeat collapse instead |
 | Diff | `crush_diff` would keep headers and hunks; in practice a diff is a document, so the guard below stops it first |
-| JSON, HTML, notebook | A class transform exists for each; each is a document, so the guard below stops them first |
+| JSON, notebook | A class transform exists for each; each is a document, so the guard below stops them first |
+| HTML | `crush_html` keeps the text. Output that opens with a tag is a document, so only markup further in (after `curl -i` headers, say) reaches it |
 | Prose | Nothing. There is no shape-based saving in prose |
 | Unrecognised | The ANSI pass again, for noise every terminal payload can carry |
 
@@ -160,11 +175,26 @@ something that still looks complete, which is worse than leaving it whole, so th
 rewriting stages stay out of it. `retention::looks_structured` decides, once, and
 both the crushers and the importance stage read the same verdict.
 
-A payload counts as a document when it parses as JSON, starts with an XML or HTML
-declaration, contains a `diff --git` or `@@ ` line, or came from a document
+A payload counts as a document when it parses as JSON, starts with `<?xml`,
+`<!DOCTYPE` or a tag, contains a `diff --git` or `@@ ` line, or came from a document
 producer: `cat`, `bat`, `jq`, `yq`, `diff`, `base64`, `openssl`, `xxd`,
 `hexdump`, `pdfinfo`, and Git's `diff`, `show` and `cat-file`. The check looks
 through a pipeline, so `find . | head` and `cmd && cat x` count.
+
+## Stored crushers
+
+Preclean only accepts a transform that keeps every literal. A second crusher
+stage, in `jev_lanes::reduce_payload`, may lose lines, so it stores first, like
+the importance pass below:
+
+- a stack trace (`crush_stack`), a test report (`crush_test_output`) or HTML
+  (`crush_html`) is cut when the cut keeps under 70% of the bytes;
+- otherwise, base64 and data-URI islands (`crush_embedded_blobs`) and SVG path
+  data (`crush_svg`) become typed placeholders when that saves at least 1 KiB,
+  unless the payload looks secret-bearing.
+
+The cut is accepted only after `store_payload` returns a path, and the footer
+names it. A store that refuses keeps the bytes.
 
 ## Importance extraction
 
@@ -344,11 +374,14 @@ The utility handles these sources:
   would cut at 4 KiB is selected from the whole result within 4 KiB and the
   original stored; otherwise the cut stays. Background completions reported
   inside a tool result mid-turn are not covered yet.
-- Memory capture: tool results of 4,000 bytes or more in the finished turn,
-  at most 8 chunks per capture, skipped when the session model is the utility
-  model. The extraction itself stays on the main model.
+- Memory capture: tool results, assistant text and string tool-call
+  arguments of 4,000 bytes or more in the finished turn (the user's words never;
+  arguments stay valid JSON), at most 8 chunks per capture, skipped when the
+  session model is the utility model. The extraction itself stays on the main
+  model. The legacy memory flush pre-digests its window the same way.
 
-There is no Jev pre-approval and no main-model fallback. A tool-result or
+Selection has no Jev pre-approval and never falls back to the main model: its
+fallback is today's bytes, as the deterministic stages left them. A tool-result or
 memory-capture selection keeps verbatim units over a stored original, so it is
 used without a Jev review (`review:skip-verbatim`) unless it keeps under 10% of
 the chunk; then Jev post-review reads the reconstructed text. Other
@@ -370,18 +403,89 @@ request's first words are the title, and the title model (at its lowest effort)
 runs only when those make no title. A subagent's title is its spawn
 description, with no model call.
 
+When enabled, the laziness classifier asks the utility first with its own
+prompt; an answer that is not a valid verdict, a secret in the transcript, a
+failure or 45 s without an answer classify on the session model as before,
+inside the same 120 s budget and abort on user input or a model switch. After
+two utility failures in a row the session stops asking the utility. Its events
+name the model that gave the verdict. The
+permission auto-classifier and the memory dream stay on their models.
+
+Goal roles stay on the main model (round-end evaluation, planner, verifiers,
+strategist), with three exceptions that fall back to the old path:
+
+- The mid-turn progress checkpoint (every 24 tool rounds) makes no model call
+  when the harness sees new work (a new worktree state or check outcome) that
+  no evaluation counted and no blocker is pending; that work counts as progress
+  once and still reaches the next main evaluation (the goal's
+  `evaluations.jsonl` logs it with `"evaluator": "skipped"`; usage.json does
+  not count it). Otherwise the checkpoint runs on main: a pending blocker is
+  main's to confirm, and without new harness work only main can tell progress
+  from a stall (a utility observation would reset the stall count unchecked).
+- The closing summary is one utility `display_text` call over the objective,
+  the verified criteria, the plan and the verifier notes; the read-only
+  subagent stays the fallback.
+- Each skill the objective pins is cut once per goal by `select_units` to its
+  gates, outputs, steps and prohibitions (headings and lines saying must,
+  never, always, required or before kept) and stored in goal state; the
+  evaluator gets that excerpt, marked as unchecked where lines were omitted,
+  while the file is unchanged, and the full body otherwise or when the utility
+  picked nothing beyond those always-kept lines.
+
+On main, the evaluator's effort is capped at medium (low when the model offers
+no medium; a model offering neither keeps the session's), its output at 16K
+tokens when that cap applied (a retained high or max effort keeps the model's
+limit), and the stable goal message carries its own cache breakpoint.
+
+One-shot side calls (memory capture, the title model, compaction pass 2, goal
+evaluation, the laziness classifier, the dream and flush calls, utility tasks)
+mark no conversation breakpoint on the Messages API, so they no longer pay the
+cache-write premium on a prompt nobody resends. Their system prompt, and the
+goal message, keep theirs.
+
 Utility usage rows carry `reason`, `bytes_in` and `bytes_out`. The end-of-turn
 report shows `Utility - Nx`.
+
+### Every utility use at a glance
+
+Each use needs a resolved utility model and `e_cheap_compress` (on by default;
+the `explore` children need `e_cheap_agent` instead), plus the lever of its own
+feature where it has one. Without them, and on any
+failure, timeout, secret or unusable answer, it takes its fallback, which is
+the behavior from before the utility was added. A valid `NONE` is an answer,
+not a failure.
+
+| Use | Runs when | Fallback |
+|---|---|---|
+| Tool-result selection (terminal, task, checks, MCP, web, grep, `list_dir`, `read_file`, `read_range`, `search_tool`, JSON arrays, subagent reports, multi-wait items, running-task polls, full logs, hook replacements, workflow results) | At the per-source floors above, 3,000 to 16,000 bytes | Today's bytes |
+| `ask_stored_output` | The model calls it | "Read the file directly", plus up to 40 lines matching the question's terms |
+| Memory capture pre-digest, and the legacy flush | Items of 4,000 bytes or more, 8 chunks per capture | The item as it was; extraction stays on main |
+| Skills listing (`p6_skill_suggestion`) | Jev gives no answer at a prefix build or a discovery of more than eight skills | The lexical selection |
+| Tool families (`p1_tool_family`) | Jev gives no answer | Every pending family joins |
+| Compaction input | Only a cold input that must be fitted; results of 4 KiB or more, 4 chunks, 30 s | First and last lines |
+| Working-set excerpts | After a compaction, up to three edited files, 30 s | The reminder without them |
+| Initial title | First request | The request's first words, then the title model |
+| Shell autocomplete | No model pinned | The previous completion call |
+| Prompt suggestion | After a turn | The paid suggestion model |
+| Recap | Auto or manual recap | One stricter retry, then the main-model recap |
+| Laziness classifier | The classifier is enabled, until two utility failures in a row | The session model, after 45 s at most |
+| Goal closing summary | The goal completes | The read-only summarizer subagent |
+| Goal skill excerpts | Once per pinned skill per goal | The full skill body |
+| `explore` children (`e_cheap_agent`, opt-in) | A fresh `explore` child with no model of its own | The child's own model |
+
+Round-end goal evaluation, the planner, verifiers and skeptics, the strategist,
+memory extraction and the compaction summary stay on main; the utility only
+pre-digests some of their inputs.
 
 ## The reversible store
 
 Everything above is lossy in what it shows and exact in what it keeps. The
-original lives in a file, and two functions read from it without sending it to a
-model:
-
-- `retrieve_range` returns a line range of the original.
-- `grep_handle` runs an exact match inside handles and returns verbatim lines
-  with their line numbers.
+original lives in a file, and the model reads it back with its ordinary
+`read_file` (an offset and limit for a range) or a shell command, without a
+model in between. `ask_stored_output` asks the utility which lines answer a
+question; when it cannot, `grep_handle` returns the lines matching the
+question's terms, verbatim with their line numbers. (`retrieve_range`, the same
+slice as a pure function, has no caller.)
 
 So summarising is optional. A model that needs the raw bytes asks for a range; a
 model that does not never pays for them.
@@ -434,8 +538,8 @@ Eight levers affect what reaches the model:
   assistant message (left out when it looks secret-bearing) and the todo
   statuses; `usage.json` counts each answer under `compaction_timing`.
 - `e_retention` keeps only the payload chunks a task still needs, asking one
-  question per chunk. It is off by default, and runs only on an output utility
-  selection left as it was (no lane, a failed or unpaying selection): its
+  question per chunk. It is off by default, and when on runs only on an output
+  utility selection left as it was (no lane, a failed or unpaying selection): its
   questions never carried the chunk text (60 logged runs, no trim), and
   utility selection already keeps a result's edges and failure lines.
 
@@ -531,10 +635,14 @@ the skills listing and the MCP announcements cost in estimated tokens.
 
 ## Routing saves money, not tokens
 
-The `b2_*` levers route a call to a weaker or local model:
+Two levers change which model or effort answers a call:
 
-- `b2_local_model` prefers your configured local model for calls it can finish.
 - `b2_micro_effort` picks the effort level per call, when you set `/effort auto`.
+- `e_cheap_agent` (opt-in) runs a fresh `explore` child on the utility model,
+  with the child's usual model as its fallback (see below).
+
+`b2_local_model` no longer routes anything: a whole main round on another model
+replays the history uncached, so that route was removed and the lever is off.
 
 The worker model (`/worker-model`) is the other routing saving: the main model
 delegates implementation to it, so the expensive model plans and reviews while
@@ -543,6 +651,50 @@ the cheaper one does the long edit-and-test work in its own context.
 Routing changes which model answers the turn, not how many tokens the turn needs.
 It lowers your bill. If you are trying to fit a context window, these levers do
 not help you and the layers above do.
+
+### Utility explore children (`e_cheap_agent`, opt-in)
+
+```toml
+[jev.ladder]
+e_cheap_agent = true
+
+[jev.local]
+model = "openrouter-qwen37"   # a [model.<id>] catalog entry with tool calling
+```
+
+A fresh `explore` child the main model delegates, with no model chosen by the
+caller, a role, `[subagents.models]` or its definition, runs each round on the
+utility model. Its own model (the worker, or main without one) is resolved as
+before and stays its fallback. These keep that model instead:
+
+- the utility is a raw OpenRouter chain, missing, the child's own model, or
+  listed by OpenRouter without tool calling;
+- the conversation plus the reserve no longer fits the utility window (capped by
+  `[jev.local] max_context_tokens`);
+- the conversation carries something `utility_secret_presence` flags;
+- a utility request fails for any reason; that request is resent on the child's
+  model at once and the child stays there (a round the user cancelled or
+  rewound is not resent);
+- the child belongs to a workflow or has an output budget: its failed request
+  must fail closed, not be resent.
+
+After a utility child fails, its parent's later children skip the utility. A
+fresh child shares no prefix with main, so no main cache is lost; the saving is
+the price gap. Not measured yet: report quality against the worker's, and how
+often a utility child answers that it cannot do the task (that answer is not
+retried; it reaches the main model as it is). Watch `e_cheap_agent` rows in
+`jev.jsonl` (`utility`, `own-model`, `fallback`).
+
+A config-only way to try the same thing, with no fallback at all, is a pin:
+
+```toml
+[subagents.models]
+explore = "openrouter-qwen37"
+```
+
+The pin also covers explore children that skills or goal roles spawn (unless a
+role names its own model) and every resume, and the lever leaves a pinned type
+alone. Remove the line to revert.
 
 ## The decision layer on top
 
@@ -556,21 +708,60 @@ GROK_LOG_JEV=1 distill
 
 This writes `logs/jev.jsonl` inside the active profile, one entry per decision,
 each with the lever, the verdict, the reason and, where there is one, a
-confidence. The reduction steps use the labels `reuse`, `crush`, `extract` and
-`keep`, the utility task uses `used` or `defer`, and the routing levers use
-`local` or `cloud`. That is how you find out which layer is doing the work in a
-real session.
+confidence. The reduction steps use the labels `reuse`, `crush`,
+`crush_stored`, `extract` and `keep`, the utility task uses `used` or `defer`,
+and `e_cheap_agent` uses `utility`, `own-model` or `fallback`. That is how you
+find out which layer is doing the work in a real session.
 
 Utility outcomes are kept without that variable. Each session's `usage.json`
-has `utilityOutcomes` per source kind (`shell`, `mcp`, `recap`, …): the final
-decision per eligible result (`compress`, `not_shorter`,
-`defer:required-dominates`, `keep:lane-unavailable`, …), large results a guard
-keeps out (`keep:exact-floor` under an exact-output floor, `keep:read-window`
-for an offset/limit read that is not a large window, `keep:read-floor` for a whole read under 16,000
-bytes), requests refused before
-dispatch (`request:defer:failure-bound`, …), chunks, and bytes in and out. Every
-utility attempt row also carries `source_kind` and `final_decision`. Sizes and
-labels only, never content.
+has `utilityOutcomes`, one row per source kind. A row holds `decisions` (a
+count per label) and, summed over every decision, `chunks` (utility requests
+planned), `bytes_in` and `bytes_out`. Sizes and labels only, never content.
+Every utility attempt row also carries `source_kind` and `final_decision`.
+
+The source kinds:
+
+- tool results: `shell`, `checks`, `task_output`, `mcp`, `grep`, `list_dir`,
+  `read_file`, `read_range`, `web_search`, `web_fetch`, `search_tool`,
+  `subagent`, `task_poll`, `full_log`, `hook`, `workflow_result`;
+- side calls: `stored_output`, `memory_capture`, `skill_listing`,
+  `tool_families`, `compaction_input`, `post_compaction_excerpt`,
+  `initial_title`, `ai_suggest`, `prompt_suggest`, `recap`, `goal_summary`,
+  `goal_skill`, `laziness_classifier`;
+- no utility call, counted in the same table: `history_batch`,
+  `history_evict`, `history_reread` (above), `test_rerun`
+  (`collapse:unchanged`; `chunks` is the failures folded), `error_site`
+  (`cited`, `read-after-cite`) and `compaction_timing` (`compact:jev_early`,
+  `defer`).
+
+The labels:
+
+- `compress` (and `compress:outline`, `partial:verbatim-tail`): the selection
+  was used;
+- `not_shorter`, `defer:…` (`defer:required-dominates`,
+  `defer:small-cannot-pay`, …): the utility was asked, or the plan showed it
+  could not pay, and today's bytes stayed;
+- `keep:…`: today's bytes stayed for the named reason, mostly a guard before
+  any call (`keep:lane-unavailable` when no utility resolved, `keep:secret`,
+  `keep:store-unavailable`, `keep:exact-floor` under an exact-output floor,
+  `keep:read-window` for an offset/limit read that is not a large window,
+  `keep:read-floor` for a whole read under 16,000 bytes), sometimes after one
+  (`keep:thin-selection`, `keep:rebuild-failed`);
+- `request:defer:…`: one utility request refused before dispatch
+  (`request:defer:failure-bound` after repeated failures in the turn,
+  `request:defer:input-bound`, `request:defer:task-bound`);
+- for the classifier: `used`, `fallback:main` (an answer the
+  harness would not apply, so main ran too) and `fallback:transport` (no answer
+  in time).
+
+For a tool-result kind, `bytes_in` minus `bytes_out` is what that source kept
+out of the context on first entry; each byte saved there is saved again on
+every later call that replays the history. For `laziness_classifier` the two
+numbers are the request and the answer, not a
+saving: the saving is the main call that `used` replaced. A rising
+`fallback:main` share means those calls are paying twice. A source whose
+`decisions` are mostly `not_shorter` or `defer:…` spends utility calls for
+nothing and is a candidate for a higher floor.
 
 ## Turning levers off
 
@@ -580,17 +771,26 @@ through as the bytes they were. The authoritative list of switches and their
 defaults is `JevFlags::harness_default()` in
 `crates/codegen/distill-workspace/src/jev/flags.rs`. Do not confuse it with
 `JevFlags::default()`, an inert all-off value used by tests.
+`e_cheap_compress = false` turns off every utility use in the table above
+except the `explore` children; each takes its fallback.
 
-Six levers stay off by default, each for a stated reason:
+These levers stay off by default, each for a stated reason:
 
 | Lever | Why it is off |
 |---|---|
-| `e_retention` | One question per chunk, and the questions never carried the chunk text; with utility selection on it does not run at all |
+| `e_retention` | One question per chunk, and the questions never carried the chunk text; it runs only on a result utility selection left as it was |
+| `d6_warm_batches` | Rewriting sent history on a warm cache waits until `history_batch` and `history_reread` show it pays |
 | `d2_big_output_retention` | Asked at ingest from a 1,200-character head, before the model read the output; it kept every output it judged |
-| `e_cheap_agent` | The cheap-subagent lane is not wired, so a decision that asks for one defers instead of pretending |
+| `e_cheap_agent` | Utility `explore` reports are not yet measured against the worker's; a missed file costs a main follow-up read |
+| `b2_local_model` | Retired: nothing routes a main round to the utility any more, so it switches nothing |
 | `e_prompt_blocks` | The skills part is already cut per request by `p6_skill_suggestion`; cutting AGENTS.md and user rules needs a whitelist of lines that must always travel, and no safe one exists yet, so it would need opt-in and a rule-adherence measurement first |
 | `b2_model_tier` | A money lever waiting for its own cost gate |
 | `c6_injection_screen` | Waiting for a measurement of what the screen itself costs |
+
+`b6_delegation_hint`, `c1_premature_stop` and `c3_completion_check` are off as
+well; they are quality checks, not savings (B6 is still asked and logged).
+Retired lever keys (`e_cheap_task`, `e_lane_choice`, `e_breaker`, …) are
+ignored with a warning.
 
 ## What is coded but not wired
 
@@ -605,18 +805,39 @@ nothing on the live path invokes them:
   and `crush_svg` run in the crusher stage on non-exact, non-document output at
   2,000 bytes or more, with the original stored first, when they save at least
   1 KiB; a secret-looking payload keeps its bytes.)
-- `crush_json`, `crush_html` and `crush_notebook` are behind the document guard,
-  because each of those payloads *is* the document.
+- `crush_json` and `crush_notebook` are behind the document guard, because each
+  of those payloads *is* the document. (`crush_html` runs only on markup that
+  does not open the output; see stored crushers.)
 - `crush_diff` is behind the same guard: a unified diff is a document.
+  Large documents still reach the utility's line selection where that lane
+  admits them, with the original stored; what is missing there is unit shape
+  (hunks, JSON elements), not a crusher pre-pass.
 - `secret_redacted_view`, `pii_presence` and `injection_presence` are safety
   transforms, not savings: they mask or flag a value by decision rather than by
   gain. (`secret_presence` is live: retention and D2 use it. The utility screen uses
   the narrower `utility_secret_presence`.)
 - `store_stats`, `search_store`, `validate_json`, `estimate_tokens`,
-  `repo_map_budget`, `write_ack`, `error_site_refs`, `test_baseline_diff`,
-  `alias_identifiers`, `volatile_tokens` and `compact_span` are pure functions
-  waiting for a caller.
-- The task registry still contains other utility tasks, but tool-result compression now selects source units instead of mapping payloads through `task_for_payload`.
+  `repo_map_budget`, `write_ack`, `test_baseline_diff`, `alias_identifiers`,
+  `volatile_tokens` and `compact_span` are pure functions waiting for a caller.
+  None has a measured saving for the main model: `write_ack` targets results
+  that are already small, `repo_map_budget` and `alias_identifiers` would change
+  what the model sees in the prefix or history, `volatile_tokens` is a cache
+  diagnostic, and `test_baseline_diff` compares names only (the native Cargo
+  rerun fold compares each failure's text instead).
+- `error_site_refs` runs only as a measurement. For a failing terminal result it
+  notes the first three cited `file:line` sites, and usage.json counts
+  `error_site` `cited` and `read-after-cite` (a later `read_file` covering one of
+  them). Quoting the lines up front would add bytes to every failing run, so the
+  autoquote waits for that rate.
+- Apart from `select_units` and `display_text`, the task registry
+  (`jev/tasks.rs`: 93 catalogue tasks such as `test_verdict`, `cite_spans` and
+  `commit_message_draft`) has no live caller: tool-result
+  compression selects source units instead of mapping payloads through
+  `task_for_payload`, and `run_best_of` runs only in tests. The utility
+  allowlist admits only `select_units` and `display_text`; a registry row with
+  the `Literals` guard is converted to a pick over source units or a closed label
+  set before it is wired, because where the literals are the content no real
+  reduction passes that guard.
 - The image-describe pipeline (`session/image_describe.rs`, `transcribe_user_images`)
   runs only under `is_cursor_harness()`, which is always false in this build. User
   images and tool screenshots reach the main model as images. They are not
@@ -624,8 +845,8 @@ nothing on the live path invokes them:
   caption at entry loses the pixels UI work needs. Swapping an image already in
   history would bust the cache, and compaction already removes every image.
 
-`TODO.md` at the repository root is the full inventory, with a status and a
-reason per entry, cross-referenced to `list.md`.
+`list.md` at the repository root is the full inventory, with a status and a
+reason per entry; `todo.md` is the cost plan it serves.
 
 ## What never happens
 
@@ -635,7 +856,8 @@ work:
 - A tool result on an exact-output call is never rewritten when it enters the
   conversation. Twenty rounds later, history eviction may replace it with its
   edges and a pointer to the stored original.
-- A document is never rewritten.
+- A document is never rewritten by a deterministic stage. A large one may reach
+  utility selection, which keeps verbatim units over a stored original.
 - A user-authored message is never compressed or rewritten. The pipeline only
   ever receives a tool result.
 - Skill bodies and permission text are never rewritten.

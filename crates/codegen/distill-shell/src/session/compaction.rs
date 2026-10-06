@@ -520,10 +520,12 @@ impl SessionActor {
     /// Agent `RefCell` borrows are only taken for synchronous snapshots (never held across `.await`).
     /// A long-lived borrow would race with turn/compact/cancel and panic on double-borrow.
     /// With `fit_cold`, a history that cannot fit beside the tools and the summary is digested and fitted first: it would fail whole, so its cache is no loss.
+    /// `one_shot` marks a history no later request repeats (pass2), so it writes no conversation cache entry.
     async fn two_pass_sample(
         &self,
         history: Vec<ConversationItem>,
         fit_cold: bool,
+        one_shot: bool,
     ) -> Option<CompactOutput> {
         let sampling_config = self.reconstruct_full_config().await;
         let client = match self.prepare_chat_completion(false).await {
@@ -588,6 +590,7 @@ impl SessionActor {
                 self.compaction.tool_choice,
                 &cancel,
                 Some(&observer),
+                one_shot,
             )
             .await;
         match result {
@@ -728,7 +731,7 @@ impl SessionActor {
         let prompt = build_compaction_prompt(None, false);
         let pass1_history = build_two_pass_pass1_history(&prefix_prepared, &prompt);
         let started = std::time::Instant::now();
-        let out = self.two_pass_sample(pass1_history, true).await;
+        let out = self.two_pass_sample(pass1_history, true, false).await;
         let pass1_latency_ms = started.elapsed().as_millis() as u64;
         let attempted = |outcome: PrefireOutcome, note1_chars: Option<usize>| PrefirePass1Run {
             outcome,
@@ -832,7 +835,8 @@ impl SessionActor {
         let pass2_history =
             build_two_pass_pass2_history(prefix, &prepared_tail, &cache.note1, &prompt);
         let started = std::time::Instant::now();
-        let mut out = self.two_pass_sample(pass2_history, false).await?;
+        // NOTE1 plus the tail is a prompt only this pass2 sends.
+        let mut out = self.two_pass_sample(pass2_history, false, true).await?;
         if is_degenerate_summary(&out.content) {
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(

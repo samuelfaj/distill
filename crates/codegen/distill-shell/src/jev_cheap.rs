@@ -767,6 +767,19 @@ pub(crate) fn resolve_utility_lane_traced(
     excluded: &[&str],
     resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
 ) -> (Option<CheapLane>, Vec<(UtilityCandidate, &'static str)>) {
+    let (winner, skipped) = resolve_utility_candidate(models_manager, excluded, resolve_catalog);
+    (winner.map(|(_, lane)| lane), skipped)
+}
+
+/// [`resolve_utility_lane_traced`] that also names the candidate that won.
+fn resolve_utility_candidate(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> (
+    Option<(UtilityCandidate, CheapLane)>,
+    Vec<(UtilityCandidate, &'static str)>,
+) {
     let local = crate::jev::local_config_cached();
     let summary_pin = models_manager
         .session_summary_model()
@@ -785,11 +798,28 @@ pub(crate) fn resolve_utility_lane_traced(
     );
     for candidate in candidates {
         match candidate_lane(&candidate, models_manager, &catalog, excluded, resolve_catalog) {
-            Ok(lane) => return (Some(lane), skipped),
+            Ok(lane) => return (Some((candidate, lane)), skipped),
             Err(reason) => skipped.push((candidate, reason)),
         }
     }
     (None, skipped)
+}
+
+/// The utility model as a catalog id a whole child round can run on (E6): the
+/// candidate [`resolve_utility_lane`] picks, when it is a catalog entry. A raw
+/// OpenRouter chain has no entry to give a session its endpoint, window and
+/// credentials, so it gives `None`, as does no lane: the child keeps its own
+/// model.
+pub(crate) fn utility_catalog_model(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> Option<String> {
+    let (winner, _) = resolve_utility_candidate(models_manager, excluded, resolve_catalog);
+    let (candidate, _) = winner?;
+    crate::agent::config::find_model_by_id(&models_manager.models(), &candidate.spec)
+        .is_some()
+        .then_some(candidate.spec)
 }
 
 /// The utility lane, resolved the same way for every consumer
@@ -1647,6 +1677,8 @@ impl MainLane {
             json_schema: None,
             prompt_cache_key: None,
             length_policy: LengthPolicy::Fail,
+            // Each task is its own payload behind the shared task prompt.
+            one_shot: true,
         })
     }
 
@@ -2582,6 +2614,51 @@ mod tests {
         assert_eq!(
             skipped.iter().map(|(c, reason)| (c.source, *reason)).collect::<Vec<_>>(),
             vec![(SOURCE_SHIPPED, SKIP_NO_LANE)]
+        );
+        crate::jev::clear_test_local_config();
+        crate::jev::clear_test_worker_model();
+    }
+
+    /// E6 runs whole child rounds on the utility, which needs a catalog
+    /// entry's endpoint, window and credentials. A catalog pin serves; a raw
+    /// OpenRouter slug, the child's own model or no lane gives no route, so
+    /// the child keeps the model it has without the lever.
+    #[test]
+    #[serial_test::serial]
+    fn a_utility_child_route_needs_a_catalog_entry() {
+        {
+            let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+            no_effort_lookup();
+            let (_home, manager) = utility_test_manager(&["aux-model"], Some("aux-model"), None);
+            assert_eq!(
+                utility_catalog_model(&manager, &["main-model"], &keyed_catalog_config).as_deref(),
+                Some("aux-model")
+            );
+            assert_eq!(
+                utility_catalog_model(&manager, &["aux-model"], &keyed_catalog_config),
+                None,
+                "a route to the child's own model saves nothing"
+            );
+            assert_eq!(
+                utility_catalog_model(&manager, &["main-model"], &|_| None),
+                None,
+                "no lane, no route"
+            );
+        }
+        let _key = distill_test_support::env::EnvGuard::set("OPENROUTER_API_KEY", "sk-test");
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("vendor/raw-utility".to_owned()),
+            effort: Some("none".to_owned()),
+            ..Default::default()
+        });
+        let (_home, manager) = utility_test_manager(&["aux-model"], Some("aux-model"), None);
+        let (lane, _) =
+            resolve_utility_lane_traced(&manager, &["main-model"], &keyed_catalog_config);
+        assert_eq!(lane.expect("the raw slug is a utility lane").model(), "vendor/raw-utility");
+        assert_eq!(
+            utility_catalog_model(&manager, &["main-model"], &keyed_catalog_config),
+            None,
+            "a raw slug has no entry for a whole round, and the pin is not the utility"
         );
         crate::jev::clear_test_local_config();
         crate::jev::clear_test_worker_model();

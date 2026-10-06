@@ -64,8 +64,8 @@ pub struct JevLadderOverlay {
     /// for, and use its answer only if the task's own guard accepts it.
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: Option<bool>,
-    /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
-    /// E6 — hand a non-critical micro-task to a cheap-model subagent.
+    /// E6 — run a fresh `explore` child's rounds on the utility model, falling
+    /// back to the child's own model on any failed request.
     pub e_cheap_agent: Option<bool>,
     /// E9 — send only the standing-prompt blocks this turn needs.
     pub e_prompt_blocks: Option<bool>,
@@ -89,7 +89,7 @@ pub struct JevLadderOverlay {
     pub b2_model_tier: Option<bool>,
     /// B2 (auto): the per-model-call effort the user opts into with `/effort auto`.
     pub b2_micro_effort: Option<bool>,
-    /// B2 (local): prefer the configured local model for calls it can fully do.
+    /// B2 (local): retired whole-round routing to the utility model.
     pub b2_local_model: Option<bool>,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: Option<bool>,
@@ -152,7 +152,9 @@ impl JevFlags {
             b1_intent_routing: true,
             b2_model_tier: false,
             b2_micro_effort: true,
-            b2_local_model: true,
+            // Nothing routes a whole main round to the utility any more: a
+            // round on another model replays the history uncached.
+            b2_local_model: false,
             b3_subagent_type: true,
             b6_delegation_hint: false,
             c1_premature_stop: false,
@@ -165,6 +167,8 @@ impl JevFlags {
             e_importance: true,
             e_cheap_compress: true,
             e_read_reuse: true,
+            // Opt-in until utility explore reports are measured against the
+            // worker's.
             e_cheap_agent: false,
             e_prompt_blocks: false,
             // Measured: it asks at ingest, judging a 4 KB+ output by its first
@@ -295,8 +299,8 @@ pub struct JevFlags {
     /// E5 — run a registered cheap task (classify/extract/digest) on a tool result and use its answer.
     /// E4 — serve a repeated read as a pointer to the bytes already sent.
     pub e_read_reuse: bool,
-    /// E7 — let the decision layer choose main-vs-cheap, the form and the effort for a micro-action.
-    /// E6 — hand a non-critical micro-task to a cheap-model subagent.
+    /// E6 — run a fresh `explore` child's rounds on the utility model, falling
+    /// back to the child's own model on any failed request.
     pub e_cheap_agent: bool,
     /// E9 — send only the standing-prompt blocks this turn needs.
     pub e_prompt_blocks: bool,
@@ -324,7 +328,8 @@ pub struct JevFlags {
     pub b2_model_tier: bool,
     /// B2 (auto): pick the effort for every model call (only runs in auto mode).
     pub b2_micro_effort: bool,
-    /// B2 (local): prefer the configured local model when it can fully do the call.
+    /// B2 (local): retired whole-round routing to the utility model; nothing
+    /// reads it, and it defaults off.
     pub b2_local_model: bool,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: bool,
@@ -675,6 +680,14 @@ mod tests {
         assert!(
             !flags.d6_warm_batches,
             "D6 rewrites sent history on a warm cache only once its payback is measured"
+        );
+        assert!(
+            !flags.b2_local_model,
+            "no code routes a main round to the utility, so the lever must not claim a saving"
+        );
+        assert!(
+            !flags.e_cheap_agent,
+            "utility explore children are opt-in until their reports are measured"
         );
         for lever in [
             JevLever::B6DelegationHint,

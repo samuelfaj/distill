@@ -8,6 +8,40 @@ const ITEM_MAX_BYTES: usize = 4 * 1024;
 /// keeps the full list for its own de-duplication; the evaluator only needs
 /// the recent identities to reuse them.
 const EVALUATOR_SEEN_OBSERVATIONS_MAX: usize = 40;
+/// The verdict is a bounded JSON object, so the cap only stops runaway output.
+/// Reasoning backends count thinking against it, and a truncated verdict fails
+/// the round, so it stays well above a long criteria list plus medium thinking,
+/// and applies only at medium effort or below (see [`evaluator_output_cap`]).
+pub(crate) const GOAL_EVALUATOR_MAX_OUTPUT_TOKENS: u32 = 16_384;
+
+#[cfg(test)]
+thread_local! {
+    /// The goal roles' utility endpoint in tests. Unset, they see no utility,
+    /// so an ambient provider key never sends a test's goal to a live model.
+    static TEST_GOAL_UTILITY_URL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_goal_utility(base_url: Option<String>) {
+    TEST_GOAL_UTILITY_URL.with(|url| *url.borrow_mut() = base_url);
+}
+
+/// The goal roles' utility in tests: a chat-completions model at the
+/// endpoint [`set_test_goal_utility`] named, or none.
+#[cfg(test)]
+pub(crate) fn test_goal_utility_config() -> Option<distill_sampler::SamplerConfig> {
+    let base_url = TEST_GOAL_UTILITY_URL.with(|url| url.borrow().clone())?;
+    Some(distill_sampler::SamplerConfig {
+        api_key: Some("aux-key".to_owned()),
+        base_url,
+        model: "aux-model".to_owned(),
+        api_backend: distill_sampling_types::ApiBackend::ChatCompletions,
+        context_window: 48_000,
+        max_retries: Some(0),
+        ..Default::default()
+    })
+}
 
 const SYSTEM_PROMPT_TEMPLATE: &str = r#"You are the hidden completion evaluator for an autonomous coding goal.
 You are not the coding agent. Evaluate only the supplied goal and transcript evidence.
@@ -164,6 +198,22 @@ impl GoalSeenWork {
         self.is_new_state(signals) || self.new_checks(signals).next().is_some()
     }
 
+    /// [`Self::has_new_work`] that also passes over what `credited` holds:
+    /// work a skipped checkpoint already counted as progress is
+    /// not counted again, though the evaluator still sees it until it weighs it.
+    pub(crate) fn has_new_work_beyond(
+        &self,
+        credited: &GoalSeenWork,
+        signals: &GoalWorkSignals,
+    ) -> bool {
+        signals.workspace.as_ref().is_some_and(|state| {
+            !self.fingerprints.contains(&state.fingerprint)
+                && !credited.fingerprints.contains(&state.fingerprint)
+        }) || self
+            .new_checks(signals)
+            .any(|check| !credited.checks.contains(&check.key))
+    }
+
     /// Remembers `signals`; the oldest entries go first.
     pub(crate) fn observe(&mut self, signals: &GoalWorkSignals) {
         fn push_bounded(seen: &mut Vec<String>, value: &str, max: usize) {
@@ -247,18 +297,182 @@ pub(crate) async fn resolved_goal_skills(
     objective: &str,
     skills: &[distill_tools::implementations::skills::types::SkillInfo],
 ) -> String {
+    render_goal_skills(&pinned_goal_skills(objective, skills).await, &[])
+}
+
+/// A skill the objective pins, read from its catalog path.
+pub(crate) struct PinnedGoalSkill {
+    pub name: String,
+    pub path: String,
+    pub body: Result<String, String>,
+}
+
+pub(crate) async fn pinned_goal_skills(
+    objective: &str,
+    skills: &[distill_tools::implementations::skills::types::SkillInfo],
+) -> Vec<PinnedGoalSkill> {
     let pins = distill_agent::prompt::skills::explicit_skill_pins(objective, skills);
-    let mut sources = Vec::new();
+    let mut pinned = Vec::new();
     for skill in skills.iter().filter(|s| pins.contains(&s.dedup_key())) {
-        let body = tokio::fs::read_to_string(&skill.path).await;
-        sources.push(serde_json::json!({
-            "name": skill.name,
-            "path": skill.path,
-            "body": body.as_ref().ok(),
-            "read_error": body.as_ref().err().map(ToString::to_string),
-        }));
+        pinned.push(PinnedGoalSkill {
+            name: skill.name.clone(),
+            path: skill.path.clone(),
+            body: tokio::fs::read_to_string(&skill.path)
+                .await
+                .map_err(|error| error.to_string()),
+        });
     }
+    pinned
+}
+
+/// The `resolved_skills` the evaluator reads: a skill's stored excerpt when it
+/// matches the body on disk, else the full body.
+pub(crate) fn render_goal_skills(
+    pinned: &[PinnedGoalSkill],
+    excerpts: &[GoalSkillExcerpt],
+) -> String {
+    let sources: Vec<_> = pinned
+        .iter()
+        .map(|skill| {
+            let excerpt = skill.body.as_ref().ok().and_then(|body| {
+                let hash = skill_body_hash(body);
+                excerpts
+                    .iter()
+                    .find(|e| e.path == skill.path && e.body_hash == hash)
+                    .and_then(|e| e.excerpt.as_deref())
+            });
+            match excerpt {
+                Some(excerpt) => serde_json::json!({
+                    "name": skill.name,
+                    "path": skill.path,
+                    "excerpt": excerpt,
+                    "excerpt_note": SKILL_EXCERPT_NOTE,
+                }),
+                None => serde_json::json!({
+                    "name": skill.name,
+                    "path": skill.path,
+                    "body": skill.body.as_ref().ok(),
+                    "read_error": skill.body.as_ref().err(),
+                }),
+            }
+        })
+        .collect();
     serde_json::to_string(&sources).unwrap_or_default()
+}
+
+const SKILL_EXCERPT_NOTE: &str = "Verbatim lines of the skill body that a cheaper model picked as its gates, required outputs, steps and prohibitions, plus every heading and every line that says must, never, always, required or before. Omitted lines are marked; nobody checked them, so a requirement the excerpt does not show is not proof that the skill has none.";
+const SKILL_EXCERPT_QUESTION: &str = "The payload is a skill file that an autonomous coding goal follows. Pick the units that state a mandatory gate, a required output or deliverable, a required step or command, or a prohibition. Leave out examples, background, rationale and optional advice.";
+/// A skill larger than this many utility chunks keeps its full body.
+const SKILL_EXCERPT_MAX_CHUNKS: usize = 4;
+
+/// What the utility kept of one pinned skill for the evaluator, chosen once
+/// per goal so the evaluator's goal message stays the same every round. Keyed
+/// by the body's hash, so an edited skill is chosen again.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GoalSkillExcerpt {
+    pub path: String,
+    pub body_hash: String,
+    /// `None`: the utility gave no usable selection; the evaluator reads the full body.
+    pub excerpt: Option<String>,
+}
+
+pub(crate) fn skill_body_hash(body: &str) -> String {
+    blake3::hash(body.as_bytes()).to_hex().to_string()
+}
+
+/// One utility `select_units` pass over a skill body: the kept lines verbatim,
+/// headings and gate-worded lines always kept. `None` (the evaluator keeps the
+/// full body) when the body looks secret-bearing, does not fit, every chunk
+/// failed, the utility picked nothing beyond what is always kept (a bare
+/// `NONE` is no selection to trust for a whole goal), or the excerpt would
+/// not be under 70% of the body.
+pub(crate) async fn utility_skill_excerpt(
+    lane: &crate::jev_cheap::CheapLane,
+    body: &str,
+) -> Option<String> {
+    use crate::utility_select::{ChunkAnswer, UnitKind};
+    use distill_workspace::jev::tasks::{SELECT_UNITS_TASK, parse_unit_ids, render_units};
+
+    if distill_workspace::jev::crushers::utility_secret_presence(body).is_some() {
+        return None;
+    }
+    let cap = lane.max_payload_bytes();
+    let units = crate::utility_select::build_units(body, UnitKind::Lines, cap);
+    let chunks = crate::utility_select::plan_chunks(&units, cap, SKILL_EXCERPT_MAX_CHUNKS).ok()?;
+    let answers = futures::future::join_all(chunks.iter().map(|chunk| {
+        let refs: Vec<&str> = units[chunk.clone()].iter().map(String::as_str).collect();
+        let payload = render_units(&refs, chunk.start + 1);
+        let valid = chunk.start + 1..=chunk.end;
+        let units = &units;
+        async move {
+            let picked = |answer: &str| {
+                parse_unit_ids(answer, valid.clone()).ok().map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| units.get(id - 1).map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+            };
+            let outcome = lane
+                .run_task_with_acceptance(
+                    distill_workspace::jev::flags::JevLever::ECheapCompress,
+                    SELECT_UNITS_TASK,
+                    &payload,
+                    SKILL_EXCERPT_QUESTION,
+                    "goal_skill",
+                    false,
+                    |answer| {
+                        if answer.trim().eq_ignore_ascii_case("none") {
+                            return Some(String::new());
+                        }
+                        picked(answer)
+                    },
+                )
+                .await;
+            match outcome {
+                Some(outcome) if outcome.text.trim().eq_ignore_ascii_case("none") => {
+                    ChunkAnswer::Nothing
+                }
+                Some(outcome) => parse_unit_ids(&outcome.text, valid.clone())
+                    .map(ChunkAnswer::Ids)
+                    .unwrap_or(ChunkAnswer::Failed),
+                None => ChunkAnswer::Failed,
+            }
+        }
+    }))
+    .await;
+    let always: Vec<bool> = units
+        .iter()
+        .map(|unit| skill_line_always_kept(unit))
+        .collect();
+    let kept = crate::utility_select::merge(&chunks, &answers, &always)?;
+    if kept.iter().all(|&unit| always[unit]) {
+        return None;
+    }
+    let excerpt =
+        crate::utility_select::reconstruct(&units, &kept, UnitKind::Lines, None, "", String::new());
+    (excerpt.len() * 10 < body.len() * 7).then_some(excerpt)
+}
+
+/// A heading, or a line worded like a gate: kept whatever the utility picked,
+/// so a dropped gate cannot hide from the evaluator, which cannot open the file.
+fn skill_line_always_kept(line: &str) -> bool {
+    const GATE_WORDS: [&str; 7] = [
+        "must",
+        "never",
+        "always",
+        "required",
+        "requires",
+        "mandatory",
+        "before",
+    ];
+    let line = line.trim_start().to_lowercase();
+    line.starts_with('#')
+        || line.contains("do not")
+        || line.contains("don't")
+        || line
+            .split(|ch: char| !ch.is_alphanumeric())
+            .any(|word| GATE_WORDS.contains(&word))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -491,6 +705,46 @@ pub(crate) fn parse_goal_evaluator_verdict(
         .validate()
 }
 
+/// The evaluator's effort: the session's, capped at medium. The verdict is a
+/// small schema object, and inheriting a max-effort session paid max thinking
+/// on every round. The cap is the highest of low or medium the model offers
+/// (`supported`, empty when unknown); a model offering neither keeps the
+/// session's effort, since an unsupported level would fail the evaluation. A
+/// session without an effort keeps sending none.
+pub(crate) fn goal_evaluator_effort(
+    session: Option<distill_sampling_types::ReasoningEffort>,
+    supported: &[distill_sampling_types::ReasoningEffort],
+) -> Option<distill_sampling_types::ReasoningEffort> {
+    use crate::session::acp_session::effort_rank;
+    use distill_sampling_types::ReasoningEffort as E;
+    let session = session?;
+    if effort_rank(session) <= effort_rank(E::Medium) {
+        return Some(session);
+    }
+    if supported.is_empty() {
+        return Some(E::Medium);
+    }
+    supported
+        .iter()
+        .copied()
+        .filter(|effort| matches!(effort, E::Low | E::Medium))
+        .max_by_key(|effort| effort_rank(*effort))
+        .or(Some(session))
+}
+
+/// The output cap for an evaluator request at `effort`: only an effort at
+/// medium or below bounds the thinking that counts against it. A retained
+/// high or max effort, or the model's default, keeps the model's own limit,
+/// since a verdict truncated by thinking fails the round and pauses the goal.
+fn evaluator_output_cap(effort: Option<distill_sampling_types::ReasoningEffort>) -> Option<u32> {
+    use crate::session::acp_session::effort_rank;
+    effort
+        .filter(|effort| {
+            effort_rank(*effort) <= effort_rank(distill_sampling_types::ReasoningEffort::Medium)
+        })
+        .map(|_| GOAL_EVALUATOR_MAX_OUTPUT_TOKENS)
+}
+
 pub(crate) fn goal_evaluator_json_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -617,6 +871,7 @@ pub(crate) fn build_goal_evaluator_request(
     resolved_skills: &str,
     prior_verifier_gaps: Option<&str>,
     harness_observed: &serde_json::Value,
+    reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
 ) -> ConversationRequest {
     // What stays the same for the whole goal goes first, so every round after
     // the first reuses the provider's cached prefix; the round's own state and
@@ -646,7 +901,10 @@ pub(crate) fn build_goal_evaluator_request(
     ConversationRequest {
         items: vec![
             ConversationItem::system(SYSTEM_PROMPT.as_str()),
-            ConversationItem::user(goal.to_string()),
+            // Tagged like a leading instructions message so the Messages
+            // mapping puts a cache breakpoint on it: the next round reads the
+            // goal from cache instead of writing it again behind the tip.
+            ConversationItem::project_instructions(goal.to_string()),
             ConversationItem::user(round.to_string()),
         ],
         tools: vec![],
@@ -654,13 +912,16 @@ pub(crate) fn build_goal_evaluator_request(
         tool_choice: None,
         model: Some(model),
         temperature: None,
-        max_output_tokens: None,
-        reasoning_effort: None,
+        max_output_tokens: evaluator_output_cap(reasoning_effort),
+        reasoning_effort,
         json_schema: Some(goal_evaluator_json_schema()),
         x_grok_conv_id: Some(session_id.to_owned()),
         x_grok_req_id: Some(format!("xai-goal-eval-{}", uuid::Uuid::new_v4())),
         x_grok_session_id: Some(session_id.to_owned()),
         x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+        // The round message differs every round, so only the goal message is
+        // marked: a tip breakpoint would write a cache entry nobody reads.
+        one_shot: true,
         ..ConversationRequest::default()
     }
 }
@@ -1078,6 +1339,7 @@ mod tests {
             "[]",
             None,
             &serde_json::json!({"workspace_changed_since_last_evaluation": true}),
+            None,
         );
         assert!(request.tools.is_empty());
         assert!(request.hosted_tools.is_empty());
@@ -1109,6 +1371,7 @@ mod tests {
                 "[]",
                 None,
                 &serde_json::json!({}),
+                None,
             )
         };
         let (first, second) = (request_for("round one"), request_for("round two"));
@@ -1131,6 +1394,7 @@ mod tests {
             .collect();
         let request = build_goal_evaluator_request(
             "goal", "t", None, "small".into(), "s", &progress, "[]", None, &serde_json::json!({}),
+            None,
         );
         let round: serde_json::Value =
             serde_json::from_str(&request.items[2].text_content()).unwrap();
@@ -1138,5 +1402,254 @@ mod tests {
         assert_eq!(shown.len(), EVALUATOR_SEEN_OBSERVATIONS_MAX);
         assert_eq!(shown.last().unwrap()["criterion_id"], "c99", "the newest are kept");
         assert_eq!(progress.seen_observations.len(), 100, "the harness copy is untouched");
+    }
+
+    /// Work a skipped checkpoint already counted must not count again: a
+    /// worker that stops after one commit would otherwise look like it makes
+    /// progress at every checkpoint and never be told to change approach.
+    #[test]
+    fn credited_work_is_counted_as_progress_once() {
+        let seen = GoalSeenWork::default();
+        let mut credited = GoalSeenWork::default();
+        let first = signals("aaa", &[("cargo test", false)]);
+        assert!(seen.has_new_work_beyond(&credited, &first));
+        credited.observe(&first);
+        assert!(
+            !seen.has_new_work_beyond(&credited, &first),
+            "already credited"
+        );
+        assert!(
+            seen.has_new_work(&first),
+            "the main evaluator still sees it as unweighed"
+        );
+        assert!(seen.has_new_work_beyond(&credited, &signals("aaa", &[("cargo test", true)])));
+        assert!(seen.has_new_work_beyond(&credited, &signals("bbb", &[])));
+    }
+
+    /// A max-effort session paid max thinking for every evaluator round; the
+    /// small verdict gets medium at most, and a session without an effort
+    /// still sends none. A level the model does not offer would fail the
+    /// round and pause the goal, so the cap only picks offered levels.
+    #[test]
+    fn the_evaluator_caps_effort_and_output() {
+        use distill_sampling_types::ReasoningEffort as E;
+        assert_eq!(goal_evaluator_effort(Some(E::Max), &[]), Some(E::Medium));
+        assert_eq!(
+            goal_evaluator_effort(Some(E::Max), &[E::Low, E::Medium, E::High, E::Max]),
+            Some(E::Medium)
+        );
+        assert_eq!(goal_evaluator_effort(Some(E::High), &[]), Some(E::Medium));
+        assert_eq!(goal_evaluator_effort(Some(E::Low), &[]), Some(E::Low));
+        assert_eq!(goal_evaluator_effort(None, &[E::Medium]), None);
+        assert_eq!(
+            goal_evaluator_effort(Some(E::High), &[E::Low, E::High]),
+            Some(E::Low),
+            "no medium offered: the cheaper offered level"
+        );
+        assert_eq!(
+            goal_evaluator_effort(Some(E::Max), &[E::High, E::Max]),
+            Some(E::Max),
+            "nothing at or under medium offered: the session's effort"
+        );
+        let request = build_goal_evaluator_request(
+            "goal",
+            "t",
+            None,
+            "small".into(),
+            "s",
+            &GoalProgress::default(),
+            "[]",
+            None,
+            &serde_json::json!({}),
+            Some(E::Medium),
+        );
+        assert_eq!(request.reasoning_effort, Some(E::Medium));
+        assert_eq!(
+            request.max_output_tokens,
+            Some(GOAL_EVALUATOR_MAX_OUTPUT_TOKENS)
+        );
+        // Thinking at a retained high or max effort, or at the model's own
+        // default, could eat a fixed cap and truncate the verdict.
+        assert_eq!(
+            evaluator_output_cap(Some(E::Low)),
+            Some(GOAL_EVALUATOR_MAX_OUTPUT_TOKENS)
+        );
+        assert_eq!(evaluator_output_cap(Some(E::Max)), None);
+        assert_eq!(evaluator_output_cap(Some(E::High)), None);
+        assert_eq!(evaluator_output_cap(None), None);
+    }
+
+    /// The goal message is the same every round, so it carries its own cache
+    /// breakpoint: the next round reads it instead of writing it again.
+    #[test]
+    fn the_stable_goal_message_carries_a_cache_breakpoint() {
+        let request = build_goal_evaluator_request(
+            "goal",
+            "t",
+            Some("# Plan"),
+            "claude-opus-5-5".into(),
+            "s",
+            &GoalProgress::default(),
+            "[]",
+            None,
+            &serde_json::json!({}),
+            None,
+        );
+        let wire =
+            serde_json::to_value(distill_sampling_types::build_messages_request(&request)).unwrap();
+        let goal = &wire["messages"][0];
+        assert!(
+            goal["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("# Plan")
+        );
+        assert!(
+            goal["content"][0]["cache_control"].is_object(),
+            "goal message is a breakpoint: {goal}"
+        );
+        // The round message is new every round: no cache write for it.
+        let round = &wire["messages"][1];
+        assert!(
+            round["content"][0]["cache_control"].is_null(),
+            "round message is no breakpoint: {round}"
+        );
+    }
+
+    fn pinned(body: &str) -> PinnedGoalSkill {
+        PinnedGoalSkill {
+            name: "sam-task".into(),
+            path: "/skills/sam-task/SKILL.md".into(),
+            body: Ok(body.into()),
+        }
+    }
+
+    /// The stored excerpt replaces the body only while the skill on disk is
+    /// the one it was chosen from; an edited skill goes out whole.
+    #[test]
+    fn a_skill_excerpt_applies_only_to_the_body_it_was_chosen_from() {
+        let excerpt = GoalSkillExcerpt {
+            path: "/skills/sam-task/SKILL.md".into(),
+            body_hash: skill_body_hash("# Gates\nRun the tests.\nBackground prose."),
+            excerpt: Some("# Gates\nRun the tests.\n".into()),
+        };
+        let rendered: serde_json::Value = serde_json::from_str(&render_goal_skills(
+            &[pinned("# Gates\nRun the tests.\nBackground prose.")],
+            std::slice::from_ref(&excerpt),
+        ))
+        .unwrap();
+        assert_eq!(rendered[0]["excerpt"], "# Gates\nRun the tests.\n");
+        assert!(rendered[0]["body"].is_null());
+        assert_eq!(rendered[0]["path"], "/skills/sam-task/SKILL.md");
+        let edited: serde_json::Value = serde_json::from_str(&render_goal_skills(
+            &[pinned("# Gates\nRun the tests twice.")],
+            &[excerpt],
+        ))
+        .unwrap();
+        assert_eq!(edited[0]["body"], "# Gates\nRun the tests twice.");
+        assert!(edited[0]["excerpt"].is_null());
+    }
+
+    fn skill_lane(base_url: String) -> crate::jev_cheap::CheapLane {
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+        crate::jev::set_test_decision_answers([]);
+        set_test_goal_utility(Some(base_url));
+        let lane =
+            crate::jev_cheap::CheapLane::from_sampler_config(&test_goal_utility_config().unwrap())
+                .expect("utility lane");
+        set_test_goal_utility(None);
+        lane
+    }
+
+    fn utility_reply(content: &str) -> distill_test_support::ScriptedResponse {
+        distill_test_support::ScriptedResponse::json(
+            200,
+            serde_json::json!({
+                "id": "utility-skill", "model": "aux-model",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 3}
+            }),
+        )
+    }
+
+    fn skill_body() -> String {
+        let mut body = String::from(
+            "# Gates\nRun the full test suite and attach its output to the PR.\nNever push to main.\n",
+        );
+        for i in 0..40 {
+            body.push_str(&format!(
+                "Background note {i} about why the team likes tests.\n"
+            ));
+        }
+        body
+    }
+
+    /// The evaluator gets the skill's gate lines verbatim, not a paraphrase,
+    /// and the headings that frame them. A gate-worded line the utility left
+    /// out is kept anyway: the evaluator cannot open the file to find it.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_skill_excerpt_keeps_the_picked_lines_verbatim() {
+        let server = distill_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        server.enqueue_response("/v1/chat/completions", utility_reply("U2"));
+        let lane = skill_lane(server.url());
+        let excerpt = utility_skill_excerpt(&lane, &skill_body()).await;
+        crate::jev::clear_test_flags();
+        crate::jev::clear_test_decision_answers();
+        let excerpt = excerpt.expect("a much shorter excerpt");
+        assert!(excerpt.starts_with(
+            "# Gates\nRun the full test suite and attach its output to the PR.\nNever push to main.\n"
+        ));
+        assert!(!excerpt.contains("Background note 3"));
+        assert!(excerpt.contains("omitted"));
+    }
+
+    /// A utility that answers NONE for a pinned skill picked nothing to trust
+    /// for the whole goal: the evaluator keeps reading the full body.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_skill_the_utility_picks_nothing_from_keeps_its_full_body() {
+        let server = distill_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        server.enqueue_response("/v1/chat/completions", utility_reply("NONE"));
+        let lane = skill_lane(server.url());
+        let excerpt = utility_skill_excerpt(&lane, &skill_body()).await;
+        crate::jev::clear_test_flags();
+        crate::jev::clear_test_decision_answers();
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+        assert_eq!(excerpt, None);
+    }
+
+    /// No usable selection keeps today's full body: a failed call, and a
+    /// secret-bearing skill that never reaches the utility at all.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_skill_without_a_usable_excerpt_keeps_its_full_body() {
+        let server = distill_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        server.enqueue_response(
+            "/v1/chat/completions",
+            distill_test_support::ScriptedResponse::json(500, serde_json::json!({"error": "down"})),
+        );
+        let lane = skill_lane(server.url());
+        assert_eq!(utility_skill_excerpt(&lane, &skill_body()).await, None);
+        let requests = server.request_count_for("/v1/chat/completions");
+        let secret = format!(
+            "{}\nexport OPENAI_KEY=sk-{}\n",
+            skill_body(),
+            "A1b2C3d4".repeat(4)
+        );
+        assert_eq!(utility_skill_excerpt(&lane, &secret).await, None);
+        crate::jev::clear_test_flags();
+        crate::jev::clear_test_decision_answers();
+        assert_eq!(
+            server.request_count_for("/v1/chat/completions"),
+            requests,
+            "the secret-bearing skill was never sent"
+        );
     }
 }

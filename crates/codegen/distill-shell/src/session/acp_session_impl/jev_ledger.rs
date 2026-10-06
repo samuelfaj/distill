@@ -67,6 +67,10 @@ pub(crate) struct JevTurnLedger {
     /// keeps it, so the tools array only grows when a later request needs
     /// another family.
     pub(crate) tool_families: distill_workspace::jev::catalog::routing::ToolFamilySelection,
+    /// E6: the utility route of an `explore` child failed or no longer fits,
+    /// so the rest of the child stays on its own model. Session-scoped:
+    /// draining the turn keeps it.
+    pub(crate) cheap_agent_off: bool,
 }
 
 impl JevTurnLedger {

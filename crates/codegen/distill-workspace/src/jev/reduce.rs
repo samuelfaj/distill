@@ -360,8 +360,9 @@ pub fn error_site_refs(text: &str) -> Vec<(String, usize)> {
     let mut found: Vec<(String, usize)> = Vec::new();
     for line in text.lines() {
         for token in line.split_whitespace() {
+            // A trailing `:` ends Rust's `panicked at src/lib.rs:42:5:`.
             let token = token.trim_matches(|c: char| {
-                matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | '"' | '\'')
+                matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | ':' | '"' | '\'')
             });
             // `file:line` and `file:line:col` both end in numbers; the path is
             // everything in front of them (it may itself contain `:`).
@@ -834,6 +835,11 @@ mod tests {
                 ("src/main.rs".to_owned(), 12),
             ],
             "duplicates collapse and the column is dropped"
+        );
+        assert_eq!(
+            error_site_refs("thread 'suite::broken' panicked at src/lib.rs:42:5:"),
+            vec![("src/lib.rs".to_owned(), 42)],
+            "a Rust panic location is the site a fix starts from"
         );
         assert!(error_site_refs("no locations here, just prose").is_empty());
         assert!(error_site_refs("see 12:30 for the time").is_empty());

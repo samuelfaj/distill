@@ -2650,6 +2650,64 @@ fn only_fresh_model_delegation_defaults_to_the_worker_model() {
     assert_eq!(delegated_worker_model(&delegated("general-purpose"), false, None), None);
     crate::jev::clear_test_worker_model();
 }
+/// E6 is opt-in and narrow: only a fresh, read-only `explore` child the parent
+/// model delegated with no model of its own may run on the utility. Forks,
+/// resumes, other types, workflow or output-budgeted children (whose failed
+/// request must fail closed, not resend) and any model the owner or caller
+/// chose keep today's routing, and once a utility child of a parent fails, that parent's later
+/// children stay on their own model.
+#[test]
+fn only_a_fresh_delegated_explore_child_may_run_on_the_utility() {
+    use distill_tools::implementations::distill::task::types::ModelOverrideProvenance;
+    use distill_workspace::jev::JevFlags;
+    let explore = || {
+        let mut request = bootstrap_test_request(false);
+        request.subagent_type = "explore".to_string();
+        request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+        request
+    };
+    let parent = "cheap-agent-parent";
+    crate::jev::set_test_flags(JevFlags::harness_default());
+    assert!(
+        !cheap_agent_eligible(&explore(), true, false, parent),
+        "off by default: nothing moves to the utility until the owner opts in"
+    );
+    let mut flags = JevFlags::harness_default();
+    flags.e_cheap_agent = true;
+    crate::jev::set_test_flags(flags);
+    assert!(cheap_agent_eligible(&explore(), true, false, parent));
+    assert!(!cheap_agent_eligible(&explore(), false, false, parent), "resume or wake");
+    assert!(
+        !cheap_agent_eligible(&explore(), true, true, parent),
+        "a role, pinned or definition model"
+    );
+    let mut general = explore();
+    general.subagent_type = "general-purpose".to_string();
+    assert!(!cheap_agent_eligible(&general, true, false, parent), "may edit");
+    let mut fork = explore();
+    fork.fork_context = true;
+    assert!(!cheap_agent_eligible(&fork, true, false, parent), "fork");
+    let mut explicit = explore();
+    explicit.runtime_overrides.model = Some("other-model".to_string());
+    assert!(!cheap_agent_eligible(&explicit, true, false, parent), "explicit model");
+    let mut harness = bootstrap_test_request(false);
+    harness.subagent_type = "explore".to_string();
+    assert!(!cheap_agent_eligible(&harness, true, false, parent), "harness role");
+    let mut workflow = explore();
+    workflow.owner =
+        distill_tools::implementations::distill::task::types::SubagentOwner::workflow("run");
+    assert!(!cheap_agent_eligible(&workflow, true, false, parent), "workflow child");
+    let mut budgeted = explore();
+    budgeted.runtime_overrides.output_token_budget = Some(4_000);
+    assert!(!cheap_agent_eligible(&budgeted, true, false, parent), "output budget");
+    trip_cheap_agent(parent);
+    assert!(
+        !cheap_agent_eligible(&explore(), true, false, parent),
+        "a parent whose utility child failed keeps its children on their own model"
+    );
+    assert!(cheap_agent_eligible(&explore(), true, false, "another-parent"));
+    crate::jev::clear_test_flags();
+}
 /// The worker's configured effort reaches a child on the worker model, auto
 /// included, but it never overrides an effort the caller, a role or the agent
 /// definition chose, and it never touches a child on another model.

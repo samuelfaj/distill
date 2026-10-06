@@ -259,6 +259,213 @@ async fn sampler_error_aborts_with_classifier_error() {
         .await;
 }
 
+fn utility_classifier_reply(text: &str) -> distill_test_support::ScriptedResponse {
+    distill_test_support::ScriptedResponse::sse(
+        distill_test_support::sse::chat_completion_script_exact(text, "aux-model"),
+    )
+}
+
+/// The utility model classifies first: its valid verdict is the classifier's
+/// verdict, so the session model (unreachable here) is never asked.
+#[tokio::test(flavor = "current_thread")]
+async fn a_valid_utility_verdict_settles_the_classifier() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let utility = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            utility.enqueue_response(
+                "/v1/chat/completions",
+                utility_classifier_reply(
+                    r#"{"category":"not_stalled_complete","confidence":0.9,"evidence":"done"}"#,
+                ),
+            );
+            crate::session::goal_evaluator::set_test_goal_utility(Some(utility.url()));
+            let (actor, tmp) = make_laziness_actor(LazinessDetectorPerModelConfig {
+                enabled: true,
+                max_nudges_per_session: 1,
+                idle_threshold_ms: Some(50),
+                min_confidence: None,
+                include_reasoning: None,
+            })
+            .await;
+            SessionActor::maybe_fire_laziness_check(actor.clone()).await;
+            crate::session::goal_evaluator::set_test_goal_utility(None);
+            drop(Arc::try_unwrap(actor).ok().unwrap());
+            assert_eq!(utility.request_count_for("/v1/chat/completions"), 1);
+            let log = events_log(&tmp);
+            assert!(
+                has_event_with(&log, "laziness_classifier_fired", |v| j(v, "category")
+                    == crate::session::events::LAZINESS_NOT_STALLED_COMPLETE
+                    && j(v, "model_id") == "aux-model"),
+                "the utility verdict is the classifier's verdict, credited to the utility:\n{log}"
+            );
+            assert!(
+                !log.contains("laziness_classifier_aborted"),
+                "the session model was never asked:\n{log}"
+            );
+        })
+        .await;
+}
+
+/// An answer that is no verdict, or a failed utility call, classifies on the
+/// session model exactly as before: here the unreachable session model ends
+/// each fire in the same classifier-error abort it gives without a utility.
+#[tokio::test(flavor = "current_thread")]
+async fn a_utility_that_cannot_classify_falls_back_to_the_session_model() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let utility = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            utility.enqueue_response(
+                "/v1/chat/completions",
+                utility_classifier_reply("The agent looks fine to me."),
+            );
+            utility.enqueue_response(
+                "/v1/chat/completions",
+                distill_test_support::ScriptedResponse::json(
+                    500,
+                    serde_json::json!({"error": "down"}),
+                ),
+            );
+            crate::session::goal_evaluator::set_test_goal_utility(Some(utility.url()));
+            let (actor, tmp) = make_laziness_actor(LazinessDetectorPerModelConfig {
+                enabled: true,
+                max_nudges_per_session: 1,
+                idle_threshold_ms: Some(50),
+                min_confidence: None,
+                include_reasoning: None,
+            })
+            .await;
+            SessionActor::maybe_fire_laziness_check(actor.clone()).await;
+            SessionActor::maybe_fire_laziness_check(actor.clone()).await;
+            crate::session::goal_evaluator::set_test_goal_utility(None);
+            drop(Arc::try_unwrap(actor).ok().unwrap());
+            assert_eq!(utility.request_count_for("/v1/chat/completions"), 2);
+            let log = events_log(&tmp);
+            let aborts = log
+                .lines()
+                .filter(|line| {
+                    line.contains("laziness_classifier_aborted")
+                        && line.contains(crate::session::events::LAZINESS_ABORT_CLASSIFIER_ERROR)
+                })
+                .count();
+            assert_eq!(aborts, 2, "both fires reached the session model:\n{log}");
+            assert!(
+                !log.contains("laziness_classifier_fired"),
+                "no utility answer became a verdict:\n{log}"
+            );
+        })
+        .await;
+}
+
+/// A prompt that lands while the utility is still classifying ends the fire
+/// as it would during the session-model call: the utility request is dropped
+/// and the session model is never started for a moot verdict.
+#[tokio::test(flavor = "current_thread")]
+async fn user_input_during_the_utility_call_aborts_without_the_session_model() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let utility = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            utility.enqueue_response(
+                "/v1/chat/completions",
+                distill_test_support::ScriptedResponse::hang(),
+            );
+            crate::session::goal_evaluator::set_test_goal_utility(Some(utility.url()));
+            let (actor, tmp) = make_laziness_actor(LazinessDetectorPerModelConfig {
+                enabled: true,
+                max_nudges_per_session: 1,
+                idle_threshold_ms: Some(50),
+                min_confidence: None,
+                include_reasoning: None,
+            })
+            .await;
+            let bump_actor = actor.clone();
+            let bump_task = tokio::task::spawn_local(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                bump_actor
+                    .user_input_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            });
+            let fire = SessionActor::maybe_fire_laziness_check(actor.clone());
+            tokio::time::timeout(std::time::Duration::from_secs(10), fire)
+                .await
+                .expect("the prompt ends the fire long before the utility deadline");
+            bump_task.await.unwrap();
+            crate::session::goal_evaluator::set_test_goal_utility(None);
+            drop(Arc::try_unwrap(actor).ok().unwrap());
+            assert_eq!(utility.request_count_for("/v1/chat/completions"), 1);
+            let log = events_log(&tmp);
+            assert!(
+                has_event_with(&log, "laziness_classifier_aborted", |v| j(v, "reason")
+                    == crate::session::events::LAZINESS_ABORT_USER_INPUT),
+                "expected user_input abort:\n{log}"
+            );
+            assert!(
+                !log.contains(crate::session::events::LAZINESS_ABORT_CLASSIFIER_ERROR),
+                "the unreachable session model was never asked:\n{log}"
+            );
+        })
+        .await;
+}
+
+/// A utility that keeps failing stops being asked: after two failures in a
+/// row each fire goes straight to the session model instead of first waiting
+/// out a dead endpoint.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failing_utility_stops_being_asked() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let utility = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            for _ in 0..3 {
+                utility.enqueue_response(
+                    "/v1/chat/completions",
+                    distill_test_support::ScriptedResponse::json(
+                        500,
+                        serde_json::json!({"error": "down"}),
+                    ),
+                );
+            }
+            crate::session::goal_evaluator::set_test_goal_utility(Some(utility.url()));
+            let (actor, tmp) = make_laziness_actor(LazinessDetectorPerModelConfig {
+                enabled: true,
+                max_nudges_per_session: 1,
+                idle_threshold_ms: Some(50),
+                min_confidence: None,
+                include_reasoning: None,
+            })
+            .await;
+            for _ in 0..3 {
+                SessionActor::maybe_fire_laziness_check(actor.clone()).await;
+            }
+            crate::session::goal_evaluator::set_test_goal_utility(None);
+            drop(Arc::try_unwrap(actor).ok().unwrap());
+            assert_eq!(
+                utility.request_count_for("/v1/chat/completions"),
+                2,
+                "the third fire skipped the utility"
+            );
+            let aborts = events_log(&tmp)
+                .lines()
+                .filter(|line| {
+                    line.contains("laziness_classifier_aborted")
+                        && line.contains(crate::session::events::LAZINESS_ABORT_CLASSIFIER_ERROR)
+                })
+                .count();
+            assert_eq!(aborts, 3, "every fire still reached the session model");
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn idle_recheck_after_sleep_short_circuits_silently() {
     // The actor enters maybe_fire_laziness_check idle, but a pending input lands during the sleep

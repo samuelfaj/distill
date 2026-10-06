@@ -865,6 +865,7 @@ pub fn invalidate_payload_reads_for_active_session() {
     if let Some(client) = client_cached() {
         client.clear_memo_for_session(&session_id);
     }
+    forget_test_failures(&session_id);
     let Ok(mut index) = read_index().lock() else {
         return;
     };
@@ -875,10 +876,93 @@ pub fn invalidate_payload_reads_for_active_session() {
 /// copies a reuse note could point at. Utility answers stay valid, so the
 /// selection memo is kept.
 pub fn invalidate_payload_reads_for_session(session_id: &str) {
+    forget_test_failures(session_id);
     let Ok(mut index) = read_index().lock() else {
         return;
     };
     index.retain(|(owner, _), _| owner != session_id);
+}
+
+/// Failure blocks of a test run, by test name, with a hash of each block.
+pub(crate) type TestFailures = std::collections::BTreeMap<String, String>;
+
+/// The failure blocks the latest filtered run of each test command showed the
+/// model, keyed like the read index and forgotten with it: after a compaction
+/// or an eviction the copy a rerun would point at may be gone.
+fn test_failure_index()
+-> &'static std::sync::Mutex<std::collections::HashMap<(String, String), TestFailures>> {
+    static INDEX: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), TestFailures>>,
+    > = OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// The failure blocks the previous filtered run of `command` showed; empty
+/// when there was none or the index is poisoned, so every block stays.
+pub(crate) fn previous_test_failures(command: &str) -> TestFailures {
+    test_failure_index()
+        .lock()
+        .ok()
+        .and_then(|index| {
+            index
+                .get(&(active_session_id(), command.to_owned()))
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+/// Records the failure blocks the model has now seen for `command`.
+pub(crate) fn note_test_failures(command: &str, failures: TestFailures) {
+    if let Ok(mut index) = test_failure_index().lock() {
+        index.insert((active_session_id(), command.to_owned()), failures);
+    }
+}
+
+/// Forgets `command`'s baseline: its latest run reached the model verbatim,
+/// so a fold against an older run would describe text the model did not see last.
+pub(crate) fn forget_test_failures_of(command: &str) {
+    if let Ok(mut index) = test_failure_index().lock() {
+        index.remove(&(active_session_id(), command.to_owned()));
+    }
+}
+
+fn forget_test_failures(session_id: &str) {
+    if let Ok(mut index) = test_failure_index().lock() {
+        index.retain(|(owner, _), _| owner != session_id);
+    }
+}
+
+/// The `file:line` sites the latest failing terminal output cited, per session.
+/// Nothing is quoted from them: they only count how often a read follows.
+fn error_site_index()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, Vec<(String, usize)>>> {
+    static INDEX: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Vec<(String, usize)>>>,
+    > = OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Replaces the session's cited error sites.
+pub(crate) fn note_error_sites(sites: Vec<(String, usize)>) {
+    if let Ok(mut index) = error_site_index().lock() {
+        index.insert(active_session_id(), sites);
+    }
+}
+
+/// Removes and reports the first cited site `covers` accepts, so a site
+/// counts once.
+pub(crate) fn take_error_site(covers: impl Fn(&str, usize) -> bool) -> bool {
+    let Ok(mut index) = error_site_index().lock() else {
+        return false;
+    };
+    let Some(sites) = index.get_mut(&active_session_id()) else {
+        return false;
+    };
+    let Some(position) = sites.iter().position(|(path, line)| covers(path, *line)) else {
+        return false;
+    };
+    sites.remove(position);
+    true
 }
 
 /// How many payloads the process remembers (tests, and a bound on the map).

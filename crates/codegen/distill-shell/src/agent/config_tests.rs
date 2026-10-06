@@ -8686,6 +8686,49 @@ fn a_status_line_the_parser_could_not_read_in_full_reaches_grok_inspect() {
     );
     assert_eq!(cfg.ui.theme.as_deref(), Some("kanagawa"));
 }
+/// A retired Jev lever left on in config switches nothing. The load warning
+/// must say it is retired, once per key, so nobody runs a token experiment
+/// believing a cheap-task or lane-choice lane is active; a real typo in the
+/// same table still reads as unrecognized.
+#[test]
+fn retired_jev_ladder_keys_warn_as_retired_not_as_typos() {
+    use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
+    let raw_config: toml::Value = toml::from_str(
+        r#"
+            [jev.ladder]
+            e_cheap_task = true
+            e_lane_choice = true
+            e_breaker = true
+            e_crushers = true
+            e_crusher = true
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw_config).expect("retired keys must not fail the load");
+    let reasons = |path: &str| {
+        cfg.config_warnings
+            .iter()
+            .filter(|w| {
+                w.kind == ConfigWarningKind::UnknownField
+                    && matches!(&w.target, WarningTarget::ConfigKey { path: p } if p == path)
+            })
+            .map(|w| w.reason.as_str())
+            .collect::<Vec<_>>()
+    };
+    for key in ["e_cheap_task", "e_lane_choice", "e_breaker"] {
+        let path = format!("jev.ladder.{key}");
+        assert_eq!(
+            reasons(&path),
+            vec!["retired Jev lever; ignored, it no longer switches anything"],
+            "{path}"
+        );
+    }
+    assert_eq!(reasons("jev.ladder.e_crusher"), vec!["unrecognized config key"]);
+    assert!(
+        reasons("jev.ladder.e_crushers").is_empty(),
+        "a live lever is not a warning"
+    );
+}
 /// A model's `env_key` credential, installed as the process static key, is served by the shared api-key provider.
 /// Lives agent-side because it resolves a model list from the full `Config`, which the auth layer never sees.
 #[tokio::test]

@@ -1867,18 +1867,106 @@ mod tests {
 }
 
 impl SessionActor {
-    /// Puts a routed round back on the session model after its endpoint refused
-    /// the request. Only that round falls back: the next micro-action asks Jev
-    /// again and may route locally once more.
+    /// E6: runs this round of a fresh `explore` child on the utility model when
+    /// that model is a catalog entry, is not the child's own model, is not known
+    /// to lack tool calling, and the conversation fits its window and carries no
+    /// secret. The child's
+    /// session model stays what it would be without the lever (worker or main),
+    /// so a failed request goes back to it through [`Self::undo_local_route`].
+    /// Once the route stops, the rest of the child stays on its own model.
+    /// Returns whether this round was routed.
+    pub(super) async fn jev_route_cheap_agent(&self, cfg: &mut SamplingConfig) -> bool {
+        if !self.startup_hints.cheap_agent
+            || self.jev_ledger.borrow().cheap_agent_off
+            || self.child_model_routing_locked()
+            || !crate::jev::lever_active(JevLever::ECheapAgent)
+        {
+            return false;
+        }
+        let stop = |reason: &str| {
+            self.jev_ledger.borrow_mut().cheap_agent_off = true;
+            crate::jev::record_item(JevLever::ECheapAgent, "own-model", reason, None, None);
+            false
+        };
+        let creds = self.chat_state_handle.get_credentials().await;
+        let resolve = |slug: &str| self.aux_sampler_config_with(slug, &creds);
+        let excluded = [cfg.model.as_str()];
+        let Some(model) =
+            crate::jev_cheap::utility_catalog_model(&self.models_manager, &excluded, &resolve)
+        else {
+            return stop("no utility catalog entry other than this child's model");
+        };
+        let Some(mut utility) = resolve(&model) else {
+            return stop(&format!("`{model}` did not resolve to an endpoint"));
+        };
+        let facts = crate::jev_model_facts::model_facts(&[(&utility.model, &utility.base_url)]);
+        if let Some(parameters) = facts
+            .first()
+            .and_then(|facts| facts["openrouter"]["supported_parameters"].as_array())
+            && !parameters.iter().any(|parameter| parameter == "tools")
+        {
+            return stop(&format!("`{model}` does not list tool calling"));
+        }
+        // `[jev.local]` may cap the window (a speed policy) and set the reserve.
+        let local = crate::jev::local_config_cached();
+        let ceiling = local
+            .max_context_tokens
+            .map_or(utility.context_window, |cap| utility.context_window.min(cap));
+        let reserve = local
+            .context_reserve_tokens
+            .unwrap_or(crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE)
+            .max(u64::from(utility.max_completion_tokens.unwrap_or_default()));
+        let conversation = self.chat_state_handle.get_conversation().await;
+        // A secret the child read stays in its history, so the utility never
+        // sees this child again.
+        let secret = |text: &str| {
+            distill_workspace::jev::crushers::utility_secret_presence(text).is_some()
+        };
+        if conversation.iter().any(|item| {
+            secret(&item.text_content())
+                || matches!(item, ConversationItem::Assistant(assistant)
+                    if assistant.tool_calls.iter().any(|call| secret(&call.arguments)))
+        }) {
+            return stop("the conversation carries a secret");
+        }
+        let estimate = self.jev_prompt_token_estimate(&conversation).await;
+        if estimate.saturating_add(reserve) > ceiling {
+            return stop(&format!(
+                "~{estimate} tokens + {reserve} reserve > {ceiling} for `{model}`"
+            ));
+        }
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut utility,
+            cfg,
+            self.client_identifier.clone(),
+            cfg.max_retries,
+        );
+        crate::jev::record_item(
+            JevLever::ECheapAgent,
+            "utility",
+            &format!("{model} · ~{estimate}/{ceiling} tokens"),
+            None,
+            None,
+        );
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_local_route(utility.model.clone());
+        *cfg = utility;
+        true
+    }
+
+    /// Puts a routed round back on the session model after its request failed.
+    /// The rest of the child stays there: the next round does not route again.
     ///
-    /// The refusal is recorded with the endpoint's own words, so the turn report
-    /// and `jev.jsonl` explain why the local model disappeared mid-turn.
+    /// The failure is recorded with the endpoint's own words, so the turn report
+    /// and `jev.jsonl` explain why the utility model disappeared mid-turn.
     pub(super) async fn undo_local_route(
         &self,
         request: &mut ConversationRequest,
         error: &distill_sampler::SamplingErrorInfo,
     ) -> SamplingConfig {
         self.signals_handle().clear_active_dispatch();
+        self.jev_ledger.borrow_mut().cheap_agent_off = true;
         let session = self.reconstruct_full_config().await;
         request.model = Some(session.model.clone());
         request.reasoning_effort = session.reasoning_effort;
@@ -1913,12 +2001,12 @@ impl SessionActor {
         tracing::warn!(
             session_id = %self.session_info.id.0,
             %reason,
-            "jev local route refused by its endpoint; the round continues on the session model"
+            "jev utility route failed; the round continues on the session model"
         );
         crate::jev::record_item(
-            JevLever::B2LocalModel,
+            JevLever::ECheapAgent,
             "fallback",
-            &format!("local endpoint refused a routed call, back on the session model · {reason}"),
+            &format!("utility endpoint failed a routed call, back on the session model · {reason}"),
             None,
             None,
         );

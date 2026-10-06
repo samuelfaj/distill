@@ -940,6 +940,16 @@ pub(crate) async fn run_shell_child(
             &ctx,
         )
         .await;
+    let cheap_agent = crate::agent::subagent::cheap_agent_eligible(
+        &request,
+        !is_wake && resume_source.is_none() && request.resume_from.is_none(),
+        effective_runtime.model.is_some()
+            || matches!(definition.model, ModelOverride::Override(_))
+            || ctx
+                .subagent_model_overrides
+                .contains_key(&request.subagent_type),
+        &ctx.parent_session_id,
+    );
     let subagent_max_turns = resolve_subagent_max_turns(definition.max_turns, ctx.parent_max_turns);
     {
         let model_str = &effective_sampling_config.model;
@@ -1750,6 +1760,7 @@ pub(crate) async fn run_shell_child(
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
             explicit_model_override: model_routing_locked,
+            cheap_agent,
             report_budget: context_source == InitialContextSource::New
                 && !request.owner.is_workflow()
                 && request.runtime_overrides.output_schema.is_none()
@@ -2342,6 +2353,9 @@ pub(crate) async fn run_shell_child(
         .await;
         let execution = super::worker_execution_evidence(&conversation);
         result.output = Arc::from(format!("{}\n\n{execution}\n\n{review}", result.output));
+    }
+    if cheap_agent && !result.success && !result.cancelled {
+        crate::agent::subagent::trip_cheap_agent(&ctx.parent_session_id);
     }
     if let Some(worker) = unavailable_worker.as_deref()
         && request.runtime_overrides.output_schema.is_none()

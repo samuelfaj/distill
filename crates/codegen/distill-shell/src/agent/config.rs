@@ -1281,7 +1281,8 @@ pub struct JevLadderConfig {
     pub e_cheap_compress: Option<bool>,
     /// e_read_reuse: the `e_read_reuse` lane (see `list.md`).
     pub e_read_reuse: Option<bool>,
-    /// e_cheap_agent: the `e_cheap_agent` lane (see `list.md`).
+    /// e_cheap_agent: run fresh `explore` children on the utility model when it
+    /// is a catalog entry (off by default; see `docs/token-saver.md`).
     pub e_cheap_agent: Option<bool>,
     /// e_prompt_blocks: the `e_prompt_blocks` lane (see `list.md`).
     pub e_prompt_blocks: Option<bool>,
@@ -1306,8 +1307,8 @@ pub struct JevLadderConfig {
     pub b1_intent_routing: Option<bool>,
     /// B2: money lever (model tier); off until its own gate passes.
     pub b2_model_tier: Option<bool>,
-    /// B2 (local): route a model call to the configured local model when it can
-    /// fully do it (free), falling back to the cloud model otherwise.
+    /// B2 (local): retired whole-round routing to the utility model; accepted
+    /// so existing configs load, but nothing reads it.
     pub b2_local_model: Option<bool>,
     /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
     #[serde(default, alias = "b2_micro_effort")]
@@ -1912,6 +1913,25 @@ fn non_boolean_feature_error(path: &str, value: &toml::Value) -> String {
     };
     format!("{path}: expected true or false, found {found}")
 }
+/// `[jev.ladder]` keys of retired levers. They parse but switch nothing, so the
+/// load warning says so instead of calling them typos.
+const RETIRED_JEV_LADDER_KEYS: &[&str] = &[
+    "e_cheap_task",
+    "e_lane_choice",
+    "e_breaker",
+    "a3_log_lines",
+    "c2_failure_triage",
+    "c7_change_type",
+];
+/// Why an unrecognized key is ignored.
+fn unrecognized_key_reason(path: &str) -> &'static str {
+    match path.strip_prefix("jev.ladder.") {
+        Some(key) if RETIRED_JEV_LADDER_KEYS.contains(&key) => {
+            "retired Jev lever; ignored, it no longer switches anything"
+        }
+        _ => "unrecognized config key",
+    }
+}
 /// Config paths read by raw-layer resolvers, not [`Config`] serde fields, so `serde_ignored` must not report them as unrecognized keys.
 const NON_SERDE_CONFIG_PATHS: &[&str] = &[
     crate::util::config::SLASH_COMMAND_TAGS_CONFIG_PATH,
@@ -2151,11 +2171,12 @@ impl Config {
         config.config_warnings.extend(model_provider_warnings);
         unrecognized_keys.sort();
         for key in unrecognized_keys {
+            let reason = unrecognized_key_reason(&key).to_owned();
             config.config_warnings.push(
                 super::config_model_override_parse::ConfigWarning::config_key(
                     key,
                     super::config_model_override_parse::ConfigWarningKind::UnknownField,
-                    "unrecognized config key".to_owned(),
+                    reason,
                 ),
             );
         }

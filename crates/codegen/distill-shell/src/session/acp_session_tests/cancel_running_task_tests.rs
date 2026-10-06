@@ -104,6 +104,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     front_message_committed: false,
                     hook_block_hold: Default::default(),
                     nudges_used_this_session: 0,
+                    laziness_utility_failures: 0,
                 }),
                 notifications: NotificationSender {
                     gateway: GatewaySender::new(gateway_tx),
@@ -638,6 +639,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     front_message_committed: false,
                     hook_block_hold: Default::default(),
                     nudges_used_this_session: 0,
+                    laziness_utility_failures: 0,
                 }),
                 notifications: NotificationSender {
                     gateway: GatewaySender::new(gateway_tx),
@@ -941,6 +943,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 front_message_committed: false,
                 hook_block_hold: Default::default(),
                 nudges_used_this_session: 0,
+                laziness_utility_failures: 0,
             });
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let agent = test_agent_default().await;
@@ -2467,6 +2470,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 front_message_committed: false,
                 hook_block_hold: Default::default(),
                 nudges_used_this_session: 0,
+                laziness_utility_failures: 0,
             });
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let agent = test_agent_default().await;

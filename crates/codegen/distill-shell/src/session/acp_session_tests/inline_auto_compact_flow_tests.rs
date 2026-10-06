@@ -47,6 +47,7 @@ async fn create_test_actor(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
     let chat_state_handle = distill_chat_state::ChatStateActor::spawn(
@@ -480,6 +481,7 @@ async fn create_test_actor_with_memory(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
     let chat_state_handle = distill_chat_state::ChatStateActor::spawn(

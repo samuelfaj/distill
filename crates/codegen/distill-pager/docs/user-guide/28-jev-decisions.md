@@ -98,7 +98,8 @@ decides whether the worker can do a subagent task as well as the main model
 C4 sends the change once. B1 intent reaches B2 as `turn_intent`.
 
 Retired levers `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
-`c2_failure_triage` and `c7_change_type` are ignored in configuration.
+`c2_failure_triage` and `c7_change_type` are ignored in configuration; config
+load warns once per key that it is retired (`grok inspect` lists it).
 
 ## Kill switch and how to revert
 
@@ -145,8 +146,11 @@ still shows the `jev …` chip per turn.
 
 ## Local model first (oMLX, Ollama, any OpenAI-compatible server)
 
-The local model is free, so it takes a call whenever it can fully do it. Configure the endpoint like any custom
-model and point `[jev.local]` at it:
+Whole main rounds no longer move to the local model: a round on another model replays the history uncached, so
+that route was removed, and `b2_local_model` is off and switches nothing. `[jev.local]` names the utility model for
+bounded utility tasks and, with `[jev.ladder] e_cheap_agent = true`, for the rounds of a fresh `explore` subagent
+when it is a catalog entry (see `docs/token-saver.md`). Configure the endpoint like any custom model and point
+`[jev.local]` at it:
 
 ```toml
 [model.qwen38-local]
@@ -165,23 +169,6 @@ notes = "tool calling OK, no reasoning effort; weak at proofs and counting."
 context_reserve_tokens = 8192
 # min_capability = 0.70
 ```
-
-Per model call:
-
-1. **Code guard** — the conversation estimate plus the reserve must fit the local window; if not, the call stays
-   on the session model and the record says why.
-2. **Decision** — three `noul` questions: *can the local model fully do this call?*, *does it need more context
-   than its window?*, *does it need frontier-level reasoning?*. Local wins only with `capable ≥ min_capability`
-   (0.70 by default) and no red flag at or above 0.40. Any missing answer, error or timeout means cloud.
-3. **Apply** — the round runs with the local endpoint, credential, backend and window; session attribution is
-   kept, and the turn row marks `jev ×N ·local`.
-
-Watch the window: this harness's base prompt (system prompt plus the turn's history) is already **~29k tokens**,
-and the tool definitions ride on top. A 32k local window therefore rarely fits — raise it on the server (oMLX:
-*Settings → model → max context window*, then restart the server so it re-reads its settings) and keep
-`[model.<local>] context_window` at the same number, or point `[jev.local]` at a larger local model. Measured
-once the window was 128k: a trivial turn ran **entirely** on the local model (126.4k tokens, 3m25s) instead of the
-cloud (about 9s) — free tokens, slower work. Disable it with `[jev.ladder] b2_local_model = false`.
 
 ## Reviewing a change
 

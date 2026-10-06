@@ -120,10 +120,10 @@ EXPLICIT = {
     "issue_triage_draft": ("Digest", "Literals"),
     "sql_query_draft": ("Ask", "Literals"),
     "search_query_suggest": ("Ask", "Literals"),
-    "patch_explain": ("Ask", "Literals"),
+    "patch_explain": ("Ask", "Spans"),
     "json_path_select": ("Ask", "Literals"),
     "filter_line_numbers": ("Ask", "Literals"),
-    "map_error_to_files": ("Ask", "CandidateIds"),
+    "map_error_to_files": ("Pick", "CandidateIds"),
     "help_flags_extract": ("Extract", "Literals"),
     "db_schema_digest": ("Extract", "Literals"),
     "tabular_digest": ("Extract", "Literals"),
@@ -169,6 +169,13 @@ CLOSING = {
         "Answer with the smallest extract that answers the question, quoting the "
         "payload verbatim; do not paraphrase."
     ),
+}
+
+
+# A summary whose wording contradicts its guard: a ClosedSet answer is one
+# label, so it cannot also carry the failing names.
+SUMMARY = {
+    "test_verdict": "PASS/FAIL from test stdout",
 }
 
 
@@ -224,7 +231,7 @@ def main():
         if structured is not None:
             instruction = structured[1]
         else:
-            summary = fn["summary"].replace("\\", "").replace('"', "'")
+            summary = SUMMARY.get(fid, fn["summary"]).replace("\\", "").replace('"', "'")
             instruction = f"{summary}. {CLOSING[kind]}"
         rows.append((fid, kind, guard, instruction))
 

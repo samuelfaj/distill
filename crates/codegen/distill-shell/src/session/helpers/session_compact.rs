@@ -535,6 +535,7 @@ pub(crate) async fn generate_session_compact(
         tool_choice,
         cancel,
         None,
+        false,
     )
     .await
 }
@@ -554,6 +555,7 @@ pub(crate) async fn generate_session_compact_with_observer(
     tool_choice: crate::util::config::CompactionToolChoice,
     cancel: &tokio_util::sync::CancellationToken,
     observer: Option<&AttemptObserver>,
+    one_shot: bool,
 ) -> Result<CompactOutput, CompactFailure> {
     if cancel.is_cancelled() {
         return Err(CompactFailure::Cancelled);
@@ -782,6 +784,7 @@ pub(crate) async fn generate_session_compact_with_observer(
                 x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                one_shot,
                 ..Default::default()
             };
             let request_id = request.x_grok_req_id.clone().unwrap_or_default();
@@ -1019,6 +1022,7 @@ pub(crate) async fn generate_session_compact_with_observer(
                 x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                one_shot,
                 ..Default::default()
             };
             let request_id = request.x_grok_req_id.clone().unwrap_or_default();

@@ -114,6 +114,7 @@ pub(super) async fn create_test_actor_with_memory(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();

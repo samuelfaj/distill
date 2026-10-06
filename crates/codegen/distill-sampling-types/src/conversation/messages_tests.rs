@@ -469,6 +469,51 @@ fn test_messages_request_cache_breakpoint_skips_lone_project_instructions() {
     assert_eq!(count_cache_control(&json), 2, "{json:#}");
 }
 
+/// A one-shot side call is never resent, so a tip or previous-turn breakpoint
+/// would only pay the cache-write premium on its whole prompt. The system
+/// prompt stays marked: the next call of the same kind reads it.
+#[test]
+fn a_one_shot_request_writes_no_conversation_breakpoint() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("Extract durable observations."),
+        ConversationItem::user("transcript"),
+        ConversationItem::assistant("working"),
+        ConversationItem::user("follow up"),
+    ])
+    .with_model("messages-compatible-model")
+    .one_shot();
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert_eq!(
+        json.pointer("/system/0/cache_control/type")
+            .and_then(|v| v.as_str()),
+        Some("ephemeral"),
+        "{json:#}",
+    );
+    assert_eq!(count_cache_control(&json), 1, "{json:#}");
+}
+
+/// A one-shot call with a stable leading message (the goal evaluator's goal)
+/// keeps that breakpoint, so the next round still reads it from cache.
+#[test]
+fn a_one_shot_request_keeps_its_stable_leading_message_breakpoint() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are the evaluator."),
+        ConversationItem::project_instructions("the goal"),
+        ConversationItem::user("this round"),
+    ])
+    .with_model("messages-compatible-model")
+    .one_shot();
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let Some(messages) = json.get("messages").and_then(|v| v.as_array()) else {
+        panic!("expected messages array: {json:#}");
+    };
+    assert_eq!(marker_on_last_block(&messages[0]), Some("ephemeral"), "{json:#}");
+    assert_eq!(marker_on_last_block(&messages[1]), None, "tip: {json:#}");
+    assert_eq!(count_cache_control(&json), 2, "{json:#}");
+}
+
 fn per_message_effort_history() -> Vec<ConversationItem> {
     let mut items = vec![
         ConversationItem::system("You are a helpful assistant."),

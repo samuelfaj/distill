@@ -2823,6 +2823,7 @@ impl SessionActor {
         output: &distill_tools::types::output::ToolOutput,
         text: String,
     ) -> String {
+        super::native_tool_output::measure_error_site_reads(output, &text);
         // A read of a stored original is the model asking for the full text a
         // footer pointed it to; narrowing it again would only point back at
         // the same store, so it enters history as the tool returned it.

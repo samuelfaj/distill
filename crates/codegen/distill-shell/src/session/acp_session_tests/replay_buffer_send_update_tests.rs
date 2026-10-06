@@ -76,6 +76,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let actor = SessionActor {

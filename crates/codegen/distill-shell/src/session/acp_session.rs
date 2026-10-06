@@ -415,6 +415,9 @@ pub(crate) struct State {
     /// Reset to 0 by the actor's main `select!` loop when its `model_switch_rx` watch channel fires.
     /// See the `model_switch_rx.changed()` arm in `run_session`.
     pub(crate) nudges_used_this_session: u32,
+    /// Utility laziness classifications that failed or timed out in a row;
+    /// at the limit the session classifies on its own model only.
+    pub(crate) laziness_utility_failures: u32,
 }
 /// Queue hold after a prompt-gate block; see [`State::hook_block_hold`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

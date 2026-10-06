@@ -1595,3 +1595,43 @@ async fn output_reservation_overflow_lowers_learned_cap_without_compacting() {
         })
         .await;
 }
+
+/// A utility `explore` child (E6) is only an optimization: any failed request
+/// on its utility round, a timeout or an overloaded server included, goes back
+/// to the child's own model, so the child never does worse than without the
+/// lever. Any other routed round keeps the narrower rule: only a request the
+/// endpoint rejected falls back.
+#[test]
+fn a_utility_child_falls_back_on_any_failure_other_routes_only_on_rejection() {
+    use distill_sampler::{SamplingErrorInfo, SamplingErrorKind};
+    let error = |kind: SamplingErrorKind, status_code: Option<u16>| SamplingErrorInfo {
+        kind,
+        status_code,
+        message: "failed".to_owned(),
+        is_retryable: true,
+        retry_after_secs: None,
+        should_retry: None,
+        error_code: None,
+        model_metadata: None,
+        empty_response_context: None,
+        doom_loop_triggers: None,
+        doom_loop_aborted_at_chunk: None,
+        credential: distill_sampling_types::SentCredential::Unknown,
+    };
+    let rejected = error(SamplingErrorKind::Api, Some(400));
+    let overloaded = error(SamplingErrorKind::Api, Some(503));
+    let timed_out = error(SamplingErrorKind::IdleTimeout, None);
+    let rate_limited = error(SamplingErrorKind::RateLimited, Some(429));
+    for failure in [&rejected, &overloaded, &timed_out, &rate_limited] {
+        assert!(super::local_route_falls_back(failure, true), "{:?}", failure.kind);
+    }
+    assert!(super::local_route_falls_back(&rejected, false));
+    for failure in [&overloaded, &timed_out, &rate_limited] {
+        assert!(!super::local_route_falls_back(failure, false), "{:?}", failure.kind);
+    }
+    // The user cancelled or rewound that round: resending it on the child's
+    // own model would spend a call nobody wants and may land on the restored turn.
+    let revoked = super::revoked_sampling_info();
+    assert!(!super::local_route_falls_back(&revoked, true));
+    assert!(!super::local_route_falls_back(&revoked, false));
+}

@@ -106,6 +106,7 @@ impl ChatStateActor {
             // Execute completed tool calls on a Length-truncated turn instead
             // of failing it; text-only salvage stays behind `CompletePartial`.
             length_policy: distill_sampling_types::LengthPolicy::CompleteToolCalls,
+            one_shot: false,
         }
     }
 

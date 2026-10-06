@@ -331,7 +331,9 @@ Just generate the session_title and nothing else"#,
     // initial-title call failed on the ChatGPT Codex backend and on OpenRouter
     // Muse while their other requests succeeded). With `Auto` the model still
     // calls the only tool, and a plain-text title is accepted below.
-    .with_tool_choice(ConversationToolChoice::Auto);
+    .with_tool_choice(ConversationToolChoice::Auto)
+    // Asked once per session, so a tip breakpoint would write a cache nobody reads.
+    .one_shot();
 
     let (response_result, rejected_response) = client
         .conversation_collect_with_idle_timeout_and_rejection(

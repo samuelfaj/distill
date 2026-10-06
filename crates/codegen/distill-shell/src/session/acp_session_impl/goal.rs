@@ -127,20 +127,21 @@ impl SessionActor {
         }
     }
 
+    /// One progress evaluation over `signals`, on the main model. A
+    /// checkpoint the harness settles makes no call at all (see
+    /// [`Self::skip_goal_checkpoint`]); what is left needs main's judgment: a
+    /// pending blocker main may confirm, or a round where only main can tell
+    /// progress from a stall.
     async fn evaluate_goal_round(
         &self,
         checkpoint: bool,
-    ) -> Result<
-        (
-            crate::session::goal_evaluator::GoalEvaluatorVerdict,
-            crate::session::goal_evaluator::GoalWorkSignals,
-        ),
-        String,
-    > {
+        signals: &crate::session::goal_evaluator::GoalWorkSignals,
+    ) -> Result<crate::session::goal_evaluator::GoalEvaluatorVerdict, String> {
         use crate::session::goal_evaluator::{
-            bounded_goal_transcript, build_goal_evaluator_request, parse_goal_evaluator_verdict,
+            bounded_goal_transcript, build_goal_evaluator_request, goal_evaluator_effort,
+            parse_goal_evaluator_verdict,
         };
-        let (objective, plan_file, progress, prior_gaps, seen_work) = {
+        let (objective, plan_file, progress, prior_gaps, seen_work, credited_work) = {
             let tracker = self.goal_tracker.lock();
             let snapshot = tracker
                 .snapshot()
@@ -151,12 +152,12 @@ impl SessionActor {
                 snapshot.progress.clone(),
                 snapshot.last_classifier_gaps.clone(),
                 snapshot.seen_work.clone(),
+                snapshot.credited_work.clone(),
             )
         };
-        let signals = self.goal_work_signals().await;
-        let harness_observed = seen_work.harness_observed(&signals);
-        let harness_progress = seen_work.has_new_work(&signals);
-        let resolved_skills = self.goal_skill_context(&objective).await;
+        let harness_observed = seen_work.harness_observed(signals);
+        let harness_progress = seen_work.has_new_work_beyond(&credited_work, signals);
+        let resolved_skills = self.goal_evaluator_skill_context(&objective).await;
         let transcript = bounded_goal_transcript(&self.chat_state_handle.get_conversation().await);
         let plan = match plan_file {
             Some(path) => tokio::fs::read_to_string(path)
@@ -165,15 +166,23 @@ impl SessionActor {
                 .map(|text| distill_tools::util::truncate_str(&text, 16 * 1024).to_owned()),
             None => None,
         };
-        let active_model = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
+        let sampling_config = self.chat_state_handle.get_sampling_config().await;
+        let session_effort = sampling_config
+            .as_ref()
+            .and_then(|config| config.reasoning_effort);
+        let active_model = sampling_config
             .map(|config| config.model)
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| self.models_manager.current_model_id().0.to_string());
         let session_id = self.session_info.id.to_string();
         let model = active_model;
+        let supported_efforts: Vec<_> = self
+            .models_manager
+            .model_reasoning_efforts(&model)
+            .into_iter()
+            .map(|option| option.value)
+            .collect();
+        let effort = goal_evaluator_effort(session_effort, &supported_efforts);
         let mut last_error = String::new();
         // One retry on the session model before a failed evaluation pauses the goal.
         for _ in 0..2 {
@@ -194,6 +203,7 @@ impl SessionActor {
                 &resolved_skills,
                 prior_gaps.as_deref(),
                 &harness_observed,
+                effort,
             );
             if checkpoint {
                 request.items.push(ConversationItem::user(
@@ -253,7 +263,7 @@ impl SessionActor {
                         }
                     }
                     match progress.clone().record(&verdict, harness_progress) {
-                        Ok(()) => return Ok((verdict, signals)),
+                        Ok(()) => return Ok(verdict),
                         Err(error) => last_error = error,
                     }
                 }
@@ -261,6 +271,122 @@ impl SessionActor {
             }
         }
         Err(last_error)
+    }
+
+    /// The utility lane the goal roles use; `None` keeps each on its main path.
+    pub(super) async fn goal_utility_lane(&self) -> Option<crate::jev_cheap::CheapLane> {
+        #[cfg(test)]
+        return crate::session::goal_evaluator::test_goal_utility_config()
+            .and_then(|config| crate::jev_cheap::CheapLane::from_sampler_config(&config));
+        #[cfg(not(test))]
+        self.cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+            .await
+    }
+
+    /// The utility model as a sampler, for a verdict no closed utility task
+    /// covers (the laziness classifier). A closed lane is
+    /// rebuilt on its own endpoint; one that cannot be leaves the caller on
+    /// the main model.
+    pub(super) async fn goal_utility_sampler(
+        &self,
+    ) -> Option<(distill_sampler::SamplingClient, String)> {
+        #[cfg(test)]
+        {
+            let config = crate::session::goal_evaluator::test_goal_utility_config()?;
+            let model = config.model.clone();
+            return Some((distill_sampler::SamplingClient::new(config).ok()?, model));
+        }
+        #[cfg(not(test))]
+        {
+            let lane = self
+                .cheap_lane(distill_workspace::jev::flags::JevLever::ECheapCompress)
+                .await?;
+            let model = lane.model().to_owned();
+            let base_url = match &lane.transport {
+                crate::jev_cheap::UtilityTransport::Sampler(sampler) => {
+                    return Some((sampler.client().clone(), model));
+                }
+                crate::jev_cheap::UtilityTransport::Closed(client) => {
+                    client.config().base_url.clone()
+                }
+            };
+            let catalog = self.models_manager.models();
+            let mut config = if crate::agent::config::find_model_by_id(&catalog, &model).is_some() {
+                let creds = self.chat_state_handle.get_credentials().await;
+                self.aux_sampler_config_with(&model, &creds)?
+            } else {
+                // A raw OpenRouter priority list: the sampler sends one model,
+                // so the checkpoint uses the list's first.
+                let first = model.split(',').map(str::trim).find(|id| !id.is_empty())?;
+                crate::jev_cheap::CheapLane::standalone_sampler_config(first)?
+            };
+            let model = config.model.clone();
+            if config.base_url.trim_end_matches('/') != base_url {
+                return None;
+            }
+            config.reasoning_effort = self
+                .models_manager
+                .model_reasoning_efforts(&config.model)
+                .into_iter()
+                .min_by_key(|option| crate::session::acp_session::effort_rank(option.value))
+                .map(|option| option.value);
+            Some((distill_sampler::SamplingClient::new(config).ok()?, model))
+        }
+    }
+
+    /// The evaluator's `resolved_skills`: each pinned skill's utility excerpt,
+    /// chosen once per goal and kept in goal state so the goal message stays
+    /// the same every round; the full body when there is no usable excerpt.
+    async fn goal_evaluator_skill_context(&self, objective: &str) -> String {
+        use crate::session::goal_evaluator::{
+            GoalSkillExcerpt, pinned_goal_skills, render_goal_skills, skill_body_hash,
+            utility_skill_excerpt,
+        };
+        let skills = self.slash_skills_for_resolve().await;
+        let pinned = pinned_goal_skills(objective, &skills).await;
+        let mut excerpts = self
+            .goal_tracker
+            .lock()
+            .snapshot()
+            .map(|goal| goal.skill_excerpts.clone())
+            .unwrap_or_default();
+        let mut lane = None;
+        let mut chosen = false;
+        for skill in &pinned {
+            let Ok(body) = &skill.body else {
+                continue;
+            };
+            let body_hash = skill_body_hash(body);
+            if excerpts
+                .iter()
+                .any(|e| e.path == skill.path && e.body_hash == body_hash)
+            {
+                continue;
+            }
+            if lane.is_none() {
+                lane = Some(self.goal_utility_lane().await);
+            }
+            // No lane: nothing is recorded, so the full body goes out as before.
+            let Some(Some(lane)) = &lane else {
+                break;
+            };
+            let excerpt = utility_skill_excerpt(lane, body).await;
+            excerpts.retain(|e| e.path != skill.path);
+            excerpts.push(GoalSkillExcerpt {
+                path: skill.path.clone(),
+                body_hash,
+                excerpt,
+            });
+            chosen = true;
+        }
+        if chosen {
+            let mut tracker = self.goal_tracker.lock();
+            if let Some(goal) = tracker.snapshot_mut() {
+                goal.skill_excerpts = excerpts.clone();
+                self.goal_notify_sender().persist_goal_state(&tracker);
+            }
+        }
+        render_goal_skills(&pinned, &excerpts)
     }
 
     fn record_goal_round_progress(&self, detail: &str, failed: bool) {
@@ -1688,8 +1814,12 @@ impl SessionActor {
         ) {
             return GoalRoundDecision::EndTurn;
         }
-        let (verdict, signals) = match self.evaluate_goal_round(checkpoint).await {
-            Ok(evaluated) => evaluated,
+        let signals = self.goal_work_signals().await;
+        if checkpoint && let Some(decision) = self.skip_goal_checkpoint(&signals).await {
+            return decision;
+        }
+        let verdict = match self.evaluate_goal_round(checkpoint, &signals).await {
+            Ok(verdict) => verdict,
             Err(error) => {
                 self.log_goal_evaluation(serde_json::json!({
                     "kind": if checkpoint { "checkpoint" } else { "round_end" },
@@ -1732,7 +1862,9 @@ impl SessionActor {
                 .last_classifier_gaps
                 .as_ref()
                 .is_some_and(|gaps| !gaps.is_empty());
-            let harness_progress = goal.seen_work.has_new_work(&signals);
+            let harness_progress = goal
+                .seen_work
+                .has_new_work_beyond(&goal.credited_work, &signals);
             let observed = goal.seen_work.harness_observed(&signals);
             let result = goal.progress.record(&verdict, harness_progress).map(|()| {
                 (
@@ -1794,6 +1926,7 @@ impl SessionActor {
         self.log_goal_evaluation(serde_json::json!({
             "kind": if checkpoint { "checkpoint" } else { "round_end" },
             "action": action,
+            "evaluator": "main",
             "decision": verdict.decision,
             "next_step": verdict.next_step,
             "blocker_key": verdict.blocker_key,
@@ -1895,6 +2028,52 @@ impl SessionActor {
         GoalRoundDecision::Continue(plan.directive)
     }
 
+    /// A checkpoint that sees new work no evaluation counted yet, with no
+    /// blocker pending, makes no model call: the new work is progress, which
+    /// is all a checkpoint evaluation would record for it. The work stays
+    /// unweighed for the next evaluation, which sees it in `harness_observed`.
+    async fn skip_goal_checkpoint(
+        &self,
+        signals: &crate::session::goal_evaluator::GoalWorkSignals,
+    ) -> Option<GoalRoundDecision> {
+        let observed = {
+            let mut tracker = self.goal_tracker.lock();
+            let goal = tracker.snapshot_mut()?;
+            if goal.evaluator_blocker_key.is_some()
+                || !goal
+                    .seen_work
+                    .has_new_work_beyond(&goal.credited_work, signals)
+            {
+                return None;
+            }
+            let observed = goal.seen_work.harness_observed(signals);
+            goal.credited_work.observe(signals);
+            goal.progress.no_progress_rounds = 0;
+            self.goal_notify_sender().persist_goal_state(&tracker);
+            observed
+        };
+        let resolved_after = self.finish_goal_escalation();
+        self.log_goal_evaluation(serde_json::json!({
+            "kind": "checkpoint",
+            "action": "continue",
+            "evaluator": "skipped",
+            "no_progress_rounds": 0,
+            "escalation_resolved_after_runs": resolved_after,
+            "workspace_changed": observed.get("workspace_changed_since_last_evaluation"),
+            "new_check_outcomes": observed
+                .get("new_check_outcomes")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len),
+            "delivery_root": signals.delivery_root,
+        }))
+        .await;
+        let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
+        if self.enforce_goal_token_budget(current_tokens).await {
+            return Some(GoalRoundDecision::EndTurn);
+        }
+        Some(GoalRoundDecision::Continue(String::new()))
+    }
+
     /// A stalled goal gets a change-of-approach directive: the main model keeps
     /// the goal and must stop repeating the work that stalled.
     async fn run_goal_escalation(&self, assessment: &str, next_step: &str, stalled: u32) {
@@ -1994,7 +2173,12 @@ impl SessionActor {
             .open(&path)
             .await
         {
-            Ok(mut file) => file.write_all(line.as_bytes()).await,
+            // A tokio file finishes the write in the background unless
+            // flushed; the next record or reader must see this one.
+            Ok(mut file) => match file.write_all(line.as_bytes()).await {
+                Ok(()) => file.flush().await,
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
         if let Err(error) = written {

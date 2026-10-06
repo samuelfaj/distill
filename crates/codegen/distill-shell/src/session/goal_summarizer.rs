@@ -37,6 +37,15 @@ const GOAL_SUMMARIZER_PROMPT_TEMPLATE: &str = include_str!("templates/goal_summa
 /// Sits well above a compliant summary; it only clips a model that ignores the prompt's word cap.
 const GOAL_SUMMARIZER_SUMMARY_MAX_CHARS: usize = 1200;
 
+const UTILITY_SUMMARY_QUESTION: &str = "This coding goal was just verified as achieved. Write the closing message the user reads: first one sentence naming what was delivered, then exactly how to use it (the command or steps to run, open or call it). State only facts the payload gives: the objective, the verified criteria and their evidence, the plan and the verifier notes. Do not echo the review. At most 80 words, plain text.";
+/// The utility summary's display bound; a longer answer ends at its last whole sentence.
+const UTILITY_SUMMARY_MAX_CHARS: usize = 800;
+/// Per-section bytes of the inlined inputs, under the utility's 24 KiB payload bound.
+const UTILITY_SUMMARY_OBJECTIVE_BYTES: usize = 3 * 1024;
+const UTILITY_SUMMARY_CRITERIA_BYTES: usize = 5 * 1024;
+const UTILITY_SUMMARY_PLAN_BYTES: usize = 8 * 1024;
+const UTILITY_SUMMARY_DETAILS_BYTES: usize = 6 * 1024;
+
 // Outcome and spawner abstraction
 
 /// `Summarized` carries the closing summary text the caller surfaces to the user.
@@ -210,6 +219,89 @@ pub(crate) struct GoalSummarizerInputs<'a> {
     pub model_id: &'a str,
     /// Resolved tool names for the inherited parent toolset.
     pub tool_names: &'a RoleToolNames,
+    /// With a lane, one utility call over the inlined inputs writes the
+    /// summary; the subagent stays the fallback.
+    pub utility: Option<&'a crate::jev_cheap::CheapLane>,
+    /// The goal's criteria; the verified ones and their evidence are the
+    /// delivered facts the utility summary may state.
+    pub criteria: &'a [crate::session::goal_evaluator::GoalCriterion],
+}
+
+/// The closing summary from one utility `display_text` call over the inlined
+/// objective, verified criteria, plan and verifier notes. `None` (no usable
+/// answer, a secret in the inputs, or a failed call) keeps the subagent.
+async fn utility_goal_summary(
+    lane: &crate::jev_cheap::CheapLane,
+    inputs: &GoalSummarizerInputs<'_>,
+) -> Option<String> {
+    use distill_tools::util::truncate_str;
+    let read = |path: Option<std::path::PathBuf>| async move {
+        match path {
+            Some(path) => tokio::fs::read_to_string(path).await.ok(),
+            None => None,
+        }
+    };
+    let plan = read(Some(inputs.plan_file.to_path_buf())).await;
+    let details = read(inputs.details_file.map(std::path::PathBuf::from)).await;
+    let verified = inputs
+        .criteria
+        .iter()
+        .filter(|c| c.status == crate::session::goal_evaluator::GoalCriterionStatus::Verified)
+        .map(|c| {
+            format!(
+                "- {} — evidence: {}",
+                c.requirement.trim(),
+                c.evidence.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let section = |title: &str, text: Option<&str>, max: usize| match text.map(str::trim) {
+        Some(text) if !text.is_empty() => format!("{title}:\n{}\n\n", truncate_str(text, max)),
+        _ => format!("{title}: (unavailable)\n\n"),
+    };
+    let payload = [
+        section(
+            "OBJECTIVE",
+            Some(inputs.objective),
+            UTILITY_SUMMARY_OBJECTIVE_BYTES,
+        ),
+        section(
+            "VERIFIED CRITERIA",
+            Some(&verified),
+            UTILITY_SUMMARY_CRITERIA_BYTES,
+        ),
+        section("PLAN", plan.as_deref(), UTILITY_SUMMARY_PLAN_BYTES),
+        section(
+            "VERIFIER NOTES",
+            details.as_deref(),
+            UTILITY_SUMMARY_DETAILS_BYTES,
+        ),
+    ]
+    .concat();
+    if distill_workspace::jev::crushers::utility_secret_presence(&payload).is_some() {
+        crate::jev_cheap::record_utility_outcome(
+            "goal_summary",
+            "keep:secret",
+            0,
+            payload.len(),
+            0,
+        );
+        return None;
+    }
+    match lane
+        .display_paragraph(
+            &payload,
+            UTILITY_SUMMARY_QUESTION,
+            UTILITY_SUMMARY_MAX_CHARS,
+            "goal_summary",
+        )
+        .await
+    {
+        crate::jev_cheap::ParagraphAnswer::Text(summary) => Some(summary),
+        crate::jev_cheap::ParagraphAnswer::Rejected
+        | crate::jev_cheap::ParagraphAnswer::NoAnswer => None,
+    }
 }
 
 /// Fail-OPEN: every failure path returns `FailOpen { reason }`; the caller logs it and completes the goal.
@@ -219,6 +311,23 @@ pub(crate) async fn run_goal_summarizer(
     emit_event: &dyn Fn(Event),
 ) -> GoalSummarizerOutcome {
     let started = std::time::Instant::now();
+    if let Some(lane) = inputs.utility
+        && let Some(summary) = utility_goal_summary(lane, &inputs).await
+    {
+        emit_event(Event::GoalSummarizerFired {
+            attempt: inputs.attempt,
+            model_id: lane.model().to_string(),
+        });
+        let latency_ms = started.elapsed().as_millis() as u64;
+        emit_event(Event::GoalSummarizerCompleted {
+            attempt: inputs.attempt,
+            latency_ms,
+        });
+        return GoalSummarizerOutcome::Summarized {
+            summary,
+            latency_ms,
+        };
+    }
     emit_event(Event::GoalSummarizerFired {
         attempt: inputs.attempt,
         model_id: inputs.model_id.to_string(),
@@ -428,6 +537,8 @@ mod tests {
             attempt: 2,
             model_id: "grok-test",
             tool_names,
+            utility: None,
+            criteria: &[],
         }
     }
 
@@ -650,5 +761,113 @@ mod tests {
         );
         let _ = request.result_tx.send(SubagentResult::default());
         handle.await.unwrap();
+    }
+
+    fn utility_lane(base_url: String) -> crate::jev_cheap::CheapLane {
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+        crate::session::goal_evaluator::set_test_goal_utility(Some(base_url));
+        let lane = crate::jev_cheap::CheapLane::from_sampler_config(
+            &crate::session::goal_evaluator::test_goal_utility_config().unwrap(),
+        )
+        .expect("utility lane");
+        crate::session::goal_evaluator::set_test_goal_utility(None);
+        lane
+    }
+
+    fn utility_reply(status: u16, content: &str) -> distill_test_support::ScriptedResponse {
+        distill_test_support::ScriptedResponse::json(
+            status,
+            serde_json::json!({
+                "id": "utility-summary", "model": "aux-model",
+                "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 9}
+            }),
+        )
+    }
+
+    fn verified_criterion() -> crate::session::goal_evaluator::GoalCriterion {
+        crate::session::goal_evaluator::GoalCriterion {
+            id: "cli".into(),
+            requirement: "ship the todo CLI".into(),
+            source: "user: build a todo CLI".into(),
+            status: crate::session::goal_evaluator::GoalCriterionStatus::Verified,
+            evidence: "cargo run -- add milk printed 1 item".into(),
+            scope: "abc".into(),
+            invalidated_by: String::new(),
+        }
+    }
+
+    /// With a utility lane the closing summary costs one utility call over the
+    /// inlined facts instead of a main-model subagent reading files.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_utility_summary_replaces_the_subagent() {
+        let server = distill_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        server.enqueue_response(
+            "/v1/chat/completions",
+            utility_reply(
+                200,
+                "A todo CLI was delivered. Run `cargo run -- add milk` to add an item.",
+            ),
+        );
+        let lane = utility_lane(server.url());
+        let dir = tmp_dir("utility");
+        let plan = dir.join("plan.md");
+        std::fs::write(&plan, "- [x] add command").unwrap();
+        let tn = RoleToolNames::inherit_defaults();
+        let spawner = Arc::new(MockSpawner::ok("subagent summary"));
+        let (log, emit) = collect_events();
+        let criteria = [verified_criterion()];
+        let mut with_utility = inputs(&plan, &tn);
+        with_utility.utility = Some(&lane);
+        with_utility.criteria = &criteria;
+        let outcome = run_goal_summarizer(spawner.clone(), with_utility, &emit).await;
+        crate::jev::clear_test_flags();
+        let GoalSummarizerOutcome::Summarized { summary, .. } = outcome else {
+            panic!("expected a summary");
+        };
+        assert!(summary.starts_with("A todo CLI was delivered."));
+        assert!(spawner.last_prompt.lock().unwrap().is_none(), "no subagent");
+        assert_eq!(*log.lock().unwrap(), ["fired", "completed"]);
+        let sent = server
+            .requests()
+            .into_iter()
+            .filter_map(|request| request.body)
+            .map(|body| body["messages"].to_string())
+            .collect::<String>();
+        assert!(
+            sent.contains("cargo run -- add milk printed 1 item"),
+            "{sent}"
+        );
+        assert!(sent.contains("add command"), "the plan is inlined");
+    }
+
+    /// A utility failure keeps today's closing summary from the subagent.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_failed_utility_summary_falls_back_to_the_subagent() {
+        let server = distill_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        server.enqueue_response("/v1/chat/completions", utility_reply(500, ""));
+        let lane = utility_lane(server.url());
+        let dir = tmp_dir("utility-fails");
+        let plan = dir.join("plan.md");
+        let tn = RoleToolNames::inherit_defaults();
+        let spawner = Arc::new(MockSpawner::ok("subagent summary"));
+        let (_log, emit) = collect_events();
+        let criteria = [verified_criterion()];
+        let mut with_utility = inputs(&plan, &tn);
+        with_utility.utility = Some(&lane);
+        with_utility.criteria = &criteria;
+        let outcome = run_goal_summarizer(spawner.clone(), with_utility, &emit).await;
+        crate::jev::clear_test_flags();
+        let GoalSummarizerOutcome::Summarized { summary, .. } = outcome else {
+            panic!("expected the subagent summary");
+        };
+        assert_eq!(summary, "subagent summary");
+        assert!(spawner.last_prompt.lock().unwrap().is_some());
     }
 }

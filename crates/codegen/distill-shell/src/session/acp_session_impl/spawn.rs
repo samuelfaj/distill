@@ -642,6 +642,7 @@ pub(crate) async fn spawn_session_actor(
         front_message_committed: false,
         hook_block_hold: Default::default(),
         nudges_used_this_session: 0,
+        laziness_utility_failures: 0,
     });
     let mcp_strategy = startup_hints.resolve_mcp_strategy();
     let file_state_tracker = Arc::new(match rewind_points_path {

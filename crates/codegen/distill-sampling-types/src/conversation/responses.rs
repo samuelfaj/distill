@@ -160,9 +160,24 @@ impl From<&ConversationRequest> for rs::CreateResponse {
 
 /// Reasoning items stay top-level siblings rather than folding into the assistant, so the input replays the model's original order.
 pub(super) fn build_responses_input(req: &ConversationRequest) -> rs::InputParam {
-    let items: Vec<rs::InputItem> = req
+    // System-role messages mid-history are an Anthropic feature: here the latest system prompt update replaces the leading prompt.
+    let folded;
+    let conversation = if req
         .items
         .iter()
+        .any(ConversationItem::is_system_prompt_update)
+    {
+        let mut items = req.items.clone();
+        fold_system_prompt_updates(&mut items);
+        folded = items;
+        &folded
+    } else {
+        &req.items
+    };
+    // Mid-conversation tool changes are an Anthropic feature: here the tools travel in `tools`.
+    let items: Vec<rs::InputItem> = conversation
+        .iter()
+        .filter(|item| !item.is_tool_addition())
         .flat_map(conversation_item_to_input_items)
         .collect();
     rs::InputParam::Items(items)

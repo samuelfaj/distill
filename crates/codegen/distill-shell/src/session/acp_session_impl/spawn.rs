@@ -1350,6 +1350,25 @@ pub(crate) async fn spawn_session_actor(
     save_prompt_context(&session_info, &prompt_context);
     let is_subagent_spawn = startup_hints.is_subagent;
     let session_non_interactive = startup_hints.non_interactive;
+    // A resumed history starts cold, so its system prompt updates go back into the head before the
+    // head is reconciled. A fork that keeps its parent's prompt keeps them: they are the prefix it shares.
+    if !startup_hints.preserve_inherited_system {
+        let updates_in_prefix = startup_hints.inherited_prefix_len.map(|len| {
+            conversation
+                .iter()
+                .take(len)
+                .filter(|item| item.is_system_prompt_update())
+                .count()
+        });
+        if distill_sampling_types::fold_system_prompt_updates(&mut conversation)
+            && let (Some(len), Some(dropped)) = (
+                startup_hints.inherited_prefix_len.as_mut(),
+                updates_in_prefix,
+            )
+        {
+            *len = len.saturating_sub(dropped);
+        }
+    }
     install_system_prompt(
         &mut conversation,
         &mut startup_hints.inherited_prefix_len,

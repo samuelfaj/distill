@@ -268,9 +268,15 @@ impl PromptContext {
     pub fn render_with_renderer(&self, renderer: &TemplateRenderer) -> Option<String> {
         let placeholders = self.placeholders();
         let render = |template: &str| renderer.render_with_extra(template, &placeholders).ok();
-        // The subagent template's `<user_info>` (workspace path, date) differs between sibling
-        // children; moved after everything else, it leaves them the longest shared cached prefix.
-        let mut per_child_tail = String::new();
+        // Each built-in template closes on its per-session values: a subagent's `<user_info>`
+        // (workspace path, date), the primary's `<environment>` (worker model, memory roots).
+        // Moved after everything else, they leave sibling children, workspaces and configs the
+        // longest shared cached prefix.
+        let tail_tag = match self.audience {
+            PromptAudience::Subagent => "user_info",
+            PromptAudience::Primary => "environment",
+        };
+        let mut per_session_tail = String::new();
         let prompt = match self.prompt_mode {
             PromptMode::Extend => {
                 let decrypted;
@@ -290,12 +296,11 @@ impl PromptContext {
                     }
                 };
                 let mut prompt = render(base)?;
-                if self.audience == PromptAudience::Subagent
-                    && matches!(self.system_prompt, TemplateOverride::None)
-                    && prompt.ends_with("</user_info>")
-                    && let Some(at) = prompt.rfind("\n\n<user_info>")
+                if matches!(self.system_prompt, TemplateOverride::None)
+                    && prompt.ends_with(&format!("</{tail_tag}>"))
+                    && let Some(at) = prompt.rfind(&format!("\n\n<{tail_tag}>"))
                 {
-                    per_child_tail = prompt.split_off(at);
+                    per_session_tail = prompt.split_off(at);
                 }
                 if let Some(body) = &self.prompt_body {
                     prompt.push_str("\n\n");
@@ -305,7 +310,7 @@ impl PromptContext {
             }
             PromptMode::Full => render(self.prompt_body.as_deref().unwrap_or(""))?,
         };
-        Some(prompt + &self.always_on_sections() + &per_child_tail)
+        Some(prompt + &self.always_on_sections() + &per_session_tail)
     }
     /// The sections every prompt carries, appended after the base template and body so a custom
     /// or codex base, a full-mode body and a host that leaves `output_style` unset all get them.
@@ -987,11 +992,15 @@ mod tests {
                 assert!(prompt.contains(&caveman), "{label}");
                 assert_eq!(prompt.matches("<ponytail>\n").count(), 1, "{label}");
                 assert!(prompt.contains(ponytail::instructions(audience)), "{label}");
-                // Only a subagent's per-child `<user_info>` data block may follow them (cache sharing).
-                let instructions = match prompt.rsplit_once("\n\n<user_info>") {
-                    Some((head, _)) if audience == PromptAudience::Subagent => head,
-                    _ => prompt.as_str(),
+                // Only the per-session data block (a subagent's `<user_info>`, the primary's
+                // `<environment>`) may follow them (cache sharing).
+                let tail = match audience {
+                    PromptAudience::Subagent => "\n\n<user_info>",
+                    PromptAudience::Primary => "\n\n<environment>",
                 };
+                let instructions = prompt
+                    .rsplit_once(tail)
+                    .map_or(prompt.as_str(), |(head, _)| head);
                 assert!(
                     instructions.trim_end().ends_with("</output_style>"),
                     "the style rules stay last so they are the most recent instruction: {label}"
@@ -1028,6 +1037,57 @@ mod tests {
         assert!(first.find("</output_style>").expect("style") < user_info);
         assert!(first.ends_with("Current Date: 2026-10-05\n</user_info>"), "{first}");
         assert_eq!(first.matches("<user_info>").count(), 1);
+    }
+    /// Sessions in different workspaces, or on different workers, share a cached prefix only up to
+    /// their first differing byte. The worker id and memory roots therefore close the primary
+    /// prompt, after the always-on sections, and appear nowhere earlier.
+    #[test]
+    fn primary_per_session_values_close_the_system_prompt() {
+        use distill_tools::types::tool::ToolKind;
+        let renderer = TemplateRenderer::new(
+            [
+                (ToolKind::Task, "spawn_subagent".to_owned()),
+                (ToolKind::Read, "read_file".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            std::collections::HashMap::new(),
+        );
+        let render = |worker: &str, workspace_memory: &str| {
+            PromptContext {
+                worker_model: Some(worker.to_owned()),
+                memory_v2_enabled: true,
+                memory_global_path: Some("/home/u/.distill/memory/global".to_owned()),
+                memory_workspace_path: Some(workspace_memory.to_owned()),
+                ..Default::default()
+            }
+            .render_with_renderer(&renderer)
+            .unwrap()
+        };
+        let first = render("worker-a", "/home/u/.distill/memory/workspaces/a");
+        let second = render("worker-b", "/home/u/.distill/memory/workspaces/b");
+        let environment = first
+            .find("\n\n<environment>")
+            .expect("environment present");
+        assert_eq!(
+            first.get(..environment),
+            second.get(..environment),
+            "workspaces and workers share everything before <environment>"
+        );
+        assert!(first.find("<orchestration>").expect("orchestration") < environment);
+        assert!(first.find("\n<memory>\n").expect("memory") < environment);
+        assert!(first.find("</output_style>").expect("style") < environment);
+        assert!(
+            first.ends_with(
+                "<environment>\nWorker model: `worker-a`\n\
+                 Global memory root: `/home/u/.distill/memory/global`\n\
+                 Workspace memory root: `/home/u/.distill/memory/workspaces/a`\n</environment>"
+            ),
+            "{first}"
+        );
+        assert_eq!(first.matches("worker-a").count(), 1);
+        assert_eq!(first.matches("/memory/workspaces/a").count(), 1);
+        assert_eq!(first.matches("\n<environment>\n").count(), 1);
     }
     /// A pinned level replaces the default text, and never adds a second section.
     #[test]
@@ -1074,8 +1134,13 @@ mod tests {
         let on = render_primary(ctx("chatgpt/gpt-6-luna", "spawn_subagent"));
         assert!(on.contains("<orchestration>"));
         assert!(on.contains(
-            "The worker model `chatgpt/gpt-6-luna` costs a small fraction of each of your turns"
+            "The worker model named in <environment> at the end of this prompt costs a small fraction of each of your turns"
         ));
+        assert!(
+            on.ends_with("\n\n<environment>\nWorker model: `chatgpt/gpt-6-luna`\n</environment>"),
+            "the worker id closes the prompt so it never splits the shared prefix: {on}"
+        );
+        assert_eq!(on.matches("chatgpt/gpt-6-luna").count(), 1);
         assert!(
             on.contains("Delegate by default, small changes included")
                 && on.contains("delegate it before reading the code yourself"),
@@ -1101,7 +1166,9 @@ mod tests {
         ));
         assert!(on.contains("Omit optional defaults and nulls"));
         assert!(!render_primary(ctx("", "spawn_subagent")).contains("<orchestration>"));
+        assert!(!render_primary(ctx("", "spawn_subagent")).contains("<environment>"));
         assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<orchestration>"));
+        assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<environment>"));
         assert!(
             !render_subagent_template(ctx("chatgpt/gpt-6-luna", "spawn_subagent"))
                 .contains("<orchestration>")

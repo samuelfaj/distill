@@ -468,6 +468,7 @@ mod tests {
                 reasoning_tokens: 0,
                 cached_prompt_tokens: 0,
                 cache_creation_prompt_tokens: 0,
+                cache_creation_1h_prompt_tokens: 0,
             },
             None,
             Some(10),
@@ -497,6 +498,7 @@ mod tests {
             effort_usage: Vec::new(),
             jev_calls: 0,
             utility_calls: 0,
+            last_cache_break: None,
         };
         let free = "subscription:free-usage-exhausted quota hit";
         let err = attach_prompt_usage(

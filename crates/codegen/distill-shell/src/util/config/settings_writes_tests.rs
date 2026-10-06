@@ -161,6 +161,40 @@ async fn tier_efforts_persist_auto_or_a_level_where_their_readers_look() {
     assert_eq!(auto["models"]["worker"].as_str(), Some("luna"), "the tiers are untouched");
 }
 
+/// "Don't ask again" on the cold-return compaction offer writes `[compaction] cold_return =
+/// "off"`. The section also holds the pruning and memory-flush settings the session resolved at
+/// startup, which must survive, and the offer reads the mode from the effective config: a write
+/// it cannot see would keep asking after the user said not to.
+#[tokio::test]
+#[serial_test::serial(GROK_HOME)]
+async fn cold_return_off_lands_where_the_offer_reads_it() {
+    use crate::session::acp_session::cold_return::ColdReturnMode;
+    let home = tempfile::tempdir().expect("home");
+    let _guard = distill_test_support::env::EnvGuard::set("GROK_HOME", home.path());
+    let path = crate::util::config::user_config_path();
+    std::fs::write(&path, "[compaction.pruning]\nkeep_last_n_turns = 7\n")
+        .expect("seed the config the user already has");
+
+    set_compaction_cold_return("off".to_owned())
+        .await
+        .expect("persist the answer");
+
+    let written: TomlValue = toml::from_str(&std::fs::read_to_string(&path).expect("read back"))
+        .expect("the write leaves parseable TOML");
+    assert_eq!(written["compaction"]["cold_return"].as_str(), Some("off"));
+    assert_eq!(
+        written["compaction"]["pruning"]["keep_last_n_turns"].as_integer(),
+        Some(7),
+        "the pruning settings share the section and must survive"
+    );
+    let effective = crate::config::load_effective_config().expect("effective config");
+    assert_eq!(
+        ColdReturnMode::from_config(&effective),
+        ColdReturnMode::Off,
+        "an answer the offer cannot read is a silent no-op"
+    );
+}
+
 #[test]
 fn utility_model_warning_only_targets_non_catalog_lanes() {
     assert_eq!(

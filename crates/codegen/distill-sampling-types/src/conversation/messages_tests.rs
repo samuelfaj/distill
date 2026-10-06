@@ -544,6 +544,8 @@ fn anchored(items: Vec<ConversationItem>) -> crate::messages::MessagesRequest {
         MessagesCacheOptions {
             anchor: true,
             extended_ttl: false,
+            system_messages: false,
+            deferred_tools: false,
         },
     )
 }
@@ -625,6 +627,8 @@ fn the_anchor_needs_its_option_and_never_marks_a_one_shot() {
         MessagesCacheOptions {
             anchor: true,
             extended_ttl: true,
+            system_messages: false,
+            deferred_tools: false,
         },
     );
     assert_eq!(
@@ -664,6 +668,8 @@ fn a_long_wait_marks_every_breakpoint_one_hour_only_where_the_endpoint_takes_it(
     let options = MessagesCacheOptions {
         anchor: true,
         extended_ttl: true,
+        system_messages: false,
+        deferred_tools: false,
     };
     let long = build_messages_request_with(&req, options);
     assert_eq!(ttl_values(&long), vec![Some("1h".to_owned()); 4]);
@@ -835,5 +841,482 @@ fn per_message_effort_keeps_json_schema_top_level() {
             .unwrap()
             .contains(&marker_json("low")),
         "{json:#}"
+    );
+}
+
+const SYSTEM_MESSAGES: MessagesCacheOptions = MessagesCacheOptions {
+    anchor: true,
+    extended_ttl: false,
+    system_messages: true,
+    deferred_tools: false,
+};
+
+/// Two agent rounds and a closing answer under the opening prompt `v1`, then `tail`.
+fn finished_turn_then(tail: Vec<ConversationItem>) -> Vec<ConversationItem> {
+    let mut items = vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("Fix the bug"),
+    ];
+    items.extend(agent_turn(0));
+    items.extend(agent_turn(1));
+    items.push(ConversationItem::assistant("Fixed."));
+    items.extend(tail);
+    items
+}
+
+fn messages_json(
+    model: &str,
+    items: Vec<ConversationItem>,
+    options: MessagesCacheOptions,
+) -> serde_json::Value {
+    serde_json::to_value(build_messages_request_with(
+        &ConversationRequest::from_items(items).with_model(model),
+        options,
+    ))
+    .unwrap()
+}
+
+fn without_cache_control(mut value: serde_json::Value) -> serde_json::Value {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("cache_control");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut value);
+    value
+}
+
+/// A mid-session prompt change (plan mode, `/memory`, a new worker) used to rewrite the top-level
+/// system prompt, re-billing every cached token after it. On a model that takes system-role
+/// messages the opening prompt stays byte for byte and the new prompt follows the cached history,
+/// after the user turn (the only place the API takes one), so only the update is new input.
+#[test]
+fn a_system_prompt_update_follows_the_cached_history_and_leaves_the_prefix_alone() {
+    let before = messages_json(
+        "claude-opus-5-5",
+        finished_turn_then(vec![ConversationItem::user("Now add a test")]),
+        SYSTEM_MESSAGES,
+    );
+    let after = messages_json(
+        "claude-opus-5-5",
+        finished_turn_then(vec![
+            ConversationItem::system_prompt_update("v2"),
+            ConversationItem::user("Now add a test"),
+        ]),
+        SYSTEM_MESSAGES,
+    );
+    assert_eq!(after["system"], before["system"], "{after:#}");
+    let before_messages = before["messages"].as_array().unwrap();
+    let after_messages = after["messages"].as_array().unwrap();
+    assert_eq!(after_messages.len(), before_messages.len() + 1, "{after:#}");
+    assert_eq!(
+        &after_messages[..before_messages.len()],
+        before_messages.as_slice(),
+        "every message before the update keeps its bytes and breakpoints"
+    );
+    let update = after_messages.last().unwrap();
+    assert_eq!(update["role"], "system", "{after:#}");
+    assert_eq!(
+        update["content"],
+        format!("{SYSTEM_PROMPT_UPDATE_PREAMBLE}\n\nv2"),
+        "the model is told the update replaces the earlier prompt"
+    );
+    assert_eq!(
+        count_cache_control(update),
+        0,
+        "no breakpoint on a system message"
+    );
+
+    // The next round keeps the update where it was, so it is cached from then on.
+    let next = messages_json(
+        "claude-opus-5-5",
+        finished_turn_then(vec![
+            ConversationItem::system_prompt_update("v2"),
+            ConversationItem::user("Now add a test"),
+            ConversationItem::assistant("Added."),
+            ConversationItem::user("Thanks"),
+        ]),
+        SYSTEM_MESSAGES,
+    );
+    let next_messages = without_cache_control(next["messages"].clone());
+    assert_eq!(
+        next_messages.as_array().unwrap()[..after_messages.len()],
+        without_cache_control(after["messages"].clone())
+            .as_array()
+            .unwrap()[..],
+        "{next:#}"
+    );
+    assert_eq!(next_messages[after_messages.len()]["role"], "assistant");
+}
+
+/// Without the option (another endpoint, or after the API refused one), on a model without
+/// system-role messages, or when the update has no user turn to follow, the request is exactly the
+/// one rewriting the head sent: the latest update is the top-level prompt and nothing else moves.
+#[test]
+fn without_system_messages_the_latest_update_is_the_top_level_prompt() {
+    let items = finished_turn_then(vec![
+        ConversationItem::system_prompt_update("v2"),
+        ConversationItem::user("Now add a test"),
+        ConversationItem::assistant("Added."),
+        ConversationItem::system_prompt_update("v3"),
+        ConversationItem::user("Thanks"),
+    ]);
+    let mut rewritten = items.clone();
+    assert!(fold_system_prompt_updates(&mut rewritten));
+    assert_eq!(current_system_prompt(&rewritten), Some("v3"));
+    for (model, options) in [
+        ("claude-opus-5-5", MessagesCacheOptions::default()),
+        ("claude-sonnet-5", SYSTEM_MESSAGES),
+    ] {
+        let folded = messages_json(model, items.clone(), options);
+        assert_eq!(
+            folded,
+            messages_json(model, rewritten.clone(), options),
+            "{model}"
+        );
+        assert!(
+            folded["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|m| m["role"] != "system"),
+            "{folded:#}"
+        );
+    }
+
+    // A request that ends on the assistant leaves the update nowhere to sit.
+    let prefill = finished_turn_then(vec![ConversationItem::system_prompt_update("v2")]);
+    let mut prefill_rewritten = prefill.clone();
+    assert!(fold_system_prompt_updates(&mut prefill_rewritten));
+    assert_eq!(
+        messages_json("claude-opus-5-5", prefill, SYSTEM_MESSAGES),
+        messages_json("claude-opus-5-5", prefill_rewritten, SYSTEM_MESSAGES)
+    );
+}
+
+/// The API rejects a system message between a `tool_use` and its `tool_result`, so an update
+/// stored inside a tool round goes after the results, never right after the assistant.
+#[test]
+fn a_system_prompt_update_never_splits_a_tool_round() {
+    let mut items = vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("Fix the bug"),
+    ];
+    let mut round = agent_turn(0);
+    round.insert(1, ConversationItem::system_prompt_update("v2"));
+    items.extend(round);
+    let json = messages_json("claude-opus-5-5", items, SYSTEM_MESSAGES);
+    let messages = json["messages"].as_array().unwrap();
+    let at = messages
+        .iter()
+        .position(|m| m["role"] == "system")
+        .expect("the update is sent in history");
+    assert_eq!(at + 1, messages.len(), "{json:#}");
+    assert_eq!(messages[at - 1]["role"], "user", "{json:#}");
+    assert_eq!(
+        messages[at - 1]["content"][0]["type"],
+        "tool_result",
+        "{json:#}"
+    );
+}
+
+/// A trailing update must not push the effort back to the top level, which would restart the cache.
+#[test]
+fn per_message_effort_survives_a_trailing_system_prompt_update() {
+    let mut req = ConversationRequest::from_items(finished_turn_then(vec![
+        ConversationItem::user("Now add a test"),
+        ConversationItem::system_prompt_update("v2"),
+    ]))
+    .with_model("claude-opus-5-5");
+    req.reasoning_effort = Some(crate::ReasoningEffort::Low);
+    let json = serde_json::to_value(build_messages_request_with(&req, SYSTEM_MESSAGES)).unwrap();
+    assert!(json.pointer("/output_config/effort").is_none(), "{json:#}");
+    let messages = json["messages"].as_array().unwrap();
+    assert!(messages.contains(&marker_json("low")), "{json:#}");
+    assert_eq!(messages.last().unwrap()["role"], "system", "{json:#}");
+}
+
+// A wrong match sends a system-role message to a model that rejects it (Claude Sonnet 5), or rewrites the prompt where one was free.
+#[test]
+fn supports_system_messages_matches_the_documented_models() {
+    for model in [
+        "claude-opus-5-5",
+        "claude-opus-5-5-20260101",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+    ] {
+        assert!(supports_system_messages(model), "{model}");
+    }
+    for model in [
+        "claude-sonnet-5",
+        "claude-sonnet-5-20260101",
+        "claude-opus-4-7",
+        "claude-haiku-4-5-20251001",
+        "anthropic/claude-opus-5.5",
+    ] {
+        assert!(!supports_system_messages(model), "{model}");
+    }
+}
+
+const DEFERRED_TOOLS: MessagesCacheOptions = MessagesCacheOptions {
+    anchor: true,
+    extended_ttl: false,
+    system_messages: true,
+    deferred_tools: true,
+};
+
+fn tool_spec(name: &str) -> ToolSpec {
+    ToolSpec {
+        name: name.to_owned(),
+        description: Some(format!("{name} tool")),
+        parameters: serde_json::json!({"type": "object"}),
+    }
+}
+
+/// `items` on `model`, offering `offered` and holding `deferred` back.
+fn tools_json(
+    model: &str,
+    items: Vec<ConversationItem>,
+    offered: &[&str],
+    deferred: &[&str],
+    options: MessagesCacheOptions,
+) -> serde_json::Value {
+    let req = ConversationRequest {
+        tools: offered.iter().map(|name| tool_spec(name)).collect(),
+        deferred_tools: deferred.iter().map(|name| tool_spec(name)).collect(),
+        ..ConversationRequest::from_items(items).with_model(model)
+    };
+    serde_json::to_value(build_messages_request_with(&req, options)).unwrap()
+}
+
+fn without_tool_additions(mut items: Vec<ConversationItem>) -> Vec<ConversationItem> {
+    items.retain(|item| !item.is_tool_addition());
+    items
+}
+
+/// A tool family that joined mid-session used to change the tools array, which opens the cached
+/// prefix, so the whole conversation was re-billed. Declared deferred from the first request, the
+/// family joins with one `tool_addition` system message after the human turn that needed it: the
+/// tools array and every earlier message keep their bytes, and the next round keeps the addition
+/// where it was, so it is cached from then on.
+#[test]
+fn a_tool_family_joining_keeps_the_tools_array_and_the_cached_history() {
+    let core = ["edit_file", "read_file"];
+    let media = ["generate_image", "edit_image"];
+    let ask = || ConversationItem::user("Draw an icon for the app");
+    let before = tools_json(
+        "claude-opus-5-5",
+        finished_turn_then(vec![ask()]),
+        &core,
+        &media,
+        DEFERRED_TOOLS,
+    );
+    let joined = || finished_turn_then(vec![ask(), ConversationItem::tool_addition(media)]);
+    let all = ["edit_file", "read_file", "generate_image", "edit_image"];
+    let after = tools_json("claude-opus-5-5", joined(), &all, &[], DEFERRED_TOOLS);
+    assert_eq!(after["tools"], before["tools"], "{after:#}");
+    let deferred: Vec<&str> = before["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| tool["defer_loading"] == true)
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(deferred, ["edit_image", "generate_image"], "{before:#}");
+
+    let before_messages = before["messages"].as_array().unwrap();
+    let after_messages = after["messages"].as_array().unwrap();
+    assert_eq!(after_messages.len(), before_messages.len() + 1, "{after:#}");
+    assert_eq!(
+        &after_messages[..before_messages.len()],
+        before_messages.as_slice(),
+        "every message before the addition keeps its bytes and breakpoints"
+    );
+    let addition = after_messages.last().unwrap();
+    assert_eq!(addition["role"], "system", "{after:#}");
+    assert_eq!(
+        addition["content"],
+        serde_json::json!([
+            {"type": "tool_addition", "tool": {"type": "tool_reference", "name": "generate_image"}},
+            {"type": "tool_addition", "tool": {"type": "tool_reference", "name": "edit_image"}},
+        ])
+    );
+    assert_eq!(
+        count_cache_control(addition),
+        0,
+        "no breakpoint on a system message"
+    );
+
+    let mut later = joined();
+    later.push(ConversationItem::assistant("Here it is."));
+    later.push(ConversationItem::user("Thanks"));
+    let next = tools_json("claude-opus-5-5", later, &all, &[], DEFERRED_TOOLS);
+    assert_eq!(next["tools"], before["tools"]);
+    let next_messages = without_cache_control(next["messages"].clone());
+    assert_eq!(
+        next_messages.as_array().unwrap()[..after_messages.len()],
+        without_cache_control(after["messages"].clone())
+            .as_array()
+            .unwrap()[..],
+        "{next:#}"
+    );
+    assert_eq!(next_messages[after_messages.len()]["role"], "assistant");
+}
+
+/// Without the option (another endpoint, or after the API refused deferred tools) or on a model
+/// without mid-conversation tool changes, the request is exactly the one before deferred tools:
+/// the tools in effect, no deferred tool the model could not use, no addition.
+#[test]
+fn without_tool_changes_the_request_sends_the_tools_in_effect() {
+    let items = finished_turn_then(vec![
+        ConversationItem::user("Draw an icon for the app"),
+        ConversationItem::tool_addition(["generate_image"]),
+    ]);
+    let offered = ["generate_image", "read_file"];
+    for (model, options) in [
+        ("claude-opus-5-5", SYSTEM_MESSAGES),
+        ("claude-sonnet-5", DEFERRED_TOOLS),
+        ("claude-sonnet-4-5", DEFERRED_TOOLS),
+    ] {
+        let sent = tools_json(model, items.clone(), &offered, &["schedule_task"], options);
+        assert_eq!(
+            sent,
+            tools_json(
+                model,
+                without_tool_additions(items.clone()),
+                &offered,
+                &[],
+                options
+            ),
+            "{model}"
+        );
+        assert!(
+            !sent.to_string().contains("defer_loading")
+                && !sent.to_string().contains("schedule_task"),
+            "{sent:#}"
+        );
+    }
+}
+
+/// Where an addition has no place a system message can sit (a request that ends on the
+/// assistant), or every tool would be deferred (the first one offered would rewrite the prompt's
+/// head), the request sends the tools in effect instead of one the API rejects or re-bills.
+#[test]
+fn tool_additions_fall_back_where_they_cannot_keep_the_cache() {
+    let offered = ["generate_image", "read_file"];
+    let prefill = finished_turn_then(vec![ConversationItem::tool_addition(["generate_image"])]);
+    assert_eq!(
+        tools_json(
+            "claude-opus-5-5",
+            prefill.clone(),
+            &offered,
+            &[],
+            DEFERRED_TOOLS
+        ),
+        tools_json(
+            "claude-opus-5-5",
+            without_tool_additions(prefill),
+            &offered,
+            &[],
+            DEFERRED_TOOLS
+        )
+    );
+
+    let only_joined = finished_turn_then(vec![
+        ConversationItem::user("Draw an icon for the app"),
+        ConversationItem::tool_addition(["generate_image"]),
+    ]);
+    let sent = tools_json(
+        "claude-opus-5-5",
+        only_joined.clone(),
+        &["generate_image"],
+        &[],
+        DEFERRED_TOOLS,
+    );
+    assert_eq!(
+        sent,
+        tools_json(
+            "claude-opus-5-5",
+            without_tool_additions(only_joined),
+            &["generate_image"],
+            &[],
+            DEFERRED_TOOLS
+        )
+    );
+    assert!(!sent.to_string().contains("defer_loading"), "{sent:#}");
+}
+
+/// After a resume the history can name a tool the session has not judged needed again: it stays
+/// deferred with no addition, so the model never sees a tool the harness would refuse to run. A
+/// tool named twice is offered once, where it first joined, and an unknown name is never
+/// referenced (the API rejects a reference to an undeclared tool).
+#[test]
+fn a_tool_addition_offers_only_tools_the_session_offers_and_each_once() {
+    let items = finished_turn_then(vec![
+        ConversationItem::user("Draw an icon for the app"),
+        ConversationItem::tool_addition(["generate_image", "vanished_tool"]),
+        ConversationItem::assistant("Done."),
+        ConversationItem::user("And a banner"),
+        ConversationItem::tool_addition(["generate_image", "edit_image"]),
+    ]);
+    let resumed = tools_json(
+        "claude-opus-5-5",
+        items.clone(),
+        &["read_file"],
+        &["edit_image", "generate_image"],
+        DEFERRED_TOOLS,
+    );
+    assert!(
+        resumed["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["role"] != "system"),
+        "{resumed:#}"
+    );
+    assert!(
+        !resumed.to_string().contains("vanished_tool"),
+        "{resumed:#}"
+    );
+
+    let joined = tools_json(
+        "claude-opus-5-5",
+        items,
+        &["edit_image", "generate_image", "read_file"],
+        &[],
+        DEFERRED_TOOLS,
+    );
+    let additions: Vec<Vec<&str>> = joined["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "system")
+        .map(|m| {
+            m["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|block| block["tool"]["name"].as_str().unwrap())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        additions,
+        [vec!["generate_image"], vec!["edit_image"]],
+        "{joined:#}"
+    );
+    assert_eq!(
+        joined["tools"], resumed["tools"],
+        "the same array either way"
     );
 }

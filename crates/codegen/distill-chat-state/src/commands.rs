@@ -194,6 +194,11 @@ pub enum ChatStateCommand {
         lifetime: Option<std::time::Duration>,
     },
 
+    /// A main request read far less from the cache than the previous one sent; kept for `/usage`.
+    RecordCacheBreak {
+        cache_break: crate::usage::CacheBreak,
+    },
+
     /// Track that the agent edited a file path.
     RecordAgentEditedPath { path: String },
 
@@ -227,10 +232,19 @@ pub enum ChatStateCommand {
         reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
     },
 
-    /// Atomically align the leading `System` message with `prompt`, persisting inside the actor.
+    /// Atomically align the leading `System` message with `prompt` and drop every system prompt update, persisting inside the actor.
     /// Serializes with turn pushes so a mid-turn reconnect cannot lose updates the way RMW would.
     /// A changed head re-bases `total_tokens`; acceptable because it invalidates the KV prefix anyway.
     ReplaceSystemHead {
+        prompt: String,
+        reply: oneshot::Sender<bool>,
+    },
+
+    /// Make `prompt` the system prompt in effect, inside the actor. Where the next request keeps the
+    /// cached prefix (a model that takes system-role messages, a warm history at a turn boundary) it
+    /// is appended as a [`distill_sampling_types::SyntheticReason::SystemPromptUpdate`]; otherwise it
+    /// replaces the head and every earlier update, as [`Self::ReplaceSystemHead`] does.
+    UpdateSystemPrompt {
         prompt: String,
         reply: oneshot::Sender<bool>,
     },
@@ -302,6 +316,9 @@ pub enum ChatStateCommand {
     /// Whether the next request misses the provider cache anyway, so old
     /// history may be rewritten now without re-billing a warm prefix.
     IsHistoryCold { reply: oneshot::Sender<bool> },
+
+    /// Whether the provider cache expired while the session sat idle (a known lifetime only).
+    IsCacheExpiredWhileIdle { reply: oneshot::Sender<bool> },
 
     /// The request trims this session's requests sent (see [`Self::StartFromInheritedHistory`]).
     GetRequestTrims {
@@ -449,7 +466,8 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<ConversationCounts>,
     },
 
-    /// Get the first `System` message in the conversation, if any.
+    /// Get the system prompt in effect as a leading `System` message, if any: the last system
+    /// prompt update, else the first `System` message.
     /// Cheaper than `GetConversation` when only the system prompt is needed.
     GetSystemMessage {
         reply: oneshot::Sender<Option<ConversationItem>>,
@@ -540,6 +558,9 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::IsHistoryCold { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::IsCacheExpiredWhileIdle { reply: tx };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetEstimatedTotalTokens { reply: tx };

@@ -190,6 +190,10 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
     let mut pending_reasoning: Vec<String> = Vec::new();
 
     for item in items {
+        // Mid-conversation tool changes are an Anthropic feature: here the tools travel in `tools`.
+        if item.is_tool_addition() {
+            continue;
+        }
         match item {
             ConversationItem::Reasoning(r) => {
                 let text = reasoning_item_text(&r);
@@ -261,7 +265,10 @@ impl From<ConversationRequest> for ChatCompletionRequest {
                 ),
             },
         };
-        let mut messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(req.items);
+        // System-role messages mid-history are an Anthropic feature: here the latest system prompt update replaces the leading prompt.
+        let mut items = req.items;
+        fold_system_prompt_updates(&mut items);
+        let mut messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(items);
         // DeepSeek thinking mode with `tools`: every assistant message must
         // carry `reasoning_content` (empty if that turn had none). Omitting
         // the field is a 400.

@@ -14,7 +14,8 @@ pub fn canonical_system_prompt_eq(a: &str, b: &str) -> bool {
     a.trim_end_matches(['\n', '\r']) == b.trim_end_matches(['\n', '\r'])
 }
 
-/// Replace the leading `System` message with `prompt`, or insert one. Returns whether it changed.
+/// Replace the leading `System` message with `prompt`, or insert one, and drop every system prompt
+/// update (older views of the prompt the head now carries). Returns whether it changed.
 /// A head already equal modulo trailing newlines is left untouched (KV-cache-friendly idempotency).
 /// Shared by cold-load pre-apply and the atomic actor head swap.
 #[must_use]
@@ -22,10 +23,13 @@ pub fn replace_or_insert_system_head(
     conversation: &mut Vec<ConversationItem>,
     prompt: &str,
 ) -> bool {
+    let len = conversation.len();
+    conversation.retain(|item| !item.is_system_prompt_update());
+    let dropped_updates = conversation.len() != len;
     match conversation.first_mut() {
         Some(ConversationItem::System(sys)) => {
             if canonical_system_prompt_eq(sys.content.as_ref(), prompt) {
-                return false;
+                return dropped_updates;
             }
             sys.content = Arc::from(prompt);
             true
@@ -35,6 +39,19 @@ pub fn replace_or_insert_system_head(
             true
         }
     }
+}
+
+/// Keeps `prompt` the system prompt in effect after a rewrite (a rewind) that may have cut the
+/// update carrying it: it then becomes the head, as [`replace_or_insert_system_head`] sets it.
+/// Returns whether it changed.
+#[must_use]
+pub fn keep_system_prompt(conversation: &mut Vec<ConversationItem>, prompt: &str) -> bool {
+    if distill_sampling_types::current_system_prompt(conversation)
+        .is_some_and(|current| canonical_system_prompt_eq(current, prompt))
+    {
+        return false;
+    }
+    replace_or_insert_system_head(conversation, prompt)
 }
 
 #[cfg(test)]
@@ -97,6 +114,47 @@ mod tests {
         ));
         assert_eq!(system_prompt(&history), Some("client override"));
         assert_eq!(history.len(), 2, "inserts at head, keeps existing turns");
+    }
+
+    /// A head set from outside (a client override, a model switch) is the whole prompt: an update
+    /// left after it would replace it again, since the last one is the prompt in effect.
+    #[test]
+    fn replace_or_insert_system_head_drops_system_prompt_updates() {
+        let mut history = vec![
+            ConversationItem::system("v1"),
+            ConversationItem::user("hi"),
+            ConversationItem::assistant("yo"),
+            ConversationItem::system_prompt_update("v2"),
+            ConversationItem::user("again"),
+        ];
+        assert!(replace_or_insert_system_head(&mut history, "v1"));
+        assert_eq!(history.len(), 4);
+        assert!(
+            !history
+                .iter()
+                .any(ConversationItem::is_system_prompt_update)
+        );
+        assert_eq!(
+            distill_sampling_types::current_system_prompt(&history),
+            Some("v1")
+        );
+    }
+
+    /// A rewind that cuts the update carrying the prompt in effect must not revert the session
+    /// to an older prompt while its mode, memory and worker stay current.
+    #[test]
+    fn keep_system_prompt_restores_a_cut_update_into_the_head() {
+        let mut history = vec![
+            ConversationItem::system("v1"),
+            ConversationItem::user("hi"),
+            ConversationItem::assistant("yo"),
+            ConversationItem::system_prompt_update("v2"),
+        ];
+        assert!(!keep_system_prompt(&mut history, "v2"), "still in effect");
+        history.truncate(3);
+        assert!(keep_system_prompt(&mut history, "v2"));
+        assert_eq!(system_prompt(&history), Some("v2"));
+        assert_eq!(history.len(), 3);
     }
 
     #[test]

@@ -413,6 +413,7 @@ impl SessionActor {
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
         let tool_calls = self.reject_excess_media_gen_calls(tool_calls).await?;
+        let tool_calls = self.reject_deferred_tool_calls(tool_calls).await?;
         if !tool_calls.is_empty() {
             if tool_calls.len() > 1 {
                 let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);
@@ -536,6 +537,57 @@ impl SessionActor {
             allowed = allowed.len(),
             "media_gen batch limit rejected tool calls"
         );
+        Ok(allowed)
+    }
+    /// A tool held back as deferred (an optional family no request has needed yet) is not the
+    /// model's to call: the API withholds it, so a call that names one anyway gets an error result
+    /// instead of running. Every rejected id still gets its result so the batch stays paired.
+    pub(super) async fn reject_deferred_tool_calls(
+        &self,
+        tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
+    ) -> Result<Vec<crate::sampling::types::ToolCallResponse>, acp::Error> {
+        let deferred: std::collections::HashSet<String> = self
+            .jev_ledger
+            .borrow()
+            .deferred_tools
+            .iter()
+            .map(|def| def.function.name.clone())
+            .collect();
+        if deferred.is_empty() {
+            return Ok(tool_calls);
+        }
+        let (rejected, allowed): (Vec<_>, Vec<_>) = tool_calls
+            .into_iter()
+            .partition(|call| deferred.contains(&call.function.name));
+        for call in rejected {
+            let tool_name = call.function.name.clone();
+            let tool_call_id = acp::ToolCallId::new(std::sync::Arc::from(call.id.clone()));
+            let early_raw_input =
+                serde_json::from_str::<serde_json::Value>(&call.function.arguments).ok();
+            let meta = self.stamp_tool_meta(None, &tool_name, None);
+            self.send_update(
+                acp::SessionUpdate::ToolCall(
+                    acp::ToolCall::new(tool_call_id.clone(), tool_name.clone())
+                        .kind(acp::ToolKind::Other)
+                        .status(acp::ToolCallStatus::Pending)
+                        .raw_input(early_raw_input)
+                        .meta(meta),
+                ),
+                None,
+            )
+            .await;
+            tracing::warn!(
+                session_id = %self.session_info.id.0,
+                tool_name = %tool_name,
+                "model called a deferred tool; not executed"
+            );
+            self.handle_tool_not_executed(
+                &call.id,
+                &tool_call_id,
+                deferred_tool_call_result(&tool_name),
+            )
+            .await?;
+        }
         Ok(allowed)
     }
     /// Runs prepare, then dispatch, then post-flight.
@@ -3219,6 +3271,12 @@ impl SessionActor {
         self.chat_state_handle.push_tool_result(tool_chat);
         Ok(())
     }
+}
+/// The tool result for a call to a deferred tool: it did not run, and the model is told why.
+fn deferred_tool_call_result(tool_name: &str) -> String {
+    format!(
+        "Tool `{tool_name}` was not run: it is not available in this conversation yet. Use the tools you were given."
+    )
 }
 /// The title peels a redundant leading `cd <cwd>` for chrome only; `raw_input` is serialized separately and stays full.
 fn execute_tool_call_parts(

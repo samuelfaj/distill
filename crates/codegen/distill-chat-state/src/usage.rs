@@ -113,6 +113,9 @@ pub struct UsageTotals {
     pub output_tokens: u64,
     pub cached_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// The one-hour part of `cache_creation_tokens`; the rest is five-minute.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_creation_1h_tokens: u64,
     pub reasoning_tokens: u64,
     pub model_calls: u64,
     pub api_duration_ms: u64,
@@ -153,6 +156,7 @@ impl UsageTotals {
             output_tokens: u64::from(usage.completion_tokens),
             cached_read_tokens: u64::from(usage.cached_prompt_tokens),
             cache_creation_tokens: u64::from(usage.cache_creation_prompt_tokens),
+            cache_creation_1h_tokens: u64::from(usage.cache_creation_1h_prompt_tokens),
             reasoning_tokens: u64::from(usage.reasoning_tokens),
             model_calls: 1,
             api_duration_ms: api_duration_ms.unwrap_or(0),
@@ -178,6 +182,7 @@ impl UsageTotals {
             output_tokens,
             cached_read_tokens,
             cache_creation_tokens,
+            cache_creation_1h_tokens,
             reasoning_tokens,
             model_calls,
             api_duration_ms,
@@ -190,12 +195,19 @@ impl UsageTotals {
         self.cache_creation_tokens = self
             .cache_creation_tokens
             .saturating_add(*cache_creation_tokens);
+        self.cache_creation_1h_tokens = self
+            .cache_creation_1h_tokens
+            .saturating_add(*cache_creation_1h_tokens);
         self.reasoning_tokens = self.reasoning_tokens.saturating_add(*reasoning_tokens);
         self.model_calls = self.model_calls.saturating_add(*model_calls);
         self.api_duration_ms = self.api_duration_ms.saturating_add(*api_duration_ms);
         self.cost_missing_calls = self.cost_missing_calls.saturating_add(*cost_missing_calls);
         self.cost_usd_ticks = merge_cost_ticks(self.cost_usd_ticks, *cost_usd_ticks);
     }
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 fn merge_cost_ticks(a: Option<i64>, b: Option<i64>) -> Option<i64> {
@@ -287,6 +299,39 @@ pub struct UsageLedger {
     /// Utility outcomes per source kind. Not billing: it never changes totals.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub utility_outcomes: BTreeMap<String, UtilityOutcomeCounts>,
+    /// The last main request whose cache read fell far below the previous
+    /// prompt. Telemetry, not billing: no total reads it, and subagent folds
+    /// leave it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cache_break: Option<CacheBreak>,
+}
+
+/// Where the last prompt-cache break happened: the first item of the request
+/// that differed from the previous one, or none when the prefix was intact and
+/// the cache entry had expired or been evicted. Hashes and kinds only, never
+/// content.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheBreak {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_changed_index: Option<u64>,
+    /// Kind of the changed item (`system`, `user`, `tool_result`, …), as sent
+    /// before the break, or after it when the history shrank there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_kind: Option<String>,
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Seconds between the previous request and the one that missed.
+    #[serde(default)]
+    pub secs_since_previous: u64,
+    /// The items were intact but the tools or request settings sent with them changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settings_changed: bool,
+    /// The cache lifetime the previous request got, when its endpoint's is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_lifetime_secs: Option<u64>,
 }
 
 impl UsageLedger {
@@ -541,6 +586,10 @@ impl UsageLedger {
         self.incomplete = true;
     }
 
+    pub fn record_cache_break(&mut self, cache_break: CacheBreak) {
+        self.last_cache_break = Some(cache_break);
+    }
+
     fn fold_entry(&mut self, model_id: &str, totals: &UsageTotals) {
         self.totals.fold_totals(totals);
         self.by_model
@@ -562,6 +611,7 @@ mod tests {
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
             cache_creation_prompt_tokens: 0,
+            cache_creation_1h_prompt_tokens: 0,
         }
     }
 
@@ -1045,5 +1095,68 @@ mod tests {
         row.final_decision = None;
         let json = serde_json::to_value(&row).expect("serialize untagged row");
         assert!(json.get("source_kind").is_none() && json.get("final_decision").is_none());
+    }
+
+    /// `/usage` prices one-hour writes (2x) apart from five-minute ones (1.25x), so the split
+    /// must survive every fold, per model and in the session total.
+    #[test]
+    fn one_hour_cache_writes_fold_per_model_and_in_total() {
+        let mut ledger = UsageLedger::default();
+        let mut call = tu(1_000, 10);
+        call.cache_creation_prompt_tokens = 300;
+        call.cache_creation_1h_prompt_tokens = 200;
+        ledger.record_main_loop_call("a", &call, None, None);
+        ledger.record_subagent(
+            &[(
+                "b".into(),
+                UsageTotals {
+                    cache_creation_tokens: 50,
+                    cache_creation_1h_tokens: 50,
+                    model_calls: 1,
+                    ..Default::default()
+                },
+            )],
+            false,
+        );
+        assert_eq!(ledger.by_model["a"].cache_creation_1h_tokens, 200);
+        assert_eq!(ledger.by_model["b"].cache_creation_1h_tokens, 50);
+        assert_eq!(ledger.totals.cache_creation_tokens, 350);
+        assert_eq!(ledger.totals.cache_creation_1h_tokens, 250);
+    }
+
+    /// A child snapshot from before the split existed has no field: it reads as all five-minute.
+    #[test]
+    fn totals_without_the_split_read_as_five_minute_writes() {
+        let totals: UsageTotals = serde_json::from_value(serde_json::json!({
+            "input_tokens": 1, "output_tokens": 1, "cached_read_tokens": 0,
+            "cache_creation_tokens": 40, "reasoning_tokens": 0, "model_calls": 1,
+            "api_duration_ms": 0, "cost_usd_ticks": null, "cost_missing_calls": 1
+        }))
+        .expect("old totals still parse");
+        assert_eq!(totals.cache_creation_1h_tokens, 0);
+    }
+
+    /// The cache-break note is telemetry for `/usage`: recording one never moves a billed total.
+    #[test]
+    fn cache_break_is_kept_without_touching_totals() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_main_loop_call("a", &tu(100, 10), None, Some(5));
+        let before = ledger.totals.clone();
+        ledger.record_cache_break(CacheBreak {
+            first_changed_index: Some(3),
+            changed_kind: Some("tool_result".into()),
+            prompt_tokens: 52_000,
+            cache_read_tokens: 1_000,
+            secs_since_previous: 12,
+            ..Default::default()
+        });
+        assert_eq!(ledger.totals, before);
+        assert_eq!(
+            ledger
+                .last_cache_break
+                .as_ref()
+                .and_then(|b| b.first_changed_index),
+            Some(3)
+        );
     }
 }

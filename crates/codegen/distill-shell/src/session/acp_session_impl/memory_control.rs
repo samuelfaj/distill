@@ -492,10 +492,12 @@ impl SessionActor {
     }
 
     /// After a prompt swap on the agent: drop the stale prefire cache, persist the prompt
-    /// artifacts, and align the conversation head. The head swap is atomic in the chat-state
-    /// actor and serializes with turn pushes, so it is safe even if a turn started meanwhile.
-    /// An injected manifest block on the head is kept only while memory is on; turning memory
-    /// off must also take the remembered notes out of context, as resume does.
+    /// artifacts, and make it the conversation's prompt in effect. The update is atomic in the
+    /// chat-state actor and serializes with turn pushes, so it is safe even if a turn started
+    /// meanwhile; where it keeps the prompt cache it follows the history instead of rewriting the head.
+    /// An injected manifest block on the prompt in effect is kept only while memory is on; turning
+    /// memory off must also take the remembered notes out of context, as resume does, so it then
+    /// rewrites the head.
     async fn publish_agent_prompt(&self) {
         self.abort_and_clear_prefire().await;
         let (system_prompt, persisted_context, memory_v2_enabled) = {
@@ -512,19 +514,30 @@ impl SessionActor {
         super::save_system_prompt(&self.session_info, &system_prompt);
 
         let conversation = self.chat_state_handle.get_conversation().await;
-        let manifest_block = match conversation.first() {
-            Some(distill_sampling_types::ConversationItem::System(sys)) if memory_v2_enabled => sys
-                .content
-                .find(distill_chat_state::MEMORY_CONTEXT_OPEN_TAG)
-                .and_then(|start| sys.content.get(start..))
-                .map(str::to_owned),
-            _ => None,
-        };
+        let manifest_block = distill_sampling_types::current_system_prompt(&conversation)
+            .filter(|_| memory_v2_enabled)
+            .and_then(|prompt| {
+                prompt
+                    .find(distill_chat_state::MEMORY_CONTEXT_OPEN_TAG)
+                    .and_then(|start| prompt.get(start..))
+            })
+            .map(str::to_owned);
         let head = match manifest_block {
             Some(block) => format!("{}\n\n{block}", system_prompt.trim_end_matches('\n')),
             None => system_prompt,
         };
-        self.chat_state_handle.replace_system_head(&head).await;
+        // Notes left in an earlier prompt stay readable after an update, so taking them out of
+        // context takes a rewrite.
+        let notes_in_context = !memory_v2_enabled
+            && conversation.iter().any(|item| {
+                matches!(item, distill_sampling_types::ConversationItem::System(sys)
+                    if sys.content.contains(distill_chat_state::MEMORY_CONTEXT_OPEN_TAG))
+            });
+        if notes_in_context {
+            self.chat_state_handle.replace_system_head(&head).await;
+        } else {
+            self.chat_state_handle.update_system_prompt(&head).await;
+        }
         tracing::info!(
             session_id = %self.session_info.id.0,
             memory_v2_enabled,

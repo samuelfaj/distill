@@ -116,6 +116,8 @@ impl SessionActor {
                 self.relabel_agent_system_prompt(system_prompt_label).await;
             }
             let mut conversation = self.chat_state_handle.get_conversation().await;
+            // A switched model has no cache for this history: the new head is the whole prompt.
+            distill_sampling_types::fold_system_prompt_updates(&mut conversation);
             for item in conversation.iter_mut() {
                 if let ConversationItem::System(sys) = item {
                     if use_concise {
@@ -188,7 +190,8 @@ impl SessionActor {
         Ok(model_id)
     }
     /// Bring the `<orchestration>` section in line with the session's worker and main model, in the
-    /// agent's prompt and in the conversation head, which a resumed session keeps as it was saved.
+    /// agent's prompt and in the conversation's prompt in effect (the head, which a resumed session
+    /// keeps as it was saved, or the latest system prompt update).
     /// A running turn pins `Ref<Agent>` and the head is its cached prefix, so the swap then waits for
     /// the next turn's promotion.
     pub(super) async fn refresh_worker_prompt(&self) {
@@ -234,15 +237,15 @@ impl SessionActor {
         }
         let system_prompt = self.agent.borrow().system_prompt().to_owned();
         let conversation = self.chat_state_handle.get_conversation().await;
-        if let Some(ConversationItem::System(sys)) = conversation.first()
-            && let Some(head) = reconciled_orchestration_head(&sys.content, &system_prompt)
+        if let Some(in_effect) = distill_sampling_types::current_system_prompt(&conversation)
+            && let Some(head) = reconciled_orchestration_head(in_effect, &system_prompt)
         {
             if self.state.lock().await.running_task.is_some() {
                 self.worker_prompt_pending.set(true);
                 return;
             }
             self.abort_and_clear_prefire().await;
-            self.chat_state_handle.replace_system_head(&head).await;
+            self.chat_state_handle.update_system_prompt(&head).await;
             save_system_prompt(&self.session_info, &head);
             tracing::info!(
                 session_id = %self.session_info.id.0,

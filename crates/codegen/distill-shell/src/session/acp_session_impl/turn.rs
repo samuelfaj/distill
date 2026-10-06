@@ -1323,6 +1323,12 @@ impl SessionActor {
             let mut stop_continuations_this_turn: u32 = 0;
             let mut salvage =
                 super::length_salvage::LengthSalvage::new(self.length_salvage_budget());
+            if matches!(
+                input_origin.as_prompt_origin(),
+                super::super::PromptOrigin::User
+            ) {
+                self.maybe_compact_on_cold_return().await;
+            }
             loop {
                 if self.goal_harness_enabled() {
                     let goal_loop_active = self.goal_tracker.lock().status()
@@ -2963,6 +2969,22 @@ impl SessionActor {
                     parameters: schema,
                 });
             }
+            // Optional tools not needed yet, declared deferred where the endpoint takes it (see
+            // `ConversationRequest::deferred_tools`), through the same projection as the offered ones.
+            let deferred_tools: Vec<ToolSpec> = {
+                let held_back = self.jev_ledger.borrow().deferred_tools.clone();
+                let specs = self.turn_base_tool_specs(&held_back);
+                if self.startup_hints.is_subagent {
+                    child_tool_projection::child_safe_tool_specs(
+                        specs,
+                        child_tool_projection::ChildToolProjection::Rebuilt,
+                        messaging_grant,
+                        |name| bridge.tool_kind(name),
+                    )
+                } else {
+                    specs
+                }
+            };
             self.model_tools_read_only
                 .set(super::jev_tool_result::session_is_read_only(
                     effective_tools.iter().map(|tool| tool.name.as_str()),
@@ -3036,6 +3058,7 @@ impl SessionActor {
                 request.json_schema = json_schema.clone();
             }
             request.hosted_tools = self.hosted_tools_for_turn();
+            request.deferred_tools = deferred_tools;
             let configured_output_tokens = if self.tool_context.task_output_token_budget.is_some() {
                 self.chat_state_handle
                     .get_sampling_config()
@@ -4432,6 +4455,7 @@ mod last_sample_span_tests {
                 reasoning_tokens: 0,
                 cached_prompt_tokens: 0,
                 cache_creation_prompt_tokens: 0,
+                cache_creation_1h_prompt_tokens: 0,
             }),
             cost_usd_ticks: None,
             message_chunks_emitted: 0,

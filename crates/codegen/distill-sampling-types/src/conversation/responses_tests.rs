@@ -1715,3 +1715,50 @@ fn serialized_body_contains_no_placeholder_strings() {
         "both reasoning siblings must be present"
     );
 }
+
+/// Only Anthropic takes a system prompt update mid-history; the Responses input must be the one a
+/// rewritten head sent.
+#[test]
+fn a_system_prompt_update_reaches_responses_as_the_leading_prompt() {
+    let items = vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("Fix the bug"),
+        ConversationItem::assistant("Fixed."),
+        ConversationItem::system_prompt_update("v2"),
+        ConversationItem::user("Now add a test"),
+    ];
+    let mut rewritten = items.clone();
+    assert!(fold_system_prompt_updates(&mut rewritten));
+    let input = |items| {
+        serde_json::to_value(super::responses::build_responses_input(
+            &ConversationRequest::from_items(items),
+        ))
+        .unwrap()
+    };
+    let json = input(items);
+    assert_eq!(json, input(rewritten));
+    assert!(json.to_string().contains("\"v2\""), "{json:#}");
+    assert!(!json.to_string().contains("\"v1\""), "{json:#}");
+}
+
+/// Only Anthropic offers a tool mid-history; the Responses input must carry no trace of a tool
+/// addition (it would read as a system prompt of tool names).
+#[test]
+fn a_tool_addition_never_reaches_responses() {
+    let items = vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("Draw an icon"),
+        ConversationItem::tool_addition(["generate_image"]),
+    ];
+    let input = |items| {
+        serde_json::to_value(super::responses::build_responses_input(
+            &ConversationRequest::from_items(items),
+        ))
+        .unwrap()
+    };
+    let mut without = items.clone();
+    without.retain(|item| !item.is_tool_addition());
+    let json = input(items);
+    assert_eq!(json, input(without));
+    assert!(!json.to_string().contains("generate_image"), "{json:#}");
+}

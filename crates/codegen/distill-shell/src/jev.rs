@@ -1068,6 +1068,7 @@ pub(crate) fn record_tagged_workspace_attempt(
                 .cache_creation_input_tokens
                 .unwrap_or(0)
                 .min(u64::from(u32::MAX)) as u32,
+            cache_creation_1h_prompt_tokens: 0,
         })
     });
     let cost_usd_ticks = attempt.billing.cost_usd_ticks.filter(|&cost| cost >= 0);

@@ -652,12 +652,17 @@ impl ChatStateActor {
         });
     }
 
-    /// Atomically swap the leading `System` message with `prompt` (or insert one).
+    /// Atomically swap the leading `System` message with `prompt` (or insert one), dropping every system prompt update.
     /// Runs in the actor loop so it serializes with turn pushes — no lost-update on mid-turn reconnect.
     /// Clone, do not `mem::take`: `replace_conversation` snapshots the turn-capture tail first.
     pub(super) fn replace_system_head(&mut self, prompt: &str) -> bool {
         if let Some(ConversationItem::System(sys)) = self.state.conversation.first()
             && crate::conversation_util::canonical_system_prompt_eq(sys.content.as_ref(), prompt)
+            && !self
+                .state
+                .conversation
+                .iter()
+                .any(ConversationItem::is_system_prompt_update)
         {
             return false;
         }
@@ -667,6 +672,46 @@ impl ChatStateActor {
         debug_assert!(changed, "head mismatch must produce a change");
         self.replace_conversation(conversation, false);
         changed
+    }
+
+    /// See [`crate::commands::ChatStateCommand::UpdateSystemPrompt`]. Returns whether the conversation changed.
+    /// An update is a plain append, persisted like any pushed item; the rewrite path re-bases token totals.
+    pub(super) fn update_system_prompt(&mut self, prompt: &str) -> bool {
+        if distill_sampling_types::current_system_prompt(&self.state.conversation).is_some_and(
+            |current| crate::conversation_util::canonical_system_prompt_eq(current, prompt),
+        ) {
+            return false;
+        }
+        if !self.appends_system_prompt_updates() {
+            return self.replace_system_head(prompt);
+        }
+        let item = ConversationItem::system_prompt_update(prompt);
+        self.state.estimated_tokens_since_model += super::state::estimate_item_tokens(&item);
+        self.persistence.persist_message(&item);
+        self.state.conversation.push(item);
+        true
+    }
+
+    /// Whether a new system prompt can follow the history instead of rewriting the head: the model
+    /// takes system-role messages, the cache is warm (on a cold one the rewrite costs nothing extra),
+    /// a request already went out, and the history rests at a turn boundary (an update between a tool
+    /// call and its results would read as a dangling call to the integrity repair).
+    pub(super) fn appends_system_prompt_updates(&self) -> bool {
+        let conversation = &self.state.conversation;
+        distill_sampling_types::supports_system_messages(&self.state.sampling_config.model)
+            && !self.history_is_cold()
+            && conversation
+                .iter()
+                .any(|item| matches!(item, ConversationItem::Assistant(_)))
+            && match conversation
+                .iter()
+                .rev()
+                .find(|item| !item.is_system_prompt_update() && !item.is_tool_addition())
+            {
+                Some(ConversationItem::User(_)) => true,
+                Some(ConversationItem::Assistant(assistant)) => assistant.tool_calls.is_empty(),
+                _ => false,
+            }
     }
 
     /// Restore all state fields from a snapshot.

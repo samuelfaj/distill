@@ -96,6 +96,11 @@ pub(crate) struct PrefixTrace {
 pub(crate) struct SentPrefix {
     hashes: Vec<u64>,
     kinds: Vec<&'static str>,
+    /// Hash of what goes out beside the items (tools, model, effort): a change there breaks the
+    /// cache with every item intact.
+    settings_hash: u64,
+    /// The cache lifetime this request got; under it, an intact prefix that missed did not expire.
+    pub(super) cache_lifetime: Option<std::time::Duration>,
     prompt_tokens: u32,
     sent_at: Instant,
 }
@@ -105,13 +110,31 @@ impl SentPrefix {
         Self {
             hashes: items.iter().map(item_hash).collect(),
             kinds: items.iter().map(item_kind).collect(),
+            settings_hash: 0,
+            cache_lifetime: None,
             prompt_tokens: 0,
             sent_at: Instant::now(),
         }
     }
+
+    pub(super) fn of_request(request: &distill_sampling_types::ConversationRequest) -> Self {
+        let mut sent = Self::of(&request.items);
+        sent.settings_hash = json_hash(&serde_json::json!({
+            "tools": &request.tools,
+            "deferred_tools": &request.deferred_tools,
+            "model": &request.model,
+            "reasoning_effort": &request.reasoning_effort,
+            "max_output_tokens": &request.max_output_tokens,
+        }));
+        sent
+    }
 }
 
 fn item_hash(item: &ConversationItem) -> u64 {
+    json_hash(item)
+}
+
+fn json_hash(value: &impl serde::Serialize) -> u64 {
     struct HashWriter(std::collections::hash_map::DefaultHasher);
     impl std::io::Write for HashWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -123,7 +146,7 @@ fn item_hash(item: &ConversationItem) -> u64 {
         }
     }
     let mut writer = HashWriter(Default::default());
-    let _ = serde_json::to_writer(&mut writer, item);
+    let _ = serde_json::to_writer(&mut writer, value);
     writer.0.finish()
 }
 
@@ -177,7 +200,23 @@ impl PrefixTrace {
             "cache_read_tokens": usage.cached_prompt_tokens,
             "cache_write_tokens": usage.cache_creation_prompt_tokens,
             "secs_since_previous": current.sent_at.duration_since(previous.sent_at).as_secs(),
+            "settings_changed": previous.settings_hash != current.settings_hash,
+            "previous_cache_lifetime_secs": previous.cache_lifetime.map(|lifetime| lifetime.as_secs()),
         }))
+    }
+}
+
+/// The part of an [`PrefixTrace::observe`] report `/usage` shows as the last cache break.
+pub(crate) fn cache_break(report: &serde_json::Value) -> distill_chat_state::CacheBreak {
+    let kind = |key: &str| report[key].as_str().map(str::to_owned);
+    distill_chat_state::CacheBreak {
+        first_changed_index: report["first_changed_index"].as_u64(),
+        changed_kind: kind("kind_before").or_else(|| kind("kind_after")),
+        prompt_tokens: report["prompt_tokens"].as_u64().unwrap_or(0),
+        cache_read_tokens: report["cache_read_tokens"].as_u64().unwrap_or(0),
+        secs_since_previous: report["secs_since_previous"].as_u64().unwrap_or(0),
+        settings_changed: report["settings_changed"].as_bool().unwrap_or(false),
+        cache_lifetime_secs: report["previous_cache_lifetime_secs"].as_u64(),
     }
 }
 
@@ -350,5 +389,71 @@ mod tests {
             .observe(SentPrefix::of(&edited), &usage(52_000, 0))
             .expect("an intact prefix that missed is reported");
         assert!(report["first_changed_index"].is_null(), "{report}");
+    }
+
+    /// `/usage` shows the last break: where the prefix changed (index and kind), or no index when
+    /// the prefix was intact and the entry had expired.
+    #[test]
+    fn a_break_report_becomes_the_usage_line() {
+        let mut trace = PrefixTrace::default();
+        let history = turn(vec![vec![read()], vec![read()]]);
+        trace.observe(SentPrefix::of(&history), &usage(50_000, 0));
+        let mut edited = history.clone();
+        edited[3] = ConversationItem::tool_result("call-read_file", "rewritten");
+        let report = trace
+            .observe(SentPrefix::of(&edited), &usage(50_000, 2_000))
+            .expect("a break is reported");
+        let changed = cache_break(&report);
+        assert_eq!(changed.first_changed_index, Some(3));
+        assert_eq!(changed.changed_kind.as_deref(), Some("tool_result"));
+        assert_eq!(changed.cache_read_tokens, 2_000);
+
+        let report = trace
+            .observe(SentPrefix::of(&edited), &usage(50_000, 0))
+            .expect("an intact prefix that missed is reported");
+        let expired = cache_break(&report);
+        assert_eq!(expired.first_changed_index, None);
+        assert_eq!(expired.changed_kind, None);
+    }
+
+    /// A tool family joining (or an effort change) breaks the cache with every item intact; it must
+    /// not read as an expiry, and the previous lifetime lets `/usage` tell a 3s gap from a real one.
+    #[test]
+    fn an_intact_prefix_names_a_settings_change_and_the_previous_lifetime() {
+        let history = turn(vec![vec![read()], vec![read()]]);
+        let request = |tools: Vec<&str>| distill_sampling_types::ConversationRequest {
+            items: history.clone(),
+            tools: tools
+                .into_iter()
+                .map(|name| distill_sampling_types::ToolSpec {
+                    name: name.to_owned(),
+                    description: None,
+                    parameters: serde_json::json!({}),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut trace = PrefixTrace::default();
+        let mut first = SentPrefix::of_request(&request(vec!["read_file"]));
+        first.cache_lifetime = Some(std::time::Duration::from_secs(300));
+        trace.observe(first, &usage(50_000, 0));
+        let report = trace
+            .observe(
+                SentPrefix::of_request(&request(vec!["read_file", "mcp__extra"])),
+                &usage(50_000, 0),
+            )
+            .expect("a break is reported");
+        let changed = cache_break(&report);
+        assert_eq!(changed.first_changed_index, None);
+        assert!(changed.settings_changed);
+        assert_eq!(changed.cache_lifetime_secs, Some(300));
+
+        let report = trace
+            .observe(
+                SentPrefix::of_request(&request(vec!["read_file", "mcp__extra"])),
+                &usage(50_000, 0),
+            )
+            .expect("an intact prefix that missed is reported");
+        assert!(!cache_break(&report).settings_changed);
     }
 }

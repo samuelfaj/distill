@@ -523,6 +523,7 @@ async fn record_last_turn_usage_round_trip() {
         reasoning_tokens: 0,
         cached_prompt_tokens: 800,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     };
     h.handle.record_last_turn_usage(usage.clone());
 
@@ -539,6 +540,7 @@ async fn record_last_turn_usage_round_trip() {
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     };
     h.handle.record_last_turn_usage(next);
     let got2 = h
@@ -561,6 +563,7 @@ async fn prompt_usage_ledger_via_handle_resets_and_clears() {
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     };
 
     let h = TestHarness::new();
@@ -1281,6 +1284,185 @@ async fn replace_system_head_inserts_when_absent() {
         matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "sys")
     );
     assert!(matches!(conv.get(1), Some(ConversationItem::User(_))));
+}
+
+fn system_messages_config() -> SamplingConfig {
+    SamplingConfig {
+        model: "claude-opus-5-5".to_string(),
+        ..test_config()
+    }
+}
+
+fn finished_turn() -> Vec<ConversationItem> {
+    vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("hi"),
+        ConversationItem::assistant("yo"),
+    ]
+}
+
+/// A mid-session prompt change (plan mode, `/memory`, a new worker) on a model that takes
+/// system-role messages is appended after a finished turn: the head and every item after it keep
+/// their bytes, so the cached prefix survives, and the append is persisted like any pushed item
+/// instead of rewriting the history. Reverting appends the original again; a repeat is a no-op.
+#[tokio::test]
+async fn update_system_prompt_appends_after_a_finished_turn_and_keeps_the_head() {
+    let mut h = TestHarness::with_config(finished_turn(), system_messages_config());
+    let _ = h.drain_persistence();
+    assert_eq!(h.handle.update_system_prompt("v2").await, Some(true));
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(conv.len(), 4, "{conv:?}");
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v1")
+    );
+    assert!(
+        conv.last()
+            .is_some_and(ConversationItem::is_system_prompt_update)
+    );
+    assert_eq!(
+        distill_sampling_types::current_system_prompt(&conv),
+        Some("v2")
+    );
+    let records = h.drain_persistence();
+    assert!(
+        matches!(records.as_slice(), [PersistenceRecord::Message(item)] if item.is_system_prompt_update()),
+        "{records:?}"
+    );
+
+    assert_eq!(h.handle.update_system_prompt("v2\n").await, Some(false));
+    assert_eq!(h.handle.update_system_prompt("v1").await, Some(true));
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(conv.len(), 5, "{conv:?}");
+    assert_eq!(
+        distill_sampling_types::current_system_prompt(&conv),
+        Some("v1")
+    );
+    // A compaction rebuilds its head from this: the prompt in effect, as a leading system item.
+    let system = h.handle.get_system_message().await.expect("system message");
+    assert!(!system.is_system_prompt_update());
+    assert_eq!(system.text_content(), "v1");
+}
+
+/// Where an append cannot keep the cache or would break the history, the head is rewritten as
+/// before: a model without system-role messages, a history whose cache is cold anyway (a model
+/// switch), and a tool round in flight (an update before its results would read as a dangling call).
+#[tokio::test]
+async fn update_system_prompt_rewrites_the_head_where_an_append_does_not_pay() {
+    let h = TestHarness::with_conversation(finished_turn());
+    assert_eq!(h.handle.update_system_prompt("v2").await, Some(true));
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(conv.len(), 3, "{conv:?}");
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v2")
+    );
+
+    let mut in_flight = finished_turn();
+    in_flight.push(ConversationItem::user("read it"));
+    in_flight.push(ConversationItem::assistant_tool_calls(vec![
+        distill_sampling_types::ToolCall {
+            id: "call_1".into(),
+            name: "read_file".to_string(),
+            arguments: "{}".into(),
+        },
+    ]));
+    let h = TestHarness::with_config(in_flight, system_messages_config());
+    assert_eq!(h.handle.update_system_prompt("v2").await, Some(true));
+    let conv = h.handle.get_conversation().await;
+    assert!(
+        !conv.iter().any(ConversationItem::is_system_prompt_update),
+        "{conv:?}"
+    );
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v2")
+    );
+
+    let h = TestHarness::with_config(finished_turn(), system_messages_config());
+    assert_eq!(h.handle.update_system_prompt("v2").await, Some(true));
+    h.handle.update_sampling_config(SamplingConfig {
+        model: "claude-sonnet-5-5".to_string(),
+        ..test_config()
+    });
+    assert_eq!(h.handle.update_system_prompt("v3").await, Some(true));
+    let conv = h.handle.get_conversation().await;
+    assert!(
+        !conv.iter().any(ConversationItem::is_system_prompt_update),
+        "{conv:?}"
+    );
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v3")
+    );
+}
+
+/// A request whose cache is cold anyway (here a model switch) folds the updates back into the
+/// head, in the request and in the stored history, so the prefix goes back to one system prompt.
+#[tokio::test]
+async fn a_cold_request_folds_system_prompt_updates_into_the_head() {
+    let h = TestHarness::with_config(finished_turn(), system_messages_config());
+    assert_eq!(h.handle.update_system_prompt("v2").await, Some(true));
+    h.handle.push_user_message(ConversationItem::user("go on"));
+    let warm = h
+        .handle
+        .build_request(vec![], None, false, None, "c".into(), "r".into())
+        .await
+        .expect("request");
+    assert!(
+        warm.items
+            .iter()
+            .any(ConversationItem::is_system_prompt_update)
+    );
+
+    h.handle.update_sampling_config(SamplingConfig {
+        model: "claude-sonnet-5-5".to_string(),
+        ..test_config()
+    });
+    let cold = h
+        .handle
+        .build_request(vec![], None, false, None, "c".into(), "r".into())
+        .await
+        .expect("request");
+    assert!(
+        !cold
+            .items
+            .iter()
+            .any(ConversationItem::is_system_prompt_update)
+    );
+    assert!(
+        matches!(cold.items.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v2")
+    );
+    let conv = h.handle.get_conversation().await;
+    assert!(
+        !conv.iter().any(ConversationItem::is_system_prompt_update),
+        "{conv:?}"
+    );
+}
+
+/// A rewind that cuts the update carrying the prompt in effect appends it again while the cache is
+/// warm: the rewound prefix [head .. turn N] was cached, and rewriting the head would bill all of it again.
+#[tokio::test]
+async fn a_warm_rewind_appends_the_cut_update_instead_of_rewriting_the_head() {
+    let mut items = finished_turn();
+    items.push(ConversationItem::user("again"));
+    items.push(ConversationItem::assistant("ok"));
+    let h = TestHarness::with_config(items, system_messages_config());
+    h.handle.increment_prompt_index();
+    h.handle.increment_prompt_index();
+    assert_eq!(h.handle.update_system_prompt("v2").await, Some(true));
+
+    h.handle.truncate_to_prompt_index(1).await;
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(conv.len(), 4, "{conv:?}");
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v1"),
+        "the cached head keeps its bytes"
+    );
+    assert!(
+        conv.last()
+            .is_some_and(ConversationItem::is_system_prompt_update)
+    );
+    assert_eq!(
+        distill_sampling_types::current_system_prompt(&conv),
+        Some("v2")
+    );
 }
 
 /// Lost-update safety: an item pushed just before the head swap survives.
@@ -4745,6 +4927,71 @@ async fn idle_past_the_last_requests_cache_lifetime_is_cold() {
     assert!(!handle.history_is_cold().await, "within a ten-minute lifetime");
     handle.record_cache_lifetime(None);
     assert!(!handle.history_is_cold().await, "unknown lifetime: the hour fallback");
+}
+
+/// The cold-return compaction offer asks only when the provider is known to have dropped the
+/// prefix: idle past the lifetime the last request reported. An unknown lifetime (a local server
+/// may keep its prefix for hours) and the other cold reasons (a model switch, a resume, which
+/// have no idle gap behind them) never count, so a warm or unknown cache is never traded for a
+/// summary.
+#[tokio::test]
+async fn the_cache_expires_while_idle_only_past_a_known_lifetime() {
+    let handle = spawn_trimming(vec![]);
+    push_turns(&handle, 1, 10).await;
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    handle.record_cache_lifetime(None);
+    assert!(
+        !handle.cache_expired_while_idle().await,
+        "unknown lifetime: never"
+    );
+    handle.record_cache_lifetime(Some(Duration::from_secs(10 * 60)));
+    assert!(
+        !handle.cache_expired_while_idle().await,
+        "within a ten-minute lifetime"
+    );
+    handle.record_cache_lifetime(Some(Duration::from_millis(20)));
+    assert!(
+        handle.cache_expired_while_idle().await,
+        "idle 40 ms past a 20 ms lifetime"
+    );
+
+    make_history_cold(&handle);
+    handle.record_cache_lifetime(Some(Duration::from_secs(10 * 60)));
+    assert!(handle.history_is_cold().await);
+    assert!(
+        !handle.cache_expired_while_idle().await,
+        "a model switch is cold but no cache expired"
+    );
+
+    let source = spawn_trimming(vec![]);
+    push_turns(&source, 2, 10).await;
+    let resumed = spawn_trimming(source.get_conversation().await);
+    resumed.start_from_inherited_history(None);
+    resumed.record_cache_lifetime(Some(Duration::from_millis(1)));
+    assert!(resumed.history_is_cold().await);
+    assert!(
+        !resumed.cache_expired_while_idle().await,
+        "a resume has no idle gap in this process"
+    );
+}
+
+/// A request before a subagent wait writes its prefix for an hour; the five-minute requests after
+/// it in the turn still read through those entries. Idle past five minutes, the history is still
+/// cached: neither the cold-return offer nor a cold rewrite (which would guarantee the full miss)
+/// may run until the hour is over.
+#[tokio::test]
+async fn hour_entries_keep_the_history_warm_past_a_shorter_last_lifetime() {
+    let handle = spawn_trimming(vec![]);
+    push_turns(&handle, 1, 10).await;
+    handle.record_cache_lifetime(Some(Duration::from_secs(60 * 60)));
+    handle.record_cache_lifetime(Some(Duration::from_millis(20)));
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(
+        !handle.history_is_cold().await,
+        "the hour entries are still live"
+    );
+    assert!(!handle.cache_expired_while_idle().await);
 }
 
 #[tokio::test]

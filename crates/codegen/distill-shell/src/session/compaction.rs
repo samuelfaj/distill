@@ -4,7 +4,9 @@
 //! These methods form a second `impl SessionActor` block that lives alongside the primary one in `acp_session.rs`.
 use super::SessionActor;
 use super::is_project_instructions;
-use crate::extensions::notification::MODEL_FAMILY_SWITCH_COMPACT_BANNER;
+use crate::extensions::notification::{
+    COLD_RETURN_COMPACT_BANNER, MODEL_FAMILY_SWITCH_COMPACT_BANNER,
+};
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::session::compaction_config::{
     AsyncCompactionCache, SUPPRESS_AUTH, SUPPRESS_NONE, SUPPRESS_ROUTE_OVERFLOW, SUPPRESS_STICKY,
@@ -3210,8 +3212,14 @@ impl SessionActor {
         });
         self.signals_handle()
             .record_compaction(trigger_info.tokens_used);
-        let reason = if trigger_info.reason_override == Some(MODEL_FAMILY_SWITCH_COMPACT_BANNER) {
-            MODEL_FAMILY_SWITCH_COMPACT_BANNER.to_string()
+        let reason = if let Some(banner) = trigger_info.reason_override.filter(|reason| {
+            [
+                MODEL_FAMILY_SWITCH_COMPACT_BANNER,
+                COLD_RETURN_COMPACT_BANNER,
+            ]
+            .contains(reason)
+        }) {
+            banner.to_string()
         } else {
             format!("Context window {}% full", trigger_info.percentage)
         };

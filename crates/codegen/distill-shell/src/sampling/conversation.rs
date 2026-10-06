@@ -35,7 +35,10 @@ pub(crate) fn fork_filter_chat(items: &mut Vec<ConversationItem>) {
     let mut i = 0;
     while let Some(item) = items.get(i) {
         match item {
-            ConversationItem::System(_) => {
+            // Mid-history prompt updates and tool additions can follow an unfinished turn's user message: transparent.
+            ConversationItem::System(_)
+                if !item.is_system_prompt_update() && !item.is_tool_addition() =>
+            {
                 last_complete_end = i + 1;
                 i += 1;
             }

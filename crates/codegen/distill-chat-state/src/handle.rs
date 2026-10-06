@@ -418,6 +418,13 @@ impl ChatStateHandle {
             .send(ChatStateCommand::RecordCacheLifetime { lifetime });
     }
 
+    /// Where the last prompt-cache break happened, shown by `/usage`.
+    pub fn record_cache_break(&self, cache_break: crate::usage::CacheBreak) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::RecordCacheBreak { cache_break });
+    }
+
     /// Track that the agent edited a file path.
     pub fn record_agent_edited_path(&self, path: String) {
         let _ = self
@@ -493,6 +500,17 @@ impl ChatStateHandle {
         let prompt = prompt.to_owned();
         self.query("ReplaceSystemHead", |reply| {
             ChatStateCommand::ReplaceSystemHead { prompt, reply }
+        })
+        .await
+    }
+
+    /// Make `prompt` the system prompt in effect for a mid-session change (mode, memory, worker),
+    /// appending it after the history where that keeps the prompt cache (see
+    /// [`ChatStateCommand::UpdateSystemPrompt`]). `Some(changed)`, or `None` if the actor is dead.
+    pub async fn update_system_prompt(&self, prompt: &str) -> Option<bool> {
+        let prompt = prompt.to_owned();
+        self.query("UpdateSystemPrompt", |reply| {
+            ChatStateCommand::UpdateSystemPrompt { prompt, reply }
         })
         .await
     }
@@ -649,6 +667,16 @@ impl ChatStateHandle {
     pub async fn history_is_cold(&self) -> bool {
         self.query("IsHistoryCold", |reply| ChatStateCommand::IsHistoryCold {
             reply,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// Whether the provider cache this history was last sent under expired while the session sat
+    /// idle; only an endpoint whose cache lifetime is known counts. False when the actor is gone.
+    pub async fn cache_expired_while_idle(&self) -> bool {
+        self.query("IsCacheExpiredWhileIdle", |reply| {
+            ChatStateCommand::IsCacheExpiredWhileIdle { reply }
         })
         .await
         .unwrap_or(false)

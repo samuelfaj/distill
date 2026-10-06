@@ -135,7 +135,16 @@ pub struct PromptUsage {
     /// Utility calls made during this turn, including non-completed attempts.
     #[serde(default, rename = "utilityCalls", skip_serializing_if = "is_zero")]
     pub utility_calls: u64,
+    /// Where the session's last prompt-cache break happened (session ledger only).
+    #[serde(
+        default,
+        rename = "lastCacheBreak",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_cache_break: Option<CacheBreak>,
 }
+
+pub use distill_chat_state::CacheBreak;
 
 /// One row of a turn's distribution: which model, at which effort, how much.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -179,6 +188,7 @@ impl PromptUsage {
                 effort_usage: Vec::new(),
                 jev_calls: 0,
                 utility_calls: 0,
+                last_cache_break: None,
                 ..Default::default()
             },
             None => return None,
@@ -223,12 +233,14 @@ impl PromptUsage {
             total_tokens: _, // derived from input + output
             cached_read_tokens,
             cache_creation_tokens, // subset of input_tokens on the wire
+            cache_creation_1h_tokens: _, // subset of cache_creation_tokens
             reasoning_tokens: _,   // subset of output_tokens
             model_calls,
             api_duration_ms: _, // timing, not tokens
             cost_usd_ticks: _,  // cost without usage cannot occur
             cost_is_partial: _,
             cost_missing_calls: _,
+            cache_savings_usd_ticks: _, // an estimate, not a bill
         } = self.totals;
         model_calls == 0
             && input_tokens == 0
@@ -256,6 +268,10 @@ pub struct PromptUsageModel {
     /// but projected as a disjoint bucket in the headless shape.
     #[serde(default)]
     pub cache_creation_tokens: u64,
+    /// The one-hour part of `cache_creation_tokens`; the rest (and any write
+    /// whose lifetime was not reported) is five-minute.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_creation_1h_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
@@ -275,6 +291,12 @@ pub struct PromptUsageModel {
     /// Internal accounting for `cost_is_partial` only; never on the public ACP wire.
     #[serde(default, skip_serializing)]
     pub cost_missing_calls: u64,
+    /// Estimated USD ticks the cache reads saved against uncached input, less the
+    /// premium the cache writes paid (negative when the writes cost more), from
+    /// published per-token prices. Set only by `x.ai/session/usage`, and only
+    /// for calls whose prices are known; never part of a bill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_savings_usd_ticks: Option<i64>,
 }
 
 /// One model call's token usage: the four Messages API `message.usage` fields plus `reasoning_tokens`.
@@ -303,6 +325,7 @@ impl From<&distill_chat_state::UsageTotals> for PromptUsageModel {
             output_tokens,
             cached_read_tokens,
             cache_creation_tokens,
+            cache_creation_1h_tokens,
             reasoning_tokens,
             model_calls,
             api_duration_ms,
@@ -315,12 +338,14 @@ impl From<&distill_chat_state::UsageTotals> for PromptUsageModel {
             total_tokens: t.total_tokens(),
             cached_read_tokens,
             cache_creation_tokens,
+            cache_creation_1h_tokens,
             reasoning_tokens,
             model_calls,
             api_duration_ms,
             cost_usd_ticks,
             cost_is_partial: t.cost_is_partial(),
             cost_missing_calls,
+            cache_savings_usd_ticks: None,
         }
     }
 }
@@ -339,6 +364,7 @@ impl From<&distill_chat_state::UsageLedger> for PromptUsage {
             effort_usage: Vec::new(),
             jev_calls: 0,
             utility_calls: 0,
+            last_cache_break: ledger.last_cache_break.clone(),
         };
         usage.scrub_untrustworthy_costs();
         usage
@@ -378,12 +404,14 @@ pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &Promp
         total_tokens,
         cached_read_tokens,
         cache_creation_tokens,
+        cache_creation_1h_tokens: _, // dropped: not part of the frozen headless shape
         reasoning_tokens,
         model_calls: _,     // totals-level; headless carries num_turns instead
         api_duration_ms: _, // dropped: not part of the frozen headless shape
         cost_usd_ticks,
         cost_is_partial,
         cost_missing_calls: _, // internal partiality count; the flag suffices
+        cache_savings_usd_ticks: _, // dropped: an estimate, only on /usage
     } = usage.totals;
     result.insert(
         "usage".into(),
@@ -423,12 +451,14 @@ pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &Promp
                 total_tokens: _, // derivable per row
                 cached_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens: _, // dropped: reduced per-model schema
                 reasoning_tokens: _, // dropped: reduced per-model schema
                 model_calls,
                 api_duration_ms: _, // dropped: reduced per-model schema
                 cost_usd_ticks,
                 cost_is_partial,
                 cost_missing_calls: _,
+                cache_savings_usd_ticks: _, // dropped: an estimate, only on /usage
             } = *m;
             let mut entry = serde_json::json!({
                 "inputTokens": uncached_input_tokens(input_tokens, cached_read_tokens)
@@ -535,6 +565,10 @@ pub enum AutoCompactCancelReason {
 /// The pager also matches this `AutoCompactStarted.reason` to show the idle
 /// `Switching model…` loader (family-switch compact runs with no turn in flight).
 pub const MODEL_FAMILY_SWITCH_COMPACT_BANNER: &str = "Switching model. Compacting…";
+
+/// User-visible auto-compact start banner for a human prompt on a large session whose prompt
+/// cache expired while it sat idle (`[compaction] cold_return`). It runs inside the prompt's turn.
+pub const COLD_RETURN_COMPACT_BANNER: &str = "Prompt cache expired. Compacting…";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "sessionUpdate")]
@@ -2858,6 +2892,7 @@ mod tests {
             effort_usage: Vec::new(),
             jev_calls: 0,
             utility_calls: 0,
+            last_cache_break: None,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &partial);
@@ -2893,6 +2928,7 @@ mod tests {
             effort_usage: Vec::new(),
             jev_calls: 0,
             utility_calls: 0,
+            last_cache_break: None,
         };
         incomplete.scrub_untrustworthy_costs();
         assert!(incomplete.totals.cost_usd_ticks.is_none());
@@ -2969,6 +3005,7 @@ mod tests {
             effort_usage: Vec::new(),
             jev_calls: 0,
             utility_calls: 0,
+            last_cache_break: None,
         };
         usage.scrub_untrustworthy_costs();
         assert!(usage.totals.cost_usd_ticks.is_none());
@@ -3006,6 +3043,7 @@ mod tests {
             effort_usage: Vec::new(),
             jev_calls: 0,
             utility_calls: 0,
+            last_cache_break: None,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &usage);

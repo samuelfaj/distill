@@ -49,6 +49,9 @@ const BUST_COST_FACTOR: usize = 10;
 /// provider's default prompt-cache lifetime is shorter. The idle limit until a
 /// request reports its own lifetime, and for an endpoint whose lifetime is unknown.
 pub const COLD_IDLE: Duration = Duration::from_secs(60 * 60);
+/// The one-hour lifetime a request gets before a long wait. Its entries outlive the five-minute
+/// requests after it in the turn, which still read through them.
+const ONE_HOUR_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
 /// Lines and bytes a head/tail digest keeps at each end.
 const EDGE_LINES: usize = 8;
@@ -116,6 +119,9 @@ pub(crate) struct EvictionState {
     /// The cache lifetime the last request had, when its endpoint's is known; idle past it
     /// (else past [`COLD_IDLE`]) the history is cold.
     pub cache_lifetime: Option<Duration>,
+    /// When the entries of the last one-hour request expire. Until then the history is not idle
+    /// past its lifetime, whatever shorter lifetime the requests after it had.
+    pub hour_entries_until: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -940,11 +946,33 @@ impl ChatStateActor {
         self.eviction
             .last_model_output
             .is_some_and(|at| at.elapsed() >= lifetime)
+            && !self.hour_entries_live()
+    }
+
+    fn hour_entries_live(&self) -> bool {
+        self.eviction
+            .hour_entries_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Idle past the cache lifetime the last request reported: the provider has dropped this
+    /// history's prefix, so the next request writes all of it again. Unlike
+    /// [`Self::history_is_cold`], an endpoint whose lifetime is unknown never counts (a local
+    /// server may keep its prefix for hours), and neither does any other cold reason.
+    pub(super) fn cache_expired_while_idle(&self) -> bool {
+        self.eviction.cache_lifetime.is_some_and(|lifetime| {
+            self.eviction
+                .last_model_output
+                .is_some_and(|at| at.elapsed() >= lifetime)
+        }) && !self.hour_entries_live()
     }
 
     /// The cache lifetime the last main request had (`None`: its endpoint's is unknown).
     pub(super) fn record_cache_lifetime(&mut self, lifetime: Option<Duration>) {
         self.eviction.cache_lifetime = lifetime;
+        if let Some(lifetime) = lifetime.filter(|lifetime| *lifetime >= ONE_HOUR_LIFETIME) {
+            self.eviction.hour_entries_until = Some(Instant::now() + lifetime);
+        }
     }
 
     /// Once, before the first request of a session that starts from a history. A verbatim fork
@@ -972,7 +1000,12 @@ impl ChatStateActor {
         if self.eviction.cold.is_none() && self.idle_past_cache_lifetime() {
             self.eviction.cold = Some(ColdReason::Idle);
         }
-        self.eviction.cold.take()
+        let cold = self.eviction.cold.take();
+        if cold.is_some() {
+            // A cold request rebuilds the prefix: the hour entries no longer match it.
+            self.eviction.hour_entries_until = None;
+        }
+        cold
     }
 
     /// Marks the next request cold (a model switch).

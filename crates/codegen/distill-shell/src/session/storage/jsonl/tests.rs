@@ -2661,6 +2661,7 @@ async fn usage_json_rewrites_session_and_appends_turns() {
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     };
     let mut ledger = UsageLedger::default();
     ledger.record_main_loop_call("grok-4", &tu(100, 20), Some(10), Some(50));

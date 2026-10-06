@@ -1681,6 +1681,7 @@ impl MainLane {
             one_shot: true,
             shared_prefix: true,
             long_cache_ttl: false,
+            deferred_tools: Vec::new(),
         })
     }
 

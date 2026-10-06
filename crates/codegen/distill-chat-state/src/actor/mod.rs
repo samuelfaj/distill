@@ -308,6 +308,9 @@ impl ChatStateActor {
             ChatStateCommand::RecordCacheLifetime { lifetime } => {
                 self.record_cache_lifetime(lifetime);
             }
+            ChatStateCommand::RecordCacheBreak { cache_break } => {
+                self.state.session_usage.record_cache_break(cache_break);
+            }
             ChatStateCommand::RecordAgentEditedPath { path } => {
                 self.state.agent_edited_paths.insert(path);
             }
@@ -364,6 +367,10 @@ impl ChatStateActor {
             }
             ChatStateCommand::ReplaceSystemHead { prompt, reply } => {
                 let changed = self.replace_system_head(&prompt);
+                let _ = reply.send(changed);
+            }
+            ChatStateCommand::UpdateSystemPrompt { prompt, reply } => {
+                let changed = self.update_system_prompt(&prompt);
                 let _ = reply.send(changed);
             }
             ChatStateCommand::CachePromptText { text } => {
@@ -442,6 +449,9 @@ impl ChatStateActor {
             }
             ChatStateCommand::IsHistoryCold { reply } => {
                 let _ = reply.send(self.history_is_cold());
+            }
+            ChatStateCommand::IsCacheExpiredWhileIdle { reply } => {
+                let _ = reply.send(self.cache_expired_while_idle());
             }
             ChatStateCommand::GetRequestTrims { reply } => {
                 let _ = reply.send(self.eviction.request_trims.clone());

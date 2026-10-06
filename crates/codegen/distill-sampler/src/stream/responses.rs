@@ -630,6 +630,7 @@ pub(crate) fn stream_responses_tracked<'a>(
             reasoning_tokens: u.output_tokens_details.reasoning_tokens,
             cached_prompt_tokens: u.input_tokens_details.cached_tokens,
             cache_creation_prompt_tokens: 0,
+            cache_creation_1h_prompt_tokens: 0,
         });
 
         let cost_usd_ticks = response

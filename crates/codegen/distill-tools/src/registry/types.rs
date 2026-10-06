@@ -1242,6 +1242,12 @@ impl distill_tool_runtime::ToolDispatch for InnerDispatchForToolset {
         distill_tool_runtime::terminal_only(result)
     }
 }
+/// Tool definitions sorted by name (stable). The tools array opens a model's cached prompt prefix,
+/// so registration order and MCP connect order must never change its bytes.
+fn canonical_tool_order(mut definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+    definitions
+}
 impl FinalizedToolset {
     /// Construct an empty toolset for tests. No tools, no background tasks.
     ///
@@ -1274,13 +1280,15 @@ impl FinalizedToolset {
             false
         }
     }
-    /// Get all tool definitions to send to the client.
+    /// Get all tool definitions to send to the client, in [`canonical_tool_order`].
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
-            .read()
-            .iter()
-            .map(|t| t.definition.clone())
-            .collect()
+        canonical_tool_order(
+            self.tools
+                .read()
+                .iter()
+                .map(|t| t.definition.clone())
+                .collect(),
+        )
     }
     /// Client-facing name of the (first) enabled tool of `kind`, honoring `name_override` / preset
     /// renames — `None` if no tool of that kind is enabled. Mirrors `${{ tools.by_kind.<kind> }}`
@@ -1338,12 +1346,14 @@ impl FinalizedToolset {
     /// instead of the "__" string heuristic. This breaks if a built-in tool ever has "__" in its
     /// name or an MCP server omits the delimiter.
     pub fn tool_definitions_builtins_only(&self) -> Vec<ToolDefinition> {
-        self.tools
-            .read()
-            .iter()
-            .filter(|t| !t.client_name.contains("__"))
-            .map(|t| t.definition.clone())
-            .collect()
+        canonical_tool_order(
+            self.tools
+                .read()
+                .iter()
+                .filter(|t| !t.client_name.contains("__"))
+                .map(|t| t.definition.clone())
+                .collect(),
+        )
     }
     /// Get the resolved contract version for a tool by its client-facing name. Returns `None` if
     /// the tool is not found or is not version-managed. Returns an owned `String` because the
@@ -3525,6 +3535,66 @@ mod tests {
                 def.function.name
             );
         }
+    }
+    /// The tools array opens every cached prompt prefix, so two sessions whose tools registered,
+    /// or whose MCP servers connected, in a different order must still send the same bytes.
+    #[tokio::test]
+    async fn tool_definitions_ignore_registration_and_mcp_connect_order() {
+        let build = |tmp: &TempDir, tools: Vec<ToolConfig>, mcp: &[&str]| {
+            let config = ToolServerConfig {
+                tools,
+                behavior_preset: None,
+            };
+            let toolset = ToolRegistryBuilder::new()
+                .finalize(config, test_session_context(tmp))
+                .unwrap();
+            for name in mcp {
+                toolset
+                    .register_tool(
+                        name.to_string(),
+                        FakeMcpTool {
+                            description: format!("{name} tool"),
+                        },
+                        Some(serde_json::json!({"type": "object", "properties": {}})),
+                    )
+                    .unwrap();
+            }
+            toolset
+        };
+        let (tmp_a, tmp_b) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let first = build(
+            &tmp_a,
+            vec![
+                ToolConfig::for_tool::<distill::ReadFileTool>(),
+                ToolConfig::for_tool::<distill::GrepTool>(),
+            ],
+            &["linear__save_issue", "github__create_issue"],
+        );
+        let second = build(
+            &tmp_b,
+            vec![
+                ToolConfig::for_tool::<distill::GrepTool>(),
+                ToolConfig::for_tool::<distill::ReadFileTool>(),
+            ],
+            &["github__create_issue", "linear__save_issue"],
+        );
+        let wire = |defs: Vec<ToolDefinition>| serde_json::to_string(&defs).unwrap();
+        assert_eq!(
+            wire(first.tool_definitions()),
+            wire(second.tool_definitions())
+        );
+        assert_eq!(
+            wire(first.tool_definitions_builtins_only()),
+            wire(second.tool_definitions_builtins_only())
+        );
+        let names: Vec<String> = first
+            .tool_definitions()
+            .into_iter()
+            .map(|def| def.function.name)
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
     }
     /// `task` tool must be rejected when neither `get_task_output` nor
     /// `kill_task` are present in the toolset.

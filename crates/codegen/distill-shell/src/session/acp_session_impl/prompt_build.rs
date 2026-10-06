@@ -373,6 +373,9 @@ fn has_memory_section(prompt: &str) -> bool {
 const ORCHESTRATION_OPEN: &str = "\n\n<orchestration>\n";
 const ORCHESTRATION_CLOSE: &str = "\n</orchestration>";
 const WORK_POLICY_CLOSE: &str = "\n</work_policy>";
+const ENVIRONMENT_OPEN: &str = "\n\n<environment>\n";
+const ENVIRONMENT_CLOSE: &str = "\n</environment>";
+const WORKER_LINE: &str = "Worker model: `";
 /// `(before, body, after)` around the `<orchestration>` block `templates/prompt.md` renders right
 /// after `</work_policy>` when the prompt has a worker to delegate to.
 fn split_orchestration(prompt: &str) -> Option<(&str, &str, &str)> {
@@ -380,37 +383,62 @@ fn split_orchestration(prompt: &str) -> Option<(&str, &str, &str)> {
     let (body, after) = rest.split_once(ORCHESTRATION_CLOSE)?;
     Some((before, body, after))
 }
-/// The worker id the block's first line puts in backticks; empty when it names none.
-fn worker_named(body: &str) -> &str {
-    body.split('`').nth(1).unwrap_or_default()
+/// `(before, body, after)` around the `<environment>` block that closes the rendered
+/// `templates/prompt.md` with its per-session values (worker model, memory roots).
+fn split_environment(prompt: &str) -> Option<(&str, &str, &str)> {
+    let (before, rest) = prompt.split_once(ENVIRONMENT_OPEN)?;
+    let (body, after) = rest.split_once(ENVIRONMENT_CLOSE)?;
+    Some((before, body, after))
 }
-/// A resumed head keeps the prompt it was saved with, but its `<orchestration>` section must name
-/// the worker this session's children run on, which the fresh prompt carries. Returns the head with
-/// only that section replaced, so saved rules, date and memory manifest stay. `None` when the head
-/// already agrees (it stays byte-identical, keeping the prompt cache) or is not a standard prompt,
-/// such as a client override or a concise head.
+/// The worker a prompt with an `<orchestration>` block delegates to: its `<environment>` line, or
+/// for a head saved before the id moved there, the block's first backticked id. `None` without
+/// the block.
+fn worker_named(prompt: &str) -> Option<&str> {
+    let (_, body, _) = split_orchestration(prompt)?;
+    let in_environment = split_environment(prompt).and_then(|(_, environment, _)| {
+        environment
+            .lines()
+            .find_map(|line| line.strip_prefix(WORKER_LINE)?.strip_suffix('`'))
+    });
+    Some(in_environment.unwrap_or_else(|| body.split('`').nth(1).unwrap_or_default()))
+}
+/// A resumed head keeps the prompt it was saved with, but its `<orchestration>` section and
+/// `<environment>` block must name the worker this session's children run on, which the fresh
+/// prompt carries. Returns the head with only those two replaced, so saved rules, date and memory
+/// manifest stay. `None` when the head already agrees (it stays byte-identical, keeping the prompt
+/// cache) or is not a standard prompt, such as a client override or a concise head.
 pub(super) fn reconciled_orchestration_head(head: &str, fresh: &str) -> Option<String> {
     let (head_prompt, manifest) = head
         .find(distill_chat_state::MEMORY_CONTEXT_OPEN_TAG)
         .map_or((head, ""), |start| head.split_at(start));
-    let head_block = split_orchestration(head_prompt);
-    let fresh_block = split_orchestration(fresh);
-    let head_worker = head_block.map(|(_, body, _)| worker_named(body));
-    let fresh_worker = fresh_block.map(|(_, body, _)| worker_named(body));
-    if head_worker == fresh_worker {
+    if worker_named(head_prompt) == worker_named(fresh) {
         return None;
     }
-    let section = fresh_block.map_or_else(String::new, |(_, body, _)| {
+    let section = split_orchestration(fresh).map_or_else(String::new, |(_, body, _)| {
         format!("{ORCHESTRATION_OPEN}{body}{ORCHESTRATION_CLOSE}")
     });
-    let (before, after) = match head_block {
+    let (before, after) = match split_orchestration(head_prompt) {
         Some((before, _, after)) => (before.to_owned(), after),
         None => {
             let (before, after) = head_prompt.split_once(WORK_POLICY_CLOSE)?;
             (format!("{before}{WORK_POLICY_CLOSE}"), after)
         }
     };
-    Some(format!("{before}{section}{after}{manifest}"))
+    let head_prompt = format!("{before}{section}{after}");
+    let environment = split_environment(fresh).map_or_else(String::new, |(_, body, _)| {
+        format!("{ENVIRONMENT_OPEN}{body}{ENVIRONMENT_CLOSE}")
+    });
+    let head_prompt = match split_environment(&head_prompt) {
+        Some((before, _, after)) => format!("{before}{environment}{after}"),
+        // A head saved before the block existed gets it at its end, ahead of the blank lines
+        // that separate the memory manifest.
+        None => {
+            let text = head_prompt.trim_end_matches('\n');
+            let gap = head_prompt.get(text.len()..).unwrap_or_default();
+            format!("{text}{environment}{gap}")
+        }
+    };
+    Some(format!("{head_prompt}{manifest}"))
 }
 #[cfg(test)]
 mod reconcile_resumed_memory_section_tests {
@@ -466,16 +494,50 @@ mod reconcile_resumed_memory_section_tests {
 mod reconciled_orchestration_head_tests {
     use super::reconciled_orchestration_head;
     use distill_chat_state::MEMORY_CONTEXT_OPEN_TAG;
-    /// Shaped like `templates/prompt.md`: the section sits right after `</work_policy>`.
+    /// Shaped like `templates/prompt.md`: the section sits right after `</work_policy>` and the
+    /// worker id in the `<environment>` block that closes the prompt.
     fn prompt(worker: Option<&str>) -> String {
-        let section = worker.map_or_else(String::new, |worker| {
-            format!(
-                "\n\n<orchestration>\nThe worker model `{worker}` costs little.\n- delegate\n</orchestration>"
-            )
-        });
+        let section = if worker.is_some() {
+            "\n\n<orchestration>\nThe worker model named in <environment> costs little.\n- delegate with `task`\n</orchestration>"
+        } else {
+            ""
+        };
+        let worker_line =
+            worker.map_or_else(String::new, |worker| format!("\nWorker model: `{worker}`"));
         format!(
-            "You are Distill.\n\n<work_policy>\n- keep scope\n</work_policy>{section}\n\n<memory>\nuse memory\n</memory>\n\ndate 2026-01-01"
+            "You are Distill.\n\n<work_policy>\n- keep scope\n</work_policy>{section}\n\n<memory>\nuse memory\n</memory>\n\ndate 2026-01-01\n\n<environment>{worker_line}\nGlobal memory root: `/g`\n</environment>"
         )
+    }
+    /// A head saved before the worker id moved to `<environment>` names it in the section itself;
+    /// it is still read, and a stale one gains the block ahead of the memory manifest.
+    #[test]
+    fn a_head_saved_before_the_environment_block_is_read_and_rewritten() {
+        let legacy = |worker: &str| {
+            format!(
+                "You are Distill.\n\n<work_policy>\n- keep scope\n</work_policy>\n\n<orchestration>\nThe worker model `{worker}` costs little.\n</orchestration>\n\ndate 2025-12-31"
+            )
+        };
+        let fresh = prompt(Some("b"));
+        assert_eq!(
+            reconciled_orchestration_head(&legacy("b"), &fresh),
+            None,
+            "a head that already names the worker keeps its cached bytes"
+        );
+        let manifest = format!("{MEMORY_CONTEXT_OPEN_TAG}\nindex\n</memory-context>");
+        let head = reconciled_orchestration_head(&format!("{}\n\n{manifest}", legacy("a")), &fresh)
+            .expect("stale section");
+        assert!(
+            head.contains("Worker model: `b`") && !head.contains("`a`"),
+            "{head}"
+        );
+        assert!(
+            head.contains("date 2025-12-31\n\n<environment>\n"),
+            "{head}"
+        );
+        assert!(
+            head.ends_with(&format!("</environment>\n\n{manifest}")),
+            "{head}"
+        );
     }
     #[test]
     fn the_head_names_the_fresh_worker_and_nothing_else_changes() {

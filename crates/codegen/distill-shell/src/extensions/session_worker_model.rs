@@ -135,8 +135,8 @@ pub(crate) fn effective_worker(state: &SessionWorkerState) -> EffectiveWorker {
     }
 }
 
-/// The worker the session's main prompt names in `<orchestration>`: the worker its
-/// delegated children run on, kept only for a primary prompt with subagents enabled,
+/// The worker the session's main prompt names in `<environment>` for `<orchestration>`: the
+/// worker its delegated children run on, kept only for a primary prompt with subagents enabled,
 /// a catalog model, and not the catalog entry of the session's own main model.
 pub(crate) fn orchestration_worker(
     state: &SessionWorkerState,

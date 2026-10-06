@@ -301,6 +301,14 @@ impl SessionActor {
             let needs_replay = self.needs_compaction_replay().await;
 
             let mut conversation = self.chat_state_handle.get_conversation().await;
+            // The rewind keeps the prompt a system prompt update put in effect: mode, memory and
+            // worker are not rewound, and cutting the update would revert to an older prompt.
+            let system_prompt_in_effect = conversation
+                .iter()
+                .any(ConversationItem::is_system_prompt_update)
+                .then(|| distill_sampling_types::current_system_prompt(&conversation))
+                .flatten()
+                .map(str::to_owned);
 
             // Cross-compaction replay recomputes whether a compaction summary survives; `None` keeps the existing marker (standard truncation)
             let mut replay_compaction_marker: Option<Option<usize>> = None;
@@ -394,6 +402,11 @@ impl SessionActor {
                     replay_compaction_marker.unwrap_or(snap.last_compaction_prompt_index);
                 snap.last_compaction_prompt_index = new_marker;
                 self.chat_state_handle.restore_snapshot(snap);
+            }
+            // After the restore, so it applies to the rewound history: appended where that keeps the
+            // rewound prefix cached, else written into the head.
+            if let Some(prompt) = system_prompt_in_effect {
+                let _ = self.chat_state_handle.update_system_prompt(&prompt).await;
             }
 
             // The conversation shrank: clear budget-based (size/schema) and stale per-turn suppression so compaction can run on the smaller context

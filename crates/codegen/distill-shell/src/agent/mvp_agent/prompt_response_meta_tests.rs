@@ -63,6 +63,7 @@ fn enriches_meta_with_camelcase_token_keys() {
         reasoning_tokens: 75,
         cached_prompt_tokens: 1000,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     };
     let meta = build_prompt_response_meta(PromptResponseMetaArgs {
         last_turn_usage: Some(&usage),
@@ -94,6 +95,7 @@ fn preserves_zero_token_values() {
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     };
     let meta = build_prompt_response_meta(PromptResponseMetaArgs {
         last_turn_usage: Some(&usage),
@@ -121,6 +123,7 @@ fn usage_object_lands_on_meta() {
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
             cache_creation_prompt_tokens: 0,
+            cache_creation_1h_prompt_tokens: 0,
         },
         None,
         None,

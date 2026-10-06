@@ -56,7 +56,28 @@ impl ChatStateActor {
             }
         }
 
+        let in_effect = distill_sampling_types::current_system_prompt(&self.state.conversation)
+            .map(str::to_owned);
         self.state.conversation.truncate(truncate_at);
+        // The rewind keeps the prompt in effect even when it cut the update that carried it: appended
+        // again where `update_system_prompt` would append (the rewound prefix stays cached), else in the head.
+        if let Some(prompt) = in_effect
+            && !distill_sampling_types::current_system_prompt(&self.state.conversation)
+                .is_some_and(|current| {
+                    crate::conversation_util::canonical_system_prompt_eq(current, &prompt)
+                })
+        {
+            if self.appends_system_prompt_updates() {
+                self.state
+                    .conversation
+                    .push(distill_sampling_types::ConversationItem::system_prompt_update(prompt));
+            } else {
+                let _ = crate::conversation_util::keep_system_prompt(
+                    &mut self.state.conversation,
+                    &prompt,
+                );
+            }
+        }
         self.state.prompt_texts.truncate(target_prompt_index);
         self.state.prompt_index = target_prompt_index;
         let base_estimate = super::state::estimate_conversation_tokens(&self.state.conversation);
@@ -293,8 +314,18 @@ impl ChatStateActor {
         counts
     }
 
-    /// Return the first `System` message in the conversation, or `None`.
+    /// Return the system prompt in effect as a leading `System` message, or `None`: the last system
+    /// prompt update (a compaction keeps this as the head it rebuilds), else the first `System` message.
     pub(super) fn get_system_message(&self) -> Option<distill_sampling_types::ConversationItem> {
+        if self
+            .state
+            .conversation
+            .iter()
+            .any(distill_sampling_types::ConversationItem::is_system_prompt_update)
+        {
+            return distill_sampling_types::current_system_prompt(&self.state.conversation)
+                .map(distill_sampling_types::ConversationItem::system);
+        }
         self.state
             .conversation
             .iter()

@@ -11,6 +11,7 @@ fn tu(prompt: u32, completion: u32) -> TokenUsage {
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     }
 }
 
@@ -185,6 +186,45 @@ fn second_turn_appends_and_session_becomes_latest_ledger() {
     assert_eq!(file.session.output_tokens, 30);
     assert_eq!(file.session.turn_count, 2);
     assert_eq!(file.session.cost_usd_ticks, Some(70));
+}
+
+/// The one-hour share of cache writes (billed at 2x, against 1.25x for five-minute) is kept per
+/// turn and per model in usage.json, and a file written before the split loads with every write
+/// read as five-minute.
+#[test]
+fn one_hour_cache_writes_persist_as_turn_deltas_and_old_files_still_load() {
+    let with_writes = |calls: &[(u32, u32)]| {
+        let mut ledger = UsageLedger::default();
+        for (written, one_hour) in calls {
+            let mut call = tu(1_000, 10);
+            call.cache_creation_prompt_tokens = *written;
+            call.cache_creation_1h_prompt_tokens = *one_hour;
+            ledger.record_main_loop_call("claude", &call, Some(10), Some(5));
+        }
+        UsageSummary::from_ledger(&ledger)
+    };
+    let mut file = SessionUsageFile::new("sess-1");
+    let first = with_writes(&[(300, 200)]);
+    file.apply_turn(1, "t1", &first, None);
+    file.apply_turn(2, "t2", &with_writes(&[(300, 200), (100, 0)]), Some(&first));
+
+    let [t0, t1] = file.turns.as_slice() else {
+        panic!("expected two turns: {:?}", file.turns);
+    };
+    assert_eq!(t0.usage.cache_creation_1h_tokens, 200);
+    assert_eq!(t1.usage.cache_creation_tokens, 100);
+    assert_eq!(t1.usage.cache_creation_1h_tokens, 0);
+    assert_eq!(file.session.cache_creation_1h_tokens, 200);
+    assert_eq!(
+        file.session.model_usage["claude"].cache_creation_1h_tokens,
+        200
+    );
+
+    let old: UsageSummary = serde_json::from_value(serde_json::json!({
+        "inputTokens": 10, "cacheCreationTokens": 4, "modelCalls": 1
+    }))
+    .expect("a file from before the split loads");
+    assert_eq!(old.cache_creation_1h_tokens, 0);
 }
 
 #[test]

@@ -110,6 +110,7 @@ pub fn load_config_from_toml(root: &TomlValue) -> Config {
         telemetry: section(table, "telemetry"),
         features: section(table, "features"),
         jev: section(table, "jev"),
+        compaction: section(table, "compaction"),
     }
 }
 #[cfg(test)]

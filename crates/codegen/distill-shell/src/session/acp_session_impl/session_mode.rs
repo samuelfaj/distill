@@ -145,16 +145,15 @@ impl SessionActor {
                 .await;
             *self.active_agent_type.lock() = Some(def.name.clone());
         }
-        if let Some(ref def) = agent_def {
+        // A conversation without a system prompt yet gets none here.
+        if let Some(ref def) = agent_def
+            && self.chat_state_handle.get_system_message().await.is_some()
+        {
             let new_prompt = self.agent.borrow().render_prompt_for_definition(def).await;
-            let mut conversation = self.chat_state_handle.get_conversation().await;
-            for item in conversation.iter_mut() {
-                if let ConversationItem::System(sys) = item {
-                    sys.content = std::sync::Arc::<str>::from(new_prompt);
-                    break;
-                }
-            }
-            self.chat_state_handle.replace_conversation(conversation);
+            // Appended after the history where that keeps the prompt cache; else the head is rewritten.
+            self.chat_state_handle
+                .update_system_prompt(&new_prompt)
+                .await;
         }
     }
     /// Only a real user turn declares a mode.

@@ -247,7 +247,7 @@ fn cold_load_updates_a_saved_head_that_names_another_worker() {
                         .expect("saved head parses"),
                 );
                 assert!(
-                    saved.contains("The worker model `worker-a` costs"),
+                    saved.contains("Worker model: `worker-a`"),
                     "the saved head names worker-a: {saved:.300}"
                 );
                 agent.remove_session(&sid);

@@ -1463,11 +1463,15 @@ fn forked_initial_context(
 /// A verbatim mirror requires a coherent tail: the conversation must end on a plain assistant text response (a clean turn boundary).
 /// A dangling assistant (unanswered tool calls), a trailing ToolResult (mid-turn), or a trailing user/reasoning means the prefix would be incoherent.
 /// The caller then falls back to the summarized path instead of partial-trimming.
+/// Trailing system prompt updates and tool additions are skipped: they land after a finished reply between turns, and the mirror keeps them.
 fn conversation_tail_is_complete(
     items: &[distill_sampling_types::conversation::ConversationItem],
 ) -> bool {
     matches!(
-        items.last(),
+        items
+            .iter()
+            .rev()
+            .find(|i| !i.is_system_prompt_update() && !i.is_tool_addition()),
         Some(ConversationItem::Assistant(a)) if a.tool_calls.is_empty()
     )
 }

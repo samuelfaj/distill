@@ -8,3 +8,4 @@ Session usage (since start or last resume):
   Total tokens:   1,280,245
   Model calls:    42 · API time: 3m12s
   Cost:           $1.2345
+  Cache:          81% hit

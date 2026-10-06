@@ -302,6 +302,12 @@ impl ChatStateActor {
                 }
                 self.state.sampling_config = *config;
             }
+            ChatStateCommand::StartFromInheritedHistory { parent_trims } => {
+                self.start_from_inherited_history(parent_trims);
+            }
+            ChatStateCommand::RecordCacheLifetime { lifetime } => {
+                self.record_cache_lifetime(lifetime);
+            }
             ChatStateCommand::RecordAgentEditedPath { path } => {
                 self.state.agent_edited_paths.insert(path);
             }
@@ -434,6 +440,12 @@ impl ChatStateActor {
             ChatStateCommand::GetTotalTokens { reply } => {
                 let _ = reply.send(self.state.total_tokens);
             }
+            ChatStateCommand::IsHistoryCold { reply } => {
+                let _ = reply.send(self.history_is_cold());
+            }
+            ChatStateCommand::GetRequestTrims { reply } => {
+                let _ = reply.send(self.eviction.request_trims.clone());
+            }
             ChatStateCommand::GetLastTurnUsage { reply } => {
                 let _ = reply.send(self.state.last_turn_usage.clone());
             }
@@ -451,7 +463,8 @@ impl ChatStateActor {
                 let _ = reply.send(self.state.sampling_config.clone());
             }
             ChatStateCommand::ApplyTurnRequestPruning { items, reply } => {
-                let _ = reply.send(self.prune_items_for_turn_request(items));
+                let cold = self.history_is_cold();
+                let _ = reply.send(self.prune_items_for_turn_request(items, cold));
             }
             ChatStateCommand::GetAgentEditedPaths { reply } => {
                 let _ = reply.send(self.state.agent_edited_paths.clone());

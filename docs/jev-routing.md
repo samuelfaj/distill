@@ -176,23 +176,37 @@ Only public model IDs are queried; task content is not sent to metadata endpoint
 Jev considers total task cost, retries, and possible loss of prompt-cache reuse
 when switching models. Benchmark and price hints do not override the configured
 candidate set, context guard, explicit effort, or permission policy.
-For direct OpenRouter requests, the sampler sends the existing session ID as
-`x-session-id` for provider affinity unless the user configured that header.
-Responses requests carry the session ID as `prompt_cache_key`. On ChatGPT
-(Codex), the first response of a turn also issues an `x-codex-turn-state`, which
-the session's later rounds of that turn send back so the backend keeps the turn
-on the replica that holds its cached prefix; a new turn starts without one.
-This does not guarantee a cache hit; compare cache-read tokens and total cost
-before changing cache TTL or context-pruning behavior.
+Every request that replays the main prefix routes on the main call's key: the
+session ID, the parent's ID for a verbatim fork, or `{group}:{type}` for a fresh
+subagent. That covers compaction pass 1, recap and `/btw`, which also send the
+effort the last main round used. Their conversation ID stays the session's own,
+so sibling subagents never share a Codex thread. Calls with a different prompt
+(goal evaluation, compaction pass 2, memory capture, dream, classifiers, prompt
+suggestion) route on a stable `{session}:{purpose}` key, so they do not evict
+the main prefix and can reuse their own. Responses requests send the key as
+`prompt_cache_key`. OpenRouter requests send it as the body `session_id`, as
+`prompt_cache_key` and as the `x-session-id` header (unless you set that
+header), and `anthropic/*` and `google/gemini*` models get `cache_control`
+breakpoints there. On ChatGPT (Codex), the first response of a turn also issues
+an `x-codex-turn-state`, which the turn's later rounds send back.
 
-A main model OpenRouter serves from several providers can alternate cache hits
-and misses within one session (muse-spark measured about 40% of prompt tokens
-cached, with half of its calls at zero). That is provider routing, not a prefix
-change. A `[model.<id>]` entry has no field for OpenRouter's `provider` request
-object, so pinning one provider is a setting on your OpenRouter account
-(allowed or ignored providers), not in Distill. Compare `cachedReadTokens` in
-`usage.json` before and after. Distill does not rewrite history on an observed
-hit rate: on an alternating pattern that would destroy the hits that remain.
+With auto effort, a turn keeps the effort its first round picked on backends
+whose cache is keyed by effort (everything except Messages models with the
+per-message effort marker); a new turn, a model switch, a compaction or a
+prompt under 16K tokens frees it. On `api.anthropic.com`, a round that blocked
+on a task or subagent, or started background work, asks for the one-hour cache
+lifetime (a refusal turns it off for the process), and the free fourth
+breakpoint anchors on a former tip that moves every 10 rounds. Rewrites of old
+history (soft trims, the retained hard clear, old goal directives) wait for a
+cold moment: idle past the last request's cache lifetime (5 minutes on
+Messages, 1 hour when asked, 30 minutes on Codex, 10 on Grok and OpenRouter),
+a compaction, a model switch or a resume. A verbatim fork inherits its parent's
+soft trims.
+
+None of this guarantees a cache hit; compare `cachedReadTokens` in `usage.json`
+before and after. muse-spark on OpenRouter has a single provider (Meta), and its
+hits and misses alternate inside that provider (about 40% of prompt tokens
+cached) even though the session key reaches it, so no request field fixes it.
 
 ## Utility work
 

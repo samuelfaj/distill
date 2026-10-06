@@ -180,6 +180,8 @@ use session_mode::*;
 mod child_tool_projection;
 #[path = "acp_session_impl/jev_ledger.rs"]
 pub(crate) mod jev_ledger;
+#[path = "acp_session_impl/prompt_cache.rs"]
+pub(crate) mod prompt_cache;
 #[path = "acp_session_impl/jev_memory.rs"]
 mod jev_memory;
 #[path = "acp_session_impl/jev_routing.rs"]

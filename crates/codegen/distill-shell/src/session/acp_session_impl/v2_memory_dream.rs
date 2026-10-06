@@ -1140,7 +1140,15 @@ impl SessionActor {
             model: Some(model.clone()),
             reasoning_effort,
             json_schema: Some(dream_plan_schema()),
-            x_grok_conv_id: Some(format!("dream-v2-{}", uuid::Uuid::new_v4())),
+            // A stable key of its own: the fixed dream prompt is read from cache on the next dream.
+            x_grok_conv_id: Some(crate::sampling::purpose_cache_key(
+                &self.session_info.id.to_string(),
+                "dream-v2",
+            )),
+            prompt_cache_key: Some(crate::sampling::purpose_cache_key(
+                &self.session_info.id.to_string(),
+                "dream-v2",
+            )),
             x_grok_req_id: Some(format!("xai-dream-v2-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(self.session_info.id.to_string()),
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),

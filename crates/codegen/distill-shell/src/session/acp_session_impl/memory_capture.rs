@@ -322,6 +322,7 @@ fn build_extraction_request(
         system.push(' ');
         system.push_str(&note);
     }
+    let cache_key = crate::sampling::purpose_cache_key(session_id, "memory-capture");
     ConversationRequest {
         items: vec![
             ConversationItem::system(system),
@@ -336,10 +337,13 @@ fn build_extraction_request(
         max_output_tokens: Some(EXTRACTION_MAX_OUTPUT_TOKENS),
         reasoning_effort,
         json_schema: Some(extraction_schema()),
-        x_grok_conv_id: Some(format!("memory-capture-{}", uuid::Uuid::new_v4())),
+        // A stable key of its own: the fixed system prompt is read from cache on the next capture.
+        x_grok_conv_id: Some(cache_key.clone()),
+        prompt_cache_key: Some(cache_key),
         x_grok_req_id: Some(format!("xai-memory-capture-{}", uuid::Uuid::new_v4())),
         x_grok_session_id: Some(session_id.to_owned()),
-        // The transcript is this capture's alone: a tip breakpoint writes it to a cache nobody reads.
+        // The transcript is this capture's alone, and the system prompt carries this capture's
+        // stats note: any breakpoint writes a cache entry nobody reads.
         one_shot: true,
         ..Default::default()
     }
@@ -1845,6 +1849,32 @@ mod tests {
             wire["messages"][0]["content"][0]["cache_control"].is_null(),
             "{wire}"
         );
+    }
+
+    /// Every capture shares the extraction system prompt. A fresh random key per
+    /// call never let it read that prefix, and the session's own key would evict
+    /// the main conversation's cache entry; a stable purpose key does neither.
+    #[test]
+    fn extractor_routes_on_a_stable_key_of_its_own() {
+        let request = |from| {
+            build_extraction_request(
+                "session",
+                distill_memory::CaptureRange::try_new(from, from + 1).unwrap(),
+                CondensedTranscript {
+                    json: "[]".to_owned(),
+                    stats: CondensationStats::default(),
+                },
+                "test-model".to_owned(),
+                None,
+            )
+        };
+        let (first, second) = (request(1), request(5));
+        assert_eq!(
+            first.x_grok_conv_id.as_deref(),
+            Some("session:memory-capture")
+        );
+        assert_eq!(first.prompt_cache_key, first.x_grok_conv_id);
+        assert_eq!(first.x_grok_conv_id, second.x_grok_conv_id);
     }
 
     #[test]

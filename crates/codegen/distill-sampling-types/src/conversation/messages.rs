@@ -36,15 +36,22 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
 /// An entry is written only at a breakpoint, so marking the system prompt alone leaves the transcript uncached.
 /// The third covers a turn that appends more than the API's 20 block lookback.
 /// The leading project-instructions message, when more follows it, is marked only while one of the four slots stays free, so sibling subagents share system, tools and that message on their first request.
-/// The fourth slot stays free: a gateway that turns on automatic caching takes it, and five is rejected outright.
-/// A `one_shot` request is never resent, so it marks neither the tip nor the previous turn.
+/// The fourth slot stays free unless `anchor`: a gateway that turns on automatic caching takes it, and five is rejected outright.
+/// With `anchor` it sits on a former tip that advances every [`ANCHOR_ROUNDS`] rounds, so an edit older than the previous tip still reads everything before the anchor.
+/// A `one_shot` request is never resent, so it marks nothing, unless `shared_prefix` says its system prompt and leading message repeat.
 fn apply_cache_breakpoints(
     system_blocks: &mut [crate::messages::TextBlock],
     messages: &mut [crate::messages::Message],
     leading_project_instructions: bool,
     one_shot: bool,
+    shared_prefix: bool,
+    anchor: bool,
 ) {
     use crate::messages::{CacheControl, MessageRole};
+
+    if one_shot && !shared_prefix {
+        return;
+    }
 
     if let Some(last) = system_blocks.last_mut() {
         last.cache_control = Some(CacheControl::ephemeral());
@@ -89,6 +96,39 @@ fn apply_cache_breakpoints(
             mark_message_cache_breakpoint(first);
         }
     }
+
+    if anchor
+        && tip.is_some()
+        && count_cache_breakpoints(system_blocks, messages) < MAX_CACHE_BREAKPOINTS
+        && let Some(at) = anchor_position(messages)
+        && let Some(msg) = messages.get_mut(at)
+        && message_breakpoints(msg) == 0
+    {
+        mark_message_cache_breakpoint(msg);
+    }
+}
+
+/// Rounds between anchor moves: an edit older than the previous tip re-bills at most about this many rounds.
+pub const ANCHOR_ROUNDS: usize = 10;
+
+/// The tip of the request that produced assistant round `j` (the last user message before it), for the
+/// largest multiple `j` of [`ANCHOR_ROUNDS`] that is at least two rounds old: the previous tip covers the round before.
+/// That request wrote a cache entry exactly there, and every later request names the same position until the anchor moves.
+fn anchor_position(messages: &[crate::messages::Message]) -> Option<usize> {
+    use crate::messages::MessageRole;
+
+    let assistants: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, MessageRole::Assistant))
+        .map(|(i, _)| i)
+        .collect();
+    let round = assistants.len().checked_sub(2)? / ANCHOR_ROUNDS * ANCHOR_ROUNDS;
+    let assistant = *assistants.get(round)?;
+    messages
+        .get(..assistant)?
+        .iter()
+        .rposition(|m| matches!(m.role, MessageRole::User))
 }
 
 const MAX_CACHE_BREAKPOINTS: usize = 4;
@@ -142,7 +182,24 @@ pub fn supports_per_message_effort(model: &str) -> bool {
     })
 }
 
+/// Cache choices only the sending client can make, from the endpoint it talks to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessagesCacheOptions {
+    /// Spend the fourth breakpoint on a rolling anchor. Only where nothing in between adds automatic caching,
+    /// which takes a slot of its own (a fifth breakpoint is rejected).
+    pub anchor: bool,
+    /// Give the breakpoints the one-hour lifetime when the request asks for it ([`ConversationRequest::long_cache_ttl`]).
+    pub extended_ttl: bool,
+}
+
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
+    build_messages_request_with(req, MessagesCacheOptions::default())
+}
+
+pub fn build_messages_request_with(
+    req: &ConversationRequest,
+    cache: MessagesCacheOptions,
+) -> crate::messages::MessagesRequest {
     use crate::messages::{
         ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
         OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
@@ -362,6 +419,8 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         &mut messages,
         leading_project_instructions,
         req.one_shot,
+        req.shared_prefix,
+        cache.anchor,
     );
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
@@ -452,7 +511,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         None
     };
 
-    MessagesRequest {
+    let mut request = MessagesRequest {
         model: req.model.clone().unwrap_or_default(),
         messages,
         max_tokens: req.max_output_tokens.unwrap_or(0),
@@ -467,7 +526,11 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         thinking,
         output_config,
         metadata: None,
+    };
+    if cache.extended_ttl && req.long_cache_ttl {
+        request.set_cache_ttl(Some(crate::messages::EXTENDED_CACHE_TTL));
     }
+    request
 }
 
 /// `Thinking` is dropped because this `From` returns a single item; the streaming consumer emits the sibling `Reasoning` item instead.

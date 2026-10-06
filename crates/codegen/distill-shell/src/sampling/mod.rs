@@ -52,6 +52,45 @@ pub(crate) fn subagent_prompt_cache_key(
     Some(format!("{}:{}", group_id?.as_ref(), subagent_type?))
 }
 
+/// The routing key of a session's main call: the subagent key when one applies, else the session id.
+/// The main call sends it as `prompt_cache_key`, and so must every request that replays the main prefix
+/// (compaction pass 1, recap, `/btw`), or that request lands on a cold route; their conv id is [`conv_id_for`].
+pub(crate) fn main_cache_key(
+    session_id: &str,
+    is_subagent: bool,
+    verbatim_fork: bool,
+    parent_session_id: Option<&str>,
+    subagent_type: Option<&str>,
+    group_id: Option<&ConversationGroupId>,
+) -> String {
+    subagent_prompt_cache_key(
+        is_subagent,
+        verbatim_fork,
+        parent_session_id,
+        subagent_type,
+        group_id,
+    )
+    .unwrap_or_else(|| session_id.to_owned())
+}
+
+/// Stable routing key for a session's call whose prompt is not the main one (goal eval, compaction pass 2, memory, classifiers).
+/// It must not be the main key: a provider keeps one cache entry per key, so a different prompt there evicts the main prefix.
+/// It is stable per purpose so repeated calls with the same system prompt read their own cached prefix.
+pub(crate) fn purpose_cache_key(session_id: &str, purpose: &str) -> String {
+    format!("{session_id}:{purpose}")
+}
+
+/// Conversation id for a request routed on `cache_key`. A purpose call is its own conversation, so its key is its id.
+/// A replay of the main prefix keeps the session's own id, as the main call does: Codex derives `thread-id` and
+/// the per-turn state from it, and sibling subagents must not share one thread.
+pub(crate) fn conv_id_for(session_id: &str, cache_key: &str) -> String {
+    if cache_key.starts_with(&format!("{session_id}:")) {
+        cache_key.to_owned()
+    } else {
+        session_id.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod conversation_group_tests {
     use pretty_assertions::{assert_eq, assert_ne};
@@ -96,5 +135,71 @@ mod conversation_group_tests {
             subagent_prompt_cache_key(false, false, None, None, Some(&group)),
             None
         );
+    }
+
+    /// Compaction and recap replay the main prefix, so they must route where the main call routes:
+    /// a verbatim fork on its parent, a fresh child on its sibling route, a root on its own id.
+    #[test]
+    fn main_cache_key_is_where_the_main_prefix_is_cached() {
+        let group = derive_conversation_group_id("root");
+        assert_eq!(
+            main_cache_key("root", false, false, None, None, Some(&group)),
+            "root"
+        );
+        assert_eq!(
+            main_cache_key(
+                "child",
+                true,
+                true,
+                Some("parent"),
+                Some("explore"),
+                Some(&group)
+            ),
+            "parent",
+            "a verbatim fork's prefix is the parent's, so its replays read the parent's cache"
+        );
+        assert_eq!(
+            main_cache_key(
+                "child",
+                true,
+                false,
+                Some("parent"),
+                Some("explore"),
+                Some(&group)
+            ),
+            format!("{}:explore", group.as_ref())
+        );
+        // No group yet: the child routes on its own id, never on an empty key.
+        assert_eq!(
+            main_cache_key("child", true, false, Some("parent"), Some("explore"), None),
+            "child"
+        );
+    }
+
+    /// A call with a different prompt must not overwrite the main call's cache entry,
+    /// and its own prefix stays warm only if the key is the same every time.
+    #[test]
+    fn a_main_replay_keeps_the_sessions_thread_and_a_purpose_call_is_its_own() {
+        assert_eq!(
+            conv_id_for("child", "parent"),
+            "child",
+            "a fork's replay routes on the parent's key but keeps its own thread, as its main call does"
+        );
+        assert_eq!(conv_id_for("child", "group-1:explore"), "child");
+        assert_eq!(
+            conv_id_for("s1", &purpose_cache_key("s1", "goal-eval")),
+            "s1:goal-eval",
+            "a purpose call is a separate conversation that must not evict the main thread"
+        );
+    }
+
+    #[test]
+    fn purpose_cache_key_is_stable_and_never_the_main_key() {
+        let main = main_cache_key("s1", false, false, None, None, None);
+        let goal = purpose_cache_key("s1", "goal-eval");
+        assert_ne!(goal, main);
+        assert_eq!(goal, purpose_cache_key("s1", "goal-eval"));
+        assert_ne!(goal, purpose_cache_key("s1", "compact-pass2"));
+        assert_ne!(goal, purpose_cache_key("s2", "goal-eval"));
     }
 }

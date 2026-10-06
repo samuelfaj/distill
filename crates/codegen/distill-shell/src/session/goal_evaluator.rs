@@ -4,6 +4,8 @@ use distill_sampling_types::SyntheticReason;
 
 const TRANSCRIPT_MAX_BYTES: usize = 32 * 1024;
 const ITEM_MAX_BYTES: usize = 4 * 1024;
+/// The transcript window drops old rows in steps of this many bytes; see [`bounded_goal_transcript`].
+const TRANSCRIPT_DROP_STEP_BYTES: usize = 8 * 1024;
 /// Recorded observations replayed to the evaluator each round. The harness
 /// keeps the full list for its own de-duplication; the evaluator only needs
 /// the recent identities to reuse them.
@@ -817,11 +819,16 @@ pub(crate) fn goal_evaluator_json_schema() -> serde_json::Value {
     })
 }
 
+/// The most recent rows of `items` within [`TRANSCRIPT_MAX_BYTES`], oldest first.
+///
+/// Rounds only append rows, so a window whose start holds still lets each round's message
+/// share the previous one's transcript as a cached prefix. The start therefore moves only
+/// when the bytes that must be dropped (counted from the conversation's start) cross a
+/// multiple of [`TRANSCRIPT_DROP_STEP_BYTES`]: the window holds between the cap less one
+/// step and the cap, and the newest row is always in it.
 pub(crate) fn bounded_goal_transcript(items: &[ConversationItem]) -> String {
-    let mut selected = Vec::new();
-    let mut used = 0usize;
-
-    for item in items.iter().rev() {
+    let mut rows = Vec::new();
+    for item in items {
         let (role, warning) = match item {
             ConversationItem::System(_) => continue,
             ConversationItem::User(user)
@@ -848,17 +855,28 @@ pub(crate) fn bounded_goal_transcript(items: &[ConversationItem]) -> String {
             continue;
         }
         let capped = distill_tools::util::truncate_str(trimmed, ITEM_MAX_BYTES);
-        let row = format!("[{role}] {capped}");
-        let row_cost = row.len().saturating_add(2);
-        if !selected.is_empty() && used.saturating_add(row_cost) > TRANSCRIPT_MAX_BYTES {
-            break;
-        }
-        used = used.saturating_add(row_cost);
-        selected.push(row);
+        rows.push(format!("[{role}] {capped}"));
     }
 
-    selected.reverse();
-    selected.join("\n\n")
+    let row_cost = |row: &String| row.len().saturating_add(2);
+    // The latest rows that fit, as a plain sliding window would take them.
+    let mut fit_start = rows.len();
+    let mut used = 0usize;
+    for (index, row) in rows.iter().enumerate().rev() {
+        if fit_start < rows.len() && used.saturating_add(row_cost(row)) > TRANSCRIPT_MAX_BYTES {
+            break;
+        }
+        used = used.saturating_add(row_cost(row));
+        fit_start = index;
+    }
+    let mut dropped: usize = rows[..fit_start].iter().map(row_cost).sum();
+    let drop_target = dropped.div_ceil(TRANSCRIPT_DROP_STEP_BYTES) * TRANSCRIPT_DROP_STEP_BYTES;
+    let mut start = fit_start;
+    while dropped < drop_target && start + 1 < rows.len() {
+        dropped = dropped.saturating_add(row_cost(&rows[start]));
+        start += 1;
+    }
+    rows[start..].join("\n\n")
 }
 
 pub(crate) fn build_goal_evaluator_request(
@@ -888,16 +906,21 @@ pub(crate) fn build_goal_evaluator_request(
             .seen_observations
             .drain(..seen - EVALUATOR_SEEN_OBSERVATIONS_MAX);
     }
+    // The transcript only grows at its end between rounds (its window start moves in coarse
+    // steps), so it leads; the progress and harness state, new every round, close the message.
     let round = serde_json::json!({
+        "transcript": transcript,
+        "prior_verifier_gaps": prior_verifier_gaps,
         "previous_progress": shown,
         "seen_observations_shown": format!(
             "the most recent {} of {seen} recorded observations",
             shown.seen_observations.len()
         ),
-        "prior_verifier_gaps": prior_verifier_gaps,
         "harness_observed": harness_observed,
-        "transcript": transcript,
     });
+    // Its own route: on the session id it would evict the main prefix, and a
+    // stable key keeps the system + goal prefix warm between rounds.
+    let cache_key = crate::sampling::purpose_cache_key(session_id, "goal-eval");
     ConversationRequest {
         items: vec![
             ConversationItem::system(SYSTEM_PROMPT.as_str()),
@@ -915,13 +938,16 @@ pub(crate) fn build_goal_evaluator_request(
         max_output_tokens: evaluator_output_cap(reasoning_effort),
         reasoning_effort,
         json_schema: Some(goal_evaluator_json_schema()),
-        x_grok_conv_id: Some(session_id.to_owned()),
+        x_grok_conv_id: Some(cache_key.clone()),
         x_grok_req_id: Some(format!("xai-goal-eval-{}", uuid::Uuid::new_v4())),
         x_grok_session_id: Some(session_id.to_owned()),
         x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+        prompt_cache_key: Some(cache_key),
         // The round message differs every round, so only the goal message is
         // marked: a tip breakpoint would write a cache entry nobody reads.
         one_shot: true,
+        // The next round follows within minutes and reads system + goal.
+        shared_prefix: true,
         ..ConversationRequest::default()
     }
 }
@@ -1314,6 +1340,43 @@ mod tests {
         assert!(transcript.ends_with("[user] latest"));
     }
 
+    /// Each round's message shares the previous one's transcript as a cached prefix only while the
+    /// window start holds. A plain sliding window moved it every round once the cap was reached; old
+    /// rows now go in coarse steps, while the cap still holds and the newest row is always shown.
+    #[test]
+    fn transcript_window_start_moves_in_coarse_steps() {
+        let rows = |count: usize| -> Vec<ConversationItem> {
+            (0..count)
+                .map(|i| ConversationItem::assistant(format!("turn {i:04} {}", "x".repeat(1_000))))
+                .collect()
+        };
+        let first_row = |transcript: &str| transcript.split("\n\n").next().unwrap_or("").to_owned();
+        let mut moves = 0;
+        let mut previous: Option<String> = None;
+        for count in 40..220 {
+            let transcript = bounded_goal_transcript(&rows(count));
+            assert!(transcript.len() <= TRANSCRIPT_MAX_BYTES);
+            assert!(transcript.ends_with(&format!("turn {:04} {}", count - 1, "x".repeat(1_000))));
+            assert!(
+                transcript.len() + TRANSCRIPT_DROP_STEP_BYTES + ITEM_MAX_BYTES > TRANSCRIPT_MAX_BYTES,
+                "the window never shrinks by more than one step"
+            );
+            if let Some(previous) = &previous {
+                if first_row(previous) == first_row(&transcript) {
+                    assert!(
+                        transcript.starts_with(previous.as_str()),
+                        "a held start extends the previous transcript"
+                    );
+                } else {
+                    moves += 1;
+                }
+            }
+            previous = Some(transcript);
+        }
+        // ~1 KB rows past the cap: a sliding window moved its start on every one of these 180 rounds.
+        assert!(moves < 30, "start moved {moves} times");
+    }
+
     #[test]
     fn transcript_marks_agent_message_as_untrusted_not_human() {
         let transcript =
@@ -1378,6 +1441,66 @@ mod tests {
         assert_eq!(first.items[1].text_content(), second.items[1].text_content());
         assert!(!first.items[1].text_content().contains("round one"));
         assert!(first.items[2].text_content().contains("round one"));
+    }
+
+    /// Within the round message the transcript, which only grows at its end, leads; the progress and
+    /// harness state that change every round follow it, so they do not cut the shared prefix short.
+    #[test]
+    fn round_message_leads_with_the_append_only_transcript() {
+        let request_for = |transcript: &str, rounds: u32| {
+            let mut progress = GoalProgress::default();
+            progress.no_progress_rounds = rounds;
+            build_goal_evaluator_request(
+                "goal",
+                transcript,
+                None,
+                "small".into(),
+                "s",
+                &progress,
+                "[]",
+                None,
+                &serde_json::json!({ "workspace_fingerprint": format!("f{rounds}") }),
+                None,
+            )
+            .items[2]
+                .text_content()
+        };
+        let earlier = request_for("[user] go\n\n[assistant] step one", 1);
+        let later = request_for("[user] go\n\n[assistant] step one\n\n[tool] ok", 2);
+        let shared = earlier
+            .bytes()
+            .zip(later.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        assert!(earlier.starts_with("{\"transcript\":"), "{earlier}");
+        assert!(
+            earlier[..shared].contains("step one"),
+            "the earlier transcript is in the shared prefix: {}",
+            &earlier[..shared]
+        );
+    }
+
+    /// The evaluator's prompt is not the main one. On the session's own key it
+    /// overwrote the main cache entry (the next main call missed fully 25.8% of
+    /// the time after a goal eval, against 1.6%), so it routes on a stable key
+    /// of its own, which also keeps its goal prefix warm from round to round.
+    #[test]
+    fn evaluator_routes_on_its_own_stable_key() {
+        let request_for = || {
+            build_goal_evaluator_request(
+                "goal", "t", None, "small".into(), "s1", &GoalProgress::default(), "[]", None,
+                &serde_json::json!({}), None,
+            )
+        };
+        let (first, second) = (request_for(), request_for());
+        assert_eq!(first.x_grok_conv_id.as_deref(), Some("s1:goal-eval"));
+        assert_eq!(first.prompt_cache_key.as_deref(), Some("s1:goal-eval"));
+        assert_eq!(first.x_grok_conv_id, second.x_grok_conv_id);
+        assert_eq!(
+            first.x_grok_session_id.as_deref(),
+            Some("s1"),
+            "attribution still names the session"
+        );
     }
 
     /// The observation list grows every round; the evaluator gets a bounded tail.

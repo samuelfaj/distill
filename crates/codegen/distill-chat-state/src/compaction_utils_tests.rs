@@ -2847,6 +2847,47 @@ fn verbatim_truncates_trailing_incomplete_tool_call() {
         Some(ConversationItem::ToolResult(_))
     ));
 }
+/// With thinking kept, a two-pass split can end the prefix between a `Reasoning` item and its
+/// assistant message, and dropping an unanswered tool call can leave its `Reasoning` last. Alone it
+/// is an assistant message holding only a thinking block: no main request sent that (the cached
+/// prefix never matches) and strict backends reject it. It goes; earlier reasoning stays.
+#[test]
+fn verbatim_drops_a_trailing_reasoning_item_cut_off_from_its_message() {
+    use distill_sampling_types::{ToolCall, rs};
+    let reasoning = |id: &str| {
+        ConversationItem::Reasoning(rs::ReasoningItem {
+            id: id.to_string(),
+            summary: vec![],
+            content: None,
+            encrypted_content: Some("sig".to_string()),
+            status: None,
+        })
+    };
+    let head = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::user("go"),
+        reasoning("r1"),
+        ConversationItem::assistant("done"),
+        ConversationItem::user("next"),
+    ];
+
+    let mut split_prefix = head.clone();
+    split_prefix.push(reasoning("r2"));
+    let prefix = prepare_conversation_for_verbatim_summarization(split_prefix, false);
+    assert_eq!(prefix.len(), head.len(), "the cut-off reasoning goes: {prefix:?}");
+    assert!(matches!(at(&prefix, 2), ConversationItem::Reasoning(_)), "earlier reasoning stays");
+
+    let mut mid_turn = head.clone();
+    mid_turn.push(reasoning("r2"));
+    mid_turn.push(ConversationItem::assistant_tool_calls(vec![ToolCall {
+        id: "c1".into(),
+        name: "grep".to_string(),
+        arguments: "{}".into(),
+    }]));
+    let truncated = prepare_conversation_for_verbatim_summarization(mid_turn, false);
+    assert_eq!(truncated.len(), head.len(), "the call and its reasoning go: {truncated:?}");
+    assert!(matches!(truncated.last(), Some(ConversationItem::User(_))));
+}
 /// A conversation ending in a complete tool run (tail = `ToolResult`) is left untouched.
 #[test]
 fn verbatim_keeps_trailing_complete_tool_run() {

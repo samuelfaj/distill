@@ -520,14 +520,18 @@ impl SessionActor {
     /// Agent `RefCell` borrows are only taken for synchronous snapshots (never held across `.await`).
     /// A long-lived borrow would race with turn/compact/cancel and panic on double-borrow.
     /// With `fit_cold`, a history that cannot fit beside the tools and the summary is digested and fitted first: it would fail whole, so its cache is no loss.
-    /// `one_shot` marks a history no later request repeats (pass2), so it writes no conversation cache entry.
+    /// `one_shot` marks a history no later request repeats (pass2): it writes no conversation cache entry, but keeps the system breakpoint that reads the main system prompt and tools.
+    /// `cache_key` is the main key for pass1, which replays the main prefix, and a purpose key for pass2, whose prompt is its own.
     async fn two_pass_sample(
         &self,
         history: Vec<ConversationItem>,
         fit_cold: bool,
         one_shot: bool,
+        cache_key: String,
     ) -> Option<CompactOutput> {
-        let sampling_config = self.reconstruct_full_config().await;
+        let mut sampling_config = self.reconstruct_full_config().await;
+        sampling_config.reasoning_effort =
+            self.main_replay_effort(&sampling_config.model, sampling_config.reasoning_effort);
         let client = match self.prepare_chat_completion(false).await {
             Ok(c) => c,
             Err(e) => {
@@ -550,6 +554,10 @@ impl SessionActor {
             let mut fitted = self
                 .fit_cold_compaction_turns(history, budget.saturating_sub(prompt_tokens))
                 .await;
+            // A fitted history is no longer the cached prefix; Messages rejects thinking blocks around mutated turns.
+            if sampling_config.api_backend == ApiBackend::Messages {
+                fitted = distill_chat_state::compaction_utils::strip_reasoning_blocks(fitted);
+            }
             fitted.extend(prompt);
             fitted
         } else {
@@ -584,6 +592,7 @@ impl SessionActor {
                 hosted_tools,
                 client,
                 self.session_info.id.clone(),
+                cache_key,
                 &sampling_config,
                 self.inference_idle_timeout,
                 wall_clock_budget_secs,
@@ -711,14 +720,17 @@ impl SessionActor {
             return PrefireOutcome::EmptySplit.into();
         }
         let sampling_cfg = self.chat_state_handle.get_sampling_config().await;
-        let strips = sampling_cfg
-            .as_ref()
-            .map(|c| c.api_backend == ApiBackend::Messages)
-            .unwrap_or(false);
         let model_slug = sampling_cfg
             .as_ref()
             .map(|c| c.model.to_string())
             .unwrap_or_default();
+        // The prefix is the main request's own: its signed thinking blocks stay when the replayed effort keeps thinking on.
+        let strips = sampling_cfg.as_ref().is_some_and(|c| {
+            verbatim_strips_reasoning(
+                &c.api_backend,
+                self.main_replay_effort(&c.model, c.reasoning_effort),
+            )
+        });
         let prefix_prepared = apply_turn_image_budget_and_prune(
             &self.chat_state_handle,
             prepare_conversation_for_verbatim_summarization(split.prefix.to_vec(), strips),
@@ -731,7 +743,10 @@ impl SessionActor {
         let prompt = build_compaction_prompt(None, false);
         let pass1_history = build_two_pass_pass1_history(&prefix_prepared, &prompt);
         let started = std::time::Instant::now();
-        let out = self.two_pass_sample(pass1_history, true, false).await;
+        let cache_key = self.main_cache_key().await;
+        let out = self
+            .two_pass_sample(pass1_history, true, false, cache_key)
+            .await;
         let pass1_latency_ms = started.elapsed().as_millis() as u64;
         let attempted = |outcome: PrefireOutcome, note1_chars: Option<usize>| PrefirePass1Run {
             outcome,
@@ -835,8 +850,12 @@ impl SessionActor {
         let pass2_history =
             build_two_pass_pass2_history(prefix, &prepared_tail, &cache.note1, &prompt);
         let started = std::time::Instant::now();
-        // NOTE1 plus the tail is a prompt only this pass2 sends.
-        let mut out = self.two_pass_sample(pass2_history, false, true).await?;
+        // NOTE1 plus the tail is a prompt only this pass2 sends, so it keeps its own route off the main one.
+        let cache_key =
+            crate::sampling::purpose_cache_key(&self.session_info.id.to_string(), "compact-pass2");
+        let mut out = self
+            .two_pass_sample(pass2_history, false, true, cache_key)
+            .await?;
         if is_degenerate_summary(&out.content) {
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(
@@ -929,6 +948,15 @@ fn split_compaction_prompt(
 /// be sampled: a cached two-pass summary never reads it.
 fn cold_digest_applies(stage: CompactInputStage, two_pass_used: bool) -> bool {
     stage == CompactInputStage::VerbatimFitted && !two_pass_used
+}
+/// Whether an untrimmed compaction input that replays the main prefix drops reasoning.
+/// With thinking on, the main request sent these signed blocks unmodified, so keeping them keeps
+/// the cached prefix past the first assistant message; with it off (or on another backend) the old rule holds.
+fn verbatim_strips_reasoning(
+    backend: &ApiBackend,
+    replay_effort: Option<distill_sampling_types::ReasoningEffort>,
+) -> bool {
+    super::side_call::should_strip_side_call_reasoning(backend.clone(), replay_effort)
 }
 /// P3 drops whole segments from the middle of the input. On the warm,
 /// cache-aligned verbatim input that turns every later cached token uncached,
@@ -1489,10 +1517,18 @@ impl SessionActor {
             );
             span.record("compaction_trigger", trigger_str);
         }
+        // Trimmed or one-shot inputs no longer match the cached prefix, so on Messages they always drop reasoning.
         let summary_strips_reasoning = sampling_config
             .as_ref()
             .map(|c| c.api_backend == ApiBackend::Messages)
             .unwrap_or(false);
+        // The untrimmed verbatim input is the main request's prefix: it keeps its signed thinking blocks when the replayed effort keeps thinking on.
+        let verbatim_strips = sampling_config.as_ref().is_some_and(|c| {
+            verbatim_strips_reasoning(
+                &c.api_backend,
+                self.main_replay_effort(&c.model, c.reasoning_effort),
+            )
+        });
         let model_id = sampling_config.map(|c| c.model).unwrap_or_default();
         let compaction = distill_telemetry::events::CompactionScope::begin(
             distill_telemetry::events::CompactionBeginParams {
@@ -1545,7 +1581,7 @@ impl SessionActor {
         let mut simplified_messages = if verbatim_input_enabled {
             distill_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
                 full_conversation,
-                summary_strips_reasoning,
+                verbatim_strips,
             )
         } else {
             distill_chat_state::compaction_utils::prepare_conversation_for_summarization(
@@ -1604,7 +1640,9 @@ impl SessionActor {
                 "{COMPACTION_FAILED_GUARD_PREFIX}no system message in simplified conversation"
             )));
         }
-        let sampling_config = self.reconstruct_full_config().await;
+        let mut sampling_config = self.reconstruct_full_config().await;
+        sampling_config.reasoning_effort =
+            self.main_replay_effort(&sampling_config.model, sampling_config.reasoning_effort);
         let sampling_client = self.prepare_chat_completion(false).await?;
         let backend_search_active = self.backend_search_active();
         let effective_tool_defs: Vec<distill_sampling_types::ToolDefinition> = self
@@ -1649,6 +1687,10 @@ impl SessionActor {
         } else {
             let stage =
                 verbatim_start_stage(&simplified_messages, compaction_tool_tokens, context_window);
+            if stage != CompactInputStage::Verbatim && summary_strips_reasoning {
+                simplified_messages =
+                    distill_chat_state::compaction_utils::strip_reasoning_blocks(simplified_messages);
+            }
             if cold_digest_applies(stage, two_pass_used) {
                 simplified_messages = self
                     .fit_cold_compaction_turns(
@@ -1676,6 +1718,7 @@ impl SessionActor {
             compaction_tool_tokens,
             sampling_client,
             self.session_info.id.clone(),
+            self.main_cache_key().await,
             sampling_config.clone(),
             self.inference_idle_timeout,
             wall_clock_budget_secs,
@@ -1863,12 +1906,16 @@ impl SessionActor {
                 0 => context_window,
                 window => window,
             };
-            let turns = self
+            let mut turns = self
                 .fit_cold_compaction_turns(
                     request_turns.clone(),
                     fitted_input_budget(window, compaction_tool_tokens),
                 )
                 .await;
+            // Another model's request reads none of the main cache and its input is fitted.
+            if summary_strips_reasoning {
+                turns = distill_chat_state::compaction_utils::strip_reasoning_blocks(turns);
+            }
             let fallback_model = fallback_config.model.clone();
             let fallback_sampler =
                 crate::session::helpers::full_replace_compaction::ShellCompactionSampler::new(
@@ -1879,6 +1926,10 @@ impl SessionActor {
                     compaction_tool_tokens,
                     fallback_client,
                     self.session_info.id.clone(),
+                    crate::sampling::purpose_cache_key(
+                        &self.session_info.id.to_string(),
+                        "compact-fallback",
+                    ),
                     fallback_config,
                     self.inference_idle_timeout,
                     wall_clock_budget_secs,
@@ -2612,6 +2663,8 @@ impl SessionActor {
         self.chat_state_handle
             .replace_conversation_for_compaction(compacted_history);
         crate::jev::invalidate_payload_reads_for_active_session();
+        // The cached prefix the turn's kept effort protected is gone.
+        self.jev_ledger.borrow_mut().note_compaction();
         self.reseed_active_goal_after_compaction().await;
         let new_len = self.chat_state_handle.get_conversation_len().await;
         if self.startup_hints.inherited_prefix_len.is_some() {

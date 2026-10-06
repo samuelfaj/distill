@@ -2,9 +2,33 @@
 use super::{
     CompactInputStage, SUMMARY_BUDGET_RESERVE_TOKENS, cold_digest_applies,
     compaction_fallback_model, fitted_input_budget, p3_recorte_applies, split_compaction_prompt,
-    verbatim_start_stage,
+    verbatim_start_stage, verbatim_strips_reasoning,
 };
-use distill_sampling_types::ConversationItem;
+use distill_sampling_types::{ApiBackend, ConversationItem, ReasoningEffort};
+
+/// The main Messages request sends its signed thinking blocks unmodified whenever thinking is on.
+/// A compaction that drops them stops matching the cached prefix at the first assistant message
+/// (18-26k cached of a 470-630k input), so the untrimmed input keeps them under the same setting.
+#[test]
+fn verbatim_compaction_keeps_thinking_blocks_when_main_thinks() {
+    assert!(!verbatim_strips_reasoning(
+        &ApiBackend::Messages,
+        Some(ReasoningEffort::High)
+    ));
+    assert!(
+        verbatim_strips_reasoning(&ApiBackend::Messages, None),
+        "without a thinking configuration Messages takes no thinking blocks"
+    );
+    assert!(verbatim_strips_reasoning(
+        &ApiBackend::Messages,
+        Some(ReasoningEffort::None)
+    ));
+    assert!(!verbatim_strips_reasoning(&ApiBackend::Responses, None));
+    assert!(!verbatim_strips_reasoning(
+        &ApiBackend::ChatCompletions,
+        None
+    ));
+}
 
 #[test]
 fn fitted_input_budget_subtracts_reserve_and_tools() {

@@ -401,6 +401,23 @@ impl ChatStateHandle {
         });
     }
 
+    /// Before the first request of a session spawned with a history: a verbatim fork passes the
+    /// trims its parent's requests sent ([`Self::request_trims`]) so its first request matches the
+    /// parent's cached prefix; any other history (`None`) is cold.
+    pub fn start_from_inherited_history(&self, parent_trims: Option<crate::RequestTrims>) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::StartFromInheritedHistory { parent_trims });
+    }
+
+    /// The cache lifetime the last main request had (`None`: unknown for its endpoint); idle past
+    /// it, the history counts as cold.
+    pub fn record_cache_lifetime(&self, lifetime: Option<std::time::Duration>) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::RecordCacheLifetime { lifetime });
+    }
+
     /// Track that the agent edited a file path.
     pub fn record_agent_edited_path(&self, path: String) {
         let _ = self
@@ -625,6 +642,25 @@ impl ChatStateHandle {
         })
         .await
         .flatten()
+    }
+
+    /// Whether the next request misses the provider cache anyway (a model switch, a
+    /// compaction that rebuilt the prefix, a long idle gap). False when the actor is gone.
+    pub async fn history_is_cold(&self) -> bool {
+        self.query("IsHistoryCold", |reply| ChatStateCommand::IsHistoryCold {
+            reply,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// The request trims this session's requests sent; empty when the actor is gone.
+    pub async fn request_trims(&self) -> crate::RequestTrims {
+        self.query("GetRequestTrims", |reply| ChatStateCommand::GetRequestTrims {
+            reply,
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Get total accumulated tokens.

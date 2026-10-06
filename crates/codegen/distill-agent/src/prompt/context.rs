@@ -268,6 +268,9 @@ impl PromptContext {
     pub fn render_with_renderer(&self, renderer: &TemplateRenderer) -> Option<String> {
         let placeholders = self.placeholders();
         let render = |template: &str| renderer.render_with_extra(template, &placeholders).ok();
+        // The subagent template's `<user_info>` (workspace path, date) differs between sibling
+        // children; moved after everything else, it leaves them the longest shared cached prefix.
+        let mut per_child_tail = String::new();
         let prompt = match self.prompt_mode {
             PromptMode::Extend => {
                 let decrypted;
@@ -287,6 +290,13 @@ impl PromptContext {
                     }
                 };
                 let mut prompt = render(base)?;
+                if self.audience == PromptAudience::Subagent
+                    && matches!(self.system_prompt, TemplateOverride::None)
+                    && prompt.ends_with("</user_info>")
+                    && let Some(at) = prompt.rfind("\n\n<user_info>")
+                {
+                    per_child_tail = prompt.split_off(at);
+                }
                 if let Some(body) = &self.prompt_body {
                     prompt.push_str("\n\n");
                     prompt.push_str(&render(body).unwrap_or_else(|| body.clone()));
@@ -295,7 +305,7 @@ impl PromptContext {
             }
             PromptMode::Full => render(self.prompt_body.as_deref().unwrap_or(""))?,
         };
-        Some(prompt + &self.always_on_sections())
+        Some(prompt + &self.always_on_sections() + &per_child_tail)
     }
     /// The sections every prompt carries, appended after the base template and body so a custom
     /// or codex base, a full-mode body and a host that leaves `output_style` unset all get them.
@@ -977,12 +987,47 @@ mod tests {
                 assert!(prompt.contains(&caveman), "{label}");
                 assert_eq!(prompt.matches("<ponytail>\n").count(), 1, "{label}");
                 assert!(prompt.contains(ponytail::instructions(audience)), "{label}");
+                // Only a subagent's per-child `<user_info>` data block may follow them (cache sharing).
+                let instructions = match prompt.rsplit_once("\n\n<user_info>") {
+                    Some((head, _)) if audience == PromptAudience::Subagent => head,
+                    _ => prompt.as_str(),
+                };
                 assert!(
-                    prompt.trim_end().ends_with("</output_style>"),
+                    instructions.trim_end().ends_with("</output_style>"),
                     "the style rules stay last so they are the most recent instruction: {label}"
                 );
             }
         }
+    }
+    /// Sibling subagents of one type share a cached prefix only up to their first differing byte.
+    /// The workspace path and date differ between some siblings, so they close the prompt: the type's
+    /// body and the always-on sections stay in the shared prefix ahead of them.
+    #[test]
+    fn subagent_per_child_values_close_the_system_prompt() {
+        let render = |working_directory: &str, current_date: &str| {
+            PromptContext {
+                audience: PromptAudience::Subagent,
+                prompt_body: Some("explore body".to_owned()),
+                working_directory: Some(working_directory.to_owned()),
+                current_date: Some(current_date.to_owned()),
+                ..Default::default()
+            }
+            .render_with_renderer(&common_tools_renderer())
+            .unwrap()
+        };
+        let first = render("/work/a", "2026-10-05");
+        let second = render("/work/b", "2026-10-06");
+        let user_info = first.find("\n\n<user_info>").expect("user_info present");
+        let shared = first
+            .bytes()
+            .zip(second.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        assert!(shared > user_info, "siblings share everything before <user_info>");
+        assert!(first.find("explore body").expect("body") < user_info);
+        assert!(first.find("</output_style>").expect("style") < user_info);
+        assert!(first.ends_with("Current Date: 2026-10-05\n</user_info>"), "{first}");
+        assert_eq!(first.matches("<user_info>").count(), 1);
     }
     /// A pinned level replaces the default text, and never adds a second section.
     #[test]

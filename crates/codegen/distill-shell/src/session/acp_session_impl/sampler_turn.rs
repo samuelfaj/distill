@@ -81,6 +81,13 @@ fn sampler_route_backend_key(config: &SamplingConfig) -> &'static str {
     }
 }
 
+/// A request to a Messages (`/messages`) endpoint, the backend whose cache usage the prefix trace reads.
+fn is_messages_endpoint(endpoint: Option<&str>) -> bool {
+    endpoint
+        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+        .is_some_and(|url| url.path().ends_with("/messages"))
+}
+
 fn usage_is_complete(usage: Option<&distill_sampling_types::TokenUsage>) -> bool {
     usage.is_some()
 }
@@ -1037,7 +1044,15 @@ impl SessionActor {
                         // Resolved `[auto_mode]` effort: explicit config/remote, else the built-in `Low` default when the model supports it
                         // None means the provider default
                         reasoning_effort: classifier_reasoning_effort,
-                        x_grok_conv_id: Some(format!("perm-classifier-{}", uuid::Uuid::new_v4())),
+                        // A stable key of its own: the classifier prompt is read from cache on the next call, and the main prefix is left alone.
+                        x_grok_conv_id: Some(crate::sampling::purpose_cache_key(
+                            &session_id,
+                            "perm-classifier",
+                        )),
+                        prompt_cache_key: Some(crate::sampling::purpose_cache_key(
+                            &session_id,
+                            "perm-classifier",
+                        )),
                         x_grok_req_id: Some(format!("xai-perm-auto-{}", uuid::Uuid::new_v4())),
                         x_grok_session_id: Some(session_id),
                         x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
@@ -1210,12 +1225,19 @@ impl SessionActor {
         // E6: a utility `explore` child runs this round on the utility model at
         // its own effort; the effort passes below belong to the session model.
         if !self.jev_route_cheap_agent(&mut sampler_config).await {
-            // The main model runs this call; auto effort picks from its own menu and
-            // an explicit effort stays fixed.
-            self.jev_choose_effort(&mut sampler_config).await;
-            // B2 (money lever): a routine turn may run at a cheaper setting; the
-            // pass can only lower effort, and it is off until its gate passes.
-            self.jev_apply_model_tier(&mut sampler_config).await;
+            // Where the effort is part of the cached prefix, a later round of the
+            // turn keeps the turn's model and effort: a switch re-reads the whole
+            // prompt uncached. Otherwise this round chooses below.
+            if !self.jev_keep_turn_effort(&mut sampler_config) {
+                let session_model = sampler_config.model.clone();
+                // The main model runs this call; auto effort picks from its own menu and
+                // an explicit effort stays fixed.
+                self.jev_choose_effort(&mut sampler_config).await;
+                // B2 (money lever): a routine turn may run at a cheaper setting; the
+                // pass can only lower effort, and it is off until its gate passes.
+                self.jev_apply_model_tier(&mut sampler_config).await;
+                self.jev_anchor_turn_effort(&session_model, &sampler_config);
+            }
             // A redo the change review asked for runs at the setting it asked for:
             // the floor wins over anything cheaper chosen above.
             self.jev_apply_effort_floor(&mut sampler_config).await;
@@ -1954,6 +1976,10 @@ impl SessionActor {
                 request.reasoning_effort = None;
             }
         }
+        // What this request finally sends is what a later compaction or recap must replay.
+        self.jev_ledger
+            .borrow_mut()
+            .note_main_request(request.model.as_deref(), request.reasoning_effort);
     }
 
     fn remember_observed_route_context_cap(
@@ -2396,6 +2422,20 @@ impl SessionActor {
         let usage_context = self
             .sampler_usage_context(&request_id_str, &request, route_config)
             .await;
+        // Honoured by the client only where the endpoint takes the one-hour lifetime.
+        request.long_cache_ttl = super::prompt_cache::long_wait_likely(&request.items);
+        // The endpoint this request goes to, for the cache lifetime it gets (see below).
+        let cache_route = match route_config {
+            Some(config) => Some((config.base_url.clone(), config.api_backend.clone(), config.model.clone())),
+            None => self
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .map(|config| (config.base_url, config.api_backend, config.model)),
+        };
+        let long_cache_ttl = request.long_cache_ttl;
+        let sent_prefix = is_messages_endpoint(usage_context.endpoint.as_deref())
+            .then(|| super::prompt_cache::SentPrefix::of(&request.items));
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
         let stream_drained_rx = {
@@ -2445,6 +2485,28 @@ impl SessionActor {
         }
         match collected.result {
             Ok((response, metrics)) => {
+                // Idle past this lifetime, the next request misses the cache anyway: the moment old
+                // history may be rewritten. Read after the call, which may have refused the hour.
+                if let Some((base_url, api_backend, model)) = &cache_route {
+                    let model = actual_model.as_deref().unwrap_or(model);
+                    self.chat_state_handle.record_cache_lifetime(
+                        distill_sampler::prompt_cache_lifetime(base_url, api_backend, model, long_cache_ttl),
+                    );
+                }
+                if let (Some(sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
+                    let report = self
+                        .jev_ledger
+                        .borrow_mut()
+                        .prefix_trace
+                        .observe(sent, usage);
+                    if let Some(report) = report {
+                        distill_telemetry::unified_log::debug(
+                            "prompt cache: read far below the previous prompt",
+                            Some(self.session_info.id.0.as_ref()),
+                            Some(report),
+                        );
+                    }
+                }
                 // Current span is the turn span (this fn is inline-awaited from process_conversation_turn, no own #[instrument])
                 let span = tracing::Span::current();
                 span.record("request_id", request_id_str.as_str());

@@ -3016,15 +3016,12 @@ impl SessionActor {
             );
             let mut request = request;
             request.x_grok_session_id = Some(self.session_info.id.to_string());
-            request.prompt_cache_key = crate::sampling::subagent_prompt_cache_key(
-                self.startup_hints.is_subagent,
-                self.startup_hints.preserve_inherited_system,
-                self.startup_hints.parent_session_id.as_deref(),
-                self.subagent_type_label().as_deref(),
+            let cache_key = self.main_cache_key_for(
                 sampling_config
                     .as_ref()
                     .and_then(|config| config.conversation_group_id.as_ref()),
             );
+            request.prompt_cache_key = Some(cache_key);
             request.x_grok_turn_idx =
                 Some(self.chat_state_handle.get_prompt_index().await.to_string());
             request.x_grok_agent_id = Some(distill_telemetry::id::agent_id());

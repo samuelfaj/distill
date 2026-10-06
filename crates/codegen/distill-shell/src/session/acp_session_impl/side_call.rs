@@ -312,9 +312,8 @@ pub(crate) struct AuxCall {
     pub(crate) model: String,
     /// Must match the main turn's, or the prompt differs before the conversation history even starts.
     pub(crate) reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
-    /// Says whether the cache key gets sent, which is what decides the conv id below.
-    pub(crate) backend: crate::sampling::ApiBackend,
-    pub(crate) conv_id: String,
+    /// The main call's routing key ([`SessionActor::main_cache_key`]), sent as conv id and cache key.
+    pub(crate) cache_key: String,
     pub(crate) req_id: String,
 }
 
@@ -324,7 +323,7 @@ pub(crate) struct SideCallSetup {
     pub(crate) strip_reasoning: bool,
     pub(crate) context_window: u64,
     pub(crate) model: String,
-    /// Must match the main turn so the side-call shares the prompt-cache prefix.
+    /// The last main request's effort ([`SessionActor::main_replay_effort`]), so the side-call shares its prompt-cache prefix.
     pub(crate) reasoning_effort: Option<distill_sampling_types::ReasoningEffort>,
 }
 
@@ -475,18 +474,59 @@ pub(super) fn should_strip_side_call_reasoning(
 }
 
 impl SessionActor {
-    /// Request skeleton for an auxiliary call that replays the parent conversation under the parent's `prompt_cache_key`.
+    /// The routing key of this session's main call, given its conversation group; see [`crate::sampling::main_cache_key`].
+    pub(crate) fn main_cache_key_for(
+        &self,
+        group_id: Option<&crate::sampling::ConversationGroupId>,
+    ) -> String {
+        crate::sampling::main_cache_key(
+            &self.session_info.id.to_string(),
+            self.startup_hints.is_subagent,
+            self.startup_hints.preserve_inherited_system,
+            self.startup_hints.parent_session_id.as_deref(),
+            self.subagent_type_label().as_deref(),
+            group_id,
+        )
+    }
+
+    /// [`Self::main_cache_key_for`] with the session's own conversation group.
+    pub(crate) async fn main_cache_key(&self) -> String {
+        let sampling_config = self.chat_state_handle.get_sampling_config().await;
+        self.main_cache_key_for(
+            sampling_config
+                .as_ref()
+                .and_then(|config| config.conversation_group_id.as_ref()),
+        )
+    }
+
+    /// Effort for a request that replays the main prefix on `model`; see [`super::jev_ledger::JevTurnLedger::main_replay_effort`].
+    pub(crate) fn main_replay_effort(
+        &self,
+        model: &str,
+        configured: Option<distill_sampling_types::ReasoningEffort>,
+    ) -> Option<distill_sampling_types::ReasoningEffort> {
+        self.jev_ledger
+            .borrow()
+            .main_replay_effort(model, configured)
+    }
+
+    /// A conversation snapshot as the main request would send it: the same image budget and old tool-result pruning.
+    /// A replay built from the raw conversation differs from the cached prefix at the first pruned result.
+    /// The `ModelRequestHistory` step runs in [`Self::parent_cached_request`].
+    pub(crate) async fn main_request_items(
+        &self,
+        conversation: Vec<ConversationItem>,
+    ) -> Vec<ConversationItem> {
+        let items = distill_chat_state::image_budget::apply_image_budget(conversation).items;
+        self.chat_state_handle.apply_turn_request_pruning(items).await
+    }
+
+    /// Request skeleton for an auxiliary call that replays the parent conversation on the main call's route.
     /// Temperature stays unset: cli-chat-proxy may inject a `thinking` config, and the Messages API then requires temperature == 1.
     pub(crate) fn parent_cached_request(&self, call: AuxCall) -> ConversationRequest {
         let session_id = self.session_info.id.to_string();
-        // Only the Responses mapping sends the cache key
-        // On the other backends the conv id is what ties a call to its conversation, so it has to stay the parent session id
-        // The `btw-`/`recap-` label still shows up in `x_grok_req_id`
-        let conv_id = if call.backend.forwards_prompt_cache_key() {
-            call.conv_id
-        } else {
-            session_id.clone()
-        };
+        // Conv id and cache key are the main call's (the session id and its routing key), so the replay reads the main prefix on every backend
+        // The `btw-`/`recap-` label shows up in `x_grok_req_id`
         ConversationRequest {
             items: distill_chat_state::compaction_utils::ModelRequestHistory::from_raw(call.items)
                 .into_items(),
@@ -496,11 +536,11 @@ impl SessionActor {
             temperature: None,
             // Effort changes the prompt ahead of the conversation history, so dropping it here would share no prefix with the main turn.
             reasoning_effort: call.reasoning_effort,
-            x_grok_conv_id: Some(conv_id),
+            x_grok_conv_id: Some(crate::sampling::conv_id_for(&session_id, &call.cache_key)),
             x_grok_req_id: Some(call.req_id),
-            x_grok_session_id: Some(session_id.clone()),
+            x_grok_session_id: Some(session_id),
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
-            prompt_cache_key: Some(session_id),
+            prompt_cache_key: Some(call.cache_key),
             // Side calls persist text and never execute tools (the attached tools only align the prompt-cache prefix)
             // A Length sample must fail rather than salvage
             length_policy: distill_sampling_types::LengthPolicy::Fail,
@@ -519,10 +559,16 @@ impl SessionActor {
             .as_ref()
             .map(|c| c.context_window.get())
             .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-        let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
+        let model = sampling_config
+            .as_ref()
+            .map(|c| c.model.clone())
+            .unwrap_or_default();
+        let reasoning_effort = self.main_replay_effort(
+            &model,
+            sampling_config.as_ref().and_then(|c| c.reasoning_effort),
+        );
         let strip_reasoning =
             should_strip_side_call_reasoning(client.api_backend(), reasoning_effort);
-        let model = sampling_config.map(|c| c.model).unwrap_or_default();
         Ok(SideCallSetup {
             client,
             strip_reasoning,
@@ -539,21 +585,20 @@ impl SessionActor {
         &self,
         setup: &SideCallSetup,
         items: Vec<ConversationItem>,
-        x_grok_conv_id: String,
         x_grok_req_id: String,
     ) -> ConversationRequest {
         let tool_defs = self.prepare_tool_definitions().await;
         let tools = self.turn_base_tool_specs(&tool_defs);
         // Mirror the main turn's hosted tools (overrides folded in) so a side-call can't search past the active cutoff.
         let hosted_tools = self.hosted_tools_for_turn();
+        let cache_key = self.main_cache_key().await;
         self.parent_cached_request(AuxCall {
             items,
             tools,
             hosted_tools,
             model: setup.model.clone(),
             reasoning_effort: setup.reasoning_effort,
-            backend: setup.client.api_backend(),
-            conv_id: x_grok_conv_id,
+            cache_key,
             req_id: x_grok_req_id,
         })
     }

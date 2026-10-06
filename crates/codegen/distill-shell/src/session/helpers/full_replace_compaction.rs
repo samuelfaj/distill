@@ -58,6 +58,8 @@ pub(crate) struct ShellCompactionSampler {
     compaction_tool_tokens: u64,
     client: OaiCompatClient,
     session_id: acp::SessionId,
+    /// Conv id and `prompt_cache_key` forwarded to `generate_session_compact`.
+    cache_key: String,
     sampling_config: SamplingConfig,
     /// Per-chunk idle timeout forwarded to `generate_session_compact`.
     /// A stalled summarizer stream (no model-output chunk for this long) fails instead of hanging.
@@ -80,6 +82,7 @@ impl ShellCompactionSampler {
         compaction_tool_tokens: u64,
         client: OaiCompatClient,
         session_id: acp::SessionId,
+        cache_key: String,
         sampling_config: SamplingConfig,
         idle_timeout: Duration,
         wall_clock_budget_secs: u64,
@@ -95,6 +98,7 @@ impl ShellCompactionSampler {
             compaction_tool_tokens,
             client,
             session_id,
+            cache_key,
             sampling_config,
             idle_timeout,
             wall_clock_budget_secs,
@@ -156,6 +160,7 @@ impl CompactionSampler for ShellCompactionSampler {
             self.hosted_tools.clone(),
             self.client.clone(),
             self.session_id.clone(),
+            self.cache_key.clone(),
             &self.sampling_config,
             self.idle_timeout,
             self.wall_clock_budget_secs,

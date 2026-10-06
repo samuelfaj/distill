@@ -126,6 +126,8 @@ pub fn truncate_trailing_incomplete_tool_call(
     conversation
 }
 /// Cache-aligned summarizer prep: keep tool I/O + images so the prefix matches the engine cache; set `strip_reasoning` when the provider rejects mutated thinking blocks.
+/// A trailing `Reasoning` item whose assistant message was cut off (by a two-pass split or the truncation) goes too:
+/// alone it becomes an assistant message holding only a thinking block, which no main request sent (so it misses the cache) and strict backends reject.
 pub fn prepare_conversation_for_verbatim_summarization(
     conversation: Vec<ConversationItem>,
     strip_reasoning: bool,
@@ -135,7 +137,12 @@ pub fn prepare_conversation_for_verbatim_summarization(
     } else {
         conversation
     };
-    truncate_trailing_incomplete_tool_call(conversation)
+    let mut conversation = truncate_trailing_incomplete_tool_call(conversation);
+    while matches!(conversation.last(), Some(ConversationItem::Reasoning(_))) {
+        conversation.pop();
+        conversation = truncate_trailing_incomplete_tool_call(conversation);
+    }
+    conversation
 }
 /// Per-item token estimate via the trigger-side estimator, so `fit`'s budget matches what fired the compaction (counts images + encrypted reasoning).
 fn estimate_item_tokens(item: &ConversationItem) -> u64 {

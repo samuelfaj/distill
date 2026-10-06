@@ -75,6 +75,39 @@ pub(crate) struct JevTurnLedger {
     /// a compaction or recap at the start of the next turn replays that
     /// request's prefix and must send the same effort to read its cache.
     last_main_request: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
+    /// The model and effort this prompt turn's main rounds stay on where the
+    /// effort is part of the cached prefix. Set by a round that chose freely;
+    /// dropped by a compaction and by the turn drain.
+    turn_route: Option<TurnRouteAnchor>,
+    /// Prompt tokens of the last main response: the prefix the next main
+    /// request extends, i.e. what an effort switch would re-read uncached.
+    /// Session-scoped, like the cache it describes.
+    last_main_prompt_tokens: Option<u64>,
+}
+
+/// Prompt size under which a main round may still change its effort mid-turn.
+///
+/// On a backend whose cache is keyed by effort, a switch re-reads the whole
+/// prompt uncached. Under 16k tokens that costs about what a cached read of a
+/// 160k-token prompt does (cached input bills at roughly a tenth), so one
+/// ordinary late round; above it the miss grows with every round the turn has
+/// run, which is the cost the turn route exists to avoid.
+pub(crate) const EFFORT_SWITCH_FREE_PROMPT_TOKENS: u64 = 16_384;
+
+/// A main round's model and effort, as the turn route keeps them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnRoute {
+    pub model: String,
+    pub effort: Option<distill_sampling_types::ReasoningEffort>,
+}
+
+#[derive(Debug, Clone)]
+struct TurnRouteAnchor {
+    /// Prompt turn the route was chosen in; another turn chooses again.
+    turn: u64,
+    /// Session model the round started from, so a model switch chooses again.
+    session_model: String,
+    route: TurnRoute,
 }
 
 impl JevTurnLedger {
@@ -122,6 +155,51 @@ impl JevTurnLedger {
             row.input_tokens = row.input_tokens.saturating_add(input_tokens);
             row.output_tokens = row.output_tokens.saturating_add(output_tokens);
         }
+        self.last_main_prompt_tokens = Some(input_tokens);
+    }
+
+    /// Prompt tokens of the last main response, when one reported usage.
+    pub(crate) fn last_main_prompt_tokens(&self) -> Option<u64> {
+        self.last_main_prompt_tokens
+    }
+
+    /// The route a main round of `turn` started from `session_model` must keep:
+    /// the one an earlier round of the same turn chose. `None` lets the round
+    /// choose: a new turn, another session model, no round chosen yet (or a
+    /// compaction since), or a prompt still small enough that a cache miss is
+    /// cheap.
+    pub(crate) fn kept_turn_route(&self, turn: u64, session_model: &str) -> Option<TurnRoute> {
+        let anchor = self.turn_route.as_ref()?;
+        if anchor.turn != turn || anchor.session_model != session_model {
+            return None;
+        }
+        if self
+            .last_main_prompt_tokens
+            .is_none_or(|tokens| tokens < EFFORT_SWITCH_FREE_PROMPT_TOKENS)
+        {
+            return None;
+        }
+        Some(anchor.route.clone())
+    }
+
+    /// Records the route a freely chosen main round of `turn` runs with.
+    pub(crate) fn anchor_turn_route(
+        &mut self,
+        turn: u64,
+        session_model: impl Into<String>,
+        route: TurnRoute,
+    ) {
+        self.turn_route = Some(TurnRouteAnchor {
+            turn,
+            session_model: session_model.into(),
+            route,
+        });
+    }
+
+    /// A compaction rewrote the prompt, so the cache the turn route protects is
+    /// gone and the next round may choose again.
+    pub(crate) fn note_compaction(&mut self) {
+        self.turn_route = None;
     }
 
     /// When this turn's first call was noted (the window its decisions belong to).
@@ -263,6 +341,7 @@ impl JevTurnLedger {
         self.facts = Default::default();
         self.turn_intent = None;
         self.last_execution = None;
+        self.turn_route = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())
@@ -306,6 +385,68 @@ mod tests {
             ledger.main_replay_effort("sol", Some(ReasoningEffort::Medium)),
             Some(ReasoningEffort::Medium),
             "a round routed to another model says nothing about this model's cache"
+        );
+    }
+
+    /// On a backend whose cache is keyed by effort, a mid-turn switch re-read
+    /// the whole prompt uncached (74% full misses on ChatGPT). Later rounds of
+    /// a turn keep its route; only a new turn, a model switch, a compaction or
+    /// a still-small prompt lets a round choose again.
+    #[test]
+    fn a_turn_keeps_its_route_until_switching_is_cheap() {
+        use distill_sampling_types::ReasoningEffort;
+        let high = TurnRoute {
+            model: "sol".to_owned(),
+            effort: Some(ReasoningEffort::High),
+        };
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(
+            ledger.kept_turn_route(3, "sol"),
+            None,
+            "the turn's first round chooses"
+        );
+        ledger.anchor_turn_route(3, "sol", high.clone());
+        assert_eq!(
+            ledger.kept_turn_route(3, "sol"),
+            None,
+            "without a reported prompt size the round behaves as before"
+        );
+        ledger.note_round("sol", Some("high".to_owned()));
+        ledger.add_usage(EFFORT_SWITCH_FREE_PROMPT_TOKENS - 1, 10);
+        assert_eq!(
+            ledger.kept_turn_route(3, "sol"),
+            None,
+            "a miss on a small prompt is cheap, so the round may still choose"
+        );
+        ledger.add_usage(80_000, 10);
+        assert_eq!(ledger.kept_turn_route(3, "sol"), Some(high.clone()));
+        assert_eq!(
+            ledger.kept_turn_route(4, "sol"),
+            None,
+            "a new prompt turn chooses again"
+        );
+        assert_eq!(
+            ledger.kept_turn_route(3, "luna"),
+            None,
+            "after a model switch the old route's cache is not this model's"
+        );
+        ledger.note_compaction();
+        assert_eq!(
+            ledger.kept_turn_route(3, "sol"),
+            None,
+            "a compaction rewrote the prompt, so its cache is gone anyway"
+        );
+        ledger.anchor_turn_route(3, "sol", high);
+        let _ = ledger.take_rows();
+        assert_eq!(
+            ledger.kept_turn_route(3, "sol"),
+            None,
+            "the drain ends the turn"
+        );
+        assert_eq!(
+            ledger.last_main_prompt_tokens(),
+            Some(80_000),
+            "the prompt size describes the session's cache, not the turn"
         );
     }
 

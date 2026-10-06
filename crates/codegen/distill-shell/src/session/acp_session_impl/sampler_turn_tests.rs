@@ -389,6 +389,68 @@ async fn sampler_preparation_keeps_one_million_parent_when_utility_is_confident(
         .await;
 }
 
+/// On a backend whose cache is keyed by effort, changing effort between rounds
+/// of one turn re-read the whole prompt uncached (74% full misses on ChatGPT).
+/// A later round keeps the effort the turn chose, even over the configured
+/// default; an explicit effort still wins.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn later_rounds_of_a_turn_keep_its_effort_on_an_effort_keyed_cache() {
+    use super::super::jev_ledger::{EFFORT_SWITCH_FREE_PROMPT_TOKENS, TurnRoute};
+    use super::super::support::create_test_actor;
+    use distill_sampling_types::{ApiBackend, ReasoningEffort};
+    use std::sync::atomic::Ordering;
+    use tokio::task::LocalSet;
+
+    LocalSet::new()
+        .run_until(async {
+            crate::jev::set_test_decision_answers([]);
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 1_000_000, 85, gateway_tx, persistence_tx).await;
+            let mut config = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            config.api_backend = ApiBackend::Responses;
+            config.reasoning_effort = Some(ReasoningEffort::High);
+            actor.chat_state_handle.update_sampling_config(config);
+            actor.jev_effort_auto.store(true, Ordering::Relaxed);
+            {
+                let mut ledger = actor.jev_ledger.borrow_mut();
+                ledger.anchor_turn_route(
+                    actor.current_turn_number.get(),
+                    "test",
+                    TurnRoute {
+                        model: "test".to_owned(),
+                        effort: Some(ReasoningEffort::Low),
+                    },
+                );
+                ledger.note_round("test", Some("low".to_owned()));
+                ledger.add_usage(EFFORT_SWITCH_FREE_PROMPT_TOKENS * 4, 100);
+            }
+
+            let prepared = actor.prepare_sampler_for_turn().await;
+            assert_eq!(prepared.model, "test");
+            assert_eq!(
+                prepared.reasoning_effort,
+                Some(ReasoningEffort::Low),
+                "the turn's chosen effort holds the cache, not the configured default"
+            );
+
+            actor.jev_effort_auto.store(false, Ordering::Relaxed);
+            let prepared = actor.prepare_sampler_for_turn().await;
+            assert_eq!(
+                prepared.reasoning_effort,
+                Some(ReasoningEffort::High),
+                "an explicit effort always wins over the kept route"
+            );
+            crate::jev::clear_test_decision_answers();
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn route_preflight_keeps_mid_salvage_terminal_without_rewrite_or_usage() {
     use super::super::support::create_test_actor;

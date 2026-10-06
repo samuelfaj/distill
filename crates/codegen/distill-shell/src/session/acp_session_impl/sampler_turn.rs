@@ -1218,12 +1218,19 @@ impl SessionActor {
         // E6: a utility `explore` child runs this round on the utility model at
         // its own effort; the effort passes below belong to the session model.
         if !self.jev_route_cheap_agent(&mut sampler_config).await {
-            // The main model runs this call; auto effort picks from its own menu and
-            // an explicit effort stays fixed.
-            self.jev_choose_effort(&mut sampler_config).await;
-            // B2 (money lever): a routine turn may run at a cheaper setting; the
-            // pass can only lower effort, and it is off until its gate passes.
-            self.jev_apply_model_tier(&mut sampler_config).await;
+            // Where the effort is part of the cached prefix, a later round of the
+            // turn keeps the turn's model and effort: a switch re-reads the whole
+            // prompt uncached. Otherwise this round chooses below.
+            if !self.jev_keep_turn_effort(&mut sampler_config) {
+                let session_model = sampler_config.model.clone();
+                // The main model runs this call; auto effort picks from its own menu and
+                // an explicit effort stays fixed.
+                self.jev_choose_effort(&mut sampler_config).await;
+                // B2 (money lever): a routine turn may run at a cheaper setting; the
+                // pass can only lower effort, and it is off until its gate passes.
+                self.jev_apply_model_tier(&mut sampler_config).await;
+                self.jev_anchor_turn_effort(&session_model, &sampler_config);
+            }
             // A redo the change review asked for runs at the setting it asked for:
             // the floor wins over anything cheaper chosen above.
             self.jev_apply_effort_floor(&mut sampler_config).await;

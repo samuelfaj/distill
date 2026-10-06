@@ -262,6 +262,48 @@ impl SessionActor {
         );
     }
 
+    /// Keeps this main round on the model and effort an earlier round of the
+    /// same prompt turn chose, where the effort is part of the cached prefix.
+    /// `false` leaves the round to the per-call choice: an explicit effort, a
+    /// per-message effort marker, or nothing to keep (see
+    /// [`super::jev_ledger::JevTurnLedger::kept_turn_route`]). A redo floor
+    /// still applies on top; the next round returns to the kept route.
+    pub(super) fn jev_keep_turn_effort(&self, cfg: &mut SamplingConfig) -> bool {
+        if !self
+            .jev_effort_auto
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || !effort_keys_cached_prefix(&cfg.api_backend, &cfg.model)
+        {
+            return false;
+        }
+        let Some(route) = self
+            .jev_ledger
+            .borrow()
+            .kept_turn_route(self.current_turn_number.get(), &cfg.model)
+        else {
+            return false;
+        };
+        tracing::debug!(target: "jev.decision", model = route.model,
+            effort = route.effort.map(|effort| effort.as_ref().to_owned()),
+            "turn keeps its effort: a switch would miss the cached prefix");
+        cfg.model = route.model;
+        cfg.reasoning_effort = route.effort;
+        true
+    }
+
+    /// Records the route a freely chosen main round runs with, for the turn's
+    /// later rounds to keep.
+    pub(super) fn jev_anchor_turn_effort(&self, session_model: &str, cfg: &SamplingConfig) {
+        self.jev_ledger.borrow_mut().anchor_turn_route(
+            self.current_turn_number.get(),
+            session_model,
+            super::jev_ledger::TurnRoute {
+                model: cfg.model.clone(),
+                effort: cfg.reasoning_effort,
+            },
+        );
+    }
+
     /// Choose the main model's effort for this call. The main model runs every
     /// call; a fixed effort pins its intensity.
     pub(super) async fn jev_choose_effort(&self, cfg: &mut SamplingConfig) {
@@ -302,6 +344,10 @@ impl SessionActor {
         }
         state["reasoning_effort_policy"] = serde_json::json!("auto");
         state["previous_dispatch"] = serde_json::json!(self.jev_ledger.borrow().last_execution);
+        state["effort_switch_cost"] = effort_switch_cost_json(
+            effort_keys_cached_prefix(&cfg.api_backend, &cfg.model),
+            self.jev_ledger.borrow().last_main_prompt_tokens(),
+        );
         let Some(answers) = crate::jev::ask_item(JevLever::B2MicroEffort, state, questions).await
         else {
             return;
@@ -1292,6 +1338,30 @@ fn micro_action_state_json(
     state
 }
 
+/// Whether `model` on `backend` caches its prompt per effort, so changing the
+/// effort re-reads the whole prompt uncached. Only Messages models that take
+/// the effort as a per-message marker keep one cache across efforts; every
+/// other request carries the effort at request level (Responses, Chat
+/// Completions and Grok, or Messages' top-level `output_config`).
+fn effort_keys_cached_prefix(backend: &distill_sampling_types::ApiBackend, model: &str) -> bool {
+    !(*backend == distill_sampling_types::ApiBackend::Messages
+        && distill_sampling_types::supports_per_message_effort(model))
+}
+
+/// What changing effort from `previous_dispatch` costs this call, for the
+/// effort question.
+fn effort_switch_cost_json(keyed_by_effort: bool, prompt_tokens: Option<u64>) -> serde_json::Value {
+    serde_json::json!({
+        "cache_keyed_by_effort": keyed_by_effort,
+        "cached_prompt_tokens": prompt_tokens,
+        "note": if keyed_by_effort {
+            "A different effort than the previous dispatch re-reads cached_prompt_tokens uncached."
+        } else {
+            "Changing effort keeps the prompt cache."
+        },
+    })
+}
+
 /// The effort behind a wire id the model offers.
 fn effort_from_id(id: &str) -> Option<ReasoningEffort> {
     id.parse::<ReasoningEffort>().ok()
@@ -1300,6 +1370,38 @@ fn effort_from_id(id: &str) -> Option<ReasoningEffort> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the per-message marker keeps one Messages cache across efforts;
+    /// everywhere else (ChatGPT/Responses, Chat Completions, Grok, top-level
+    /// `output_config`) a mid-turn effort change missed the whole prompt, so
+    /// those rounds keep the turn's effort and marker models keep their freedom.
+    #[test]
+    fn only_the_per_message_marker_frees_effort_from_the_cache_key() {
+        use distill_sampling_types::ApiBackend;
+        assert!(!effort_keys_cached_prefix(&ApiBackend::Messages, "claude-opus-5-5"));
+        assert!(
+            effort_keys_cached_prefix(&ApiBackend::Messages, "claude-sonnet-4-5"),
+            "a Messages model without the marker sends a top-level effort"
+        );
+        assert!(effort_keys_cached_prefix(&ApiBackend::Responses, "gpt-6-sol"));
+        assert!(effort_keys_cached_prefix(&ApiBackend::ChatCompletions, "grok-4.6"));
+        assert!(
+            effort_keys_cached_prefix(&ApiBackend::Responses, "claude-opus-5-5"),
+            "the marker exists only on the Messages wire"
+        );
+    }
+
+    /// Jev weighed effort with no notion of what a switch costs; the question
+    /// now carries whether the cache is keyed by effort and how big it is.
+    #[test]
+    fn the_effort_question_sees_what_a_switch_costs() {
+        let keyed = effort_switch_cost_json(true, Some(90_000));
+        assert_eq!(keyed["cache_keyed_by_effort"], true);
+        assert_eq!(keyed["cached_prompt_tokens"], 90_000);
+        let free = effort_switch_cost_json(false, None);
+        assert_eq!(free["cache_keyed_by_effort"], false);
+        assert!(free["cached_prompt_tokens"].is_null(), "unknown is not zero");
+    }
 
     /// A bare level name ("low", "medium") gave Jev no cost signal, so it could
     /// not tell levels apart; catalog text still wins when it exists.

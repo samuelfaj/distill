@@ -9,7 +9,7 @@ mod messages;
 mod responses;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
-pub use messages::build_messages_request;
+pub use messages::{build_messages_request, supports_per_message_effort};
 pub use responses::{
     extra_tool_entries, patch_input_item_ids, patch_reasoning_text_types,
     response_to_conversation_items,

@@ -2663,6 +2663,8 @@ impl SessionActor {
         self.chat_state_handle
             .replace_conversation_for_compaction(compacted_history);
         crate::jev::invalidate_payload_reads_for_active_session();
+        // The cached prefix the turn's kept effort protected is gone.
+        self.jev_ledger.borrow_mut().note_compaction();
         self.reseed_active_goal_after_compaction().await;
         let new_len = self.chat_state_handle.get_conversation_len().await;
         if self.startup_hints.inherited_prefix_len.is_some() {

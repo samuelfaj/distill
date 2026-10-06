@@ -195,11 +195,21 @@ impl SessionActor {
             .await
             .map_err(|e| SideQuestionError::PrepareClient(e.to_string()))?;
 
-        // Full conversation snapshot including system prompt, reasoning, tool calls, and results.
-        let mut items = self.chat_state_handle.get_conversation().await;
+        // Full conversation snapshot including system prompt, reasoning, tool calls, and results, shaped like the main request's.
+        let mut items = self
+            .main_request_items(self.chat_state_handle.get_conversation().await)
+            .await;
 
         let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
+        let model = sampling_config
+            .as_ref()
+            .map(|c| c.model.clone())
+            .unwrap_or_default();
+        // The last main request's effort: a different one misses its cached prefix.
+        let reasoning_effort = self.main_replay_effort(
+            &model,
+            sampling_config.as_ref().and_then(|c| c.reasoning_effort),
+        );
         if super::side_call::should_strip_side_call_reasoning(
             sampling_client.api_backend(),
             reasoning_effort,
@@ -213,8 +223,7 @@ impl SessionActor {
         let (instruction, tool_specs, hosted_tools) =
             self.side_question_prompt_and_tools(question, images).await;
         items.push(instruction);
-
-        let model = sampling_config.map(|c| c.model).unwrap_or_default();
+        let cache_key = self.main_cache_key().await;
 
         let persist = |answer: String, success: bool, error: Option<String>, attempts: u32| {
             let _ = self.notifications.persistence_tx.send(PersistenceMsg::Btw(
@@ -239,8 +248,7 @@ impl SessionActor {
             hosted_tools,
             model: model.clone(),
             reasoning_effort,
-            backend: sampling_client.api_backend(),
-            conv_id: btw_session_id.clone(),
+            cache_key,
             req_id: format!("xai-btw-{}", uuid::Uuid::new_v4()),
         });
 
@@ -503,7 +511,7 @@ impl SessionActor {
         };
         let tag = self.reminder_wrapper_tag();
         let items = session_recap::budget_recap_items(
-            conversation,
+            self.main_request_items(conversation).await,
             tag,
             setup.strip_reasoning,
             setup.context_window,
@@ -511,11 +519,11 @@ impl SessionActor {
         let strip_reasoning = setup.strip_reasoning;
         let model = setup.model.clone();
         let started_at = chrono::Utc::now().to_rfc3339();
-        let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
         let request = self
-            .side_call_request(&setup, items, x_grok_conv_id.clone(), x_grok_req_id.clone())
+            .side_call_request(&setup, items, x_grok_req_id.clone())
             .await;
+        let x_grok_conv_id = request.x_grok_conv_id.clone().unwrap_or_default();
         let attempt = auxiliary_attempt(&setup.client, &request);
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
@@ -1065,7 +1073,15 @@ impl SessionActor {
             temperature: Some(temperature),
             max_output_tokens: Some(max_output_tokens),
             reasoning_effort,
-            x_grok_conv_id: Some(format!("promptsuggest-{}", uuid::Uuid::new_v4())),
+            // A stable key of its own: the suggestion prompt is read from cache on the next call.
+            x_grok_conv_id: Some(crate::sampling::purpose_cache_key(
+                &self.session_info.id.to_string(),
+                "promptsuggest",
+            )),
+            prompt_cache_key: Some(crate::sampling::purpose_cache_key(
+                &self.session_info.id.to_string(),
+                "promptsuggest",
+            )),
             x_grok_req_id: Some(request_id.clone()),
             x_grok_session_id: Some(self.session_info.id.to_string()),
             x_grok_agent_id: Some(distill_telemetry::id::agent_id()),

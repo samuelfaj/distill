@@ -1037,7 +1037,15 @@ impl SessionActor {
                         // Resolved `[auto_mode]` effort: explicit config/remote, else the built-in `Low` default when the model supports it
                         // None means the provider default
                         reasoning_effort: classifier_reasoning_effort,
-                        x_grok_conv_id: Some(format!("perm-classifier-{}", uuid::Uuid::new_v4())),
+                        // A stable key of its own: the classifier prompt is read from cache on the next call, and the main prefix is left alone.
+                        x_grok_conv_id: Some(crate::sampling::purpose_cache_key(
+                            &session_id,
+                            "perm-classifier",
+                        )),
+                        prompt_cache_key: Some(crate::sampling::purpose_cache_key(
+                            &session_id,
+                            "perm-classifier",
+                        )),
                         x_grok_req_id: Some(format!("xai-perm-auto-{}", uuid::Uuid::new_v4())),
                         x_grok_session_id: Some(session_id),
                         x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
@@ -1954,6 +1962,10 @@ impl SessionActor {
                 request.reasoning_effort = None;
             }
         }
+        // What this request finally sends is what a later compaction or recap must replay.
+        self.jev_ledger
+            .borrow_mut()
+            .note_main_request(request.model.as_deref(), request.reasoning_effort);
     }
 
     fn remember_observed_route_context_cap(

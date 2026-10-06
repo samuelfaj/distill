@@ -536,6 +536,89 @@ async fn responses_below_trigger_preserves_images_and_tools() {
     let _ = shutdown_tx.send(());
 }
 
+/// A compaction that replays the main prefix must send the main call's effort and route.
+/// Without an explicit effort the server default applies, which on ChatGPT read 0% of a sol
+/// session's prefix; on the child's own id a verbatim fork's 176k compaction read nothing.
+#[tokio::test]
+async fn responses_compaction_sends_the_replayed_effort_and_cache_key() {
+    use std::sync::{Arc, Mutex};
+
+    let captured: Arc<Mutex<Vec<(Option<String>, serde_json::Value)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let cap = captured.clone();
+    let app = Router::new().route(
+        "/v1/responses",
+        post(
+            move |headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                let cap = cap.clone();
+                async move {
+                    let conv_id = headers
+                        .get("x-grok-conv-id")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_owned);
+                    cap.lock().unwrap().push((conv_id, body.0));
+                    let stream = stream::iter(
+                        responses_summary_stream()
+                            .into_iter()
+                            .map(Ok::<_, std::convert::Infallible>),
+                    );
+                    Sse::new(stream).keep_alive(KeepAlive::default())
+                }
+            },
+        ),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+
+    let base_url = format!("http://{addr}/v1");
+    let client = Client::new(test_config_responses(&base_url)).unwrap();
+    let mut config = test_config_responses(&base_url);
+    config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+    generate_session_compact_with_observer(
+        image_compaction_history(),
+        0,
+        vec![],
+        vec![],
+        client,
+        acp::SessionId::new("child-session"),
+        "parent-session".to_owned(),
+        &config,
+        std::time::Duration::from_secs(30),
+        0,
+        crate::util::config::CompactionToolChoice::Auto,
+        &tokio_util::sync::CancellationToken::new(),
+        None,
+        false,
+    )
+    .await
+    .unwrap_or_else(|_| panic!("Responses compaction must succeed"));
+
+    let bodies = captured.lock().unwrap();
+    let (conv_id, body) = at(&bodies, 0);
+    assert_eq!(
+        j(j(body, "reasoning"), "effort").as_str(),
+        Some("high"),
+        "the client default (unset here) must not stand in for the main effort"
+    );
+    assert_eq!(j(body, "prompt_cache_key").as_str(), Some("parent-session"));
+    assert_eq!(
+        conv_id.as_deref(),
+        Some("child-session"),
+        "the replay keeps the child's own thread, as its main call does"
+    );
+
+    let _ = shutdown_tx.send(());
+}
+
 #[tokio::test]
 async fn stalled_compaction_stream_times_out_as_transient() {
     let app = Router::new().route(

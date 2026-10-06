@@ -898,6 +898,9 @@ pub(crate) fn build_goal_evaluator_request(
         "harness_observed": harness_observed,
         "transcript": transcript,
     });
+    // Its own route: on the session id it would evict the main prefix, and a
+    // stable key keeps the system + goal prefix warm between rounds.
+    let cache_key = crate::sampling::purpose_cache_key(session_id, "goal-eval");
     ConversationRequest {
         items: vec![
             ConversationItem::system(SYSTEM_PROMPT.as_str()),
@@ -915,10 +918,11 @@ pub(crate) fn build_goal_evaluator_request(
         max_output_tokens: evaluator_output_cap(reasoning_effort),
         reasoning_effort,
         json_schema: Some(goal_evaluator_json_schema()),
-        x_grok_conv_id: Some(session_id.to_owned()),
+        x_grok_conv_id: Some(cache_key.clone()),
         x_grok_req_id: Some(format!("xai-goal-eval-{}", uuid::Uuid::new_v4())),
         x_grok_session_id: Some(session_id.to_owned()),
         x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+        prompt_cache_key: Some(cache_key),
         // The round message differs every round, so only the goal message is
         // marked: a tip breakpoint would write a cache entry nobody reads.
         one_shot: true,
@@ -1378,6 +1382,29 @@ mod tests {
         assert_eq!(first.items[1].text_content(), second.items[1].text_content());
         assert!(!first.items[1].text_content().contains("round one"));
         assert!(first.items[2].text_content().contains("round one"));
+    }
+
+    /// The evaluator's prompt is not the main one. On the session's own key it
+    /// overwrote the main cache entry (the next main call missed fully 25.8% of
+    /// the time after a goal eval, against 1.6%), so it routes on a stable key
+    /// of its own, which also keeps its goal prefix warm from round to round.
+    #[test]
+    fn evaluator_routes_on_its_own_stable_key() {
+        let request_for = || {
+            build_goal_evaluator_request(
+                "goal", "t", None, "small".into(), "s1", &GoalProgress::default(), "[]", None,
+                &serde_json::json!({}), None,
+            )
+        };
+        let (first, second) = (request_for(), request_for());
+        assert_eq!(first.x_grok_conv_id.as_deref(), Some("s1:goal-eval"));
+        assert_eq!(first.prompt_cache_key.as_deref(), Some("s1:goal-eval"));
+        assert_eq!(first.x_grok_conv_id, second.x_grok_conv_id);
+        assert_eq!(
+            first.x_grok_session_id.as_deref(),
+            Some("s1"),
+            "attribution still names the session"
+        );
     }
 
     /// The observation list grows every round; the evaluator gets a bounded tail.

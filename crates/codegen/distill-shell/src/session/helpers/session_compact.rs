@@ -522,6 +522,7 @@ pub(crate) async fn generate_session_compact(
     tool_choice: crate::util::config::CompactionToolChoice,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<CompactOutput, CompactFailure> {
+    let cache_key = session_id.to_string();
     generate_session_compact_with_observer(
         chat_history,
         compaction_tool_tokens,
@@ -529,6 +530,7 @@ pub(crate) async fn generate_session_compact(
         hosted_tools,
         client,
         session_id,
+        cache_key,
         sampling_config,
         idle_timeout,
         wall_clock_budget_secs,
@@ -549,6 +551,9 @@ pub(crate) async fn generate_session_compact_with_observer(
     hosted_tools: Vec<HostedTool>,
     client: OaiCompatClient,
     session_id: acp::SessionId,
+    // `prompt_cache_key`: the main call's key when this replays the main prefix, a purpose key otherwise; the conv id follows `conv_id_for`.
+    cache_key: String,
+    // Its `reasoning_effort` is sent explicitly: the server default is not the main call's effort, and a different one misses the cache.
     sampling_config: &SamplingConfig,
     idle_timeout: std::time::Duration,
     wall_clock_budget_secs: u64,
@@ -610,9 +615,10 @@ pub(crate) async fn generate_session_compact_with_observer(
                     .with_tool_choice(wire_tool_choice);
             }
 
+            message.reasoning_effort = sampling_config.reasoning_effort;
             let sid = session_id.to_string();
             let request_id = format!("distill-compact-{}", uuid::Uuid::new_v4());
-            message.x_grok_conv_id = Some(sid.clone());
+            message.x_grok_conv_id = Some(crate::sampling::conv_id_for(&sid, &cache_key));
             message.x_grok_req_id = Some(request_id.clone());
             message.x_grok_session_id = Some(sid);
             message.x_grok_agent_id = Some(distill_telemetry::id::agent_id());
@@ -780,10 +786,12 @@ pub(crate) async fn generate_session_compact_with_observer(
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
                 max_output_tokens: output_cap,
-                x_grok_conv_id: Some(session_id.to_string()),
+                reasoning_effort: sampling_config.reasoning_effort,
+                x_grok_conv_id: Some(crate::sampling::conv_id_for(&session_id.to_string(), &cache_key)),
                 x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                prompt_cache_key: Some(cache_key),
                 one_shot,
                 ..Default::default()
             };
@@ -1018,10 +1026,12 @@ pub(crate) async fn generate_session_compact_with_observer(
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
                 max_output_tokens: output_cap,
-                x_grok_conv_id: Some(session_id.to_string()),
+                reasoning_effort: sampling_config.reasoning_effort,
+                x_grok_conv_id: Some(crate::sampling::conv_id_for(&session_id.to_string(), &cache_key)),
                 x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
                 x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+                prompt_cache_key: Some(cache_key),
                 one_shot,
                 ..Default::default()
             };

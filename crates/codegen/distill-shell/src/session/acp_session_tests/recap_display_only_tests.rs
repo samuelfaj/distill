@@ -969,7 +969,7 @@ fn over_budget_recap_serializes_to_well_formed_messages_request() {
     );
 }
 
-/// The recap sends the main turn's tools and the session id as `prompt_cache_key`, so it rides the parent turn's prefix cache.
+/// The recap sends the main turn's tools and routes like the main call (conv id and `prompt_cache_key`), so it rides the parent turn's prefix cache.
 #[tokio::test(flavor = "current_thread")]
 async fn recap_request_rides_parent_prompt_cache() {
     use distill_test_support::MockInferenceServer;
@@ -1010,13 +1010,11 @@ async fn recap_request_rides_parent_prompt_cache() {
                 .find(|r| r.path.contains("responses"))
                 .expect("a responses request must be recorded");
 
+            // A `recap-<uuid>` conv id sent a 168k-440k replay to a cold route (0 cached): it must be the main call's.
             let conv_id = recap_req
                 .header("x-grok-conv-id")
                 .expect("recap must send x-grok-conv-id");
-            assert!(
-                conv_id.starts_with("recap-"),
-                "conv id keeps the recap-* label: {conv_id}"
-            );
+            assert_eq!(conv_id, actor.session_info.id.to_string());
 
             let body = recap_req.body.as_ref().expect("recap body must be JSON");
             assert_eq!(
@@ -1475,7 +1473,7 @@ async fn recap_hosted_tools_reflect_the_active_per_turn_override() {
         .await;
 }
 
-/// A `/btw` call sends the main turn's tools and the session id as `prompt_cache_key`, so it reuses the parent's cached prefix.
+/// A `/btw` call sends the main turn's tools and routes like the main call, so it reuses the parent's cached prefix.
 #[tokio::test(flavor = "current_thread")]
 async fn side_question_request_rides_parent_prompt_cache() {
     use distill_test_support::MockInferenceServer;
@@ -1522,9 +1520,10 @@ async fn side_question_request_rides_parent_prompt_cache() {
             let conv_id = btw_req
                 .header("x-grok-conv-id")
                 .expect("side question must send x-grok-conv-id");
-            assert!(
-                conv_id.starts_with("btw-"),
-                "conv id keeps the btw-* label: {conv_id}"
+            assert_eq!(
+                conv_id,
+                actor.session_info.id.to_string(),
+                "the conv id routes like the main call; the btw label lives in the req id"
             );
 
             let body = btw_req.body.as_ref().expect("btw body must be JSON");
@@ -2032,12 +2031,68 @@ async fn parent_cached_request_pins_fail_length_policy() {
         hosted_tools: Vec::new(),
         model: "test-model".to_string(),
         reasoning_effort: None,
-        backend: crate::sampling::ApiBackend::Messages,
-        conv_id: "conv".to_string(),
+        cache_key: "key".to_string(),
         req_id: "req".to_string(),
     });
     assert_eq!(
         request.length_policy,
         distill_sampling_types::LengthPolicy::Fail
     );
+}
+
+/// The main call's effort can differ from the configured one (Jev picks it per round). A side call
+/// sent at the configured effort changes the prompt ahead of the history and misses the whole prefix,
+/// so `/btw` replays the effort the last main request on this model actually sent.
+#[tokio::test(flavor = "current_thread")]
+async fn side_question_replays_the_last_main_requests_effort() {
+    use distill_test_support::MockInferenceServer;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _grx) =
+                tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            *actor.agent.borrow_mut() = test_agent_with_goal_tool().await;
+
+            let server = MockInferenceServer::start().await.unwrap();
+            server.set_response("an answer");
+            let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            cfg.base_url = server.url();
+            cfg.api_backend = distill_sampling_types::ApiBackend::Responses;
+            cfg.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
+            let model = cfg.model.clone();
+            actor.chat_state_handle.update_sampling_config(cfg);
+            actor.jev_ledger.borrow_mut().note_main_request(
+                Some(&model),
+                Some(distill_sampling_types::ReasoningEffort::High),
+            );
+
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("you are a coding agent"),
+                ConversationItem::user("explain the borrow checker"),
+                ConversationItem::assistant("it enforces shared-xor-mutable"),
+            ]);
+
+            actor
+                .handle_side_question("what does xor mean here?", Vec::new())
+                .await
+                .expect("side question must succeed");
+
+            let requests = server.requests();
+            let body = requests
+                .iter()
+                .rev()
+                .find(|r| r.path.contains("responses"))
+                .and_then(|r| r.body.as_ref())
+                .expect("btw body must be JSON");
+            assert_eq!(
+                j(j(body, "reasoning"), "effort").as_str(),
+                Some("high"),
+                "the replay must send the main request's effort, not the configured one: {}",
+                j(body, "reasoning")
+            );
+        })
+        .await;
 }

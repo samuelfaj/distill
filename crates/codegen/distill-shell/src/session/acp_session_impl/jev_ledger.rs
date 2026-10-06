@@ -71,6 +71,10 @@ pub(crate) struct JevTurnLedger {
     /// so the rest of the child stays on its own model. Session-scoped:
     /// draining the turn keeps it.
     pub(crate) cheap_agent_off: bool,
+    /// Model and effort the last main request was sent with. Session-scoped:
+    /// a compaction or recap at the start of the next turn replays that
+    /// request's prefix and must send the same effort to read its cache.
+    last_main_request: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
 }
 
 impl JevTurnLedger {
@@ -212,6 +216,30 @@ impl JevTurnLedger {
         self.pending_request_effort.take()
     }
 
+    pub(crate) fn note_main_request(
+        &mut self,
+        model: Option<&str>,
+        effort: Option<distill_sampling_types::ReasoningEffort>,
+    ) {
+        self.last_main_request = model.map(|model| (model.to_owned(), effort));
+    }
+
+    /// Effort for a request that replays the main prefix on `model`: the one
+    /// the last main request sent, since a different effort (thinking setting
+    /// on Messages, reasoning field elsewhere) misses the cached prefix. Falls
+    /// back to `configured` before any main request, or when the last one ran
+    /// on another model (whose cache this request cannot read anyway).
+    pub(crate) fn main_replay_effort(
+        &self,
+        model: &str,
+        configured: Option<distill_sampling_types::ReasoningEffort>,
+    ) -> Option<distill_sampling_types::ReasoningEffort> {
+        match &self.last_main_request {
+            Some((last_model, effort)) if last_model == model => *effort,
+            _ => configured,
+        }
+    }
+
     /// Takes the pending route, if any: the request carries it exactly once.
     pub(crate) fn take_pending_route(&mut self) -> Option<(String, bool)> {
         self.pending_route.take().map(|model| {
@@ -248,6 +276,38 @@ impl JevTurnLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compaction usually fires at the start of a turn, after the previous
+    /// turn's rows were drained; it must still replay that turn's effort.
+    #[test]
+    fn replay_effort_is_the_last_main_requests_and_survives_the_turn() {
+        use distill_sampling_types::ReasoningEffort;
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(
+            ledger.main_replay_effort("sol", Some(ReasoningEffort::Medium)),
+            Some(ReasoningEffort::Medium),
+            "before any main request the configured effort is all there is"
+        );
+        ledger.note_main_request(Some("sol"), Some(ReasoningEffort::Low));
+        let _ = ledger.take_rows();
+        assert_eq!(
+            ledger.main_replay_effort("sol", Some(ReasoningEffort::Medium)),
+            Some(ReasoningEffort::Low),
+            "the auto-chosen effort, not the configured default, is what the cache holds"
+        );
+        ledger.note_main_request(Some("sol"), None);
+        assert_eq!(
+            ledger.main_replay_effort("sol", Some(ReasoningEffort::Medium)),
+            None,
+            "a main request sent without effort is replayed without one"
+        );
+        ledger.note_main_request(Some("utility"), Some(ReasoningEffort::High));
+        assert_eq!(
+            ledger.main_replay_effort("sol", Some(ReasoningEffort::Medium)),
+            Some(ReasoningEffort::Medium),
+            "a round routed to another model says nothing about this model's cache"
+        );
+    }
 
     #[test]
     fn usage_lands_on_the_round_it_belongs_to() {

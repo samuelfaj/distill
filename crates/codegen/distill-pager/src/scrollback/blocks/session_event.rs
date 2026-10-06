@@ -21,7 +21,7 @@ use crate::theme::Theme;
 use crate::util::format_duration;
 use crate::views::plan_approval_view::PlanReviewOutcome;
 use distill_shell::extensions::notification::{
-    MODEL_FAMILY_SWITCH_COMPACT_BANNER, MemoryCaptureDebugEntry,
+    COLD_RETURN_COMPACT_BANNER, MODEL_FAMILY_SWITCH_COMPACT_BANNER, MemoryCaptureDebugEntry,
 };
 
 /// Shared text-selection range id for recap body lines (header is excluded).
@@ -416,8 +416,10 @@ impl SessionEvent {
                 format!("Turn failed: {error}")
             }
             SessionEvent::CompactionStarted { percentage, reason } => {
-                if reason == MODEL_FAMILY_SWITCH_COMPACT_BANNER {
-                    MODEL_FAMILY_SWITCH_COMPACT_BANNER.to_string()
+                if reason == MODEL_FAMILY_SWITCH_COMPACT_BANNER
+                    || reason == COLD_RETURN_COMPACT_BANNER
+                {
+                    reason.clone()
                 } else {
                     format!("Context {percentage}% full. Compacting…")
                 }
@@ -1033,6 +1035,17 @@ mod tests {
             reason: MODEL_FAMILY_SWITCH_COMPACT_BANNER.into(),
         };
         assert_eq!(event.message(), MODEL_FAMILY_SWITCH_COMPACT_BANNER);
+    }
+
+    /// A cold-return compaction runs inside the prompt's turn before anything is sent; its
+    /// banner says why (the cache expired), not a fullness the threshold never reached.
+    #[test]
+    fn compaction_started_cold_return_reason_renders_reason() {
+        let event = SessionEvent::CompactionStarted {
+            percentage: 40,
+            reason: COLD_RETURN_COMPACT_BANNER.into(),
+        };
+        assert_eq!(event.message(), COLD_RETURN_COMPACT_BANNER);
     }
 
     #[test]

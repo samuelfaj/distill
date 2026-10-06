@@ -34,6 +34,9 @@ pub struct UsageSummary {
     pub cached_read_tokens: u64,
     #[serde(default)]
     pub cache_creation_tokens: u64,
+    /// The one-hour part of `cache_creation_tokens`; absent in older files, where every write reads as five-minute.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_creation_1h_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
@@ -108,6 +111,7 @@ impl UsageSummary {
             output_tokens: totals.output_tokens,
             cached_read_tokens: totals.cached_read_tokens,
             cache_creation_tokens: totals.cache_creation_tokens,
+            cache_creation_1h_tokens: totals.cache_creation_1h_tokens,
             reasoning_tokens: totals.reasoning_tokens,
             total_tokens: totals.total_tokens(),
             model_calls: totals.model_calls,
@@ -175,6 +179,9 @@ impl UsageSummary {
             cache_creation_tokens: self
                 .cache_creation_tokens
                 .saturating_add(other.cache_creation_tokens),
+            cache_creation_1h_tokens: self
+                .cache_creation_1h_tokens
+                .saturating_add(other.cache_creation_1h_tokens),
             reasoning_tokens: self.reasoning_tokens.saturating_add(other.reasoning_tokens),
             total_tokens: self.total_tokens.saturating_add(other.total_tokens),
             model_calls: self.model_calls.saturating_add(other.model_calls),
@@ -258,6 +265,9 @@ impl UsageSummary {
             cache_creation_tokens: self
                 .cache_creation_tokens
                 .saturating_sub(other.cache_creation_tokens),
+            cache_creation_1h_tokens: self
+                .cache_creation_1h_tokens
+                .saturating_sub(other.cache_creation_1h_tokens),
             reasoning_tokens: self.reasoning_tokens.saturating_sub(other.reasoning_tokens),
             total_tokens: self.total_tokens.saturating_sub(other.total_tokens),
             model_calls: self.model_calls.saturating_sub(other.model_calls),

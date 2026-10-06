@@ -195,18 +195,86 @@ whose cache is keyed by effort (everything except Messages models with the
 per-message effort marker); a new turn, a model switch, a compaction or a
 prompt under 16K tokens frees it. On `api.anthropic.com`, a round that blocked
 on a task or subagent, or started background work, asks for the one-hour cache
-lifetime (a refusal turns it off for the process), and the free fourth
+lifetime (a refusal turns it off for the process once the resend without it
+goes through), and the free fourth
 breakpoint anchors on a former tip that moves every 10 rounds. Rewrites of old
 history (soft trims, the retained hard clear, old goal directives) wait for a
 cold moment: idle past the last request's cache lifetime (5 minutes on
-Messages, 1 hour when asked, 30 minutes on Codex, 10 on Grok and OpenRouter),
-a compaction, a model switch or a resume. A verbatim fork inherits its parent's
+Messages, 1 hour when asked, 30 minutes on Codex, 10 on Grok and OpenRouter,
+and never within the hour after a one-hour write, which later requests still
+read through), a compaction, a model switch or a resume. A verbatim fork inherits its parent's
 soft trims.
 
+When you type into a session of 100K tokens or more that sat idle past that
+lifetime (a known one only; the hour fallback never counts), the request about
+to go out writes the whole history at full price anyway, so the turn first asks:
+Compact and continue, Keep full history, or Don't ask again, which writes
+`[compaction] cold_return = "off"`. `cold_return = "auto"` compacts without
+asking. A history already at the auto-compact threshold compacts as usual, and
+headless sessions, subagents, `--no-ask-user`, a client without the question UI
+and no answer within two minutes keep the full history. A resumed session has
+no idle time in the process and is never asked.
+
+The main system prompt keeps its per-session values, the worker model id and
+the memory roots, in an `<environment>` block at its end, so sessions of one
+agent on other workspaces or workers share every byte before it; a resumed head
+that names a stale worker has only that block and the `<orchestration>` section
+replaced. Tool definitions are sorted by name, so registration and MCP connect
+order never change the tools array that opens the prefix.
+
+A system prompt that changes mid-session (another mode, `/memory`, a new worker)
+no longer rewrites the opening prompt on `api.anthropic.com` models that take
+system-role messages (Opus 4.8, 5 and 5.5, Sonnet 5.5, Fable and Mythos 5 and
+5.1; not Sonnet 5). The new prompt is appended to the history at a turn boundary
+and sent as a system message after the next user turn, saying it replaces the
+earlier instructions, so everything cached before it stays; reverting appends
+the original again, and a rewind that cuts an update appends it again. A cold moment (above) folds the updates back into the
+opening prompt, and a resume does so before the head is reconciled. A change in
+the middle of a tool round, turning memory off while remembered notes are in the
+prompt, another endpoint or model, and every request after the API refuses a
+system message (which turns them off for the process once the resend without
+them goes through) send the latest prompt as the opening one, as before.
+
+On the same models and endpoint, an optional tool family (`p1_tool_family`) no
+request has needed yet is declared in the tools array with `defer_loading`
+from the first request, under the `mid-conversation-tool-changes-2026-07-01`
+beta. When a later request needs it, a `tool_addition` system message after
+that human turn offers its tools, so the tools array and everything cached
+before the join stay. A family needed by the first request just joins the
+array. The model never sees a deferred tool, and a call that names one anyway
+gets an error result instead of running. Plan mode, another endpoint or model,
+an addition with no user turn to follow, and every request after the API
+refuses a deferred tool or the beta (which turns them off for the process once
+the resend without them goes through) send the tools in effect, as before.
+
 None of this guarantees a cache hit; compare `cachedReadTokens` in `usage.json`
-before and after. muse-spark on OpenRouter has a single provider (Meta), and its
+before and after. `/usage` shows the hit rate (cache reads over the whole prompt,
+per model and in total), the cache writes split by lifetime (`cacheCreation1hTokens`
+in `usage.json`; a write whose lifetime the endpoint does not report counts as
+five-minute), an estimated saving in dollars for OpenRouter calls whose catalog
+prices are known, net of the cache-write premium (shown as a loss when the
+writes cost more than the reads saved), and the last cache break of a main
+Messages request: the first history item that changed, the tools or settings
+when every item was intact, or "expired" when nothing changed and the gap
+outlived the previous request's cache lifetime ("not expired" inside it: the
+system prompt the sampler sent changed, or the entry was evicted). muse-spark on OpenRouter has a single provider (Meta), and its
 hits and misses alternate inside that provider (about 40% of prompt tokens
 cached) even though the session key reaches it, so no request field fixes it.
+
+Ignored tests check this against the real APIs and spend real tokens, so they
+run only when asked:
+`cargo test -p distill-shell --lib real_api_cache -- --ignored --nocapture`.
+A multi-step tool loop must read the whole previous request from cache on every
+request after the first (less a 256-token tail), on Anthropic with your Claude
+login, on OpenRouter with `OPENROUTER_API_KEY` (Claude Haiku 4.5 by default)
+and on ChatGPT with your ChatGPT login. On Anthropic, the request after a tool
+family joins through `tool_addition`, and the one after a system prompt update,
+must read everything before them, and the model must follow the new prompt.
+Each provider without a credential is skipped with a message; the stored logins
+are only read, never refreshed, so an expired one skips too until Distill runs
+again. `DISTILL_CACHE_TEST_ANTHROPIC_MODEL`, `DISTILL_CACHE_TEST_OPENROUTER_MODEL`
+and `DISTILL_CACHE_TEST_CHATGPT_MODEL` pick other models. Prompts sit just past
+each model's minimum cacheable length, so a run costs about a cent on OpenRouter.
 
 ## Utility work
 

@@ -911,6 +911,10 @@ pub struct FeedbackUserConfig {
 pub struct CompactionConfig {
     pub memory_flush: Option<crate::config::MemoryFlushSettings>,
     pub pruning: Option<crate::config::PruningSettings>,
+    /// `"offer"` (default), `"auto"` or `"off"`: what a human prompt on a large session whose
+    /// prompt cache expired while idle does. Read out-of-band at that moment
+    /// (`session::acp_session_impl::cold_return`); declared so `serde_ignored` allows the key.
+    pub cold_return: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]

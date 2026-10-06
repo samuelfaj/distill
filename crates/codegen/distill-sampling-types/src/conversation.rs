@@ -10,8 +10,9 @@ mod responses;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
 pub use messages::{
-    MessagesCacheOptions, build_messages_request, build_messages_request_with,
-    supports_per_message_effort,
+    MessagesCacheOptions, SYSTEM_PROMPT_UPDATE_PREAMBLE, build_messages_request,
+    build_messages_request_with, supports_per_message_effort, supports_system_messages,
+    supports_tool_changes,
 };
 pub use responses::{
     extra_tool_entries, patch_input_item_ids, patch_reasoning_text_types,
@@ -172,6 +173,13 @@ pub enum SyntheticReason {
     /// The goal rules and tracking policy that accompany a `/goal` objective.
     /// Reserved ahead of its producer; today rules and objective share one untagged `Human` item.
     GoalSetup,
+    /// A full system prompt that replaces the one in effect, appended after the cached history instead of rewriting the opening prompt, which would re-bill everything after it.
+    /// The last one in the conversation is the prompt in effect; a cold moment folds it back into the head ([`fold_system_prompt_updates`]).
+    SystemPromptUpdate,
+    /// Optional tools that join the conversation here, one name per line ([`ConversationItem::tool_addition`]).
+    /// The Messages mapping offers them from this point with a `tool_addition` block where the endpoint takes one;
+    /// every other mapping drops the item and sends the tools in `tools`, as before.
+    ToolAddition,
     /// Catch-all for unknown/future variants.
     #[serde(other)]
     Unknown,
@@ -218,7 +226,9 @@ impl SyntheticReason {
             | Self::Interjection
             | Self::GoalSummary
             | Self::StopHookFeedback
-            | Self::WorkingDirectorySwitch => false,
+            | Self::WorkingDirectorySwitch
+            | Self::SystemPromptUpdate
+            | Self::ToolAddition => false,
         }
     }
 }
@@ -676,6 +686,10 @@ pub struct ConversationRequest {
     /// A long wait (a blocking task or subagent wait) likely follows this request, longer than the default
     /// five-minute cache lifetime. Where the endpoint takes it, the request's breakpoints get the one-hour lifetime.
     pub long_cache_ttl: bool,
+    /// Optional tools the session has not offered yet (a tool family no request has needed). Where the endpoint takes
+    /// mid-conversation tool changes the Messages mapping declares them with `defer_loading`, so the tools array stays
+    /// the same when one joins through a [`SyntheticReason::ToolAddition`] item; every other mapping leaves them out.
+    pub deferred_tools: Vec<ToolSpec>,
 }
 
 impl ConversationRequest {
@@ -799,6 +813,15 @@ pub struct TokenUsage {
     /// Part of `prompt_tokens` but distinct from cache reads; 0 on backends without a cache-write signal.
     #[serde(default)]
     pub cache_creation_prompt_tokens: u32,
+    /// The part of `cache_creation_prompt_tokens` written with the one-hour lifetime (Messages
+    /// `usage.cache_creation.ephemeral_1h_input_tokens`, billed at 2x). The rest, including any write
+    /// whose lifetime the backend did not report, is five-minute.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub cache_creation_1h_prompt_tokens: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 impl TokenUsage {
@@ -843,6 +866,7 @@ impl From<Usage> for TokenUsage {
                 .map_or(0, |d| d.reasoning_tokens),
             cached_prompt_tokens,
             cache_creation_prompt_tokens,
+            cache_creation_1h_prompt_tokens: 0,
         }
     }
 }
@@ -1000,6 +1024,33 @@ impl ConversationItem {
             content: Arc::<str>::from(content.into()),
             synthetic_reason: SyntheticReason::Primary,
         })
+    }
+
+    /// A full system prompt that replaces the one in effect from here on, tagged [`SyntheticReason::SystemPromptUpdate`].
+    pub fn system_prompt_update(content: impl Into<String>) -> Self {
+        Self::System(SystemItem {
+            content: Arc::<str>::from(content.into()),
+            synthetic_reason: SyntheticReason::SystemPromptUpdate,
+        })
+    }
+
+    /// Whether this is a [`Self::system_prompt_update`].
+    pub fn is_system_prompt_update(&self) -> bool {
+        matches!(self, Self::System(s) if s.synthetic_reason == SyntheticReason::SystemPromptUpdate)
+    }
+
+    /// Optional tools that join the conversation at this point, tagged [`SyntheticReason::ToolAddition`].
+    pub fn tool_addition<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Self {
+        let names: Vec<String> = names.into_iter().map(|n| n.as_ref().to_owned()).collect();
+        Self::System(SystemItem {
+            content: Arc::<str>::from(names.join("\n")),
+            synthetic_reason: SyntheticReason::ToolAddition,
+        })
+    }
+
+    /// Whether this is a [`Self::tool_addition`].
+    pub fn is_tool_addition(&self) -> bool {
+        matches!(self, Self::System(s) if s.synthetic_reason == SyntheticReason::ToolAddition)
     }
 
     /// Create a user message with text content, tagged [`SyntheticReason::Human`] for real user input.
@@ -1960,6 +2011,54 @@ pub fn transform_conversation_cwd(
             }
         }
     }
+}
+
+// ============================================================================
+// System Prompt Updates
+// ============================================================================
+
+/// The system prompt in effect: the last [`SyntheticReason::SystemPromptUpdate`], else the first `System` item.
+pub fn current_system_prompt(items: &[ConversationItem]) -> Option<&str> {
+    fn text(item: &ConversationItem) -> Option<&str> {
+        match item {
+            ConversationItem::System(s) => Some(s.content.as_ref()),
+            _ => None,
+        }
+    }
+    items
+        .iter()
+        .rev()
+        .filter(|item| item.is_system_prompt_update())
+        .find_map(text)
+        .or_else(|| {
+            items
+                .iter()
+                .filter(|item| !item.is_tool_addition())
+                .find_map(text)
+        })
+}
+
+/// Folds the system prompt updates into the head: it takes the latest one's text and every update is dropped,
+/// which is the conversation rewriting the head would have left. Returns whether anything changed.
+pub fn fold_system_prompt_updates(items: &mut Vec<ConversationItem>) -> bool {
+    let Some(latest) = items.iter().rev().find_map(|item| match item {
+        ConversationItem::System(s) if item.is_system_prompt_update() => Some(s.content.clone()),
+        _ => None,
+    }) else {
+        return false;
+    };
+    items.retain(|item| !item.is_system_prompt_update());
+    match items.first_mut() {
+        Some(ConversationItem::System(head)) => head.content = latest,
+        _ => items.insert(
+            0,
+            ConversationItem::System(SystemItem {
+                content: latest,
+                synthetic_reason: SyntheticReason::Primary,
+            }),
+        ),
+    }
+    true
 }
 
 // ============================================================================

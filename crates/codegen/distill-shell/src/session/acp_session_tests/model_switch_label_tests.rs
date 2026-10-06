@@ -205,8 +205,7 @@ async fn session_worker_change_rerenders_the_orchestration_section() {
             actor.refresh_worker_prompt().await;
             let head = head_text(&actor.chat_state_handle.get_conversation().await);
             assert!(
-                head.contains("<orchestration>")
-                    && head.contains("The worker model `worker-x` costs"),
+                head.contains("<orchestration>") && head.contains("Worker model: `worker-x`"),
                 "the head must name the session's worker, got: {head:.200}"
             );
             assert!(!actor.worker_prompt_pending.get());
@@ -270,7 +269,7 @@ async fn orchestration_head_reconciliation_matches_the_rendered_template() {
             let none = render_naming(&agent, None).await;
             let a = render_naming(&agent, Some("worker-a")).await;
             let b = render_naming(&agent, Some("worker-b")).await;
-            assert!(a.contains("The worker model `worker-a` costs"), "{a:.300}");
+            assert!(a.contains("Worker model: `worker-a`"), "{a:.300}");
             assert!(!none.contains("<orchestration>"));
 
             assert_eq!(reconciled_orchestration_head(&a, &b), Some(b.clone()));
@@ -303,9 +302,7 @@ async fn refresh_rewrites_a_stale_head_and_leaves_a_matching_one_alone() {
                 .await
                 .expect("agent build succeeds");
             assert!(
-                agent
-                    .system_prompt()
-                    .contains("The worker model `worker-b` costs"),
+                agent.system_prompt().contains("Worker model: `worker-b`"),
                 "the agent already names the session's worker"
             );
             let saved = format!(
@@ -337,7 +334,7 @@ async fn refresh_rewrites_a_stale_head_and_leaves_a_matching_one_alone() {
             let conv = actor.chat_state_handle.get_conversation().await;
             let head = head_text(&conv);
             assert!(
-                head.contains("The worker model `worker-b` costs") && !head.contains("`worker-a`"),
+                head.contains("Worker model: `worker-b`") && !head.contains("`worker-a`"),
                 "the head must name the session's worker, got: {head:.300}"
             );
             assert!(head.ends_with("</human_rules>"), "only the section changes");

@@ -394,6 +394,76 @@ async fn a_subagent_starts_from_its_parents_tool_families() {
     .await;
 }
 
+/// On a model that takes mid-conversation tool changes, a family no request
+/// needs yet is held back to be declared deferred, not dropped, so the tools
+/// array that opens the cached prefix is the same before and after it joins.
+/// A family joining after the first request is offered with a tool addition
+/// after the human turn instead of a new tools array, and until then a call
+/// that names one of its tools gets an error result and never runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_family_joining_later_is_offered_by_a_tool_addition_and_never_runs_before() {
+    with_actor(|actor| async move {
+        let mut config = actor
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .expect("sampling config");
+        config.model = "claude-opus-5-5".to_owned();
+        actor.chat_state_handle.update_sampling_config(config);
+        let names = |defs: &[ToolDefinition]| -> Vec<String> {
+            defs.iter().map(|d| d.function.name.clone()).collect()
+        };
+        let held_back = |actor: &SessionActor| names(&actor.jev_ledger.borrow().deferred_tools);
+
+        ask_about(&actor, "fix the parser");
+        crate::jev::set_test_decision_answers([Some(family_answers(0.02, 0.01))]);
+        let first = actor
+            .jev_filter_tool_definitions(optional_family_defs(), false)
+            .await;
+        assert_eq!(names(&first), ["read_file", "run_terminal_command"]);
+        assert_eq!(held_back(&actor), ["image_gen", "scheduler_list"]);
+
+        let call = crate::sampling::types::ToolCallResponse {
+            id: "call-deferred-1".to_owned(),
+            kind: "function".to_owned(),
+            function: crate::sampling::types::ToolCallFunction {
+                name: "image_gen".to_owned(),
+                arguments: "{}".to_owned(),
+            },
+        };
+        let allowed = actor
+            .reject_deferred_tool_calls(vec![call])
+            .await
+            .expect("rejection");
+        assert!(allowed.is_empty(), "a deferred tool never runs");
+        let conversation = actor.chat_state_handle.get_conversation().await;
+        assert!(
+            matches!(conversation.last(), Some(ConversationItem::ToolResult(t))
+                if t.tool_call_id.as_str() == "call-deferred-1"
+                    && t.content.contains("not available")),
+            "{conversation:?}"
+        );
+
+        actor.chat_state_handle.replace_conversation(vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user("<user_query>\nfix the parser\n</user_query>"),
+            ConversationItem::assistant("Fixed."),
+            ConversationItem::user("<user_query>\ndraw an icon for the app\n</user_query>"),
+        ]);
+        crate::jev::set_test_decision_answers([Some(family_answers(0.95, 0.01))]);
+        let icon = actor
+            .jev_filter_tool_definitions(optional_family_defs(), false)
+            .await;
+        assert!(names(&icon).contains(&"image_gen".to_owned()));
+        assert_eq!(held_back(&actor), ["scheduler_list"]);
+        let conversation = actor.chat_state_handle.get_conversation().await;
+        let addition = conversation.last().expect("tool addition");
+        assert!(addition.is_tool_addition(), "{conversation:?}");
+        assert_eq!(addition.text_content(), "image_gen");
+    })
+    .await;
+}
+
 fn optional_family_defs() -> Vec<ToolDefinition> {
     ["read_file", "run_terminal_command", "image_gen", "scheduler_list"]
         .map(tool_def)

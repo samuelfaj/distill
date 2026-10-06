@@ -1,6 +1,8 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 pub mod conversation;
 pub mod error;
+#[cfg(test)]
+mod real_api_cache_tests;
 pub mod types;
 
 // `Client` is the legacy alias used throughout the shell; it points at the sampler crate's `SamplingClient`

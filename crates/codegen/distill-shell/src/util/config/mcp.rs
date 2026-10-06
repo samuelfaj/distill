@@ -56,6 +56,17 @@ pub struct Config {
     /// levers are read-only from the harness's side, and the deep merge in
     /// `save_config_locked` preserves them.
     pub jev: JevPersistConfig,
+    /// `[compaction]`: only `cold_return` round-trips (the cold-return offer's "Don't ask
+    /// again"); `memory_flush` and `pruning` are preserved by the deep merge.
+    pub compaction: CompactionPersistConfig,
+}
+
+/// The `[compaction]` slice the harness is allowed to write back.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CompactionPersistConfig {
+    /// `"offer"` (default), `"auto"` or `"off"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cold_return: Option<String>,
 }
 
 /// The `[jev]` slice the pager is allowed to write back.

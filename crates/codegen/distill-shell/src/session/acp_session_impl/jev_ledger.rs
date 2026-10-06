@@ -67,6 +67,10 @@ pub(crate) struct JevTurnLedger {
     /// keeps it, so the tools array only grows when a later request needs
     /// another family.
     pub(crate) tool_families: distill_workspace::jev::catalog::routing::ToolFamilySelection,
+    /// Optional tools held back by the last turn-start pass where the model takes mid-conversation
+    /// tool changes: declared deferred, so a family that joins later keeps the tools array, and
+    /// never run if the model names one. Empty elsewhere (held-back tools are simply left out).
+    pub(crate) deferred_tools: Vec<crate::sampling::types::ToolDefinition>,
     /// E6: the utility route of an `explore` child failed or no longer fits,
     /// so the rest of the child stays on its own model. Session-scoped:
     /// draining the turn keeps it.

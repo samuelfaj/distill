@@ -12,7 +12,9 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
                     | ContentBlock::ToolResult { cache_control, .. }
                     | ContentBlock::Image { cache_control, .. }
                     | ContentBlock::ToolUse { cache_control, .. } => cache_control,
-                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::RedactedThinking { .. }
+                    | ContentBlock::ToolAddition { .. } => {
                         continue;
                     }
                 };
@@ -144,7 +146,9 @@ fn message_breakpoints(msg: &crate::messages::Message) -> usize {
                 | ContentBlock::ToolResult { cache_control, .. }
                 | ContentBlock::Image { cache_control, .. }
                 | ContentBlock::ToolUse { cache_control, .. } => cache_control.is_some(),
-                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => false,
+                ContentBlock::Thinking { .. }
+                | ContentBlock::RedactedThinking { .. }
+                | ContentBlock::ToolAddition { .. } => false,
             })
             .count(),
         MessageContent::Text(_) => 0,
@@ -165,14 +169,45 @@ fn count_cache_breakpoints(
 /// Models that take the effort as a per-message `output_config` marker instead of a top-level one.
 /// The id is the bare name, optionally with a dated `-YYYYMMDD` snapshot suffix.
 pub fn supports_per_message_effort(model: &str) -> bool {
-    const MODELS: [&str; 5] = [
-        "claude-opus-5-5",
-        "claude-opus-5",
-        "claude-sonnet-5-5",
-        "claude-fable-5-1",
-        "claude-mythos-5-1",
-    ];
-    MODELS.iter().any(|base| {
+    is_model(
+        model,
+        &[
+            "claude-opus-5-5",
+            "claude-opus-5",
+            "claude-sonnet-5-5",
+            "claude-fable-5-1",
+            "claude-mythos-5-1",
+        ],
+    )
+}
+
+/// Models that take a system-role message inside `messages`, so a changed system prompt can follow the cached history
+/// instead of rewriting the top-level one. Claude Sonnet 5 takes only the top-level `system`.
+pub fn supports_system_messages(model: &str) -> bool {
+    is_model(
+        model,
+        &[
+            "claude-fable-5-1",
+            "claude-mythos-5-1",
+            "claude-fable-5",
+            "claude-mythos-5",
+            "claude-opus-5-5",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-sonnet-5-5",
+        ],
+    )
+}
+
+/// Models that take mid-conversation tool changes (in beta): a tool declared with `defer_loading` and offered later by a
+/// `tool_addition` block in a system-role message. The same models as [`supports_system_messages`].
+pub fn supports_tool_changes(model: &str) -> bool {
+    supports_system_messages(model)
+}
+
+/// `model` is one of `models`, bare or with a dated `-YYYYMMDD` snapshot suffix.
+fn is_model(model: &str, models: &[&str]) -> bool {
+    models.iter().any(|base| {
         model.strip_prefix(base).is_some_and(|rest| {
             rest.is_empty()
                 || rest
@@ -190,6 +225,100 @@ pub struct MessagesCacheOptions {
     pub anchor: bool,
     /// Give the breakpoints the one-hour lifetime when the request asks for it ([`ConversationRequest::long_cache_ttl`]).
     pub extended_ttl: bool,
+    /// Send each system prompt update ([`SyntheticReason::SystemPromptUpdate`]) as a system-role message after the
+    /// history it follows, for a model in [`supports_system_messages`], so the cached prefix stays. Off, or where one
+    /// cannot sit, the latest update replaces the top-level prompt, as rewriting the head did.
+    pub system_messages: bool,
+    /// Declare [`ConversationRequest::deferred_tools`] and every tool a [`SyntheticReason::ToolAddition`] item names
+    /// with `defer_loading`, and offer each joined tool with a `tool_addition` block where it joined, for a model in
+    /// [`supports_tool_changes`], so a tool family joining later keeps the cached prefix. Off, or where an addition
+    /// cannot sit, the request sends the tools in effect, as before.
+    pub deferred_tools: bool,
+}
+
+/// Opens a system prompt update sent as a system-role message: the model must drop the instructions it replaces.
+pub const SYSTEM_PROMPT_UPDATE_PREAMBLE: &str = "The system prompt has changed. The instructions below replace, in full, the system prompt this conversation started with and any earlier system prompt update. Follow them from here on.";
+
+/// Where a system message for a history item that came after `at` messages can sit: a system message with content must
+/// follow a user message and precede an assistant one or end the request, so it goes after the user turn that follows
+/// the item, ahead of the next assistant message. `None` when no user message comes right before that place.
+fn system_message_position(messages: &[crate::messages::Message], at: usize) -> Option<usize> {
+    use crate::messages::MessageRole;
+
+    let pos = messages
+        .iter()
+        .skip(at)
+        .position(|m| matches!(m.role, MessageRole::Assistant))
+        .map_or(messages.len(), |i| at + i);
+    pos.checked_sub(1)
+        .and_then(|before| messages.get(before))
+        .filter(|m| matches!(m.role, MessageRole::User))
+        .map(|_| pos)
+}
+
+/// The tools a request declares deferred, and where each joined tool is offered.
+struct DeferredToolPlan {
+    /// Names sent with `defer_loading`.
+    deferred: std::collections::BTreeSet<String>,
+    /// Each `tool_addition` message: its position among the built messages and the names it offers.
+    additions: Vec<(usize, Vec<String>)>,
+}
+
+/// Declares [`ConversationRequest::deferred_tools`] and every offered tool a [`SyntheticReason::ToolAddition`] item
+/// names deferred, and offers each of the latter at its first item. A named tool the request does not offer (not judged
+/// needed again after a resume, or gone) gets no addition, so the model never sees it.
+/// `None` sends the tools in effect instead: nothing to defer, an addition with no place a system message can sit, or
+/// no tool offered from the start (with every tool deferred, the first one offered would change the prompt's head).
+fn deferred_tool_plan(
+    req: &ConversationRequest,
+    tool_additions: &[(usize, &str)],
+    messages: &[crate::messages::Message],
+) -> Option<DeferredToolPlan> {
+    let offered: std::collections::BTreeSet<&str> =
+        req.tools.iter().map(|t| t.name.as_str()).collect();
+    let mut deferred: std::collections::BTreeSet<String> = req
+        .deferred_tools
+        .iter()
+        .filter(|t| !offered.contains(t.name.as_str()))
+        .map(|t| t.name.clone())
+        .collect();
+    let mut additions = Vec::new();
+    for &(at, names) in tool_additions {
+        let mut joined = Vec::new();
+        for name in names.lines().map(str::trim) {
+            if offered.contains(name) && deferred.insert(name.to_owned()) {
+                joined.push(name.to_owned());
+            }
+        }
+        if !joined.is_empty() {
+            additions.push((system_message_position(messages, at)?, joined));
+        }
+    }
+    if deferred.is_empty() || req.tools.iter().all(|t| deferred.contains(&t.name)) {
+        return None;
+    }
+    Some(DeferredToolPlan {
+        deferred,
+        additions,
+    })
+}
+
+/// A system-role message that offers `names`, each declared deferred in `tools`.
+fn tool_addition_message(names: &[String]) -> crate::messages::Message {
+    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole, ToolChangeTarget};
+
+    Message {
+        role: MessageRole::System,
+        content: MessageContent::Blocks(
+            names
+                .iter()
+                .map(|name| ContentBlock::ToolAddition {
+                    tool: ToolChangeTarget::ToolReference { name: name.clone() },
+                })
+                .collect(),
+        ),
+        output_config: None,
+    }
 }
 
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
@@ -207,6 +336,10 @@ pub fn build_messages_request_with(
 
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
+    // Each system prompt update with the number of messages built before it.
+    let mut updates: Vec<(usize, &str)> = Vec::new();
+    // Each tool addition (its names, one per line) with the number of messages built before it.
+    let mut tool_additions: Vec<(usize, &str)> = Vec::new();
     let mut pending_assistant: Vec<ContentBlock> = Vec::new();
     let mut pending_tool_results: Vec<ContentBlock> = Vec::new();
 
@@ -295,6 +428,16 @@ pub fn build_messages_request_with(
 
     for item in &req.items {
         match item {
+            ConversationItem::System(s) if item.is_system_prompt_update() => {
+                flush_assistant(&mut pending_assistant, &mut messages);
+                flush_tool_results(&mut pending_tool_results, &mut messages);
+                updates.push((messages.len(), s.content.as_ref()));
+            }
+            ConversationItem::System(s) if item.is_tool_addition() => {
+                flush_assistant(&mut pending_assistant, &mut messages);
+                flush_tool_results(&mut pending_tool_results, &mut messages);
+                tool_additions.push((messages.len(), s.content.as_ref()));
+            }
             ConversationItem::System(s) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
                 flush_tool_results(&mut pending_tool_results, &mut messages);
@@ -406,6 +549,38 @@ pub fn build_messages_request_with(
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
+    // A system message with content must follow a user message and precede an assistant one or end the request,
+    // so each update sits after the user turn that follows it, ahead of the next assistant message.
+    let update_positions: Vec<usize> =
+        if cache.system_messages && req.model.as_deref().is_some_and(supports_system_messages) {
+            updates
+                .iter()
+                .map(|&(at, _)| system_message_position(&messages, at))
+                .collect::<Option<Vec<usize>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+    let in_history = !updates.is_empty() && update_positions.len() == updates.len();
+    // Otherwise the latest update replaces the top-level prompt, the request a rewritten head sent.
+    if !in_history && let Some(&(_, latest)) = updates.last() {
+        match system_blocks.first_mut() {
+            Some(head) => head.text = latest.to_owned(),
+            None => system_blocks.push(TextBlock {
+                r#type: "text".to_string(),
+                text: latest.to_owned(),
+                cache_control: None,
+            }),
+        }
+    }
+    // `None` sends the tools in effect and no addition, the request before deferred tools.
+    let deferred =
+        if cache.deferred_tools && req.model.as_deref().is_some_and(supports_tool_changes) {
+            deferred_tool_plan(req, &tool_additions, &messages)
+        } else {
+            None
+        };
+
     // The leading project-instructions item becomes `messages[0]` because the system item precedes it.
     let leading_project_instructions = matches!(
         (req.items.first(), req.items.get(1)),
@@ -423,6 +598,33 @@ pub fn build_messages_request_with(
         cache.anchor,
     );
 
+    // Inserted after the breakpoints, which never land on a system message; in reverse so earlier positions hold.
+    // At one position the tool additions come first (the stable sort keeps them ahead of the updates).
+    let mut system_messages: Vec<(usize, Message)> = Vec::new();
+    if let Some(plan) = &deferred {
+        for (pos, names) in &plan.additions {
+            system_messages.push((*pos, tool_addition_message(names)));
+        }
+    }
+    if in_history {
+        for (&pos, &(_, text)) in update_positions.iter().zip(&updates) {
+            system_messages.push((
+                pos,
+                Message {
+                    role: MessageRole::System,
+                    content: MessageContent::Text(format!(
+                        "{SYSTEM_PROMPT_UPDATE_PREAMBLE}\n\n{text}"
+                    )),
+                    output_config: None,
+                },
+            ));
+        }
+    }
+    system_messages.sort_by_key(|(pos, _)| *pos);
+    for (pos, message) in system_messages.into_iter().rev() {
+        messages.insert(pos, message);
+    }
+
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None
     } else if let [block] = system_blocks.as_slice()
@@ -435,6 +637,23 @@ pub fn build_messages_request_with(
 
     let tools: Option<Vec<ToolParam>> = if req.tools.is_empty() {
         None
+    } else if let Some(plan) = &deferred {
+        // Offered and deferred tools in one array, by name: a tool that joins keeps its place and its bytes.
+        let mut seen = std::collections::BTreeSet::new();
+        let mut tools: Vec<ToolParam> = req
+            .tools
+            .iter()
+            .chain(&req.deferred_tools)
+            .filter(|t| seen.insert(t.name.clone()))
+            .map(|t| ToolParam {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.parameters.clone(),
+                defer_loading: plan.deferred.contains(&t.name).then_some(true),
+            })
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(tools)
     } else {
         Some(
             req.tools
@@ -443,6 +662,7 @@ pub fn build_messages_request_with(
                     name: t.name.clone(),
                     description: t.description.clone(),
                     input_schema: t.parameters.clone(),
+                    defer_loading: None,
                 })
                 .collect(),
         )
@@ -476,14 +696,15 @@ pub fn build_messages_request_with(
         });
 
     // A top-level effort change restarts the prompt cache and a marker does not, so models that take one get the effort as a system-role marker after the last assistant message.
-    // A marker after the final user message would not apply to this request, hence the last-role check.
+    // A marker after the final user message would not apply to this request, hence the last-role check (past a trailing system prompt update).
     let per_message_effort = effort.is_some()
         && req
             .model
             .as_deref()
             .is_some_and(supports_per_message_effort)
         && messages
-            .last()
+            .iter()
+            .rfind(|m| !matches!(m.role, MessageRole::System))
             .is_some_and(|m| matches!(m.role, MessageRole::User));
     let output_config = if per_message_effort {
         let at = messages

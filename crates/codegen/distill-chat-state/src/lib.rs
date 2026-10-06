@@ -61,7 +61,7 @@ pub use persistence::{
 };
 pub use types::*;
 pub use usage::{
-    UsageAttribution, UsageCallStatus, UsageCostBasis, UsageLedger, UsageTotals,
+    CacheBreak, UsageAttribution, UsageCallStatus, UsageCostBasis, UsageLedger, UsageTotals,
     UtilityOutcomeCounts,
 };
 // Re-exported so `distill_chat_state::CompactionDetail` stays a working path for

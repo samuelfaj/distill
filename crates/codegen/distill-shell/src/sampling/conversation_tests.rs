@@ -217,3 +217,35 @@ fn fork_filter_drops_trailing_incomplete_goal_turn_after_reasoning() {
         other => panic!("expected trailing assistant, got {other:?}"),
     }
 }
+/// A tool family joining mid-turn appends a ToolAddition after the human message; it must not make that unfinished turn look complete.
+#[test]
+fn fork_filter_does_not_close_a_turn_at_a_tool_addition() {
+    use distill_sampling_types::conversation::*;
+
+    let mut items = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::user("q1"),
+        ConversationItem::assistant("a1"),
+        ConversationItem::user("in-flight request"),
+        ConversationItem::tool_addition(["mcp__extra__tool"]),
+        ConversationItem::system_prompt_update("sys v2"),
+        ConversationItem::Assistant(AssistantItem {
+            content: String::new().into(),
+            tool_calls: vec![ToolCall {
+                id: "spawn".into(),
+                name: "spawn_subagent".into(),
+                arguments: "{}".into(),
+            }],
+            model_id: None,
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+    ];
+    fork_filter_chat(&mut items);
+    assert_eq!(
+        items.len(),
+        3,
+        "the partial turn must be dropped, not kept up to the tool addition: {items:?}"
+    );
+    assert!(matches!(items.last(), Some(ConversationItem::Assistant(_))));
+}

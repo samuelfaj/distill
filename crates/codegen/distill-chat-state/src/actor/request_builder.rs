@@ -33,6 +33,19 @@ impl ChatStateActor {
     ) -> ConversationRequest {
         // Read before the eviction pass consumes the cold mark.
         let cold = self.history_is_cold();
+        // A cold request re-bills the prefix anyway: fold the system prompt updates back into the head.
+        if cold
+            && self
+                .state
+                .conversation
+                .iter()
+                .any(ConversationItem::is_system_prompt_update)
+        {
+            self.snapshot_turn_slice();
+            distill_sampling_types::fold_system_prompt_updates(&mut self.state.conversation);
+            self.persistence.replace_history(&self.state.conversation);
+            self.rebase_turn_capture_offset();
+        }
         let mut memory_reminder = memory_reminder;
         if let Some(reminder) = memory_reminder.as_deref()
             && persist_memory_reminder
@@ -111,6 +124,7 @@ impl ChatStateActor {
             one_shot: false,
             shared_prefix: false,
             long_cache_ttl: false,
+            deferred_tools: Vec::new(),
         }
     }
 
@@ -315,7 +329,8 @@ fn unique_result_indices(conversation: &[ConversationItem]) -> Option<BTreeMap<S
 
 use crate::types::MEMORY_CONTEXT_OPEN_TAG;
 
-/// Upsert a memory reminder into the conversation's system message.
+/// Upsert a memory reminder into the conversation's system message: the system prompt update in
+/// effect when there is one (the model reads the latest prompt in place of the head), else the head.
 /// Replaces a prior reminder section in-place, or prepends a `System` item if none exists.
 /// Returns `true` when the conversation was changed.
 pub(super) fn inject_memory_reminder(items: &mut Vec<ConversationItem>, reminder: &str) -> bool {
@@ -324,7 +339,14 @@ pub(super) fn inject_memory_reminder(items: &mut Vec<ConversationItem>, reminder
         return false;
     }
 
-    if let Some(ConversationItem::System(sys)) = items.first_mut() {
+    let target = match items
+        .iter()
+        .rposition(ConversationItem::is_system_prompt_update)
+    {
+        Some(update) => items.get_mut(update),
+        None => items.first_mut(),
+    };
+    if let Some(ConversationItem::System(sys)) = target {
         upsert_memory_reminder_text(&mut sys.content, reminder)
     } else {
         items.insert(0, ConversationItem::system(reminder));
@@ -425,6 +447,30 @@ mod tests {
             assert!(sys.content.starts_with("You are helpful."));
         }
         assert_eq!(items.len(), 2); // no new item added
+    }
+
+    /// The latest system prompt update replaces the head for the model, so a manifest written
+    /// into the head would be read as superseded.
+    #[test]
+    fn inject_memory_into_the_system_prompt_update_in_effect() {
+        let mut items = vec![
+            ConversationItem::system("v1"),
+            ConversationItem::user("hi"),
+            ConversationItem::assistant("yo"),
+            ConversationItem::system_prompt_update("v2"),
+        ];
+        assert!(inject_memory_reminder(
+            &mut items,
+            "Remember: user likes rust"
+        ));
+        assert!(
+            matches!(items.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "v1")
+        );
+        assert!(matches!(
+            items.last(),
+            Some(ConversationItem::System(s))
+                if s.content.starts_with("v2") && s.content.contains("user likes rust")
+        ));
     }
 
     #[test]

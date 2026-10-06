@@ -35,6 +35,7 @@ fn message_start() -> MessageStreamEvent {
                 output_tokens: 0,
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
+                cache_creation: None,
             },
         },
     }
@@ -73,6 +74,7 @@ fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
             input_tokens: Some(10),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            cache_creation: None,
         },
     }
 }
@@ -94,6 +96,7 @@ fn message_delta_refusal_with_explanation(explanation: &str) -> MessageStreamEve
             input_tokens: Some(10),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            cache_creation: None,
         },
     }
 }
@@ -720,6 +723,7 @@ fn message_start_with_cache(
                 output_tokens: 0,
                 cache_creation_input_tokens: cache_creation,
                 cache_read_input_tokens: cache_read,
+                cache_creation: None,
             },
         },
     }
@@ -742,6 +746,7 @@ fn message_delta_with_cache(
             input_tokens: input,
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
+            cache_creation: None,
         },
     }
 }
@@ -799,6 +804,71 @@ async fn message_delta_cache_fields_override_message_start() {
     assert_eq!(usage.cached_prompt_tokens, 900);
     assert_eq!(usage.cache_creation_prompt_tokens, 50);
     assert_eq!(usage.completion_tokens, 4);
+}
+
+/// A one-hour write bills at 2x and a five-minute one at 1.25x, so /usage needs the lifetime split
+/// the API reports under `usage.cache_creation`. An endpoint that omits it counts every write as
+/// five-minute (1h = 0), and a split larger than the write is never trusted past the write.
+#[tokio::test]
+async fn cache_write_lifetime_split_is_carried_and_unknown_counts_as_five_minutes() {
+    let mut start = message_start_with_cache(10, 1000, 300);
+    if let MessageStreamEvent::MessageStart { message } = &mut start {
+        message.usage.cache_creation = Some(messages::CacheCreationUsage {
+            ephemeral_5m_input_tokens: 100,
+            ephemeral_1h_input_tokens: 200,
+        });
+    }
+    let usage = usage_from_stream(vec![
+        start,
+        message_delta_with_cache(3, None, None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+    assert_eq!(usage.cache_creation_prompt_tokens, 300);
+    assert_eq!(usage.cache_creation_1h_prompt_tokens, 200);
+
+    let unknown = usage_from_stream(vec![
+        message_start_with_cache(10, 1000, 300),
+        message_delta_with_cache(3, None, None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+    assert_eq!(unknown.cache_creation_1h_prompt_tokens, 0);
+
+    let mut overstated = message_start_with_cache(10, 0, 50);
+    if let MessageStreamEvent::MessageStart { message } = &mut overstated {
+        message.usage.cache_creation = Some(messages::CacheCreationUsage {
+            ephemeral_5m_input_tokens: 0,
+            ephemeral_1h_input_tokens: 80,
+        });
+    }
+    let clamped = usage_from_stream(vec![
+        overstated,
+        message_delta_with_cache(3, None, None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+    assert_eq!(clamped.cache_creation_1h_prompt_tokens, 50);
+}
+
+/// The wire shape Anthropic documents for a mixed-lifetime write parses into the split.
+#[test]
+fn messages_usage_parses_documented_cache_creation_object() {
+    let usage: MessagesUsage = serde_json::from_value(serde_json::json!({
+        "input_tokens": 2048,
+        "cache_read_input_tokens": 1800,
+        "cache_creation_input_tokens": 248,
+        "output_tokens": 503,
+        "cache_creation": {"ephemeral_5m_input_tokens": 148, "ephemeral_1h_input_tokens": 100}
+    }))
+    .unwrap();
+    assert_eq!(
+        usage.cache_creation,
+        Some(messages::CacheCreationUsage {
+            ephemeral_5m_input_tokens: 148,
+            ephemeral_1h_input_tokens: 100,
+        })
+    );
 }
 
 #[tokio::test]

@@ -97,6 +97,8 @@ pub fn stream_messages<'a>(
         let mut final_input_tokens: u32 = 0;
         let mut final_cache_read_input_tokens: u32 = 0;
         let mut final_cache_creation_input_tokens: u32 = 0;
+        // The one-hour part of the cache write, when the endpoint reports the lifetime split
+        let mut final_cache_creation_1h_input_tokens: u32 = 0;
         let mut final_output_tokens: u32 = 0;
         let mut final_stop_reason: Option<StopReason> = None;
         let mut final_stop_message: Option<String> = None;
@@ -160,6 +162,9 @@ pub fn stream_messages<'a>(
                     final_input_tokens = message.usage.input_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
                     final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
+                    if let Some(split) = message.usage.cache_creation {
+                        final_cache_creation_1h_input_tokens = split.ephemeral_1h_input_tokens;
+                    }
                     // Yield the real id, model, and input usage before any content
                     // Partial-mode framing then emits them on the real `message_start` instead of a synthesized placeholder
                     yield SamplingEvent::ResponseStarted {
@@ -435,6 +440,9 @@ pub fn stream_messages<'a>(
                     if let Some(cache_creation) = usage.cache_creation_input_tokens {
                         final_cache_creation_input_tokens = cache_creation;
                     }
+                    if let Some(split) = usage.cache_creation {
+                        final_cache_creation_1h_input_tokens = split.ephemeral_1h_input_tokens;
+                    }
                 }
 
                 MessageStreamEvent::MessageStop => {
@@ -495,6 +503,9 @@ pub fn stream_messages<'a>(
                 reasoning_tokens: 0,
                 cached_prompt_tokens: final_cache_read_input_tokens,
                 cache_creation_prompt_tokens: final_cache_creation_input_tokens,
+                // Never more than the write it splits, whatever the endpoint reported
+                cache_creation_1h_prompt_tokens: final_cache_creation_1h_input_tokens
+                    .min(final_cache_creation_input_tokens),
             })
         } else {
             None

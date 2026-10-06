@@ -499,7 +499,11 @@ Eight levers affect what reaches the model:
   of the tools array until a human request needs them. Tool schemas are resent
   every round, which makes them a recurring cost rather than a one-off. A family
   that joins never leaves: the tools array opens the cached prompt prefix, so a
-  family that came and went would re-bill the whole conversation. A subagent
+  family that came and went would re-bill the whole conversation. On
+  `api.anthropic.com` models that take mid-conversation tool changes, the
+  families not needed yet are declared deferred from the first request and one
+  that joins later is offered by a tool addition after the human turn, so the
+  join keeps the cached prefix too (see `docs/jev-routing.md`). A subagent
   starts from the families its parent offers and never adds one the parent left
   out. When Jev gives no answer the utility model answers the same questions for
   media, scheduling and feedback (verified `select_units`, NONE is an answer);
@@ -509,7 +513,8 @@ Eight levers affect what reaches the model:
   instructions come with its `search_tool` results instead. A child that may
   call an MCP tool directly keeps the instructions. With P1 on, the spawn
   roster of a child type leaves out media, scheduling and feedback, which a
-  child gets only when its parent's request needs them.
+  child gets only when its parent's request needs them. The tools array is
+  sorted by tool name, so registration and MCP connect order never change it.
 - `p6_skill_suggestion` has Jev rank the whole skill catalog against the request.
   The listing keeps full descriptors only for the skills that request needs,
   names every other skill next to a full-catalog index file, and is rebuilt only
@@ -629,7 +634,10 @@ the file is stale and skipped; the selections run at once under one 30 s
 deadline, and no lane, NONE or a failure leaves the reminder as it was. `usage.json` counts it under `post_compaction_excerpt`. Whether it
 cuts re-reads is not measured: an edit still needs a prior read by default.
 
-Two commands line up with this. `/compact` reclaims window space on demand.
+Two commands line up with this. `/compact` reclaims window space on demand, and
+a prompt on a session of 100K tokens or more whose prompt cache expired while it
+sat idle offers it first (`[compaction] cold_return`, see
+[Jev routing](jev-routing.md)).
 `/context` shows where the window is going, including what the tool definitions,
 the skills listing and the MCP announcements cost in estimated tokens.
 

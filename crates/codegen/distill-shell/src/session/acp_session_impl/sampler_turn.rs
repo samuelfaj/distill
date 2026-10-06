@@ -2435,7 +2435,7 @@ impl SessionActor {
         };
         let long_cache_ttl = request.long_cache_ttl;
         let sent_prefix = is_messages_endpoint(usage_context.endpoint.as_deref())
-            .then(|| super::prompt_cache::SentPrefix::of(&request.items));
+            .then(|| super::prompt_cache::SentPrefix::of_request(&request));
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
         let stream_drained_rx = {
@@ -2487,19 +2487,23 @@ impl SessionActor {
             Ok((response, metrics)) => {
                 // Idle past this lifetime, the next request misses the cache anyway: the moment old
                 // history may be rewritten. Read after the call, which may have refused the hour.
+                let mut cache_lifetime = None;
                 if let Some((base_url, api_backend, model)) = &cache_route {
                     let model = actual_model.as_deref().unwrap_or(model);
-                    self.chat_state_handle.record_cache_lifetime(
-                        distill_sampler::prompt_cache_lifetime(base_url, api_backend, model, long_cache_ttl),
-                    );
+                    cache_lifetime =
+                        distill_sampler::prompt_cache_lifetime(base_url, api_backend, model, long_cache_ttl);
+                    self.chat_state_handle.record_cache_lifetime(cache_lifetime);
                 }
-                if let (Some(sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
+                if let (Some(mut sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
+                    sent.cache_lifetime = cache_lifetime;
                     let report = self
                         .jev_ledger
                         .borrow_mut()
                         .prefix_trace
                         .observe(sent, usage);
                     if let Some(report) = report {
+                        self.chat_state_handle
+                            .record_cache_break(super::prompt_cache::cache_break(&report));
                         distill_telemetry::unified_log::debug(
                             "prompt cache: read far below the previous prompt",
                             Some(self.session_info.id.0.as_ref()),

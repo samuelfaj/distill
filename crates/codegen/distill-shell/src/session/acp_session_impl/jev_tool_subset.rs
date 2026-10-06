@@ -30,12 +30,16 @@ impl SessionActor {
     /// (media, scheduling, feedback, and MCP when `search_tool` can find it again)
     /// join the session's tool set once a human request needs them and never
     /// leave, so the tools array that opens the cached prefix stays stable.
+    /// Where the model takes mid-conversation tool changes, the families not
+    /// needed yet are kept in the ledger to be declared deferred, so a later
+    /// join leaves the tools array as it was.
     pub(super) async fn jev_filter_tool_definitions(
         &self,
         defs: Vec<ToolDefinition>,
         plan_active: bool,
     ) -> Vec<ToolDefinition> {
         if plan_active || defs.is_empty() {
+            self.jev_ledger.borrow_mut().deferred_tools.clear();
             return defs;
         }
         let names: Vec<String> = defs.iter().map(|d| d.function.name.clone()).collect();
@@ -55,10 +59,15 @@ impl SessionActor {
         }
         let selection = self.jev_ledger.borrow().tool_families.clone();
         let schema_tokens_before = distill_chat_state::estimate_tool_definitions_tokens(&defs);
-        let defs: Vec<ToolDefinition> = defs
+        let (defs, held_back): (Vec<ToolDefinition>, Vec<ToolDefinition>) = defs
             .into_iter()
-            .filter(|def| selection.keeps(&def.function.name, mcp_prunable))
-            .collect();
+            .partition(|def| selection.keeps(&def.function.name, mcp_prunable));
+        let deferred = if self.defers_optional_tools().await {
+            held_back
+        } else {
+            Vec::new()
+        };
+        self.jev_ledger.borrow_mut().deferred_tools = deferred;
         tracing::info!(target: "jev.decision", event_kind = "tool_schema",
             session_id = %self.session_info.id, schema_tokens_before,
             schema_tokens_after = distill_chat_state::estimate_tool_definitions_tokens(&defs),
@@ -180,6 +189,7 @@ impl SessionActor {
             .borrow_mut()
             .tool_families
             .record(request, pending, decisions.as_ref());
+        self.jev_offer_joined_tools(names, &added).await;
         if let Some(answers) = delegation_answers {
             let hint = routing::compose_delegation(&answers);
             let applied =
@@ -210,6 +220,46 @@ impl SessionActor {
             if applied {
                 self.jev_ledger.borrow_mut().delegation_hint = Some(request.to_owned());
             }
+        }
+    }
+
+    /// Whether optional tools not needed yet are declared deferred instead of
+    /// left out: the session's model takes mid-conversation tool changes. A
+    /// forked child sends its parent's tools verbatim, so it holds nothing back.
+    async fn defers_optional_tools(&self) -> bool {
+        self.forked_tool_override.is_none()
+            && self
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .is_some_and(|config| distill_sampling_types::supports_tool_changes(&config.model))
+    }
+
+    /// Offers the tools of the families that just joined with a tool addition
+    /// item after the human turn that needed them, where the earlier requests
+    /// declared them deferred: the tools array and the cached history keep
+    /// their bytes. Before the first request there is no prefix to keep, so the
+    /// family simply joins the tools array.
+    async fn jev_offer_joined_tools(&self, names: &[String], joined: &[&str]) {
+        if joined.is_empty() || !self.defers_optional_tools().await {
+            return;
+        }
+        let tools: Vec<&String> = names
+            .iter()
+            .filter(|name| {
+                routing::tool_family_of(name).is_some_and(|family| joined.contains(&family))
+            })
+            .collect();
+        if tools.is_empty() {
+            return;
+        }
+        let conversation = self.chat_state_handle.get_conversation().await;
+        if conversation
+            .iter()
+            .any(|item| matches!(item, ConversationItem::Assistant(_)))
+        {
+            self.chat_state_handle
+                .push_user_message(ConversationItem::tool_addition(tools));
         }
     }
 

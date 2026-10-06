@@ -324,6 +324,7 @@ fn responses_usage(response: &Response) -> Option<TokenUsage> {
         reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
         cached_prompt_tokens: usage.input_tokens_details.cached_tokens,
         cache_creation_prompt_tokens: 0,
+        cache_creation_1h_prompt_tokens: 0,
     })
 }
 
@@ -387,6 +388,9 @@ fn messages_usage(usage: &distill_sampling_types::messages::MessagesUsage) -> To
         reasoning_tokens: 0,
         cached_prompt_tokens: cached,
         cache_creation_prompt_tokens: cache_creation,
+        cache_creation_1h_prompt_tokens: usage.cache_creation.map_or(0, |split| {
+            split.ephemeral_1h_input_tokens.min(cache_creation)
+        }),
     }
 }
 
@@ -571,6 +575,47 @@ mod chat_request_tests {
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral", "{body:#}");
         assert_eq!(body.to_string().matches("cache_control").count(), 1, "{body:#}");
     }
+
+    /// A system prompt update the main model has not answered would follow the summary request
+    /// as its last word; it is left out, and one already answered stays where the main prefix has it.
+    #[test]
+    fn a_compaction_leaves_out_an_unanswered_system_prompt_update() {
+        let history = vec![
+            ConversationItem::system("v1"),
+            ConversationItem::user("hi"),
+            ConversationItem::assistant("yo"),
+            ConversationItem::system_prompt_update("v2"),
+            ConversationItem::user("go on"),
+            ConversationItem::assistant("done"),
+            ConversationItem::system_prompt_update("v3"),
+            ConversationItem::user("summarize"),
+        ];
+        let request = compaction_conversation_request(
+            history,
+            None,
+            vec![],
+            vec![],
+            None,
+            &SamplingConfig {
+                api_backend: ApiBackend::Messages,
+                ..openrouter_route()
+            },
+            &acp::SessionId::new("s1"),
+            "s1".to_owned(),
+            false,
+        );
+        let updates: Vec<String> = request
+            .items
+            .iter()
+            .filter(|item| item.is_system_prompt_update())
+            .map(ConversationItem::text_content)
+            .collect();
+        assert_eq!(updates, ["v2"]);
+        assert!(matches!(
+            request.items.last(),
+            Some(ConversationItem::User(_))
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -716,7 +761,7 @@ fn compaction_conversation_request(
     one_shot: bool,
 ) -> ConversationRequest {
     ConversationRequest {
-        items: chat_history,
+        items: without_unanswered_system_prompt_updates(chat_history),
         tool_choice,
         tools,
         hosted_tools,
@@ -733,6 +778,25 @@ fn compaction_conversation_request(
         shared_prefix: one_shot,
         ..Default::default()
     }
+}
+
+/// Drops the system prompt updates no assistant message answered yet. Sent as a system message
+/// after the summary request they would read as its last word, and the main prefix this replays
+/// ends before them; the summary does not need the new prompt, which the compacted head carries.
+fn without_unanswered_system_prompt_updates(
+    mut chat_history: Vec<distill_sampling_types::ConversationItem>,
+) -> Vec<distill_sampling_types::ConversationItem> {
+    let answered = chat_history
+        .iter()
+        .rposition(|item| matches!(item, distill_sampling_types::ConversationItem::Assistant(_)))
+        .map_or(0, |at| at + 1);
+    let mut index = 0;
+    chat_history.retain(|item| {
+        let keep = index < answered || !item.is_system_prompt_update();
+        index += 1;
+        keep
+    });
+    chat_history
 }
 
 pub(crate) async fn generate_session_compact_with_observer(
@@ -1297,6 +1361,7 @@ pub(crate) async fn generate_session_compact_with_observer(
                                     cache_read_input_tokens: delta_usage
                                         .cache_read_input_tokens
                                         .unwrap_or(0),
+                                    cache_creation: delta_usage.cache_creation,
                                 }));
                             }
                             _ => {}

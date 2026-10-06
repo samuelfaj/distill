@@ -631,3 +631,53 @@ fn upgrade_then_fold_through_conversation_to_chat_messages() {
         "reconstructed sibling folded onto assistant.reasoning_content"
     );
 }
+
+/// Only Anthropic takes a system prompt update mid-history; here the request must be the one a
+/// rewritten head sent: the latest update leads, and no system message follows the history.
+#[test]
+fn a_system_prompt_update_reaches_chat_completions_as_the_leading_prompt() {
+    let items = vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("Fix the bug"),
+        ConversationItem::assistant("Fixed."),
+        ConversationItem::system_prompt_update("v2"),
+        ConversationItem::user("Now add a test"),
+    ];
+    let mut rewritten = items.clone();
+    assert!(fold_system_prompt_updates(&mut rewritten));
+    let wire = |items| {
+        serde_json::to_value(ChatCompletionRequest::from(
+            ConversationRequest::from_items(items).with_model("grok-4"),
+        ))
+        .unwrap()
+    };
+    let json = wire(items);
+    assert_eq!(json, wire(rewritten));
+    let roles: Vec<&str> = json["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["system", "user", "assistant", "user"], "{json:#}");
+}
+
+/// Only Anthropic offers a tool mid-history; here the tools travel in `tools`, so a tool addition
+/// in the history must leave no trace on the wire (it would read as a system prompt of tool names).
+#[test]
+fn a_tool_addition_never_reaches_chat_completions() {
+    let items = vec![
+        ConversationItem::system("v1"),
+        ConversationItem::user("Draw an icon"),
+        ConversationItem::tool_addition(["generate_image"]),
+    ];
+    let wire = |items| {
+        serde_json::to_value(ChatCompletionRequest::from(
+            ConversationRequest::from_items(items).with_model("grok-4"),
+        ))
+        .unwrap()
+    };
+    let mut without = items.clone();
+    without.retain(|item| !item.is_tool_addition());
+    assert_eq!(wire(items), wire(without));
+}

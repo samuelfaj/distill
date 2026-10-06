@@ -136,7 +136,9 @@ impl MessagesRequest {
                     | ContentBlock::Image { cache_control, .. }
                     | ContentBlock::ToolUse { cache_control, .. }
                     | ContentBlock::ToolResult { cache_control, .. } => set(cache_control),
-                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::RedactedThinking { .. }
+                    | ContentBlock::ToolAddition { .. } => {}
                 }
             }
         }
@@ -180,6 +182,18 @@ pub enum ContentBlock {
     RedactedThinking {
         data: String,
     },
+    /// Offers a tool declared with `defer_loading` from this point of the conversation on. Sent only in a system-role
+    /// message, under the mid-conversation tool changes beta; never part of a response.
+    ToolAddition {
+        tool: ToolChangeTarget,
+    },
+}
+
+/// The tool a [`ContentBlock::ToolAddition`] names: one declared in `tools`, by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolChangeTarget {
+    ToolReference { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +217,10 @@ pub struct ToolParam {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    /// Withheld from the model until a [`ContentBlock::ToolAddition`] offers it. A deferred tool is not part of the
+    /// rendered prompt, so declaring it from the first request keeps the cached prefix when it joins later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
 }
 
 /// Tool choice (Anthropic Messages API format)
@@ -303,6 +321,20 @@ pub struct MessagesUsage {
     pub cache_creation_input_tokens: u32,
     #[serde(default)]
     pub cache_read_input_tokens: u32,
+    /// How `cache_creation_input_tokens` splits by lifetime. Absent on endpoints
+    /// that do not report it; the whole write then counts as five-minute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CacheCreationUsage>,
+}
+
+/// The `usage.cache_creation` breakdown of a Messages response: tokens written
+/// with each cache lifetime. The two sum to `cache_creation_input_tokens`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheCreationUsage {
+    #[serde(default)]
+    pub ephemeral_5m_input_tokens: u32,
+    #[serde(default)]
+    pub ephemeral_1h_input_tokens: u32,
 }
 
 // ============================================================================
@@ -373,6 +405,8 @@ pub struct MessageDeltaUsage {
     pub cache_read_input_tokens: Option<u32>,
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CacheCreationUsage>,
 }
 
 /// Content delta within a content_block_delta event
@@ -538,6 +572,41 @@ mod tests {
             Some(&serde_json::json!("redacted_thinking"))
         );
         assert_eq!(json.get("data"), Some(&serde_json::json!("abc")));
+    }
+
+    /// The mid-conversation tool change and the deferred declaration must match the documented wire shape exactly:
+    /// the API answers a malformed one with a 400, which turns the feature off for the rest of the process.
+    #[test]
+    fn tool_addition_and_defer_loading_serialize_to_the_documented_shape() {
+        let block = ContentBlock::ToolAddition {
+            tool: ToolChangeTarget::ToolReference {
+                name: "generate_image".to_owned(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&block).unwrap(),
+            serde_json::json!({
+                "type": "tool_addition",
+                "tool": {"type": "tool_reference", "name": "generate_image"}
+            })
+        );
+        let tool = ToolParam {
+            name: "generate_image".to_owned(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            defer_loading: Some(true),
+        };
+        assert_eq!(serde_json::to_value(&tool).unwrap()["defer_loading"], true);
+        let plain = ToolParam {
+            defer_loading: None,
+            ..tool
+        };
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("defer_loading")
+                .is_none()
+        );
     }
 
     #[test]

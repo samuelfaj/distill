@@ -114,12 +114,22 @@ impl distill_compaction::ItemTokenCounter<ConversationItem> for EstimatedItemTok
     }
 }
 
-/// Bytes/4 estimate of every non-system item in `items`.
+/// Bytes/4 estimate of every item in `items` except the system prompt in effect, which the breakdown
+/// counts on its own. The head and superseded system prompt updates still go out with every request.
 pub fn estimate_messages_tokens(items: &[ConversationItem]) -> u64 {
+    let in_effect = items
+        .iter()
+        .rposition(ConversationItem::is_system_prompt_update)
+        .or_else(|| {
+            items
+                .iter()
+                .position(|i| matches!(i, ConversationItem::System(_)) && !i.is_tool_addition())
+        });
     items
         .iter()
-        .filter(|i| !matches!(i, ConversationItem::System(_)))
-        .map(estimate_item_tokens)
+        .enumerate()
+        .filter(|(idx, _)| Some(*idx) != in_effect)
+        .map(|(_, i)| estimate_item_tokens(i))
         .sum()
 }
 
@@ -396,6 +406,25 @@ mod tests {
         // Total = 4000 (4 items * 1000), system = 1000, messages = 3000.
         assert_eq!(estimate_conversation_tokens(&items), 4000);
         assert_eq!(estimate_messages_tokens(&items), 3000);
+    }
+
+    /// Every request still sends the head and earlier updates as system-role messages, so the
+    /// breakdown must count them: only the prompt in effect sits in the system-prompt category.
+    #[test]
+    fn estimate_messages_tokens_counts_superseded_system_prompts() {
+        let items = vec![
+            ConversationItem::system("x".repeat(4000).as_str()),
+            ConversationItem::user("y".repeat(4000).as_str()),
+            ConversationItem::assistant("z".repeat(4000).as_str()),
+            ConversationItem::system_prompt_update("v".repeat(4000).as_str()),
+            ConversationItem::system_prompt_update("u".repeat(4000).as_str()),
+        ];
+        // The latest update (1000) is the system prompt; head + first update + user + assistant remain.
+        assert_eq!(estimate_messages_tokens(&items), 4000);
+        assert_eq!(
+            estimate_conversation_tokens(&items) - estimate_messages_tokens(&items),
+            1000
+        );
     }
 
     #[test]

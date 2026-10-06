@@ -221,6 +221,14 @@ pub async fn set_feedback_trace_card(value: bool) -> Result<()> {
     .await
 }
 
+/// Persist `[compaction].cold_return` (`"offer"` | `"auto"` | `"off"`).
+pub async fn set_compaction_cold_return(value: String) -> Result<()> {
+    update_config(|cfg| {
+        cfg.compaction.cold_return = Some(value);
+    })
+    .await
+}
+
 /// Persist `[ui].fork_secondary_model` via `update_config`. Caller must validate against the model catalog. Empty string restores the built-in default. A length over [`MAX_DEFAULT_MODEL_LEN`] returns `Err`.
 pub async fn set_fork_secondary_model(value: String) -> Result<()> {
     if value.len() > MAX_DEFAULT_MODEL_LEN {

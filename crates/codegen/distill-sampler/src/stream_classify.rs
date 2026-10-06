@@ -128,7 +128,8 @@ fn message_event_has_content(event: &messages::MessageStreamEvent) -> bool {
             ContentBlock::Thinking { thinking, .. } => !thinking.is_empty(),
             ContentBlock::Image { .. }
             | ContentBlock::ToolResult { .. }
-            | ContentBlock::RedactedThinking { .. } => false,
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolAddition { .. } => false,
         },
         MessageStreamEvent::MessageStart { .. }
         | MessageStreamEvent::MessageDelta { .. }

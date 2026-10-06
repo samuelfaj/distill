@@ -130,6 +130,9 @@ impl CodexTurnAffinity {
 /// Beta flag under which the Messages API accepts a Claude subscription bearer.
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const MID_CONVERSATION_OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
+/// Beta flag for a tool declared with `defer_loading` and offered later by a `tool_addition` block naming it by
+/// reference. (`inline-tools-2026-09-15` also covers it, and a tool defined by value, which nothing here sends.)
+const MID_CONVERSATION_TOOL_CHANGES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
 
 /// `existing` plus `flag`, comma-joined without duplicates.
 fn with_beta_flag(existing: Option<&str>, flag: &str) -> String {
@@ -160,6 +163,24 @@ fn add_effort_marker_beta(request: &mut reqwest::Request, messages: &[messages::
     if let Ok(value) = HeaderValue::from_str(&with_beta_flag(
         existing,
         MID_CONVERSATION_OUTPUT_CONFIG_BETA,
+    )) {
+        request.headers_mut().insert("anthropic-beta", value);
+    }
+}
+
+/// Deferred tools, and the `tool_addition` blocks that offer them, need their beta flag, merged into the flags the
+/// request already carries (a subscription bearer's among them).
+fn add_tool_changes_beta(request: &mut reqwest::Request, inner: &messages::MessagesRequest) {
+    if !carries_tool_changes(inner) {
+        return;
+    }
+    let existing = request
+        .headers()
+        .get("anthropic-beta")
+        .and_then(|v| v.to_str().ok());
+    if let Ok(value) = HeaderValue::from_str(&with_beta_flag(
+        existing,
+        MID_CONVERSATION_TOOL_CHANGES_BETA,
     )) {
         request.headers_mut().insert("anthropic-beta", value);
     }
@@ -222,6 +243,108 @@ fn is_cache_ttl_rejection(error: &SamplingError) -> bool {
         }
         _ => false,
     }
+}
+
+/// Set once the API refused a system-role message in `messages`: the rest of the process sends
+/// the latest system prompt update as the top-level prompt instead.
+static SYSTEM_MESSAGES_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// A client error that names a system message or a refused message role, the API's answer to a
+/// system-role message a model or endpoint does not take (or one in a place it rejects). One that
+/// names the effort marker's `output_config` is the marker's, not an update's.
+fn is_system_message_rejection(error: &SamplingError) -> bool {
+    match error {
+        SamplingError::Api {
+            status, message, ..
+        } => {
+            let message = message.to_ascii_lowercase();
+            status.is_client_error()
+                && *status != reqwest::StatusCode::UNAUTHORIZED
+                && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                && !names_effort_marker(&message)
+                && (message.contains("system message")
+                    || message.contains("system-role")
+                    || (message.contains("role")
+                        && ["'system'", "\"system\"", "'user' or 'assistant'"]
+                            .iter()
+                            .any(|word| message.contains(word))))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a lowercased error text names the per-message effort marker or its beta flag.
+fn names_effort_marker(message: &str) -> bool {
+    message.contains("output_config") || message.contains(MID_CONVERSATION_OUTPUT_CONFIG_BETA)
+}
+
+/// Whether `request` carries a system prompt update as a system-role message (the effort marker
+/// is one too, but without content, and a tool addition one without a prompt).
+fn carries_system_messages(request: &messages::MessagesRequest) -> bool {
+    request.messages.iter().any(|message| {
+        matches!(message.role, messages::MessageRole::System)
+            && match &message.content {
+                messages::MessageContent::Text(text) => !text.is_empty(),
+                messages::MessageContent::Blocks(blocks) => blocks
+                    .iter()
+                    .any(|block| !matches!(block, messages::ContentBlock::ToolAddition { .. })),
+            }
+    })
+}
+
+/// Set once the API refused a deferred tool or a `tool_addition` block: the rest of the process
+/// sends the tools in effect in `tools`, as before.
+static DEFERRED_TOOLS_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// A client error that names a deferred tool, a tool change or a beta flag, the API's answer to
+/// mid-conversation tool changes a model, endpoint or account does not take. A beta complaint
+/// that names the effort marker's flag is the marker's.
+fn is_tool_change_rejection(error: &SamplingError) -> bool {
+    match error {
+        SamplingError::Api {
+            status, message, ..
+        } => {
+            let message = message.to_ascii_lowercase();
+            status.is_client_error()
+                && *status != reqwest::StatusCode::UNAUTHORIZED
+                && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                && !names_effort_marker(&message)
+                && [
+                    "defer_loading",
+                    "deferred",
+                    "tool_addition",
+                    "tool_reference",
+                    "beta",
+                ]
+                .iter()
+                .any(|word| message.contains(word))
+        }
+        _ => false,
+    }
+}
+
+/// After a request was accepted with `accepted`, every option `first` had on and a refusal turned
+/// off stays off for the rest of the process: the resend without it went through, so it was the
+/// cause. A resend that failed latches nothing, and the next request tries the option again.
+fn latch_messages_refusals(first: MessagesCacheOptions, accepted: MessagesCacheOptions) {
+    for (was_on, is_on, refused, option) in [
+        (first.extended_ttl, accepted.extended_ttl, &EXTENDED_CACHE_TTL_REFUSED, "the one-hour cache lifetime"),
+        (first.system_messages, accepted.system_messages, &SYSTEM_MESSAGES_REFUSED, "system-role messages"),
+        (first.deferred_tools, accepted.deferred_tools, &DEFERRED_TOOLS_REFUSED, "deferred tools"),
+    ] {
+        if was_on && !is_on && !refused.swap(true, Ordering::Relaxed) {
+            tracing::warn!(option, "messages API refused an option and took the request without it; it stays off for this process");
+        }
+    }
+}
+
+/// Whether `request` declares a deferred tool (every `tool_addition` block offers one).
+fn carries_tool_changes(request: &messages::MessagesRequest) -> bool {
+    request
+        .tools
+        .iter()
+        .flatten()
+        .any(|tool| tool.defer_loading == Some(true))
 }
 
 /// Anthropic's default cache lifetime, and what a breakpoint without `ttl` gets.
@@ -2210,6 +2333,7 @@ impl SamplingClient {
             .build_json_request(grok_headers.apply(builder), &request.inner)
             .await?;
         add_effort_marker_beta(&mut built_request, &request.inner.messages);
+        add_tool_changes_beta(&mut built_request, &request.inner);
         let response = self.send(built_request).await?;
 
         let status = response.status();
@@ -2342,6 +2466,7 @@ impl SamplingClient {
             .build_json_request(http_request, &request.inner)
             .await?;
         add_effort_marker_beta(&mut built_request, &request.inner.messages);
+        add_tool_changes_beta(&mut built_request, &request.inner);
 
         tracing::debug!(
             url = %built_request.url(),
@@ -2615,16 +2740,86 @@ impl SamplingClient {
         MessagesCacheOptions {
             anchor: direct,
             extended_ttl: direct && !EXTENDED_CACHE_TTL_REFUSED.load(Ordering::Relaxed),
+            system_messages: direct && !SYSTEM_MESSAGES_REFUSED.load(Ordering::Relaxed),
+            deferred_tools: direct && !DEFERRED_TOOLS_REFUSED.load(Ordering::Relaxed),
         }
     }
 
-    /// Whether `error` refused a request that carried the one-hour lifetime; if so the
-    /// lifetime is off for the rest of the process and the caller resends once without it.
+    /// The options to resend with after `error` refused something `cache` turned on: the one-hour
+    /// lifetime, deferred tools, or a system-role message. `None` when the error is not such a
+    /// refusal. Each answer turns one option off, so a request is resent at most three times; an
+    /// option stays off for the rest of the process only once a resend without it is accepted
+    /// ([`latch_messages_refusals`]), so a refusal of something else never turns it off.
+    fn messages_fallback(
+        &self,
+        cache: MessagesCacheOptions,
+        sent_ttl: bool,
+        sent_system_messages: bool,
+        sent_tool_changes: bool,
+        error: &SamplingError,
+    ) -> Option<MessagesCacheOptions> {
+        if self.cache_ttl_refused(sent_ttl, error) {
+            return Some(MessagesCacheOptions {
+                extended_ttl: false,
+                ..cache
+            });
+        }
+        if self.tool_changes_refused(sent_tool_changes, sent_system_messages, error) {
+            return Some(MessagesCacheOptions {
+                deferred_tools: false,
+                ..cache
+            });
+        }
+        if self.system_messages_refused(sent_system_messages, error) {
+            return Some(MessagesCacheOptions {
+                system_messages: false,
+                ..cache
+            });
+        }
+        None
+    }
+
+    /// Whether `error` refused a request that declared deferred tools: an error naming them or a
+    /// beta flag, or one naming a system message when the only ones sent were tool additions. If so
+    /// the caller resends with the tools in effect.
+    fn tool_changes_refused(
+        &self,
+        sent: bool,
+        sent_system_messages: bool,
+        error: &SamplingError,
+    ) -> bool {
+        if !sent
+            || !(is_tool_change_rejection(error)
+                || (!sent_system_messages && is_system_message_rejection(error)))
+        {
+            return false;
+        }
+        tracing::warn!(
+            error = %error,
+            "messages API refused deferred tools; resending with the tools in effect"
+        );
+        true
+    }
+
+    /// Whether `error` refused a request that carried a system prompt update as a system-role
+    /// message; if so the caller resends without them.
+    fn system_messages_refused(&self, sent: bool, error: &SamplingError) -> bool {
+        if !sent || !is_system_message_rejection(error) {
+            return false;
+        }
+        tracing::warn!(
+            error = %error,
+            "messages API refused a system-role message; resending the system prompt update as the top-level prompt"
+        );
+        true
+    }
+
+    /// Whether `error` refused a request that carried the one-hour lifetime; if so the caller
+    /// resends once without it.
     fn cache_ttl_refused(&self, sent_ttl: bool, error: &SamplingError) -> bool {
         if !sent_ttl || !is_cache_ttl_rejection(error) {
             return false;
         }
-        EXTENDED_CACHE_TTL_REFUSED.store(true, Ordering::Relaxed);
         tracing::warn!(
             error = %error,
             "messages API refused the one-hour cache lifetime; resending with the default"
@@ -2643,19 +2838,31 @@ impl SamplingClient {
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
-        let cache = self.messages_cache_options();
-        let sent_ttl = cache.extended_ttl && request.long_cache_ttl;
-        let first = messages_wrapper(&request, cache, trace.as_ref().map(|t| t.clone_box()));
-        match self.create_message_stream(first).await {
-            Err(error) if self.cache_ttl_refused(sent_ttl, &error) => {
-                let cache = MessagesCacheOptions {
-                    extended_ttl: false,
-                    ..cache
-                };
-                self.create_message_stream(messages_wrapper(&request, cache, trace))
-                    .await
+        let first = self.messages_cache_options();
+        let mut cache = first;
+        loop {
+            let sent_ttl = cache.extended_ttl && request.long_cache_ttl;
+            let wrapper = messages_wrapper(&request, cache, trace.as_ref().map(|t| t.clone_box()));
+            let sent_system_messages = carries_system_messages(&wrapper.inner);
+            let sent_tool_changes = carries_tool_changes(&wrapper.inner);
+            match self.create_message_stream(wrapper).await {
+                Err(error) => {
+                    match self.messages_fallback(
+                        cache,
+                        sent_ttl,
+                        sent_system_messages,
+                        sent_tool_changes,
+                        &error,
+                    ) {
+                        Some(fallback) => cache = fallback,
+                        None => return Err(error),
+                    }
+                }
+                accepted => {
+                    latch_messages_refusals(first, cache);
+                    return accepted;
+                }
             }
-            result => result,
         }
     }
 
@@ -2667,19 +2874,31 @@ impl SamplingClient {
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
-        let cache = self.messages_cache_options();
-        let sent_ttl = cache.extended_ttl && request.long_cache_ttl;
-        let first = messages_wrapper(&request, cache, trace.as_ref().map(|t| t.clone_box()));
-        match self.create_message(first).await {
-            Err(error) if self.cache_ttl_refused(sent_ttl, &error) => {
-                let cache = MessagesCacheOptions {
-                    extended_ttl: false,
-                    ..cache
-                };
-                self.create_message(messages_wrapper(&request, cache, trace))
-                    .await
+        let first = self.messages_cache_options();
+        let mut cache = first;
+        loop {
+            let sent_ttl = cache.extended_ttl && request.long_cache_ttl;
+            let wrapper = messages_wrapper(&request, cache, trace.as_ref().map(|t| t.clone_box()));
+            let sent_system_messages = carries_system_messages(&wrapper.inner);
+            let sent_tool_changes = carries_tool_changes(&wrapper.inner);
+            match self.create_message(wrapper).await {
+                Err(error) => {
+                    match self.messages_fallback(
+                        cache,
+                        sent_ttl,
+                        sent_system_messages,
+                        sent_tool_changes,
+                        &error,
+                    ) {
+                        Some(fallback) => cache = fallback,
+                        None => return Err(error),
+                    }
+                }
+                accepted => {
+                    latch_messages_refusals(first, cache);
+                    return accepted;
+                }
             }
-            result => result,
         }
     }
 
@@ -4926,10 +5145,14 @@ mod cache_ttl_tests {
         }
     }
 
+    /// Serializes the tests that flip a process-wide refusal and read the options it feeds.
+    static REFUSAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn a_refused_hour_is_resent_once_without_it_and_stays_off() {
         use reqwest::StatusCode;
 
+        let _serial = REFUSAL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let _reset = RefusalReset;
         let refusal = api_error(
             StatusCode::BAD_REQUEST,
@@ -4954,6 +5177,8 @@ mod cache_ttl_tests {
             MessagesCacheOptions {
                 anchor: true,
                 extended_ttl: true,
+                system_messages: true,
+                deferred_tools: true,
             }
         );
         assert!(
@@ -4963,12 +5188,260 @@ mod cache_ttl_tests {
         assert!(direct.messages_cache_options().extended_ttl);
 
         assert!(direct.cache_ttl_refused(true, &refusal));
+        let cache = direct.messages_cache_options();
+        let fallback = direct
+            .messages_fallback(cache, true, false, false, &refusal)
+            .expect("resent without the hour");
+        assert!(
+            direct.messages_cache_options().extended_ttl,
+            "a refusal alone latches nothing: the resend may fail the same way"
+        );
+        latch_messages_refusals(cache, fallback);
         assert_eq!(
             direct.messages_cache_options(),
             MessagesCacheOptions {
                 anchor: true,
                 extended_ttl: false,
+                system_messages: true,
+                deferred_tools: true,
             }
+        );
+    }
+
+    /// Clears the process-wide system-message refusal when a test that sets it ends.
+    struct SystemMessagesRefusalReset;
+
+    impl Drop for SystemMessagesRefusalReset {
+        fn drop(&mut self) {
+            SYSTEM_MESSAGES_REFUSED.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// A model or endpoint that refuses a system-role message must not fail the round: the
+    /// refusal is recognised from the error text, the request is resent with the update as the
+    /// top-level prompt (today's request, which the API takes), and the rest of the process sends
+    /// it that way. Other client errors, and a refusal of a request that carried no update, change
+    /// nothing, so the prompt cache stays where the API takes system messages.
+    #[test]
+    fn a_refused_system_message_is_resent_as_the_top_level_prompt_and_stays_off() {
+        use distill_sampling_types::ConversationItem;
+        use reqwest::StatusCode;
+
+        let _serial = REFUSAL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = SystemMessagesRefusalReset;
+        let refusal = api_error(
+            StatusCode::BAD_REQUEST,
+            "messages.4.role: Input should be 'user' or 'assistant'",
+        );
+        for (status, message) in [
+            (StatusCode::BAD_REQUEST, "max_tokens too large"),
+            (StatusCode::TOO_MANY_REQUESTS, "system"),
+            (StatusCode::UNAUTHORIZED, "role"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "system"),
+        ] {
+            assert!(
+                !is_system_message_rejection(&api_error(status, message)),
+                "{status} {message}"
+            );
+        }
+        assert!(is_system_message_rejection(&refusal));
+        assert!(is_system_message_rejection(&api_error(
+            StatusCode::BAD_REQUEST,
+            "System messages with content must follow a user message",
+        )));
+
+        let direct = client("https://api.anthropic.com/v1");
+        let cache = direct.messages_cache_options();
+        assert!(cache.system_messages);
+        assert_eq!(
+            direct.messages_fallback(cache, false, false, false, &refusal),
+            None,
+            "no update was sent"
+        );
+        assert!(direct.messages_cache_options().system_messages);
+
+        let fallback = direct
+            .messages_fallback(cache, false, true, false, &refusal)
+            .expect("resent without system messages");
+        assert!(!fallback.system_messages && fallback.anchor);
+        assert!(
+            direct.messages_cache_options().system_messages,
+            "only an accepted resend latches the refusal"
+        );
+        latch_messages_refusals(cache, fallback);
+        assert!(!direct.messages_cache_options().system_messages);
+
+        // The effort marker is a system-role message too: its own refusal is not an update's.
+        for marker in [
+            "messages.5.output_config: Extra inputs are not permitted",
+            "Unexpected value for anthropic-beta: mid-conversation-output-config-2026-07-01 (system)",
+        ] {
+            let error = api_error(StatusCode::BAD_REQUEST, marker);
+            assert!(!is_system_message_rejection(&error), "{marker}");
+            assert!(!is_tool_change_rejection(&error), "{marker}");
+        }
+        assert!(
+            !is_system_message_rejection(&api_error(
+                StatusCode::BAD_REQUEST,
+                "system: text content blocks must be non-empty"
+            )),
+            "a complaint about the top-level system prompt is not about a system-role message"
+        );
+
+        // The resend carries the update as the top-level prompt, so it cannot be refused again.
+        let request = ConversationRequest {
+            items: vec![
+                ConversationItem::system("v1"),
+                ConversationItem::user("Fix the bug"),
+                ConversationItem::assistant("Fixed."),
+                ConversationItem::system_prompt_update("v2"),
+                ConversationItem::user("Now add a test"),
+            ],
+            model: Some("claude-opus-5-5".to_owned()),
+            ..Default::default()
+        };
+        assert!(carries_system_messages(&build_messages_request_with(
+            &request, cache
+        )));
+        assert!(!carries_system_messages(&build_messages_request_with(
+            &request, fallback
+        )));
+    }
+
+    /// Clears the process-wide deferred-tools refusal when a test that sets it ends.
+    struct DeferredToolsRefusalReset;
+
+    impl Drop for DeferredToolsRefusalReset {
+        fn drop(&mut self) {
+            DEFERRED_TOOLS_REFUSED.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// A model, endpoint or account that refuses mid-conversation tool changes must not fail the
+    /// round: the refusal is recognised, the request is resent with the tools in effect in `tools`
+    /// (the request before deferred tools, which the API takes) and the rest of the process sends
+    /// that. A complaint about a system message when the only ones sent were tool additions is
+    /// theirs too, and must not turn off the system prompt updates, which keep their own cache win.
+    #[test]
+    fn refused_tool_changes_are_resent_with_the_tools_in_effect_and_stay_off() {
+        use distill_sampling_types::{ConversationItem, ToolSpec};
+        use reqwest::StatusCode;
+
+        let _serial = REFUSAL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _reset = DeferredToolsRefusalReset;
+        let _system_reset = SystemMessagesRefusalReset;
+        for (status, message) in [
+            (StatusCode::BAD_REQUEST, "max_tokens too large"),
+            (StatusCode::TOO_MANY_REQUESTS, "beta"),
+            (StatusCode::UNAUTHORIZED, "defer_loading"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "tool_addition"),
+        ] {
+            assert!(
+                !is_tool_change_rejection(&api_error(status, message)),
+                "{status} {message}"
+            );
+        }
+        let refusal = api_error(
+            StatusCode::BAD_REQUEST,
+            "tools.1.defer_loading: Extra inputs are not permitted",
+        );
+        assert!(is_tool_change_rejection(&refusal));
+
+        let tool = |name: &str| ToolSpec {
+            name: name.to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        };
+        let request = ConversationRequest {
+            items: vec![
+                ConversationItem::system("v1"),
+                ConversationItem::user("Draw an icon for the app"),
+                ConversationItem::tool_addition(["generate_image"]),
+            ],
+            tools: vec![tool("generate_image"), tool("read_file")],
+            deferred_tools: vec![tool("schedule_task")],
+            model: Some("claude-opus-5-5".to_owned()),
+            ..Default::default()
+        };
+        let direct = client("https://api.anthropic.com/v1");
+        let cache = direct.messages_cache_options();
+        assert!(cache.deferred_tools);
+        let sent = build_messages_request_with(&request, cache);
+        assert!(carries_tool_changes(&sent));
+        assert!(
+            !carries_system_messages(&sent),
+            "a tool addition is not a system prompt update"
+        );
+        assert_eq!(
+            direct.messages_fallback(cache, false, false, false, &refusal),
+            None,
+            "no deferred tool was sent"
+        );
+        assert!(direct.messages_cache_options().deferred_tools);
+
+        let placement = api_error(
+            StatusCode::BAD_REQUEST,
+            "System messages with content must follow a user message",
+        );
+        let fallback = direct
+            .messages_fallback(cache, false, false, true, &placement)
+            .expect("resent with the tools in effect");
+        assert!(!fallback.deferred_tools && fallback.system_messages);
+        assert!(direct.messages_cache_options().deferred_tools);
+        latch_messages_refusals(cache, fallback);
+        assert!(!direct.messages_cache_options().deferred_tools);
+        assert!(
+            direct.messages_cache_options().system_messages,
+            "system prompt updates stay on"
+        );
+
+        let resent = build_messages_request_with(&request, fallback);
+        assert!(!carries_tool_changes(&resent));
+        let names: Vec<&str> = resent
+            .tools
+            .iter()
+            .flatten()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["generate_image", "read_file"],
+            "the tools in effect"
+        );
+        assert!(
+            resent
+                .messages
+                .iter()
+                .all(|m| !matches!(m.role, messages::MessageRole::System)),
+            "no tool addition without its deferred tool"
+        );
+    }
+
+    /// The API rejects a deferred tool without its beta flag, and dropping the subscription flags
+    /// it already carries would fail auth.
+    #[test]
+    fn deferred_tools_add_their_beta_flag_beside_the_oauth_flags() {
+        let mut request = reqwest::Client::new()
+            .post("https://api.anthropic.com/v1/messages")
+            .header("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+            .build()
+            .unwrap();
+        let mut inner = messages::MessagesRequest::default();
+        add_tool_changes_beta(&mut request, &inner);
+        assert_eq!(
+            request.headers()["anthropic-beta"],
+            "claude-code-20250219,oauth-2025-04-20"
+        );
+        inner.tools = Some(vec![messages::ToolParam {
+            name: "generate_image".to_owned(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            defer_loading: Some(true),
+        }]);
+        add_tool_changes_beta(&mut request, &inner);
+        assert_eq!(
+            request.headers()["anthropic-beta"],
+            format!("claude-code-20250219,oauth-2025-04-20,{MID_CONVERSATION_TOOL_CHANGES_BETA}")
         );
     }
 

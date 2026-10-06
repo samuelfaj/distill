@@ -1635,6 +1635,29 @@ fn verbatim_fork_falls_back_to_summary_on_incomplete_tail() {
             "summarized fallback must produce a background_context blob"
         );
 }
+/// A mode switch or /memory toggle between turns appends a system prompt update after the finished reply.
+/// The fork must still mirror verbatim (keeping the update), or the child loses the parent's cached prefix.
+#[test]
+fn verbatim_fork_survives_a_trailing_system_prompt_update() {
+    use distill_sampling_types::conversation::ConversationItem;
+    let items = vec![
+        ConversationItem::system("parent system v1"),
+        ConversationItem::user("q1 UNIQUE_FORK_MARKER_TEST"),
+        ConversationItem::assistant("a1"),
+        ConversationItem::system_prompt_update("parent system v2"),
+        ConversationItem::tool_addition(["mcp__extra__tool"]),
+    ];
+    let ctx = verbatim_or_normalize_fork(items, 256_000);
+    assert!(
+        ctx.verbatim_fork,
+        "a trailing update after a finished reply is still a turn boundary"
+    );
+    assert_eq!(ctx.conversation.len(), 5);
+    assert!(
+        ctx.conversation[3].is_system_prompt_update() && ctx.conversation[4].is_tool_addition(),
+        "the mirror keeps the update and the tool addition in place"
+    );
+}
 #[test]
 fn summarized_fork_is_not_a_verbatim_mirror() {
     use distill_sampling_types::conversation::ConversationItem;

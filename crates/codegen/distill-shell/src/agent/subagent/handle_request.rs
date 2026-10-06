@@ -1161,6 +1161,11 @@ pub(crate) async fn run_shell_child(
     context_bootstrap_span.close();
     let verbatim_mirror_fork =
         context_source == InitialContextSource::Forked && context_verbatim_fork;
+    // The mirror's first request goes out under the parent's cache key: it must trim what the parent's did.
+    let inherited_request_trims = match ctx.parent_chat_state.as_ref() {
+        Some(parent) if verbatim_mirror_fork => Some(parent.request_trims().await),
+        _ => None,
+    };
     let task_prompt_text = prompt.clone();
     let (mut forked_conversation, mut inherited_prefix_len) =
         (forked_conversation, inherited_prefix_len.unwrap_or(0));
@@ -1759,6 +1764,7 @@ pub(crate) async fn run_shell_child(
             parent_prompt_id: request.parent_prompt_id.clone(),
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
+            inherited_request_trims,
             explicit_model_override: model_routing_locked,
             cheap_agent,
             report_budget: context_source == InitialContextSource::New

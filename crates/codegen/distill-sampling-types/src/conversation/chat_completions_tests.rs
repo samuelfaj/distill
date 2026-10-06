@@ -345,7 +345,7 @@ fn test_user_with_multiple_images() {
     let [b0, b1, b2, b3] = blocks.as_slice() else {
         panic!("expected four blocks: {blocks:?}");
     };
-    assert_matches!(b0, ChatContentBlock::Text { text } if text == "Compare these images:");
+    assert_matches!(b0, ChatContentBlock::Text { text, .. } if text == "Compare these images:");
     assert_matches!(b1, ChatContentBlock::ImageUrl { .. });
     assert_matches!(b2, ChatContentBlock::ImageUrl { .. });
     assert_matches!(b3, ChatContentBlock::ImageUrl { .. });
@@ -571,7 +571,9 @@ fn test_tool_result_with_images_to_chat_completions() {
     let [b0, b1] = blocks.as_slice() else {
         panic!("expected two blocks: {blocks:?}");
     };
-    assert!(matches!(b0, ChatContentBlock::Text { text } if text == "Read image file: photo.png"));
+    assert!(
+        matches!(b0, ChatContentBlock::Text { text, .. } if text == "Read image file: photo.png")
+    );
     assert!(
         matches!(b1, ChatContentBlock::ImageUrl { image_url } if image_url.url == "data:image/png;base64,iVBOR")
     );

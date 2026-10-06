@@ -89,7 +89,7 @@ pub struct TextBlock {
     pub cache_control: Option<CacheControl>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub r#type: String, // "ephemeral"

@@ -31,6 +31,8 @@ impl ChatStateActor {
         conv_id: String,
         req_id: String,
     ) -> ConversationRequest {
+        // Read before the eviction pass consumes the cold mark.
+        let cold = self.history_is_cold();
         let mut memory_reminder = memory_reminder;
         if let Some(reminder) = memory_reminder.as_deref()
             && persist_memory_reminder
@@ -70,7 +72,7 @@ impl ChatStateActor {
                 body_bytes_after,
             });
         }
-        items = self.prune_items_for_turn_request(items);
+        items = self.prune_items_for_turn_request(items, cold);
         if let Some(reminder) = memory_reminder {
             inject_memory_reminder(&mut items, &reminder);
         }
@@ -112,11 +114,21 @@ impl ChatStateActor {
         }
     }
 
+    /// Soft-trims old results in a request copy. Trims already sent repeat on every request; new ones
+    /// happen only when `cold` (see [`Self::history_is_cold`]): trimming a result a few rounds back on
+    /// a warm cache re-bills everything after it, which costs more than the bytes it removes.
     pub(super) fn prune_items_for_turn_request(
         &mut self,
         mut items: Vec<ConversationItem>,
+        cold: bool,
     ) -> Vec<ConversationItem> {
-        prune_conversation(&mut *self.persistence, &mut items, &self.pruning_config);
+        prune_conversation(
+            &mut *self.persistence,
+            &mut items,
+            &self.pruning_config,
+            &mut self.eviction.request_trims,
+            cold,
+        );
         items
     }
 }
@@ -136,11 +148,15 @@ pub(crate) fn should_prune(eligible_old_output_bytes: usize, config: &PruningCon
 ///
 /// The canonical conversation is never changed. Ambiguous IDs fail open, and
 /// the persistence seam owns producer and safety eligibility before any lossy
-/// projection is applied.
+/// projection is applied. `trims` holds the projections earlier requests sent;
+/// they are repeated so the prefix stays as cached, and new ones are made only
+/// when `allow_new` (a cold moment) and remembered there.
 pub(crate) fn prune_conversation(
     persistence: &mut dyn ChatPersistence,
     conversation: &mut [ConversationItem],
     config: &PruningConfig,
+    trims: &mut BTreeMap<String, (usize, std::sync::Arc<str>)>,
+    allow_new: bool,
 ) {
     if !config.enabled {
         return;
@@ -149,6 +165,18 @@ pub(crate) fn prune_conversation(
     let Some(result_indices) = unique_result_indices(conversation) else {
         return;
     };
+
+    for (call_id, &result_index) in &result_indices {
+        if let Some((original_len, projection)) = trims.get(call_id)
+            && let ConversationItem::ToolResult(result) = &mut conversation[result_index]
+            && result.content.len() == *original_len
+        {
+            result.content = projection.clone();
+        }
+    }
+    if !allow_new {
+        return;
+    }
 
     let mut seen_call_ids = BTreeSet::new();
     let mut completed_groups_seen = 0usize;
@@ -186,6 +214,9 @@ pub(crate) fn prune_conversation(
 
         for call in &assistant.tool_calls {
             let call_id = call.id.to_string();
+            if trims.contains_key(&call_id) {
+                continue;
+            }
             let Some(&result_index) = result_indices.get(&call_id) else {
                 continue;
             };
@@ -196,6 +227,7 @@ pub(crate) fn prune_conversation(
                 eligible_old_output_bytes += result.content.len();
                 candidates.push((
                     result_index,
+                    call_id,
                     call.name.clone(),
                     call.arguments.to_string(),
                 ));
@@ -208,7 +240,7 @@ pub(crate) fn prune_conversation(
     }
 
     let mut projections = Vec::new();
-    for (result_index, tool_name, tool_arguments) in candidates {
+    for (result_index, call_id, tool_name, tool_arguments) in candidates {
         let ConversationItem::ToolResult(result) = &conversation[result_index] else {
             continue;
         };
@@ -233,30 +265,32 @@ pub(crate) fn prune_conversation(
             "{prefix}{head}{SOFT_TRIM_SEPARATOR}{tail}{suffix}\n[full output stored at {path} — read that file for complete output]"
         );
         if projected.len() < original.len() {
-            projections.push((result_index, projected));
+            projections.push((result_index, call_id, projected));
         }
     }
 
     if !projections.is_empty() {
         let original_bytes: usize = projections
             .iter()
-            .map(|(index, _)| match &conversation[*index] {
+            .map(|(index, _, _)| match &conversation[*index] {
                 ConversationItem::ToolResult(result) => result.content.len(),
                 _ => 0,
             })
             .sum();
-        let projected_bytes: usize = projections.iter().map(|(_, text)| text.len()).sum();
+        let projected_bytes: usize = projections.iter().map(|(_, _, text)| text.len()).sum();
         tracing::debug!(
             results = projections.len(),
             original_bytes,
             projected_bytes,
-            first_changed_item = projections.iter().map(|(index, _)| *index).min().unwrap_or(0),
-            "old tool results shortened in this request; cached prefix may change"
+            first_changed_item = projections.iter().map(|(index, _, _)| *index).min().unwrap_or(0),
+            "old tool results shortened in this request at a cold moment"
         );
     }
-    for (result_index, projection) in projections {
+    for (result_index, call_id, projection) in projections {
         if let ConversationItem::ToolResult(result) = &mut conversation[result_index] {
-            result.content = std::sync::Arc::<str>::from(projection);
+            let projection = std::sync::Arc::<str>::from(projection);
+            trims.insert(call_id, (result.content.len(), projection.clone()));
+            result.content = projection;
         }
     }
 }
@@ -372,7 +406,7 @@ mod tests {
             ..Default::default()
         };
         let mut persistence = crate::persistence::NullChatPersistence;
-        prune_conversation(&mut persistence, &mut conv, &config);
+        prune_conversation(&mut persistence, &mut conv, &config, &mut BTreeMap::new(), true);
         let [ConversationItem::ToolResult(tr)] = conv.as_slice() else {
             panic!("expected one tool result: {conv:?}")
         };

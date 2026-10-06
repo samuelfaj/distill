@@ -49,6 +49,25 @@ where
     Option::<T>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
 }
 
+/// Breakpoints on the newest user or tool messages; with the system prompt's, within Anthropic's limit of four.
+const OPENROUTER_TRAILING_BREAKPOINTS: usize = 2;
+
+/// Which messages of a Chat Completions request may carry an explicit cache breakpoint
+/// ([`ChatCompletionRequest::apply_openrouter_cache_routing`]). A breakpoint pays a write premium,
+/// so it goes only where a later request reads it back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CacheBreakpoints {
+    /// A conversation resent with more appended: the system prompt and the newest messages.
+    #[default]
+    Conversation,
+    /// A one-shot whose system prompt repeats on the next call of the same purpose
+    /// ([`crate::ConversationRequest::shared_prefix`]); `leading_message` when the message after
+    /// it (a goal, an instructions block) repeats too.
+    SharedPrefix { leading_message: bool },
+    /// A one-shot nobody reads again ([`crate::ConversationRequest::one_shot`]).
+    None,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +106,20 @@ pub struct ChatCompletionRequest {
     /// recognized off switch and leaves the model thinking.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<serde_json::Value>,
+    /// OpenRouter's top sticky-routing key: it outranks `x-session-id` and pins the
+    /// provider from the first request. Set only by [`Self::apply_openrouter_cache_routing`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// OpenRouter's lowest-precedence routing key. Set only by [`Self::apply_openrouter_cache_routing`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+    /// The request's routing key ([`crate::ConversationRequest::prompt_cache_key`]), carried but never
+    /// serialized: only the sampler knows whether the endpoint reads one, and in which field.
+    #[serde(skip)]
+    pub cache_routing_key: Option<String>,
+    /// Where explicit breakpoints may go; never serialized.
+    #[serde(skip)]
+    pub cache_breakpoints: CacheBreakpoints,
 
     /// custom headers
     #[serde(skip)]
@@ -133,6 +166,10 @@ impl ChatCompletionRequest {
             reasoning_effort: None,
             reasoning: None,
             thinking: None,
+            session_id: None,
+            prompt_cache_key: None,
+            cache_routing_key: None,
+            cache_breakpoints: CacheBreakpoints::Conversation,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -163,6 +200,10 @@ impl ChatCompletionRequest {
             reasoning_effort: None,
             reasoning: None,
             thinking: None,
+            session_id: None,
+            prompt_cache_key: None,
+            cache_routing_key: None,
+            cache_breakpoints: CacheBreakpoints::Conversation,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -237,6 +278,55 @@ impl ChatCompletionRequest {
         self.thinking = Some(serde_json::json!({ "type": thinking_type }));
     }
 
+    /// OpenRouter routing and caching, for a request about to go to OpenRouter.
+    ///
+    /// The routing key goes in the body as `prompt_cache_key` and, unless the user pinned
+    /// their own `x-session-id` (`body_session_id` false), as `session_id`, which outranks
+    /// both and keeps routing sticky from the first request. Upstreams that cache only at
+    /// explicit breakpoints (Anthropic, Gemini) get them on the system prompt and the last
+    /// two user or tool messages (three of Anthropic's four): the newest prefix is written,
+    /// and the one before is where the previous request ended when its round appended a
+    /// single message. A round that appended several (parallel tool results) left the previous
+    /// breakpoint further back, read only if it lies within Anthropic's 20-block lookback.
+    /// A one-shot marks only what the next call of its purpose repeats ([`CacheBreakpoints`]).
+    pub fn apply_openrouter_cache_routing(&mut self, body_session_id: bool) {
+        if let Some(key) = self.cache_routing_key.clone().filter(|key| !key.is_empty()) {
+            if body_session_id {
+                self.session_id = Some(key.clone());
+            }
+            self.prompt_cache_key = Some(key);
+        }
+        let needs_breakpoints = self.model.as_deref().is_some_and(|model| {
+            let model = model.to_ascii_lowercase();
+            model.starts_with("anthropic/") || model.starts_with("google/gemini")
+        });
+        if !needs_breakpoints || self.cache_breakpoints == CacheBreakpoints::None {
+            return;
+        }
+        if let Some(system) = self.messages.iter_mut().find(|m| m.role == Role::System) {
+            system.mark_cache_breakpoint();
+        }
+        if let CacheBreakpoints::SharedPrefix { leading_message } = self.cache_breakpoints {
+            let leading = self.messages.iter().position(|m| m.role != Role::System);
+            if leading_message
+                && let Some(at) = leading.filter(|&at| at + 1 < self.messages.len())
+                && let Some(message) = self.messages.get_mut(at)
+            {
+                message.mark_cache_breakpoint();
+            }
+            return;
+        }
+        let mut marked = 0;
+        for message in self.messages.iter_mut().rev() {
+            if marked == OPENROUTER_TRAILING_BREAKPOINTS {
+                break;
+            }
+            if matches!(message.role, Role::User | Role::Tool) && message.mark_cache_breakpoint() {
+                marked += 1;
+            }
+        }
+    }
+
     pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.tools = Some(tools);
         self
@@ -272,7 +362,12 @@ pub struct ImageUrl {
 #[serde(tag = "type")]
 pub enum ChatContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        /// An explicit cache breakpoint; see [`ChatCompletionRequest::apply_openrouter_cache_routing`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<crate::messages::CacheControl>,
+    },
     #[serde(rename = "image_url")]
     ImageUrl { image_url: ImageUrl },
 }
@@ -295,7 +390,10 @@ impl MessageContent {
     pub fn blocks(&self) -> Vec<ChatContentBlock> {
         match self {
             MessageContent::Blocks(blocks) => blocks.clone(),
-            MessageContent::Text(text) => vec![ChatContentBlock::Text { text: text.clone() }],
+            MessageContent::Text(text) => vec![ChatContentBlock::Text {
+                text: text.clone(),
+                cache_control: None,
+            }],
         }
     }
 }
@@ -397,7 +495,7 @@ impl ChatRequestMessage {
             .blocks()
             .iter()
             .filter_map(|block| match block {
-                ChatContentBlock::Text { text } => Some(text.clone()),
+                ChatContentBlock::Text { text, .. } => Some(text.clone()),
                 ChatContentBlock::ImageUrl { .. } => None,
             })
             .collect::<Vec<_>>()
@@ -419,12 +517,46 @@ impl ChatRequestMessage {
             MessageContent::Text(prev) => MessageContent::Text(format!("{}{}", prev, text.into())),
             MessageContent::Blocks(blocks) => {
                 let mut blocks = blocks.clone();
-                blocks.push(ChatContentBlock::Text { text: text.into() });
+                blocks.push(ChatContentBlock::Text {
+                    text: text.into(),
+                    cache_control: None,
+                });
                 MessageContent::Blocks(blocks)
             }
         };
 
         self.content = new_content;
+    }
+
+    /// Marks the last non-empty text part as a cache breakpoint; false when there is none
+    /// (Anthropic rejects a breakpoint on empty text).
+    fn mark_cache_breakpoint(&mut self) -> bool {
+        if let MessageContent::Text(text) = &mut self.content {
+            if text.is_empty() {
+                return false;
+            }
+            self.content = MessageContent::Blocks(vec![ChatContentBlock::Text {
+                text: std::mem::take(text),
+                cache_control: None,
+            }]);
+        }
+        let MessageContent::Blocks(blocks) = &mut self.content else {
+            return false;
+        };
+        let last_text = blocks.iter_mut().rev().find_map(|block| match block {
+            ChatContentBlock::Text {
+                text,
+                cache_control,
+            } if !text.is_empty() => Some(cache_control),
+            _ => None,
+        });
+        match last_text {
+            Some(cache_control) => {
+                *cache_control = Some(crate::messages::CacheControl::ephemeral());
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -1301,7 +1433,8 @@ impl ApiBackend {
         matches!(self, Self::ChatCompletions | Self::Responses)
     }
 
-    /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire. Only the Responses mapping sends it, so a key set elsewhere is inert.
+    /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire. Only the Responses mapping sends it, so a key set elsewhere is inert,
+    /// except that the sampler writes the Chat Completions key for OpenRouter, which this backend-only answer cannot see.
     ///
     /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
     pub fn forwards_prompt_cache_key(&self) -> bool {
@@ -1531,6 +1664,9 @@ pub struct MessagesRequestWrapper {
     pub x_grok_agent_id: Option<String>,
     pub x_grok_deployment_id: Option<String>,
     pub x_grok_user_id: Option<String>,
+    /// The request's routing key ([`crate::ConversationRequest::prompt_cache_key`]); the Messages body has no
+    /// field for it, so it reaches only OpenRouter's `x-session-id` header.
+    pub prompt_cache_key: Option<String>,
 
     /// Optional tracing context (e.g., where to persist the finalized request payload).
     pub trace: Option<Box<dyn TraceContext>>,
@@ -1550,6 +1686,7 @@ impl MessagesRequestWrapper {
             x_grok_agent_id: None,
             x_grok_deployment_id: None,
             x_grok_user_id: None,
+            prompt_cache_key: None,
             trace: None,
             traceparent: None,
         }
@@ -1884,6 +2021,7 @@ mod tests {
     fn test_chat_text_content_serialization() {
         let test = vec![ChatContentBlock::Text {
             text: "Hello World!".to_string(),
+            cache_control: None,
         }];
 
         let json = serde_json::to_string(&test).unwrap();
@@ -1900,6 +2038,7 @@ mod tests {
             },
             ChatContentBlock::Text {
                 text: "Hello".to_string(),
+                cache_control: None,
             },
         ];
 
@@ -1923,7 +2062,7 @@ mod tests {
             let blocks = msg.content.blocks();
             assert_eq!(blocks.len(), 1);
             match blocks.first() {
-                Some(ChatContentBlock::Text { text }) => assert_eq!(text, expected_content),
+                Some(ChatContentBlock::Text { text, .. }) => assert_eq!(text, expected_content),
                 other => panic!("Expected empty Text block, got {other:?}"),
             }
         }
@@ -1982,6 +2121,135 @@ mod tests {
         request.reasoning_effort = effort;
         request.max_tokens = max_tokens;
         request
+    }
+
+    fn openrouter_request(model: &str) -> ChatCompletionRequest {
+        let mut request = ChatCompletionRequest::new(
+            model,
+            vec![
+                ChatRequestMessage::system("system prompt"),
+                ChatRequestMessage::user("first"),
+                ChatRequestMessage::assistant("answer", model, None),
+                ChatRequestMessage::user("second"),
+                ChatRequestMessage::assistant_tool_call(ToolCallRequest::function("read", "{}")),
+                ChatRequestMessage::tool("call-1", "result"),
+                ChatRequestMessage::tool("call-2", ""),
+            ],
+        );
+        request.cache_routing_key = Some("parent-session".to_owned());
+        request
+    }
+
+    fn breakpoint_texts(request: &ChatCompletionRequest) -> Vec<String> {
+        let body = serde_json::to_value(request).expect("request serializes");
+        body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .flat_map(|message| message["content"].as_array().cloned().unwrap_or_default())
+            .filter(|part| part.get("cache_control") == Some(&json!({ "type": "ephemeral" })))
+            .map(|part| part["text"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// OpenRouter routes on the body `session_id` first, so the routing key (the parent's id for a
+    /// verbatim fork) must be there; otherwise a fork lands on a provider that never saw the prefix.
+    /// A user-pinned `x-session-id` header must keep winning, so the body leaves it out then.
+    #[test]
+    fn openrouter_routes_on_the_requests_cache_key() {
+        let mut request = openrouter_request("moonshotai/kimi-k3");
+        request.apply_openrouter_cache_routing(true);
+        let body = serde_json::to_value(&request).expect("request serializes");
+        assert_eq!(body["session_id"], "parent-session");
+        assert_eq!(body["prompt_cache_key"], "parent-session");
+        assert!(
+            body.get("cache_routing_key").is_none(),
+            "the carrier field never reaches the wire"
+        );
+
+        let mut pinned = openrouter_request("moonshotai/kimi-k3");
+        pinned.apply_openrouter_cache_routing(false);
+        let body = serde_json::to_value(&pinned).expect("request serializes");
+        assert!(body.get("session_id").is_none());
+        assert_eq!(body["prompt_cache_key"], "parent-session");
+
+        let untouched = serde_json::to_value(openrouter_request("moonshotai/kimi-k3"))
+            .expect("request serializes");
+        assert!(untouched.get("session_id").is_none());
+        assert!(untouched.get("prompt_cache_key").is_none());
+    }
+
+    /// Anthropic and Gemini behind OpenRouter cache nothing without explicit breakpoints. The system
+    /// prompt and the two newest user/tool messages carry one (three of Anthropic's four); an empty
+    /// text part cannot, so the walk skips it. Other models keep plain string content.
+    #[test]
+    fn openrouter_marks_breakpoints_only_for_models_that_need_them() {
+        for model in ["anthropic/claude-sonnet-5", "google/gemini-3-pro"] {
+            let mut request = openrouter_request(model);
+            request.apply_openrouter_cache_routing(true);
+            assert_eq!(
+                breakpoint_texts(&request),
+                ["system prompt", "second", "result"],
+                "{model}"
+            );
+            assert_eq!(request.messages[1].text_content(), "first");
+            assert!(matches!(request.messages[1].content, MessageContent::Text(_)));
+        }
+
+        let mut request = openrouter_request("openai/gpt-5.5");
+        request.apply_openrouter_cache_routing(true);
+        assert!(breakpoint_texts(&request).is_empty());
+        assert!(request
+            .messages
+            .iter()
+            .all(|message| matches!(message.content, MessageContent::Text(_))));
+    }
+
+    /// A breakpoint pays the cache-write premium and is worth it only where a later request reads
+    /// it. A one-shot (memory capture, title, flush) is never resent, so it marks nothing; a
+    /// shared-prefix one-shot (the goal evaluator) repeats its system prompt and goal on the next
+    /// round but never its round message, so only those two are marked; a classifier whose leading
+    /// message is its new payload marks only the system prompt.
+    #[test]
+    fn openrouter_one_shots_mark_only_what_the_next_call_reads() {
+        use crate::{ConversationItem, ConversationRequest};
+
+        let mapped = |items: Vec<ConversationItem>, one_shot: bool, shared_prefix: bool| {
+            let mut request = ConversationRequest::from_items(items).with_model("anthropic/claude-sonnet-5");
+            request.one_shot = one_shot;
+            request.shared_prefix = shared_prefix;
+            let mut chat = ChatCompletionRequest::from(request);
+            chat.apply_openrouter_cache_routing(true);
+            breakpoint_texts(&chat)
+        };
+        let capture = vec![
+            ConversationItem::system("Extract durable observations."),
+            ConversationItem::user("transcript"),
+            ConversationItem::assistant("working"),
+            ConversationItem::user("follow up"),
+        ];
+        assert!(mapped(capture.clone(), true, false).is_empty());
+        assert_eq!(
+            mapped(capture, false, false),
+            ["Extract durable observations.", "transcript", "follow up"],
+            "a resent conversation keeps its breakpoints"
+        );
+
+        let evaluator = vec![
+            ConversationItem::system("You are the evaluator."),
+            ConversationItem::project_instructions("the goal"),
+            ConversationItem::user("this round"),
+        ];
+        assert_eq!(
+            mapped(evaluator, true, true),
+            ["You are the evaluator.", "the goal"]
+        );
+
+        let classifier = vec![
+            ConversationItem::system("Classify the transcript."),
+            ConversationItem::user("transcript window"),
+        ];
+        assert_eq!(mapped(classifier, true, true), ["Classify the transcript."]);
     }
 
     /// DeepSeek Chat Completions turns thinking off with `thinking.type`, not

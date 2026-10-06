@@ -2316,11 +2316,13 @@ mod tests {
                         == Some("cache-key-1")
                 }
                 crate::ApiBackend::ChatCompletions => {
+                    // The mapping carries the key for the sampler, which writes it only for OpenRouter
+                    // (the one Chat Completions endpoint here that routes on it); the mapped body never has it.
                     let mapped = ChatCompletionRequest::from(request());
-                    serde_json::to_value(&mapped)
-                        .expect("chat request serializes")
-                        .get("prompt_cache_key")
-                        .is_some()
+                    assert_eq!(mapped.cache_routing_key.as_deref(), Some("cache-key-1"));
+                    let body = serde_json::to_value(&mapped).expect("chat request serializes");
+                    assert!(body.get("session_id").is_none());
+                    body.get("prompt_cache_key").is_some()
                 }
                 crate::ApiBackend::Messages => {
                     let mapped = super::messages::build_messages_request(&request());

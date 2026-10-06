@@ -464,6 +464,116 @@ fn compaction_output_cap(config: &SamplingConfig, input_tokens: u64) -> Option<u
 }
 
 #[cfg(test)]
+mod chat_request_tests {
+    use super::*;
+    use distill_sampling_types::ConversationItem;
+
+    fn openrouter_route() -> SamplingConfig {
+        SamplingConfig {
+            base_url: "https://openrouter.ai/api/v1".into(),
+            model: "anthropic/claude-sonnet-5".into(),
+            api_backend: ApiBackend::ChatCompletions,
+            context_window: 200_000,
+            ..Default::default()
+        }
+    }
+
+    fn history() -> Vec<ConversationItem> {
+        vec![
+            ConversationItem::system("main system prompt"),
+            ConversationItem::user("task"),
+            ConversationItem::assistant("done"),
+            ConversationItem::user("summarize"),
+        ]
+    }
+
+    fn sent_body(mut request: ChatCompletionRequest) -> serde_json::Value {
+        // What the sampler does to every Chat Completions request bound for OpenRouter.
+        request.apply_openrouter_cache_routing(true);
+        serde_json::to_value(&request).expect("request serializes")
+    }
+
+    fn marked_texts(body: &serde_json::Value) -> Vec<String> {
+        body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+            .filter(|part| part.get("cache_control").is_some())
+            .map(|part| part["text"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// A verbatim fork's compaction replays its parent's prefix, cached on the provider OpenRouter
+    /// pinned for the parent's key. Routed on the child's own id it lands elsewhere and re-reads
+    /// that whole prefix uncached, as the Responses and Messages branches already avoid.
+    #[test]
+    fn an_openrouter_compaction_routes_on_the_main_key() {
+        let request = compaction_chat_request(
+            history(),
+            vec![],
+            ToolChoice::auto(),
+            None,
+            &openrouter_route(),
+            &acp::SessionId::new("child-session"),
+            "parent-session".to_owned(),
+            false,
+        );
+        assert_eq!(request.x_grok_session_id.as_deref(), Some("child-session"));
+        let body = sent_body(request);
+        assert_eq!(body["session_id"], "parent-session");
+        assert_eq!(body["prompt_cache_key"], "parent-session");
+    }
+
+    /// Pass 2 is never resent, but it opens with the main system prompt and tools, which main
+    /// requests keep cached: its system breakpoint reads them. Nothing after it is marked.
+    #[test]
+    fn a_one_shot_compaction_marks_only_the_system_prompt() {
+        let request = compaction_chat_request(
+            history(),
+            vec![],
+            ToolChoice::auto(),
+            None,
+            &openrouter_route(),
+            &acp::SessionId::new("s1"),
+            "s1:compact-pass2".to_owned(),
+            true,
+        );
+        assert_eq!(marked_texts(&sent_body(request)), ["main system prompt"]);
+    }
+
+    /// The same on Messages: pass 2 (system, NOTE₁, tail, prompt) used to mark nothing, so it
+    /// re-read the main system prompt and tools uncached; its system breakpoint reads them.
+    #[test]
+    fn a_one_shot_messages_compaction_reads_the_cached_system_prompt() {
+        let pass2 = vec![
+            ConversationItem::system("main system prompt"),
+            ConversationItem::user_meta("NOTE1"),
+            ConversationItem::assistant("tail"),
+            ConversationItem::user("summarize"),
+        ];
+        let request = compaction_conversation_request(
+            pass2,
+            None,
+            vec![],
+            vec![],
+            None,
+            &SamplingConfig {
+                api_backend: ApiBackend::Messages,
+                ..openrouter_route()
+            },
+            &acp::SessionId::new("s1"),
+            "s1:compact-pass2".to_owned(),
+            true,
+        );
+        let body = serde_json::to_value(distill_sampling_types::build_messages_request(&request))
+            .expect("request serializes");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral", "{body:#}");
+        assert_eq!(body.to_string().matches("cache_control").count(), 1, "{body:#}");
+    }
+}
+
+#[cfg(test)]
 mod output_cap_tests {
     use super::*;
 
@@ -542,6 +652,89 @@ pub(crate) async fn generate_session_compact(
     .await
 }
 
+/// The Chat Completions compaction request. It routes on `cache_key` as the main call does: on
+/// OpenRouter the sampler writes it as the body `session_id`, so a fork's compaction that replays
+/// its parent's prefix lands on the provider holding it. A `one_shot` request (pass 2) still
+/// opens with the main system prompt and tools, so it keeps the system breakpoint that reads them.
+#[allow(clippy::too_many_arguments)]
+fn compaction_chat_request(
+    chat_history: Vec<distill_sampling_types::ConversationItem>,
+    tools: Vec<ToolSpec>,
+    tool_choice: ToolChoice,
+    output_cap: Option<u32>,
+    sampling_config: &SamplingConfig,
+    session_id: &acp::SessionId,
+    cache_key: String,
+    one_shot: bool,
+) -> ChatCompletionRequest {
+    // Fold `Reasoning` siblings into the following assistant via `conversation_to_chat_messages`.
+    let chat_messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(chat_history);
+    let mut message = ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
+        .with_temperature(1.0);
+    message.max_tokens = output_cap.or(message.max_tokens);
+    // Prefix-cache alignment (see doc comment)
+    // `tool_choice` is set only when tools are present; Chat Completions rejects it otherwise
+    if !tools.is_empty() {
+        message = message
+            .with_tools(
+                tools
+                    .into_iter()
+                    .map(|t| ToolDefinition::function(t.name, t.description, t.parameters))
+                    .collect(),
+            )
+            .with_tool_choice(tool_choice);
+    }
+
+    message.reasoning_effort = sampling_config.reasoning_effort;
+    let sid = session_id.to_string();
+    message.x_grok_conv_id = Some(crate::sampling::conv_id_for(&sid, &cache_key));
+    message.x_grok_req_id = Some(format!("distill-compact-{}", uuid::Uuid::new_v4()));
+    message.x_grok_session_id = Some(sid);
+    message.x_grok_agent_id = Some(distill_telemetry::id::agent_id());
+    message.cache_routing_key = Some(cache_key);
+    if one_shot {
+        message.cache_breakpoints = distill_sampling_types::CacheBreakpoints::SharedPrefix {
+            leading_message: false,
+        };
+    }
+    message
+}
+
+/// The Responses and Messages compaction request. A `one_shot` request (pass 2) is never resent,
+/// but it opens with the main system prompt and tools, which main requests keep cached: it is a
+/// shared prefix, so the Messages mapping keeps the system breakpoint that reads them.
+#[allow(clippy::too_many_arguments)]
+fn compaction_conversation_request(
+    chat_history: Vec<distill_sampling_types::ConversationItem>,
+    tool_choice: Option<ConversationToolChoice>,
+    tools: Vec<ToolSpec>,
+    hosted_tools: Vec<HostedTool>,
+    output_cap: Option<u32>,
+    sampling_config: &SamplingConfig,
+    session_id: &acp::SessionId,
+    cache_key: String,
+    one_shot: bool,
+) -> ConversationRequest {
+    ConversationRequest {
+        items: chat_history,
+        tool_choice,
+        tools,
+        hosted_tools,
+        model: Some(sampling_config.model.to_owned()),
+        temperature: Some(1.0),
+        max_output_tokens: output_cap,
+        reasoning_effort: sampling_config.reasoning_effort,
+        x_grok_conv_id: Some(crate::sampling::conv_id_for(&session_id.to_string(), &cache_key)),
+        x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
+        x_grok_session_id: Some(session_id.to_string()),
+        x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
+        prompt_cache_key: Some(cache_key),
+        one_shot,
+        shared_prefix: one_shot,
+        ..Default::default()
+    }
+}
+
 pub(crate) async fn generate_session_compact_with_observer(
     chat_history: impl Into<
         crate::session::helpers::prepared_compaction_history::CompactionHistoryInput,
@@ -595,33 +788,17 @@ pub(crate) async fn generate_session_compact_with_observer(
 
     let output = match sampling_config.api_backend {
         ApiBackend::ChatCompletions => {
-            // Fold `Reasoning` siblings into the following assistant via `conversation_to_chat_messages`.
-            let chat_messages: Vec<ChatRequestMessage> =
-                conversation_to_chat_messages(chat_history);
-            let mut message =
-                ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
-                    .with_temperature(1.0);
-            message.max_tokens = output_cap.or(message.max_tokens);
-            // Prefix-cache alignment (see doc comment)
-            // `tool_choice` is set only when tools are present; Chat Completions rejects it otherwise
-            if !tools.is_empty() {
-                message = message
-                    .with_tools(
-                        tools
-                            .into_iter()
-                            .map(|t| ToolDefinition::function(t.name, t.description, t.parameters))
-                            .collect(),
-                    )
-                    .with_tool_choice(wire_tool_choice);
-            }
-
-            message.reasoning_effort = sampling_config.reasoning_effort;
-            let sid = session_id.to_string();
-            let request_id = format!("distill-compact-{}", uuid::Uuid::new_v4());
-            message.x_grok_conv_id = Some(crate::sampling::conv_id_for(&sid, &cache_key));
-            message.x_grok_req_id = Some(request_id.clone());
-            message.x_grok_session_id = Some(sid);
-            message.x_grok_agent_id = Some(distill_telemetry::id::agent_id());
+            let message = compaction_chat_request(
+                chat_history,
+                tools,
+                wire_tool_choice,
+                output_cap,
+                sampling_config,
+                &session_id,
+                cache_key,
+                one_shot,
+            );
+            let request_id = message.x_grok_req_id.clone().unwrap_or_default();
 
             tracing::info!(
                 compact_model = %sampling_config.model,
@@ -778,23 +955,17 @@ pub(crate) async fn generate_session_compact_with_observer(
         }
         ApiBackend::Responses => {
             // Send `ConversationItem`s directly; this preserves encrypted reasoning
-            let request = ConversationRequest {
-                items: chat_history,
-                tool_choice: (!tools.is_empty()).then_some(conversation_tool_choice),
+            let request = compaction_conversation_request(
+                chat_history,
+                (!tools.is_empty()).then_some(conversation_tool_choice),
                 tools,
                 hosted_tools,
-                model: Some(sampling_config.model.to_owned()),
-                temperature: Some(1.0),
-                max_output_tokens: output_cap,
-                reasoning_effort: sampling_config.reasoning_effort,
-                x_grok_conv_id: Some(crate::sampling::conv_id_for(&session_id.to_string(), &cache_key)),
-                x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
-                x_grok_session_id: Some(session_id.to_string()),
-                x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
-                prompt_cache_key: Some(cache_key),
+                output_cap,
+                sampling_config,
+                &session_id,
+                cache_key,
                 one_shot,
-                ..Default::default()
-            };
+            );
             let request_id = request.x_grok_req_id.clone().unwrap_or_default();
             let mut attempt_guard = AttemptGuard::new(
                 observer,
@@ -1018,23 +1189,18 @@ pub(crate) async fn generate_session_compact_with_observer(
         }
         ApiBackend::Messages => {
             // Messages API uses similar streaming to Responses.
-            let request = ConversationRequest {
-                items: chat_history,
-                // Prefix-cache alignment (see doc comment).
+            // Prefix-cache alignment (see doc comment): no `tool_choice`.
+            let request = compaction_conversation_request(
+                chat_history,
+                None,
                 tools,
                 hosted_tools,
-                model: Some(sampling_config.model.to_owned()),
-                temperature: Some(1.0),
-                max_output_tokens: output_cap,
-                reasoning_effort: sampling_config.reasoning_effort,
-                x_grok_conv_id: Some(crate::sampling::conv_id_for(&session_id.to_string(), &cache_key)),
-                x_grok_req_id: Some(format!("distill-compact-{}", uuid::Uuid::new_v4())),
-                x_grok_session_id: Some(session_id.to_string()),
-                x_grok_agent_id: Some(distill_telemetry::id::agent_id()),
-                prompt_cache_key: Some(cache_key),
+                output_cap,
+                sampling_config,
+                &session_id,
+                cache_key,
                 one_shot,
-                ..Default::default()
-            };
+            );
             let request_id = request.x_grok_req_id.clone().unwrap_or_default();
             let mut attempt_guard = AttemptGuard::new(
                 observer,

@@ -11,8 +11,9 @@
 //! Rewriting an old item breaks the provider's prompt cache from that item
 //! on, so the pass never runs per request. It fires
 //! - at a moment the cache is already cold: a model switch, a compaction
-//!   (unless it kept a cached prefix with tool rounds, as a fork does), or an
-//!   idle gap longer than any provider's default cache lifetime; and
+//!   (unless it kept a cached prefix with tool rounds, as a fork does), a
+//!   resumed history, or an idle gap longer than the cache lifetime the last
+//!   request had; and
 //! - only with `d6_warm_batches` (off by default: it rewrites sent history on
 //!   a warm cache, and its payback is unmeasured), warm, at most once per
 //!   [`BATCH_INTERVAL_ROUNDS`], when the bytes it removes, replayed over the
@@ -45,7 +46,8 @@ pub const BATCH_INTERVAL_ROUNDS: usize = 25;
 /// (0.9x extra, plus a cache-write premium on some providers): 10x covers both.
 const BUST_COST_FACTOR: usize = 10;
 /// No model output for this long means the provider cache has expired: every
-/// provider's default prompt-cache lifetime is shorter.
+/// provider's default prompt-cache lifetime is shorter. The idle limit until a
+/// request reports its own lifetime, and for an endpoint whose lifetime is unknown.
 pub const COLD_IDLE: Duration = Duration::from_secs(60 * 60);
 
 /// Lines and bytes a head/tail digest keeps at each end.
@@ -73,6 +75,9 @@ pub(crate) enum ColdReason {
     ModelSwitch,
     Compaction,
     Idle,
+    /// A history loaded from disk: the trims its requests sent are not known, so its
+    /// first request differs from the cached prefix anyway.
+    Resume,
 }
 
 impl ColdReason {
@@ -81,9 +86,14 @@ impl ColdReason {
             Self::ModelSwitch => "batch:cold-model-switch",
             Self::Compaction => "batch:cold-compaction",
             Self::Idle => "batch:cold-idle",
+            Self::Resume => "batch:cold-resume",
         }
     }
 }
+
+/// Request-copy soft trims already sent, by tool call id: the result's length when trimmed and
+/// its trimmed text.
+pub type RequestTrims = BTreeMap<String, (usize, Arc<str>)>;
 
 /// Per-session bookkeeping for the pass (in memory: a resumed session starts fresh).
 #[derive(Debug, Default)]
@@ -100,6 +110,12 @@ pub(crate) struct EvictionState {
     pub reread_subjects: BTreeSet<String>,
     /// Stored copies the pass pointed at, to count reads of them.
     pub stored_paths: BTreeSet<String>,
+    /// Request-copy soft trims already sent. Every later request repeats them, so the cached
+    /// prefix keeps them; a verbatim fork starts from its parent's.
+    pub request_trims: RequestTrims,
+    /// The cache lifetime the last request had, when its endpoint's is known; idle past it
+    /// (else past [`COLD_IDLE`]) the history is cold.
+    pub cache_lifetime: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -912,17 +928,43 @@ impl ChatStateActor {
     }
 
     /// Whether the next request misses the provider cache anyway (a model
-    /// switch, a compaction that rebuilt the prefix, or an idle gap past
-    /// [`COLD_IDLE`]), so rewriting old history costs nothing extra now.
-    /// Peeks: the next request build consumes it.
+    /// switch, a compaction that rebuilt the prefix, a resumed history, or an
+    /// idle gap past the last request's cache lifetime), so rewriting old
+    /// history costs nothing extra now. Peeks: the next request build consumes it.
     pub(super) fn history_is_cold(&self) -> bool {
         self.eviction.cold.is_some() || self.idle_past_cache_lifetime()
     }
 
     fn idle_past_cache_lifetime(&self) -> bool {
+        let lifetime = self.eviction.cache_lifetime.unwrap_or(COLD_IDLE);
         self.eviction
             .last_model_output
-            .is_some_and(|at| at.elapsed() >= COLD_IDLE)
+            .is_some_and(|at| at.elapsed() >= lifetime)
+    }
+
+    /// The cache lifetime the last main request had (`None`: its endpoint's is unknown).
+    pub(super) fn record_cache_lifetime(&mut self, lifetime: Option<Duration>) {
+        self.eviction.cache_lifetime = lifetime;
+    }
+
+    /// Once, before the first request of a session that starts from a history. A verbatim fork
+    /// (`parent_trims`) sends its parent's prefix under its parent's cache key: it repeats the
+    /// trims the parent sent, or its first request differs at the first one. Any other history
+    /// (a resume, a summarized fork) has no record of what its earlier requests trimmed, so its
+    /// first request misses the cache anyway: it is cold.
+    pub(super) fn start_from_inherited_history(&mut self, parent_trims: Option<RequestTrims>) {
+        match parent_trims {
+            Some(trims) => self.eviction.request_trims = trims,
+            None if self
+                .state
+                .conversation
+                .iter()
+                .any(|item| !matches!(item, ConversationItem::System(_))) =>
+            {
+                self.eviction.cold = Some(ColdReason::Resume);
+            }
+            None => {}
+        }
     }
 
     /// The cold reason for the request being built; the one after it starts warm.

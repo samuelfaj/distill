@@ -183,6 +183,17 @@ pub enum ChatStateCommand {
     /// Update the sampling config (e.g., model switch).
     UpdateSamplingConfig { config: Box<SamplingConfig> },
 
+    /// Sent once, before the first request of a session spawned with a history: a verbatim
+    /// fork's `parent_trims` are the request trims its parent sent; any other history is cold.
+    StartFromInheritedHistory {
+        parent_trims: Option<crate::actor::history_eviction::RequestTrims>,
+    },
+
+    /// The cache lifetime the last main request had; `None` when the endpoint's is unknown.
+    RecordCacheLifetime {
+        lifetime: Option<std::time::Duration>,
+    },
+
     /// Track that the agent edited a file path.
     RecordAgentEditedPath { path: String },
 
@@ -291,6 +302,11 @@ pub enum ChatStateCommand {
     /// Whether the next request misses the provider cache anyway, so old
     /// history may be rewritten now without re-billing a warm prefix.
     IsHistoryCold { reply: oneshot::Sender<bool> },
+
+    /// The request trims this session's requests sent (see [`Self::StartFromInheritedHistory`]).
+    GetRequestTrims {
+        reply: oneshot::Sender<crate::actor::history_eviction::RequestTrims>,
+    },
 
     /// Retrieve the most recent stashed per-turn `TokenUsage`. Returns
     /// `None` until at least one `RecordLastTurnUsage` has been processed.

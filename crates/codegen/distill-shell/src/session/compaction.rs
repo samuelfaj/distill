@@ -520,7 +520,7 @@ impl SessionActor {
     /// Agent `RefCell` borrows are only taken for synchronous snapshots (never held across `.await`).
     /// A long-lived borrow would race with turn/compact/cancel and panic on double-borrow.
     /// With `fit_cold`, a history that cannot fit beside the tools and the summary is digested and fitted first: it would fail whole, so its cache is no loss.
-    /// `one_shot` marks a history no later request repeats (pass2), so it writes no conversation cache entry.
+    /// `one_shot` marks a history no later request repeats (pass2): it writes no conversation cache entry, but keeps the system breakpoint that reads the main system prompt and tools.
     /// `cache_key` is the main key for pass1, which replays the main prefix, and a purpose key for pass2, whose prompt is its own.
     async fn two_pass_sample(
         &self,

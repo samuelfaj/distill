@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -206,20 +207,81 @@ fn is_direct_anthropic_base_url(base_url: &str) -> bool {
 /// Set once the API refused a one-hour cache lifetime: the rest of the process sends the default.
 static EXTENDED_CACHE_TTL_REFUSED: AtomicBool = AtomicBool::new(false);
 
-/// A client error that names the cache lifetime or the breakpoint it sits on.
+/// A client error that names the cache lifetime. Another `cache_control` complaint (too many
+/// breakpoints, one on empty text) is not about the lifetime: resending without it would hide
+/// the real error and turn the hour off for the rest of the process.
 fn is_cache_ttl_rejection(error: &SamplingError) -> bool {
     match error {
         SamplingError::Api {
             status, message, ..
         } => {
-            let message = message.to_ascii_lowercase();
             status.is_client_error()
                 && *status != reqwest::StatusCode::UNAUTHORIZED
                 && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
-                && (message.contains("ttl") || message.contains("cache_control"))
+                && message.to_ascii_lowercase().contains("ttl")
         }
         _ => false,
     }
+}
+
+/// Anthropic's default cache lifetime, and what a breakpoint without `ttl` gets.
+const ANTHROPIC_CACHE_LIFETIME: Duration = Duration::from_secs(5 * 60);
+/// The one-hour lifetime a Messages request gets with [`ConversationRequest::long_cache_ttl`].
+const ANTHROPIC_EXTENDED_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// OpenAI's prompt-cache lifetime for the ChatGPT/Codex models; the measured miss rate climbs
+/// past ~10-20 minutes idle.
+const CODEX_CACHE_LIFETIME: Duration = Duration::from_secs(30 * 60);
+/// Grok's prompt cache, and OpenRouter's sticky routing, which expires after 10 minutes idle.
+const GROK_OPENROUTER_CACHE_LIFETIME: Duration = Duration::from_secs(10 * 60);
+
+/// How long the provider keeps the prefix of a request sent to `base_url` on `api_backend`, or
+/// `None` for an endpoint whose lifetime is unknown. `long_cache_ttl` is whether the request asked
+/// for the hour; it holds only on Anthropic's own endpoint and until the API refused it.
+pub fn prompt_cache_lifetime(
+    base_url: &str,
+    api_backend: &ApiBackend,
+    model: &str,
+    long_cache_ttl: bool,
+) -> Option<Duration> {
+    cache_lifetime_for(
+        base_url,
+        api_backend,
+        model,
+        long_cache_ttl && !EXTENDED_CACHE_TTL_REFUSED.load(Ordering::Relaxed),
+    )
+}
+
+fn cache_lifetime_for(
+    base_url: &str,
+    api_backend: &ApiBackend,
+    model: &str,
+    hour_accepted: bool,
+) -> Option<Duration> {
+    if is_openrouter_base_url(base_url) {
+        // Anthropic behind OpenRouter gets breakpoints without `ttl`: its five minutes end first.
+        return Some(if model.to_ascii_lowercase().starts_with("anthropic/") {
+            ANTHROPIC_CACHE_LIFETIME
+        } else {
+            GROK_OPENROUTER_CACHE_LIFETIME
+        });
+    }
+    if *api_backend == ApiBackend::Messages {
+        return Some(if hour_accepted && is_direct_anthropic_base_url(base_url) {
+            ANTHROPIC_EXTENDED_CACHE_LIFETIME
+        } else {
+            ANTHROPIC_CACHE_LIFETIME
+        });
+    }
+    if is_codex_base_url(base_url) {
+        return Some(CODEX_CACHE_LIFETIME);
+    }
+    let xai = reqwest::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host == "x.ai" || host.ends_with(".x.ai"))
+    });
+    xai.then_some(GROK_OPENROUTER_CACHE_LIFETIME)
 }
 
 /// The Messages wrapper for `request`, carrying its routing headers and trace.
@@ -235,6 +297,7 @@ fn messages_wrapper(
     wrapper.x_grok_turn_idx = request.x_grok_turn_idx.clone();
     wrapper.x_grok_transient_retry = request.x_grok_transient_retry.clone();
     wrapper.x_grok_agent_id = request.x_grok_agent_id.clone();
+    wrapper.prompt_cache_key = request.prompt_cache_key.clone();
     wrapper.traceparent = request.traceparent.clone();
     wrapper.trace = trace;
     wrapper
@@ -279,6 +342,8 @@ struct GrokRequestHeaders<'a> {
     req_id: &'a str,
     model_id: &'a str,
     session_id: &'a str,
+    /// The request's routing key; OpenRouter's `x-session-id` carries it, falling back to `session_id`.
+    routing_key: Option<&'a str>,
     openrouter: bool,
     turn_idx: Option<&'a str>,
     /// Turn-level resubmit attempt; the proxy counts retry traffic by it.
@@ -296,8 +361,12 @@ impl GrokRequestHeaders<'_> {
             .header("x-grok-model-override", self.model_id)
             .header("x-grok-session-id", self.session_id)
             .header("x-grok-agent-id", self.agent_id);
-        if self.openrouter && !self.session_id.is_empty() {
-            b = b.header("x-session-id", self.session_id);
+        let openrouter_session = self
+            .routing_key
+            .filter(|key| !key.is_empty())
+            .unwrap_or(self.session_id);
+        if self.openrouter && !openrouter_session.is_empty() {
+            b = b.header("x-session-id", openrouter_session);
         }
         if let Some(idx) = self.turn_idx {
             b = b.header("x-grok-turn-idx", idx);
@@ -1251,6 +1320,10 @@ impl SamplingClient {
         // same chosen effort expressed in its own dialect.
         request.apply_reasoning_shape(self.defaults.reasoning_shape);
         request.apply_deepseek_thinking_toggle();
+        if is_openrouter_base_url(&self.base_url) {
+            // A user-pinned `x-session-id` keeps winning: the body `session_id` would outrank it.
+            request.apply_openrouter_cache_routing(self.should_set_openrouter_session_header());
+        }
 
         Ok(request)
     }
@@ -1333,6 +1406,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
+            routing_key: payload.cache_routing_key.as_deref(),
             openrouter: self.should_set_openrouter_session_header(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             transient_retry: payload.x_grok_transient_retry.as_deref(),
@@ -1472,6 +1546,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: payload.x_grok_session_id.as_deref().unwrap_or_default(),
+            routing_key: payload.cache_routing_key.as_deref(),
             openrouter: self.should_set_openrouter_session_header(),
             turn_idx: payload.x_grok_turn_idx.as_deref(),
             transient_retry: payload.x_grok_transient_retry.as_deref(),
@@ -1693,6 +1768,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            routing_key: request.inner.prompt_cache_key.as_deref(),
             openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
@@ -1844,6 +1920,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            routing_key: request.inner.prompt_cache_key.as_deref(),
             openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
@@ -2116,6 +2193,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            routing_key: request.prompt_cache_key.as_deref(),
             openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
@@ -2244,6 +2322,7 @@ impl SamplingClient {
             req_id: x_grok_req_id,
             model_id: &model_id,
             session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            routing_key: request.prompt_cache_key.as_deref(),
             openrouter: self.should_set_openrouter_session_header(),
             turn_idx: request.x_grok_turn_idx.as_deref(),
             transient_retry: request.x_grok_transient_retry.as_deref(),
@@ -2740,12 +2819,13 @@ mod tests {
         use super::*;
 
         let client = reqwest::Client::new();
-        let request_for = |base_url: &str, session_id: &str| {
+        let request_with_key = |base_url: &str, session_id: &str, routing_key: Option<&str>| {
             GrokRequestHeaders {
                 conv_id: "conversation",
                 req_id: "request",
                 model_id: "model",
                 session_id,
+                routing_key,
                 openrouter: is_openrouter_base_url(base_url),
                 turn_idx: None,
                 transient_retry: None,
@@ -2757,6 +2837,8 @@ mod tests {
             .build()
             .expect("request builds")
         };
+        let request_for =
+            |base_url: &str, session_id: &str| request_with_key(base_url, session_id, None);
 
         let openrouter = request_for("https://openrouter.ai/api/v1", "session-1");
         assert_eq!(openrouter.headers()["x-session-id"], "session-1");
@@ -2768,6 +2850,15 @@ mod tests {
             .headers()
             .contains_key("x-session-id"));
         assert!(!is_openrouter_base_url("https://openrouter.ai.evil.test/api/v1"));
+        // A verbatim fork routes with its parent's key, not its own session id: the header must
+        // match the body's routing key or the two would pin different providers.
+        let fork = request_with_key(
+            "https://openrouter.ai/api/v1",
+            "child-session",
+            Some("parent-session"),
+        );
+        assert_eq!(fork.headers()["x-session-id"], "parent-session");
+        assert_eq!(fork.headers()["x-grok-session-id"], "child-session");
 
         let configured = SamplingClient::new(SamplerConfig {
             base_url: "https://openrouter.ai/api/v1".into(),
@@ -2987,6 +3078,51 @@ mod tests {
         assert!(payload.reasoning.is_none());
     }
 
+    /// The routing key reaches a Chat Completions body only on OpenRouter, the one endpoint here known to read it;
+    /// another provider may reject the unknown fields. A user-pinned `x-session-id` keeps its precedence there.
+    #[test]
+    fn chat_routing_key_reaches_the_body_only_on_openrouter() {
+        let body_for = |config: SamplerConfig| {
+            let client = SamplingClient::new(config).expect("client constructs without I/O");
+            let mut request = ChatCompletionRequest::new(
+                "anthropic/claude-sonnet-5",
+                vec![
+                    ChatRequestMessage::system("system"),
+                    ChatRequestMessage::user("hi"),
+                ],
+            );
+            request.cache_routing_key = Some("group:explore".to_owned());
+            serde_json::to_value(client.apply_defaults(request).expect("defaults apply"))
+                .expect("payload serializes")
+        };
+
+        let openrouter = body_for(SamplerConfig {
+            base_url: "https://openrouter.ai/api/v1".into(),
+            ..minimal_config()
+        });
+        assert_eq!(openrouter["session_id"], "group:explore");
+        assert_eq!(openrouter["prompt_cache_key"], "group:explore");
+        assert_eq!(
+            openrouter["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+
+        let pinned = body_for(SamplerConfig {
+            base_url: "https://openrouter.ai/api/v1".into(),
+            extra_headers: IndexMap::from([("x-session-id".into(), "custom".into())]),
+            ..minimal_config()
+        });
+        assert!(pinned.get("session_id").is_none());
+        assert_eq!(pinned["prompt_cache_key"], "group:explore");
+
+        let other = body_for(SamplerConfig {
+            base_url: "https://api.anthropic.example/v1".into(),
+            ..minimal_config()
+        });
+        assert!(other.get("session_id").is_none() && other.get("prompt_cache_key").is_none());
+        assert_eq!(other["messages"][0]["content"], "system");
+    }
+
     /// The serialized StreamingChatRequest flattens all ChatCompletionRequest fields at top level.
     /// The wrapper adds `stream: true` and `stream_options.include_usage: true`.
     #[test]
@@ -3006,6 +3142,10 @@ mod tests {
             response_format: None,
             reasoning: None,
             thinking: None,
+            session_id: None,
+            prompt_cache_key: None,
+            cache_routing_key: None,
+            cache_breakpoints: Default::default(),
             reasoning_effort: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
@@ -4777,10 +4917,20 @@ mod cache_ttl_tests {
     /// it is recognised from the error text, resent once without it, and the rest of
     /// the process sends the default while keeping the anchor. Other client errors,
     /// and a refusal of a request that sent no lifetime, change nothing.
+    /// Clears the process-wide refusal when a test that sets it ends, even by a panic.
+    struct RefusalReset;
+
+    impl Drop for RefusalReset {
+        fn drop(&mut self) {
+            EXTENDED_CACHE_TTL_REFUSED.store(false, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn a_refused_hour_is_resent_once_without_it_and_stays_off() {
         use reqwest::StatusCode;
 
+        let _reset = RefusalReset;
         let refusal = api_error(
             StatusCode::BAD_REQUEST,
             "messages.3.content.0.cache_control.ttl: Extra inputs are not permitted",
@@ -4820,6 +4970,70 @@ mod cache_ttl_tests {
                 extended_ttl: false,
             }
         );
-        EXTENDED_CACHE_TTL_REFUSED.store(false, Ordering::Relaxed);
+    }
+
+    /// Only a complaint about the lifetime turns it off. A breakpoint-count or placement error
+    /// names `cache_control` too, but resending without the hour would not fix it: it would hide
+    /// the real error and drop the hour for every later request of the process.
+    #[test]
+    fn a_cache_control_error_that_is_not_about_the_lifetime_keeps_the_hour() {
+        use reqwest::StatusCode;
+
+        for message in [
+            "A maximum of 4 blocks with cache_control may be provided. Found 5.",
+            "messages.2.content.0.text: cache_control cannot be set for empty text blocks",
+        ] {
+            let error = api_error(StatusCode::BAD_REQUEST, message);
+            assert!(!is_cache_ttl_rejection(&error), "{message}");
+            assert!(!client("https://api.anthropic.com/v1").cache_ttl_refused(true, &error));
+        }
+    }
+
+    /// History counts as cold once idle exceeds the lifetime the last request had. Each value is
+    /// the provider's: Anthropic's five minutes (the hour only where it was sent and accepted),
+    /// OpenAI's thirty for Codex, ten for Grok and for OpenRouter's sticky routing (five for an
+    /// Anthropic model there, whose breakpoints carry no `ttl`), and unknown elsewhere.
+    #[test]
+    fn the_cache_lifetime_follows_the_provider_and_the_accepted_hour() {
+        let minutes = |m: u64| Some(Duration::from_secs(m * 60));
+        let direct = "https://api.anthropic.com/v1";
+        assert_eq!(cache_lifetime_for(direct, &ApiBackend::Messages, "claude", true), minutes(60));
+        assert_eq!(cache_lifetime_for(direct, &ApiBackend::Messages, "claude", false), minutes(5));
+        assert_eq!(
+            cache_lifetime_for("https://gateway.test/v1", &ApiBackend::Messages, "claude", true),
+            minutes(5),
+            "a gateway never gets the hour"
+        );
+        assert_eq!(
+            cache_lifetime_for(
+                "https://chatgpt.com/backend-api/codex",
+                &ApiBackend::Responses,
+                "gpt-5.5",
+                false
+            ),
+            minutes(30)
+        );
+        assert_eq!(
+            cache_lifetime_for("https://api.x.ai/v1", &ApiBackend::Responses, "grok-4.5", false),
+            minutes(10)
+        );
+        let openrouter = "https://openrouter.ai/api/v1";
+        assert_eq!(
+            cache_lifetime_for(openrouter, &ApiBackend::ChatCompletions, "moonshotai/kimi-k3", false),
+            minutes(10)
+        );
+        assert_eq!(
+            cache_lifetime_for(
+                openrouter,
+                &ApiBackend::ChatCompletions,
+                "anthropic/claude-sonnet-5",
+                false
+            ),
+            minutes(5)
+        );
+        assert_eq!(
+            cache_lifetime_for("https://llm.internal/v1", &ApiBackend::ChatCompletions, "m", false),
+            None
+        );
     }
 }

@@ -13,7 +13,7 @@ impl From<ChatRequestMessage> for ConversationItem {
                     .blocks()
                     .into_iter()
                     .map(|block| match block {
-                        ChatContentBlock::Text { text } => ContentPart::Text {
+                        ChatContentBlock::Text { text, .. } => ContentPart::Text {
                             text: Arc::<str>::from(text),
                         },
                         ChatContentBlock::ImageUrl { image_url } => ContentPart::Image {
@@ -94,6 +94,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                     .map(|part| match part {
                         ContentPart::Text { text } => ChatContentBlock::Text {
                             text: text.as_ref().to_owned(),
+                            cache_control: None,
                         },
                         ContentPart::Image { url } => ChatContentBlock::ImageUrl {
                             image_url: ImageUrl {
@@ -141,6 +142,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
             } else {
                 let mut blocks = vec![ChatContentBlock::Text {
                     text: t.content.as_ref().to_owned(),
+                    cache_control: None,
                 }];
                 for img in t.images {
                     if let ContentPart::Image { url } = img {
@@ -245,6 +247,20 @@ impl From<ChatResponseMessage> for ConversationItem {
 impl From<ConversationRequest> for ChatCompletionRequest {
     fn from(req: ConversationRequest) -> Self {
         let tools_is_empty = req.tools.is_empty();
+        let cache_breakpoints = match (req.one_shot, req.shared_prefix) {
+            (false, _) => crate::types::CacheBreakpoints::Conversation,
+            (true, false) => crate::types::CacheBreakpoints::None,
+            // As the Messages mapping: the leading message repeats only when it is an instructions block.
+            (true, true) => crate::types::CacheBreakpoints::SharedPrefix {
+                leading_message: matches!(
+                    (req.items.first(), req.items.get(1)),
+                    (
+                        Some(ConversationItem::System(_)),
+                        Some(ConversationItem::User(u)),
+                    ) if u.synthetic_reason == SyntheticReason::ProjectInstructions
+                ),
+            },
+        };
         let mut messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(req.items);
         // DeepSeek thinking mode with `tools`: every assistant message must
         // carry `reasoning_content` (empty if that turn had none). Omitting
@@ -305,6 +321,10 @@ impl From<ConversationRequest> for ChatCompletionRequest {
             reasoning_effort: req.reasoning_effort,
             reasoning: None,
             thinking: None,
+            session_id: None,
+            prompt_cache_key: None,
+            cache_routing_key: req.prompt_cache_key,
+            cache_breakpoints,
             x_grok_conv_id: req.x_grok_conv_id,
             x_grok_req_id: req.x_grok_req_id,
             x_grok_session_id: req.x_grok_session_id,

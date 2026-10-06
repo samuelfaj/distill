@@ -2424,6 +2424,16 @@ impl SessionActor {
             .await;
         // Honoured by the client only where the endpoint takes the one-hour lifetime.
         request.long_cache_ttl = super::prompt_cache::long_wait_likely(&request.items);
+        // The endpoint this request goes to, for the cache lifetime it gets (see below).
+        let cache_route = match route_config {
+            Some(config) => Some((config.base_url.clone(), config.api_backend.clone(), config.model.clone())),
+            None => self
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .map(|config| (config.base_url, config.api_backend, config.model)),
+        };
+        let long_cache_ttl = request.long_cache_ttl;
         let sent_prefix = is_messages_endpoint(usage_context.endpoint.as_deref())
             .then(|| super::prompt_cache::SentPrefix::of(&request.items));
         self.turn_phases.record_sampling_request();
@@ -2475,6 +2485,14 @@ impl SessionActor {
         }
         match collected.result {
             Ok((response, metrics)) => {
+                // Idle past this lifetime, the next request misses the cache anyway: the moment old
+                // history may be rewritten. Read after the call, which may have refused the hour.
+                if let Some((base_url, api_backend, model)) = &cache_route {
+                    let model = actual_model.as_deref().unwrap_or(model);
+                    self.chat_state_handle.record_cache_lifetime(
+                        distill_sampler::prompt_cache_lifetime(base_url, api_backend, model, long_cache_ttl),
+                    );
+                }
                 if let (Some(sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
                     let report = self
                         .jev_ledger

@@ -604,6 +604,8 @@ pub(crate) async fn spawn_session_actor(
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
+    // First in the actor's queue, before anything can read or rewrite the history.
+    chat_state_handle.start_from_inherited_history(startup_hints.inherited_request_trims.take());
     // Register before the first await and before this function returns control
     // to prompt delivery. Child sessions use this same shared spawn path.
     let _ = persistence

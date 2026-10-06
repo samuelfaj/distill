@@ -650,6 +650,10 @@ pub struct StartupHints {
     pub cheap_agent: bool,
     #[serde(skip)]
     pub startup_traceparent: std::cell::RefCell<Option<String>>,
+    /// A verbatim fork's parent's request trims: its first request repeats them, as its parent's
+    /// cached prefix has them. Transient spawn policy.
+    #[serde(skip)]
+    pub inherited_request_trims: Option<distill_chat_state::RequestTrims>,
 }
 
 impl StartupHints {

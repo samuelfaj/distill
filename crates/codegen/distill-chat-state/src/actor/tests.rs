@@ -4020,6 +4020,24 @@ async fn forked_subagent_bootstrap_replaces_parent_system_message() {
 
 /// Helper: push N complete turns (user + assistant + tool-result) so the
 /// conversation grows to a predictable length.
+/// One user turn: question, a tool call and its result.
+async fn push_turn(handle: &crate::handle::ChatStateHandle, i: usize, content_len: usize) {
+    handle.push_user_message(ConversationItem::user(format!("q{i}")));
+    handle.increment_prompt_index();
+    handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![
+        distill_sampling_types::conversation::ToolCall {
+            id: format!("call_{i}").into(),
+            name: "run_terminal_command".to_owned(),
+            arguments: r#"{"command":"cargo build"}"#.into(),
+        },
+    ]));
+    handle.push_tool_result(ConversationItem::tool_result(
+        format!("call_{i}"),
+        "x".repeat(content_len),
+    ));
+    let _ = handle.get_conversation_len().await;
+}
+
 async fn push_turns(handle: &crate::handle::ChatStateHandle, turns: usize, content_len: usize) {
     for i in 0..turns {
         handle.push_user_message(ConversationItem::user(format!("q{i}")));
@@ -4168,6 +4186,8 @@ async fn request_pruning_projects_old_groups_and_preserves_provenance() {
                 large_log(&format!("recent-{i}")),
             ));
     }
+    // New request-copy trims happen only at a cold moment.
+    make_history_cold(&h.handle);
     let original = h.handle.get_conversation().await;
     let request = h
         .handle
@@ -4508,6 +4528,7 @@ async fn apply_turn_request_pruning_soft_trims_old_results_over_output_threshold
     );
 
     push_turns(&handle, 5, 8_000).await;
+    make_history_cold(&handle);
 
     let conv = handle.get_conversation().await;
     let pruned = handle.apply_turn_request_pruning(conv.clone()).await;
@@ -4533,6 +4554,197 @@ async fn apply_turn_request_pruning_soft_trims_old_results_over_output_threshold
         other => panic!("expected ToolResult, got {other:?}"),
     };
     assert_eq!(recent, 8_000);
+}
+
+/// The request copy is rebuilt every time, so a trim is a prefix change: made on a warm cache it
+/// re-bills everything after the trimmed result. New trims wait for a cold moment, and a trim once
+/// sent repeats on every later request (warm ones included) so the cached prefix keeps it.
+#[tokio::test]
+async fn request_soft_trims_wait_for_a_cold_moment_and_then_stay() {
+    use crate::actor::ChatStateActor;
+    use crate::persistence::MockChatPersistence;
+    use crate::types::PruningConfig;
+
+    fn result_at(items: &[ConversationItem], index: usize) -> String {
+        match items.get(index) {
+            Some(ConversationItem::ToolResult(tr)) => tr.content.to_string(),
+            other => panic!("expected ToolResult at {index}, got {other:?}"),
+        }
+    }
+
+    let (mock, _rx) = MockChatPersistence::new();
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let handle = ChatStateActor::spawn_with_pruning(
+        vec![],
+        test_config_with_window(1_000_000),
+        PruningConfig {
+            keep_last_n_turns: 2,
+            soft_trim_threshold: 4000,
+            soft_trim_head: 20,
+            soft_trim_tail: 20,
+            hard_clear_age_turns: 100,
+            ..Default::default()
+        },
+        Box::new(mock),
+        event_tx,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    push_turns(&handle, 5, 8_000).await;
+
+    let warm = handle
+        .apply_turn_request_pruning(handle.get_conversation().await)
+        .await;
+    assert_eq!(result_at(&warm, 2).len(), 8_000, "warm: the prefix stays as sent");
+
+    make_history_cold(&handle);
+    let cold = handle
+        .build_request(vec![], None, false, None, "conv".into(), "req".into())
+        .await
+        .expect("request should build")
+        .items;
+    let trimmed = result_at(&cold, 2);
+    assert!(trimmed.contains("[…trimmed…]"), "cold: old results trimmed");
+    assert!(!handle.history_is_cold().await, "the request consumed the cold moment");
+
+    // Two more turns age turns 4 and 5 past `keep_last_n_turns`, on a warm cache.
+    // (`push_turns` would reuse call ids, and duplicate ids make pruning fail open.)
+    for i in 0..2 {
+        handle.push_user_message(ConversationItem::user(format!("late q{i}")));
+        handle.increment_prompt_index();
+        handle.push_assistant_response(ConversationItem::assistant_tool_calls(vec![
+            distill_sampling_types::conversation::ToolCall {
+                id: format!("late_{i}").into(),
+                name: "run_terminal_command".to_owned(),
+                arguments: r#"{"command":"cargo test"}"#.into(),
+            },
+        ]));
+        handle.push_tool_result(ConversationItem::tool_result(
+            format!("late_{i}"),
+            "y".repeat(8_000),
+        ));
+    }
+    let later = handle
+        .apply_turn_request_pruning(handle.get_conversation().await)
+        .await;
+    assert_eq!(result_at(&later, 2), trimmed, "a sent trim repeats byte for byte");
+    assert_eq!(result_at(&later, 3 * 3 + 2).len(), 8_000, "a newly aged result waits");
+
+    // Another model switch (the first already moved to `make_history_cold`'s model).
+    let mut config = test_config();
+    config.model = "a-third-model".to_string();
+    handle.update_sampling_config(config);
+    let next_cold = handle
+        .apply_turn_request_pruning(handle.get_conversation().await)
+        .await;
+    assert!(result_at(&next_cold, 3 * 3 + 2).contains("[…trimmed…]"));
+    assert_eq!(result_at(&next_cold, 2), trimmed);
+}
+
+fn trimming_config() -> crate::types::PruningConfig {
+    crate::types::PruningConfig {
+        keep_last_n_turns: 2,
+        soft_trim_threshold: 4000,
+        soft_trim_head: 20,
+        soft_trim_tail: 20,
+        hard_clear_age_turns: 100,
+        ..Default::default()
+    }
+}
+
+fn spawn_trimming(conversation: Vec<ConversationItem>) -> crate::handle::ChatStateHandle {
+    let (mock, _rx) = MockChatPersistence::new();
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    ChatStateActor::spawn_with_pruning(
+        conversation,
+        test_config_with_window(1_000_000),
+        trimming_config(),
+        Box::new(mock),
+        event_tx,
+        tokio_util::sync::CancellationToken::new(),
+    )
+}
+
+async fn first_request_items(handle: &crate::handle::ChatStateHandle) -> Vec<ConversationItem> {
+    handle
+        .build_request(vec![], None, false, None, "conv".into(), "req".into())
+        .await
+        .expect("request should build")
+        .items
+}
+
+fn tool_result_text(items: &[ConversationItem], index: usize) -> String {
+    match items.get(index) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.to_string(),
+        other => panic!("expected ToolResult at {index}, got {other:?}"),
+    }
+}
+
+/// A verbatim fork sends its parent's history under its parent's cache key, so its first request
+/// must be the parent's last one byte for byte. The canonical history it copies is untrimmed: with
+/// an empty memo and a warm cache it would send the results the parent trimmed full-size, and miss
+/// the cache from the first of them. Starting from the parent's trims, it sends them as the parent did.
+#[tokio::test]
+async fn a_verbatim_fork_repeats_the_trims_its_parent_sent() {
+    let parent = spawn_trimming(vec![]);
+    push_turns(&parent, 5, 8_000).await;
+    make_history_cold(&parent);
+    let parent_request = first_request_items(&parent).await;
+    assert!(tool_result_text(&parent_request, 2).contains("[…trimmed…]"));
+    let history = parent.get_conversation().await;
+    assert_eq!(tool_result_text(&history, 2).len(), 8_000, "the canonical history is untrimmed");
+
+    let unseeded = spawn_trimming(history.clone());
+    assert_eq!(
+        tool_result_text(&first_request_items(&unseeded).await, 2).len(),
+        8_000,
+        "without the parent's trims the fork's prefix differs from the parent's"
+    );
+
+    let fork = spawn_trimming(history);
+    fork.start_from_inherited_history(Some(parent.request_trims().await));
+    assert!(!fork.history_is_cold().await, "the fork rides its parent's warm prefix");
+    let fork_request = first_request_items(&fork).await;
+    assert_eq!(
+        serde_json::to_string(&fork_request).unwrap(),
+        serde_json::to_string(&parent_request).unwrap()
+    );
+}
+
+/// A resumed session has no record of what its earlier requests trimmed, so its first request
+/// differs from the cached prefix anyway: that is the moment to trim, not a later idle gap.
+/// A history holding only the system prompt (a new session) has nothing to rewrite and stays warm.
+#[tokio::test]
+async fn a_resumed_history_is_cold_until_its_first_request() {
+    let source = spawn_trimming(vec![]);
+    push_turns(&source, 5, 8_000).await;
+    let resumed = spawn_trimming(source.get_conversation().await);
+    resumed.start_from_inherited_history(None);
+    assert!(resumed.history_is_cold().await);
+    let request = first_request_items(&resumed).await;
+    assert!(tool_result_text(&request, 2).contains("[…trimmed…]"));
+    assert!(!resumed.history_is_cold().await, "the first request consumed the cold moment");
+
+    let fresh = spawn_trimming(vec![ConversationItem::system("system prompt")]);
+    fresh.start_from_inherited_history(None);
+    assert!(!fresh.history_is_cold().await);
+}
+
+/// Old history is rewritten only when the provider cache is gone anyway. A provider's cache
+/// lives as long as its lifetime (five minutes on Anthropic, ten on Grok), far less than the hour
+/// kept as the fallback: idle past the lifetime the last request had, history is cold; while it
+/// is unknown, the hour holds.
+#[tokio::test]
+async fn idle_past_the_last_requests_cache_lifetime_is_cold() {
+    let handle = spawn_trimming(vec![]);
+    push_turns(&handle, 1, 10).await;
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    handle.record_cache_lifetime(Some(Duration::from_millis(20)));
+    assert!(handle.history_is_cold().await, "idle 40 ms past a 20 ms lifetime");
+    handle.record_cache_lifetime(Some(Duration::from_secs(10 * 60)));
+    assert!(!handle.history_is_cold().await, "within a ten-minute lifetime");
+    handle.record_cache_lifetime(None);
+    assert!(!handle.history_is_cold().await, "unknown lifetime: the hour fallback");
 }
 
 #[tokio::test]
@@ -4570,6 +4782,7 @@ async fn apply_turn_request_pruning_keeps_native_envelope_when_body_trimmed_to_z
     );
 
     push_turns(&handle, 5, 8_000).await;
+    make_history_cold(&handle);
 
     let mut conv = handle.get_conversation().await;
     for item in &mut conv {
@@ -4664,8 +4877,13 @@ async fn prune_retained_bounds_long_session_footprint() {
         token,
     );
 
-    make_history_cold(&handle);
-    push_turns(&handle, TURNS, CONTENT_LEN).await;
+    // Each turn follows an idle gap longer than the cache lifetime, so each user message lands
+    // at a real cold moment (the previous turn's model output started the idle clock).
+    handle.record_cache_lifetime(Some(Duration::from_millis(5)));
+    for i in 0..TURNS {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        push_turn(&handle, i, CONTENT_LEN).await;
+    }
 
     let conv = handle.get_conversation().await;
 
@@ -4704,6 +4922,34 @@ async fn prune_retained_bounds_long_session_footprint() {
     assert!(
         actual_tr_bytes < naive_bytes / 5,
         "retained tool-result bytes ({actual_tr_bytes}) must be << naive ({naive_bytes})"
+    );
+}
+
+/// The hard clear rewrites history many rounds back, re-billing everything after it on a warm
+/// cache, so a session that keeps its cache warm never triggers it, however long it runs.
+#[tokio::test]
+async fn prune_retained_waits_while_the_cache_is_warm() {
+    let (mock, _rx) = MockChatPersistence::new();
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let handle = ChatStateActor::spawn_with_pruning(
+        vec![],
+        test_config(),
+        crate::types::PruningConfig {
+            hard_clear_age_turns: 5,
+            keep_last_n_turns: 2,
+            ..Default::default()
+        },
+        Box::new(mock),
+        event_tx,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    handle.record_cache_lifetime(Some(Duration::from_secs(10 * 60)));
+    push_turns(&handle, 20, 5_000).await;
+    let conv = handle.get_conversation().await;
+    assert!(
+        conv.iter()
+            .all(|i| !matches!(i, ConversationItem::ToolResult(tr) if tr.content.len() < 5_000)),
+        "a warm session keeps its history as sent"
     );
 }
 

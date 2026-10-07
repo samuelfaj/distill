@@ -373,6 +373,28 @@ mod tests {
     }
 
     #[test]
+    fn upstream_provider_404_retries_but_plain_404_is_fatal() {
+        let body = br#"{"error":{"message":"Provider returned error","code":404,"metadata":{"provider_name":"Meta"}}}"#;
+        let envelope = SamplingError::Api {
+            status: StatusCode::NOT_FOUND,
+            message: "x".to_string(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: distill_sampling_types::error::parse_error_code(body),
+        };
+        assert!(matches!(
+            classify_error(&envelope, 1, 15, 5),
+            RetryDecision::Retry { .. }
+        ));
+        let plain = api_err(StatusCode::NOT_FOUND, "not found");
+        assert!(matches!(
+            classify_error(&plain, 1, 15, 5),
+            RetryDecision::Fatal(_)
+        ));
+    }
+
+    #[test]
     fn resolve_max_retries_env_override_takes_precedence() {
         assert_eq!(resolve_max_retries_with_env(Some("9"), Some(3)), 9);
     }

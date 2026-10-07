@@ -687,8 +687,14 @@ impl ActiveModal {
             ActiveModal::ArgPicker {
                 command,
                 args_query,
+                original_items,
                 ..
             } => match command.as_str() {
+                "model" | "m"
+                    if crate::slash::commands::model::is_variant_items(original_items) =>
+                {
+                    "Pick OpenRouter variant"
+                }
                 "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                 "model" | "m" => "Pick model",
                 "theme" | "t" => "Pick theme",

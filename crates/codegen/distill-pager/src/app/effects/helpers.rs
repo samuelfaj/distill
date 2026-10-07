@@ -1383,6 +1383,17 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "main_variant" | "worker_variant" => {
+            let SettingValue::Enum(s) = value else {
+                return Err(kind_mismatch(key, "Enum", &value));
+            };
+            if key == "main_variant" {
+                distill_shell::util::config::set_main_variant(s.to_string()).await
+            } else {
+                distill_shell::util::config::set_worker_variant(s.to_string()).await
+            }
+            .map_err(|e| e.to_string())
+        }
         "main_effort" => {
             let SettingValue::String(s) = value else {
                 return Err(kind_mismatch("main_effort", "String", &value));

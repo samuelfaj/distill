@@ -1153,6 +1153,8 @@ pub(crate) struct SessionActor {
     /// Generation of the currently registered title-refresh task.
     /// A finishing task whose generation no longer matches must not persist its result.
     pub(crate) title_refresh_generation: std::cell::Cell<u64>,
+    /// Weak sender into this actor's own command loop (goal infra auto-retry timer); weak so it never keeps the loop alive.
+    pub(crate) session_cmd_tx: tokio::sync::mpsc::WeakUnboundedSender<SessionCommand>,
     /// Index into `TITLE_REFRESH_TURNS` of the next checkpoint to apply.
     /// Advanced when an attempt completes (success *or* failure, with catch-up past skipped checkpoints), and persisted to the watermark.
     /// Once it reaches the end the title is frozen.

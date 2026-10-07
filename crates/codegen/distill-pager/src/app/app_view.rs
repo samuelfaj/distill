@@ -5775,6 +5775,7 @@ impl AppView {
                 .is_some_and(|m| m.needs_spinner_tick())
                 && spinner_frame_tick;
             needs_redraw |= agent.drain_blocked();
+            needs_redraw |= agent.goal_retry_secs() != agent.goal_retry_shown_secs;
             agent.prompt.slash_controller.set_workflows_available(
                 agent
                     .session
@@ -6145,6 +6146,9 @@ impl AppView {
                     });
                 if fast {
                     return TickDemand::Fast;
+                }
+                if agent.goal_retry_secs().is_some() {
+                    return TickDemand::Slow;
                 }
                 if cfg!(target_os = "macos")
                     && (agent.needs_link_modifier_poll()

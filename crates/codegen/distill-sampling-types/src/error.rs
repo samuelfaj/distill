@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use distill_circuit_breaker::RetryPolicy;
 
-use crate::provider_error::{parse_provider_error, parse_provider_error_str};
+use crate::provider_error::{
+    is_upstream_provider_envelope, parse_provider_error, parse_provider_error_str,
+};
 
 pub type Result<T> = std::result::Result<T, SamplingError>;
 
@@ -217,6 +219,9 @@ fn is_byte_size_overflow_error_code(code: &str) -> bool {
         || code.eq_ignore_ascii_case("request_too_large")
 }
 
+/// Synthetic wire code for [`ApiErrorCode::UpstreamProvider`].
+const UPSTREAM_PROVIDER_ERROR_CODE: &str = "upstream_provider_error";
+
 /// A wire `error.code`, parsed once at the boundary so classification compares variants instead of strings.
 /// `#[non_exhaustive]`: the next semantic code is a new variant, not another const and `||` chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +232,8 @@ pub enum ApiErrorCode {
     /// A size-overflow code ([`is_size_overflow_error_code`]).
     /// Carries the verbatim wire code so serialization stays byte-identical.
     ContextOverflow(String),
+    /// An OpenRouter upstream-provider failure envelope (`error.metadata.provider_name`): transient even on HTTP 404.
+    UpstreamProvider,
     /// Any other wire code, preserved verbatim (Responses-stream error events pass arbitrary codes through).
     Other(String),
 }
@@ -235,6 +242,7 @@ impl ApiErrorCode {
     pub fn parse(code: &str) -> Self {
         match code {
             INVALID_IMAGE_ERROR_CODE => Self::InvalidImage,
+            UPSTREAM_PROVIDER_ERROR_CODE => Self::UpstreamProvider,
             c if is_size_overflow_error_code(c) => Self::ContextOverflow(c.to_string()),
             _ => Self::Other(code.to_string()),
         }
@@ -243,6 +251,7 @@ impl ApiErrorCode {
     pub fn as_str(&self) -> &str {
         match self {
             Self::InvalidImage => INVALID_IMAGE_ERROR_CODE,
+            Self::UpstreamProvider => UPSTREAM_PROVIDER_ERROR_CODE,
             Self::ContextOverflow(code) | Self::Other(code) => code,
         }
     }
@@ -415,7 +424,13 @@ impl SamplingError {
             SamplingError::MtlsConfiguration(_) => false,
             SamplingError::Http(err) => is_retryable_reqwest(err),
             SamplingError::Serialization(_) => false,
-            SamplingError::Api { status, .. } => is_retryable_api_status(*status),
+            SamplingError::Api {
+                status, error_code, ..
+            } => {
+                is_retryable_api_status(*status)
+                    || (*status == StatusCode::NOT_FOUND
+                        && *error_code == Some(ApiErrorCode::UpstreamProvider))
+            }
             SamplingError::EventStreamError(_) => true,
             SamplingError::StreamError { .. } => true,
             SamplingError::IdleTimeout { .. } => false,
@@ -632,10 +647,17 @@ fn try_parse_error(data: &str) -> Option<ParsedError> {
 /// Semantic `error.code` from a raw error body. Nested envelopes yield their code verbatim.
 /// The flat envelope overloads its `code` slot with gRPC kebab codes and type slots, so only exact semantic values surface from it.
 pub fn parse_error_code(bytes: &[u8]) -> Option<ApiErrorCode> {
-    std::str::from_utf8(bytes)
+    let code = std::str::from_utf8(bytes)
         .ok()
         .and_then(try_parse_error)?
-        .code
+        .code;
+    // OpenRouter puts the numeric HTTP status in `code`, which the rigid parse drops
+    match code {
+        Some(c) if !matches!(c, ApiErrorCode::Other(_)) => Some(c),
+        other => is_upstream_provider_envelope(bytes)
+            .then_some(ApiErrorCode::UpstreamProvider)
+            .or(other),
+    }
 }
 
 /// Max chars of a structured (JSON) error message shown to users.
@@ -683,6 +705,13 @@ fn truncate_user_error(s: &str) -> String {
 
 /// Format a known JSON error envelope; `None` if the body is not structured.
 fn structured_error_message(bytes: &[u8]) -> Option<String> {
+    // Upstream provider detail beats the rigid parse's generic "Provider returned error"
+    if let Some(parsed) = parse_provider_error(bytes)
+        && parsed.upstream
+        && !parsed.message_is_markup()
+    {
+        return Some(parsed.display_message());
+    }
     let rigid = std::str::from_utf8(bytes).ok().and_then(try_parse_error);
     if let Some(ParsedError {
         error_type,
@@ -774,6 +803,56 @@ fn message_looks_overloaded(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const META_404: &str = r#"{"error":{"message":"Provider returned error","code":404,"metadata":{"raw":"{\"error\":{\"code\":\"service_overloaded\",\"message\":\"The backend is temporarily overloaded. Please retry.\",\"param\":null,\"type\":\"server_error\"}}","provider_name":"Meta","is_byok":false,"provider_error_code":"service_overloaded","retry_after_seconds":60}}}"#;
+
+    #[test]
+    fn openrouter_upstream_detail_replaces_generic_message() {
+        let want = "Meta: service_overloaded: The backend is temporarily overloaded. Please retry.";
+        assert_eq!(parse_error_bytes(META_404.as_bytes()), want);
+        assert_eq!(
+            user_facing_api_error_message(StatusCode::NOT_FOUND, META_404.as_bytes()),
+            want
+        );
+        assert_eq!(
+            parse_error_code(META_404.as_bytes()),
+            Some(ApiErrorCode::UpstreamProvider)
+        );
+    }
+
+    #[test]
+    fn openrouter_non_json_raw_is_used_trimmed() {
+        let body = r#"{"error":{"message":"Provider returned error","code":404,"metadata":{"raw":"  upstream melted down \n","provider_name":"Meta","provider_error_code":"bad_gateway"}}}"#;
+        assert_eq!(
+            parse_error_bytes(body.as_bytes()),
+            "Meta: bad_gateway: upstream melted down"
+        );
+    }
+
+    #[test]
+    fn openrouter_without_metadata_is_unchanged() {
+        let body = br#"{"error":{"message":"Provider returned error","code":404}}"#;
+        assert_eq!(parse_error_bytes(body), "Provider returned error");
+        assert_eq!(parse_error_code(body), None);
+        let empty = br#"{"error":{"message":"Provider returned error","code":404,"metadata":{}}}"#;
+        assert_eq!(parse_error_bytes(empty), "Provider returned error");
+        assert_eq!(parse_error_code(empty), None);
+    }
+
+    #[test]
+    fn upstream_provider_code_retries_only_on_404() {
+        let err = |status, error_code| SamplingError::Api {
+            status,
+            message: "x".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code,
+        };
+        let code = Some(ApiErrorCode::UpstreamProvider);
+        assert!(err(StatusCode::NOT_FOUND, code).is_retryable());
+        assert!(!err(StatusCode::NOT_FOUND, None).is_retryable());
+    }
 
     #[test]
     fn overloaded_detects_stream_and_api_shapes() {

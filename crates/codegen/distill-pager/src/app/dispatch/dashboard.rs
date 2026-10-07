@@ -1489,7 +1489,17 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
         command.run(&mut ctx, invocation.args)
     };
 
-    match result {
+    // The variant is a saved preference; the model choice below still stages per spawn.
+    let (result, variant_effects) = match result {
+        CommandResult::Action(Action::WithOpenrouterVariant { key, value, then }) => (
+            CommandResult::Action(*then),
+            dispatch(Action::SetOpenrouterVariant { key, value }, app),
+        ),
+        other => (other, vec![]),
+    };
+
+    let mut effects = variant_effects;
+    effects.extend(match result {
         CommandResult::Handled => {
             if let Some(d) = app.dashboard.as_mut() {
                 d.dispatch.set_text("");
@@ -1606,7 +1616,8 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             // The dashboard has none, so route the text through the "new session with this as the first prompt" path so the user's typing isn't lost
             dispatch_dashboard_dispatch(app, text, /* attach */ false)
         }
-    }
+    });
+    effects
 }
 
 /// Stage a model (and optional reasoning effort) for the next agent the dashboard spawns.

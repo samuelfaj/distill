@@ -130,6 +130,8 @@ pub struct AgentViewLayoutParams {
     /// 0 or 1: the gap row between turn status (or scrollback) and the prompt.
     pub prompt_gap: u16,
     pub voice_recording_height: u16,
+    /// 0 or 1: the infra-pause auto-retry countdown row directly above the prompt.
+    pub goal_retry_height: u16,
     pub shortcuts_height: u16,
     /// Clamped to the rows left over once every other row and the scrollback minimum are counted.
     /// A tall script loses its own rows rather than the prompt or the shortcuts bar losing theirs.
@@ -159,6 +161,8 @@ pub struct AgentViewLayout {
     pub dock: Rect,
     /// Single-row record indicator ("◉ Recording") directly above the prompt, shown only while voice capture is active.
     pub voice_recording: Rect,
+    /// Single-row goal auto-retry countdown directly above the prompt; zero-area when hidden.
+    pub goal_retry: Rect,
     pub prompt: Rect,
     pub shortcuts: Rect,
     /// Bottom status_line row; zero-area when disabled.
@@ -197,6 +201,7 @@ impl AgentViewLayout {
             dock_height,
             prompt_gap,
             voice_recording_height,
+            goal_retry_height,
             shortcuts_height,
             status_line_height,
             compact,
@@ -277,6 +282,9 @@ impl AgentViewLayout {
         }
         if voice_recording_height > 0 {
             constraints.push(Constraint::Length(voice_recording_height));
+        }
+        if goal_retry_height > 0 {
+            constraints.push(Constraint::Length(goal_retry_height));
         }
         constraints.push(Constraint::Length(prompt_height));
         let pushed = constraints
@@ -369,6 +377,11 @@ impl AgentViewLayout {
         } else {
             Rect::default()
         };
+        let goal_retry = if goal_retry_height > 0 {
+            chunks.next().unwrap_or_default()
+        } else {
+            Rect::default()
+        };
         let prompt = chunks.next().unwrap_or_default();
         if shortcuts_gap > 0 {
             chunks.next();
@@ -414,6 +427,7 @@ impl AgentViewLayout {
             follow_ups,
             dock,
             voice_recording,
+            goal_retry,
             prompt,
             shortcuts,
             status_line,

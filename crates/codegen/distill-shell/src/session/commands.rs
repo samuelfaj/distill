@@ -920,6 +920,12 @@ pub enum SessionCommand {
         run_id: String,
         revision: u64,
     },
+    /// Infra auto-retry timer fired for a goal paused by a turn error.
+    /// Ignored unless `goal_id` and `generation` still match the paused goal.
+    GoalInfraRetry {
+        goal_id: String,
+        generation: u64,
+    },
     /// Take turn messages from the chat state actor (proxied from mvp_agent).
     TakeTurnMessages {
         respond_to: oneshot::Sender<Option<distill_chat_state::TurnCapture>>,

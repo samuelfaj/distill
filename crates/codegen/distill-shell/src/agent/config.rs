@@ -975,6 +975,13 @@ pub struct ModelsConfig {
     /// means `auto`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_effort: Option<String>,
+    /// OpenRouter routing suffix for the main model's slug: `floor` (unset
+    /// default), `nitro`, `exacto` or `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_variant: Option<String>,
+    /// Same as `main_variant`, for the worker model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_variant: Option<String>,
     /// The pre-campaign `models.default` (merged user/managed/requirements), captured when a campaign is overriding the default.
     /// Model resolution recovers to it if the campaign points at a model missing from the catalog.
     /// `None` when there is nothing to recover to. Runtime-only; never serialized.
@@ -5360,6 +5367,8 @@ pub(crate) fn sampling_config_for_model(
         reasoning_effort: info.reasoning_effort,
         reasoning_shape: info.reasoning_shape,
         reasoning_summary: info.reasoning_summary,
+        // The main session sets it per turn; the worker path sets it where it spawns.
+        openrouter_variant: None,
         force_http1: false,
         max_retries: info.max_retries,
         rate_limit_retry_threshold: info.rate_limit_retry_threshold,
@@ -5554,6 +5563,10 @@ pub(crate) fn to_acp_model_info(
                         REASONING_EFFORTS_META_KEY.to_string(),
                         reasoning_efforts_meta_value(&info.reasoning_efforts),
                     );
+                }
+                // The pager offers the OpenRouter routing-variant picker only for these.
+                if crate::openrouter_auth::is_openrouter_url(&info.base_url) {
+                    map.insert("openrouter".to_string(), serde_json::Value::Bool(true));
                 }
                 if map.is_empty() { None } else { Some(map) }
             };

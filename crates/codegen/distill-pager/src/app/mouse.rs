@@ -37,6 +37,13 @@ impl AgentView {
                 {
                     return InputOutcome::Action(Action::ShowTierEditor);
                 }
+                if self.hit_goal_retry_now.contains(mouse.column, mouse.row)
+                    && !self.pos_occluded(mouse.column, mouse.row)
+                {
+                    return InputOutcome::Action(Action::SendSlashCommandPreservingDraft(
+                        "/goal resume".into(),
+                    ));
+                }
                 if self.hit_todo_close.contains(mouse.column, mouse.row) {
                     self.todo.overlay.escape();
                     self.todo.on_state_change();
@@ -1099,6 +1106,9 @@ impl AgentView {
                     .update_hover(mouse.column, mouse.row);
                 changed |= self.hit_bg_status.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_goal_status.update_hover(mouse.column, mouse.row);
+                changed |= self
+                    .hit_goal_retry_now
+                    .update_hover(mouse.column, mouse.row);
                 changed |= self.hit_bg_close.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_catalog_close.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_cwd.update_hover(mouse.column, mouse.row);

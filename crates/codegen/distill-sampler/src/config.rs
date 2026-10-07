@@ -85,6 +85,9 @@ pub struct SamplerConfig {
     /// Overrides the Responses API `reasoning.summary` the request builder sets; `None` leaves it as built.
     #[serde(default)]
     pub reasoning_summary: Option<ReasoningSummary>,
+    /// OpenRouter routing suffix (`floor`, `nitro`, `exacto`) appended to the wire model slug; `None` sends the slug as is.
+    #[serde(default)]
+    pub openrouter_variant: Option<String>,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -154,6 +157,7 @@ impl Default for SamplerConfig {
             reasoning_effort: None,
             reasoning_shape: ReasoningShape::default(),
             reasoning_summary: None,
+            openrouter_variant: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,

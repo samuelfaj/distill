@@ -2084,6 +2084,7 @@ pub(crate) async fn spawn_session_actor(
         title_refresh_enabled,
         title_refresh_task: std::cell::RefCell::new(None),
         title_refresh_generation: std::cell::Cell::new(0),
+        session_cmd_tx: cmd_tx.downgrade(),
         next_title_refresh_idx: std::cell::Cell::new(initial_title_refresh_idx),
         session_turn_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),

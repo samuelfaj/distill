@@ -1013,6 +1013,10 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
         "default_selected_permission" => {
             Some(Action::SetDefaultSelectedPermission(choice.to_string()))
         }
+        "main_variant" | "worker_variant" => Some(Action::SetOpenrouterVariant {
+            key,
+            value: choice.to_string(),
+        }),
         _ => None,
     }
 }

@@ -189,6 +189,9 @@ pub(crate) fn build_goal_updated(
         last_event_timestamp: last_entry.map(|e| e.timestamp.clone()),
         deliverables: Vec::new(),
         pause_message: o.pause_message.clone(),
+        auto_retry_at_ms: o
+            .infra_retry_at_ms
+            .filter(|_| o.status == GoalStatus::InfraPaused),
         classifier_runs_attempted: (o.classifier_runs_attempted > 0)
             .then_some(o.classifier_runs_attempted),
         classifier_max_runs: o.classifier_max_runs,
@@ -230,6 +233,7 @@ pub(crate) fn build_goal_cleared() -> XaiSessionUpdate {
         last_event_timestamp: None,
         deliverables: Vec::new(),
         pause_message: None,
+        auto_retry_at_ms: None,
         classifier_runs_attempted: None,
         classifier_max_runs: None,
         last_classifier_verdict: None,

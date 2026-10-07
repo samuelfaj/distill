@@ -1099,6 +1099,10 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         // config file the jev lanes resolve at startup, so the failure toast is
         // the whole story.
         ("cheap_model", SettingValue::String(_)) => {}
+        ("main_variant" | "worker_variant", SettingValue::Enum(s)) => {
+            crate::acp::ModelState::set_openrouter_variant(key == "worker_variant", s);
+            refresh_open_settings_modals(app);
+        }
         // main_effort: saved for new sessions only; the running session already
         // switched, so there is no mirror to restore.
         ("main_effort", SettingValue::String(_)) => {}

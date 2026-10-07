@@ -518,6 +518,14 @@ pub enum Action {
     /// Set the canonical for `[ui].default_selected_permission`. Persists via `Effect::PersistSetting`.
     /// Payload is the registry's canonical string (`default` | `allow_once` | `allow_always` | `reject`).
     SetDefaultSelectedPermission(String),
+    /// Set `[models].main_variant` / `worker_variant` (`key`), value one of floor|nitro|exacto|none.
+    SetOpenrouterVariant { key: &'static str, value: String },
+    /// Run `then` (a model selection), then persist the OpenRouter variant for `key` (`main_variant` / `worker_variant`).
+    WithOpenrouterVariant {
+        key: &'static str,
+        value: String,
+        then: Box<Action>,
+    },
     /// Set the hunk-tracker mode. Payload is the registry canonical string.
     SetHunkTrackerMode(String),
     /// Set default screen mode (`fullscreen` | `minimal`); restart-required.

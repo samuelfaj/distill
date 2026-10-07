@@ -267,6 +267,8 @@ impl AgentView {
             last_context_click_at: None,
             hovered_prompt: false,
             hit_model_tier_change: Default::default(),
+            hit_goal_retry_now: Default::default(),
+            goal_retry_shown_secs: None,
             hit_context: Default::default(),
             hit_credits: Default::default(),
             hit_todo_close: Default::default(),

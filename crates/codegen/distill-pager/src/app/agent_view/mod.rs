@@ -1049,6 +1049,10 @@ pub struct AgentView {
     pub hovered_prompt: bool,
     /// `change` action in the prompt footer.
     pub hit_model_tier_change: HitArea,
+    /// `[try now]` link in the infra-pause auto-retry countdown row above the prompt.
+    pub hit_goal_retry_now: HitArea,
+    /// Countdown value painted last frame; the tick compares it to the current value to redraw once per second.
+    pub goal_retry_shown_secs: Option<u64>,
     pub hit_context: HitArea,
     pub hit_credits: HitArea,
     pub hit_todo_close: HitArea,

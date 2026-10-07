@@ -1264,6 +1264,7 @@ async fn read_parent_sampling_config(
                     .model_compaction_at_tokens(catalog_model_id.0.as_ref()),
                 doom_loop_recovery: ctx.sampling_config.doom_loop_recovery,
                 reasoning_shape: ctx.sampling_config.reasoning_shape,
+                openrouter_variant: ctx.sampling_config.openrouter_variant.clone(),
                 header_injector: ctx.sampling_config.header_injector.clone(),
             };
             let model_id = ctx.model_id.clone();
@@ -1368,6 +1369,7 @@ fn resolve_model_override_to_config(
         ctx.sampling_config.deployment_id.clone(),
         ctx.sampling_config.user_id.clone(),
     );
+    config.openrouter_variant = crate::jev::worker_variant();
     if config.bearer_resolver.is_none()
         && !ctx.would_strip_fallback_key(config.api_key.as_deref())
         && resolved_auth_type == distill_chat_state::AuthType::SessionToken

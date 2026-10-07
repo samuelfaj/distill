@@ -573,12 +573,97 @@ impl SessionActor {
             )
             .await;
         if paused {
+            let delay_secs = self.schedule_goal_infra_retry().await;
             self.send_slash_command_output(&format!(
-                "Goal paused due to turn error: {slash_detail}. Use /goal resume to retry."
+                "Goal paused due to turn error: {slash_detail}. Retrying automatically in {delay_secs}s; use /goal resume to retry now."
             ))
             .await;
         }
         paused
+    }
+
+    /// Arm the infra auto-retry timer for the goal just paused; returns the delay in seconds.
+    /// The timer re-enters the run loop via `GoalInfraRetry`, which re-checks goal id and generation.
+    async fn schedule_goal_infra_retry(&self) -> u64 {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        let (goal_id, delay_secs, generation) = {
+            let mut tracker = self.goal_tracker.lock();
+            let Some(goal_id) = tracker.snapshot().map(|o| o.goal_id.clone()) else {
+                return 0;
+            };
+            let (delay_secs, generation) = tracker.schedule_infra_retry(now_ms);
+            (goal_id, delay_secs, generation)
+        };
+        let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
+        let (tokens_used, finished_marginal) = self.goal_tokens(current_tokens);
+        self.goal_notify_sender().emit_goal_updated(
+            &mut self.goal_tracker.lock(),
+            tokens_used,
+            finished_marginal,
+        );
+        let cmd_tx = self.session_cmd_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            if let Some(cmd_tx) = cmd_tx.upgrade() {
+                let _ = cmd_tx.send(crate::session::commands::SessionCommand::GoalInfraRetry {
+                    goal_id,
+                    generation,
+                });
+            }
+        });
+        delay_secs
+    }
+
+    /// Infra auto-retry timer fired: resume the goal if `(goal_id, generation)` still names the armed pause.
+    pub(super) async fn handle_goal_infra_retry(
+        self: Arc<Self>,
+        goal_id: String,
+        generation: u64,
+        completion_tx: mpsc::UnboundedSender<super::turn_task::TurnCompletionMsg>,
+    ) {
+        if !self.goal_tracker.lock().infra_retry_matches(&goal_id, generation) {
+            return;
+        }
+        // Synthetic prompts are `SlashAuthority::Inert`, so resume directly instead of sending `/goal resume`
+        match self.resume_goal(None).await {
+            GoalResumeOutcome::Inference { reminder, user_msg } => {
+                self.send_slash_command_output(&user_msg).await;
+                let prompt_id = format!("goal-summary-{}", uuid::Uuid::now_v7());
+                let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(reminder))];
+                let (respond_to, _) = tokio::sync::oneshot::channel();
+                {
+                    let mut state = self.state.lock().await;
+                    state.pending_inputs.push_back(InputItem {
+                        prompt_id,
+                        prompt_blocks,
+                        prompt_mode: crate::session::plan_mode::PromptMode::Agent,
+                        trace_gcs_config: None,
+                        artifact_tracker: None,
+                        client_identifier: None,
+                        screen_mode: None,
+                        verbatim: true,
+                        json_schema: None,
+                        input_origin: InputOrigin::new(PromptOrigin::GoalSummary),
+                        task_wake_fallback: None,
+                        tool_overrides_update: None,
+                        respond_to,
+                        persist_ack: None,
+                        parsed_prompt_tx: None,
+                        initial_child_prompt_ready: None,
+                        queue_meta: None,
+                        queue_mutation_policy: QueueMutationPolicy::hidden(),
+                        send_now: false,
+                        traceparent: None,
+                    });
+                }
+                SessionActor::maybe_start_running_task(self.clone(), completion_tx).await;
+            }
+            GoalResumeOutcome::Message(msg) => {
+                self.send_slash_command_output(&msg).await;
+            }
+        }
     }
 
     /// Extract the best human-readable detail from an infra turn error.

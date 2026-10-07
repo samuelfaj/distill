@@ -13,6 +13,10 @@ pub struct ProviderError {
     pub code: Option<String>,
     pub param: Option<String>,
     pub wke: Option<String>,
+    /// OpenRouter `error.metadata.provider_name`: the upstream provider behind the failure.
+    pub provider: Option<String>,
+    /// `true` when `error.metadata` supplied the message, code, or provider.
+    pub upstream: bool,
 }
 
 impl ProviderError {
@@ -52,14 +56,18 @@ impl ProviderError {
     }
 
     pub fn display_message(&self) -> String {
-        match self.slug() {
+        let body = match self.slug() {
             Some(slug)
                 if !message_already_says(&self.message, slug)
                     && !slug.chars().all(|c| c.is_ascii_digit()) =>
             {
-                truncate_provider_message(&format!("{slug}: {}", self.message))
+                format!("{slug}: {}", self.message)
             }
-            _ => truncate_provider_message(&self.message),
+            _ => self.message.clone(),
+        };
+        match &self.provider {
+            Some(provider) => truncate_provider_message(&format!("{provider}: {body}")),
+            None => truncate_provider_message(&body),
         }
     }
 }
@@ -172,6 +180,8 @@ fn unwrap_double_encoding(outer: ProviderError) -> ProviderError {
         code: inner.code.or(outer.code),
         param: inner.param.or(outer.param),
         wke: inner.wke.or(outer.wke),
+        provider: outer.provider,
+        upstream: outer.upstream,
     }
 }
 
@@ -190,7 +200,7 @@ fn walk_object(obj: &Value) -> Option<ProviderError> {
             let message = first_str(inner, ["message", "error", "detail", "description"])
                 .or_else(|| nonempty_str(inner.get("type")))?;
             let (message, wke) = split_wke(message);
-            Some(ProviderError {
+            let parsed = ProviderError {
                 message,
                 kind: nonempty_str(inner.get("type")).or_else(|| nonempty_str(obj.get("type"))),
                 code: stringify_code(inner.get("code"))
@@ -199,7 +209,9 @@ fn walk_object(obj: &Value) -> Option<ProviderError> {
                 param: nonempty_str(inner.get("param"))
                     .or_else(|| nonempty_str(inner.get("field"))),
                 wke,
-            })
+                ..Default::default()
+            };
+            Some(apply_upstream_metadata(parsed, inner.get("metadata")))
         }
 
         Some(Value::String(s)) => {
@@ -215,6 +227,7 @@ fn walk_object(obj: &Value) -> Option<ProviderError> {
                     .or_else(|| stringify_code(obj.get("error_code"))),
                 param: nonempty_str(obj.get("param")),
                 wke,
+                ..Default::default()
             })
         }
 
@@ -230,9 +243,52 @@ fn walk_object(obj: &Value) -> Option<ProviderError> {
                     .or_else(|| stringify_code(obj.get("error_code"))),
                 param: nonempty_str(obj.get("param")),
                 wke,
+                ..Default::default()
             })
         }
     }
+}
+
+/// OpenRouter wraps upstream failures as `{"message":"Provider returned error","metadata":{"raw":..,"provider_name":..,"provider_error_code":..}}`.
+/// Lift the provider's own detail over the generic outer message; no usable metadata leaves `parsed` untouched.
+fn apply_upstream_metadata(mut parsed: ProviderError, metadata: Option<&Value>) -> ProviderError {
+    let Some(meta @ Value::Object(_)) = metadata else {
+        return parsed;
+    };
+    let provider = nonempty_str(meta.get("provider_name"));
+    let slug = nonempty_str(meta.get("provider_error_code"));
+    let raw = nonempty_str(meta.get("raw"));
+    let detail = raw.as_deref().and_then(|raw| {
+        if let Some(inner) = parse_provider_error_str(raw) {
+            return Some(inner);
+        }
+        if serde_json::from_str::<Value>(raw).is_ok() {
+            return None;
+        }
+        ProviderError::from_message(raw).filter(|p| !p.message_is_markup())
+    });
+    if provider.is_none() && slug.is_none() && detail.is_none() {
+        return parsed;
+    }
+    if let Some(detail) = detail {
+        parsed.message = detail.message;
+        parsed.kind = detail.kind.or(parsed.kind);
+        parsed.code = detail.code.or(slug).or(parsed.code);
+        parsed.param = detail.param.or(parsed.param);
+        parsed.wke = detail.wke.or(parsed.wke);
+    } else if slug.is_some() {
+        parsed.code = slug;
+    }
+    parsed.provider = provider;
+    parsed.upstream = true;
+    parsed
+}
+
+/// `true` for an OpenRouter upstream-provider failure envelope (`error.metadata.provider_name` present).
+pub fn is_upstream_provider_envelope(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .is_some_and(|v| nonempty_str(v.pointer("/error/metadata/provider_name")).is_some())
 }
 
 fn truncate_provider_message(s: &str) -> String {

@@ -20,13 +20,13 @@ impl SlashCommand for ModelCommand {
         name: "model",
         aliases: ["m"],
         description: "Choose the main model",
-        usage: "/model <name> [effort]",
+        usage: "/model <name> [effort] [variant]",
         takes_args: true,
         args_required: true,
         session_scoped: true,
         // The dashboard offers `/model` to pick the model for the next spawned agent (intercepted in `dispatch_dashboard_dispatch_slash`).
         offered_when_session_less: true,
-        arg_placeholder: "<model> [effort]",
+        arg_placeholder: "<model> [effort] [variant]",
     }
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
@@ -34,9 +34,12 @@ impl SlashCommand for ModelCommand {
             return None;
         }
 
-        // Effort phase if input is "<reasoning-model> ", else model phase.
+        // Variant phase for OpenRouter models after the effort, effort phase if input is "<model> ", else model phase.
+        if let Some(items) = build_variant_items(ctx.models, args_query) {
+            return Some(items);
+        }
         if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
-            return Some(build_effort_items(ctx.models, &model_id));
+            return Some(build_effort_items_chained(ctx.models, &model_id));
         }
         Some(build_model_items(ctx.models))
     }
@@ -44,35 +47,122 @@ impl SlashCommand for ModelCommand {
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
         if trimmed.is_empty() {
-            return CommandResult::Error("Usage: /model <name> [effort]".into());
+            return CommandResult::Error("Usage: /model <name> [effort] [variant]".into());
         }
 
-        // Prefer an exact full-string catalog match first. Model display names often contain spaces ("Grok 4.5").
-        // If we split on the last token first, a shorter catalog entry ("Grok") would steal the prefix and treat "4.5" as an effort level
-        if let Some(id) = ctx.models.resolve_by_name_or_id(trimmed) {
-            return CommandResult::Action(Action::SetDefaultModel(id));
-        }
-
-        // A trailing effort token on a reasoning model makes a session-scoped switch (not persisted as default)
-        // Resolve via the shared gate so a rejected level (e.g. `none` on grok-4.5) reports the effort error with the model's offered ids.
-        // Without it the fall-through reports "Unknown model: … none"
-        if let Some((prefix, token)) = split_trailing_token(trimmed)
-            && let Some(id) = resolve_model(ctx.models, prefix)
-        {
-            if token.eq_ignore_ascii_case("auto") {
-                return CommandResult::Action(Action::SetDefaultModel(id));
+        match parse_selection(ctx.models, trimmed) {
+            // A trailing effort token makes a session-scoped switch (not persisted as default); no token or `auto` sets the default.
+            Ok((id, effort, variant)) => {
+                let action = match effort {
+                    Some(effort) => Action::SwitchModel {
+                        model_id: id,
+                        effort: Some(effort),
+                    },
+                    None => Action::SetDefaultModel(id),
+                };
+                CommandResult::Action(with_variant(action, "main_variant", variant))
             }
-            return match ctx.models.resolve_effort_for_model(&id, token) {
-                Ok(effort) => CommandResult::Action(Action::SwitchModel {
-                    model_id: id,
-                    effort: Some(effort),
-                }),
-                Err(err) => CommandResult::Error(err.message()),
-            };
+            Err(None) => CommandResult::Error(format!("Unknown model: {trimmed}")),
+            Err(Some(message)) => CommandResult::Error(message),
         }
-
-        CommandResult::Error(format!("Unknown model: {trimmed}"))
     }
+}
+
+/// OpenRouter routing variants offered after the effort, with their picker description.
+const VARIANTS: [(&str, &str, &str); 4] = [
+    ("floor", "Floor (default)", "Cheapest provider first"),
+    ("nitro", "Nitro", "Fastest throughput provider first"),
+    (
+        "exacto",
+        "Exacto",
+        "Providers with best tool-calling accuracy",
+    ),
+    ("none", "None", "OpenRouter default routing"),
+];
+
+/// Wrap `action` so the chosen variant is persisted for `key` as well.
+pub(super) fn with_variant(
+    action: Action,
+    key: &'static str,
+    variant: Option<&'static str>,
+) -> Action {
+    match variant {
+        Some(value) => Action::WithOpenrouterVariant {
+            key,
+            value: value.to_owned(),
+            then: Box::new(action),
+        },
+        None => action,
+    }
+}
+
+fn parse_variant(token: &str) -> Result<&'static str, String> {
+    VARIANTS
+        .iter()
+        .find(|(id, _, _)| token.eq_ignore_ascii_case(id))
+        .map(|(id, _, _)| *id)
+        .ok_or_else(|| {
+            format!(
+                "unknown variant '{token}'; use one of: {}",
+                VARIANTS.map(|(id, _, _)| id).join(", ")
+            )
+        })
+}
+
+fn parse_effort_token(
+    models: &ModelState,
+    id: &acp::ModelId,
+    token: &str,
+) -> Result<Option<distill_shell::sampling::types::ReasoningEffort>, String> {
+    if token.eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    models
+        .resolve_effort_for_model(id, token)
+        .map(Some)
+        .map_err(|error| error.message())
+}
+
+/// Parse `<model> [effort] [variant]`; `Err(None)` means no model matched.
+/// Names contain spaces, so the effort and variant tokens are taken from the end.
+/// A full-string catalog match wins first: a shorter entry ("Grok") must not steal the prefix of "Grok 4.5" and read "4.5" as an effort.
+/// A rejected effort (e.g. `none` on grok-4.5) reports the effort error with the model's offered ids.
+#[allow(clippy::type_complexity)]
+pub(crate) fn parse_selection(
+    models: &ModelState,
+    args: &str,
+) -> Result<
+    (
+        acp::ModelId,
+        Option<distill_shell::sampling::types::ReasoningEffort>,
+        Option<&'static str>,
+    ),
+    Option<String>,
+> {
+    if let Some(id) = models.resolve_by_name_or_id(args) {
+        return Ok((id, None, None));
+    }
+    if let Some((prefix, token)) = split_trailing_token(args)
+        && let Some(id) = resolve_model(models, prefix)
+    {
+        let effort = parse_effort_token(models, &id, token).map_err(Some)?;
+        return Ok((id, effort, None));
+    }
+    if let Some((rest, variant_token)) = split_trailing_token(args)
+        && let Some((prefix, effort_token)) = split_trailing_token(rest)
+        && let Some(id) = resolve_model(models, prefix)
+    {
+        let effort = parse_effort_token(models, &id, effort_token).map_err(Some)?;
+        let variant = parse_variant(variant_token).map_err(Some)?;
+        if !models.is_openrouter(&id) {
+            return Err(Some(format!(
+                "'{}' is not served by OpenRouter; variants do not apply",
+                models.display_name_for(&id)
+            )));
+        }
+        return Ok((id, effort, Some(variant)));
+    }
+    Err(None)
 }
 
 /// Look up a model by case-insensitive display name OR model id match.
@@ -182,6 +272,73 @@ pub(super) fn build_effort_items(models: &ModelState, model_id: &acp::ModelId) -
     items
 }
 
+/// Effort rows for `/model` and `/worker-model`: OpenRouter models get a trailing space on each row so the picker chains into the variant phase.
+pub(super) fn build_effort_items_chained(
+    models: &ModelState,
+    model_id: &acp::ModelId,
+) -> Vec<ArgItem> {
+    let mut items = build_effort_items(models, model_id);
+    if models.is_openrouter(model_id) {
+        for item in &mut items {
+            item.insert_text.push(' ');
+        }
+    }
+    items
+}
+
+/// Marks variant rows in `match_text`; effort rows use a letter or `0`.
+const VARIANT_SORT_PREFIX: char = 'v';
+
+/// Whether the picker rows are the variant phase.
+pub(crate) fn is_variant_items(items: &[ArgItem]) -> bool {
+    !items.is_empty()
+        && items.iter().all(|item| {
+            let mut chars = item.match_text.chars();
+            chars.next() == Some(VARIANT_SORT_PREFIX)
+                && chars.next().is_some_and(|c| c.is_ascii_digit())
+                && chars.next() == Some(' ')
+        })
+}
+
+/// Index of the saved variant (`floor|nitro|exacto|none`) among the variant rows.
+pub(crate) fn saved_variant_index(saved: &str) -> usize {
+    VARIANTS
+        .iter()
+        .position(|(id, _, _)| *id == saved)
+        .unwrap_or(0)
+}
+
+/// Variant rows when `args_query` is `"<openrouter-model> <effort> ..."`; `None` for other models and phases.
+/// `insert_text` is `"ModelName high nitro"` so selecting a row completes all three tokens.
+pub(super) fn build_variant_items(models: &ModelState, args_query: &str) -> Option<Vec<ArgItem>> {
+    let (head, _) = args_query.rsplit_once(char::is_whitespace)?;
+    let head = head.trim_end();
+    if models.resolve_by_name_or_id(head).is_some() {
+        return None;
+    }
+    let (prefix, effort_token) = split_trailing_token(head)?;
+    let id = resolve_model(models, prefix)?;
+    if !models.is_openrouter(&id) || parse_effort_token(models, &id, effort_token).is_err() {
+        return None;
+    }
+    let name = models.display_name_for(&id);
+    Some(
+        VARIANTS
+            .iter()
+            .enumerate()
+            .map(|(idx, (variant, label, description))| {
+                let insert_text = format!("{name} {effort_token} {variant}");
+                ArgItem {
+                    display: (*label).to_owned(),
+                    match_text: format!("{VARIANT_SORT_PREFIX}{idx} {insert_text}"),
+                    insert_text,
+                    description: (*description).to_owned(),
+                }
+            })
+            .collect(),
+    )
+}
+
 /// The utility tier reuses the model/effort picker, restricted to OpenRouter.
 pub(super) fn tier_suggestions(models: &ModelState, query: &str) -> Vec<ArgItem> {
     let mut candidates = models.clone();
@@ -218,27 +375,18 @@ pub(crate) fn parse_tier_selection(
     ),
     String,
 > {
-    let args = args.trim();
-    if let Some(id) = models.resolve_by_name_or_id(args) {
-        return Ok((id.0.to_string(), None));
-    }
-    if let Some((prefix, token)) = split_trailing_token(args)
-        && let Some(id) = models.resolve_by_name_or_id(prefix)
-    {
-        let effort = if token.eq_ignore_ascii_case("auto") {
-            None
-        } else {
-            Some(
-                models
-                    .resolve_effort_for_model(&id, token)
-                    .map_err(|error| error.message())?,
+    let (id, effort, variant) = parse_selection(models, args.trim()).map_err(|error| {
+        error.unwrap_or_else(|| {
+            format!(
+                "Unknown model: {}. Choose a model from the list; effort defaults to auto.",
+                args.trim()
             )
-        };
-        return Ok((id.0.to_string(), effort));
+        })
+    })?;
+    if variant.is_some() {
+        return Err("variants apply only to /model and /worker-model".into());
     }
-    Err(format!(
-        "Unknown model: {args}. Choose a model from the list; effort defaults to auto."
-    ))
+    Ok((id.0.to_string(), effort))
 }
 
 #[cfg(test)]
@@ -562,5 +710,88 @@ mod tests {
             );
         }
         assert_eq!(detect_effort_phase(&state, "plain "), Some(id));
+    }
+
+    fn openrouter_model(id: &str, name: &str) -> (acp::ModelId, acp::ModelInfo) {
+        let (id, mut info) = model_with_reasoning(id, name);
+        info.meta
+            .as_mut()
+            .unwrap()
+            .insert("openrouter".into(), serde_json::Value::Bool(true));
+        (id, info)
+    }
+
+    #[test]
+    fn variant_phase_is_offered_only_for_openrouter_models() {
+        let mut state = ModelState::default();
+        let (oid, oinfo) = openrouter_model("or-x", "DeepSeek V4.1 Flash");
+        let (rid, rinfo) = model_with_reasoning("reasoning-x", "Reasoning X");
+        state.available.insert(oid.clone(), oinfo);
+        state.available.insert(rid, rinfo);
+
+        let items = build_variant_items(&state, "DeepSeek V4.1 Flash high ").unwrap();
+        let ids: Vec<_> = items.iter().map(|i| i.insert_text.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "DeepSeek V4.1 Flash high floor",
+                "DeepSeek V4.1 Flash high nitro",
+                "DeepSeek V4.1 Flash high exacto",
+                "DeepSeek V4.1 Flash high none",
+            ]
+        );
+        assert!(is_variant_items(&items));
+        assert!(build_variant_items(&state, "Reasoning X high ").is_none());
+        assert!(build_variant_items(&state, "DeepSeek V4.1 Flash ").is_none());
+
+        // The effort rows chain (trailing space) for OpenRouter only.
+        let chained = build_effort_items_chained(&state, &oid);
+        assert!(chained.iter().all(|i| i.insert_text.ends_with(' ')));
+        assert!(!is_variant_items(&chained));
+        let (plain_id, _) = model_with_reasoning("reasoning-x", "Reasoning X");
+        let plain = build_effort_items_chained(&state, &plain_id);
+        assert!(plain.iter().all(|i| !i.insert_text.ends_with(' ')));
+    }
+
+    #[test]
+    fn run_parses_variant_as_third_token_and_rejects_invalid() {
+        let mut state = ModelState::default();
+        let (id, info) = openrouter_model("or-x", "DeepSeek V4.1 Flash");
+        state.available.insert(id.clone(), info);
+        let (pid, pinfo) = model_with_reasoning("reasoning-x", "Reasoning X");
+        state.available.insert(pid, pinfo);
+        let mut ctx = dummy_exec_ctx(&state);
+
+        match ModelCommand.run(&mut ctx, "DeepSeek V4.1 Flash high nitro") {
+            CommandResult::Action(Action::WithOpenrouterVariant { key, value, then }) => {
+                assert_eq!(key, "main_variant");
+                assert_eq!(value, "nitro");
+                assert!(matches!(
+                    *then,
+                    Action::SwitchModel { model_id, effort: Some(ReasoningEffort::High) } if model_id == id
+                ));
+            }
+            other => panic!("expected variant action, got {other:?}"),
+        }
+        match ModelCommand.run(&mut ctx, "DeepSeek V4.1 Flash auto exacto") {
+            CommandResult::Action(Action::WithOpenrouterVariant { value, then, .. }) => {
+                assert_eq!(value, "exacto");
+                assert!(matches!(*then, Action::SetDefaultModel(m) if m == id));
+            }
+            other => panic!("expected variant action, got {other:?}"),
+        }
+        // Without a variant the command is unchanged.
+        assert!(matches!(
+            ModelCommand.run(&mut ctx, "DeepSeek V4.1 Flash high"),
+            CommandResult::Action(Action::SwitchModel { .. })
+        ));
+        match ModelCommand.run(&mut ctx, "DeepSeek V4.1 Flash high turbo") {
+            CommandResult::Error(msg) => assert!(msg.contains("unknown variant 'turbo'"), "{msg}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        match ModelCommand.run(&mut ctx, "Reasoning X high nitro") {
+            CommandResult::Error(msg) => assert!(msg.contains("not served by OpenRouter"), "{msg}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 }

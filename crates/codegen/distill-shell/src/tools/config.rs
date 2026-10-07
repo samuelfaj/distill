@@ -215,6 +215,7 @@ impl ShellToolsetConfig {
             reasoning_effort: None,
             reasoning_shape: Default::default(),
             reasoning_summary: None,
+            openrouter_variant: None,
             force_http1: false,
             max_retries: None,
             rate_limit_retry_threshold: None,

@@ -98,9 +98,9 @@ Rename the current session. Alias: `/title`.
 
 ## Model and Mode
 
-### `/model <name>`
+### `/model <name> [effort] [variant]`
 
-Switch models. Accepts a model ID or display name (case-insensitive), and for reasoning models you can add an effort level as a second argument. Alias: `/m`.
+Switch models. Accepts a model ID or display name (case-insensitive), and for reasoning models you can add an effort level as a second argument. The optional third argument `variant` applies to OpenRouter models only: `floor` (default, cheapest provider first), `nitro`, `exacto` or `none`; it is saved as `[models].main_variant`. Alias: `/m`.
 
 ```
 /model grok-4.6
@@ -108,9 +108,9 @@ Switch models. Accepts a model ID or display name (case-insensitive), and for re
 /model Reasoning X high
 ```
 
-### `/worker-model <name> [effort|auto]|clear`
+### `/worker-model <name> [effort|auto] [variant]|clear`
 
-Choose the optional worker model and its effort. The main model gives the worker every assignment a precise spec fully determines and keeps planning, judgment and review for itself. The effort is a level the model offers, or `auto` (the default), which lets the decision layer pick it for every call. `clear` removes the worker, so the main model does all the work. Alias: `/worker`. `/tiers worker <name> [effort|auto]` does the same, and bare `/tiers` opens the editor for the main, worker, and utility models, where each tier is entered as `model effort`.
+Choose the optional worker model and its effort. The main model gives the worker every assignment a precise spec fully determines and keeps planning, judgment and review for itself. The effort is a level the model offers, or `auto` (the default), which lets the decision layer pick it for every call. `clear` removes the worker, so the main model does all the work. The optional `variant` applies to OpenRouter models only: `floor` (default, cheapest provider first), `nitro`, `exacto` or `none`; it is saved as `[models].worker_variant`. Alias: `/worker`. `/tiers worker <name> [effort|auto]` does the same, and bare `/tiers` opens the editor for the main, worker, and utility models, where each tier is entered as `model effort`.
 
 ```
 /worker-model gpt-6-luna auto

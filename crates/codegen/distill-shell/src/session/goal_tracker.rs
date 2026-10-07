@@ -573,6 +573,11 @@ pub struct GoalOrchestration {
     /// So the "Verifying…" badge survives the token-accounting and continuation `GoalUpdated`s that fire mid-verification.
     #[serde(skip)]
     pub verifying_in_flight: bool,
+
+    /// Epoch ms at which the pending infra auto-retry fires; `Some` only while `InfraPaused` with a timer armed.
+    /// Runtime only (lives here so `build_goal_updated` can ship it); the attempt counter and generation live on [`GoalTracker`].
+    #[serde(skip)]
+    pub infra_retry_at_ms: Option<i64>,
 }
 
 impl GoalOrchestration {
@@ -607,6 +612,21 @@ pub struct GoalTracker {
     session_dir: PathBuf,
     active_since: Option<Instant>,
     planner_run: Option<GoalPlannerRunState>,
+    /// Consecutive infra auto-retries scheduled without an intervening goal-turn success.
+    /// Runtime only; never persisted.
+    infra_retry_attempt: u32,
+    /// Bumped on every transition that must cancel a scheduled retry, so a stale timer cannot resume the goal.
+    infra_retry_generation: u64,
+}
+
+const INFRA_RETRY_BASE_SECS: u64 = 60;
+const INFRA_RETRY_MAX_SECS: u64 = 3600;
+
+/// Delay before infra auto-retry number `attempt` (0-based): 60s doubling, capped at 3600s.
+pub(crate) fn infra_retry_delay_secs(attempt: u32) -> u64 {
+    INFRA_RETRY_BASE_SECS
+        .saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX))
+        .min(INFRA_RETRY_MAX_SECS)
 }
 
 #[derive(Debug)]
@@ -622,6 +642,8 @@ impl GoalTracker {
             session_dir,
             active_since: None,
             planner_run: None,
+            infra_retry_attempt: 0,
+            infra_retry_generation: 0,
         }
     }
 
@@ -640,6 +662,7 @@ impl GoalTracker {
         // `planning_in_flight` / `verifying_in_flight` are `#[serde(skip)]` but in-memory-clone callers bypass that; reset explicitly
         snapshot.planning_in_flight = false;
         snapshot.verifying_in_flight = false;
+        snapshot.infra_retry_at_ms = None;
         // Token records anchoring a resumed skeptic-0's marginal accounting are in-memory only
         // A post-restart resume would re-count its full prior cumulative as fresh spend, so cold-spawn instead
         snapshot.skeptic0_session_id = None;
@@ -685,7 +708,52 @@ impl GoalTracker {
             session_dir,
             active_since,
             planner_run: None,
+            infra_retry_attempt: 0,
+            infra_retry_generation: 0,
         }
+    }
+
+    pub(crate) fn infra_retry_generation(&self) -> u64 {
+        self.infra_retry_generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn infra_retry_attempt(&self) -> u32 {
+        self.infra_retry_attempt
+    }
+
+    /// Cancel any scheduled infra retry: stale timers no longer match the generation.
+    fn invalidate_infra_retry(&mut self) {
+        self.infra_retry_generation = self.infra_retry_generation.wrapping_add(1);
+        if let Some(o) = &mut self.orchestration {
+            o.infra_retry_at_ms = None;
+        }
+    }
+
+    /// Arm the next infra auto-retry; returns `(delay_secs, generation)` for the timer.
+    /// The attempt counter advances so a retry that fails again doubles the delay.
+    pub(crate) fn schedule_infra_retry(&mut self, now_ms: i64) -> (u64, u64) {
+        let delay = infra_retry_delay_secs(self.infra_retry_attempt);
+        self.infra_retry_attempt = self.infra_retry_attempt.saturating_add(1);
+        self.invalidate_infra_retry();
+        if let Some(o) = &mut self.orchestration {
+            o.infra_retry_at_ms = Some(now_ms.saturating_add((delay as i64).saturating_mul(1000)));
+        }
+        (delay, self.infra_retry_generation)
+    }
+
+    /// A goal turn succeeded: the next infra failure starts the backoff over.
+    pub(crate) fn reset_infra_retry_attempt(&mut self) {
+        self.infra_retry_attempt = 0;
+    }
+
+    /// True when `(goal_id, generation)` still names the live `InfraPaused` goal whose retry is armed.
+    pub(crate) fn infra_retry_matches(&self, goal_id: &str, generation: u64) -> bool {
+        self.infra_retry_generation == generation
+            && self
+                .orchestration
+                .as_ref()
+                .is_some_and(|o| o.goal_id == goal_id && o.status == GoalStatus::InfraPaused)
     }
 
     pub fn snapshot(&self) -> Option<&GoalOrchestration> {
@@ -823,6 +891,8 @@ impl GoalTracker {
         created_at: String,
         baseline_commit: Option<String>,
     ) {
+        self.invalidate_infra_retry();
+        self.infra_retry_attempt = 0;
         let _ = std::fs::create_dir_all(self.goal_dir());
         // Replacing a still-active goal: same rescue-then-remove contract as the terminal transitions
         // The prior goal's details path may already be in user-visible messages
@@ -903,6 +973,7 @@ impl GoalTracker {
             live_tool_call_count: 0,
             planning_in_flight: false,
             verifying_in_flight: false,
+            infra_retry_at_ms: None,
         });
         self.active_since = Some(Instant::now());
         self.record_event(GoalEvent::GoalCreated, None);
@@ -953,6 +1024,7 @@ impl GoalTracker {
             false
         };
         if applied {
+            self.invalidate_infra_retry();
             self.record_event(
                 GoalEvent::GoalPaused,
                 Some(reason.history_detail().to_owned()),
@@ -978,6 +1050,7 @@ impl GoalTracker {
             o.progress.no_progress_rounds = 0;
             o.escalation_runs = 0;
             self.active_since = Some(Instant::now());
+            self.invalidate_infra_retry();
             self.record_event(GoalEvent::GoalResumed, None);
             return true;
         }
@@ -1010,6 +1083,8 @@ impl GoalTracker {
             o.reset_strategist_fields();
             o.reset_evaluator_blocker_fields();
             // The achieved ack points the user at the details file, so it must outlive the scratch-root removal below
+            self.invalidate_infra_retry();
+            self.infra_retry_attempt = 0;
             self.rescue_classifier_details();
             self.remove_scratch_root();
             self.record_event(GoalEvent::GoalCompleted, None);
@@ -1041,6 +1116,7 @@ impl GoalTracker {
             o.reset_strategist_fields();
             o.reset_evaluator_blocker_fields();
             // Symmetric with `complete`.
+            self.invalidate_infra_retry();
             self.rescue_classifier_details();
             self.remove_scratch_root();
             self.record_event(GoalEvent::BudgetExceeded, None);
@@ -1053,6 +1129,8 @@ impl GoalTracker {
     /// Dropping the whole orchestration also drops `plan_baseline_file` / `skeptic0_session_id`, so no per-field reset is needed here.
     /// Mirrors the `complete` / `budget_limit` cleanup.
     pub fn clear(&mut self) {
+        self.invalidate_infra_retry();
+        self.infra_retry_attempt = 0;
         self.rescue_classifier_details();
         self.remove_scratch_root();
         self.orchestration = None;
@@ -1312,6 +1390,7 @@ pub(crate) fn make_base_orchestration() -> GoalOrchestration {
         live_tool_call_count: 0,
         planning_in_flight: false,
         verifying_in_flight: false,
+        infra_retry_at_ms: None,
     }
 }
 

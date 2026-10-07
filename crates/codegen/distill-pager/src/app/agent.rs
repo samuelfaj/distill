@@ -474,6 +474,8 @@ pub struct GoalDisplayState {
     /// Retained for wire backwards compat; always empty in the simplified model.
     pub deliverables: Vec<()>,
     pub pause_message: Option<String>,
+    /// Epoch ms at which an `infra_paused` goal auto-retries; `None` when no retry is scheduled.
+    pub auto_retry_at_ms: Option<i64>,
     /// Number of classifier runs the shell has performed. `None` when no run has happened yet.
     pub classifier_runs_attempted: Option<u32>,
     /// Hard cap on classifier runs for this goal. `None` when not configured.
@@ -531,6 +533,7 @@ impl GoalDisplayState {
             finished_subagent_tokens: 0,
             deliverables: Vec::new(),
             pause_message: None,
+            auto_retry_at_ms: None,
             classifier_runs_attempted: None,
             classifier_max_runs: None,
             last_classifier_verdict: None,
@@ -566,6 +569,36 @@ impl GoalDisplayState {
         };
         live.max(self.elapsed_floor_ms)
     }
+    /// Whole seconds until the scheduled auto-retry, or `None` unless the goal is `InfraPaused` with a retry time set.
+    pub fn retry_countdown_secs(&self, now_ms: i64) -> Option<u64> {
+        if self.status != GoalDisplayStatus::InfraPaused {
+            return None;
+        }
+        Some(retry_secs_remaining(self.auto_retry_at_ms?, now_ms))
+    }
+}
+/// Seconds until `retry_at_ms`, rounded up so the count never shows 0 while time remains; 0 once due or past.
+pub(crate) fn retry_secs_remaining(retry_at_ms: i64, now_ms: i64) -> u64 {
+    let left = retry_at_ms.saturating_sub(now_ms);
+    if left <= 0 {
+        0
+    } else {
+        (left as u64).div_ceil(1000)
+    }
+}
+/// Text of the retry countdown row and whether the trailing `[try now]` link is shown (hidden once the countdown reaches 0).
+pub(crate) fn retry_countdown_label(secs: u64) -> (String, bool) {
+    if secs == 0 {
+        ("Retrying…".to_owned(), false)
+    } else {
+        (format!("Retrying in {secs} seconds "), true)
+    }
+}
+/// Epoch milliseconds from the wall clock, the same time base as `auto_retry_at_ms`.
+pub(crate) fn now_epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 /// What the agent is currently doing.
 ///
@@ -1096,6 +1129,23 @@ impl AgentSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The countdown must never read 0 while time remains, and must only appear for an infra pause.
+    #[test]
+    fn retry_countdown_rounds_up_and_gates_on_infra_pause() {
+        assert_eq!(retry_secs_remaining(60_000, 600), 60);
+        assert_eq!(retry_secs_remaining(1_000, 999), 1);
+        assert_eq!(retry_secs_remaining(1_000, 1_000), 0);
+        assert_eq!(retry_secs_remaining(1_000, 5_000), 0);
+        assert_eq!(retry_countdown_label(42), ("Retrying in 42 seconds ".into(), true));
+        assert_eq!(retry_countdown_label(0), ("Retrying…".into(), false));
+
+        let mut goal = GoalDisplayState::test_stub();
+        goal.auto_retry_at_ms = Some(10_000);
+        goal.status = GoalDisplayStatus::InfraPaused;
+        assert_eq!(goal.retry_countdown_secs(0), Some(10));
+        goal.status = GoalDisplayStatus::UserPaused;
+        assert_eq!(goal.retry_countdown_secs(0), None);
+    }
     fn test_session() -> AgentSession {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         AgentSession {

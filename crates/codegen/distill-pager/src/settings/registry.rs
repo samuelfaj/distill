@@ -632,6 +632,12 @@ pub fn current_value_for(
             )
             .as_canonical(),
         )),
+        "main_variant" => Some(SettingValue::Enum(
+            crate::acp::ModelState::openrouter_variant(false),
+        )),
+        "worker_variant" => Some(SettingValue::Enum(
+            crate::acp::ModelState::openrouter_variant(true),
+        )),
         // default_model: reads from the pager snapshot (not UiConfig)
         // None (no catalog yet) renders as the empty string
         "default_model" => Some(SettingValue::String(
@@ -1129,6 +1135,10 @@ mod tests {
                          `UiConfig::default_selected_permission: Option<String>` (defaults to \
                          None, mapped to the `always_allow_all_sessions` canonical)",
                     );
+                }
+                // main_variant / worker_variant: `[models]` keys with no UiConfig field; unset resolves to floor
+                ("main_variant" | "worker_variant", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(*default, "floor", "unset OpenRouter variant resolves to floor");
                 }
                 // fork_secondary_model: the empty-string default means "no opinion"
                 ("fork_secondary_model", SettingKind::DynamicEnum { default, .. }) => {

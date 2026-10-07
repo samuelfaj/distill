@@ -1893,6 +1893,36 @@ pub(in crate::app::dispatch) fn set_worker_model(
     effects
 }
 
+/// Set `[models].main_variant` / `worker_variant`; the next request reads the saved value.
+pub(in crate::app::dispatch) fn set_openrouter_variant(
+    app: &mut AppView,
+    key: &'static str,
+    value: String,
+) -> Vec<Effect> {
+    let worker = key == "worker_variant";
+    let new: &'static str = match value.as_str() {
+        "nitro" => "nitro",
+        "exacto" => "exacto",
+        "none" => "none",
+        _ => "floor",
+    };
+    let prev = crate::acp::ModelState::openrouter_variant(worker);
+    if prev == new {
+        return vec![];
+    }
+    crate::acp::ModelState::set_openrouter_variant(worker, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key, value = new, "setting changed");
+    app.show_toast(&format!(
+        "\u{2713} OpenRouter variant ({}): {new}",
+        if worker { "worker" } else { "main" }
+    ));
+    vec![Effect::PersistSetting {
+        key,
+        value: crate::settings::SettingValue::Enum(new),
+        rollback_value: crate::settings::SettingValue::Enum(prev),
+    }]
+}
 /// Remove this instance's worker model: the main model then does all the work.
 /// Persists `[models].worker = ""`; does NOT mutate the active session's main model.
 pub(in crate::app::dispatch) fn clear_worker_model(app: &mut AppView) -> Vec<Effect> {

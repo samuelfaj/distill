@@ -81,6 +81,12 @@ enum ShortcutsBarContent {
     Hidden,
 }
 impl AgentView {
+    /// Seconds left on the infra-pause auto-retry countdown, `None` when no countdown is shown.
+    pub(crate) fn goal_retry_secs(&self) -> Option<u64> {
+        self.goal_state
+            .as_ref()?
+            .retry_countdown_secs(crate::app::agent::now_epoch_ms())
+    }
     pub(crate) fn live_standalone_subagent_tokens(&self) -> u64 {
         self.subagent_sessions
             .values()
@@ -614,6 +620,7 @@ impl AgentView {
                 .is_some_and(|(owner, _, _)| !crate::views::announcements::is_dismissible(owner));
         self.frame_occluder_rects.clear();
         self.hit_model_tier_change.clear();
+        self.hit_goal_retry_now.clear();
         self.clear_scrollback_selection_state();
         self.refresh_prompt_suggestion_gate();
         let theme = Theme::current();
@@ -659,6 +666,7 @@ impl AgentView {
             self.hit_announcement_cta.clear();
             self.hit_upgrade_cta.clear();
             self.hit_model_tier_change.clear();
+            self.hit_goal_retry_now.clear();
             self.hit_dashboard.clear();
             self.hit_overlay_prev.clear();
             self.hit_overlay_next.clear();
@@ -1113,6 +1121,9 @@ impl AgentView {
             area.width,
             self.scrollback.turn_count(),
         );
+        let goal_retry_secs = self.goal_retry_secs();
+        let goal_retry_height =
+            u16::from(goal_retry_secs.is_some() && prompt_height > 0 && area.height > agent::SHORT_TERMINAL_ROWS);
         let mut layout_params = AgentViewLayoutParams {
             area,
             layout_cfg: *layout_cfg,
@@ -1131,6 +1142,7 @@ impl AgentView {
             dock_height,
             prompt_gap,
             voice_recording_height,
+            goal_retry_height,
             shortcuts_height: 1,
             status_line_height: status_line.height(),
             compact,
@@ -2290,6 +2302,43 @@ impl AgentView {
             self.hit_voice_stop_button.rect = Some(Rect::new(stop_x, rec_area.y, stop_w, 1));
         } else {
             self.hit_voice_stop_button.clear();
+        }
+        self.goal_retry_shown_secs = None;
+        if let Some(secs) = goal_retry_secs.filter(|_| layout.goal_retry.height > 0) {
+            self.goal_retry_shown_secs = Some(secs);
+            let row = layout.goal_retry;
+            let bg = theme.bg_base;
+            let (text, show_link) = crate::app::agent::retry_countdown_label(secs);
+            let text_x = row.x + layout_cfg.block_pad_left;
+            let text_w = unicode_width::UnicodeWidthStr::width(text.as_str()) as u16;
+            buf.set_style(row, Style::default().bg(bg));
+            buf.set_string(
+                text_x,
+                row.y,
+                &text,
+                Style::default().fg(theme.warning).bg(bg),
+            );
+            if show_link {
+                let link = "[try now]";
+                let link_w = unicode_width::UnicodeWidthStr::width(link) as u16;
+                let link_x = text_x + text_w;
+                let link_fg = if self.hit_goal_retry_now.hovered {
+                    theme.link_fg
+                } else {
+                    theme.accent_system
+                };
+                buf.set_string(
+                    link_x,
+                    row.y,
+                    link,
+                    Style::default()
+                        .fg(link_fg)
+                        .bg(bg)
+                        .add_modifier(ratatui::style::Modifier::UNDERLINED),
+                );
+                self.hit_goal_retry_now
+                    .set(Some(Rect::new(link_x, row.y, link_w, 1)));
+            }
         }
         self.follow_up_chips = match self.follow_ups.as_ref() {
             Some(fu) => agent::render_follow_ups(

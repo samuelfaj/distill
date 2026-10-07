@@ -2274,3 +2274,104 @@ fn escalations_count_until_progress_returns() {
     assert_eq!(t.finish_escalation(), None, "nothing left to resolve");
     assert_eq!(t.note_escalation(), 1, "a new stall counts from one");
 }
+
+/// Backoff must double from a minute but never wait longer than an hour.
+#[test]
+fn infra_retry_delay_doubles_and_caps() {
+    let secs: Vec<u64> = (0..4).map(infra_retry_delay_secs).collect();
+    assert_eq!(secs, [60, 120, 240, 480]);
+    assert_eq!(infra_retry_delay_secs(6), 3600, "60*64 exceeds the cap");
+    assert_eq!(infra_retry_delay_secs(40), 3600);
+    assert_eq!(infra_retry_delay_secs(u32::MAX), 3600, "no overflow panic");
+}
+
+fn infra_pause(t: &mut GoalTracker) -> (u64, u64) {
+    assert!(t.pause_with_message(GoalPauseReason::Infra, "boom".into()));
+    t.schedule_infra_retry(1_000_000)
+}
+
+/// A timer armed before resume/clear must not resume a later pause or goal.
+#[test]
+fn stale_infra_retry_timer_never_matches() {
+    let mut t = make_tracker();
+    activate_tracker(&mut t);
+    let (_, generation) = infra_pause(&mut t);
+    assert!(t.infra_retry_matches("goal-1", generation));
+    assert!(!t.infra_retry_matches("other-goal", generation));
+
+    assert!(t.resume());
+    assert!(
+        !t.infra_retry_matches("goal-1", generation),
+        "resume invalidates the armed timer"
+    );
+    let (_, second) = infra_pause(&mut t);
+    assert_ne!(second, generation);
+    assert!(!t.infra_retry_matches("goal-1", generation));
+    assert!(t.infra_retry_matches("goal-1", second));
+
+    t.clear();
+    assert!(!t.infra_retry_matches("goal-1", second), "clear drops the goal");
+    activate_tracker(&mut t);
+    assert!(!t.infra_retry_matches("goal-1", second));
+}
+
+/// A user pause after the infra pause must cancel the auto-retry.
+#[test]
+fn user_pause_and_terminal_transitions_invalidate_infra_retry() {
+    let mut t = make_tracker();
+    activate_tracker(&mut t);
+    let (_, generation) = infra_pause(&mut t);
+    assert!(t.resume());
+    assert!(t.pause(GoalPauseReason::User));
+    assert!(!t.infra_retry_matches("goal-1", generation));
+
+    let (_, generation) = infra_pause_from_active(&mut t);
+    assert!(t.complete());
+    assert!(!t.infra_retry_matches("goal-1", generation));
+    assert_eq!(t.infra_retry_attempt(), 0);
+}
+
+fn infra_pause_from_active(t: &mut GoalTracker) -> (u64, u64) {
+    assert!(t.resume());
+    infra_pause(t)
+}
+
+/// A retry that fails again must keep doubling; only a successful goal turn restarts the schedule.
+#[test]
+fn resume_keeps_attempt_but_success_resets_it() {
+    let mut t = make_tracker();
+    activate_tracker(&mut t);
+    assert_eq!(infra_pause(&mut t).0, 60);
+    assert!(t.resume());
+    assert_eq!(t.infra_retry_attempt(), 1, "resume must not reset the backoff");
+    assert_eq!(infra_pause(&mut t).0, 120);
+
+    assert!(t.resume());
+    t.reset_infra_retry_attempt();
+    assert_eq!(infra_pause(&mut t).0, 60, "success restarts at the base delay");
+}
+
+/// The pager only gets a countdown while an infra pause actually has a retry armed.
+#[test]
+fn auto_retry_at_ms_is_sent_only_for_infra_paused() {
+    use crate::extensions::notification::SessionUpdate;
+    use crate::session::goal_orchestrator::build_goal_updated;
+    fn at(t: &GoalTracker) -> Option<i64> {
+        match build_goal_updated(t.snapshot().unwrap(), 0, 0) {
+            SessionUpdate::GoalUpdated { auto_retry_at_ms, .. } => auto_retry_at_ms,
+            other => panic!("expected GoalUpdated, got {other:?}"),
+        }
+    }
+    let mut t = make_tracker();
+    activate_tracker(&mut t);
+    assert_eq!(at(&t), None, "active goal has no countdown");
+
+    assert!(t.pause_with_message(GoalPauseReason::Infra, "boom".into()));
+    assert_eq!(at(&t), None, "infra pause without an armed timer");
+    t.schedule_infra_retry(1_000_000);
+    assert_eq!(at(&t), Some(1_060_000));
+
+    // A stale value must not leak onto a different paused status.
+    t.snapshot_mut().unwrap().status = GoalStatus::UserPaused;
+    assert_eq!(at(&t), None);
+}

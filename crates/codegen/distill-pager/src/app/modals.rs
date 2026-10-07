@@ -22,11 +22,19 @@ impl AgentView {
     /// `suggest_args` falls back to model rows when the query is not in effort phase.
     /// Model-phase reasoning rows use a trailing space in `insert_text`; effort rows do not.
     /// Require a non-empty list with no trailing-space rows before treating the picker as effort phase.
-    fn arg_items_look_like_effort_phase(items: &[crate::slash::command::ArgItem]) -> bool {
+    /// OpenRouter effort rows and model rows both end in a space, but effort rows extend `next_query` with the effort token.
+    fn arg_items_look_like_effort_phase(
+        items: &[crate::slash::command::ArgItem],
+        next_query: &str,
+    ) -> bool {
         !items.is_empty()
-            && items
+            && (items
                 .iter()
                 .all(|item| !item.insert_text.ends_with(char::is_whitespace))
+                || items.iter().all(|item| {
+                    item.insert_text.starts_with(next_query)
+                        && item.insert_text.len() > next_query.len()
+                }))
     }
 
     /// Step the model ArgPicker from effort phase back to the model list.
@@ -49,15 +57,24 @@ impl AgentView {
         let Some(ActiveModal::ArgPicker {
             command,
             args_query,
+            original_items,
             ..
         }) = active_modal.as_ref()
         else {
             return false;
         };
+        let in_variant_phase = crate::slash::commands::model::is_variant_items(original_items);
         if args_query.is_empty() || !matches!(command.as_str(), "model" | "m") {
             return false;
         }
         let command = command.clone();
+        // From the variant phase ("Model high ") step back to the effort phase ("Model ").
+        let effort_query = args_query
+            .trim_end()
+            .rsplit_once(char::is_whitespace)
+            .map(|(head, _)| head.trim_end())
+            .filter(|head| in_variant_phase && models.resolve_by_name_or_id(head).is_some())
+            .map(|head| format!("{head} "));
         let Some(cmd) = slash_controller.registry().get(&command) else {
             return false;
         };
@@ -73,7 +90,8 @@ impl AgentView {
             screen_mode: slash_controller.screen_mode(),
             current_title: slash_controller.current_title(),
         };
-        let Some(model_items) = cmd.suggest_args(&ctx, "") else {
+        let step_query = effort_query.unwrap_or_default();
+        let Some(model_items) = cmd.suggest_args(&ctx, &step_query) else {
             return false;
         };
         if model_items.is_empty() {
@@ -87,7 +105,7 @@ impl AgentView {
             ..
         }) = active_modal.as_mut()
         {
-            args_query.clear();
+            *args_query = step_query;
             *items = model_items.clone();
             *original_items = model_items;
             // Model list is type-to-find: reopen input-default like the initial /model open.
@@ -710,7 +728,7 @@ impl AgentView {
                     if let Some(cmd) = self.prompt.slash_controller.registry().get(&command_clone) {
                         let ctx = self.prompt.slash_controller.app_ctx(&self.session.models);
                         if let Some(effort_items) = cmd.suggest_args(&ctx, &next_query)
-                            && Self::arg_items_look_like_effort_phase(&effort_items)
+                            && Self::arg_items_look_like_effort_phase(&effort_items, &next_query)
                         {
                             if let Some(ActiveModal::ArgPicker {
                                 args_query,
@@ -726,6 +744,14 @@ impl AgentView {
                                 // Effort sub-step is part of the type-to-find /model picker
                                 // Open input-focused (cursor and type-to-filter), matching the rest of the flow
                                 *state = crate::views::picker::PickerState::input_active();
+                                // The variant phase opens on the saved variant.
+                                if crate::slash::commands::model::is_variant_items(items) {
+                                    state.selected = crate::slash::commands::model::saved_variant_index(
+                                        crate::acp::ModelState::openrouter_variant(
+                                            matches!(command_clone.as_str(), "worker-model" | "worker"),
+                                        ),
+                                    );
+                                }
                             }
                             return InputOutcome::Changed;
                         }
@@ -1883,6 +1909,11 @@ impl AgentView {
             {
                 // Arg picker: ModalWindow chrome and picker content
                 let title = match command.as_str() {
+                    "model" | "m"
+                        if crate::slash::commands::model::is_variant_items(items) =>
+                    {
+                        "Pick OpenRouter variant"
+                    }
                     "model" | "m" if !args_query.is_empty() => "Pick reasoning effort",
                     "model" | "m" => "Pick model",
                     "theme" | "t" => "Pick theme",

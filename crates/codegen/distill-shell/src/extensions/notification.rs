@@ -1143,6 +1143,9 @@ pub enum SessionUpdate {
         /// The shell clears this on every transition out of a paused state (resume / complete / budget_limit). The pager also gates rendering on `is_paused()` as a defence in depth.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pause_message: Option<String>,
+        /// Epoch ms at which an `infra_paused` goal retries automatically. `None` unless a retry is scheduled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_retry_at_ms: Option<i64>,
         /// Number of times the goal-achievement classifier has run for this goal.
         /// `None` when no classifier run has occurred yet.
         /// Like `total_worker_rounds`, the field is suppressed while the counter is zero so old pagers don't see a stray zero.
@@ -2375,6 +2378,7 @@ mod tests {
             finished_subagent_tokens: 0,
             deliverables: vec![],
             pause_message: None,
+            auto_retry_at_ms: None,
             classifier_runs_attempted: Some(2),
             classifier_max_runs: Some(3),
             last_classifier_verdict: Some(GoalClassifierVerdict::NotAchieved),
@@ -2413,6 +2417,7 @@ mod tests {
             finished_subagent_tokens: 0,
             deliverables: vec![],
             pause_message: None,
+            auto_retry_at_ms: None,
             classifier_runs_attempted: None,
             classifier_max_runs: None,
             last_classifier_verdict: None,

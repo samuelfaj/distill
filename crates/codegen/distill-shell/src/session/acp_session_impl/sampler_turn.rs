@@ -928,6 +928,12 @@ impl SessionActor {
             compaction_at_tokens: self.compaction_at_tokens.get(),
             // The sampler sends the opt-in header itself when this is set.
             doom_loop_recovery: self.doom_loop_recovery,
+            // Read at turn time so a settings change applies to the next request.
+            openrouter_variant: if self.startup_hints.is_subagent {
+                crate::jev::worker_variant()
+            } else {
+                crate::jev::main_variant()
+            },
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
         }
     }

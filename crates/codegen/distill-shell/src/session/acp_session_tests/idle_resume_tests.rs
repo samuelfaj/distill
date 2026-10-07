@@ -358,6 +358,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 turn_summary_generation: std::cell::Cell::new(0),
                 title_refresh_task: std::cell::RefCell::new(None),
                 title_refresh_generation: std::cell::Cell::new(0),
+                session_cmd_tx: tokio::sync::mpsc::unbounded_channel().0.downgrade(),
                 next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
                 title_refresh_enabled: false,

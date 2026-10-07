@@ -173,6 +173,17 @@ pub fn current_status_cached() -> JevStatus {
 mod tests {
     use super::*;
 
+    /// An unset or mistyped variant must still route by price (`floor`); only an explicit `none` drops the suffix.
+    #[test]
+    fn openrouter_variant_resolves_unset_none_and_invalid() {
+        assert_eq!(resolve_openrouter_variant(None).as_deref(), Some("floor"));
+        assert_eq!(resolve_openrouter_variant(Some("")).as_deref(), Some("floor"));
+        assert_eq!(resolve_openrouter_variant(Some("none")), None);
+        assert_eq!(resolve_openrouter_variant(Some("nitro")).as_deref(), Some("nitro"));
+        assert_eq!(resolve_openrouter_variant(Some("exacto")).as_deref(), Some("exacto"));
+        assert_eq!(resolve_openrouter_variant(Some("bogus")).as_deref(), Some("floor"));
+    }
+
     #[tokio::test]
     async fn telemetry_scope_isolates_turns_and_numbers_rounds() {
         let first = with_session_scope("one", async {
@@ -1513,6 +1524,40 @@ pub fn worker_effort() -> Option<distill_sampling_types::ReasoningEffort> {
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("auto"))?
         .parse()
         .ok()
+}
+
+/// Resolves a `[models]` variant value: unset is `floor`, `none` is no suffix,
+/// anything outside floor|nitro|exacto|none falls back to `floor`.
+pub(crate) fn resolve_openrouter_variant(raw: Option<&str>) -> Option<String> {
+    let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Some("floor".to_owned());
+    };
+    match raw.to_ascii_lowercase().as_str() {
+        "none" => None,
+        v @ ("floor" | "nitro" | "exacto") => Some(v.to_owned()),
+        _ => {
+            tracing::warn!(value = raw, "invalid OpenRouter variant; using floor");
+            Some("floor".to_owned())
+        }
+    }
+}
+
+fn models_variant(key: &str) -> Option<String> {
+    let config = crate::config::load_effective_config().ok();
+    let raw = config
+        .as_ref()
+        .and_then(|c| c.get("models")?.get(key)?.as_str().map(str::to_owned));
+    resolve_openrouter_variant(raw.as_deref())
+}
+
+/// The main model's OpenRouter routing suffix (`[models].main_variant`), read per call.
+pub fn main_variant() -> Option<String> {
+    models_variant("main_variant")
+}
+
+/// The worker model's OpenRouter routing suffix (`[models].worker_variant`), read per call.
+pub fn worker_variant() -> Option<String> {
+    models_variant("worker_variant")
 }
 
 /// Publish a utility selection only after its atomic config write succeeds.

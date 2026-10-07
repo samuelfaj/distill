@@ -298,6 +298,16 @@ pub async fn set_worker_effort(
     update_config(|cfg| cfg.models.worker_effort = Some(value)).await
 }
 
+/// Persist `[models].main_variant` (floor|nitro|exacto|none).
+pub async fn set_main_variant(value: String) -> Result<()> {
+    update_config(|cfg| cfg.models.main_variant = Some(value)).await
+}
+
+/// Persist `[models].worker_variant` (floor|nitro|exacto|none).
+pub async fn set_worker_variant(value: String) -> Result<()> {
+    update_config(|cfg| cfg.models.worker_variant = Some(value)).await
+}
+
 /// Persist the main model's effort for new sessions: `None` saves auto
 /// (`[jev] effort_auto = true`); a level turns auto off and saves the level as
 /// `[models].default_reasoning_effort`.

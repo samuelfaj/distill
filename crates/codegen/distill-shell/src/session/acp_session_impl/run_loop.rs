@@ -2136,6 +2136,10 @@ pub(super) async fn run_session(
                             }
                             SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
                         }
+                        SessionCommand::GoalInfraRetry { goal_id, generation } => {
+                            // Boxed: keeps the resume path's state out of the run-loop future (debug-build stack depth)
+                            Box::pin(session.clone().handle_goal_infra_retry(goal_id, generation, completion_tx.clone())).await;
+                        }
                         SessionCommand::WorkflowCompletionTurn { run_id, revision } => {
                             let state_suppressed = session.state.lock().await.notifications_suppressed;
                             let wake_suppressed = state_suppressed

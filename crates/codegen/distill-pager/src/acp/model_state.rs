@@ -79,6 +79,20 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// This instance's OpenRouter variant picks `[main, worker]`, seeded from the
+/// config; the writes happen on other threads, so the modal reads this mirror.
+static OPENROUTER_VARIANTS: parking_lot::Mutex<[Option<&'static str>; 2]> =
+    parking_lot::Mutex::new([None, None]);
+
+fn variant_label(variant: Option<String>) -> &'static str {
+    match variant.as_deref() {
+        None => "none",
+        Some("nitro") => "nitro",
+        Some("exacto") => "exacto",
+        _ => "floor",
+    }
+}
+
 /// The saved worker; its effort counts only when a model is set.
 fn saved_worker() -> InstanceWorker {
     let model = distill_shell::jev::worker_model().map(acp::ModelId::new);
@@ -174,6 +188,21 @@ impl ModelState {
     /// This instance's worker effort; `None` is auto.
     pub fn configured_worker_effort() -> Option<ReasoningEffort> {
         with_instance_worker(|worker| worker.1)
+    }
+
+    /// The OpenRouter routing variant shown for the main (`worker == false`) or worker model.
+    pub fn openrouter_variant(worker: bool) -> &'static str {
+        OPENROUTER_VARIANTS.lock()[usize::from(worker)].get_or_insert_with(|| {
+            variant_label(if worker {
+                distill_shell::jev::worker_variant()
+            } else {
+                distill_shell::jev::main_variant()
+            })
+        })
+    }
+
+    pub fn set_openrouter_variant(worker: bool, value: &'static str) {
+        OPENROUTER_VARIANTS.lock()[usize::from(worker)] = Some(value);
     }
 
     /// Replace this instance's worker; only its own worker commands (and their
@@ -374,6 +403,16 @@ impl ModelState {
             }
         }
         None
+    }
+
+    /// Whether the model is served by OpenRouter (`meta.openrouter`, set by the shell from the entry's base URL).
+    pub fn is_openrouter(&self, id: &acp::ModelId) -> bool {
+        self.available
+            .get(id)
+            .and_then(|info| info.meta.as_ref())
+            .and_then(|meta| meta.get("openrouter"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
     }
 
     pub fn display_name_for(&self, id: &acp::ModelId) -> String {

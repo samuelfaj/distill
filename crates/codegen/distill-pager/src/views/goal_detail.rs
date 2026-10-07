@@ -990,6 +990,7 @@ mod tests {
             finished_subagent_tokens: 0,
             deliverables: vec![],
             pause_message: None,
+            auto_retry_at_ms: None,
             classifier_runs_attempted: None,
             classifier_max_runs: None,
             last_classifier_verdict: None,

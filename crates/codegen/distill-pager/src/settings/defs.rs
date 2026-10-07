@@ -117,6 +117,13 @@ const CODING_DATA_SHARING_CHOICES: &[EnumChoice] = &[
 // Plan-mode catalog. `Ask` mode is not exposed here; it is only reachable via Shift+Tab. `supports_preview: false`
 // because toggling fires an ACP request that gates tool dispatch. Commit on Enter only.
 
+const OPENROUTER_VARIANT_CHOICES: &[EnumChoice] = &[
+    EnumChoice { canonical: "floor", display: "floor", description: "Cheapest provider" },
+    EnumChoice { canonical: "nitro", display: "nitro", description: "Fastest provider" },
+    EnumChoice { canonical: "exacto", display: "exacto", description: "Best tool-calling quality" },
+    EnumChoice { canonical: "none", display: "none", description: "No suffix" },
+];
+
 // Default-selected-permission catalog. `always_allow_all_sessions` (the effective default) lands the cursor on the
 // "Always allow on all sessions" (enable-always-approve) row. `supports_preview: false` because permission prompts
 // aren't open in the modal background, so there is nothing to live-preview.
@@ -1177,6 +1184,37 @@ pub fn default_settings() -> Vec<SettingMeta> {
             kind: SettingKind::Enum {
                 default: DefaultSelectedPermission::AlwaysAllowAllSessions.as_canonical(),
                 choices: DEFAULT_SELECTED_PERMISSION_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        // SHELL-owned `[models].main_variant` / `worker_variant`: OpenRouter slug suffix.
+        SettingMeta {
+            key: "main_variant",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "OpenRouter variant (main)",
+            description: "Routing suffix appended to the main model slug on OpenRouter (floor, nitro, exacto, or none).",
+            keywords: &["openrouter", "variant", "floor", "nitro", "exacto", "routing", "provider", "main"],
+            kind: SettingKind::Enum {
+                default: "floor",
+                choices: OPENROUTER_VARIANT_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "worker_variant",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "OpenRouter variant (worker)",
+            description: "Routing suffix appended to the worker model slug on OpenRouter (floor, nitro, exacto, or none).",
+            keywords: &["openrouter", "variant", "floor", "nitro", "exacto", "routing", "provider", "worker"],
+            kind: SettingKind::Enum {
+                default: "floor",
+                choices: OPENROUTER_VARIANT_CHOICES,
                 supports_preview: false,
             },
             restart_required: false,

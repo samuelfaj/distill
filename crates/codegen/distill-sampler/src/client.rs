@@ -426,6 +426,18 @@ fn messages_wrapper(
     wrapper
 }
 
+/// Appends `:{variant}` to an OpenRouter slug that carries no variant yet (`:free` etc. stay as is).
+fn apply_openrouter_variant(model: &mut String, base_url: &str, variant: Option<&str>) {
+    let Some(variant) = variant.filter(|v| !v.is_empty()) else {
+        return;
+    };
+    if model.is_empty() || model.contains(':') || !is_openrouter_base_url(base_url) {
+        return;
+    }
+    model.push(':');
+    model.push_str(variant);
+}
+
 fn is_openrouter_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).is_ok_and(|url| {
         url.scheme() == "https"
@@ -825,6 +837,8 @@ struct ClientDefaults {
     reasoning_summary: Option<distill_sampling_types::ReasoningSummary>,
     extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<distill_sampling_types::DoomLoopRecoveryPolicy>,
+    /// OpenRouter routing suffix (`floor`, `nitro`, `exacto`) appended to the wire model slug.
+    openrouter_variant: Option<String>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -1134,6 +1148,7 @@ impl SamplingClient {
             reasoning_summary: config.reasoning_summary,
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
+            openrouter_variant: config.openrouter_variant,
         };
 
         let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
@@ -1438,6 +1453,13 @@ impl SamplingClient {
 
         if request.reasoning_effort.is_none() {
             request.reasoning_effort = self.defaults.reasoning_effort;
+        }
+        if let Some(model) = request.model.as_mut() {
+            apply_openrouter_variant(
+                model,
+                &self.base_url,
+                self.defaults.openrouter_variant.as_deref(),
+            );
         }
         // A model that takes a token budget instead of an effort name gets the
         // same chosen effort expressed in its own dialect.
@@ -1819,6 +1841,13 @@ impl SamplingClient {
     fn apply_response_defaults(&self, request: &mut CreateResponseWrapper) -> Result<()> {
         if request.inner.model.is_none() {
             request.inner.model = Some(self.defaults.model.clone());
+        }
+        if let Some(model) = request.inner.model.as_mut() {
+            apply_openrouter_variant(
+                model,
+                &self.base_url,
+                self.defaults.openrouter_variant.as_deref(),
+            );
         }
 
         if request.inner.temperature.is_none() {
@@ -2254,6 +2283,11 @@ impl SamplingClient {
         if request.inner.model.is_empty() {
             request.inner.model = self.defaults.model.clone();
         }
+        apply_openrouter_variant(
+            &mut request.inner.model,
+            &self.base_url,
+            self.defaults.openrouter_variant.as_deref(),
+        );
 
         if request.inner.max_tokens == 0 {
             request.inner.max_tokens = self
@@ -2600,6 +2634,13 @@ impl SamplingClient {
     fn apply_conversation_defaults(&self, request: &mut ConversationRequest) -> Result<()> {
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
+        }
+        if let Some(model) = request.model.as_mut() {
+            apply_openrouter_variant(
+                model,
+                &self.base_url,
+                self.defaults.openrouter_variant.as_deref(),
+            );
         }
 
         if request.temperature.is_none() {
@@ -3262,6 +3303,41 @@ mod tests {
             context_window: 8192,
             ..Default::default()
         }
+    }
+
+    /// The routing variant must reach only OpenRouter slugs that carry none, so a user-pinned `:free` is never rewritten.
+    #[test]
+    fn openrouter_variant_suffixes_only_bare_openrouter_slugs() {
+        let or = "https://openrouter.ai/api/v1";
+        let mut m = "meta/muse-spark-1.3-contributor".to_string();
+        apply_openrouter_variant(&mut m, or, Some("floor"));
+        assert_eq!(m, "meta/muse-spark-1.3-contributor:floor");
+        apply_openrouter_variant(&mut m, or, Some("nitro"));
+        assert_eq!(m, "meta/muse-spark-1.3-contributor:floor");
+
+        let mut m = "a/b".to_string();
+        apply_openrouter_variant(&mut m, "https://example.test", Some("floor"));
+        assert_eq!(m, "a/b");
+
+        let mut m = "a/b:free".to_string();
+        apply_openrouter_variant(&mut m, or, Some("floor"));
+        assert_eq!(m, "a/b:free");
+
+        let mut m = "a/b".to_string();
+        apply_openrouter_variant(&mut m, or, None);
+        apply_openrouter_variant(&mut m, or, Some(""));
+        assert_eq!(m, "a/b");
+
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: or.to_string(),
+            openrouter_variant: Some("floor".into()),
+            ..minimal_config()
+        })
+        .expect("client constructs without I/O");
+        let payload = client
+            .apply_defaults(ChatCompletionRequest::new("a/b", vec![]))
+            .expect("defaults apply");
+        assert_eq!(payload.model.as_deref(), Some("a/b:floor"));
     }
 
     /// The shipped path from a model's configured shape to the wire body: the

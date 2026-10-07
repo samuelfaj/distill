@@ -89,11 +89,12 @@ could not verify.
 Both tiers take an effort level or `auto`, and `auto` lets Jev pick the effort
 for every call from that model's own menu:
 
-- Main model: `/model <model> [effort|auto]` and `/effort <level|auto>` set this
+- Main model: `/model <model> [effort|auto] [variant]` and `/effort <level|auto>` set this
   session. The Model tiers screen (`/tiers`, entered as `model effort`) also saves
   it for new sessions: `auto` as `[jev] effort_auto = true`, a level as
   `[jev] effort_auto = false` plus `[models].default_reasoning_effort`.
-- Worker model: `/worker-model <model> [effort|auto]` or the Model tiers screen
+- `variant` is OpenRouter only: `floor` (default, cheapest provider), `nitro`, `exacto` or `none`; it is saved as `[models].main_variant` or `worker_variant`.
+- Worker model: `/worker-model <model> [effort|auto] [variant]` or the Model tiers screen
   saves `[models].worker_effort`; unset means `auto`. It applies to every child
   that runs on the worker, independent of the main model's mode, unless the
   caller, a role or the agent definition set an effort. `/worker-model clear`

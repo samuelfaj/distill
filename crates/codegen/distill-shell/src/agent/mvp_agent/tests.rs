@@ -1240,6 +1240,7 @@ fn make_test_handle(
         reasoning_effort: None,
         worker_override: crate::session::handle::new_session_worker_state(),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ultracode: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         yolo_mode: yolo,
         origin_client: client_id.map(|s| crate::http::OriginClientInfo {
             product: s.to_string(),
@@ -3206,6 +3207,7 @@ mod session_rename_tests;
 mod session_resume_close_tests;
 mod session_main_model_tests;
 mod session_worker_model_tests;
+mod session_ultracode_tests;
 mod subagent_spawn_context_tests;
 /// With no load in flight and no session the wait returns immediately (the caller then surfaces "unknown session id" exactly as before).
 #[tokio::test]

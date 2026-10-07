@@ -128,6 +128,8 @@ pub struct ModelState {
     /// picks the effort for each model call, and the footer shows `(auto)`.
     /// A fixed level chosen afterwards clears it.
     pub effort_auto: bool,
+    /// Session Ultracode mode (`/ultracode`); the footer appends ` · Ultracode`.
+    pub ultracode: bool,
     /// External override for the context window size (tokens).
     /// When set, `get_context_window()` returns this instead of reading from the current model's metadata.
     /// Used for subagent views where SubagentProgress reports the actual window size.
@@ -146,12 +148,18 @@ impl ModelState {
     /// Both footers (the welcome screen's and the session's) must agree, which is
     /// why the rule lives here rather than in either renderer.
     pub fn effort_label(&self, base: &str) -> String {
-        if self.effort_auto {
-            return format!("{base} (auto)");
-        }
-        match self.reasoning_effort {
-            Some(effort) => format!("{base} ({effort})"),
-            None => base.to_string(),
+        let label = if self.effort_auto {
+            format!("{base} (auto)")
+        } else {
+            match self.reasoning_effort {
+                Some(effort) => format!("{base} ({effort})"),
+                None => base.to_string(),
+            }
+        };
+        if self.ultracode {
+            format!("{label} · Ultracode")
+        } else {
+            label
         }
     }
 
@@ -464,6 +472,7 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                     // metadata: the mode is live client-side state, and an
                     // explicit level (`/effort <level>`, `--effort`) clears it.
                     effort_auto: distill_shell::jev::effort_auto_cached(),
+                    ultracode: false,
                     context_window_override: None,
                 }
             })
@@ -475,6 +484,19 @@ impl From<Option<acp::SessionModelState>> for ModelState {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn effort_label_appends_ultracode_without_changing_effort_part() {
+        let mut state = ModelState::default();
+        state.reasoning_effort = Some(ReasoningEffort::High);
+        let off = state.effort_label("Model A");
+        state.ultracode = true;
+        assert_eq!(state.effort_label("Model A"), format!("{off} · Ultracode"));
+        state.effort_auto = true;
+        assert_eq!(state.effort_label("Model A"), "Model A (auto) · Ultracode");
+        state.ultracode = false;
+        assert_eq!(state.effort_label("Model A"), "Model A (auto)");
+    }
 
     fn sample_models() -> ModelState {
         let mut state = ModelState::default();

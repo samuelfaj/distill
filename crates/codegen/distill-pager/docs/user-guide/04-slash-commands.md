@@ -126,6 +126,16 @@ Set reasoning effort on the **current** model without reselecting it. Levels are
 /effort high
 ```
 
+### `/ultracode [on|off]`
+
+Toggle Ultracode for the current session. While on, every request you send is treated as a dynamic workflow: the main agent plans briefly, fans the independent parts out to parallel subagents, then integrates the results and runs the verification itself. Trivial single-step requests are still done directly. Ultracode is independent of the reasoning effort and never changes it. The footer shows `· Ultracode` next to the model while it is on. `/ultracode` with no argument flips the current state.
+
+```
+/ultracode
+/ultracode on
+/ultracode off
+```
+
 ### `/always-approve` and `/auto`
 
 Both are real toggles for the permission mode: they stay in the menu, and running the mode you're already in turns it back off.

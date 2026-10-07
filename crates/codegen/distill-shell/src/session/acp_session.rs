@@ -176,6 +176,8 @@ pub(crate) use prompt_offload::LARGE_PROMPT_THRESHOLD;
 #[path = "acp_session_impl/session_mode.rs"]
 mod session_mode;
 use session_mode::*;
+#[path = "acp_session_impl/ultracode.rs"]
+mod ultracode;
 #[path = "acp_session_impl/child_tool_projection.rs"]
 mod child_tool_projection;
 #[path = "acp_session_impl/jev_ledger.rs"]
@@ -784,6 +786,8 @@ pub(crate) struct SessionActor {
     /// sessions for catalog refreshes, so this must not be read from it while
     /// routing a child.
     pub(crate) jev_effort_auto: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Ultracode mode: every user turn gets the orchestration reminder. Shared with the session handle.
+    pub(crate) ultracode: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Canonical catalogue identity for this session. The chat/sampler model
     /// may be a provider wire slug or an effort variant, so it cannot be used
     /// to infer the selected catalogue entry or an explicit model pin.
@@ -1549,6 +1553,9 @@ mod replace_system_prompt_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/support.rs"]
 mod support;
+#[cfg(test)]
+#[path = "acp_session_tests/ultracode_tests.rs"]
+mod ultracode_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/usage_categories_tests.rs"]
 mod usage_categories_tests;

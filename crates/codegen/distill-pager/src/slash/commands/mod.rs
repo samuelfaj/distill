@@ -47,6 +47,7 @@ pub mod multiline;
 pub mod new;
 pub mod personas;
 pub mod plan;
+pub mod ultracode;
 pub mod plugin;
 pub mod privacy;
 pub mod provider_status;
@@ -104,6 +105,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         // Steering the work in front of you.
         Arc::new(loop_cmd::LoopCommand),
         Arc::new(plan::PlanCommand),
+        Arc::new(ultracode::UltracodeCommand),
         Arc::new(view_plan::ViewPlanCommand),
         Arc::new(remember::RememberCommand),
         Arc::new(memory::MemoryCommand),

@@ -1792,6 +1792,7 @@ pub(crate) async fn spawn_session_actor(
     let actor_build_span = tracing::info_span!("spawn.actor_build").entered();
     let jev_effort_auto =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(session_jev_effort_auto));
+    let ultracode = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         status_wake: Default::default(),
         session_info: session_info.clone(),
@@ -1807,6 +1808,7 @@ pub(crate) async fn spawn_session_actor(
         model_auth_memo: std::cell::RefCell::new(None),
         jev_ledger: std::cell::RefCell::new(super::jev_ledger::JevTurnLedger::default()),
         jev_effort_auto: jev_effort_auto.clone(),
+        ultracode: ultracode.clone(),
         canonical_model_id: std::cell::RefCell::new(session_model_id.clone()),
         model_routing_locked: std::cell::Cell::new(
             startup_hints.is_subagent && startup_hints.explicit_model_override,
@@ -2465,6 +2467,7 @@ pub(crate) async fn spawn_session_actor(
         reasoning_effort: sampling_config.reasoning_effort,
         worker_override,
         jev_effort_auto,
+        ultracode,
         yolo_mode: session_yolo_mode,
         origin_client: origin_client.clone(),
         code_nav_enabled,

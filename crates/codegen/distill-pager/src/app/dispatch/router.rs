@@ -1104,6 +1104,16 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowPlan => dispatch_show_plan(app),
         Action::EnterPlanMode { description } => dispatch_enter_plan_mode(app, description),
         Action::SetPlanMode(kind) => set_plan_mode(app, kind),
+        Action::SetUltracode(enabled) => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            app.agents
+                .get(&id)
+                .and_then(|agent| agent.session.session_id.clone())
+                .map(|session_id| vec![Effect::SetUltracode { session_id, enabled }])
+                .unwrap_or_default()
+        }
         Action::OpenFeedbackModal(open) => dispatch_open_feedback_modal(app, open),
         Action::SubmitFeedbackModal { modal_id } => dispatch_submit_feedback_modal(app, modal_id),
         Action::RequestFeedbackDraft { request } => {

@@ -4742,6 +4742,91 @@
         }
     }
 
+    /// Perimeter position and fg of every drawn border glyph in a 40x4 bordered prompt.
+    fn border_cells(buf: &Buffer) -> Vec<(u16, u16, f32, ratatui::style::Color)> {
+        let area = Rect::new(0, 0, 40, 4);
+        let mut out = Vec::new();
+        for y in 0..4u16 {
+            for x in 0..40u16 {
+                let on_border = y == 0 || x == 0 || x == 39;
+                if on_border {
+                    let fg = buf.cell((x, y)).unwrap().fg;
+                    out.push((x, y, border_perimeter_t(area, x, y), fg));
+                }
+            }
+        }
+        out
+    }
+
+    fn luma(c: ratatui::style::Color) -> u32 {
+        match c {
+            ratatui::style::Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
+            other => panic!("expected Rgb, got {other:?}"),
+        }
+    }
+
+    fn brightest(cells: &[(u16, u16, f32, ratatui::style::Color)]) -> (u16, u16, f32) {
+        let c = cells.iter().max_by_key(|c| luma(c.3)).unwrap();
+        (c.0, c.1, c.2)
+    }
+
+    fn ultracode_style(phase: Option<f32>) -> PromptStyle {
+        PromptStyle {
+            focused: true,
+            ultracode_phase: phase,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn border_without_ultracode_phase_keeps_prompt_border_color() {
+        let _guard = crate::theme::cache::pin_theme();
+        let theme = Theme::current();
+        let buf = draw_bordered(40, &ultracode_style(None));
+        for (x, y, _, fg) in border_cells(&buf) {
+            assert_eq!(fg, theme.prompt_border_active, "cell ({x},{y})");
+        }
+    }
+
+    #[test]
+    fn ultracode_border_is_purple_with_a_band() {
+        let _guard = crate::theme::cache::pin_theme();
+        let theme = Theme::current();
+        let buf = draw_bordered(40, &ultracode_style(Some(0.3)));
+        let cells = border_cells(&buf);
+        for &(x, y, _, fg) in &cells {
+            assert_ne!(fg, theme.prompt_border_active, "cell ({x},{y})");
+            let ratatui::style::Color::Rgb(r, g, b) = fg else {
+                panic!("expected Rgb at ({x},{y}), got {fg:?}");
+            };
+            assert!(r > g && b > g, "({x},{y}) not purple: {fg:?}");
+        }
+        let (bx, by, bt) = brightest(&cells);
+        assert!((bt - 0.3).abs() < 0.03, "brightest ({bx},{by}) t={bt}");
+        let opposite = buf.cell((0, 2)).unwrap().fg;
+        assert_ne!(buf.cell((bx, by)).unwrap().fg, opposite);
+        assert_eq!(opposite, theme.accent_thinking, "far from the band stays base");
+    }
+
+    #[test]
+    fn ultracode_band_moves_with_phase() {
+        let _guard = crate::theme::cache::pin_theme();
+        let a = brightest(&border_cells(&draw_bordered(40, &ultracode_style(Some(0.1)))));
+        let b = brightest(&border_cells(&draw_bordered(40, &ultracode_style(Some(0.3)))));
+        assert!(b.0 > a.0 + 10, "band must advance along the top row: {a:?} -> {b:?}");
+    }
+
+    #[test]
+    fn ultracode_border_color_wraps_around_perimeter() {
+        let _guard = crate::theme::cache::pin_theme();
+        let theme = Theme::current();
+        let near = ultracode_border_color(&theme, 0.01, 0.99);
+        let far = ultracode_border_color(&theme, 0.5, 0.99);
+        assert_eq!(far, theme.accent_thinking);
+        assert!(luma(near) > luma(far), "phase 0.99 must light t=0.01");
+        assert_eq!(ultracode_border_color(&theme, 0.99, 0.99), ultracode_border_color(&theme, 0.0, 0.0));
+    }
+
     #[test]
     fn no_title_keeps_plain_top_border() {
         let buf = draw_bordered(40, &title_test_style(None));

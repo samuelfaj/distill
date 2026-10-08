@@ -997,6 +997,24 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             result,
             prev_model_id,
         } => handle_switch_model_complete(app, agent_id, model_id, effort, result, prev_model_id),
+        TaskResult::UltracodeSet { session_id, result } => {
+            if let Some(agent) = find_agent_by_session_id(&mut app.agents, &session_id.0) {
+                match result {
+                    Ok(enabled) => {
+                        agent.session.models.ultracode = enabled;
+                        agent.scrollback.push_block(RenderBlock::system(
+                            if enabled { "Ultracode on" } else { "Ultracode off" }.to_string(),
+                        ));
+                    }
+                    Err(message) => {
+                        agent.scrollback.push_block(RenderBlock::system(format!(
+                            "Couldn't change Ultracode: {message}"
+                        )));
+                    }
+                }
+            }
+            vec![]
+        }
         TaskResult::EffortAutoSet {
             agent_id,
             model_id,

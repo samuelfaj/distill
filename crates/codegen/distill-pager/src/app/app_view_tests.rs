@@ -1062,6 +1062,18 @@ fn tick_demand_link_poll_is_slow_only() {
         );
     }
 }
+/// The Ultracode border band travels while idle, so an otherwise parked agent must tick (Slow) and report redraws only while the mode is on.
+#[test]
+fn ultracode_agent_ticks_slow_and_redraws() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    assert_eq!(app.tick_demand(), TickDemand::None, "idle agent parks");
+    app.agents.get_mut(&id).unwrap().session.models.ultracode = true;
+    assert_eq!(app.tick_demand(), TickDemand::Slow);
+    assert!(app.tick(), "border animation needs a redraw each tick");
+    app.agents.get_mut(&id).unwrap().session.models.ultracode = false;
+    assert_eq!(app.tick_demand(), TickDemand::None);
+}
 #[test]
 fn needs_animation_gates_mode_switch_banner_countdown() {
     let mut app = test_app_with_agent();

@@ -738,6 +738,8 @@ pub enum Action {
     /// Set plan mode on/off. Per-session, ACP-mediated (not persisted to config.toml).
     /// `/plan <desc>` uses `EnterPlanMode` instead because it also starts a turn.
     SetPlanMode(PlanModeKind),
+    /// `/ultracode`: `None` toggles, `Some(on)` sets. Per-session, ACP-mediated.
+    SetUltracode(Option<bool>),
     /// Open the feedback modal (every screen mode).
     /// The payload's images were drained at slash-execution time; the modal composer adopts them as chips.
     OpenFeedbackModal(crate::views::feedback_modal::OpenFeedbackModal),
@@ -1696,6 +1698,11 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
         model_id: acp::ModelId,
+    },
+    /// Set or toggle the session-scoped Ultracode flag (`x.ai/session/ultracode/set`).
+    SetUltracode {
+        session_id: acp::SessionId,
+        enabled: Option<bool>,
     },
     /// Set the session-scoped worker model.
     SetSessionWorker {
@@ -2816,6 +2823,11 @@ pub enum TaskResult {
         result: Result<Option<u64>, SwitchModelError>,
         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
+    },
+    /// Ultracode set/toggle finished; `enabled` is the agent-reported new state.
+    UltracodeSet {
+        session_id: acp::SessionId,
+        result: Result<bool, String>,
     },
     /// Auto effort request finished; a rejection rolls the optimistic flag back.
     EffortAutoSet {

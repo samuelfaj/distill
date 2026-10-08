@@ -40,6 +40,8 @@ pub(super) fn x_ai_capabilities() -> serde_json::Value {
         "toolOverrides": tool_overrides_capability(),
         // `session/new|load|resume` take `_meta.workerModelId` / `_meta.workerEffort`, and `x.ai/session/worker_model/set` exists
         "sessionWorkerModel": true,
+        // `x.ai/session/ultracode/set` toggles the per-turn orchestration reminder
+        "sessionUltracode": true,
         // `session/new|load|resume` take `_meta.modelId` / `reasoningEffort` / `reasoningEffortAuto`, applied to that session only
         "sessionMainModel": true,
     })
@@ -2026,6 +2028,9 @@ impl acp::Agent for MvpAgent {
             "x.ai/session/usage" => crate::extensions::usage::handle(self, &args).await,
             crate::extensions::session_worker_model::SET_METHOD => {
                 crate::extensions::session_worker_model::handle(self, &args).await
+            }
+            crate::extensions::session_ultracode::SET_METHOD => {
+                crate::extensions::session_ultracode::handle(self, &args).await
             }
             crate::extensions::memory::MEMORY_FLUSH_METHOD
             | crate::extensions::memory::MEMORY_DREAM_METHOD

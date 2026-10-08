@@ -261,6 +261,24 @@ The response is the effective worker after the change:
 
 `modelId` is `null` when no worker runs. `source` is `"session"` for a session choice and `"config"` when it was cleared and the config applies. An unknown `sessionId` returns a resource-not-found error.
 
+### Ultracode
+
+Ultracode is a session-level flag. While on, every user turn of the main agent carries an extra `<system-reminder>` that tells it to plan, fan the work out to parallel subagents and integrate the results. While off, requests are unchanged. It never changes the reasoning effort. `initialize` advertises this as `"sessionUltracode": true` in `agentCapabilities._meta["x.ai/capabilities"]`.
+
+Send the extension request `x.ai/session/ultracode/set` (on the JSON-RPC wire, `_x.ai/session/ultracode/set`):
+
+```json
+{ "sessionId": "…", "enabled": true }
+```
+
+`enabled` is optional; omitted toggles the current state. The response is the new state:
+
+```json
+{ "enabled": true }
+```
+
+The flag lives in memory for the session and is not written to `config.toml`. An unknown `sessionId` returns a resource-not-found error.
+
 ---
 
 ## ACP SDKs

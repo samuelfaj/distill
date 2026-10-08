@@ -94,6 +94,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         model_auth_memo: std::cell::RefCell::new(None),
         jev_ledger: std::cell::RefCell::new(Default::default()),
         jev_effort_auto: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ultracode: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         canonical_model_id: std::cell::RefCell::new(acp::ModelId::new("test")),
         model_routing_locked: std::cell::Cell::new(false),
         worker_prompt_pending: std::cell::Cell::new(false),

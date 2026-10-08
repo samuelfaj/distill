@@ -2065,6 +2065,29 @@ pub(crate) fn execute(
                     TaskResult::CancelComplete
                 });
         }
+        Effect::SetUltracode { session_id, enabled } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({
+                    "sessionId": session_id.0.to_string(),
+                    "enabled": enabled,
+                });
+                let request = acp::ExtRequest::new(
+                    "x.ai/session/ultracode/set",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize ultracode params")
+                        .into(),
+                );
+                let result = match acp_send(request, &tx).await {
+                    Ok(resp) => serde_json::from_str::<serde_json::Value>(resp.0.get())
+                        .ok()
+                        .and_then(|v| v.get("enabled").and_then(serde_json::Value::as_bool))
+                        .ok_or_else(|| "unexpected response from agent".to_owned()),
+                    Err(e) => Err(sanitize_user_error(&e.to_string())),
+                };
+                TaskResult::UltracodeSet { session_id, result }
+            });
+        }
         Effect::SetSessionWorker { session_id, model_id, effort } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move {

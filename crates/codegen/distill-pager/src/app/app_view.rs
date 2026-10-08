@@ -5776,6 +5776,7 @@ impl AppView {
                 && spinner_frame_tick;
             needs_redraw |= agent.drain_blocked();
             needs_redraw |= agent.goal_retry_secs() != agent.goal_retry_shown_secs;
+            needs_redraw |= agent.session.models.ultracode;
             agent.prompt.slash_controller.set_workflows_available(
                 agent
                     .session
@@ -6147,7 +6148,7 @@ impl AppView {
                 if fast {
                     return TickDemand::Fast;
                 }
-                if agent.goal_retry_secs().is_some() {
+                if agent.goal_retry_secs().is_some() || agent.session.models.ultracode {
                     return TickDemand::Slow;
                 }
                 if cfg!(target_os = "macos")

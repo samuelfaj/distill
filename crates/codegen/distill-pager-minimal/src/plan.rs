@@ -216,6 +216,7 @@ fn input_style(theme: &Theme) -> PromptStyle {
         show_borders: false,
         title: None,
         image_preview: true,
+        ultracode_phase: None,
     }
 }
 

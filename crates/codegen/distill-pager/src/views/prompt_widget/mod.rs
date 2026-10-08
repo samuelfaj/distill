@@ -186,6 +186,61 @@ pub struct PromptStyle {
     pub title: Option<String>,
     /// Paint image-chip overlay into `overlay_area` (default true).
     pub image_preview: bool,
+    /// Ultracode border animation phase in `[0, 1)`: where the highlight band sits on the border perimeter.
+    /// When `Some`, the border is purple with a travelling highlight and takes precedence over `border_color_override`.
+    pub ultracode_phase: Option<f32>,
+}
+
+/// Seconds per highlight lap around the Ultracode border.
+const ULTRACODE_LAP_SECS: f32 = 3.0;
+/// Highlight band width as a fraction of the border perimeter.
+const ULTRACODE_BAND: f32 = 0.12;
+
+/// Wall-clock Ultracode border phase in `[0, 1)`: one lap every [`ULTRACODE_LAP_SECS`].
+pub fn ultracode_phase_now() -> f32 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let secs = START.get_or_init(Instant::now).elapsed().as_secs_f32();
+    (secs / ULTRACODE_LAP_SECS).fract()
+}
+
+/// Border glyph color at perimeter position `t` in `[0, 1)` while the Ultracode band is centered at `phase`.
+/// Base is `theme.accent_thinking`; a raised-cosine band blends toward a lighter tint. Themes whose colors cannot be blended (named ANSI) stay on the base.
+pub fn ultracode_border_color(
+    theme: &Theme,
+    t: f32,
+    phase: f32,
+) -> ratatui::style::Color {
+    let base = theme.accent_thinking;
+    let highlight = crate::render::color::blend_color(base, ratatui::style::Color::Rgb(255, 255, 255), 0.6)
+        .unwrap_or(base);
+    let d = (t - phase).rem_euclid(1.0);
+    let d = d.min(1.0 - d);
+    let half = ULTRACODE_BAND / 2.0;
+    let intensity = if d >= half {
+        0.0
+    } else {
+        0.5 * (1.0 + (std::f32::consts::PI * d / half).cos())
+    };
+    crate::render::color::blend_color(base, highlight, intensity).unwrap_or(base)
+}
+
+/// Position in `[0, 1)` of cell `(x, y)` along the perimeter of `area`, clockwise from the top-left corner.
+fn border_perimeter_t(area: Rect, x: u16, y: u16) -> f32 {
+    let w = u32::from(area.width.max(2) - 1);
+    let h = u32::from(area.height.max(2) - 1);
+    let (dx, dy) = (u32::from(x - area.x), u32::from(y - area.y));
+    let idx = if dy == 0 {
+        dx
+    } else if dx == w {
+        w + dy
+    } else if dy == h {
+        w + h + (w - dx)
+    } else {
+        2 * w + h + (h - dy)
+    };
+    idx as f32 / (2 * (w + h)) as f32
 }
 
 /// Background for the prompt widget. Paste chips bake `theme.paste_bg` (a badge color tuned for the
@@ -234,6 +289,7 @@ impl Default for PromptStyle {
             show_borders: true,
             title: None,
             image_preview: true,
+            ultracode_phase: None,
         }
     }
 }
@@ -269,6 +325,7 @@ impl PromptStyle {
             show_borders: false,
             title: None,
             image_preview: true,
+            ultracode_phase: None,
         }
     }
 
@@ -2978,6 +3035,15 @@ impl PromptWidget {
             theme.prompt_border
         });
 
+        let border_style_at = |x: u16, y: u16| {
+            let fg = match style.ultracode_phase {
+                Some(phase) => {
+                    ultracode_border_color(&theme, border_perimeter_t(area, x, y), phase)
+                }
+                None => border_color,
+            };
+            Style::default().fg(fg).bg(bg)
+        };
         // Fill the entire area with fg and bg so every cell has RGB colors (needed for blending)
         buf.set_style(area, Style::default().fg(theme.text_primary).bg(bg));
 
@@ -3025,7 +3091,6 @@ impl PromptWidget {
 
         // Top divider: ╭──────────╮
         if vpad_top > 0 && style.chrome && style.show_borders {
-            let div_style = Style::default().fg(border_color).bg(bg);
             let div_y = chunks.first().map(|c| c.y).unwrap_or(area.y);
             let left_x = area.x;
             let right_x = area.x + area.width.saturating_sub(1);
@@ -3039,7 +3104,7 @@ impl PromptWidget {
                         '\u{2500}' // ─
                     };
                     cell.set_char(ch);
-                    cell.set_style(div_style);
+                    cell.set_style(border_style_at(x, div_y));
                 }
             }
 
@@ -3307,17 +3372,16 @@ impl PromptWidget {
 
         // Side borders: │ on left and right of each text row.
         if style.chrome && style.show_borders && area.width >= 2 {
-            let div_style = Style::default().fg(border_color).bg(bg);
             let left_x = area.x;
             let right_x = area.x + area.width.saturating_sub(1);
             for y in text_area_rect.y..text_area_rect.y + text_area_rect.height {
                 if let Some(cell) = buf.cell_mut((left_x, y)) {
                     cell.set_char('\u{2502}'); // │
-                    cell.set_style(div_style);
+                    cell.set_style(border_style_at(left_x, y));
                 }
                 if let Some(cell) = buf.cell_mut((right_x, y)) {
                     cell.set_char('\u{2502}'); // │
-                    cell.set_style(div_style);
+                    cell.set_style(border_style_at(right_x, y));
                 }
             }
         }
@@ -3332,7 +3396,6 @@ impl PromptWidget {
             && info_chunk.height > 0
         {
             let div_y = info_chunk.y;
-            let div_style = Style::default().fg(border_color).bg(bg);
             let left_x = area.x;
             let right_x = area.x + area.width.saturating_sub(1);
             for x in area.x..area.x + area.width {
@@ -3345,7 +3408,7 @@ impl PromptWidget {
                         '\u{2500}' // ─
                     };
                     cell.set_char(ch);
-                    cell.set_style(div_style);
+                    cell.set_style(border_style_at(x, div_y));
                 }
             }
             // A blank info line still writes its padding spaces, which would punch holes in the divider it sits on.

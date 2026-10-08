@@ -77,6 +77,7 @@ pub(super) fn prompt_style(
         show_borders: false,
         title: None,
         image_preview: true,
+        ultracode_phase: None,
     }
 }
 /// Draw the pinned live region (tail + status + prompt) into the inline viewport.

@@ -733,6 +733,11 @@ impl AgentView {
             } else {
                 None
             },
+            ultracode_phase: self
+                .session
+                .models
+                .ultracode
+                .then(crate::views::prompt_widget::ultracode_phase_now),
             prefix_override: if let Some(p) = self.prompt_input_mode.prefix_override(&theme) {
                 Some(p)
             } else if casual_commenting
@@ -912,6 +917,7 @@ impl AgentView {
             show_borders: false,
             title: None,
             image_preview: !self.resize_hides_prompt_preview(),
+            ultracode_phase: None,
         };
         let inline_prompt_max = ((area.height as u32) / 3).clamp(3, 15) as u16;
         let question_prompt_body_h = if question_view_h == 0 || !is_question_input_mode {
@@ -942,6 +948,7 @@ impl AgentView {
                 show_borders: false,
                 title: None,
                 image_preview: !self.resize_hides_prompt_preview(),
+                ultracode_phase: None,
             };
             let perm_text_w = crate::views::permission_view::inline_text_width(inner_width);
             self.prompt
@@ -2480,6 +2487,7 @@ impl AgentView {
                         show_borders: false,
                         title: None,
                         image_preview: !self.resize_hides_prompt_preview(),
+                        ultracode_phase: None,
                     };
                     let prompt_h = remaining_h.saturating_sub(1).max(1);
                     let prompt_draw_area = Rect {

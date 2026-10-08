@@ -3,7 +3,7 @@
 //! Independent of reasoning effort.
 
 use crate::app::actions::Action;
-use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
+use crate::slash::command::{AppCtx, CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 
 pub struct UltracodeCommand;
 
@@ -15,6 +15,11 @@ impl SlashCommand for UltracodeCommand {
         takes_args: true,
         session_scoped: true,
         arg_placeholder: "[on|off]",
+    }
+
+    /// Picking `/ultracode` from the menu runs it as a toggle instead of waiting for `on`/`off`.
+    fn takes_args_now(&self, _ctx: &AppCtx) -> bool {
+        false
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -47,6 +52,26 @@ mod tests {
     #[test]
     fn ultracode_no_args_toggles() {
         assert!(matches!(run(""), CommandResult::Action(Action::SetUltracode(None))));
+    }
+
+    /// Selecting the command from the menu must not chain into an args phase, so Enter toggles at once.
+    #[test]
+    fn ultracode_menu_pick_runs_without_args() {
+        let models = ModelState::default();
+        let ctx = AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            billing_surface_visible: true,
+            usage_command_visible: true,
+            workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
+        };
+        assert!(!UltracodeCommand.takes_args_now(&ctx));
+        assert!(crate::slash::is_command_complete("/ultracode", &CommandRegistry::new(builtin_commands())));
     }
 
     #[test]

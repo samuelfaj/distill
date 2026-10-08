@@ -2133,6 +2133,7 @@ pub(in crate::app::dispatch) fn set_tier_editor(
     main: String,
     worker: String,
     utility: String,
+    ultracode: bool,
 ) -> Vec<Effect> {
     use crate::slash::commands::model::parse_tier_selection;
     let models = match app.active_view {
@@ -2154,6 +2155,7 @@ pub(in crate::app::dispatch) fn set_tier_editor(
             return vec![];
         }
     };
+    let ultracode_changed = models.ultracode != ultracode;
     let current_main = models.current.clone();
     let current_main_effort = if models.effort_auto {
         None
@@ -2227,6 +2229,12 @@ pub(in crate::app::dispatch) fn set_tier_editor(
         _ => vec![],
     });
     effects.extend(set_cheap_model(app, utility, None));
+    if ultracode_changed {
+        effects.extend(super::super::router::dispatch(
+            crate::app::actions::Action::SetUltracode(Some(ultracode)),
+            app,
+        ));
+    }
     match app.active_view {
         ActiveView::Agent(aid) => {
             if let Some(agent) = app.agents.get_mut(&aid) {

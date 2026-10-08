@@ -128,7 +128,7 @@ Set reasoning effort on the **current** model without reselecting it. Levels are
 
 ### `/ultracode [on|off]`
 
-Toggle Ultracode for the current session. While on, every request you send is treated as a dynamic workflow: the main agent plans briefly, fans the independent parts out to parallel subagents, then integrates the results and runs the verification itself. Trivial single-step requests are still done directly. Ultracode is independent of the reasoning effort and never changes it. The footer shows `· Ultracode` next to the model while it is on. `/ultracode` with no argument flips the current state.
+Toggle Ultracode for the current session. While on, every request you send is treated as a dynamic workflow: the main agent plans briefly, fans the independent parts out to parallel subagents, then integrates the results and runs the verification itself. Trivial single-step requests are still done directly. Ultracode is independent of the reasoning effort and never changes it. The prompt status line shows `Ultracode: on` or `Ultracode: off`, and the Model tiers screen has an Ultracode toggle. `/ultracode` with no argument flips the current state.
 
 ```
 /ultracode

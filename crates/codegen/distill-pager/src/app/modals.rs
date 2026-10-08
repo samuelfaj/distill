@@ -302,10 +302,12 @@ impl AgentView {
                     main,
                     worker,
                     utility,
+                    ultracode,
                 } => InputOutcome::Action(Action::SetTierEditor {
                     main,
                     worker,
                     utility,
+                    ultracode,
                 }),
                 crate::views::tier_editor::TierEditorOutcome::Cancelled => {
                     self.active_modal = None;

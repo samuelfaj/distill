@@ -587,6 +587,7 @@ fn tier_editor_saves_main_and_worker_efforts() {
             main: "chatgpt/gpt-6-sol high".into(),
             worker: "worker-test-luna auto".into(),
             utility: String::new(),
+            ultracode: false,
         },
         &mut app,
     );

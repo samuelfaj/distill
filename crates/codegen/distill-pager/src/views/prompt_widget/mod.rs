@@ -423,6 +423,7 @@ pub struct PromptInfo<'a> {
 pub struct PromptModelTiers {
     pub main: String,
     pub worker: Option<String>,
+    pub ultracode: bool,
 }
 
 impl PromptModelTiers {
@@ -431,6 +432,7 @@ impl PromptModelTiers {
         Some(Self {
             main: models.effort_label(&main),
             worker: models.worker_label(),
+            ultracode: models.ultracode,
         })
     }
 }
@@ -3595,6 +3597,16 @@ impl PromptWidget {
                 left_spans.push(Span::styled("Worker: ", worker_style));
                 left_spans.push(Span::styled(worker.as_str(), worker_style));
             }
+            left_spans.push(Span::styled(" | ", sep_style));
+            let ultracode_style = if tiers.ultracode {
+                Style::default().fg(theme.accent_thinking).bg(bg)
+            } else {
+                theme.muted().bg(bg)
+            };
+            left_spans.push(Span::styled(
+                if tiers.ultracode { "Ultracode: on" } else { "Ultracode: off" },
+                ultracode_style,
+            ));
             left_spans.push(Span::styled(" | ", sep_style));
             change_start = Some(Line::from(left_spans.clone()).width() as u16);
             left_spans.push(Span::styled(

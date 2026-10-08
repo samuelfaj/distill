@@ -3444,10 +3444,12 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         main,
                         worker,
                         utility,
+                        ultracode,
                     } => InputOutcome::Action(Action::SetTierEditor {
                         main,
                         worker,
                         utility,
+                        ultracode,
                     }),
                     crate::views::tier_editor::TierEditorOutcome::Cancelled => {
                         *ctx.welcome_doc_viewer = None;

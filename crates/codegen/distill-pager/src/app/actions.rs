@@ -705,11 +705,12 @@ pub enum Action {
     },
     /// Open the editable main, worker, and utility model form.
     ShowTierEditor,
-    /// Save all three model tier fields from the tier editor.
+    /// Save all model tier fields and the Ultracode toggle from the tier editor.
     SetTierEditor {
         main: String,
         worker: String,
         utility: String,
+        ultracode: bool,
     },
     /// Rename the current session's title/summary.
     RenameSession {

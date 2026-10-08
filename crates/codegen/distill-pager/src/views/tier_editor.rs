@@ -15,6 +15,7 @@ pub enum TierField {
     Main,
     Worker,
     Utility,
+    Ultracode,
 }
 
 impl TierField {
@@ -22,15 +23,17 @@ impl TierField {
         match self {
             Self::Main => Self::Worker,
             Self::Worker => Self::Utility,
-            Self::Utility => Self::Main,
+            Self::Utility => Self::Ultracode,
+            Self::Ultracode => Self::Main,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Main => Self::Utility,
+            Self::Main => Self::Ultracode,
             Self::Worker => Self::Main,
             Self::Utility => Self::Worker,
+            Self::Ultracode => Self::Utility,
         }
     }
 }
@@ -41,6 +44,7 @@ pub enum TierEditorOutcome {
         main: String,
         worker: String,
         utility: String,
+        ultracode: bool,
     },
     Cancelled,
     Changed,
@@ -52,6 +56,7 @@ pub struct TierEditorState {
     pub main: LineEditor,
     pub worker: LineEditor,
     pub utility: LineEditor,
+    pub ultracode: bool,
     pub focus: TierField,
 }
 
@@ -61,6 +66,7 @@ impl TierEditorState {
             main: LineEditor::default(),
             worker: LineEditor::default(),
             utility: LineEditor::default(),
+            ultracode: models.ultracode,
             focus: TierField::Main,
         };
         // Each tier shows its effort after the model, as the fields accept it.
@@ -91,11 +97,12 @@ impl TierEditorState {
         state
     }
 
-    pub fn active_editor_mut(&mut self) -> &mut LineEditor {
+    pub fn active_editor_mut(&mut self) -> Option<&mut LineEditor> {
         match self.focus {
-            TierField::Main => &mut self.main,
-            TierField::Worker => &mut self.worker,
-            TierField::Utility => &mut self.utility,
+            TierField::Main => Some(&mut self.main),
+            TierField::Worker => Some(&mut self.worker),
+            TierField::Utility => Some(&mut self.utility),
+            TierField::Ultracode => None,
         }
     }
 
@@ -131,13 +138,23 @@ impl TierEditorState {
                     main: self.main.text().trim().to_owned(),
                     worker: self.worker.text().trim().to_owned(),
                     utility: self.utility.text().trim().to_owned(),
+                    ultracode: self.ultracode,
                 };
             }
             _ => {}
         }
-        match self
-            .active_editor_mut()
-            .handle_key_with_insert_policy(key, |character| !character.is_control())
+        if self.focus == TierField::Ultracode {
+            return if matches!(key.code, KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
+                self.ultracode = !self.ultracode;
+                TierEditorOutcome::Changed
+            } else {
+                TierEditorOutcome::Unchanged
+            };
+        }
+        let Some(editor) = self.active_editor_mut() else {
+            return TierEditorOutcome::Unchanged;
+        };
+        match editor.handle_key_with_insert_policy(key, |character| !character.is_control())
         {
             LineEditOutcome::Unhandled => TierEditorOutcome::Unchanged,
             LineEditOutcome::HandledNoChange
@@ -147,7 +164,10 @@ impl TierEditorState {
     }
 
     pub fn insert_paste(&mut self, text: &str) -> TierEditorOutcome {
-        match self.active_editor_mut().insert_paste(text) {
+        let Some(editor) = self.active_editor_mut() else {
+            return TierEditorOutcome::Unchanged;
+        };
+        match editor.insert_paste(text) {
             LineEditOutcome::Unhandled => TierEditorOutcome::Unchanged,
             LineEditOutcome::HandledNoChange
             | LineEditOutcome::CursorChanged
@@ -247,6 +267,71 @@ pub fn render_tier_editor_overlay(
         state.focus == TierField::Utility,
         theme,
     );
+    y = y.saturating_add(3);
+    render_toggle(
+        buf,
+        content.content,
+        y,
+        content.content.width,
+        "Ultracode",
+        "Orchestrates work across parallel subagents. Space or \u{2190}/\u{2192} toggles.",
+        state.ultracode,
+        state.focus == TierField::Ultracode,
+        theme,
+    );
+}
+
+fn render_toggle(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    width: u16,
+    label: &str,
+    description: &str,
+    on: bool,
+    focused: bool,
+    theme: &Theme,
+) {
+    let bottom = area.y + area.height;
+    if y >= bottom {
+        return;
+    }
+    let label_style = Style::default()
+        .fg(if focused {
+            theme.fuzzy_accent
+        } else {
+            theme.text_primary
+        })
+        .add_modifier(Modifier::BOLD);
+    Line::from(Span::styled(label, label_style)).render(Rect::new(area.x, y, width, 1), buf);
+    if y + 1 < bottom {
+        Line::from(Span::styled(
+            description,
+            Style::default().fg(theme.gray_bright),
+        ))
+        .render(Rect::new(area.x, y + 1, width, 1), buf);
+    }
+    if y + 2 >= bottom {
+        return;
+    }
+    let style = if focused {
+        Style::default()
+            .fg(theme.text_primary)
+            .bg(theme.bg_highlight)
+    } else {
+        Style::default().fg(theme.gray_bright)
+    };
+    for x in area.x..area.x + width {
+        if let Some(cell) = buf.cell_mut((x, y + 2)) {
+            cell.set_style(style);
+            cell.set_char(' ');
+        }
+    }
+    Line::from(vec![
+        Span::styled("> ", Style::default().fg(theme.fuzzy_accent)),
+        Span::styled(if on { "on" } else { "off" }, style),
+    ])
+    .render(Rect::new(area.x, y + 2, width, 1), buf);
 }
 
 fn render_field(
@@ -367,6 +452,7 @@ mod tests {
             main: Default::default(),
             worker: Default::default(),
             utility: Default::default(),
+            ultracode: false,
             focus: TierField::Main,
         };
         state.main.set_text("  main  ");
@@ -383,8 +469,37 @@ mod tests {
                 main: "main".to_owned(),
                 worker: "worker".to_owned(),
                 utility: "one/two,three/four".to_owned(),
+                ultracode: false,
             }
         );
+    }
+
+    /// Ultracode is a toggle field: Tab reaches it, Space and arrows flip it, and Enter submits the new value.
+    #[test]
+    fn ultracode_field_toggles_and_submits() {
+        let mut models = crate::acp::ModelState::default();
+        models.ultracode = true;
+        let mut state = TierEditorState::from_models(&models);
+        assert!(state.ultracode, "opens on the current state");
+        for _ in 0..3 {
+            state.handle_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        assert_eq!(state.focus, TierField::Ultracode);
+        assert_eq!(
+            state.handle_key(&key(KeyCode::Char(' '), KeyModifiers::NONE)),
+            TierEditorOutcome::Changed
+        );
+        assert!(!state.ultracode);
+        state.handle_key(&key(KeyCode::Right, KeyModifiers::NONE));
+        assert!(state.ultracode);
+        state.handle_key(&key(KeyCode::Left, KeyModifiers::NONE));
+        assert!(!state.ultracode);
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE)),
+            TierEditorOutcome::Submitted { ultracode: false, .. }
+        ));
+        state.handle_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(state.focus, TierField::Main);
     }
 
     #[test]
@@ -393,6 +508,7 @@ mod tests {
             main: Default::default(),
             worker: Default::default(),
             utility: Default::default(),
+            ultracode: false,
             focus: TierField::Main,
         };
         assert_eq!(

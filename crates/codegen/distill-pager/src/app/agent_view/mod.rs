@@ -871,6 +871,8 @@ pub struct AgentView {
     pub(crate) modal_hovered_key: Option<char>,
     /// Cached server-reported context state.
     pub context_state: Option<distill_shell::session::ContextInfo>,
+    /// `(cached_read, prompt)` tokens of this conversation's session ledger totals, from the usage update's `_meta`.
+    pub cache_rate: Option<(u64, u64)>,
     pub status_context: Option<distill_status_line::StatusLineContext>,
     /// Held across a frame that clamps the row away, so a script keeps the size
     /// it last painted at.

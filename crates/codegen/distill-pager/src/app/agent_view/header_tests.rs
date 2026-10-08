@@ -510,3 +510,24 @@ fn nested_subagent_keeps_the_parent_header_and_routes_like_it() {
         InputOutcome::Action(Action::DashboardOverlayExit)
     ));
 }
+
+/// The cache hit rate sits after the context counter and disappears when the ledger has no prompt tokens yet.
+#[test]
+fn header_shows_cache_rate_after_context_and_hides_it_when_unset() {
+    let _theme = crate::theme::cache::pin_theme();
+    let registry = ActionRegistry::defaults();
+    let mut agent = agent_at(140);
+    agent.apply_context_used(163_000, 1_000_000);
+    agent.cache_rate = Some((870, 1000));
+    let buf = draw(&mut agent, &registry, false, OverlayHeader::default());
+    let row = header_row(&agent, &buf);
+    let ctx = row.find("163K / 1.0M").expect("context counter");
+    let cache = row.find("cache 87%").expect("cache rate");
+    assert!(ctx < cache, "cache after context, row = {row:?}");
+    assert!(cache < row.find("[Dashboard]").unwrap(), "row = {row:?}");
+
+    agent.cache_rate = None;
+    let buf = draw(&mut agent, &registry, false, OverlayHeader::default());
+    let row = header_row(&agent, &buf);
+    assert!(!row.contains("cache "), "row = {row:?}");
+}

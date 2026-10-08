@@ -1352,6 +1352,16 @@ impl AgentView {
         ) {
             status.push("context", ctx_line);
         }
+        if let Some((cached, prompt)) = self.cache_rate
+            && prompt > 0
+            && !self.chat_kind
+        {
+            let pct = (cached.saturating_mul(100) + prompt / 2) / prompt;
+            status.push(
+                "cache",
+                Line::from(Span::styled(format!("cache {pct}%"), bg.fg(theme.gray))),
+            );
+        }
         let hover_or = |hovered: bool, resting: Style| {
             if hovered {
                 bg.fg(theme.text_primary)

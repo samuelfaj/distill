@@ -979,7 +979,7 @@ pub(crate) async fn generate_session_compact_with_observer(
                                 timing.record_delta();
                                 content.push_str(delta_content);
                             }
-                            if let Some(fr) = choice.finish_reason {
+                            if let Some(fr) = choice.finish_reason.clone() {
                                 let sr = distill_sampling_types::StopReason::from(fr);
                                 truncated =
                                     matches!(sr, distill_sampling_types::StopReason::Length);

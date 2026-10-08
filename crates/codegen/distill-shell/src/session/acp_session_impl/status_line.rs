@@ -286,9 +286,21 @@ impl SessionActor {
         if size == 0 {
             return;
         }
+        let mut update = acp::UsageUpdate::new(used, size);
+        if let Ok(ledger) = self.chat_state_handle.try_get_session_usage().await
+            && ledger.totals.input_tokens > 0
+        {
+            let mut meta = acp::Meta::new();
+            meta.insert(
+                "cacheReadTokens".into(),
+                ledger.totals.cached_read_tokens.into(),
+            );
+            meta.insert("promptTokens".into(), ledger.totals.input_tokens.into());
+            update = update.meta(meta);
+        }
         let notification = acp::SessionNotification::new(
             self.session_info.id.clone(),
-            acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(used, size)),
+            acp::SessionUpdate::UsageUpdate(update),
         );
         self.emit_transient_notification(notification);
     }

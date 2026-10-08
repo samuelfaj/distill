@@ -192,6 +192,7 @@ impl AgentView {
             modal_buttons: Vec::new(),
             modal_hovered_key: None,
             context_state: None,
+            cache_rate: None,
             status_context: None,
             last_status_line_size: None,
             chat_kind: false,
@@ -1265,6 +1266,7 @@ impl AgentView {
     pub fn apply_context_used(&mut self, used: u64, total: u64) {
         if self.chat_kind {
             self.context_state = None;
+            self.cache_rate = None;
             return;
         }
         let total = if total > 0 {
@@ -1286,6 +1288,23 @@ impl AgentView {
                     used, total,
                 ));
             }
+        }
+    }
+    /// Store the cache counters a usage update carries in `_meta`; an update without them keeps the previous value.
+    pub fn apply_cache_rate(&mut self, usage: &agent_client_protocol::UsageUpdate) {
+        if self.chat_kind {
+            self.cache_rate = None;
+            return;
+        }
+        let Some(meta) = usage.meta.as_ref() else {
+            return;
+        };
+        let prompt = meta.get("promptTokens").and_then(|v| v.as_u64());
+        let cached = meta.get("cacheReadTokens").and_then(|v| v.as_u64());
+        if let (Some(cached), Some(prompt)) = (cached, prompt)
+            && prompt > 0
+        {
+            self.cache_rate = Some((cached, prompt));
         }
     }
     /// Apply Build coding-credit balance only for non-chat agents.

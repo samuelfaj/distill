@@ -792,6 +792,10 @@ impl From<FinishReason> for StopReason {
             FinishReason::Length => StopReason::Length,
             FinishReason::ToolCalls | FinishReason::FunctionCall => StopReason::ToolCalls,
             FinishReason::ContentFilter => StopReason::ContentFilter,
+            FinishReason::Unknown(other) => {
+                tracing::warn!(finish_reason = %other, "unrecognized finish reason from provider");
+                StopReason::Stop
+            }
         }
     }
 }

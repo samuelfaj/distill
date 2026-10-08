@@ -681,7 +681,7 @@ pub struct ChatChoice {
     pub finish_reason: Option<FinishReason>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
@@ -689,6 +689,9 @@ pub enum FinishReason {
     ToolCalls,
     ContentFilter,
     FunctionCall,
+    /// Catch-all for an unrecognized provider finish reason; keeps an SSE chunk parse from discarding an already-streamed response. Preserves the wire string. Must stay LAST: serde tries the tagged variants above first.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2396,5 +2399,25 @@ mod tests {
         let inner: &dyn TraceContext = &*cloned_trace;
         let downcast = inner.as_any().downcast_ref::<TestTrace>().unwrap();
         assert_eq!(downcast.0, "trace-data");
+    }
+
+    /// Providers like inclusionAI/ling-3.0-flash can return `"finish_reason": "error"` in the
+    /// final SSE chunk. `FinishReason` must deserialize it via the `Unknown` catch-all instead of
+    /// failing the parse and discarding the already-streamed response.
+    #[test]
+    fn finish_reason_unknown_variant_deserializes_and_chunk_parses() {
+        let reason: FinishReason =
+            serde_json::from_str("\"error\"").expect("unknown variant must deserialize");
+        assert_eq!(reason, FinishReason::Unknown("error".to_string()));
+
+        let chunk: ChatCompletionChunk = serde_json::from_str(
+            r#"{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"ling-3.0-flash","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}"#,
+        )
+        .expect("chunk with unknown finish_reason must parse");
+
+        assert_eq!(
+            chunk.choices[0].finish_reason,
+            Some(FinishReason::Unknown("error".to_string()))
+        );
     }
 }

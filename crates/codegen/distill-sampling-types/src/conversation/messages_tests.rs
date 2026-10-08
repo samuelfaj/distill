@@ -817,6 +817,7 @@ fn supports_per_message_effort_matches_exact_ids_and_dated_snapshots() {
     use super::messages::supports_per_message_effort;
     assert!(supports_per_message_effort("claude-opus-5-5"));
     assert!(supports_per_message_effort("claude-opus-5-5-20260101"));
+    assert!(supports_per_message_effort("claude-haiku-5-5"));
     assert!(!supports_per_message_effort("claude-opus-5-1"));
     assert!(!supports_per_message_effort("claude-sonnet-5"));
     assert!(!supports_per_message_effort("claude-opus-5-5-2026"));
@@ -1050,6 +1051,7 @@ fn supports_system_messages_matches_the_documented_models() {
         "claude-opus-4-8",
         "claude-opus-5",
         "claude-sonnet-5-5",
+        "claude-haiku-5-5",
         "claude-fable-5",
         "claude-fable-5-1",
         "claude-mythos-5",

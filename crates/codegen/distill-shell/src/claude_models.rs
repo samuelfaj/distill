@@ -41,7 +41,7 @@ const DEFAULT_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const FALLBACK_MODELS: &[(&str, &str, &[ReasoningEffort])] = &[
     ("claude-opus-5-5", "Claude Opus 5.5", &ALL_EFFORTS),
     ("claude-sonnet-5-5", "Claude Sonnet 5.5", &ALL_EFFORTS),
-    ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", &[]),
+    ("claude-haiku-5-5", "Claude Haiku 5.5", &ALL_EFFORTS),
 ];
 
 struct Catalog {
@@ -435,7 +435,10 @@ mod tests {
             effort_ids(&models["claude/claude-sonnet-5-5"]),
             ["low", "medium", "high", "xhigh", "max"]
         );
-        assert!(models["claude/claude-haiku-4-5-20251001"].info.reasoning_efforts.is_empty());
+        assert_eq!(
+            effort_ids(&models["claude/claude-haiku-5-5"]),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
     }
 
     #[tokio::test]

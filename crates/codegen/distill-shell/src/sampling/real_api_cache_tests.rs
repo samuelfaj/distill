@@ -56,7 +56,7 @@ fn env_or(name: &str, default: &str) -> String {
 /// every model but the 4,096-token ones.
 fn anthropic_min_cacheable_tokens(model: &str) -> usize {
     let model = model.rsplit('/').next().unwrap_or(model).replace('.', "-");
-    if ["haiku", "opus-4-5", "opus-4-6"]
+    if ["haiku-4", "opus-4-5", "opus-4-6"]
         .iter()
         .any(|name| model.contains(*name))
     {
@@ -66,6 +66,7 @@ fn anthropic_min_cacheable_tokens(model: &str) -> usize {
         "claude-mythos-5",
         "claude-opus-5",
         "claude-sonnet-5-5",
+        "claude-haiku-5-5",
     ]
     .iter()
     .any(|base| model.starts_with(*base))

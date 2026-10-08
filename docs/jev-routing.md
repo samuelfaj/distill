@@ -225,7 +225,7 @@ order never change the tools array that opens the prefix.
 
 A system prompt that changes mid-session (another mode, `/memory`, a new worker)
 no longer rewrites the opening prompt on `api.anthropic.com` models that take
-system-role messages (Opus 4.8, 5 and 5.5, Sonnet 5.5, Fable and Mythos 5 and
+system-role messages (Opus 4.8, 5 and 5.5, Sonnet 5.5, Haiku 5.5, Fable and Mythos 5 and
 5.1; not Sonnet 5). The new prompt is appended to the history at a turn boundary
 and sent as a system message after the next user turn, saying it replaces the
 earlier instructions, so everything cached before it stays; reverting appends

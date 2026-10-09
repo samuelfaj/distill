@@ -2016,6 +2016,8 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
             .env(CHILD, "1")
             .env("DISTILL_HOME", home.path())
             .env("GROK_HOME", home.path())
+            // Match the 16 MiB stack used by the neighboring resume tests.
+            .env("RUST_MIN_STACK", (16 * 1024 * 1024).to_string())
             .output()
             .expect("isolated durable UltraCode test process");
         assert!(

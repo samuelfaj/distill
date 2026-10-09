@@ -54,6 +54,7 @@ pub mod provider_status;
 pub mod queue;
 pub mod recap;
 pub mod release_notes;
+pub mod side;
 pub mod remember;
 pub mod rename;
 pub mod resume;
@@ -101,6 +102,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(context::ContextCommand),
         Arc::new(compact::CompactCommand),
         Arc::new(fork::ForkCommand),
+        Arc::new(side::SideCommand),
         Arc::new(resume::ResumeCommand),
         // Steering the work in front of you.
         Arc::new(loop_cmd::LoopCommand),
@@ -238,6 +240,8 @@ mod tests {
         assert!(reg.get("new").is_some());
         assert!(reg.get("compact").is_some());
         assert!(reg.get("model").is_some());
+        assert!(reg.get("fork").is_some());
+        assert!(reg.get("side").is_some(), "/side should be registered");
         assert!(reg.get("home").is_some());
         assert!(reg.get("view-plan").is_some());
         reg.set_available_tools(std::collections::HashSet::from([

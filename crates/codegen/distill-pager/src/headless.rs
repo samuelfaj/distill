@@ -604,7 +604,7 @@ async fn fork_then_open(
     restore_code: Option<bool>,
 ) -> anyhow::Result<OpenedSession> {
     use crate::app::session_startup::{
-        effective_fork_new_cwd, ensure_session_id_available, fork_response_error,
+        ForkSessionKind, effective_fork_new_cwd, ensure_session_id_available, fork_response_error,
         fork_response_new_session_id, fork_session_params, parent_session_is_worktree,
     };
     let launch_cwd_str = launch_cwd.to_string_lossy().into_owned();
@@ -615,7 +615,13 @@ async fn fork_then_open(
         ensure_session_id_available(nid, &new_cwd_str)?;
     }
     let parent_is_worktree = parent_session_is_worktree(parent_id, &write_cwd);
-    let mut payload = fork_session_params(parent_id, &write_cwd, new_id, parent_is_worktree);
+    let mut payload = fork_session_params(
+        parent_id,
+        &write_cwd,
+        new_id,
+        parent_is_worktree,
+        ForkSessionKind::Fork,
+    );
     // Shared helper stamps `fork` for interactive `/fork`
     // `-p` children must stay headless: the load path below never restamps
     if let Some(obj) = payload.as_object_mut() {

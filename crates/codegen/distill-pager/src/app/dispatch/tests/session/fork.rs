@@ -648,6 +648,7 @@ fn dispatch_fork_resolved_no_worktree_emits_fork_effect() {
                 parent_cwd,
                 parent_is_worktree,
                 new_session_id: None,
+                session_kind: crate::app::session_startup::ForkSessionKind::Fork,
             },
         ] => {
             assert_eq!(*agent_id, AgentId(1));
@@ -1691,4 +1692,47 @@ fn handle_ask_user_question_pushes_system_block_when_displaced_local_fork_modal(
         scrollback_len_before + 1,
         "exactly one system block pushed"
     );
+}
+
+#[test]
+fn dispatch_side_marks_side_chat_and_emits_side_kind() {
+    let mut app = fork_test_app();
+    let effects = dispatch(
+        Action::Side {
+            directive: Some("explain the parser".into()),
+        },
+        &mut app,
+    );
+    match effects.as_slice() {
+        [Effect::ForkSession {
+            agent_id,
+            parent_is_worktree,
+            session_kind,
+            ..
+        }] => {
+            assert_eq!(*agent_id, AgentId(1));
+            assert!(!*parent_is_worktree, "/side never uses a worktree");
+            assert_eq!(
+                *session_kind,
+                crate::app::session_startup::ForkSessionKind::Side
+            );
+        }
+        other => panic!("expected ForkSession, got {other:?}"),
+    }
+    let side = app.agents.get(&AgentId(1)).expect("side agent created");
+    assert_eq!(side.side_parent, Some(AgentId(0)));
+    assert_eq!(side.pending_first_prompt.as_deref(), Some("explain the parser"));
+    assert_eq!(app.active_view, ActiveView::Agent(AgentId(1)));
+}
+
+#[test]
+fn dispatch_side_refused_inside_side_chat() {
+    let mut app = fork_test_app();
+    let first = dispatch(Action::Side { directive: None }, &mut app);
+    assert!(matches!(first.as_slice(), [Effect::ForkSession { .. }]));
+    // Active view is now the side chat; a second /side must be refused with no effect.
+    let second = dispatch(Action::Side { directive: None }, &mut app);
+    assert!(second.is_empty(), "nested /side must be refused");
+    assert!(app.agents.contains_key(&AgentId(1)), "no second side agent");
+    assert_eq!(app.agents.len(), 2);
 }

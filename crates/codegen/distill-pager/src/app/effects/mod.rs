@@ -5097,6 +5097,7 @@ pub(crate) fn execute(
             parent_cwd,
             parent_is_worktree,
             new_session_id,
+            session_kind,
         } => {
             let tx = acp_tx.clone();
             tasks
@@ -5119,6 +5120,7 @@ pub(crate) fn execute(
                         &parent_cwd,
                         new_session_id.as_deref(),
                         parent_is_worktree,
+                        session_kind,
                     );
                     let req = acp::ExtRequest::new(
                         "x.ai/session/fork",

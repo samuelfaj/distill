@@ -11,6 +11,7 @@ use crate::app::cancel_latency::TurnEnd;
 use crate::app::dispatch::ctx::{SwitchCause, switch_to_agent};
 use crate::app::dispatch::modes::inherit_auto_mode;
 use crate::app::dispatch::prompt::supersede_open_reload_window;
+use crate::app::session_startup::ForkSessionKind;
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
 use crate::scrollback::state::ScrollbackState;
@@ -135,6 +136,27 @@ fn open_fork_question(app: &mut AppView, directive: Option<String>) -> Vec<Effec
     agent.prompt.set_text("");
     vec![]
 }
+/// Start an ephemeral side chat forked from the active session (`/side`).
+/// Refused when already inside a side chat, so side chats never nest.
+pub(in crate::app::dispatch) fn dispatch_side(
+    app: &mut AppView,
+    directive: Option<String>,
+) -> Vec<Effect> {
+    let ActiveView::Agent(parent_id) = app.active_view else {
+        app.show_toast("/side only works inside a session");
+        return vec![];
+    };
+    if app
+        .agents
+        .get(&parent_id)
+        .is_some_and(|a| a.side_parent.is_some())
+    {
+        app.show_toast("Already in a side chat -- close it before starting another");
+        return vec![];
+    }
+    dispatch_fork_resolved_kind(app, false, directive, ForkSessionKind::Side)
+}
+
 /// Construct the placeholder agent, push discoverability markers, flip the discovery gate, switch to the new agent, and emit the fork effect.
 /// `worktree == true` reuses the [`Effect::CreateWorktreeSession`] pipeline (with `load_session_id` set to the parent session id).
 /// `worktree == false` emits [`Effect::ForkSession`], which calls `x.ai/session/fork` directly.
@@ -142,6 +164,16 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
     app: &mut AppView,
     worktree: bool,
     directive: Option<String>,
+) -> Vec<Effect> {
+    dispatch_fork_resolved_kind(app, worktree, directive, ForkSessionKind::Fork)
+}
+
+/// Shared body of `/fork` and `/side`; `kind` selects the session kind and the side-chat marker.
+fn dispatch_fork_resolved_kind(
+    app: &mut AppView,
+    worktree: bool,
+    directive: Option<String>,
+    kind: ForkSessionKind,
 ) -> Vec<Effect> {
     let ActiveView::Agent(parent_id) = app.active_view else {
         return vec![];
@@ -157,10 +189,13 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
     let parent_is_worktree = parent.session.is_worktree;
     let new_id = AgentId(app.next_agent_id);
     app.next_agent_id += 1;
-    let new_agent = build_fork_placeholder(app, new_id, parent_id, &parent_cwd, worktree);
-    let parent_marker = match directive.as_deref() {
-        Some(d) => format!("Forked: {d}"),
-        None => "Forked".to_string(),
+    let side_parent = (kind == ForkSessionKind::Side).then_some(parent_id);
+    let new_agent = build_fork_placeholder(app, new_id, parent_id, &parent_cwd, worktree, side_parent);
+    let parent_marker = match (kind, directive.as_deref()) {
+        (ForkSessionKind::Side, Some(d)) => format!("Side chat: {d}"),
+        (ForkSessionKind::Side, None) => "Started a side chat".to_string(),
+        (ForkSessionKind::Fork, Some(d)) => format!("Forked: {d}"),
+        (ForkSessionKind::Fork, None) => "Forked".to_string(),
     };
     let parent_chat_kind = parent.chat_kind || app.chat_mode;
     let parent_conversation_entry = parent.conversation_entry;
@@ -234,6 +269,7 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
             parent_cwd,
             parent_is_worktree,
             new_session_id: None,
+            session_kind: kind,
         }]
     }
 }
@@ -245,6 +281,7 @@ fn build_fork_placeholder(
     parent_id: AgentId,
     parent_cwd: &std::path::Path,
     worktree: bool,
+    side_parent: Option<AgentId>,
 ) -> AgentView {
     let mut scrollback = ScrollbackState::new();
     scrollback.set_appearance(app.appearance.clone());
@@ -297,6 +334,7 @@ fn build_fork_placeholder(
     };
     agent.session.start_command(cmd);
     agent.turn_started_at = Some(Instant::now());
+    agent.side_parent = side_parent;
     agent
 }
 /// Build the discoverability banner for the child agent: the child's session id, the full parent session id, and optionally a session-switch tip.
@@ -353,6 +391,7 @@ pub(in crate::app::dispatch) fn dispatch_startup_fork_session(
         parent_cwd: cwd,
         parent_is_worktree,
         new_session_id,
+        session_kind: ForkSessionKind::Fork,
     });
     effects
 }

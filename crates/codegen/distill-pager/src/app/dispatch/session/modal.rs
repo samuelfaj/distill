@@ -71,7 +71,7 @@ pub(in crate::app::dispatch) fn dispatch_sessions_confirm_close(
         let parent = app
             .agents
             .get(&closed_id)
-            .and_then(|a| a.session.forked_from)
+            .and_then(|a| a.side_parent.or(a.session.forked_from))
             .filter(|p| app.agents.contains_key(p));
         let fallback = parent.or_else(|| app.agents.keys().copied().find(|id| *id != closed_id));
         if let Some(target) = fallback {

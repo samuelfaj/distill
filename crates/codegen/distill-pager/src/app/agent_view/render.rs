@@ -1362,6 +1362,17 @@ impl AgentView {
                 Line::from(Span::styled(format!("cache {pct}%"), bg.fg(theme.gray))),
             );
         }
+        if self.side_parent.is_some() {
+            let label = match self.side_parent_status {
+                super::SideParentStatus::Running => "side - parent running",
+                super::SideParentStatus::Idle => "side - parent idle",
+                super::SideParentStatus::Gone => "side",
+            };
+            status.push(
+                "side",
+                Line::from(Span::styled(label.to_string(), bg.fg(theme.gray))),
+            );
+        }
         let hover_or = |hovered: bool, resting: Style| {
             if hovered {
                 bg.fg(theme.text_primary)

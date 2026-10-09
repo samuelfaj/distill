@@ -806,6 +806,12 @@ pub enum Action {
     /// `/fork` slash command: parsed args produced by [`crate::slash::commands::fork::parse_fork_args`].
     /// The dispatcher resolves the worktree question (via flag or the local QuestionView modal) before constructing the placeholder.
     Fork(crate::slash::commands::fork::ForkArgs),
+    /// `/side` slash command: start an ephemeral side chat forked from the active session.
+    /// Never opens the worktree question; routes to `dispatch_side`.
+    Side {
+        /// Optional first prompt for the side chat; `None` when `/side` carries no text.
+        directive: Option<String>,
+    },
     /// Submit-path action emitted by the local fork worktree question modal.
     /// Routes directly to `dispatch_fork_resolved`.
     ForkAnswered {
@@ -2277,6 +2283,8 @@ pub enum Effect {
         parent_is_worktree: bool,
         /// Optional client-chosen ID for the forked session (`--session-id` with `--fork-session`).
         new_session_id: Option<String>,
+        /// Session kind stamped into the fork payload: `Fork` for `/fork`, `Side` for the ephemeral `/side`.
+        session_kind: crate::app::session_startup::ForkSessionKind,
     },
     /// Read session display fields from local `summary.json` after load/resume.
     /// Those are the title (and `/rename` manual-ness) plus the last-turn summary for the dashboard secondary line.

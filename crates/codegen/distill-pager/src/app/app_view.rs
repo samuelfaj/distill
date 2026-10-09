@@ -4671,6 +4671,20 @@ impl AppView {
         {
             agent.reconcile_dock_before_paint();
         }
+        // Side chats show their parent's live status; the render path has no AppView handle, so snapshot it here each frame.
+        if let ActiveView::Agent(id) = self.active_view
+            && let Some(parent_id) = self.agents.get(&id).and_then(|a| a.side_parent)
+        {
+            use crate::app::agent_view::SideParentStatus;
+            let status = match self.agents.get(&parent_id) {
+                Some(p) if p.session.state.is_busy() => SideParentStatus::Running,
+                Some(_) => SideParentStatus::Idle,
+                None => SideParentStatus::Gone,
+            };
+            if let Some(agent) = self.agents.get_mut(&id) {
+                agent.side_parent_status = status;
+            }
+        }
         self.maybe_trigger_small_screen_tip();
         self.maybe_trigger_ssh_wrap_tip();
         let compact = self.appearance.prompt.compact;

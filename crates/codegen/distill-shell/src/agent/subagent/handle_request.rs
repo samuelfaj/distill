@@ -1501,7 +1501,9 @@ pub(crate) async fn run_shell_child(
         child_cwd_abs,
         Some(gateway.clone()),
         Some(child_session_id.clone()),
-        if (request.runtime_overrides.inherited_cwd.is_some() || isolated_leaf)
+        if (request.runtime_overrides.inherited_cwd.is_some()
+            || isolated_leaf
+            || (resume_source.is_some() && override_cwd.is_some()))
             && ctx.fs.root() != inherited_fs_root.as_path()
         {
             std::sync::Arc::new(distill_workspace::file_system::LocalFs::new(

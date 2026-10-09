@@ -2086,41 +2086,50 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
                 id: acp::SessionId::new(source_id.clone()),
                 cwd: isolated.to_string_lossy().into_owned(),
             };
-            let source_meta_dir = crate::session::persistence::session_dir(&root_info)
-                .join("subagents")
-                .join(&source_id);
-            let mut source_meta = prior_wake_meta(&source_id, "test-model");
-            source_meta.child_cwd = Some(source_info.cwd.clone());
-            source_meta.worktree_path = Some(source_info.cwd.clone());
-            source_meta.snapshot_ref = None;
-            assert!(write_subagent_meta(&source_meta_dir, &source_meta));
+            let shared = temp.path().join("saved-shared-source");
+            std::fs::create_dir_all(&shared).unwrap();
+            std::fs::write(root.join("marker"), b"root").unwrap();
+            std::fs::write(shared.join("marker"), b"saved-shared").unwrap();
+            let shared_source_info = SessionInfo {
+                id: acp::SessionId::new(uuid::Uuid::now_v7().to_string()),
+                cwd: shared.to_string_lossy().into_owned(),
+            };
             let storage = crate::session::storage::jsonl::JsonlStorageAdapter::with_root(
                 crate::util::distill_home::distill_home(),
             );
-            storage
-                .init_session(&source_info, acp::ModelId::new("test-model"))
-                .await
-                .unwrap();
-            storage
-                .append_chat_message(
-                    &source_info,
-                    &ConversationItem::system("prior isolated system"),
-                )
-                .await
-                .unwrap();
-            storage
-                .append_chat_message(
-                    &source_info,
-                    &ConversationItem::assistant("prior isolated work"),
-                )
-                .await
-                .unwrap();
+            for source in [&source_info, &shared_source_info] {
+                let source_meta_dir = crate::session::persistence::session_dir(&root_info)
+                    .join("subagents")
+                    .join(source.id.to_string());
+                let mut source_meta = prior_wake_meta(&source.id.to_string(), "test-model");
+                source_meta.child_cwd = Some(source.cwd.clone());
+                source_meta.worktree_path =
+                    (source.id == source_info.id).then(|| source.cwd.clone());
+                source_meta.snapshot_ref = None;
+                assert!(write_subagent_meta(&source_meta_dir, &source_meta));
+                storage
+                    .init_session(source, acp::ModelId::new("test-model"))
+                    .await
+                    .unwrap();
+                storage
+                    .append_chat_message(source, &ConversationItem::system("prior source system"))
+                    .await
+                    .unwrap();
+                storage
+                    .append_chat_message(source, &ConversationItem::assistant("prior source work"))
+                    .await
+                    .unwrap();
+            }
             let server = distill_test_support::MockInferenceServer::start()
                 .await
                 .unwrap();
             server.set_response("isolated leaf completed");
             let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
-            for mode in [true, false] {
+            for (mode, resumed_source) in [
+                (true, &source_info),
+                (false, &source_info),
+                (true, &shared_source_info),
+            ] {
                 enabled.store(mode, std::sync::atomic::Ordering::Relaxed);
                 let policy = UltracodePolicy {
                     enabled: enabled.clone(),
@@ -2154,7 +2163,8 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
                 let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
                 let (gateway, _gateway_rx) = test_gateway_with_receiver();
                 // A new coordinator has no completed source: this must restore from disk.
-                let (command_tx, command_rx) = SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                let (command_tx, command_rx) =
+                    SubagentCoordinator::<RunShellChildTestRunner>::channel();
                 let coordinator = tokio::task::spawn_local(
                     SubagentCoordinator::from_channel(
                         command_rx,
@@ -2167,7 +2177,7 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
                 assert_eq!(backend.registry_counts().await.completed, 0);
                 let mut request = auto_wake_test_request(&uuid::Uuid::now_v7().to_string());
                 request.prompt = "Continue in this isolated checkout locally".into();
-                request.resume_from = Some(source_id.clone());
+                request.resume_from = Some(resumed_source.id.to_string());
                 request.runtime_overrides.ultracode = mode.then_some(policy);
                 request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
                 let result = tokio::time::timeout(
@@ -2180,24 +2190,39 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
                 assert!(result.success, "{:?}", result.error);
                 let (child, has_task, resources) = context_rx.recv().await.unwrap();
                 assert_eq!(
-                    resources.lock().await.get::<MaxSubagentDepth>().unwrap().0,
-                    child.subagent_depth
+                    child.cwd.as_path(),
+                    std::path::Path::new(&resumed_source.cwd)
                 );
-                assert!(
-                    !has_task,
-                    "restored isolated children must never receive Task, even with ordinary max depth 3"
-                );
-                assert_eq!(child.cwd.as_path(), isolated.as_path());
-                assert_eq!(child.fs.root(), isolated.as_path());
+                assert_eq!(child.fs.root(), child.cwd.as_path());
                 assert_eq!(root_fs.root(), root.as_path());
-                if mode {
-                    let leaf = child.ultracode_policy.as_ref().unwrap();
-                    assert_eq!(leaf.max_depth, child.subagent_depth);
-                    assert_eq!(leaf.off_max_depth, child.subagent_depth);
-                    enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-                    assert!(!leaf.is_enabled());
-                    enabled.store(true, std::sync::atomic::Ordering::Relaxed);
-                    assert_eq!(leaf.max_depth, child.subagent_depth);
+                if resumed_source.id == source_info.id {
+                    assert_eq!(
+                        resources.lock().await.get::<MaxSubagentDepth>().unwrap().0,
+                        child.subagent_depth
+                    );
+                    assert!(
+                        !has_task,
+                        "restored isolated children remain leaves at ordinary depth 3"
+                    );
+                    if mode {
+                        let leaf = child.ultracode_policy.as_ref().unwrap();
+                        assert_eq!(leaf.max_depth, child.subagent_depth);
+                        assert_eq!(leaf.off_max_depth, child.subagent_depth);
+                        enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+                        assert!(!leaf.is_enabled());
+                        enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        assert_eq!(leaf.max_depth, child.subagent_depth);
+                    }
+                } else {
+                    assert!(has_task, "restored shared cwd retains ordinary hierarchy");
+                    assert_eq!(child.fs.read_file("marker").await.unwrap(), b"saved-shared");
+                    child
+                        .fs
+                        .write_file("resume-proof.txt", b"verified")
+                        .await
+                        .unwrap();
+                    assert!(shared.join("resume-proof.txt").is_file());
+                    assert!(!root.join("resume-proof.txt").exists());
                 }
                 drop(backend);
                 coordinator.await.unwrap();

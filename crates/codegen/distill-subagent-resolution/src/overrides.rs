@@ -196,6 +196,10 @@ mod tests {
     ) -> SubagentRuntimeOverrides {
         SubagentRuntimeOverrides {
             ultracode: None,
+            inherited_model: None,
+            inherited_reasoning_effort: None,
+            inherited_cwd: None,
+            inherited_isolated: false,
             model: model.map(String::from),
             model_override_provenance: ModelOverrideProvenance::Harness,
             reasoning_effort: reasoning_effort.map(String::from),

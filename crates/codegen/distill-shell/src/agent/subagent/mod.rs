@@ -157,6 +157,7 @@ pub(crate) struct RunShellChildHarnessConfig {
     hold_wake_start_flush_ack: bool,
     hold_wake_abort_flush_ack: bool,
     reject_deferred_start_commit: bool,
+    child_context_tx: Option<mpsc::UnboundedSender<crate::tools::ToolContext>>,
 }
 #[cfg(test)]
 impl RunShellChildHarnessConfig {
@@ -167,6 +168,7 @@ impl RunShellChildHarnessConfig {
             hold_wake_start_flush_ack: false,
             hold_wake_abort_flush_ack: false,
             reject_deferred_start_commit: false,
+            child_context_tx: None,
         }
     }
     fn hold_wake_flush_acks(mut self) -> Self {
@@ -211,6 +213,8 @@ pub(crate) struct SubagentSpawnContext {
     pub parent_worker: Option<crate::session::handle::SessionWorker>,
     pub auth: Option<distill_login::GrokAuth>,
     pub parent_cwd: PathBuf,
+    /// `parent_cwd` is the spawner workspace while parent_session_info stays root-scoped.
+    pub inherited_workspace: bool,
     pub parent_session_id: String,
     /// Shell-owned source used only to freeze active-message parent attribution synchronously.
     pub active_message_parent_prompt_index: Arc<std::sync::atomic::AtomicUsize>,
@@ -1028,6 +1032,30 @@ fn cheap_agent_tripped(parent_session_id: &str) -> bool {
 pub(crate) fn trip_cheap_agent(parent_session_id: &str) {
     cheap_agent_trips().lock().insert(parent_session_id.to_owned());
 }
+/// Inherited pins are defaults: explicit descendant runtime, role/persona,
+/// definition and per-type config choices have already had their turn.
+fn apply_inherited_runtime_defaults(
+    request: &SubagentRequest,
+    runtime: &mut EffectiveRuntimeConfig,
+    definition: &distill_agent::config::AgentDefinition,
+    ctx: &SubagentSpawnContext,
+) {
+    if runtime.model.is_none()
+        && matches!(
+            definition.model,
+            distill_agent::config::ModelOverride::Inherit
+        )
+        && !ctx
+            .subagent_model_overrides
+            .contains_key(&request.subagent_type)
+    {
+        runtime.model = request.runtime_overrides.inherited_model.clone();
+    }
+    if runtime.reasoning_effort.is_none() {
+        runtime.reasoning_effort = request.runtime_overrides.inherited_reasoning_effort.clone();
+    }
+}
+
 /// Resolve the sampling config and model ID for a subagent. Precedence: `[subagents.models].{agent_name}` config override > explicit `AgentDefinition` model > the worker model for delegated work ([`delegated_worker_model`]) > the parent session's live sampling config (the main model).
 /// Unknown pins warn and fall through. The caller applies runtime model overrides before this runs.
 /// The third value names a requested worker model that could not be pinned, so the child fell back to the parent model.
@@ -2201,6 +2229,9 @@ fn resume_worktree_action(dir_exists: bool, snapshot_ref: Option<&str>) -> Resum
 }
 /// The parent session's working directory: the source path for a subagent worktree.
 fn parent_source_cwd(ctx: &SubagentSpawnContext) -> std::path::PathBuf {
+    if ctx.inherited_workspace {
+        return ctx.parent_cwd.clone();
+    }
     ctx.parent_session_info
         .as_ref()
         .map(|i| std::path::PathBuf::from(&i.cwd))

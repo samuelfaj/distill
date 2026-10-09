@@ -48,6 +48,9 @@ sessions do not inherit UltraCode and retain their existing configured depth
 behavior. Internal planner/verifier agents, workflow children and children with
 an explicit output-token budget remain leaves. Normal UltraCode children can
 delegate within shared root concurrency, depth, cancellation and usage accounting.
+Nested UltraCode tasks borrowing an isolated parent's worktree must run in the
+foreground through completion; background delegation is rejected so the parent
+cannot dispose of the checkout while descendants still use it.
 There is no shared global token grant or new hard global token budget. Capability
 and permission ceilings remain in force, alongside explicit model and effort
 pins. A nested spawn at full global capacity returns promptly for local

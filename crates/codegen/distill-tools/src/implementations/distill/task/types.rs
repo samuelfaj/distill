@@ -210,6 +210,11 @@ pub enum ModelOverrideProvenance {
 pub struct SubagentRuntimeOverrides {
     /// Host-owned recursive policy; never accepted from model JSON.
     pub ultracode: Option<UltracodePolicy>,
+    /// Coordinator-owned immediate-spawner defaults, separate from caller pins.
+    pub inherited_model: Option<String>,
+    pub inherited_reasoning_effort: Option<String>,
+    pub inherited_cwd: Option<String>,
+    pub inherited_isolated: bool,
     /// Override the model (e.g. "test-model").
     pub model: Option<String>,
     /// Whether `model` came from a model-facing Task call or internal harness logic.

@@ -4219,7 +4219,8 @@ async fn ultracode_nested_spawn_at_capacity_returns_local_fallback_without_queue
 async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_one_tree() {
     let mut harness = harness(false, std::time::Duration::from_secs(60));
     let mut pinned_outer = ultracode_request("outer");
-    pinned_outer.runtime_overrides.model = Some("pinned-model".into());
+    pinned_outer.cwd = Some("/isolated-parent".into());
+    pinned_outer.runtime_overrides.model = Some("test-model".into());
     pinned_outer.runtime_overrides.reasoning_effort = Some("high".into());
     let outer = tokio::spawn({
         let backend = harness.backend.clone();
@@ -4239,12 +4240,22 @@ async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_o
     assert_eq!(observed.parent_session_id, "parent");
     assert_eq!(observed.parent_prompt_id.as_deref(), Some("prompt"));
     assert_eq!(observed.runtime_overrides.spawn_depth, Some(2));
+    assert!(observed.cwd.is_none());
     assert_eq!(
-        observed.runtime_overrides.model.as_deref(),
-        Some("pinned-model")
+        observed.runtime_overrides.inherited_cwd.as_deref(),
+        Some("/isolated-parent")
+    );
+    assert!(observed.runtime_overrides.model.is_none());
+    assert!(observed.runtime_overrides.reasoning_effort.is_none());
+    assert_eq!(
+        observed.runtime_overrides.inherited_model.as_deref(),
+        Some("test-model")
     );
     assert_eq!(
-        observed.runtime_overrides.reasoning_effort.as_deref(),
+        observed
+            .runtime_overrides
+            .inherited_reasoning_effort
+            .as_deref(),
         Some("high")
     );
     harness.started.recv().await.expect("nested active");
@@ -4303,6 +4314,82 @@ async fn ultracode_output_budgeted_parent_remains_a_leaf_when_mode_is_off_or_on(
     assert_eq!(harness.backend.registry_counts().await.queued, 0);
     assert!(harness.requests.try_recv().is_err());
     harness.backend.cancel("budgeted").await;
+    assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn ultracode_isolated_borrower_rejects_background_resume_and_wake_and_never_auto_backgrounds()
+{
+    let mut harness = harness(false, std::time::Duration::from_secs(1));
+    let mut outer_request = ultracode_request("borrower");
+    outer_request.run_in_background = false;
+    outer_request.cwd = Some("/isolated-checkout".into());
+    outer_request.runtime_overrides.inherited_isolated = true;
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(outer_request, None).await }
+    });
+    let observed = harness.requests.recv().await.unwrap();
+    assert!(observed.await_to_completion);
+    harness.started.recv().await.unwrap();
+    let child_backend = session_backend(&harness, "borrower");
+    let mut background = ultracode_request("background");
+    background.resume_from = Some("prior-descendant".into());
+    let refused = child_backend.spawn(background, None).await.unwrap();
+    assert!(!refused.success);
+    assert!(
+        refused
+            .error
+            .unwrap()
+            .contains("Use foreground delegation or execute locally")
+    );
+    assert_eq!(harness.backend.registry_counts().await.queued, 0);
+    assert!(harness.requests.try_recv().is_err());
+
+    let nested_id = "019b0000-0000-7000-8000-000000000099";
+    let mut foreground = ultracode_request(nested_id);
+    foreground.run_in_background = false;
+    assert!(
+        !foreground.await_to_completion,
+        "model-facing Task supplies the ordinary false default"
+    );
+    let nested = tokio::spawn({
+        let backend = child_backend.clone();
+        async move { backend.spawn(foreground, None).await }
+    });
+    let observed = harness.requests.recv().await.unwrap();
+    assert!(observed.await_to_completion);
+    assert!(observed.runtime_overrides.inherited_isolated);
+    harness.started.recv().await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    assert!(
+        !nested.is_finished(),
+        "borrower must not hand off at the foreground deadline"
+    );
+    assert!(!outer.is_finished());
+    harness.finish_one.send(nested_id.to_owned()).unwrap();
+    let result = nested.await.unwrap().unwrap();
+    assert!(result.success && !result.backgrounded);
+
+    let mut resume = ultracode_request("root-resume-background");
+    resume.resume_from = Some(nested_id.into());
+    let refused = harness.backend.spawn(resume, None).await.unwrap();
+    assert!(!refused.success);
+    assert!(
+        refused
+            .error
+            .unwrap()
+            .contains("Use foreground delegation or execute locally")
+    );
+    let root_backend = session_backend(&harness, "parent");
+    let wake = root_backend
+        .send_active_message(ActiveAgentMessageRequest::try_new(nested_id, "continue").unwrap())
+        .await;
+    assert_eq!(wake, ActiveAgentMessageOutcome::NotActiveOrFinalizing);
+    assert_eq!(harness.backend.registry_counts().await.queued, 0);
+    assert!(harness.requests.try_recv().is_err());
+    harness.backend.cancel("borrower").await;
     assert!(outer.await.unwrap().unwrap().cancelled);
     harness.actor.abort();
 }

@@ -281,6 +281,7 @@ impl MvpAgent {
                 .and_then(|handle| handle.worker_override.read().clone()),
             auth: self.current_or_buffered_auth(),
             parent_cwd: parent_cwd.clone(),
+            inherited_workspace: false,
             parent_session_id: parent_session_id.to_string(),
             active_message_parent_prompt_index: parent_handle
                 .as_ref()?

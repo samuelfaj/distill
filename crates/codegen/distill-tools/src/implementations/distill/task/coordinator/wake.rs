@@ -125,6 +125,15 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 .send(ActiveAgentMessageOutcome::NotFoundOrNotOwned);
             return;
         };
+        // Wakes always run in the background. A completed borrower cannot
+        // regain that authority after its spawner has released the checkout.
+        if completed.request.runtime_overrides.inherited_isolated {
+            let _ = ingress
+                .request
+                .respond_to
+                .send(ActiveAgentMessageOutcome::NotActiveOrFinalizing);
+            return;
+        }
         let mut wake_request = completed.request.clone();
         let agent_address = completed.agent_address.clone();
         let spawner_session_id = completed.spawner_session_id.clone();

@@ -55,6 +55,7 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
         parent_worker: None,
         auth: None,
         parent_cwd,
+        inherited_workspace: false,
         parent_session_id: "grove-e2e-parent".into(),
         active_message_parent_prompt_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inherited_tool_overrides: None,

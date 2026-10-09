@@ -407,6 +407,25 @@ pub(crate) async fn run_shell_child(
         agent_address,
         spawner_session_id: _,
     } = run;
+    // Workspace defaults follow the immediate spawner; storage and accounting
+    // remain root-scoped after coordinator reparenting.
+    let root_parent_cwd = ctx.parent_cwd.clone();
+    if let Some(cwd) = request.runtime_overrides.inherited_cwd.as_deref() {
+        let workspace = std::path::PathBuf::from(cwd);
+        if !workspace.is_absolute() || !workspace.is_dir() {
+            return child_run_output(
+                failure_result(
+                    &request,
+                    "Immediate spawner workspace is unavailable; refusing to fall back to the root workspace",
+                ),
+                completion_data,
+                None,
+            );
+        }
+        ctx.parent_cwd = workspace;
+        ctx.inherited_workspace = true;
+        ctx.parent_skills = None;
+    }
     let is_wake = wake_origin.is_some();
     if is_wake {
         // The wake request carries the historical spawn overrides. Durable
@@ -539,10 +558,13 @@ pub(crate) async fn run_shell_child(
         &ctx,
         &mut definition,
     );
-    let cwd = ctx
-        .parent_session_info
-        .as_ref()
-        .map(|i| std::path::Path::new(&i.cwd));
+    let cwd = if ctx.inherited_workspace {
+        Some(ctx.parent_cwd.as_path())
+    } else {
+        ctx.parent_session_info
+            .as_ref()
+            .map(|info| std::path::Path::new(&info.cwd))
+    };
     let mut effective_runtime = distill_subagent_resolution::resolve_runtime_config(
         &request.subagent_type,
         &request.runtime_overrides,
@@ -551,6 +573,7 @@ pub(crate) async fn run_shell_child(
         cwd,
         &definition,
     );
+    apply_inherited_runtime_defaults(&request, &mut effective_runtime, &definition, &ctx);
     let prompt = request.prompt.clone();
     if let Some(ref err) = effective_runtime.persona_error {
         tracing::error!(
@@ -585,12 +608,12 @@ pub(crate) async fn run_shell_child(
                     )
                 })
                 .or_else(|| {
-                    durable_resume_source_for(&request.id, &ctx.parent_session_id, &ctx.parent_cwd)
+                    durable_resume_source_for(&request.id, &ctx.parent_session_id, &root_parent_cwd)
                 })
         }
         #[cfg(not(test))]
         {
-            durable_resume_source_for(&request.id, &ctx.parent_session_id, &ctx.parent_cwd)
+            durable_resume_source_for(&request.id, &ctx.parent_session_id, &root_parent_cwd)
         }
     } else if let Some(resume_id) = request
         .resume_from
@@ -610,7 +633,7 @@ pub(crate) async fn run_shell_child(
             }
             SubagentResumeLookup::Completed(info) => Some(ResumeSourceData::from(*info)),
             SubagentResumeLookup::Missing => {
-                match durable_resume_source_for(resume_id, &ctx.parent_session_id, &ctx.parent_cwd)
+                match durable_resume_source_for(resume_id, &ctx.parent_session_id, &root_parent_cwd)
                 {
                     Some(info) => Some(info),
                     None => {
@@ -636,8 +659,11 @@ pub(crate) async fn run_shell_child(
     // Legacy records stay `None` and use the conservative policy below.
     let mut resume_source = resume_source;
     if let Some(source) = resume_source.as_mut()
-        && let Some(durable) =
-            durable_resume_source_for(&source.subagent_id, &ctx.parent_session_id, &ctx.parent_cwd)
+        && let Some(durable) = durable_resume_source_for(
+            &source.subagent_id,
+            &ctx.parent_session_id,
+            &root_parent_cwd,
+        )
     {
         if source.effort_auto.is_none() {
             source.effort_auto = durable.effort_auto;
@@ -661,6 +687,21 @@ pub(crate) async fn run_shell_child(
             request.id
         );
         return child_run_output(failure_result(&request, &error), completion_data, None);
+    }
+    if (request.runtime_overrides.inherited_isolated
+        || request.runtime_overrides.ultracode.is_some())
+        && let Some(source) = resume_source.as_ref()
+        && source.worktree_path.is_none()
+        && !std::path::Path::new(&source.child_cwd).is_dir()
+    {
+        return child_run_output(
+            failure_result(
+                &request,
+                "Resumed Ultracode workspace is unavailable; refusing to fall back to the root workspace",
+            ),
+            completion_data,
+            None,
+        );
     }
     let explicit_model_override = request.runtime_overrides.model.is_some();
     let model_routing_locked = explicit_model_override
@@ -1151,7 +1192,7 @@ pub(crate) async fn run_shell_child(
     }
     let parent_session_dir = session::persistence::session_dir(&SessionInfo {
         id: acp::SessionId::new(ctx.parent_session_id.clone()),
-        cwd: ctx.parent_cwd.to_string_lossy().to_string(),
+        cwd: root_parent_cwd.to_string_lossy().to_string(),
     });
     #[cfg(test)]
     let subagent_meta_dir = ctx
@@ -1444,11 +1485,18 @@ pub(crate) async fn run_shell_child(
         distill_paths::AbsPathBuf::new(std::env::current_dir().unwrap_or_default())
             .expect("current_dir should be absolute")
     });
+    let inherited_fs_root = child_cwd_abs.as_path().to_path_buf();
     let mut tool_ctx = ToolContext::with_preloaded_env(
         child_cwd_abs,
         Some(gateway.clone()),
         Some(child_session_id.clone()),
-        ctx.fs.clone(),
+        if request.runtime_overrides.inherited_isolated {
+            std::sync::Arc::new(distill_workspace::file_system::LocalFs::new(
+                inherited_fs_root,
+            ))
+        } else {
+            ctx.fs.clone()
+        },
         ctx.terminal.clone(),
         ctx.hunk_tracker_handle.clone(),
         (*ctx.session_env).clone(),
@@ -1705,7 +1753,8 @@ pub(crate) async fn run_shell_child(
         );
     }
     let inherit_skills = definition.inherit_skills;
-    let definition_background = definition.background.unwrap_or(false);
+    let definition_background =
+        definition.background.unwrap_or(false) && !request.runtime_overrides.inherited_isolated;
     if inherit_skills && ctx.parent_skills.is_none() {
         let parent_cwd_str = ctx.parent_cwd.to_string_lossy().to_string();
         ctx.parent_skills = Some(
@@ -1988,6 +2037,14 @@ pub(crate) async fn run_shell_child(
         toolset: child_toolset,
         ..
     } = child_init;
+    #[cfg(test)]
+    if let Some(sender) = ctx
+        .run_shell_child_harness
+        .as_ref()
+        .and_then(|harness| harness.child_context_tx.as_ref())
+    {
+        let _ = sender.send(child_handle.tool_context.clone());
+    }
     *child_handle.worker_override.write() = ctx.parent_worker.clone();
     crate::jev::register_child_session(&child_session_id.0, &ctx.parent_session_id);
     session::bind_installed_toolset(

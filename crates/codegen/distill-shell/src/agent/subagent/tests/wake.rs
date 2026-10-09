@@ -1893,3 +1893,110 @@ async fn lone_background_child_still_wakes_on_its_own() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn ultracode_nested_shell_inherits_isolated_workspace_without_reparenting_root_state() {
+    distill_test_utils::require_git!();
+    use distill_test_utils::git::seed_repo_with_remote;
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
+    use distill_tools::implementations::distill::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (root, _remote) = seed_repo_with_remote(temp.path());
+            let isolated = temp.path().join("isolated-parent");
+            distill_fast_worktree::WorktreeBuilder::new(&root, &isolated)
+                .create()
+                .unwrap();
+            std::fs::write(root.join("marker"), b"root").unwrap();
+            std::fs::write(isolated.join("marker"), b"isolated").unwrap();
+            let meta_dir = temp.path().join("meta");
+            let server = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            server.set_response("bounded descendant completed");
+            let (context_tx, mut context_rx) = mpsc::unbounded_channel();
+            let mut harness =
+                RunShellChildHarnessConfig::new(meta_dir.clone(), InitialAttemptBehavior::Normal);
+            harness.child_context_tx = Some(context_tx);
+            let mut ctx = ctx_with_toggle(HashMap::new());
+            configure_completion_harness(&mut ctx, &server, harness);
+            ctx.parent_cwd = root.clone();
+            ctx.parent_session_info = Some(SessionInfo {
+                id: acp::SessionId::new("setup-parent"),
+                cwd: root.to_string_lossy().into_owned(),
+            });
+            ctx.fs = Arc::new(distill_workspace::file_system::LocalFs::new(root.clone()));
+            let root_fs = ctx.fs.clone();
+            let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let policy = UltracodePolicy {
+                enabled,
+                max_depth: 2,
+                off_max_depth: 1,
+                capability_ceiling: None,
+                allowed_subagent_types: None,
+            };
+            ctx.parent_ultracode_policy = Some(policy.clone());
+            let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+            ctx.parent_cmd_tx = Some(parent_cmd_tx);
+            let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+            let (gateway, _gateway_rx) = test_gateway_with_receiver();
+            let (command_tx, command_rx) =
+                SubagentCoordinator::<RunShellChildTestRunner>::channel();
+            let coordinator = tokio::task::spawn_local(
+                SubagentCoordinator::from_channel(
+                    command_rx,
+                    RunShellChildTestRunner::new([ctx], false, gateway),
+                    CoordinatorConfig::default(),
+                )
+                .run(),
+            );
+            let backend = ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+            let id = uuid::Uuid::now_v7().to_string();
+            let mut request = auto_wake_test_request(&id);
+            request.run_in_background = false;
+            request.prompt = "Verify the bounded descendant objective".into();
+            request.runtime_overrides.ultracode = Some(policy);
+            request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+            request.runtime_overrides.spawn_depth = Some(2);
+            request.runtime_overrides.inherited_cwd = Some(isolated.to_string_lossy().into_owned());
+            request.runtime_overrides.inherited_isolated = true;
+            assert!(request.cwd.is_none());
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                backend.spawn(request, None),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(result.success, "{:?}", result.error);
+            let child = context_rx.recv().await.unwrap();
+            assert_eq!(child.cwd.as_path(), isolated.as_path());
+            assert_eq!(child.fs.root(), isolated.as_path());
+            assert_eq!(root_fs.root(), root.as_path());
+            assert_eq!(child.fs.read_file("marker").await.unwrap(), b"isolated");
+            child
+                .fs
+                .write_file("descendant.txt", b"verified")
+                .await
+                .unwrap();
+            assert!(isolated.join("descendant.txt").exists());
+            assert!(!root.join("descendant.txt").exists());
+            let meta: SubagentMeta =
+                serde_json::from_slice(&std::fs::read(meta_dir.join("meta.json")).unwrap())
+                    .unwrap();
+            assert_eq!(meta.parent_session_id, "setup-parent");
+            assert_eq!(meta.child_cwd.as_deref(), isolated.to_str());
+            assert!(
+                meta.worktree_path.is_none(),
+                "descendant must not own or dispose its spawner's checkout"
+            );
+            assert!(isolated.is_dir());
+            drop(backend);
+            coordinator.await.unwrap();
+            usage_ack.abort();
+        })
+        .await;
+}

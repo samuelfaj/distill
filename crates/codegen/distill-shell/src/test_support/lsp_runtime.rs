@@ -37,6 +37,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         parent_worker: None,
         auth: None,
         parent_cwd: PathBuf::from("/tmp"),
+        inherited_workspace: false,
         parent_session_id: "test-parent".into(),
         active_message_parent_prompt_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inherited_tool_overrides: None,

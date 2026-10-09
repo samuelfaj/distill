@@ -3851,3 +3851,64 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
         })
         .await;
 }
+
+#[tokio::test]
+async fn ultracode_descendant_role_pin_beats_inherited_model_and_effort_defaults() {
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.available_models
+        .insert("ancestor-model".into(), test_model_entry("ancestor-model"));
+    ctx.available_models
+        .insert("role-model".into(), test_model_entry("role-model"));
+    let mut request = bootstrap_test_request(false);
+    request.subagent_type = "explore".into();
+    request.runtime_overrides.inherited_model = Some("ancestor-model".into());
+    request.runtime_overrides.inherited_reasoning_effort = Some("high".into());
+    let definition = distill_agent::config::AgentDefinition::default_distill();
+    let roles = HashMap::from([(
+        "explore".into(),
+        distill_subagent_resolution::SubagentRole {
+            model: Some("role-model".into()),
+            reasoning_effort: Some("low".into()),
+            ..Default::default()
+        },
+    )]);
+    let mut configured = distill_subagent_resolution::resolve_runtime_config(
+        "explore",
+        &request.runtime_overrides,
+        &roles,
+        &HashMap::new(),
+        None,
+        &definition,
+    );
+    apply_inherited_runtime_defaults(&request, &mut configured, &definition, &ctx);
+    let (_, model, _) = resolve_effective_model_config(
+        configured.model.as_deref(),
+        "explore",
+        &definition.model,
+        None,
+        &ctx,
+    )
+    .await;
+    assert_eq!(model.0.as_ref(), "role-model");
+    assert_eq!(configured.reasoning_effort.as_deref(), Some("low"));
+    let mut unconfigured = distill_subagent_resolution::resolve_runtime_config(
+        "explore",
+        &request.runtime_overrides,
+        &HashMap::new(),
+        &HashMap::new(),
+        None,
+        &definition,
+    );
+    apply_inherited_runtime_defaults(&request, &mut unconfigured, &definition, &ctx);
+    let (_, model, _) = resolve_effective_model_config(
+        unconfigured.model.as_deref(),
+        "explore",
+        &definition.model,
+        None,
+        &ctx,
+    )
+    .await;
+    assert_eq!(model.0.as_ref(), "ancestor-model");
+    assert_eq!(unconfigured.reasoning_effort.as_deref(), Some("high"));
+    assert!(request.runtime_overrides.model.is_none());
+}

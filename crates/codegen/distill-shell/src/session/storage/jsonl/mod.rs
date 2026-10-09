@@ -1187,6 +1187,15 @@ impl JsonlStorageAdapter {
             if summary.session_kind.as_deref() != Some(kind) {
                 continue;
             }
+            // Another live process may own a recent session of this kind.
+            let recent = std::fs::metadata(session_dir.join(super::SUMMARY_FILE))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < std::time::Duration::from_secs(24 * 3600));
+            if recent {
+                continue;
+            }
             match std::fs::remove_dir_all(&session_dir) {
                 Ok(()) => removed += 1,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}

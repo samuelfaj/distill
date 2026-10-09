@@ -1987,14 +1987,14 @@ async fn ultracode_nested_shell_inherits_distinct_shared_cwd_without_reparenting
             enabled.store(false, std::sync::atomic::Ordering::Relaxed);
             assert_eq!(
                 distill_tools::implementations::distill::task::effective_max_subagent_depth(
-                    &resources.lock().await
+                    &*resources.lock().await
                 ),
                 3
             );
             enabled.store(true, std::sync::atomic::Ordering::Relaxed);
             assert_eq!(
                 distill_tools::implementations::distill::task::effective_max_subagent_depth(
-                    &resources.lock().await
+                    &*resources.lock().await
                 ),
                 2
             );

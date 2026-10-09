@@ -19,6 +19,80 @@ use distill_shell::session::helpers::session_compact::COMPACT_CANCELLED_MSG;
 use distill_shell::session::unified_list::ListScope;
 
 #[test]
+fn session_ultracode_readback_survives_model_initialization_and_resets_for_new_or_old_server() {
+    use distill_shell::sampling::types::ReasoningEffort;
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new("pinned-model");
+    let mut catalog = Some(acp::SessionModelState::new(
+        model_id.clone(),
+        vec![
+            acp::ModelInfo::new(model_id.clone(), "Pinned model".to_string()).meta(
+                serde_json::json!({"supportsReasoningEffort": true, "reasoningEffort": "high"})
+                    .as_object()
+                    .cloned(),
+            ),
+        ],
+    ));
+    for (session, ultracode, fresh) in [
+        ("restored-on", Some(true), false),
+        ("fresh-off", Some(false), true),
+        ("older-response", None, false),
+    ] {
+        // A missing/false response must clear a previous session's on selection,
+        // including when the server omits a replacement model catalog.
+        app.models.ultracode = true;
+        app.agents.get_mut(&id).unwrap().session.models.ultracode = true;
+        let models = catalog.take();
+        let result = if fresh {
+            TaskResult::SessionCreated {
+                agent_id: id,
+                session_id: session.into(),
+                models,
+                modes: None,
+            }
+        } else {
+            TaskResult::SessionLoaded {
+                agent_id: id,
+                session_id: session.into(),
+                models,
+                modes: None,
+                code_restored: false,
+                restore_summary: None,
+                restore_degree: None,
+                running_prompt_id: None,
+            }
+        };
+        dispatch(
+            Action::TaskComplete(TaskResult::WithPinnedMemoryMode {
+                agent_id: id,
+                memory_mode: None,
+                ultracode,
+                result: Box::new(result),
+            }),
+            &mut app,
+        );
+        let agent = expect_agent(&app, id);
+        assert_eq!(
+            agent.session.models.ultracode,
+            ultracode.unwrap_or(false),
+            "{session}"
+        );
+        assert_eq!(
+            app.models.ultracode,
+            ultracode.unwrap_or(false),
+            "{session}"
+        );
+        assert_eq!(agent.session.models.current.as_ref(), Some(&model_id));
+        assert_eq!(
+            agent.session.models.reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
+        assert!(!agent.session.yolo_mode);
+    }
+}
+
+#[test]
 fn live_session_kind_distinguishes_missing_conversation_and_build_matches() {
     let mut app = test_app_with_agent();
     assert_eq!(live_session_kind(&app, "missing"), LiveSessionKind::Missing);

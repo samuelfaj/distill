@@ -47,6 +47,7 @@ fn remember_save_carries_the_session_pinned_mode() {
         Action::TaskComplete(TaskResult::WithPinnedMemoryMode {
             agent_id: id,
             memory_mode: Some(distill_shell::config::MemoryMode::V2),
+            ultracode: None,
             result: Box::new(TaskResult::SessionCreated {
                 agent_id: id,
                 session_id: acp::SessionId::new("pinned-v2"),

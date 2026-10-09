@@ -8,7 +8,7 @@ use crate::implementations::distill::task::types::{
     SubagentCancelRequest, SubagentClearUsageNotAppliedRequest, SubagentCompletionsRequest,
     SubagentListActiveRequest, SubagentLoopUnitActiveRequest, SubagentMarkUsageNotAppliedRequest,
     SubagentOutstandingReply, SubagentOutstandingRequest, SubagentOwner, SubagentRegistryCounts,
-    SubagentRequest, SubagentSnapshotStatus, SubagentWaitPromptDrainedRequest,
+    SubagentRequest, SubagentSnapshotStatus, SubagentWaitPromptDrainedRequest, UltracodePolicy,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -4168,5 +4168,141 @@ async fn workflow_spawns_bypass_the_session_concurrent_limit() {
             .expect("spawn round-trips")
             .success
     );
+    harness.actor.abort();
+}
+
+fn ultracode_request(id: &str) -> SubagentRequest {
+    let mut request = request(id, true);
+    request.runtime_overrides.ultracode = Some(UltracodePolicy {
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        max_depth: 2,
+        off_max_depth: 1,
+        capability_ceiling: None,
+        allowed_subagent_types: None,
+    });
+    request
+}
+
+#[tokio::test]
+async fn ultracode_nested_spawn_at_capacity_returns_local_fallback_without_queueing() {
+    let mut harness = harness_with_config(false, limited(1, LimitBehavior::Queue));
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(ultracode_request("outer"), None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        child_backend.spawn(ultracode_request("nested"), None),
+    )
+    .await
+    .expect("nested admission must return without parent completion")
+    .expect("coordinator reply");
+    assert!(!result.success);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Execute this bounded task locally")
+    );
+    assert_eq!(harness.backend.registry_counts().await.queued, 0);
+    assert!(harness.requests.try_recv().is_err());
+    let _ = harness.backend.cancel("outer").await;
+    assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+#[tokio::test]
+async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_one_tree() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut pinned_outer = ultracode_request("outer");
+    pinned_outer.runtime_overrides.model = Some("pinned-model".into());
+    pinned_outer.runtime_overrides.reasoning_effort = Some("high".into());
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(pinned_outer, None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let mut nested = ultracode_request("nested");
+    nested.parent_prompt_id = Some("child-turn".into());
+    nested.runtime_overrides.spawn_depth = Some(0);
+    let nested = tokio::spawn({
+        let backend = child_backend.clone();
+        async move { backend.spawn(nested, None).await }
+    });
+    let observed = harness.requests.recv().await.expect("nested observed");
+    assert_eq!(observed.parent_session_id, "parent");
+    assert_eq!(observed.parent_prompt_id.as_deref(), Some("prompt"));
+    assert_eq!(observed.runtime_overrides.spawn_depth, Some(2));
+    assert_eq!(
+        observed.runtime_overrides.model.as_deref(),
+        Some("pinned-model")
+    );
+    assert_eq!(
+        observed.runtime_overrides.reasoning_effort.as_deref(),
+        Some("high")
+    );
+    harness.started.recv().await.expect("nested active");
+    let grandchild_backend = session_backend(&harness, "nested");
+    let refused = grandchild_backend
+        .spawn(ultracode_request("too-deep"), None)
+        .await
+        .unwrap();
+    assert!(!refused.success);
+    assert!(refused.error.unwrap().contains("depth limit"));
+    let _ = harness.backend.cancel("outer").await;
+    assert!(nested.await.unwrap().unwrap().cancelled);
+    assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+#[tokio::test]
+async fn ultracode_output_budgeted_parent_remains_a_leaf_when_mode_is_off_or_on() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut outer_request = ultracode_request("budgeted");
+    outer_request.runtime_overrides.output_token_budget = Some(32);
+    let enabled = outer_request
+        .runtime_overrides
+        .ultracode
+        .as_ref()
+        .unwrap()
+        .enabled
+        .clone();
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(outer_request, None).await }
+    });
+    harness
+        .requests
+        .recv()
+        .await
+        .expect("budgeted parent observed");
+    harness
+        .started
+        .recv()
+        .await
+        .expect("budgeted parent active");
+    let child_backend = session_backend(&harness, "budgeted");
+    enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+    let refused = child_backend
+        .spawn(request("off-nested", true), None)
+        .await
+        .unwrap();
+    assert!(refused.error.unwrap().contains("output-budgeted"));
+    enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+    let refused = child_backend
+        .spawn(ultracode_request("on-nested"), None)
+        .await
+        .unwrap();
+    assert!(refused.error.unwrap().contains("output-budgeted"));
+    assert_eq!(harness.backend.registry_counts().await.queued, 0);
+    assert!(harness.requests.try_recv().is_err());
+    harness.backend.cancel("budgeted").await;
+    assert!(outer.await.unwrap().unwrap().cancelled);
     harness.actor.abort();
 }

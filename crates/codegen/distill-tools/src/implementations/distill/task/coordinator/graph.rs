@@ -105,6 +105,14 @@ impl SpawnGraph {
             .is_some_and(|node| node.spawner_chain.iter().any(|id| id == ancestor_id))
     }
 
+    pub(super) fn depth(&self, child_id: &str) -> Option<u32> {
+        self.nodes.get(child_id).map(|node| {
+            u32::try_from(node.spawner_chain.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(1)
+        })
+    }
+
     pub(super) fn root_session(&self, child_id: &str) -> Option<&str> {
         self.nodes.get(child_id).map(|node| node.root.as_str())
     }

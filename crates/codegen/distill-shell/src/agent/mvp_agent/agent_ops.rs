@@ -4454,6 +4454,15 @@ impl MvpAgent {
         );
         tool_ctx.monitor_event_buffer = Some(self.monitor_event_buffer.clone());
         tool_ctx.subagent_depth = 0;
+        tool_ctx.ultracode_policy = Some(
+            distill_tools::implementations::distill::task::types::UltracodePolicy {
+                enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                max_depth: self.cfg.borrow().subagents_ultracode_max_depth,
+                off_max_depth: self.cfg.borrow().subagents_max_depth,
+                capability_ceiling: None,
+                allowed_subagent_types: None,
+            },
+        );
         tool_ctx.auto_wake_enabled = self
             .cfg
             .borrow()

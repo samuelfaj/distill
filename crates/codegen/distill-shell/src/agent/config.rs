@@ -1572,6 +1572,9 @@ pub struct Config {
     /// Resolved max subagent nesting depth (see [`crate::config::SubagentsConfig::resolve_max_depth`]).
     #[serde(skip)]
     pub subagents_max_depth: u32,
+    /// UltraCode default two-level ceiling, reduced by explicit depth settings.
+    #[serde(skip)]
+    pub subagents_ultracode_max_depth: u32,
     #[serde(skip)]
     pub subagents_max_concurrent: usize,
     /// Resolved concurrent subagent turn-sampling limit feeding the shared semaphore.
@@ -1858,6 +1861,7 @@ impl Default for Config {
             cli_agent_overrides: CliAgentOverrides::default(),
             subagents_enabled: true,
             subagents_max_depth: crate::config::SubagentsConfig::DEFAULT_MAX_DEPTH,
+            subagents_ultracode_max_depth: 2,
             subagents_max_concurrent:
                 distill_tools::implementations::distill::task::admission::DEFAULT_MAX_CONCURRENT,
             subagents_sampling_limit:
@@ -2328,6 +2332,12 @@ impl Config {
             .and_then(|r| r.subagents_max_depth);
         self.subagents_max_depth =
             crate::config::SubagentsConfig::resolve_max_depth(env.as_deref(), sa.max_depth, remote);
+        self.subagents_ultracode_max_depth =
+            crate::config::SubagentsConfig::resolve_ultracode_max_depth(
+                env.as_deref(),
+                sa.max_depth,
+                remote,
+            );
     }
     fn resolve_subagent_limits(
         &mut self,
@@ -2376,6 +2386,12 @@ impl Config {
         let remote = ctx.remote_settings.and_then(|r| r.subagents_max_depth);
         self.subagents_max_depth =
             crate::config::SubagentsConfig::resolve_max_depth(env.as_deref(), toml_max, remote);
+        self.subagents_ultracode_max_depth =
+            crate::config::SubagentsConfig::resolve_ultracode_max_depth(
+                env.as_deref(),
+                toml_max,
+                remote,
+            );
         let subagents_toml = crate::config::SubagentsConfig {
             max_concurrent: ctx
                 .raw_config

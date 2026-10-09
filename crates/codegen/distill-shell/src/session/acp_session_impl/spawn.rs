@@ -1125,6 +1125,29 @@ pub(crate) async fn spawn_session_actor(
         .join_plugin_registry()
         .instrument(tracing::info_span!("spawn.plugin_registry_wait"))
         .await;
+    if !startup_hints.is_subagent
+        && let Some(policy) = tool_context.ultracode_policy.as_mut()
+    {
+        policy.capability_ceiling = agent_definition.capability_mode;
+        policy.allowed_subagent_types = agent_definition.allowed_subagent_types.clone();
+        if agent_definition.permission_mode == distill_agent::config::PermissionMode::Plan {
+            policy.capability_ceiling = Some(distill_tool_types::SubagentCapabilityMode::ReadOnly);
+        }
+        if tool_context.task_output_token_budget.is_some() {
+            policy.max_depth = tool_context.subagent_depth;
+        }
+    }
+    let ultracode_policy = tool_context.ultracode_policy.clone();
+    let ultracode = ultracode_policy
+        .as_ref()
+        .map(|policy| policy.enabled.clone())
+        .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    if !startup_hints.is_subagent {
+        ultracode.store(
+            crate::extensions::session_ultracode::load_ultracode(&session_info)?,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     let rebuild_spec = std::sync::Arc::new(crate::session::agent_rebuild::AgentRebuildSpec {
         working_directory: tool_context.cwd.as_path().to_path_buf(),
         terminal_backend: terminal_backend.clone(),
@@ -1193,6 +1216,7 @@ pub(crate) async fn spawn_session_actor(
         monitor_event_buffer: tool_context.monitor_event_buffer.clone(),
         user_question_tx: user_question_tx.clone(),
         subagent_depth: tool_context.subagent_depth,
+        ultracode_policy,
         subagents_max_depth,
         session_id_str: session_info.id.0.to_string(),
         blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
@@ -1792,7 +1816,6 @@ pub(crate) async fn spawn_session_actor(
     let actor_build_span = tracing::info_span!("spawn.actor_build").entered();
     let jev_effort_auto =
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(session_jev_effort_auto));
-    let ultracode = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         status_wake: Default::default(),
         session_info: session_info.clone(),

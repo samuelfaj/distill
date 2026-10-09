@@ -1318,6 +1318,29 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         if !self.is_reachable_from_session(id, parent_session_id) {
             return SubagentCancelOutcome::NotFound;
         }
+        let recursive = self
+            .active
+            .get(id)
+            .map(|child| &child.request)
+            .or_else(|| self.pending.get(id).map(|child| &child.request))
+            .is_some_and(|request| request.runtime_overrides.ultracode.is_some());
+        if recursive {
+            let descendants: Vec<_> = self
+                .active
+                .keys()
+                .chain(self.pending.keys())
+                .chain(self.queued.iter().map(|queued| &queued.request.id))
+                .filter(|child_id| self.graph.is_ancestor(child_id, id))
+                .cloned()
+                .collect();
+            for child_id in descendants {
+                self.cancel_one_record(&child_id, explicit);
+            }
+        }
+        self.cancel_one_record(id, explicit)
+    }
+
+    fn cancel_one_record(&mut self, id: &str, explicit: bool) -> SubagentCancelOutcome {
         if let Some(child) = self.active.get_mut(id) {
             child.explicitly_killed |= explicit;
             child.disposition = PendingDisposition::Cancelled;

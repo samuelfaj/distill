@@ -893,8 +893,51 @@ pub(crate) async fn run_shell_child(
         ctx.parent_depth,
         request.runtime_overrides.spawn_depth,
     );
+    let parent_ultracode = ctx
+        .parent_ultracode_policy
+        .as_ref()
+        .is_some_and(|policy| policy.is_enabled());
+    let inherited_ultracode = request.runtime_overrides.ultracode.is_some();
+    let mut ultracode_policy = request.runtime_overrides.ultracode.clone().filter(|_| {
+        parent_ultracode
+            && !request.owner.is_workflow()
+            && request.runtime_overrides.harness_agent_type.is_none()
+            && request.runtime_overrides.model_override_provenance
+                == distill::task::types::ModelOverrideProvenance::Tool
+    });
+    if let (Some(policy), Some(root)) = (
+        ultracode_policy.as_mut(),
+        ctx.parent_ultracode_policy.as_ref(),
+    ) {
+        // Wake requests may hold an old switch after the root was reloaded.
+        // Current root state and configuration remain the authority.
+        policy.enabled = root.enabled.clone();
+        policy.max_depth = policy.max_depth.min(root.max_depth);
+        policy.off_max_depth = policy.off_max_depth.min(root.off_max_depth);
+    }
+    let output_budgeted = request.runtime_overrides.output_token_budget.is_some();
+    let effective_max_depth = if output_budgeted && inherited_ultracode {
+        child_depth
+    } else {
+        ultracode_policy
+            .as_ref()
+            .map_or(ctx.subagents_max_depth, |policy| policy.max_depth)
+    };
+    if let Some(policy) = ultracode_policy.as_mut() {
+        policy.max_depth = effective_max_depth;
+        if output_budgeted {
+            policy.off_max_depth = policy.off_max_depth.min(child_depth);
+        }
+        policy.capability_ceiling = effective_runtime.capability_mode;
+        policy.allowed_subagent_types = definition.allowed_subagent_types.clone();
+        // A plan-mode parent cannot gain write/execute tools through a child.
+        if definition.permission_mode == distill_agent::config::PermissionMode::Plan {
+            policy.capability_ceiling = Some(distill_tool_types::SubagentCapabilityMode::ReadOnly);
+        }
+    }
     let tools_before_policy = definition.tool_config.tools.len();
-    let allow_nested_subagents = child_depth < ctx.subagents_max_depth;
+    let allow_nested_subagents = child_depth < effective_max_depth
+        && !(parent_ultracode && (request.owner.is_workflow() || ultracode_policy.is_none()));
     distill_subagent_resolution::apply_child_tool_policy(
         &mut definition,
         effective_runtime.capability_mode,
@@ -1424,6 +1467,7 @@ pub(crate) async fn run_shell_child(
         .runtime_overrides
         .output_token_budget
         .map(crate::tools::tool_context::TaskOutputTokenBudget::limited);
+    tool_ctx.ultracode_policy = ultracode_policy;
     tool_ctx.task_output_token_budget = task_output_budget.clone();
     tool_ctx.sampler_retry_only_before_output = task_output_budget.is_some();
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
@@ -1837,10 +1881,11 @@ pub(crate) async fn run_shell_child(
         ctx.managed_mcp_proxy_base_url.clone(),
         effective_model_id.clone(),
         ctx.yolo_mode
-            || matches!(
-                agent_permission_mode,
-                distill_agent::config::PermissionMode::BypassPermissions
-            ),
+            || (!(parent_ultracode || inherited_ultracode)
+                && matches!(
+                    agent_permission_mode,
+                    distill_agent::config::PermissionMode::BypassPermissions
+                )),
         false,
         child_jev_effort_auto,
         crate::session::handle::new_session_worker_state(),
@@ -1859,7 +1904,7 @@ pub(crate) async fn run_shell_child(
         ctx.goal_enabled,
         ctx.background_workflows_enabled,
         true,
-        ctx.subagents_max_depth,
+        effective_max_depth,
         ctx.workflow_max_concurrent_agents,
         ctx.media_gen_batch_limits,
         ctx.ask_user_question_enabled,

@@ -219,6 +219,7 @@ pub(crate) struct SubagentSpawnContext {
     pub yolo_mode: bool,
     pub subagent_event_tx: mpsc::UnboundedSender<SubagentEvent>,
     pub parent_depth: u32,
+    pub parent_ultracode_policy: Option<distill::task::types::UltracodePolicy>,
     pub subagents_max_depth: u32,
     pub workflow_max_concurrent_agents: usize,
     pub media_gen_batch_limits: distill_tools::media_gen_limits::MediaGenBatchLimits,

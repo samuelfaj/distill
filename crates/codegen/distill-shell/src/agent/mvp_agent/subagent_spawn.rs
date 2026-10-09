@@ -291,6 +291,8 @@ impl MvpAgent {
             yolo_mode,
             subagent_event_tx: self.subagent_event_tx.event_sender().0,
             parent_depth,
+            parent_ultracode_policy: ps
+                .and_then(|handle| handle.tool_context.ultracode_policy.clone()),
             subagents_max_depth: self.cfg.borrow().subagents_max_depth,
             workflow_max_concurrent_agents: self.cfg.borrow().workflow_max_concurrent_agents,
             media_gen_batch_limits: self.cfg.borrow().media_gen_batch_limits,

@@ -930,6 +930,12 @@ impl MvpAgent {
         );
         let config_options = self.acp_config_options(Some(&session_id), &models);
         self.report_setup_phase(SessionSetupPhase::ResponseReady);
+        if let Some(meta) = meta.as_object_mut() {
+            let enabled = self
+                .resident_handle(&session_id)
+                .is_some_and(|handle| handle.ultracode.load(std::sync::atomic::Ordering::Relaxed));
+            meta.insert("ultracode".into(), serde_json::Value::Bool(enabled));
+        }
         Ok(acp::NewSessionResponse::new(session_id)
             .models(Some(models))
             .config_options(Some(config_options))
@@ -1391,11 +1397,17 @@ impl MvpAgent {
             &SessionMainMeta::from_meta(request_meta.as_ref()),
         )
         .await;
-        let (model_state, response_meta) = self
+        let (model_state, mut response_meta) = self
             .build_attach_response_meta(&session_id, &summary, persist_data, code_restore_info)
             .await;
         distill_telemetry::unified_log::info("session loaded", Some(session_id.0.as_ref()), None);
         let config_options = self.acp_config_options(Some(&session_id), &model_state);
+        if let Some(meta) = response_meta.as_object_mut() {
+            let enabled = self
+                .resident_handle(&session_id)
+                .is_some_and(|handle| handle.ultracode.load(std::sync::atomic::Ordering::Relaxed));
+            meta.insert("ultracode".into(), serde_json::Value::Bool(enabled));
+        }
         let response = acp::LoadSessionResponse::new()
             .models(Some(model_state))
             .config_options(Some(config_options))

@@ -414,6 +414,9 @@ pub(crate) fn execute(
                             TaskResult::WithPinnedMemoryMode {
                                 agent_id,
                                 memory_mode: parse_session_memory_mode(resp.meta.as_ref()),
+                                ultracode: resp.meta.as_ref()
+                                    .and_then(|meta| meta.get("ultracode"))
+                                    .and_then(serde_json::Value::as_bool),
                                 result: Box::new(TaskResult::SessionCreated {
                                     agent_id,
                                     session_id: resp.session_id,
@@ -582,6 +585,9 @@ pub(crate) fn execute(
                             TaskResult::WithPinnedMemoryMode {
                                 agent_id,
                                 memory_mode: parse_session_memory_mode(resp.meta.as_ref()),
+                                ultracode: resp.meta.as_ref()
+                                    .and_then(|meta| meta.get("ultracode"))
+                                    .and_then(serde_json::Value::as_bool),
                                 result: Box::new(TaskResult::WorktreeSessionCreated {
                                     agent_id,
                                     session_id: resp.session_id,
@@ -655,6 +661,9 @@ pub(crate) fn execute(
                             TaskResult::WithPinnedMemoryMode {
                                 agent_id,
                                 memory_mode: parse_session_memory_mode(resp.meta.as_ref()),
+                                ultracode: resp.meta.as_ref()
+                                    .and_then(|meta| meta.get("ultracode"))
+                                    .and_then(serde_json::Value::as_bool),
                                 result: Box::new(TaskResult::SessionLoaded {
                                     agent_id,
                                     session_id: acp_session_id,

@@ -233,7 +233,12 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 ));
             }
             let depth = self.graph.depth(&spawner.request.id).unwrap_or(u32::MAX);
-            if depth >= policy.max_depth {
+            let max_depth = if policy.is_enabled() {
+                policy.max_depth
+            } else {
+                policy.off_max_depth
+            };
+            if depth >= max_depth {
                 return Err(rejected_spawn_result(
                     &request.id,
                     "Ultracode subagent depth limit reached; execute this task locally",

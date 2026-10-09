@@ -157,7 +157,13 @@ pub(crate) struct RunShellChildHarnessConfig {
     hold_wake_start_flush_ack: bool,
     hold_wake_abort_flush_ack: bool,
     reject_deferred_start_commit: bool,
-    child_context_tx: Option<mpsc::UnboundedSender<(crate::tools::ToolContext, bool)>>,
+    child_context_tx: Option<
+        mpsc::UnboundedSender<(
+            crate::tools::ToolContext,
+            bool,
+            distill_tools::types::resources::SharedResources,
+        )>,
+    >,
 }
 #[cfg(test)]
 impl RunShellChildHarnessConfig {

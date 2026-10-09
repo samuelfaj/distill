@@ -980,17 +980,26 @@ mod tests {
         let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let mut resources = Resources::new();
         resources.insert(backend);
-        resources.insert(SubagentDepthCounter(1));
-        resources.insert(MaxSubagentDepth(2));
+        resources.insert(SubagentDepthCounter(2));
+        resources.insert(MaxSubagentDepth(3));
         resources.insert(UltracodePolicy {
             enabled: enabled.clone(),
             max_depth: 2,
-            off_max_depth: 1,
+            off_max_depth: 3,
             capability_ceiling: Some(distill_tool_types::SubagentCapabilityMode::ReadOnly),
             allowed_subagent_types: None,
         });
         resources.insert(SessionIdResource("child".into()));
         let shared = resources.into_shared();
+        let on = distill_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared.clone()),
+            task_input("explore", true),
+        )
+        .await;
+        assert!(on.unwrap_err().to_string().contains("depth limit"));
+        assert!(rx.try_recv().is_err());
+        enabled.store(false, std::sync::atomic::Ordering::Relaxed);
         let inherited_enabled = enabled.clone();
         let drain = tokio::spawn(async move {
             let mut request = unwrap_spawn(rx.recv().await.expect("nested spawn"));
@@ -1010,9 +1019,12 @@ mod tests {
         input.capability_mode = Some(distill_tool_types::SubagentCapabilityMode::All);
         let result =
             distill_tool_runtime::Tool::run(&TaskTool, test_ctx(shared.clone()), input).await;
-        assert!(result.is_ok(), "enabled inherited policy permits depth two");
+        assert!(
+            result.is_ok(),
+            "off restores ordinary depth three for the same depth-two child"
+        );
         drain.await.unwrap();
-        enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+        enabled.store(true, std::sync::atomic::Ordering::Relaxed);
         let result = distill_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),

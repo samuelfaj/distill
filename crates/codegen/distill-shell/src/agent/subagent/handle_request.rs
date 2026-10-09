@@ -957,16 +957,28 @@ pub(crate) async fn run_shell_child(
     }
     let output_budgeted = request.runtime_overrides.output_token_budget.is_some();
     let isolated_leaf = worktree_path.is_some();
-    let effective_max_depth = if isolated_leaf || (output_budgeted && inherited_ultracode) {
+    let physical_leaf = isolated_leaf
+        || (output_budgeted && inherited_ultracode)
+        || (parent_ultracode && (request.owner.is_workflow() || ultracode_policy.is_none()));
+    let ordinary_max_depth = if physical_leaf {
+        child_depth
+    } else {
+        ctx.subagents_max_depth
+    };
+    // Eligible shared children retain Task for either mode. The tool and
+    // coordinator enforce the current mode's ceiling when a call is made.
+    let installation_max_depth = if physical_leaf {
         child_depth
     } else {
         ultracode_policy
             .as_ref()
-            .map_or(ctx.subagents_max_depth, |policy| policy.max_depth)
+            .map_or(ordinary_max_depth, |policy| {
+                policy.max_depth.max(policy.off_max_depth)
+            })
     };
     if let Some(policy) = ultracode_policy.as_mut() {
-        policy.max_depth = effective_max_depth;
-        if isolated_leaf || output_budgeted {
+        if physical_leaf {
+            policy.max_depth = policy.max_depth.min(child_depth);
             policy.off_max_depth = policy.off_max_depth.min(child_depth);
         }
         policy.capability_ceiling = effective_runtime.capability_mode;
@@ -977,8 +989,7 @@ pub(crate) async fn run_shell_child(
         }
     }
     let tools_before_policy = definition.tool_config.tools.len();
-    let allow_nested_subagents = child_depth < effective_max_depth
-        && !(parent_ultracode && (request.owner.is_workflow() || ultracode_policy.is_none()));
+    let allow_nested_subagents = child_depth < installation_max_depth;
     distill_subagent_resolution::apply_child_tool_policy(
         &mut definition,
         effective_runtime.capability_mode,
@@ -1954,7 +1965,7 @@ pub(crate) async fn run_shell_child(
         ctx.goal_enabled,
         ctx.background_workflows_enabled,
         true,
-        effective_max_depth,
+        ordinary_max_depth,
         ctx.workflow_max_concurrent_agents,
         ctx.media_gen_batch_limits,
         ctx.ask_user_question_enabled,
@@ -2047,6 +2058,7 @@ pub(crate) async fn run_shell_child(
         let _ = sender.send((
             child_handle.tool_context.clone(),
             child_toolset.tool_name_for_kind(ToolKind::Task).is_some(),
+            child_toolset.resources.clone(),
         ));
     }
     *child_handle.worker_override.write() = ctx.parent_worker.clone();

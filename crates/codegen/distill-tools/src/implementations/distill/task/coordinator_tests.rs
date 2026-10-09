@@ -4221,6 +4221,9 @@ async fn ultracode_nested_spawn_at_capacity_returns_local_fallback_without_queue
 async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_one_tree() {
     let mut harness = harness(false, std::time::Duration::from_secs(60));
     let mut pinned_outer = ultracode_request("outer");
+    let policy = pinned_outer.runtime_overrides.ultracode.as_mut().unwrap();
+    policy.off_max_depth = 3;
+    let enabled = policy.enabled.clone();
     pinned_outer.cwd = Some("/isolated-parent".into());
     pinned_outer.runtime_overrides.model = Some("test-model".into());
     pinned_outer.runtime_overrides.reasoning_effort = Some("high".into());
@@ -4268,7 +4271,38 @@ async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_o
         .unwrap();
     assert!(!refused.success);
     assert!(refused.error.unwrap().contains("depth limit"));
+    enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+    let third = tokio::spawn({
+        let backend = grandchild_backend.clone();
+        async move {
+            backend
+                .spawn(ultracode_request("ordinary-third"), None)
+                .await
+        }
+    });
+    let observed = harness
+        .requests
+        .recv()
+        .await
+        .expect("off-mode depth-three child admitted");
+    assert_eq!(observed.runtime_overrides.spawn_depth, Some(3));
+    assert!(
+        observed.runtime_overrides.ultracode.is_none(),
+        "off must not reactivate adaptive mode"
+    );
+    harness
+        .started
+        .recv()
+        .await
+        .expect("depth-three child active");
+    enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+    let refused = grandchild_backend
+        .spawn(ultracode_request("on-again-too-deep"), None)
+        .await
+        .unwrap();
+    assert!(refused.error.unwrap().contains("depth limit"));
     let _ = harness.backend.cancel("outer").await;
+    assert!(third.await.unwrap().unwrap().cancelled);
     assert!(nested.await.unwrap().unwrap().cancelled);
     assert!(outer.await.unwrap().unwrap().cancelled);
     harness.actor.abort();

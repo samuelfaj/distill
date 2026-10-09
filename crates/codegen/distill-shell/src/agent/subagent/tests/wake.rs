@@ -1929,13 +1929,14 @@ async fn ultracode_nested_shell_inherits_distinct_shared_cwd_without_reparenting
             let root_fs = ctx.fs.clone();
             let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
             let policy = UltracodePolicy {
-                enabled,
+                enabled: enabled.clone(),
                 max_depth: 2,
-                off_max_depth: 1,
+                off_max_depth: 3,
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             };
             ctx.parent_ultracode_policy = Some(policy.clone());
+            ctx.subagents_max_depth = 3;
             let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
             ctx.parent_cmd_tx = Some(parent_cmd_tx);
             let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
@@ -1968,7 +1969,35 @@ async fn ultracode_nested_shell_inherits_distinct_shared_cwd_without_reparenting
             .unwrap()
             .unwrap();
             assert!(result.success, "{:?}", result.error);
-            let (child, _has_task) = context_rx.recv().await.unwrap();
+            let (child, has_task, resources) = context_rx.recv().await.unwrap();
+            assert!(
+                has_task,
+                "existing depth-two shared child needs installed Task for ordinary off depth three"
+            );
+            {
+                let resources = resources.lock().await;
+                assert_eq!(resources.get::<MaxSubagentDepth>().unwrap().0, 3);
+                assert_eq!(
+                    distill_tools::implementations::distill::task::effective_max_subagent_depth(
+                        &resources
+                    ),
+                    2
+                );
+            }
+            enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(
+                distill_tools::implementations::distill::task::effective_max_subagent_depth(
+                    &resources.lock().await
+                ),
+                3
+            );
+            enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(
+                distill_tools::implementations::distill::task::effective_max_subagent_depth(
+                    &resources.lock().await
+                ),
+                2
+            );
             assert_eq!(child.cwd.as_path(), ordinary.as_path());
             assert_eq!(child.fs.root(), ordinary.as_path());
             assert_eq!(root_fs.root(), root.as_path());
@@ -2149,7 +2178,11 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
                 .unwrap()
                 .unwrap();
                 assert!(result.success, "{:?}", result.error);
-                let (child, has_task) = context_rx.recv().await.unwrap();
+                let (child, has_task, resources) = context_rx.recv().await.unwrap();
+                assert_eq!(
+                    resources.lock().await.get::<MaxSubagentDepth>().unwrap().0,
+                    child.subagent_depth
+                );
                 assert!(
                     !has_task,
                     "restored isolated children must never receive Task, even with ordinary max depth 3"

@@ -51,6 +51,11 @@ fn not_hidden_for_regular_sessions() {
 }
 
 #[test]
+fn hidden_for_side_kind() {
+    assert!(summary_with_kind(Some("side")).is_hidden());
+}
+
+#[test]
 fn headless_is_listable_but_flagged() {
     let headless = summary_with_kind(Some("headless"));
     assert!(!headless.is_hidden(), "headless must stay listable");

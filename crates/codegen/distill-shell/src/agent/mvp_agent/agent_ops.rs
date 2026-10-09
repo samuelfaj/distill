@@ -400,6 +400,12 @@ impl MvpAgent {
                 .await;
         });
     }
+    /// Delete any ephemeral `side` sessions left on disk by a crash. Best-effort, off the initialize critical path.
+    pub(super) fn spawn_side_session_orphan_sweep(&self) {
+        tokio::task::spawn_local(async move {
+            crate::session::persistence::sweep_orphan_side_sessions().await;
+        });
+    }
     pub(crate) fn agent_mcp_state(
         &self,
     ) -> std::sync::Arc<tokio::sync::Mutex<crate::session::mcp_servers::McpState>> {

@@ -511,6 +511,7 @@ impl acp::Agent for MvpAgent {
         let hostname = gethostname::gethostname();
         let mcp_servers: Vec<crate::extensions::mcp::McpServerEntry> = Vec::new();
         self.spawn_initialize_launch_mcp_setup();
+        self.spawn_side_session_orphan_sweep();
         self.spawn_managed_gateway_tool_catalog_fetch();
         {
             let agent_ref = LocalRef::new(self);

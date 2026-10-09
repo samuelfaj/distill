@@ -425,6 +425,8 @@ impl AgentView {
             minimal_cancel_hint_turn: None,
             pending_first_prompt: None,
             pending_fork_banner: None,
+            side_parent: None,
+            side_parent_status: super::SideParentStatus::Idle,
             loading_placeholder_id: None,
             pending_recap_entry: None,
             display_name: None,

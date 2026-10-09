@@ -570,6 +570,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "settings",
     "share",
     "show-plan",
+    "side",
     "skills",
     "summarize",
     "tasks",

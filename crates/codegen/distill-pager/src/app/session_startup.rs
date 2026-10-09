@@ -81,6 +81,24 @@ impl DeferredStartupActions {
             || self.open_dashboard
     }
 }
+/// Session kind stamped into `x.ai/session/fork` params.
+///
+/// `Fork` is a persisted peer (`/fork`); `Side` is an ephemeral side chat (`/side`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkSessionKind {
+    Fork,
+    Side,
+}
+
+impl ForkSessionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fork => "fork",
+            Self::Side => "side",
+        }
+    }
+}
+
 /// Build `x.ai/session/fork` params shared by TUI effects and headless.
 /// `new_cwd` is the write namespace for the child (parent session cwd when cross-cwd); preflight must use the same path via [`effective_fork_new_cwd`].
 pub fn fork_session_params(
@@ -88,6 +106,7 @@ pub fn fork_session_params(
     parent_cwd: &Path,
     new_session_id: Option<&str>,
     parent_is_worktree: bool,
+    session_kind: ForkSessionKind,
 ) -> serde_json::Value {
     let parent_cwd_str = parent_cwd.to_string_lossy().into_owned();
     let source_cwd = distill_shell::session::resolve_local_session_any_cwd(parent_session_id)
@@ -96,7 +115,7 @@ pub fn fork_session_params(
         "sourceSessionId": parent_session_id,
         "sourceCwd": source_cwd,
         "newCwd": parent_cwd_str.clone(),
-        "sessionKind": "fork",
+        "sessionKind": session_kind.as_str(),
     });
     if let Some(obj) = payload.as_object_mut() {
         if let Some(nid) = new_session_id {
@@ -1653,7 +1672,7 @@ mod tests {
     #[test]
     fn fork_session_params_sets_new_session_id_and_workspace_dir() {
         let cwd = PathBuf::from("/wt");
-        let p = fork_session_params("parent-1", &cwd, Some("child-uuid"), true);
+        let p = fork_session_params("parent-1", &cwd, Some("child-uuid"), true, ForkSessionKind::Fork);
         assert_eq!(j(&p, "sourceSessionId"), "parent-1");
         assert_eq!(j(&p, "newCwd"), "/wt");
         assert_eq!(j(&p, "newSessionId"), "child-uuid");
@@ -1663,9 +1682,15 @@ mod tests {
     #[test]
     fn fork_session_params_omits_workspace_dir_when_not_worktree() {
         let cwd = PathBuf::from("/proj");
-        let p = fork_session_params("parent-1", &cwd, None, false);
+        let p = fork_session_params("parent-1", &cwd, None, false, ForkSessionKind::Fork);
         assert!(p.get("sourceWorkspaceDir").is_none());
         assert!(p.get("newSessionId").is_none());
+    }
+    #[test]
+    fn fork_session_params_stamps_side_kind() {
+        let cwd = PathBuf::from("/proj");
+        let p = fork_session_params("parent-1", &cwd, None, false, ForkSessionKind::Side);
+        assert_eq!(j(&p, "sessionKind"), "side");
     }
     #[test]
     fn fork_response_parses_nested_and_top_level_id() {

@@ -592,6 +592,16 @@ pub(crate) struct PendingForkBanner {
     /// Whether the fork created a new worktree.
     pub worktree: bool,
 }
+
+/// Live status of a side chat's parent, shown in the side view's status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SideParentStatus {
+    #[default]
+    Idle,
+    Running,
+    /// The parent is no longer in `AppView::agents`.
+    Gone,
+}
 /// In-flight reconnect session reload.
 /// Opened by [`AgentView::begin_session_reload`]. The pre-outage transcript state is stashed while replay rebuilds fresh state.
 /// On failure, live satellite maps are not restored; they keep receiving updates and converge on the next successful reload.
@@ -1443,6 +1453,11 @@ pub struct AgentView {
     /// Set by `dispatch_fork_resolved`; stores the parent session id and worktree flag so the banner can be formatted with the child's session id (not known until `SessionLoaded`). `None` for non-fork sessions.
     /// Cleared on all failure paths: `SessionLoadFailed`, `WorktreeSessionFailed` (non-orphan branch), and `ForkSessionFailed`.
     pub(crate) pending_fork_banner: Option<PendingForkBanner>,
+    /// `Some(parent)` when this view is an ephemeral side chat started by `/side` (never persisted).
+    /// Used to refuse nested `/side` and to show the parent's live status in the status bar.
+    pub side_parent: Option<crate::app::agent::AgentId>,
+    /// Parent status snapshot for the side chat's status chip, refreshed each frame by `AppView::draw_inner` (the render path has no `AppView` handle).
+    pub side_parent_status: SideParentStatus,
     /// Entry ID of the "Loading session ..." placeholder block pushed by `dispatch_load_session_inner`. Cleared by the `SessionLoaded`
     /// handler so the placeholder doesn't linger on screen when the loaded session has no replay content.
     pub(crate) loading_placeholder_id: Option<EntryId>,

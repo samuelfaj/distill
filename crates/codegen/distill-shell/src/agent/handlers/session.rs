@@ -147,7 +147,12 @@ async fn handle_session_close(
         .map_err(|e| acp::Error::invalid_params().data(format!("invalid params: {e}")))?;
 
     let sid = acp::SessionId::new(req.session_id);
+    // Capture the cwd before close: an ephemeral side session deletes its files on close.
+    let closing_info = agent.resident_handle(&sid).map(|h| h.info.clone());
     let outcome = agent.close_active_session(&sid).await;
+    if let Some(info) = closing_info {
+        crate::session::persistence::delete_closed_side_session(&info).await;
+    }
     tracing::info!(
         session_id = %sid.0,
         ?outcome,

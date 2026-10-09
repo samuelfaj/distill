@@ -688,8 +688,7 @@ pub(crate) async fn run_shell_child(
         );
         return child_run_output(failure_result(&request, &error), completion_data, None);
     }
-    if (request.runtime_overrides.inherited_isolated
-        || request.runtime_overrides.ultracode.is_some())
+    if request.runtime_overrides.ultracode.is_some()
         && let Some(source) = resume_source.as_ref()
         && source.worktree_path.is_none()
         && !std::path::Path::new(&source.child_cwd).is_dir()
@@ -957,7 +956,8 @@ pub(crate) async fn run_shell_child(
         policy.off_max_depth = policy.off_max_depth.min(root.off_max_depth);
     }
     let output_budgeted = request.runtime_overrides.output_token_budget.is_some();
-    let effective_max_depth = if output_budgeted && inherited_ultracode {
+    let isolated_leaf = worktree_path.is_some();
+    let effective_max_depth = if isolated_leaf || (output_budgeted && inherited_ultracode) {
         child_depth
     } else {
         ultracode_policy
@@ -966,7 +966,7 @@ pub(crate) async fn run_shell_child(
     };
     if let Some(policy) = ultracode_policy.as_mut() {
         policy.max_depth = effective_max_depth;
-        if output_budgeted {
+        if isolated_leaf || output_budgeted {
             policy.off_max_depth = policy.off_max_depth.min(child_depth);
         }
         policy.capability_ceiling = effective_runtime.capability_mode;
@@ -1490,7 +1490,9 @@ pub(crate) async fn run_shell_child(
         child_cwd_abs,
         Some(gateway.clone()),
         Some(child_session_id.clone()),
-        if request.runtime_overrides.inherited_isolated {
+        if (request.runtime_overrides.inherited_cwd.is_some() || isolated_leaf)
+            && ctx.fs.root() != inherited_fs_root.as_path()
+        {
             std::sync::Arc::new(distill_workspace::file_system::LocalFs::new(
                 inherited_fs_root,
             ))
@@ -1753,8 +1755,7 @@ pub(crate) async fn run_shell_child(
         );
     }
     let inherit_skills = definition.inherit_skills;
-    let definition_background =
-        definition.background.unwrap_or(false) && !request.runtime_overrides.inherited_isolated;
+    let definition_background = definition.background.unwrap_or(false);
     if inherit_skills && ctx.parent_skills.is_none() {
         let parent_cwd_str = ctx.parent_cwd.to_string_lossy().to_string();
         ctx.parent_skills = Some(
@@ -2043,7 +2044,10 @@ pub(crate) async fn run_shell_child(
         .as_ref()
         .and_then(|harness| harness.child_context_tx.as_ref())
     {
-        let _ = sender.send(child_handle.tool_context.clone());
+        let _ = sender.send((
+            child_handle.tool_context.clone(),
+            child_toolset.tool_name_for_kind(ToolKind::Task).is_some(),
+        ));
     }
     *child_handle.worker_override.write() = ctx.parent_worker.clone();
     crate::jev::register_child_session(&child_session_id.0, &ctx.parent_session_id);

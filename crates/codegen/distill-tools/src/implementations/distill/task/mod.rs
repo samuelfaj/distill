@@ -637,7 +637,6 @@ impl distill_tool_runtime::Tool for TaskTool {
                 inherited_model: None,
                 inherited_reasoning_effort: None,
                 inherited_cwd: None,
-                inherited_isolated: false,
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
                 reasoning_effort: None,

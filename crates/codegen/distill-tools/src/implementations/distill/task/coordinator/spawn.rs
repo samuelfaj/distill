@@ -31,15 +31,6 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         if start_ack == BackgroundStartAck::Hold {
             registered_tx = None;
         }
-        // Resuming a completed borrower retains its workspace restriction.
-        if let Some(source) = request
-            .resume_from
-            .as_ref()
-            .and_then(|id| self.completed.get(id))
-            && source.request.runtime_overrides.inherited_isolated
-        {
-            request.runtime_overrides.inherited_isolated = true;
-        }
         let spawner = match self.reparent_nested_spawn(&mut request) {
             Ok(spawner) => spawner,
             Err(rejection) => {
@@ -47,19 +38,6 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 return;
             }
         };
-        if request.runtime_overrides.inherited_isolated {
-            if request.run_in_background {
-                let _ = result_tx.send(rejected_spawn_result(
-                    &request.id,
-                    "An isolated spawner checkout cannot be borrowed by background delegation. Use foreground delegation or execute locally.",
-                    false,
-                ));
-                return;
-            }
-            // The existing foreground budget must not demote a borrower while
-            // its spawner can finish and dispose the shared checkout.
-            request.await_to_completion = true;
-        }
         // Late Task spawn after user Stop (detached TaskTool background).
         if !request.owner.is_workflow()
             && self
@@ -225,6 +203,15 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 true,
             ));
         }
+        // Actual checkout ownership is authoritative, including ordinary/off
+        // sessions and resumed/woken children. No nested spawn may share this checkout.
+        if spawner.worktree_path.is_some() {
+            return Err(rejected_spawn_result(
+                &request.id,
+                "Isolated worktree agents are leaves; execute this task locally in the owned checkout.",
+                false,
+            ));
+        }
         if let Some(policy) = &spawner.request.runtime_overrides.ultracode {
             if spawner.request.owner.is_workflow() {
                 return Err(rejected_spawn_result(
@@ -267,8 +254,6 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                         .clone()
                 });
             request.runtime_overrides.inherited_cwd = Some(spawner.child_cwd.clone());
-            request.runtime_overrides.inherited_isolated |= spawner.worktree_path.is_some()
-                || spawner.request.runtime_overrides.inherited_isolated;
             request.parent_prompt_id = spawner.request.parent_prompt_id.clone();
             request.runtime_overrides.spawn_depth = Some(depth.saturating_add(1));
             request.runtime_overrides.ultracode = policy.is_enabled().then(|| policy.clone());

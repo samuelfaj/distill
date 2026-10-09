@@ -157,7 +157,7 @@ pub(crate) struct RunShellChildHarnessConfig {
     hold_wake_start_flush_ack: bool,
     hold_wake_abort_flush_ack: bool,
     reject_deferred_start_commit: bool,
-    child_context_tx: Option<mpsc::UnboundedSender<crate::tools::ToolContext>>,
+    child_context_tx: Option<mpsc::UnboundedSender<(crate::tools::ToolContext, bool)>>,
 }
 #[cfg(test)]
 impl RunShellChildHarnessConfig {
@@ -223,7 +223,7 @@ pub(crate) struct SubagentSpawnContext {
     pub yolo_mode: bool,
     pub subagent_event_tx: mpsc::UnboundedSender<SubagentEvent>,
     pub parent_depth: u32,
-    pub parent_ultracode_policy: Option<distill::task::types::UltracodePolicy>,
+    pub parent_ultracode_policy: Option<UltracodePolicy>,
     pub subagents_max_depth: u32,
     pub workflow_max_concurrent_agents: usize,
     pub media_gen_batch_limits: distill_tools::media_gen_limits::MediaGenBatchLimits,

@@ -41,16 +41,16 @@ to two child levels and caps its ceiling at two. An explicit lower ceiling wins:
 environment variable takes precedence over `[subagents] max_depth` and the
 remote setting. The runtime clamps values below one to one and ignores invalid
 environment values; the comparison runner rejects requested depths below one.
-Ordinary sessions retain their existing behavior.
+Ordinary shared-workspace sessions retain their existing behavior.
 
 UltraCode task children share the tree's mode and resolved ceiling. Ordinary
-sessions do not inherit UltraCode and retain their existing configured depth
-behavior. Internal planner/verifier agents, workflow children and children with
-an explicit output-token budget remain leaves. Normal UltraCode children can
-delegate within shared root concurrency, depth, cancellation and usage accounting.
-Nested UltraCode tasks borrowing an isolated parent's worktree must run in the
-foreground through completion; background delegation is rejected so the parent
-cannot dispose of the checkout while descendants still use it.
+shared-workspace sessions do not inherit UltraCode and retain their existing
+configured depth behavior. Internal planner/verifier agents, workflow children
+and children with an explicit output-token budget remain leaves. Normal UltraCode
+children can delegate within shared root concurrency, depth, cancellation and usage accounting.
+Subagents running in isolated worktrees are leaves and cannot delegate, with
+UltraCode on or off; shared-workspace UltraCode hierarchy remains available
+within the existing limits.
 There is no shared global token grant or new hard global token budget. Capability
 and permission ceilings remain in force, alongside explicit model and effort
 pins. A nested spawn at full global capacity returns promptly for local

@@ -483,7 +483,10 @@ impl SessionActor {
             .await;
     }
 
-    fn reserve_classifier_attempt_slot(&self, policy: &GoalClassifierPolicy) -> Option<u32> {
+    pub(in crate::session) fn reserve_classifier_attempt_slot(
+        &self,
+        policy: &GoalClassifierPolicy,
+    ) -> Option<u32> {
         let mut tracker = self.goal_tracker.lock();
         let snapshot = tracker.snapshot_mut()?;
         snapshot.classifier_runs_attempted = snapshot.classifier_runs_attempted.saturating_add(1);
@@ -2850,7 +2853,7 @@ impl SessionActor {
         Some((attempt, details_ptr.unwrap_or("").to_owned(), cap_reached))
     }
 
-    async fn apply_classifier_outcome_legacy(
+    pub(in crate::session) async fn apply_classifier_outcome_legacy(
         &self,
         policy: &GoalClassifierPolicy,
         attempt: u32,

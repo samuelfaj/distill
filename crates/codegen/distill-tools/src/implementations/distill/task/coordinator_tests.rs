@@ -235,7 +235,9 @@ impl ChildRunner for TestRunner {
                 persona: None,
                 resumed_from: request.resume_from.clone(),
                 child_cwd: request.cwd.clone().unwrap_or_default(),
-                worktree_path: None,
+                // Test-only definition with authoritative checkout ownership.
+                worktree_path: (request.subagent_type == "isolated-parent")
+                    .then(|| request.cwd.clone().unwrap_or_default()),
                 effective_model_id: "test-model".to_owned(),
                 // Mock definition resolution: this type declares background.
                 definition_background: request.subagent_type == "background-default",
@@ -4318,78 +4320,44 @@ async fn ultracode_output_budgeted_parent_remains_a_leaf_when_mode_is_off_or_on(
     harness.actor.abort();
 }
 
-#[tokio::test(start_paused = true)]
-async fn ultracode_isolated_borrower_rejects_background_resume_and_wake_and_never_auto_backgrounds()
-{
-    let mut harness = harness(false, std::time::Duration::from_secs(1));
-    let mut outer_request = ultracode_request("borrower");
-    outer_request.run_in_background = false;
-    outer_request.cwd = Some("/isolated-checkout".into());
-    outer_request.runtime_overrides.inherited_isolated = true;
-    let outer = tokio::spawn({
+#[tokio::test]
+async fn ultracode_isolated_spawner_is_a_leaf_before_admission_even_when_off_or_resuming() {
+    let mut harness = harness_with_config(false, limited(1, LimitBehavior::Queue));
+    let mut owner_request = ultracode_request("isolated-owner");
+    owner_request.subagent_type = "isolated-parent".into();
+    owner_request.cwd = Some("/isolated-checkout".into());
+    owner_request.resume_from = Some("durable-source-outside-completed-cache".into());
+    let enabled = owner_request
+        .runtime_overrides
+        .ultracode
+        .as_ref()
+        .unwrap()
+        .enabled
+        .clone();
+    let owner = tokio::spawn({
         let backend = harness.backend.clone();
-        async move { backend.spawn(outer_request, None).await }
+        async move { backend.spawn(owner_request, None).await }
     });
-    let observed = harness.requests.recv().await.unwrap();
-    assert!(observed.await_to_completion);
+    harness.requests.recv().await.unwrap();
     harness.started.recv().await.unwrap();
-    let child_backend = session_backend(&harness, "borrower");
-    let mut background = ultracode_request("background");
-    background.resume_from = Some("prior-descendant".into());
-    let refused = child_backend.spawn(background, None).await.unwrap();
-    assert!(!refused.success);
-    assert!(
-        refused
-            .error
-            .unwrap()
-            .contains("Use foreground delegation or execute locally")
-    );
-    assert_eq!(harness.backend.registry_counts().await.queued, 0);
-    assert!(harness.requests.try_recv().is_err());
-
-    let nested_id = "019b0000-0000-7000-8000-000000000099";
-    let mut foreground = ultracode_request(nested_id);
-    foreground.run_in_background = false;
-    assert!(
-        !foreground.await_to_completion,
-        "model-facing Task supplies the ordinary false default"
-    );
-    let nested = tokio::spawn({
-        let backend = child_backend.clone();
-        async move { backend.spawn(foreground, None).await }
-    });
-    let observed = harness.requests.recv().await.unwrap();
-    assert!(observed.await_to_completion);
-    assert!(observed.runtime_overrides.inherited_isolated);
-    harness.started.recv().await.unwrap();
-    tokio::time::advance(std::time::Duration::from_secs(10)).await;
-    assert!(
-        !nested.is_finished(),
-        "borrower must not hand off at the foreground deadline"
-    );
-    assert!(!outer.is_finished());
-    harness.finish_one.send(nested_id.to_owned()).unwrap();
-    let result = nested.await.unwrap().unwrap();
-    assert!(result.success && !result.backgrounded);
-
-    let mut resume = ultracode_request("root-resume-background");
-    resume.resume_from = Some(nested_id.into());
-    let refused = harness.backend.spawn(resume, None).await.unwrap();
-    assert!(!refused.success);
-    assert!(
-        refused
-            .error
-            .unwrap()
-            .contains("Use foreground delegation or execute locally")
-    );
-    let root_backend = session_backend(&harness, "parent");
-    let wake = root_backend
-        .send_active_message(ActiveAgentMessageRequest::try_new(nested_id, "continue").unwrap())
-        .await;
-    assert_eq!(wake, ActiveAgentMessageOutcome::NotActiveOrFinalizing);
-    assert_eq!(harness.backend.registry_counts().await.queued, 0);
-    assert!(harness.requests.try_recv().is_err());
-    harness.backend.cancel("borrower").await;
-    assert!(outer.await.unwrap().unwrap().cancelled);
+    let child_backend = session_backend(&harness, "isolated-owner");
+    for (index, mode) in [true, false, true].into_iter().enumerate() {
+        enabled.store(mode, std::sync::atomic::Ordering::Relaxed);
+        let mut nested = ultracode_request(&format!("denied-{index}"));
+        nested.run_in_background = index == 2;
+        nested.resume_from = Some("another-durable-source".into());
+        let refused = child_backend.spawn(nested, None).await.unwrap();
+        assert!(!refused.success);
+        assert!(
+            refused
+                .error
+                .unwrap()
+                .contains("Isolated worktree agents are leaves")
+        );
+        assert_eq!(harness.backend.registry_counts().await.queued, 0);
+        assert!(harness.requests.try_recv().is_err());
+    }
+    harness.backend.cancel("isolated-owner").await;
+    assert!(owner.await.unwrap().unwrap().cancelled);
     harness.actor.abort();
 }

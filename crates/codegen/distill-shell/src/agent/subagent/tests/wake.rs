@@ -1895,9 +1895,7 @@ async fn lone_background_child_still_wakes_on_its_own() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ultracode_nested_shell_inherits_isolated_workspace_without_reparenting_root_state() {
-    distill_test_utils::require_git!();
-    use distill_test_utils::git::seed_repo_with_remote;
+async fn ultracode_nested_shell_inherits_distinct_shared_cwd_without_reparenting_root_state() {
     use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
     use distill_tools::implementations::distill::task::coordinator::{
         CoordinatorConfig, SubagentCoordinator,
@@ -1905,13 +1903,12 @@ async fn ultracode_nested_shell_inherits_isolated_workspace_without_reparenting_
     tokio::task::LocalSet::new()
         .run_until(async {
             let temp = tempfile::tempdir().unwrap();
-            let (root, _remote) = seed_repo_with_remote(temp.path());
-            let isolated = temp.path().join("isolated-parent");
-            distill_fast_worktree::WorktreeBuilder::new(&root, &isolated)
-                .create()
-                .unwrap();
+            let root = temp.path().join("root");
+            let ordinary = temp.path().join("ordinary-parent");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::create_dir_all(&ordinary).unwrap();
             std::fs::write(root.join("marker"), b"root").unwrap();
-            std::fs::write(isolated.join("marker"), b"isolated").unwrap();
+            std::fs::write(ordinary.join("marker"), b"ordinary").unwrap();
             let meta_dir = temp.path().join("meta");
             let server = distill_test_support::MockInferenceServer::start()
                 .await
@@ -1961,8 +1958,7 @@ async fn ultracode_nested_shell_inherits_isolated_workspace_without_reparenting_
             request.runtime_overrides.ultracode = Some(policy);
             request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
             request.runtime_overrides.spawn_depth = Some(2);
-            request.runtime_overrides.inherited_cwd = Some(isolated.to_string_lossy().into_owned());
-            request.runtime_overrides.inherited_isolated = true;
+            request.runtime_overrides.inherited_cwd = Some(ordinary.to_string_lossy().into_owned());
             assert!(request.cwd.is_none());
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -1972,31 +1968,206 @@ async fn ultracode_nested_shell_inherits_isolated_workspace_without_reparenting_
             .unwrap()
             .unwrap();
             assert!(result.success, "{:?}", result.error);
-            let child = context_rx.recv().await.unwrap();
-            assert_eq!(child.cwd.as_path(), isolated.as_path());
-            assert_eq!(child.fs.root(), isolated.as_path());
+            let (child, _has_task) = context_rx.recv().await.unwrap();
+            assert_eq!(child.cwd.as_path(), ordinary.as_path());
+            assert_eq!(child.fs.root(), ordinary.as_path());
             assert_eq!(root_fs.root(), root.as_path());
-            assert_eq!(child.fs.read_file("marker").await.unwrap(), b"isolated");
+            assert_eq!(child.fs.read_file("marker").await.unwrap(), b"ordinary");
             child
                 .fs
                 .write_file("descendant.txt", b"verified")
                 .await
                 .unwrap();
-            assert!(isolated.join("descendant.txt").exists());
+            assert!(ordinary.join("descendant.txt").exists());
             assert!(!root.join("descendant.txt").exists());
             let meta: SubagentMeta =
                 serde_json::from_slice(&std::fs::read(meta_dir.join("meta.json")).unwrap())
                     .unwrap();
             assert_eq!(meta.parent_session_id, "setup-parent");
-            assert_eq!(meta.child_cwd.as_deref(), isolated.to_str());
+            assert_eq!(meta.child_cwd.as_deref(), ordinary.to_str());
             assert!(
                 meta.worktree_path.is_none(),
-                "descendant must not own or dispose its spawner's checkout"
+                "shared-cwd descendant does not own an isolated checkout"
             );
-            assert!(isolated.is_dir());
+            assert!(ordinary.is_dir());
             drop(backend);
             coordinator.await.unwrap();
             usage_ack.abort();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
+    // Re-exec before the cached home is read, using the existing isolated-home pattern.
+    const CHILD: &str = "DISTILL_ULTRACODE_DURABLE_RESUME_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let module = module_path!().split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!(
+                    "{module}::ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off"
+                ),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("DISTILL_HOME", home.path())
+            .env("GROK_HOME", home.path())
+            .output()
+            .expect("isolated durable UltraCode test process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child filter must run one test"
+        );
+        return;
+    }
+
+    distill_test_utils::require_git!();
+    use crate::session::storage::StorageAdapter;
+    use distill_test_utils::git::seed_repo_with_remote;
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
+    use distill_tools::implementations::distill::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (root, _remote) = seed_repo_with_remote(temp.path());
+            let isolated = temp.path().join("isolated-source");
+            distill_fast_worktree::WorktreeBuilder::new(&root, &isolated)
+                .create()
+                .unwrap();
+            let source_id = uuid::Uuid::now_v7().to_string();
+            let root_info = SessionInfo {
+                id: acp::SessionId::new("setup-parent"),
+                cwd: root.to_string_lossy().into_owned(),
+            };
+            let source_info = SessionInfo {
+                id: acp::SessionId::new(source_id.clone()),
+                cwd: isolated.to_string_lossy().into_owned(),
+            };
+            let source_meta_dir = crate::session::persistence::session_dir(&root_info)
+                .join("subagents")
+                .join(&source_id);
+            let mut source_meta = prior_wake_meta(&source_id, "test-model");
+            source_meta.child_cwd = Some(source_info.cwd.clone());
+            source_meta.worktree_path = Some(source_info.cwd.clone());
+            source_meta.snapshot_ref = None;
+            assert!(write_subagent_meta(&source_meta_dir, &source_meta));
+            let storage = crate::session::storage::jsonl::JsonlStorageAdapter::with_root(
+                crate::util::distill_home::distill_home(),
+            );
+            storage
+                .init_session(&source_info, acp::ModelId::new("test-model"))
+                .await
+                .unwrap();
+            storage
+                .append_chat_message(
+                    &source_info,
+                    &ConversationItem::system("prior isolated system"),
+                )
+                .await
+                .unwrap();
+            storage
+                .append_chat_message(
+                    &source_info,
+                    &ConversationItem::assistant("prior isolated work"),
+                )
+                .await
+                .unwrap();
+            let server = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            server.set_response("isolated leaf completed");
+            let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            for mode in [true, false] {
+                enabled.store(mode, std::sync::atomic::Ordering::Relaxed);
+                let policy = UltracodePolicy {
+                    enabled: enabled.clone(),
+                    max_depth: 2,
+                    off_max_depth: 3,
+                    capability_ceiling: None,
+                    allowed_subagent_types: None,
+                };
+                let (context_tx, mut context_rx) = mpsc::unbounded_channel();
+                let mut harness = RunShellChildHarnessConfig::new(
+                    temp.path().join(if mode { "on-meta" } else { "off-meta" }),
+                    InitialAttemptBehavior::Normal,
+                );
+                harness.child_context_tx = Some(context_tx);
+                let mut ctx = ctx_with_toggle(HashMap::new());
+                configure_completion_harness(&mut ctx, &server, harness);
+                ctx.parent_cwd = root.clone();
+                ctx.parent_session_info = Some(root_info.clone());
+                ctx.parent_ultracode_policy = Some(policy.clone());
+                let mut config = crate::agent::config::Config::default();
+                config.feature_values.insert(
+                    crate::agent::config::Feature::SubagentWorktreeSnapshot,
+                    false,
+                );
+                ctx.agent_config = Some(config);
+                ctx.subagents_max_depth = 3;
+                ctx.fs = Arc::new(distill_workspace::file_system::LocalFs::new(root.clone()));
+                let root_fs = ctx.fs.clone();
+                let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+                ctx.parent_cmd_tx = Some(parent_cmd_tx);
+                let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+                let (gateway, _gateway_rx) = test_gateway_with_receiver();
+                // A new coordinator has no completed source: this must restore from disk.
+                let (command_tx, command_rx) = SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                let coordinator = tokio::task::spawn_local(
+                    SubagentCoordinator::from_channel(
+                        command_rx,
+                        RunShellChildTestRunner::new([ctx], false, gateway),
+                        CoordinatorConfig::default(),
+                    )
+                    .run(),
+                );
+                let backend = ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+                assert_eq!(backend.registry_counts().await.completed, 0);
+                let mut request = auto_wake_test_request(&uuid::Uuid::now_v7().to_string());
+                request.prompt = "Continue in this isolated checkout locally".into();
+                request.resume_from = Some(source_id.clone());
+                request.runtime_overrides.ultracode = mode.then_some(policy);
+                request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    backend.spawn(request, None),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(result.success, "{:?}", result.error);
+                let (child, has_task) = context_rx.recv().await.unwrap();
+                assert!(
+                    !has_task,
+                    "restored isolated children must never receive Task, even with ordinary max depth 3"
+                );
+                assert_eq!(child.cwd.as_path(), isolated.as_path());
+                assert_eq!(child.fs.root(), isolated.as_path());
+                assert_eq!(root_fs.root(), root.as_path());
+                if mode {
+                    let leaf = child.ultracode_policy.as_ref().unwrap();
+                    assert_eq!(leaf.max_depth, child.subagent_depth);
+                    assert_eq!(leaf.off_max_depth, child.subagent_depth);
+                    enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+                    assert!(!leaf.is_enabled());
+                    enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+                    assert_eq!(leaf.max_depth, child.subagent_depth);
+                }
+                drop(backend);
+                coordinator.await.unwrap();
+                usage_ack.abort();
+            }
         })
         .await;
 }

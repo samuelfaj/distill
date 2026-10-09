@@ -2965,27 +2965,21 @@ impl SessionActor {
                     .await;
                 UpdateGoalAck::ClassifierBlocked { details_path }
             }
-            GoalClassifierOutcome::FailOpenAchieved {
-                reason,
-                details_path,
-            } => {
+            GoalClassifierOutcome::FailOpenAchieved { reason, .. } => {
                 tracing::warn!(
                     ?reason,
-                    "goal verification fail-open (infra-class) → Achieved",
+                    "goal verification infrastructure failure; pausing for retry",
                 );
-                self.prune_subagent_records_for_active_goal();
-                self.clear_pending_classifier_completions();
-                let mut tracker = self.goal_tracker.lock();
-                Self::record_verdict_on_orchestration(
-                    &mut tracker,
-                    GoalClassifierVerdict::Achieved,
-                    (!details_path.is_empty()).then_some(details_path.as_str()),
-                    GapsUpdate::Clear,
-                );
-                tracker.reset_strategist_state();
-                tracker.complete();
-                notify.emit_goal_updated(&mut tracker, tokens_used, finished_marginal);
-                UpdateGoalAck::ClassifierFailOpenAchieved {
+                self.goal_tracker.lock().rollback_classifier_attempt();
+                self.auto_pause_goal_if_active_with_message(
+                    crate::session::goal_tracker::GoalPauseReason::Infra,
+                    format!(
+                        "Goal verification infrastructure failed ({}). Run /goal resume to retry.",
+                        reason.as_const_str()
+                    ),
+                )
+                .await;
+                UpdateGoalAck::ClassifierInfraPaused {
                     reason: reason.as_const_str(),
                 }
             }

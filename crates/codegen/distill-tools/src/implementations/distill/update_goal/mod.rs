@@ -50,9 +50,9 @@ pub enum UpdateGoalAck {
     Accepted { summary: String },
     /// Classifier judged the goal achieved.
     ClassifierAchieved { details_path: String },
-    /// Classifier could not produce a verdict (infra failure); the
-    /// harness fails open and treats the goal as achieved.
-    ClassifierFailOpenAchieved { reason: &'static str },
+    /// Classifier could not produce a verdict (infra failure); the goal
+    /// remains retryable and is paused until verification can run.
+    ClassifierInfraPaused { reason: &'static str },
     /// Classifier rejected the completion; `attempt < max_runs` so
     /// another attempt is still available.
     ClassifierNotAchieved {
@@ -314,13 +314,15 @@ pub fn render_ack_into_output(
                 "Goal classifier verdict: Achieved. Goal complete. See {details_path}"
             ),
         }),
-        UpdateGoalAck::ClassifierFailOpenAchieved { reason } => Ok(UpdateGoalOutput {
-            success: true,
-            summary: format!(
-                "Goal marked complete via fail-open (reason: {reason}). No classifier verdict \
-                 was produced."
-            ),
-        }),
+        UpdateGoalAck::ClassifierInfraPaused { reason } => {
+            Err(distill_tool_runtime::ToolError::custom(
+                "goal_verification_infrastructure_failure",
+                format!(
+                    "Goal verification could not produce a verdict ({reason}). The goal is paused \
+                     for infrastructure failure; run /goal resume to retry."
+                ),
+            ))
+        }
         UpdateGoalAck::ClassifierNotAchieved {
             details_path,
             attempt,
@@ -500,5 +502,19 @@ mod tests {
             ..empty_input()
         };
         assert_eq!(build_summary(&input), "Goal updated.");
+    }
+
+    #[test]
+    fn classifier_infrastructure_failure_is_not_acknowledged_as_success() {
+        let result = render_ack_into_output(UpdateGoalAck::ClassifierInfraPaused {
+            reason: "sampler_error",
+        });
+        let error = result.expect_err("infra failure must not look like goal completion");
+        assert!(
+            error
+                .to_string()
+                .contains("paused for infrastructure failure")
+        );
+        assert!(error.to_string().contains("/goal resume"));
     }
 }

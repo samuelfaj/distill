@@ -1149,6 +1149,52 @@ impl JsonlStorageAdapter {
         .await
         .map_err(io::Error::other)?
     }
+
+    /// Delete `info`'s files only when its persisted summary kind is `side`.
+    /// Returns whether anything was deleted; a missing session is a no-op.
+    pub async fn delete_if_kind_side(&self, info: &Info) -> io::Result<bool> {
+        let summary = match self.load_summary(info).await {
+            Ok(summary) => summary,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if summary.session_kind.as_deref() != Some(crate::session::visibility::SIDE_SESSION_KIND) {
+            return Ok(false);
+        }
+        self.delete_session(info).await?;
+        Ok(true)
+    }
+
+    /// Delete every on-disk session whose `session_kind` is `kind` (crash-leftover ephemeral forks).
+    /// Scans all session dirs, including hidden kinds `list_sessions` drops. Returns how many were removed.
+    pub async fn sweep_sessions_of_kind(&self, kind: &str) -> io::Result<usize> {
+        let adapter = self.clone();
+        let kind = kind.to_string();
+        tokio::task::spawn_blocking(move || adapter.sweep_sessions_of_kind_sync(&kind))
+            .await
+            .map_err(io::Error::other)?
+    }
+
+    fn sweep_sessions_of_kind_sync(&self, kind: &str) -> io::Result<usize> {
+        let mut removed = 0;
+        for session_dir in self.scan_session_dirs(None)? {
+            let Ok(bytes) = std::fs::read(session_dir.join(super::SUMMARY_FILE)) else {
+                continue;
+            };
+            let Ok(summary) = serde_json::from_slice::<Summary>(&bytes) else {
+                continue;
+            };
+            if summary.session_kind.as_deref() != Some(kind) {
+                continue;
+            }
+            match std::fs::remove_dir_all(&session_dir) {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(removed)
+    }
 }
 fn transform_session_id_in_update(
     update: super::SessionUpdate,
@@ -1719,6 +1765,7 @@ impl StorageAdapter for JsonlStorageAdapter {
             Err(e) => Err(e),
         }
     }
+
     async fn append_rewind_point(&self, info: &Info, point: &RewindPoint) -> io::Result<()> {
         self.append_jsonl(self.rewind_points_file(info), point)
             .await

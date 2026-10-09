@@ -1254,11 +1254,11 @@ impl Summary {
 
     /// Whether this session should be excluded from history listings.
     pub fn is_hidden(&self) -> bool {
-        self.hidden.unwrap_or(
-            self.session_kind
-                .as_deref()
-                .is_some_and(|k| k.starts_with("subagent")),
-        )
+        self.hidden.unwrap_or_else(|| {
+            self.session_kind.as_deref().is_some_and(|k| {
+                k.starts_with("subagent") || k == crate::session::visibility::SIDE_SESSION_KIND
+            })
+        })
     }
 
     /// Unused TUI-open husk: untitled, 0 messages, and no fork provenance.
@@ -3372,6 +3372,37 @@ fn classify_remote_delete(
         Ok(()) => Ok(true),
         Err(BackendError::RequestFailed { status: 404, .. }) => Ok(false),
         Err(e) => Err(DeleteSessionError::Remote(e)),
+    }
+}
+
+/// Delete an ephemeral `side` session's files once its pane closes. No-op for any other kind.
+pub async fn delete_closed_side_session(info: &Info) {
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_root(
+        crate::util::distill_home::distill_home(),
+    );
+    match adapter.delete_if_kind_side(info).await {
+        Ok(true) => {
+            tracing::info!(session_id = %info.id.0, "deleted ephemeral side session on close")
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(session_id = %info.id.0, error = %e, "failed to delete side session on close")
+        }
+    }
+}
+
+/// Delete any `side` sessions left on disk by a crash. Runs once at startup.
+pub async fn sweep_orphan_side_sessions() {
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_root(
+        crate::util::distill_home::distill_home(),
+    );
+    match adapter
+        .sweep_sessions_of_kind(crate::session::visibility::SIDE_SESSION_KIND)
+        .await
+    {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "swept orphan side sessions at startup"),
+        Err(e) => tracing::warn!(error = %e, "failed to sweep orphan side sessions"),
     }
 }
 

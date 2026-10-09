@@ -7,6 +7,9 @@ use crate::session::persistence::Summary;
 
 pub const SESSION_KIND_HEADLESS: &str = "headless";
 
+/// Ephemeral side-chat fork. Hidden from listings and deleted when its pane closes.
+pub const SIDE_SESSION_KIND: &str = "side";
+
 /// Listing/search policy for `session_kind=headless` rows.
 /// Applied before truncation; headless remains distinct from `Summary::is_hidden()`.
 /// The Rust default is the first-party picker policy; omitted wire values are handled separately by [`Self::from_wire`].

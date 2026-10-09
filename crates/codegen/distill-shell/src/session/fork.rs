@@ -6,7 +6,8 @@ use crate::remote::BackendClient;
 const FORK_LOG: &str = "xai_fork";
 use crate::session::export::ExportedMetadata;
 use crate::session::info::Info;
-use crate::session::storage::{CopySessionOptions, JsonlStorageAdapter};
+use crate::session::storage::{CopySessionOptions, JsonlStorageAdapter, StorageAdapter};
+use crate::session::visibility::SIDE_SESSION_KIND;
 use crate::util::distill_home::distill_home;
 use agent_client_protocol as acp;
 use std::io;
@@ -58,10 +59,18 @@ pub async fn fork_session(
     agent_id: &str,
     auth_manager: Option<std::sync::Arc<distill_login::AuthManager>>,
 ) -> io::Result<ForkSessionResponse> {
-    let t0 = std::time::Instant::now();
+    let storage = JsonlStorageAdapter::with_root(distill_home());
+    fork_session_with_storage(request, storage, agent_id, auth_manager).await
+}
 
-    let root_dir = distill_home();
-    let storage = JsonlStorageAdapter::with_root(root_dir.clone());
+/// [`fork_session`] against an explicit storage adapter (tests inject a temp root).
+pub(crate) async fn fork_session_with_storage(
+    request: ForkSessionRequest,
+    storage: JsonlStorageAdapter,
+    agent_id: &str,
+    auth_manager: Option<std::sync::Arc<distill_login::AuthManager>>,
+) -> io::Result<ForkSessionResponse> {
+    let t0 = std::time::Instant::now();
 
     // Build source and target Info
     let source_info = Info {
@@ -78,6 +87,37 @@ pub async fn fork_session(
         id: acp::SessionId::new(new_session_id.clone()),
         cwd: request.new_cwd.clone(),
     };
+
+    // Idempotent re-fork: a prior attempt already created this child from the same parent.
+    // Return the existing session instead of erroring or copying a duplicate.
+    match storage.load_summary(&target_info).await {
+        Ok(existing)
+            if existing.parent_session_id.as_deref()
+                == Some(request.source_session_id.as_str()) =>
+        {
+            return Ok(ForkSessionResponse {
+                new_session_id,
+                chat_messages_copied: existing.num_chat_messages,
+                updates_copied: existing.num_messages,
+                // The existing plan file is not re-read; the copy result is not recomputed.
+                plan_state_copied: false,
+                new_cwd: request.new_cwd,
+                parent_session_id: request.source_session_id,
+                new_model_id: request.new_model_id,
+            });
+        }
+        Ok(existing) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "session {new_session_id} already exists (parent {:?})",
+                    existing.parent_session_id
+                ),
+            ));
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
 
     // Copy session data with parent tracking.
     // Runs on the blocking thread pool so concurrent fork copies can execute truly in parallel
@@ -111,7 +151,9 @@ pub async fn fork_session(
     // Register the fork with the backend from a spawned task
     // The local fork works without it: all fork state is in session files on disk, and the backend learns of the session when the task completes
     // Spawning keeps the network round-trip (~200-400ms) off the critical path
-    if let Some(am) = auth_manager {
+    // Side chats are ephemeral and local-only; never register them with the backend.
+    let skip_backend = request.session_kind.as_deref() == Some(SIDE_SESSION_KIND);
+    if let Some(am) = auth_manager.filter(|_| !skip_backend) {
         let sid = new_session_id.clone();
         let cwd = request.new_cwd.clone();
         let parent = request.source_session_id.clone();
@@ -376,5 +418,141 @@ mod tests {
                 "wire sessionKind={wire:?}"
             );
         }
+    }
+
+    fn side_fork_request(source: &str, child: &str) -> ForkSessionRequest {
+        ForkSessionRequest {
+            source_session_id: source.into(),
+            source_cwd: "/src".into(),
+            new_cwd: "/dst".into(),
+            new_session_id: Some(child.into()),
+            session_kind: Some(SIDE_SESSION_KIND.into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn refork_with_same_id_returns_same_child() {
+        use crate::session::persistence::default_model_id;
+        use crate::session::storage::StorageAdapter;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+        let source = Info {
+            id: acp::SessionId::new("side-parent"),
+            cwd: "/src".into(),
+        };
+        adapter
+            .init_session(&source, default_model_id())
+            .await
+            .unwrap();
+
+        let first = fork_session_with_storage(
+            side_fork_request("side-parent", "side-child"),
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
+        let second = fork_session_with_storage(
+            side_fork_request("side-parent", "side-child"),
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first.new_session_id, second.new_session_id);
+        assert_eq!(second.new_session_id, "side-child");
+        assert_eq!(second.parent_session_id, "side-parent");
+    }
+
+    #[tokio::test]
+    async fn refork_with_different_parent_conflicts() {
+        use crate::session::persistence::default_model_id;
+        use crate::session::storage::StorageAdapter;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+        for id in ["side-parent", "other-parent"] {
+            adapter
+                .init_session(
+                    &Info {
+                        id: acp::SessionId::new(id),
+                        cwd: "/src".into(),
+                    },
+                    default_model_id(),
+                )
+                .await
+                .unwrap();
+        }
+
+        fork_session_with_storage(
+            side_fork_request("side-parent", "side-child"),
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let err = fork_session_with_storage(
+            side_fork_request("other-parent", "side-child"),
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[tokio::test]
+    async fn side_fork_is_hidden_and_deleted_on_close() {
+        use crate::session::persistence::default_model_id;
+        use crate::session::storage::StorageAdapter;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+        let parent = Info {
+            id: acp::SessionId::new("side-parent"),
+            cwd: "/src".into(),
+        };
+        adapter
+            .init_session(&parent, default_model_id())
+            .await
+            .unwrap();
+        fork_session_with_storage(
+            side_fork_request("side-parent", "side-child"),
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let child = Info {
+            id: acp::SessionId::new("side-child"),
+            cwd: "/dst".into(),
+        };
+
+        // Hidden from listings.
+        let listed = adapter.list_sessions(None).await.unwrap();
+        assert!(
+            listed.iter().all(|s| s.info.id.0.as_ref() != "side-child"),
+            "side fork must not appear in list_sessions"
+        );
+        assert!(listed.iter().any(|s| s.info.id.0.as_ref() == "side-parent"));
+
+        // Deleted on close; a non-side session is untouched.
+        assert!(adapter.delete_if_kind_side(&child).await.unwrap());
+        assert!(adapter.load_summary(&child).await.is_err());
+        assert!(!adapter.delete_if_kind_side(&parent).await.unwrap());
+        assert!(adapter.load_summary(&parent).await.is_ok());
     }
 }

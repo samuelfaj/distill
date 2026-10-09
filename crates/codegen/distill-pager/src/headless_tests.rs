@@ -167,6 +167,82 @@ fn s(v: &str) -> String {
     v.to_owned()
 }
 
+#[tokio::test]
+async fn ultracode_activation_is_confirmed_before_prompt_and_default_sends_only_prompt() {
+    use distill_acp_lib::AcpAgentMessage;
+    for enabled in [true, false] {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AcpAgentMessage>();
+        let sending = tokio::spawn(async move {
+            send_headless_prompt(
+                &tx,
+                acp::PromptRequest::new(acp::SessionId::new("sess-ultra"), vec![]),
+                enabled,
+            )
+            .await
+        });
+        if enabled {
+            let AcpAgentMessage::ExtMethod(args) = rx.recv().await.unwrap() else {
+                panic!("activation must be the first request");
+            };
+            assert_eq!(args.request.method.as_ref(), "x.ai/session/ultracode/set");
+            let params: serde_json::Value =
+                serde_json::from_str(args.request.params.get()).unwrap();
+            assert_eq!(
+                params,
+                serde_json::json!({"sessionId": "sess-ultra", "enabled": true})
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "prompt waits for the activation response"
+            );
+            args.response_tx
+                .send(Ok(acp::ExtResponse::new(
+                    serde_json::value::to_raw_value(&serde_json::json!({"enabled": true}))
+                        .unwrap()
+                        .into(),
+                )))
+                .unwrap();
+        }
+        let AcpAgentMessage::Prompt(args) = rx.recv().await.unwrap() else {
+            panic!("expected the prompt after successful startup");
+        };
+        assert_eq!(args.request.session_id.0.as_ref(), "sess-ultra");
+        args.response_tx
+            .send(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
+            .unwrap();
+        assert!(sending.await.unwrap().is_ok());
+    }
+}
+
+#[tokio::test]
+async fn ultracode_activation_failure_prevents_prompt() {
+    use distill_acp_lib::AcpAgentMessage;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AcpAgentMessage>();
+    let sending = tokio::spawn(async move {
+        send_headless_prompt(
+            &tx,
+            acp::PromptRequest::new(acp::SessionId::new("sess-ultra"), vec![]),
+            true,
+        )
+        .await
+    });
+    let AcpAgentMessage::ExtMethod(args) = rx.recv().await.unwrap() else {
+        panic!("expected activation");
+    };
+    args.response_tx
+        .send(Ok(acp::ExtResponse::new(
+            serde_json::value::to_raw_value(&serde_json::json!({"enabled": false}))
+                .unwrap()
+                .into(),
+        )))
+        .unwrap();
+    assert!(sending.await.unwrap().is_err());
+    assert!(
+        rx.recv().await.is_none(),
+        "failed activation must not submit a prompt"
+    );
+}
+
 #[test]
 fn headless_materialize_ctx_stays_non_chat() {
     use crate::app::session_startup::TitleResolution;

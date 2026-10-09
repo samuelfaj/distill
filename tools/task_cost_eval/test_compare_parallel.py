@@ -142,6 +142,42 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual([p[0] for p in plan[:2]], ['baseline', 'candidate'])
         self.assertEqual(plan[0][1], plan[1][1])
 
+    def test_plan_reverses_pair_order_on_second_repetition(self):
+        plan = compare_parallel.plan_runs(COHORT, 2)
+        second = plan[len(COHORT['cases']) * 2:]
+        self.assertEqual([p[0] for p in second[:2]], ['candidate', 'baseline'])
+        self.assertEqual([(p[1]['id'], p[2]) for p in plan if p[0] == 'baseline'],
+                         [(p[1]['id'], p[2]) for p in plan if p[0] == 'candidate'])
+
+    def test_same_binary_selected_case_and_explicit_modes_are_visible_in_plan(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(compare_parallel, 'run_one') as run_one:
+            code = compare_parallel.main([
+                '--baseline-binary', '/same/distill', '--candidate-binary', '/same/distill',
+                '--baseline-ultracode', '--baseline-max-depth', '1',
+                '--candidate-ultracode', '--candidate-max-depth', '3', '--effort', 'high',
+                '--case', 'seq-rename-en', '--repetitions', '2',
+                '--work-root', '/unused', '--output', '/unused.json',
+            ])
+        self.assertEqual(code, 0)
+        run_one.assert_not_called()
+        self.assertEqual(out.getvalue().count('plan: '), 4)
+        self.assertIn('"ultracode": true', out.getvalue())
+        self.assertIn('"max_depth": 1', out.getvalue())
+        self.assertIn('"max_depth": 3', out.getvalue())
+        self.assertIn('"effort": "high"', out.getvalue())
+
+    def test_invalid_case_or_depth_cannot_start_execution(self):
+        common = ['--baseline-binary', '/nope', '--candidate-binary', '/nope',
+                  '--work-root', '/unused', '--output', '/unused.json', '--execute']
+        for extra in (['--case', 'invented-case'], ['--candidate-max-depth', '0']):
+            with contextlib.redirect_stderr(io.StringIO()), \
+                    mock.patch.object(compare_parallel, 'run_one') as run_one, \
+                    self.assertRaises(SystemExit) as error:
+                compare_parallel.main(common + extra)
+            self.assertEqual(error.exception.code, 2)
+            run_one.assert_not_called()
+
     def test_aggregate_groups_by_variant_and_kind(self):
         rows = [dict(run('baseline', 'd', 'divisible', 4.0), model_calls=3, **{f: 1 for f in compare_parallel.TOKEN_FIELDS}),
                 dict(run('baseline', 's', 'sequential', 2.0, passed=False), model_calls=1,
@@ -153,5 +189,66 @@ class DryRunTest(unittest.TestCase):
         self.assertEqual(agg['baseline/all']['model_calls'], 4)
 
 
+class ActivationRunTest(unittest.TestCase):
+    def test_run_uses_real_flag_and_depth_and_requires_activation_receipt(self):
+        case = next(c for c in COHORT['cases'] if c['id'] == 'seq-rename-en')
+        accounting = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 2,
+                      **{f: 1 for f in compare_parallel.TOKEN_FIELDS}}
+        for confirmed in (True, False):
+            with self.subTest(confirmed=confirmed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                profile = root / 'profile'
+                profile.mkdir()
+                (profile / 'codex-auth.json').write_text('{}')
+                real_popen = subprocess.Popen
+
+                def launch(command, **kwargs):
+                    if command[0] != sys.executable:
+                        return real_popen(command, **kwargs)
+                    self.assertIn('--ultracode', command)
+                    self.assertEqual(command[command.index('--effort') + 1], 'high')
+                    self.assertEqual(kwargs['env']['GROK_SUBAGENTS_MAX_DEPTH'], '3')
+                    worktree = Path(kwargs['cwd'])
+                    shutil.copytree(ROOT / case['reference_ref'],
+                                    worktree / 'tools/task_cost_eval' / case['fixture_ref'], dirs_exist_ok=True)
+                    if confirmed:
+                        session = command[command.index('--session-id') + 1]
+                        kwargs['stderr'].write(f'UltraCode enabled for session {session}\n')
+                    return mock.Mock(returncode=0, poll=mock.Mock(return_value=0))
+
+                with mock.patch.object(subprocess, 'Popen', side_effect=launch), \
+                        mock.patch.object(compare_parallel, 'distill_accounting', return_value=accounting):
+                    result = compare_parallel.run_one(
+                        Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30,
+                        ultracode=True, max_depth=3, effort='high',
+                    )
+                self.assertEqual(result['passed'], confirmed)
+                self.assertEqual(result['ultracode_activation_confirmed'], confirmed)
+                self.assertTrue(result['frozen_inputs_unchanged'] and result['binary_unchanged'])
+                self.assertEqual(result['settings']['binary_sha256'], compare_parallel._sha256_file(Path(sys.executable)))
+                self.assertEqual(result['settings']['configured_models']['worker'], 'chatgpt/gpt-6-luna')
+                self.assertEqual(result['settings']['configured_utility'],
+                                 {'model': 'chatgpt/gpt-6-luna', 'effort': 'auto'})
+                output = Path(result['output_dir'])
+                self.assertFalse((output / 'distill-home/codex-auth.json').exists())
+                self.assertEqual(json.loads((output / 'settings.json').read_text()), result['settings'])
+
+    def test_launch_failure_still_removes_isolated_auth(self):
+        case = COHORT['cases'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / 'profile'
+            profile.mkdir()
+            (profile / 'codex-auth.json').write_text('{}')
+            real_popen = subprocess.Popen
+
+            def launch(command, **kwargs):
+                if command[0] == sys.executable:
+                    raise OSError('launch failed')
+                return real_popen(command, **kwargs)
+
+            with mock.patch.object(subprocess, 'Popen', side_effect=launch), self.assertRaises(OSError):
+                compare_parallel.run_one(Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30)
+            self.assertFalse((root / 'runs' / f'candidate-{case["id"]}-1/distill-home/codex-auth.json').exists())
 if __name__ == '__main__':
     unittest.main()

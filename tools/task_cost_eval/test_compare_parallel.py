@@ -190,6 +190,52 @@ class DryRunTest(unittest.TestCase):
 
 
 class ActivationRunTest(unittest.TestCase):
+    def test_between_run_input_or_candidate_binary_mutation_cannot_pass(self):
+        case = COHORT['cases'][0]
+        for drift in ('prompt', 'candidate-binary'):
+            with self.subTest(drift=drift), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                inputs = root / 'inputs'
+                shutil.copytree(ROOT / case['fixture_ref'], inputs / case['fixture_ref'])
+                for ref in (case['prompt_ref'], case['grader']['script_ref']):
+                    target = inputs / ref
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(ROOT / ref, target)
+                cohort_path = root / 'cohort.json'
+                cohort_path.write_text(json.dumps({**COHORT, 'cases': [case]}))
+                baseline, candidate = root / 'baseline', root / 'candidate'
+                baseline.write_text('original baseline binary')
+                candidate.write_text('original candidate binary')
+                output = root / 'result.json'
+
+                def plan_with_mutation(cohort, repetitions):
+                    yield 'baseline', case, 1
+                    # This happens after baseline's post-run check, before candidate.
+                    target = inputs / case['prompt_ref'] if drift == 'prompt' else candidate
+                    target.write_text('mutated between paired runs')
+                    yield 'candidate', case, 1
+
+                def accept(binary, variant, case, repetition, *args, **kwargs):
+                    return dict(run(variant, case['id'], case['kind'], 1.0,
+                                    wall=10 if variant == 'baseline' else 5),
+                                model_calls=1, **{f: 1 for f in compare_parallel.TOKEN_FIELDS})
+
+                with mock.patch.object(compare_parallel, 'ROOT', inputs), \
+                        mock.patch.object(compare_parallel, 'plan_runs', side_effect=plan_with_mutation), \
+                        mock.patch.object(compare_parallel, 'subscription_account'), \
+                        mock.patch.object(compare_parallel, 'run_one', side_effect=accept) as run_one, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, 'Frozen comparison inputs or binaries changed before'):
+                        compare_parallel.main([
+                            '--baseline-binary', str(baseline), '--candidate-binary', str(candidate),
+                            '--cohort', str(cohort_path), '--repetitions', '1',
+                            '--work-root', str(root / 'runs'), '--output', str(output), '--execute',
+                        ])
+                run_one.assert_called_once()
+                self.assertEqual(run_one.call_args.args[1], 'baseline')
+                self.assertEqual(run_one.call_args.kwargs['binary_hash'], compare_parallel._sha256_file(baseline))
+                self.assertFalse(output.exists(), 'drift must not publish an unmatched PASS')
+
     def test_run_uses_real_flag_and_depth_and_requires_activation_receipt(self):
         case = next(c for c in COHORT['cases'] if c['id'] == 'seq-rename-en')
         accounting = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 2,
@@ -220,6 +266,8 @@ class ActivationRunTest(unittest.TestCase):
                         mock.patch.object(compare_parallel, 'distill_accounting', return_value=accounting):
                     result = compare_parallel.run_one(
                         Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30,
+                        frozen_inputs=compare_parallel.case_hashes(case),
+                        binary_hash=compare_parallel._sha256_file(Path(sys.executable)),
                         ultracode=True, max_depth=3, effort='high',
                     )
                 self.assertEqual(result['passed'], confirmed)
@@ -248,7 +296,11 @@ class ActivationRunTest(unittest.TestCase):
                 return real_popen(command, **kwargs)
 
             with mock.patch.object(subprocess, 'Popen', side_effect=launch), self.assertRaises(OSError):
-                compare_parallel.run_one(Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30)
+                compare_parallel.run_one(
+                    Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30,
+                    frozen_inputs=compare_parallel.case_hashes(case),
+                    binary_hash=compare_parallel._sha256_file(Path(sys.executable)),
+                )
             self.assertFalse((root / 'runs' / f'candidate-{case["id"]}-1/distill-home/codex-auth.json').exists())
 if __name__ == '__main__':
     unittest.main()

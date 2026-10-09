@@ -29,13 +29,21 @@ def plan_runs(cohort, repetitions):
             for case in cohort['cases'] for variant in (VARIANTS if rep % 2 else VARIANTS[::-1])]
 
 
+def case_hashes(case):
+    return (_sha256_tree(ROOT / case['fixture_ref']), _sha256_file(ROOT / case['grader']['script_ref']),
+            _sha256_file(ROOT / case['prompt_ref']))
+
+
+def comparison_hashes(cohort, binaries):
+    return {'inputs': {case['id']: case_hashes(case) for case in cohort['cases']},
+            'binaries': {variant: _sha256_file(binary) for variant, binary in binaries.items()}}
+
+
 def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
+            frozen_inputs, binary_hash,
             ultracode=False, max_depth=None, model=MODEL, effort=None):
     output = work_root / f'{variant}-{case["id"]}-{repetition}'
     output.mkdir(parents=True, exist_ok=False)
-    frozen = (_sha256_tree(ROOT / case['fixture_ref']), _sha256_file(ROOT / case['grader']['script_ref']),
-              _sha256_file(ROOT / case['prompt_ref']))
-    binary_hash = _sha256_file(binary)
     worktree = output / 'worktree'
     target = worktree / 'tools/task_cost_eval' / case['fixture_ref']
     target.parent.mkdir(parents=True)
@@ -100,8 +108,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                            text=True, capture_output=True)
     (output / 'grader.txt').write_text(grade.stdout + grade.stderr)
     accounting = distill_accounting(home, session)
-    unchanged = frozen == (_sha256_tree(ROOT / case['fixture_ref']), _sha256_file(ROOT / case['grader']['script_ref']),
-                           _sha256_file(ROOT / case['prompt_ref']))
+    unchanged = frozen_inputs == case_hashes(case)
     binary_unchanged = binary_hash == _sha256_file(binary)
     activation_confirmed = f'UltraCode enabled for session {session}' in (output / 'stderr.txt').read_text()
     return {'variant': variant, 'case': case['id'], 'kind': case['kind'], 'repetition': repetition,
@@ -183,20 +190,28 @@ def main(argv=None):
     for binary in binaries.values():
         if not binary.expanduser().resolve().is_file():
             parser.error(f'binary not found: {binary}')
+    binaries = {variant: binary.expanduser().resolve() for variant, binary in binaries.items()}
+    frozen = comparison_hashes(cohort, binaries)
     profile = args.distill_profile.expanduser()
     subscription_account(profile / 'codex-auth.json')
     work_root = args.work_root.resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     runs = []
     for variant, case, rep in planned:
-        run = run_one(binaries[variant].expanduser().resolve(), variant, case, rep, work_root, profile,
-                      args.timeout, **settings[variant])
+        if comparison_hashes(cohort, binaries) != frozen:
+            raise RuntimeError('Frozen comparison inputs or binaries changed before execution')
+        run = run_one(binaries[variant], variant, case, rep, work_root, profile,
+                      args.timeout, frozen_inputs=frozen['inputs'][case['id']],
+                      binary_hash=frozen['binaries'][variant], **settings[variant])
+        if comparison_hashes(cohort, binaries) != frozen:
+            raise RuntimeError('Frozen comparison inputs or binaries changed after execution')
         runs.append(run)
         print(json.dumps({k: run[k] for k in ('variant', 'case', 'repetition', 'passed', 'credits')}), flush=True)
     results = {'cohort_id': cohort['cohort_id'], 'model': args.model, 'effort': args.effort or 'auto',
                'variant_settings': settings, 'cases': [c['id'] for c in cohort['cases']],
+               'frozen_input_hashes': frozen['inputs'],
                'runs': runs, 'aggregates': aggregate(runs),
-               'binaries': {v: {'path': str(b), 'sha256': _sha256_file(b.expanduser().resolve())}
+               'binaries': {v: {'path': str(b), 'sha256': frozen['binaries'][v]}
                             for v, b in binaries.items()}}
     results['verdict'] = verdict(results)
     args.output.write_text(json.dumps(results, indent=2) + '\n')

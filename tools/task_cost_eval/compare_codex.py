@@ -19,9 +19,10 @@ from .evaluate import _sha256_file, _sha256_tree
 from .runner import _terminate_owned_group
 
 ROOT = Path(__file__).resolve().parent
-# Standard subscription credits / 1M tokens. Retrieved 2026-09-30:
+# Standard subscription credits / 1M tokens. Retrieved 2026-10-10:
 # https://learn.chatgpt.com/docs/pricing#token-rates
-CREDIT_RATES = {'gpt-6.1-sol': (50, 2.5, 250), 'gpt-6-luna': (2.5, .25, 12.5)}
+CREDIT_RATES = {'gpt-6-astra': (250, 25, 1250), 'gpt-6.1-sol': (50, 2.5, 250),
+                'gpt-6-luna': (2.5, .25, 12.5)}
 # Existing operator allowlist for this local-file cohort: shell file operations
 # plus delegation/lifecycle. Internal IDs precede model-facing renames, and
 # children inherit the restriction.
@@ -80,13 +81,13 @@ class CollectorHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{}')
 
 
-def distill_config(*, worker_effort='auto', utility_effort='auto'):
+def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_effort='auto', utility_effort='auto'):
     # No third-party model credentials: auto effort retains the native fallback
     # when the optional Jev decision service is unavailable.
     return f'''[cli]
 use_leader = false
 [models]
-default = "chatgpt/gpt-6.1-sol"
+default = {json.dumps(main_model)}
 worker = "chatgpt/gpt-6-luna"
 worker_effort = {json.dumps(worker_effort)}
 session_summary = "chatgpt/gpt-6-luna"

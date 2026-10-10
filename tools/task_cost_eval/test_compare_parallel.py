@@ -335,7 +335,8 @@ class ActivationRunTest(unittest.TestCase):
                         mock.patch.object(compare_parallel, 'distill_accounting', return_value=accounting) as ledger:
                     result = compare_parallel.run_one(peer, 'baseline', case, 1, root / 'runs', profile, 3,
                         frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
-                        transport='acp', ultracode=True, effort='medium', worker_effort='medium', utility_effort='medium')
+                        transport='acp', ultracode=True, model='chatgpt/gpt-6-astra', effort='medium',
+                        worker_effort='medium', utility_effort='medium')
                 output = Path(result['output_dir'])
                 ledger.assert_called_once_with(output / 'distill-home', 'runtime-session', strict=True)
                 self.assertEqual(result['accounting_evidence'], accounting['accounting_evidence'])
@@ -346,11 +347,15 @@ class ActivationRunTest(unittest.TestCase):
                 self.assertEqual(result['credits'], 1.0, 'failed runs retain accounting')
                 self.assertEqual(result['call_usage'], accounting['call_usage'], 'do not invent auxiliary effort parity')
                 self.assertEqual(result['settings']['configured_models']['worker_effort'], 'medium')
+                self.assertEqual(result['settings']['configured_models']['default'], 'chatgpt/gpt-6-astra')
                 self.assertEqual(result['settings']['configured_utility']['effort'], 'medium')
                 self.assertIsNone(result['settings']['depth_env'])
                 command = json.loads((output / 'command.json').read_text())
                 self.assertEqual(result['settings']['launch_command'], command)
                 self.assertEqual(command[-1], 'stdio')
+                self.assertEqual(command[command.index('--model') + 1], 'chatgpt/gpt-6-astra')
+                receipt_model = result['settings']['model_receipt']['result']['_meta']['canonicalModelId']
+                self.assertEqual(receipt_model, 'chatgpt/gpt-6-astra')
                 self.assertIn('agent', command)
                 self.assertNotIn('--ultracode', command)
                 self.assertGreater(command.index('--always-approve'), command.index('agent'))

@@ -98,7 +98,8 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     home = output / 'distill-home'
     home.mkdir()
     auth = home / 'codex-auth.json'
-    config_text = distill_config(worker_effort=worker_effort, utility_effort=utility_effort)
+    config_text = distill_config(main_model=model, worker_effort=worker_effort,
+                                 utility_effort=utility_effort)
     (home / 'config.toml').write_text(config_text)
     configured = tomllib.loads(config_text)
     session = str(uuid.uuid4()) if transport == 'cli' else None

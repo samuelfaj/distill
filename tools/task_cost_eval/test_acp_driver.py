@@ -73,6 +73,12 @@ for line in sys.stdin:
             result = None
     elif method == 'session/prompt':
         (root / 'prompt-seen').write_text(request['params']['prompt'][0]['text'])
+        if scenario == 'exit-plan-mode':
+            send({'id': 'plan', 'method': '_x.ai/exit_plan_mode', 'params': {
+                'sessionId': 'runtime-session', 'toolCallId': 'plan-1', 'planContent': '# Plan'}})
+            reply = json.loads(sys.stdin.readline())
+            (root / 'plan-response.json').write_text(json.dumps(reply))
+            assert reply == {'jsonrpc': '2.0', 'id': 'plan', 'result': {'outcome': 'approved'}}
         if scenario == 'unsupported-request':
             send({'id': 99, 'method': 'terminal/create', 'params': {'sessionId': 'runtime-session'}})
             (root / 'permission-response.json').write_text(sys.stdin.readline())
@@ -118,6 +124,16 @@ def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium'):
 
 
 class AcpDriverTest(unittest.TestCase):
+    def test_exit_plan_mode_uses_native_headless_approval_and_finishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = drive(root, 'exit-plan-mode')
+            self.assertTrue(result['completed'] and result['cleanup_complete'], result)
+            self.assertEqual(result['exit_code'], 0)
+            self.assertEqual(json.loads((root / 'plan-response.json').read_text())['result'],
+                             {'outcome': 'approved'})
+            self.assertTrue((root / 'tools-completed').exists())
+
     def test_off_and_auto_are_explicitly_acknowledged(self):
         with tempfile.TemporaryDirectory() as directory:
             result = drive(Path(directory), ultracode=False, effort=None)

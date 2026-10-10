@@ -120,8 +120,9 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                '--cwd', str(worktree), '--session-id', session, '--prompt-file', str(output / 'prompt.txt'),
                '--output-format', 'streaming-json', '--model', model, '--tools', LOCAL_TOOLS]
     if transport == 'acp':
-        command = [str(binary), '--disable-web-search', '--no-auto-update', '--permission-mode', 'default',
-                   'agent', '--no-leader', '--model', model]
+        # AgentArgs owns this flag; the top-level pager flag is not forwarded to stdio.
+        command = [str(binary), '--disable-web-search', '--no-auto-update',
+                   'agent', '--no-leader', '--always-approve', '--model', model]
         if effort not in (None, 'auto'):
             command.extend(['--effort', effort])
         command.append('stdio')
@@ -131,6 +132,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
         command.extend(['--effort', effort])
     (output / 'command.json').write_text(json.dumps(command, indent=2) + '\n')
     settings = {'transport': transport, 'ultracode': ultracode, 'max_depth': max_depth,
+                'launch_command': command,
                 'depth_env': environment.get('GROK_SUBAGENTS_MAX_DEPTH'),
                 'model': model, 'effort': effort or 'auto',
                 'configured_models': configured['models'],
@@ -138,9 +140,10 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                 'configured_main_effort_auto': configured['jev']['effort_auto'],
                 'order_seed': order_seed, 'timeout_s': timeout,
                 'environment_policy': 'remove inherited model/effort/depth overrides' if sanitize else 'historical inheritance',
+                'accounting_audit': 'strict study evidence' if sanitize else 'historical ledger reconciliation',
                 'removed_environment_keys': removed,
                 'tools': 'native agent toolset' if transport == 'acp' else LOCAL_TOOLS,
-                'permissions': 'standard allow_once; reported paths checked against worktree' if transport == 'acp' else 'always-approve',
+                'permissions': 'always-approve',
                 'auxiliary_effort_scope': 'worker and jev.local only; call_usage records actual applied policy',
                 'binary_sha256': binary_hash}
     (output / 'settings.json').write_text(json.dumps(settings, indent=2) + '\n')
@@ -188,8 +191,12 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     clean = acp is None or acp['cleanup_complete']
     grade = (run_grader(ROOT / case['grader']['script_ref'], worktree, output) if clean else
              {'exit_code': None, 'timed_out': False, 'wall_time_s': 0, 'skipped': 'unverified inference cleanup'})
-    accounting = (distill_accounting(home, session) if clean and session else
+    accounting = (distill_accounting(home, session, strict=True) if clean and session and sanitize else
+                  distill_accounting(home, session) if clean and session else
                   {'accounting_complete': False, 'reason': 'no session or unverified inference cleanup'})
+    evidence = accounting.get('accounting_evidence', {
+        'complete': False, 'reasons': [accounting.get('reason') or 'strict accounting evidence audit not performed'],
+        'artifacts': {}})
     unchanged = frozen_inputs == case_hashes(case)
     binary_unchanged = binary_hash == _sha256_file(binary)
     if acp is None:
@@ -204,7 +211,8 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                       and exit_code == 0 and transport_ok and (not ultracode or activation_confirmed),
             'wall_time_s': round(wall, 6), 'credits': accounting.get('credit_estimate'),
             **{f: accounting.get(f) for f in TOKEN_FIELDS}, 'model_calls': accounting.get('calls'),
-            'accounting_complete': bool(accounting['accounting_complete']),
+            'accounting_complete': bool(accounting['accounting_complete'] and (not sanitize or evidence['complete'])),
+            'accounting_evidence': evidence,
             'call_usage': accounting.get('call_usage', []),
             'exit_code': exit_code, 'timed_out': timed_out, 'session': session, 'grader': grade,
             'acp': acp, 'accounting_reason': accounting.get('reason'),

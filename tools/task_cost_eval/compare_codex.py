@@ -119,7 +119,168 @@ hooks = false
 '''
 
 
-def distill_accounting(home, session):
+def distill_accounting(home, session, *, strict=False):
+    if strict:
+        # Independent persisted evidence, not assistant-message counts: a single
+        # response can contain multiple messages, and side calls have no history.
+        from collections import Counter
+
+        reasons, artifacts = [], {}
+
+        def read(path, *, lines=False):
+            artifacts[str(path)] = path.is_file()
+            try:
+                value = ([json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+                         if lines else json.loads(path.read_text()))
+                if not (all(isinstance(row, dict) for row in value) if lines else isinstance(value, dict)):
+                    raise ValueError('expected JSON objects')
+                return value
+            except (OSError, ValueError) as error:
+                reasons.append(f'{path}: {error}')
+                return [] if lines else {}
+
+        try:
+            result = distill_accounting(home, session)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            result = {'accounting_complete': False, 'reason': f'invalid usage ledger: {error}'}
+        if not result['accounting_complete']:
+            reasons.append(result.get('reason', 'canonical ledger reconciliation incomplete'))
+        directories = {p.parent.name: p.parent for name in ('usage.json', 'events.jsonl', 'updates.jsonl')
+                       for p in sorted((home / 'sessions').rglob(name))}
+        ledgers = {sid: read(path / 'usage.json').get('session', {}) for sid, path in directories.items()}
+        attempts = {sid: {row['attempt_id']: row for row in ledger.get('attributions', [])}
+                    for sid, ledger in ledgers.items()}
+        canonical = attempts.get(session, {})
+        logs = read(home / 'logs/unified.jsonl', lines=True)
+        logged_sessions = {row.get('sid') for row in logs
+                           if str(row.get('msg', '')).startswith('shell.turn.inference_') and row.get('sid')}
+        for sid in sorted(logged_sessions - directories.keys()):
+            reasons.append(f'{sid}: inference log has no session artifacts/usage ledger')
+        updates, parents, metadata, spawned, finished, descendants = {}, {}, set(), set(), set(), []
+
+        def child_record(row, parent, path):
+            child = row.get('child_session_id')
+            parent = row.get('parent_session_id') or parent
+            if not isinstance(child, str) or not child or child == parent:
+                reasons.append(f'{path}: missing/invalid child session identity')
+                return None
+            if child in parents and parents[child] != parent:
+                reasons.append(f'{child}: conflicting parent identities')
+            parents[child] = parent
+            descendants.append({'parent_session_id': parent, 'child_session_id': child,
+                                'attempt_id': row.get('attempt_id'), 'status': row.get('status'),
+                                'artifact': str(path)})
+            return child, row.get('attempt_id')
+
+        for sid, path in directories.items():
+            updates[sid] = [row.get('params', {}).get('update', {})
+                            for row in read(path / 'updates.jsonl', lines=True)]
+            for update in updates[sid]:
+                tag = update.get('sessionUpdate')
+                if tag in ('subagent_spawned', 'subagent_finished'):
+                    identity = child_record(update, sid, path / 'updates.jsonl')
+                    if identity:
+                        (spawned if tag == 'subagent_spawned' else finished).add(identity)
+            for meta_path in sorted((path / 'subagents').glob('*/meta.json')):
+                meta = read(meta_path)
+                identity = child_record(meta, sid, meta_path)
+                if identity:
+                    metadata.add(identity[0])
+                    if not meta.get('completed_at'):
+                        reasons.append(f'{identity[0]}: child metadata has no terminal timestamp')
+        for child, parent in parents.items():
+            if child not in attempts:
+                reasons.append(f'{child}: observed child has no usage ledger')
+            if parent not in attempts:
+                reasons.append(f'{child}: parent {parent} has no usage ledger')
+            if child not in metadata:
+                reasons.append(f'{child}: missing child metadata')
+        for child, attempt in sorted(spawned - finished, key=str):
+            reasons.append(f'{child} ({attempt}): spawn has no finished notification')
+        for sid in directories.keys() - parents.keys() - {session}:
+            reasons.append(f'{sid}: session artifacts have no parent lifecycle evidence')
+
+        sessions = []
+        token_keys = ('prompt_tokens', 'cached_prompt_tokens', 'completion_tokens', 'reasoning_tokens')
+        for sid, path in directories.items():
+            ledger_rows = attempts[sid]
+            for identity, row in ledger_rows.items():
+                if canonical.get(identity) != row:
+                    reasons.append(f'{sid}: attempt {identity} missing/different in canonical ledger')
+            child_ids = {identity for child, parent in parents.items() if parent == sid
+                         for identity in attempts.get(child, {})}
+            local = {identity: row for identity, row in ledger_rows.items() if identity not in child_ids}
+            main = {identity: row for identity, row in local.items() if row.get('role') == 'main'}
+            retries = {identity for identity, row in local.items() if row.get('role') == 'main_retry'}
+            evidence_logs = [row for row in logs if row.get('sid') == sid]
+            starts = [row for row in evidence_logs if row.get('msg') == 'shell.turn.inference_start']
+            done = [row.get('ctx', {}) for row in evidence_logs if row.get('msg') == 'shell.turn.inference_done']
+            retry_ids, failed_ids = set(), set()
+            for row in evidence_logs:
+                if row.get('msg') not in ('shell.turn.inference_retry', 'shell.turn.inference_failed'):
+                    continue
+                ctx = row.get('ctx', {})
+                request = ctx.get('sampler_request_id')
+                if not request:
+                    reasons.append(f'{sid}: inference retry/failure lacks sampler_request_id')
+                    continue
+                identity = f'sampler:{request}'
+                if row['msg'] == 'shell.turn.inference_retry':
+                    retry_ids.add(f'{identity}:retry:{ctx.get("kind")}:{ctx.get("attempt")}')
+                else:
+                    failed_ids.add(identity)
+            completed = [row for row in main.values() if row.get('status') == 'completed']
+            # inference_start is a turn submission, not a physical-attempt ID.
+            # Routing can submit more than once; count it only as a lower bound.
+            if not starts or len(main) < len(starts) or len(completed) != len(done):
+                reasons.append(f'{sid}: foreground submissions/completions disagree with local ledger')
+            usage_match = (Counter(tuple(row.get(key) for key in token_keys) for row in done)
+                           == Counter(tuple((row.get('usage') or {}).get(key) for key in token_keys)
+                                      for row in completed))
+            if not usage_match:
+                reasons.append(f'{sid}: foreground completion token evidence disagrees with ledger')
+            reported_attempts = [row.get('attempts') for row in done]
+            if any(type(count) is not int or count < 1 for count in reported_attempts):
+                reasons.append(f'{sid}: completion evidence lacks a valid physical-attempt count')
+            reported_retries = sum(count - 1 for count in reported_attempts if type(count) is int and count >= 1)
+            retry_updates = sum(u.get('sessionUpdate') == 'retry_state' and u.get('type') == 'retrying'
+                                for u in updates[sid])
+            if retry_ids != retries or reported_retries > len(retry_ids) or retry_updates > len(retry_ids):
+                reasons.append(f'{sid}: retry evidence cannot be reconciled with physical retry ledger IDs')
+            if not failed_ids <= main.keys():
+                reasons.append(f'{sid}: failed request IDs absent from ledger: {sorted(failed_ids - main.keys())}')
+            events = read(path / 'events.jsonl', lines=True)
+            turns_started = sum(row.get('type') == 'turn_started' for row in events)
+            turns_ended = sum(row.get('type') == 'turn_ended' for row in events)
+            if not turns_started or turns_started != turns_ended:
+                reasons.append(f'{sid}: missing/unclosed turn lifecycle evidence')
+            sessions.append({'session_id': sid, 'artifact_dir': str(path),
+                             'local_attempt_ids': sorted(local),
+                             'ledger_request_ids': sorted({r['request_id'] for r in local.values() if r.get('request_id')}),
+                             'inference_starts': len(starts), 'inference_completions': len(done),
+                             'ledger_main_calls': len(main), 'completion_tokens_match': usage_match,
+                             'reported_retries': reported_retries, 'retry_notifications': retry_updates,
+                             'retry_attempt_ids': sorted(retry_ids), 'failed_attempt_ids': sorted(failed_ids),
+                             'turns_started': turns_started, 'turns_ended': turns_ended})
+        # Neither successful auxiliary requests nor their absence have an
+        # independent exhaustive trace in these runtimes. A ledger-only row (or
+        # its deletion) cannot prove that coverage. Disclose this separately from
+        # the protocol's canonical-ledger plus available-evidence completeness.
+        coverage_gaps = ['Runtime lacks an independent exhaustive physical-request trace for auxiliary calls; '
+                         'omitted auxiliary attempts cannot be ruled out.']
+        evidence = {'complete': not reasons, 'reasons': reasons,
+                    'available_evidence_matches': not reasons, 'coverage_gaps': coverage_gaps,
+                    'logged_session_ids': sorted(logged_sessions),
+                    'canonical_attempt_ids': sorted(canonical), 'sessions': sessions,
+                    'descendants': descendants, 'artifacts': artifacts,
+                    'ledger_only_attempt_ids': sorted(identity for identity, row in canonical.items()
+                                                      if row.get('role') not in ('main', 'main_retry'))}
+        result['accounting_evidence'] = evidence
+        result['accounting_complete'] = result['accounting_complete'] and evidence['complete']
+        if not result['accounting_complete']:
+            result['credit_estimate'] = None
+        return result
+
     files = list((home / 'sessions').rglob('usage.json'))
     root_file = next((p for p in files if p.parent.name == session), None)
     if root_file is None:
@@ -140,6 +301,7 @@ def distill_accounting(home, session):
                     'role': attribution['role'], 'status': attribution['status'],
                     'agent': 'worker' if attribution['attempt_id'] in child_ids else 'main',
                     'endpoint': attribution.get('endpoint'),
+                    'requested_effort': attribution.get('requested_effort'),
                     'effort': attribution.get('applied_effort')}
         if not usage:
             rows.append({**identity, 'complete': False})

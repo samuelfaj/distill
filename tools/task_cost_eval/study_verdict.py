@@ -17,6 +17,7 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
     substantial, controls = set(substantial_case_ids), set(control_case_ids)
     cases = substantial | controls
     reasons, invalid = [], False
+    utility_request_policy_used = False
 
     def inconclusive(reason):
         nonlocal invalid
@@ -88,8 +89,15 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
                     inconclusive(f'{variant} {case}#{rep}: row binary_sha256 does not match provenance')
             if (settings.get('transport') != 'acp' or settings.get('ultracode') is not True or
                     settings.get('timeout_s') != 900 or settings.get('order_seed') != 20261009 or
-                    settings.get('model') != MAIN_MODEL or settings.get('effort') != 'medium'):
+                    settings.get('model') != MAIN_MODEL or settings.get('effort') != 'medium' or
+                    settings.get('permissions') != 'always-approve'):
                 inconclusive(f'{variant} {case}#{rep}: settings differ from preregistration')
+            launch = settings.get('launch_command')
+            if (not isinstance(launch, list) or not all(isinstance(arg, str) for arg in launch) or
+                    'agent' not in launch or '--always-approve' not in launch or
+                    launch.index('agent') >= launch.index('--always-approve') or
+                    not launch or launch[-1] != 'stdio'):
+                inconclusive(f'{variant} {case}#{rep}: missing or invalid launch command policy corroboration')
             if settings.get('configured_models') != {'default': MAIN_MODEL, 'worker': LUNA_MODEL,
                     'worker_effort': 'medium', 'session_summary': LUNA_MODEL} or settings.get('configured_utility') != {'model': LUNA_MODEL, 'effort': 'medium'} or settings.get('configured_main_effort_auto') is not True:
                 inconclusive(f'{variant} {case}#{rep}: configured model policy mismatch')
@@ -136,6 +144,8 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
                         expected_call = (LUNA_MODEL, 'medium')
                     elif agent == 'main' and role == 'main':
                         expected_call = (MAIN_MODEL, 'medium')
+                    elif agent == 'main' and role == 'main_retry':
+                        expected_call = (MAIN_MODEL, 'medium')
                     elif ('jev' in role or 'utility' in role) and isinstance(settings, dict) and settings.get('configured_utility') == {'model': LUNA_MODEL, 'effort': 'medium'}:
                         expected_call = (LUNA_MODEL, 'medium')
                     else:
@@ -143,6 +153,18 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
                         continue
                     normalized_model = {'gpt-6-luna': LUNA_MODEL, 'gpt-6.1-sol': MAIN_MODEL}.get(model, model)
                     normalized_effort = {'effort:medium': 'medium', 'effort:low': 'low'}.get(effort, effort)
+                    request_policy_utility = (
+                        expected_call == (LUNA_MODEL, 'medium') and
+                        role == 'utility' and agent in ('main', 'worker') and
+                        call.get('endpoint') == 'https://chatgpt.com/backend-api/codex/responses' and
+                        normalized_model == LUNA_MODEL and normalized_effort is None and
+                        call.get('requested_effort') == 'medium' and
+                        isinstance(settings, dict) and
+                        settings.get('configured_utility') == {'model': LUNA_MODEL, 'effort': 'medium'}
+                    )
+                    if request_policy_utility:
+                        utility_request_policy_used = True
+                        continue
                     if (normalized_model, normalized_effort) != expected_call:
                         inconclusive(f'{variant} {case}#{rep}: applied call policy mismatch')
         evidence = row.get('accounting_evidence')
@@ -202,6 +224,10 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
     check('controls charged elapsed <= 1.10 baseline', sum(v['candidate']['charged_elapsed_s'] for v in rows.values()) <=
           1.1 * sum(v['baseline']['charged_elapsed_s'] for v in rows.values()))
     report['checks'] = checks
+    if utility_request_policy_used:
+        report['policy_disclosures'] = [
+            'Sampler utility uses source-backed persisted requested effort; applied marker unavailable.'
+        ]
     return {'performance_verdict': 'NO_GO' if reasons else 'GO', 'reasons': reasons, 'performance': report,
             'blind_review': 'required external confirmation receipt; not evaluated'}
 

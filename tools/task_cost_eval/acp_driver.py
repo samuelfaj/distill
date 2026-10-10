@@ -183,6 +183,10 @@ class _Client:
 
     def handle(self, message):
         method, params = message['method'], message.get('params', {})
+        # Native headless policy replies do not parse interaction parameters.
+        if 'id' in message and method == '_x.ai/exit_plan_mode':
+            self.send({'id': message['id'], 'result': {'outcome': 'approved'}})
+            return
         if not isinstance(params, dict):
             raise AcpError(f'{method}: invalid params')
         if 'id' in message:

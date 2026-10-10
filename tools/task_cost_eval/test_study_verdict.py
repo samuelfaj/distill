@@ -16,7 +16,10 @@ def rows(base=100, candidate=70, base_time=100, candidate_time=70, candidate_pas
                     'configured_models': {'default': 'chatgpt/gpt-6.1-sol', 'worker': 'chatgpt/gpt-6-luna',
                         'worker_effort': 'medium', 'session_summary': 'chatgpt/gpt-6-luna'},
                     'configured_utility': {'model': 'chatgpt/gpt-6-luna', 'effort': 'medium'},
-                    'configured_main_effort_auto': True, 'binary_sha256': digest}
+                    'configured_main_effort_auto': True, 'permissions': 'always-approve',
+                    'launch_command': ['codex', '--disable-web-search', '--no-auto-update', 'agent',
+                        '--no-leader', '--always-approve', '--model', 'chatgpt/gpt-6.1-sol',
+                        '--effort', 'medium', 'stdio'], 'binary_sha256': digest}
                 acp = {'setup_confirmed': True, 'completed': True, 'cleanup_complete': True,
                     'timed_out': False, 'error': None, 'exit_code': 0,
                     'model_receipt': {'id': 3, 'result': {'_meta': {'canonicalModelId': 'chatgpt/gpt-6.1-sol',
@@ -41,7 +44,11 @@ def rows(base=100, candidate=70, base_time=100, candidate_time=70, candidate_pas
                         {'attempt': 'sampler:b', 'model': 'gpt-6-luna', 'role': 'main',
                         'status': 'completed', 'agent': 'worker', 'endpoint': 'https://chatgpt.com/backend-api/codex/responses', 'effort': 'effort:medium',
                         'complete': True, 'credits': 1, 'input_tokens': 1, 'cached_input_tokens': 0,
-                        'output_tokens': 1, 'reasoning_tokens': 0}]})
+                        'output_tokens': 1, 'reasoning_tokens': 0},
+                        {'attempt': 'sampler:utility', 'model': 'gpt-6-luna', 'role': 'utility',
+                        'status': 'completed', 'agent': 'main', 'endpoint': 'https://chatgpt.com/backend-api/codex/responses',
+                        'effort': None, 'requested_effort': 'medium', 'complete': True, 'credits': 1,
+                        'input_tokens': 1, 'cached_input_tokens': 0, 'output_tokens': 1, 'reasoning_tokens': 0}]})
     return out
 
 
@@ -101,6 +108,44 @@ class StudyVerdictTest(unittest.TestCase):
         data = rows()
         data[-1]['settings'] = dict(data[-1]['settings'], binary_sha256='c' * 64)
         self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+
+    def test_permissions_and_launch_policy_must_be_corroborated(self):
+        data = rows()
+        data[0]['settings']['permissions'] = 'ask'
+        self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+        data = rows()
+        del data[0]['settings']['launch_command']
+        self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+
+    def test_fully_accounted_parent_retry_uses_main_policy(self):
+        data = rows()
+        call = dict(data[0]['call_usage'][1], attempt='retry:parent', role='main_retry')
+        data[0]['call_usage'].append(call)
+        self.assertNotEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+
+    def test_utility_requested_effort_is_explicitly_disclosed_and_required(self):
+        out = gate(rows())
+        self.assertNotEqual(out['performance_verdict'], 'INCONCLUSIVE')
+        self.assertIn('requested effort; applied marker unavailable',
+                      out['performance']['policy_disclosures'][0])
+        data = rows()
+        for row in data:
+            row['call_usage'][-1]['agent'] = 'worker'
+        self.assertNotEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+        data = rows()
+        for row in data:
+            row['call_usage'][-1]['role'] = 'jev'
+        self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+        for requested in ('low', None):
+            data = rows()
+            for row in data:
+                utility = row['call_usage'][-1]
+                if requested is None:
+                    del utility['requested_effort']
+                else:
+                    utility['requested_effort'] = requested
+            with self.subTest(requested=requested):
+                self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
 
     def test_substantial_regression_cannot_hide_behind_control_savings(self):
         data = rows(base=100, candidate=100)

@@ -242,6 +242,8 @@ class ActivationRunTest(unittest.TestCase):
             grader.assert_not_called()
             ledger.assert_not_called()
             self.assertFalse(result['passed'] or result['accounting_complete'])
+            self.assertFalse(result['accounting_evidence']['complete'])
+            self.assertIn('unverified inference cleanup', result['accounting_evidence']['reasons'][0])
             self.assertIsNone(result['credits'])
             self.assertFalse((Path(result['output_dir']) / 'distill-home/codex-auth.json').exists())
 
@@ -319,6 +321,7 @@ class ActivationRunTest(unittest.TestCase):
         case = COHORT['cases'][0]
         accounting = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 1,
                       'call_usage': [{'model': 'auxiliary', 'effort': 'auto'}],
+                      'accounting_evidence': {'complete': False, 'reasons': ['observed retry absent from ledger']},
                       **{f: 1 for f in compare_parallel.TOKEN_FIELDS}}
         for scenario in ('success', 'activation-false'):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
@@ -334,7 +337,9 @@ class ActivationRunTest(unittest.TestCase):
                         frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
                         transport='acp', ultracode=True, effort='medium', worker_effort='medium', utility_effort='medium')
                 output = Path(result['output_dir'])
-                ledger.assert_called_once_with(output / 'distill-home', 'runtime-session')
+                ledger.assert_called_once_with(output / 'distill-home', 'runtime-session', strict=True)
+                self.assertEqual(result['accounting_evidence'], accounting['accounting_evidence'])
+                self.assertFalse(result['accounting_complete'], 'study completeness must include the evidence audit')
                 self.assertEqual(json.loads((output / 'worktree/peer-env.json').read_text()), {})
                 self.assertEqual(result['acp']['completed'], scenario == 'success')
                 self.assertFalse(result['passed'], 'unsolved fixture still fails its external grader')
@@ -344,10 +349,13 @@ class ActivationRunTest(unittest.TestCase):
                 self.assertEqual(result['settings']['configured_utility']['effort'], 'medium')
                 self.assertIsNone(result['settings']['depth_env'])
                 command = json.loads((output / 'command.json').read_text())
+                self.assertEqual(result['settings']['launch_command'], command)
                 self.assertEqual(command[-1], 'stdio')
                 self.assertIn('agent', command)
                 self.assertNotIn('--ultracode', command)
-                self.assertNotIn('--always-approve', command)
+                self.assertGreater(command.index('--always-approve'), command.index('agent'))
+                self.assertNotIn('--permission-mode', command)
+                self.assertEqual(result['settings']['permissions'], 'always-approve')
                 self.assertFalse((output / 'distill-home/codex-auth.json').exists())
 
     def test_grader_loop_is_bounded_and_failure_duration_is_separate(self):

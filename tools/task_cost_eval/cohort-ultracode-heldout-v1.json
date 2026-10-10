@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "cohort_id": "ultracode-heldout-v1",
+  "cases": [
+    {
+      "id": "ultra-heldout-h1",
+      "kind": "divisible",
+      "size": "substantial",
+      "prompt_ref": "prompts/ultra-heldout-search.txt",
+      "fixture_ref": "fixtures/ultra_heldout_search",
+      "grader": {
+        "script_ref": "graders/grade_ultra_heldout_search.py"
+      },
+      "reference_ref": "reference/ultra_heldout_search"
+    },
+    {
+      "id": "ultra-heldout-h2",
+      "kind": "divisible",
+      "size": "substantial",
+      "prompt_ref": "prompts/ultra-heldout-config.txt",
+      "fixture_ref": "fixtures/ultra_heldout_config",
+      "grader": {
+        "script_ref": "graders/grade_ultra_heldout_config.py"
+      },
+      "reference_ref": "reference/ultra_heldout_config"
+    },
+    {
+      "id": "ultra-heldout-h3",
+      "kind": "sequential",
+      "size": "substantial",
+      "prompt_ref": "prompts/ultra-heldout-ledger.txt",
+      "fixture_ref": "fixtures/ultra_heldout_ledger",
+      "grader": {
+        "script_ref": "graders/grade_ultra_heldout_ledger.py"
+      },
+      "reference_ref": "reference/ultra_heldout_ledger"
+    },
+    {
+      "id": "ultra-heldout-h4",
+      "kind": "divisible",
+      "size": "control",
+      "prompt_ref": "prompts/ultra-heldout-querycontrol.txt",
+      "fixture_ref": "fixtures/ultra_heldout_querycontrol",
+      "grader": {
+        "script_ref": "graders/grade_ultra_heldout_querycontrol.py"
+      },
+      "reference_ref": "reference/ultra_heldout_querycontrol"
+    }
+  ],
+  "repetitions": 3
+}

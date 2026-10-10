@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from unittest import mock
 
 from . import compare_parallel
 from .parallel_verdict import verdict
+from .test_acp_driver import fake_peer
 
 ROOT = Path(__file__).resolve().parent
 COHORT = json.loads((ROOT / 'cohort-parallel-v1.json').read_text())
@@ -120,6 +122,38 @@ class VerdictTest(unittest.TestCase):
 
 
 class DryRunTest(unittest.TestCase):
+    def test_seeded_three_repetitions_balance_starts_and_keep_pairs_adjacent(self):
+        cohort = {'cases': COHORT['cases'][:4]}
+        plan = compare_parallel.plan_runs(cohort, 3, 20261009)
+        self.assertEqual(plan, compare_parallel.plan_runs(cohort, 3, 20261009))
+        self.assertEqual(len(plan), 24)
+        order = [p[1]['id'] for p in plan[:8:2]]
+        self.assertNotEqual(order, [c['id'] for c in cohort['cases']])
+        for rep in range(3):
+            pairs = [plan[i:i + 2] for i in range(rep * 8, (rep + 1) * 8, 2)]
+            self.assertEqual([pair[0][1]['id'] for pair in pairs], order)
+            self.assertEqual([pair[0][0] for pair in pairs],
+                             ['baseline', 'candidate'] * 2 if rep % 2 == 0 else ['candidate', 'baseline'] * 2)
+            for first, second in pairs:
+                self.assertEqual(first[1:], second[1:])
+                self.assertNotEqual(first[0], second[0])
+
+    def test_acp_study_dry_run_needs_no_binaries_or_auth(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(compare_parallel, 'run_acp') as driver, \
+                mock.patch.object(compare_parallel, 'subscription_account') as auth:
+            code = compare_parallel.main([
+                '--baseline-binary', '/old', '--candidate-binary', '/new', '--transport', 'acp',
+                '--baseline-ultracode', '--candidate-ultracode', '--baseline-max-depth', '1',
+                '--order-seed', '20261009', '--effort', 'medium', '--worker-effort', 'medium',
+                '--utility-effort', 'medium', '--timeout', '900', '--repetitions', '3',
+                '--work-root', '/unused', '--output', '/unused.json'])
+        self.assertEqual(code, 0)
+        self.assertIn('"transport": "acp"', out.getvalue())
+        self.assertIn('"worker_effort": "medium"', out.getvalue())
+        driver.assert_not_called()
+        auth.assert_not_called()
+
     def test_dry_run_prints_plan_and_executes_nothing(self):
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as directory, \
@@ -170,7 +204,7 @@ class DryRunTest(unittest.TestCase):
     def test_invalid_case_or_depth_cannot_start_execution(self):
         common = ['--baseline-binary', '/nope', '--candidate-binary', '/nope',
                   '--work-root', '/unused', '--output', '/unused.json', '--execute']
-        for extra in (['--case', 'invented-case'], ['--candidate-max-depth', '0']):
+        for extra in (['--case', 'invented-case'], ['--candidate-max-depth', '0'], ['--timeout', 'inf']):
             with contextlib.redirect_stderr(io.StringIO()), \
                     mock.patch.object(compare_parallel, 'run_one') as run_one, \
                     self.assertRaises(SystemExit) as error:
@@ -190,9 +224,51 @@ class DryRunTest(unittest.TestCase):
 
 
 class ActivationRunTest(unittest.TestCase):
+    def test_unverified_teardown_skips_grading_and_ledger_reads(self):
+        case = COHORT['cases'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / 'profile'
+            profile.mkdir()
+            (profile / 'codex-auth.json').write_text('{}')
+            with mock.patch.object(compare_parallel, 'run_acp', return_value={
+                    'session': 'runtime-session', 'completed': False, 'cleanup_complete': False,
+                    'error': 'teardown unverified', 'exit_code': None, 'timed_out': True}), \
+                    mock.patch.object(compare_parallel, 'run_grader') as grader, \
+                    mock.patch.object(compare_parallel, 'distill_accounting') as ledger:
+                result = compare_parallel.run_one(Path(sys.executable), 'baseline', case, 1, root, profile, 3,
+                    frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(Path(sys.executable)),
+                    transport='acp')
+            grader.assert_not_called()
+            ledger.assert_not_called()
+            self.assertFalse(result['passed'] or result['accounting_complete'])
+            self.assertIsNone(result['credits'])
+            self.assertFalse((Path(result['output_dir']) / 'distill-home/codex-auth.json').exists())
+
+    def test_incomplete_acp_cannot_publish_comparison_pass(self):
+        case = COHORT['cases'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def recorded(binary, variant, case, repetition, *args, **kwargs):
+                return dict(run(variant, case['id'], case['kind'], 1, wall=2 if variant == 'baseline' else 1),
+                    model_calls=1, **{f: 1 for f in compare_parallel.TOKEN_FIELDS},
+                    acp={'completed': variant == 'candidate', 'setup_confirmed': variant == 'candidate',
+                         'cleanup_complete': True, 'error': 'activation missing'})
+            with mock.patch.object(compare_parallel, 'run_one', side_effect=recorded), \
+                    mock.patch.object(compare_parallel, 'subscription_account'), contextlib.redirect_stdout(io.StringIO()):
+                code = compare_parallel.main(['--baseline-binary', sys.executable, '--candidate-binary', sys.executable,
+                    '--transport', 'acp', '--case', case['id'], '--repetitions', '1', '--execute',
+                    '--work-root', str(root / 'runs'), '--output', str(root / 'result.json')])
+            self.assertEqual(code, 1)
+            result = json.loads((root / 'result.json').read_text())
+            self.assertEqual(result['verdict']['verdict'], 'INCOMPLETE')
+            self.assertTrue(any('activation missing' in reason for reason in result['verdict']['reasons']))
+            self.assertIn(str(ROOT / 'acp_driver.py'), result['frozen_support_hashes'])
+            self.assertIn(str(ROOT / 'graders/_par_common.py'), result['frozen_support_hashes'])
+
     def test_between_run_input_or_candidate_binary_mutation_cannot_pass(self):
         case = COHORT['cases'][0]
-        for drift in ('prompt', 'candidate-binary'):
+        for drift in ('prompt', 'candidate-binary', 'helper', 'cohort'):
             with self.subTest(drift=drift), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 inputs = root / 'inputs'
@@ -201,6 +277,8 @@ class ActivationRunTest(unittest.TestCase):
                     target = inputs / ref
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(ROOT / ref, target)
+                helper = inputs / 'graders/_par_common.py'
+                shutil.copyfile(ROOT / 'graders/_par_common.py', helper)
                 cohort_path = root / 'cohort.json'
                 cohort_path.write_text(json.dumps({**COHORT, 'cases': [case]}))
                 baseline, candidate = root / 'baseline', root / 'candidate'
@@ -208,10 +286,11 @@ class ActivationRunTest(unittest.TestCase):
                 candidate.write_text('original candidate binary')
                 output = root / 'result.json'
 
-                def plan_with_mutation(cohort, repetitions):
+                def plan_with_mutation(cohort, repetitions, order_seed=None):
                     yield 'baseline', case, 1
                     # This happens after baseline's post-run check, before candidate.
-                    target = inputs / case['prompt_ref'] if drift == 'prompt' else candidate
+                    target = {'prompt': inputs / case['prompt_ref'], 'candidate-binary': candidate,
+                              'helper': helper, 'cohort': cohort_path}[drift]
                     target.write_text('mutated between paired runs')
                     yield 'candidate', case, 1
 
@@ -235,6 +314,52 @@ class ActivationRunTest(unittest.TestCase):
                 self.assertEqual(run_one.call_args.args[1], 'baseline')
                 self.assertEqual(run_one.call_args.kwargs['binary_hash'], compare_parallel._sha256_file(baseline))
                 self.assertFalse(output.exists(), 'drift must not publish an unmatched PASS')
+
+    def test_acp_runtime_session_accounting_pins_sanitization_and_auth_cleanup(self):
+        case = COHORT['cases'][0]
+        accounting = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 1,
+                      'call_usage': [{'model': 'auxiliary', 'effort': 'auto'}],
+                      **{f: 1 for f in compare_parallel.TOKEN_FIELDS}}
+        for scenario in ('success', 'activation-false'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                peer = fake_peer(root, scenario)
+                profile = root / 'profile'
+                profile.mkdir()
+                (profile / 'codex-auth.json').write_text('{}')
+                with mock.patch.dict(os.environ, {'GROK_SUBAGENTS_MAX_DEPTH': '99',
+                        'GROK_SESSION_SUMMARY_MODEL': 'wrong-model', 'GROK_REASONING_EFFORT': 'high'}), \
+                        mock.patch.object(compare_parallel, 'distill_accounting', return_value=accounting) as ledger:
+                    result = compare_parallel.run_one(peer, 'baseline', case, 1, root / 'runs', profile, 3,
+                        frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
+                        transport='acp', ultracode=True, effort='medium', worker_effort='medium', utility_effort='medium')
+                output = Path(result['output_dir'])
+                ledger.assert_called_once_with(output / 'distill-home', 'runtime-session')
+                self.assertEqual(json.loads((output / 'worktree/peer-env.json').read_text()), {})
+                self.assertEqual(result['acp']['completed'], scenario == 'success')
+                self.assertFalse(result['passed'], 'unsolved fixture still fails its external grader')
+                self.assertEqual(result['credits'], 1.0, 'failed runs retain accounting')
+                self.assertEqual(result['call_usage'], accounting['call_usage'], 'do not invent auxiliary effort parity')
+                self.assertEqual(result['settings']['configured_models']['worker_effort'], 'medium')
+                self.assertEqual(result['settings']['configured_utility']['effort'], 'medium')
+                self.assertIsNone(result['settings']['depth_env'])
+                command = json.loads((output / 'command.json').read_text())
+                self.assertEqual(command[-1], 'stdio')
+                self.assertIn('agent', command)
+                self.assertNotIn('--ultracode', command)
+                self.assertNotIn('--always-approve', command)
+                self.assertFalse((output / 'distill-home/codex-auth.json').exists())
+
+    def test_grader_loop_is_bounded_and_failure_duration_is_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / 'loop.py'
+            script.write_text('import time\nprint("grader started", flush=True)\nwhile True: time.sleep(.1)\n')
+            grade = compare_parallel.run_grader(script, root, root, timeout=.15)
+            self.assertTrue(grade['timed_out'])
+            self.assertNotEqual(grade['exit_code'], 0)
+            self.assertLess(grade['wall_time_s'], 3)
+            self.assertIn('grader started', (root / 'grader.txt').read_text())
 
     def test_run_uses_real_flag_and_depth_and_requires_activation_receipt(self):
         case = next(c for c in COHORT['cases'] if c['id'] == 'seq-rename-en')

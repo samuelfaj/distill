@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "cohort_id": "ultracode-dev-v1",
+  "cases": [
+    {
+      "id": "ultra-dev-d1",
+      "kind": "divisible",
+      "size": "substantial",
+      "prompt_ref": "prompts/ultra-dev-reports.txt",
+      "fixture_ref": "fixtures/ultra_dev_reports",
+      "grader": {
+        "script_ref": "graders/grade_ultra_dev_reports.py"
+      },
+      "reference_ref": "reference/ultra_dev_reports"
+    },
+    {
+      "id": "ultra-dev-d2",
+      "kind": "divisible",
+      "size": "substantial",
+      "prompt_ref": "prompts/ultra-dev-ingestion.txt",
+      "fixture_ref": "fixtures/ultra_dev_ingestion",
+      "grader": {
+        "script_ref": "graders/grade_ultra_dev_ingestion.py"
+      },
+      "reference_ref": "reference/ultra_dev_ingestion"
+    },
+    {
+      "id": "ultra-dev-d3",
+      "kind": "sequential",
+      "size": "substantial",
+      "prompt_ref": "prompts/ultra-dev-quotes.txt",
+      "fixture_ref": "fixtures/ultra_dev_quotes",
+      "grader": {
+        "script_ref": "graders/grade_ultra_dev_quotes.py"
+      },
+      "reference_ref": "reference/ultra_dev_quotes"
+    },
+    {
+      "id": "seq-rename-en",
+      "kind": "sequential",
+      "prompt_ref": "prompts/seq-rename-en.txt",
+      "fixture_ref": "fixtures/seq_rename",
+      "grader": {
+        "script_ref": "graders/grade_seq_rename.py"
+      },
+      "reference_ref": "reference/seq_rename",
+      "size": "control"
+    }
+  ],
+  "repetitions": 3
+}

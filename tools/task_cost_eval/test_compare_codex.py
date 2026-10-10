@@ -1,9 +1,25 @@
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
-from .compare_codex import codex_accounting, distill_accounting
+from .compare_codex import codex_accounting, distill_accounting, distill_config
+
+
+class ProfileConfigTest(unittest.TestCase):
+    def test_effort_pins_change_only_worker_and_local_utility_defaults(self):
+        default = tomllib.loads(distill_config())
+        explicit = tomllib.loads(distill_config(worker_effort='medium', utility_effort='medium'))
+        self.assertEqual(default['models']['worker_effort'], 'auto')
+        self.assertEqual(default['jev']['local']['effort'], 'auto')
+        self.assertEqual(explicit['models']['worker'], 'chatgpt/gpt-6-luna')
+        self.assertEqual(explicit['jev']['local']['model'], 'chatgpt/gpt-6-luna')
+        self.assertEqual(explicit['models']['worker_effort'], 'medium')
+        self.assertEqual(explicit['jev']['local']['effort'], 'medium')
+        explicit['models']['worker_effort'] = 'auto'
+        explicit['jev']['local']['effort'] = 'auto'
+        self.assertEqual(explicit, default)
 
 
 class SubscriptionAccountingTest(unittest.TestCase):

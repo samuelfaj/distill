@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from . import acp_driver
+from . import runner
 
 
 # A real stdio process, with no provider or credential access. It deliberately
@@ -173,20 +174,20 @@ class AcpDriverTest(unittest.TestCase):
                 self.assertIn(expected, result['error'])
 
     def test_one_process_snapshot_timeout_recovers_without_aborting_inference(self):
-        real_run = subprocess.run
+        real_popen = subprocess.Popen
         delayed = False
 
         def snapshot(command, **kwargs):
             nonlocal delayed
-            if command[0] == 'ps':
-                self.assertEqual(kwargs['timeout'], 5)
-                if not delayed:
-                    delayed = True
-                    raise subprocess.TimeoutExpired(command, kwargs['timeout'])
-            return real_run(command, **kwargs)
+            if command[0] == 'ps' and not delayed:
+                delayed = True
+                process = mock.Mock()
+                process.communicate.side_effect = subprocess.TimeoutExpired(command, 0)
+                return process
+            return real_popen(command, **kwargs)
 
         with tempfile.TemporaryDirectory() as directory, \
-                mock.patch.object(acp_driver.subprocess, 'run', side_effect=snapshot):
+                mock.patch.object(acp_driver.subprocess, 'Popen', side_effect=snapshot):
             result = drive(Path(directory))
         self.assertTrue(delayed)
         self.assertTrue(result['completed'] and result['cleanup_complete'], result)
@@ -195,12 +196,52 @@ class AcpDriverTest(unittest.TestCase):
     def test_persistent_snapshot_timeout_cannot_confirm_cleanup_from_stale_state(self):
         tree = acp_driver.OwnedTree(mock.Mock(pid=123))
         tree.live = set()  # Even a previously empty snapshot cannot prove current cleanup.
-        with mock.patch.object(acp_driver.subprocess, 'run',
-                side_effect=subprocess.TimeoutExpired(['ps'], 5)) as snapshot:
+        ps = mock.Mock()
+        ps.communicate.side_effect = subprocess.TimeoutExpired(['ps'], 5)
+        with mock.patch.object(acp_driver.subprocess, 'Popen', return_value=ps) as snapshot, \
+                mock.patch.object(acp_driver.os, 'kill'), mock.patch.object(acp_driver.os, 'killpg'), \
+                mock.patch.object(acp_driver, '_terminate_owned_group'):
             with self.assertRaises(subprocess.TimeoutExpired):
                 tree.stop()
         self.assertEqual(snapshot.call_count, 2)
         self.assertEqual(tree.checked, 0)
+
+    def test_cleanup_deadline_bounds_snapshots_waits_and_keeps_known_signals(self):
+        process = mock.Mock(pid=123)
+        process.poll.return_value = None
+        process.wait.side_effect = subprocess.TimeoutExpired('peer', 0)
+        tree = acp_driver.OwnedTree(process)
+        tree.pids.add(456)
+        tree.live = set()  # Stale state must not discard a known descendant.
+        deadline = time.monotonic() + .1
+
+        def communicate(**kwargs):
+            self.assertGreater(kwargs['timeout'], 0)
+            self.assertLessEqual(kwargs['timeout'], .1)
+            time.sleep(kwargs['timeout'])
+            raise subprocess.TimeoutExpired(['ps'], kwargs['timeout'])
+
+        snapshot = mock.Mock()
+        snapshot.communicate.side_effect = communicate
+        snapshot.wait.side_effect = subprocess.TimeoutExpired(['ps'], 0)
+        with mock.patch.object(acp_driver.subprocess, 'Popen', return_value=snapshot) as ps, \
+                mock.patch.object(acp_driver.os, 'kill') as kill, \
+                mock.patch.object(acp_driver.os, 'killpg'):
+            with self.assertRaises(TimeoutError):
+                tree.stop(deadline=deadline)
+        self.assertEqual(ps.call_count, 1)
+        snapshot.kill.assert_called_once_with()
+        snapshot.wait.assert_called_once_with(timeout=0)
+        kill.assert_any_call(456, acp_driver.signal.SIGTERM)
+        kill.assert_any_call(456, acp_driver.signal.SIGKILL)
+        for call in process.wait.call_args_list:
+            self.assertIn('timeout', call.kwargs)
+            self.assertEqual(call.kwargs['timeout'], 0)
+
+        process.reset_mock()
+        with mock.patch.object(runner.os, 'killpg', side_effect=ProcessLookupError):
+            runner._terminate_owned_group(process, deadline=deadline)
+        process.wait.assert_called_once_with(timeout=0)
 
     def test_exit_plan_mode_uses_native_headless_approval_and_finishes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -262,12 +303,12 @@ class AcpDriverTest(unittest.TestCase):
 
     def test_timeout_and_eof_stop_owned_writer_before_return(self):
         for scenario in ('timeout', 'eof', 'stubborn'):
-            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory, \
-                    mock.patch('tools.task_cost_eval.runner.TERMINATE_GRACE_SECONDS', .1):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 started = time.monotonic()
-                result = drive(root, scenario, timeout=3 if scenario == 'eof' else .7)
-                self.assertLess(time.monotonic() - started, 4)
+                timeout = 3 if scenario == 'eof' else .9
+                result = drive(root, scenario, timeout=timeout)
+                self.assertLess(time.monotonic() - started, timeout + .1)
                 self.assertFalse(result['completed'])
                 self.assertTrue(result['cleanup_complete'], result)
                 self.assertEqual(result['timed_out'], scenario != 'eof')

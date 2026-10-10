@@ -31,20 +31,43 @@ class OwnedTree:
         self.live = set(self.pids)
         self.checked = 0.0
 
-    def refresh(self, force=False):
+    def refresh(self, force=False, deadline=None):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError('ACP process snapshot deadline exceeded')
         if not force and time.monotonic() - self.checked < 0.1:
             return
         # A transient scheduler delay is not an inference deadline. Retry once;
         # persistent failure still propagates, including during forced cleanup.
         for attempt in range(2):
+            remaining = 5 if deadline is None else min(5, deadline - time.monotonic())
+            if remaining <= 0:
+                raise TimeoutError('ACP process snapshot deadline exceeded')
+            command = ['ps', '-A', '-o', 'pid=,ppid=,pgid=,stat=']
+            snapshot = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                table = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,pgid=,stat='],
-                                       capture_output=True, text=True, check=True, timeout=5)
+                try:
+                    remaining = 5 if deadline is None else max(0, min(5, deadline - time.monotonic()))
+                    stdout, stderr = snapshot.communicate(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    snapshot.kill()
+                    # subprocess.run's timeout handler waits without a bound.
+                    try:
+                        snapshot.wait(timeout=None if deadline is None else max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise
+                if snapshot.returncode:
+                    raise subprocess.CalledProcessError(snapshot.returncode, command, stdout, stderr)
                 break
             except subprocess.TimeoutExpired:
                 if attempt:
                     raise
-        rows = [line.split() for line in table.stdout.splitlines()]
+            finally:
+                snapshot.stdout.close()
+                snapshot.stderr.close()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError('ACP process snapshot deadline exceeded')
+        rows = [line.split() for line in stdout.splitlines()]
         descendants = {int(pid) for pid, _, group, _ in rows if int(group) == self.process.pid}
         descendants.update(self.pids.intersection(int(row[0]) for row in rows))
         while True:
@@ -52,27 +75,43 @@ class OwnedTree:
             if found <= descendants:
                 break
             descendants.update(found)
+        live = {int(pid) for pid, _, _, state in rows if int(pid) in descendants and not state.startswith('Z')}
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError('ACP process snapshot deadline exceeded')
         self.pids = descendants
-        self.live = {int(pid) for pid, _, _, state in rows if int(pid) in descendants and not state.startswith('Z')}
+        self.live = live
         self.checked = time.monotonic()
 
-    def stop(self):
+    def stop(self, deadline=None):
         # Refresh before signalling: children can have their own session/process group.
-        self.refresh(force=True)
-        for pid in self.live - {self.process.pid}:
+        snapshot_error = None
+        try:
+            self.refresh(force=True, deadline=deadline)
+        except (OSError, subprocess.SubprocessError, TimeoutError) as error:
+            snapshot_error = error
+        for pid in (self.pids if snapshot_error else self.live) - {self.process.pid}:
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-        _terminate_owned_group(self.process)
+        _terminate_owned_group(self.process, deadline=deadline)
         # The leader may already have exited; its remaining group still belongs to us.
         try:
             os.killpg(self.process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        deadline = time.monotonic() + SHUTDOWN_GRACE
+        for pid in self.pids - {self.process.pid}:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if snapshot_error:
+            raise snapshot_error
+        stop_deadline = deadline if deadline is not None else time.monotonic() + SHUTDOWN_GRACE
         while True:
-            self.refresh(force=True)
+            if time.monotonic() >= stop_deadline:
+                return False
+            self.refresh(force=True, deadline=deadline)
             if not self.live:
                 return True
             for pid in self.live:
@@ -80,9 +119,9 @@ class OwnedTree:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= stop_deadline:
                 return False
-            time.sleep(0.02)
+            time.sleep(min(0.02, max(0, stop_deadline - time.monotonic())))
 
 
 class _Client:
@@ -115,12 +154,12 @@ class _Client:
                     data = data[os.write(self.process.stdin.fileno(), data):]
                 except BlockingIOError:
                     continue
-            self.tree.refresh()
+            self.tree.refresh(deadline=deadline)
         self.log('sent', {'jsonrpc': '2.0', **message})
 
     def receive(self, block=True):
         while True:
-            self.tree.refresh()
+            self.tree.refresh(deadline=self.deadline)
             remaining = self.deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('ACP response/completion deadline exceeded')
@@ -261,14 +300,15 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
               'exit_code': None, 'cleanup_complete': False}
     process = client = tree = None
     deadline = time.monotonic() + timeout
+    inference_deadline = deadline - min(SHUTDOWN_GRACE, timeout / 2)
     with (output / 'stdout.jsonl').open('wb') as stdout, (output / 'stderr.txt').open('w') as stderr, \
             (output / 'acp-transcript.jsonl').open('w') as transcript:
         try:
             process = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=stderr, start_new_session=True, bufsize=0)
             tree = OwnedTree(process)
-            tree.refresh(force=True)
-            client = _Client(process, tree, cwd, deadline, stdout, transcript)
+            tree.refresh(force=True, deadline=inference_deadline)
+            client = _Client(process, tree, cwd, inference_deadline, stdout, transcript)
             init = client.request('initialize', {
                 'protocolVersion': 1, 'clientCapabilities': {'fs': {'readTextFile': False, 'writeTextFile': False}, 'terminal': False},
                 '_meta': {'clientType': 'grok-shell', 'startupHints': {
@@ -306,13 +346,13 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
                 if 'method' not in message:
                     raise AcpError('Unexpected response after prompt completion')
                 client.handle(message)
-            tree.refresh(force=True)
+            tree.refresh(force=True, deadline=inference_deadline)
             process.stdin.close()
             while process.poll() is None:
-                tree.refresh()
-                if time.monotonic() >= deadline:
+                tree.refresh(deadline=inference_deadline)
+                if time.monotonic() >= inference_deadline:
                     raise TimeoutError('ACP shutdown deadline exceeded')
-                time.sleep(0.02)
+                time.sleep(min(0.02, max(0, inference_deadline - time.monotonic())))
             if process.returncode != 0:
                 raise AcpError(f'ACP process exited {process.returncode}')
             result['completed'] = True
@@ -324,7 +364,7 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
                 if not result['completed'] and client.session and not process.stdin.closed:
                     try:
                         client.send({'method': 'session/cancel', 'params': {'sessionId': client.session}},
-                                    deadline=time.monotonic() + 0.2)
+                                    deadline=min(deadline, time.monotonic() + 0.2))
                     except (OSError, TimeoutError, subprocess.SubprocessError):
                         pass
                 result['model_receipt'] = client.receipts.get('session/set_model')
@@ -334,10 +374,11 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
                 if not process.stdin.closed:
                     process.stdin.close()
                 try:
-                    result['cleanup_complete'] = (tree or OwnedTree(process)).stop()
-                except (OSError, subprocess.SubprocessError) as error:
-                    _terminate_owned_group(process)
-                    result['error'] = f'Cannot verify owned tree cleanup: {error}'
+                    result['cleanup_complete'] = (tree or OwnedTree(process)).stop(deadline=deadline)
+                except (OSError, subprocess.SubprocessError, TimeoutError) as error:
+                    cleanup_error = f'Cannot verify owned tree cleanup: {error}'
+                    result['error'] = f'{result["error"]}; {cleanup_error}' if result['error'] else cleanup_error
+                    result['timed_out'] |= isinstance(error, (TimeoutError, subprocess.TimeoutExpired))
                 process.stdout.close()
                 result['exit_code'] = process.returncode
             else:

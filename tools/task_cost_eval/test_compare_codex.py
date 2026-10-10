@@ -281,16 +281,20 @@ class StrictDistillAccountingTest(unittest.TestCase):
                     'version': 1, 'label': 'Subagent', 'read_only': False}
             request = {'sessionUpdate': 'tool_call', 'toolCallId': 'call-review',
                        '_meta': {'x.ai/tool': tool}, 'rawInput': {
-                           'subagent_type': 'code-reviewer', 'background': False, 'prompt': 'Review the change'}}
+                           'subagent_type': 'code-reviewer', 'background': False,
+                           'prompt': 'Review the change\u2028policy'}}
             result = {'sessionUpdate': 'tool_call_update', 'toolCallId': 'call-review', 'status': 'completed',
                       'rawOutput': {'type': 'SubagentCompleted', 'subagent_id': 'child'}}
             updates = main / 'updates.jsonl'
             original = updates.read_text()
             def write_updates(extra=()):
                 updates.write_text(original + ''.join(json.dumps({'method': 'session/update',
-                    'params': {'sessionId': 'main', 'update': update}}) + '\n'
+                    'params': {'sessionId': 'main', 'update': update}}, ensure_ascii=False) + '\n'
                     for update in (request, result, *extra)))
             write_updates()
+            self.assertIn('\u2028'.encode(), updates.read_bytes())
+            strict = distill_accounting(root, 'main', strict=True)
+            self.assertTrue(strict['accounting_complete'], strict['accounting_evidence'])
             call = next(row for row in distill_accounting(root, 'main')['call_usage'] if row['attempt'] == 'sampler:c')
             owner = call['owner']
             self.assertEqual(call['model'], 'gpt-6.1-sol')

@@ -130,7 +130,7 @@ def distill_accounting(home, session, *, strict=False):
         def read(path, *, lines=False):
             artifacts[str(path)] = path.is_file()
             try:
-                value = ([json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+                value = ([json.loads(line) for line in path.read_text().split('\n') if line.strip()]
                          if lines else json.loads(path.read_text()))
                 if not (all(isinstance(row, dict) for row in value) if lines else isinstance(value, dict)):
                     raise ValueError('expected JSON objects')
@@ -322,7 +322,9 @@ def distill_accounting(home, session, *, strict=False):
         if not updates_path.is_file():
             continue
         requests, results = {}, []
-        for line, raw in enumerate(updates_path.read_text().splitlines(), 1):
+        for line, raw in enumerate(updates_path.read_text().split('\n'), 1):
+            if not raw.strip():
+                continue
             params = json.loads(raw).get('params', {})
             if params.get('sessionId') != sid:  # Resume copies its source's updates.
                 continue

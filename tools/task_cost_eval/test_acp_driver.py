@@ -94,10 +94,24 @@ for line in sys.stdin:
         (root / 'permission-response.json').write_text(json.dumps(reply))
         extension('_x.ai/task_backgrounded', 'task_backgrounded', task_id=7)
         extension('_x.ai/session/update', 'subagent_spawned', subagent_id='child', attempt_id='attempt')
+        if scenario == 'reload-acks':
+            send({'id': 'skills-reload', 'result': {'result': {'reloaded': 1}}})
+        if scenario == 'reload-malformed':
+            send({'id': 'skills-reload', 'result': {'result': {'reloaded': True}}})
+        if scenario == 'reload-rpc-error':
+            send({'id': 'skills-reload', 'error': {'code': -32603, 'message': 'reload failed'}})
+        if scenario == 'prompt-wrong-id':
+            send({'id': 'benchmark-4', 'result': {'stopReason': 'end_turn'}})
         if scenario == 'missing-stop':
             sys.exit(0)
         result = {'stopReason': 'refusal' if scenario == 'negative-stop' else 'end_turn'}
         send({'id': request['id'], 'result': result})
+        if scenario == 'reload-acks':
+            send({'id': 'workflows-reload', 'result': {'result': {'reloaded': 0}}})
+        if scenario == 'reload-unknown':
+            send({'id': 'other-reload', 'result': {'result': {'reloaded': 1}}})
+        if scenario == 'reload-error':
+            send({'id': 'workflows-reload', 'result': {'result': {'reloaded': 1}, 'error': 'reload failed'}})
         time.sleep(.08)
         update('tool_call_update', toolCallId='tool-1', status='completed')
         extension('_x.ai/task_completed', 'task_completed', task_snapshot={'task_id': 7})
@@ -125,6 +139,39 @@ def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium'):
 
 
 class AcpDriverTest(unittest.TestCase):
+    def test_internal_reload_acks_are_logged_without_completing_prompt_or_pending_children(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = drive(root, 'reload-acks')
+            self.assertTrue(result['completed'] and result['cleanup_complete'], result)
+            self.assertEqual(result['exit_code'], 0)
+            self.assertEqual(result['prompt_receipt']['id'], 'benchmark-5')
+            self.assertEqual(result['prompt_receipt']['result'], {'stopReason': 'end_turn'})
+            self.assertTrue((root / 'tools-completed').exists())
+            received = [row['message'] for row in map(json.loads, (root / 'acp-transcript.jsonl').read_text().splitlines())
+                        if row['direction'] == 'received']
+            acks = [message for message in received if message.get('id') in ('skills-reload', 'workflows-reload')]
+            self.assertEqual(acks, [
+                {'jsonrpc': '2.0', 'id': 'skills-reload', 'result': {'result': {'reloaded': 1}}},
+                {'jsonrpc': '2.0', 'id': 'workflows-reload', 'result': {'result': {'reloaded': 0}}},
+            ])
+            self.assertLess(received.index(acks[0]), received.index(result['prompt_receipt']))
+            self.assertLess(received.index(result['prompt_receipt']), received.index(acks[1]))
+            self.assertTrue(any(message.get('params', {}).get('update', {}).get('sessionUpdate') == 'subagent_finished'
+                                for message in received[received.index(acks[1]) + 1:]))
+
+    def test_unknown_malformed_or_failed_reload_and_wrong_prompt_responses_remain_errors(self):
+        for scenario in ('reload-unknown', 'reload-malformed', 'reload-rpc-error', 'reload-error', 'prompt-wrong-id'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                result = drive(Path(directory), scenario)
+                self.assertFalse(result['completed'])
+                self.assertTrue(result['cleanup_complete'], result)
+                self.assertFalse(result['timed_out'])
+                expected = ('Unexpected response after prompt completion' if scenario == 'reload-unknown' else
+                            'Unexpected ACP response ID' if scenario == 'prompt-wrong-id' else
+                            'Invalid internal reload acknowledgement')
+                self.assertIn(expected, result['error'])
+
     def test_one_process_snapshot_timeout_recovers_without_aborting_inference(self):
         real_run = subprocess.run
         delayed = False

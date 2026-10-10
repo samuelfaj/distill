@@ -130,6 +130,17 @@ class _Client:
                 if not isinstance(message, dict) or message.get('jsonrpc') != '2.0':
                     raise AcpError('Invalid ACP JSON-RPC message')
                 self.log('received', message)
+                # app.rs injects these watcher requests into the shared stream.
+                # They acknowledge reloads, not this client's outstanding call.
+                if message.get('id') in ('skills-reload', 'workflows-reload'):
+                    result = message.get('result')
+                    payload = result.get('result') if isinstance(result, dict) else None
+                    if (set(message) != {'jsonrpc', 'id', 'result'}
+                            or not isinstance(result, dict) or set(result) != {'result'}
+                            or not isinstance(payload, dict) or set(payload) != {'reloaded'}
+                            or type(payload['reloaded']) is not int or payload['reloaded'] < 0):
+                        raise AcpError(f'Invalid internal reload acknowledgement: {message["id"]}')
+                    continue
                 return message
             wait = block or bool(self.buffer)
             ready = select.select([self.process.stdout], [], [], min(remaining, 0.1) if wait else 0)[0]

@@ -2821,7 +2821,7 @@ fn only_a_fresh_child_on_the_worker_starts_with_the_worker_discipline() {
     let reminder = body.expect("a fresh worker child gets the discipline");
     assert!(reminder.starts_with("Existing agent instructions\n\n"));
     assert!(reminder.contains("Do exactly what the assignment specifies"), "{reminder}");
-    assert!(reminder.contains("stop and report the mismatch or the question instead of guessing"), "{reminder}");
+    assert!(reminder.contains("If requirements contradict one another, or an unresolved decision changes the required result, stop and report instead of guessing"), "{reminder}");
     assert!(reminder.contains("exit status"), "{reminder}");
     assert!(reminder.contains("in one terminal call"), "{reminder}");
     for (on_worker, source) in [

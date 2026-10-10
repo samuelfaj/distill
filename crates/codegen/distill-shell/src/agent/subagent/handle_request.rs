@@ -2422,6 +2422,49 @@ pub(crate) async fn run_shell_child(
         folded_settlement.settlement_status,
     )
     .await;
+    // Runtime completion wakes have their own reply channels, outside the
+    // protected parent-message receipt drain. Settle them before any final bill.
+    #[cfg(test)]
+    if let Some(sender) = ctx
+        .run_shell_child_harness
+        .as_ref()
+        .and_then(|harness| harness.completion_settlement_tx.as_ref())
+    {
+        let (release, released) = oneshot::channel();
+        sender
+            .send((child_handle.cmd_tx.clone(), release))
+            .expect("completion settlement rendezvous receiver");
+        tokio::time::timeout(CHILD_ACTOR_ACK_TIMEOUT, released)
+            .await
+            .expect("completion settlement rendezvous is bounded")
+            .expect("completion settlement rendezvous released");
+    }
+    let (respond_to, settlement) = oneshot::channel();
+    let wake_settlement = if child_handle
+        .cmd_tx
+        .send(SessionCommand::SettleSubagentCompletion { respond_to })
+        .is_ok()
+    {
+        child_actor_query(
+            "completion_settlement",
+            async { settlement.await.ok() },
+            None,
+        )
+        .await
+    } else {
+        None
+    };
+    match wake_settlement {
+        Some(Ok(settled)) => {
+            cancellation_may_hide_usage |= settled.cancellation_may_hide_usage;
+        }
+        failure => {
+            tracing::warn!(subagent_id = %request.id, ?failure,
+                "child completion did not settle; final usage is incomplete");
+            cancellation_may_hide_usage = true;
+        }
+    }
+    result.output_usage_incomplete |= cancellation_may_hide_usage;
     let trace_token_totals = child_actor_query(
         "session_usage",
         child_handle.chat_state_handle.try_get_session_usage(),
@@ -2826,7 +2869,7 @@ pub(crate) async fn run_shell_child(
     }
     crate::waterfall::mark(&request.id, crate::waterfall::stage::FLUSH_DONE);
     let _ = child_handle.cmd_tx.send(SessionCommand::Shutdown(
-        crate::session::ShutdownKind::Graceful,
+        crate::session::ShutdownKind::CancelRunningTurn,
     ));
     drop(child_handle);
     if !await_session_thread_exit(&child_thread, UNPROMOTED_SESSION_THREAD_EXIT_TIMEOUT).await {

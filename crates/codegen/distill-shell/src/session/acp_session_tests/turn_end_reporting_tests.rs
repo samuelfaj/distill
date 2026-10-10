@@ -39,34 +39,73 @@ struct Harness {
     /// Held only so the loop does not see its chat channel close.
     chat: Option<tokio::sync::mpsc::UnboundedSender<distill_chat_state::ChatStateEvent>>,
     hook_workspace: Option<tempfile::TempDir>,
+    persisted_turns: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>>,
 }
 
 impl Harness {
     async fn new() -> Self {
-        Self::build(false, None).await
+        Self::build(false, None, None).await
     }
 
     async fn subagent() -> Self {
-        Self::build(true, None).await
+        Self::build(true, None, None).await
     }
 
     async fn with_hook_workspace() -> Self {
-        Self::build(false, Some(tempfile::TempDir::new().expect("hook cwd"))).await
+        Self::build(
+            false,
+            Some(tempfile::TempDir::new().expect("hook cwd")),
+            None,
+        )
+        .await
     }
 
-    async fn build(is_subagent: bool, hook_workspace: Option<tempfile::TempDir>) -> Self {
+    async fn build(
+        is_subagent: bool,
+        hook_workspace: Option<tempfile::TempDir>,
+        sampling_gate: Option<Arc<tokio::sync::Semaphore>>,
+    ) -> Self {
         let (gateway_tx, gateway) = tokio::sync::mpsc::unbounded_channel();
         let (persistence_tx, mut persistence) =
             tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-        // Drop each message rather than hold the queue: that drops any ack channel inside it
-        // A writer waiting on one then fails fast instead of waiting forever
-        tokio::task::spawn_local(async move { while persistence.recv().await.is_some() {} });
+        let persisted_turns = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let terminal_sink = persisted_turns.clone();
+        tokio::task::spawn_local(async move {
+            while let Some(message) = persistence.recv().await {
+                if !is_subagent {
+                    // Preserve the original root fixture: drop messages and their ack senders.
+                    continue;
+                }
+                let update = match message {
+                    PersistenceMsg::Update(update) => Some(update),
+                    PersistenceMsg::AppendUpdateDurablyAndAck { update, respond_to } => {
+                        let _ = respond_to.send(Ok(()));
+                        Some(update)
+                    }
+                    PersistenceMsg::FlushAndAck { respond_to } => {
+                        let _ = respond_to.send(Ok(()));
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(crate::session::storage::SessionUpdate::Xai(notification)) = update
+                    && let XaiSessionUpdate::TurnCompleted {
+                        prompt_id,
+                        stop_reason,
+                        ..
+                    } = notification.update
+                {
+                    terminal_sink.borrow_mut().push((prompt_id, stop_reason));
+                }
+            }
+        });
         let (mut actor, events) =
             create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
         if let Some(dir) = hook_workspace.as_ref() {
             actor.hook_resolved_workspace_root = dir.path().to_string_lossy().into_owned();
         }
         actor.startup_hints.is_subagent = is_subagent;
+        actor.sampling_gate = sampling_gate;
         if is_subagent {
             actor.startup_hints.subagent_type = Some("explore".into());
         }
@@ -84,6 +123,7 @@ impl Harness {
             events: Some(events),
             chat: None,
             hook_workspace,
+            persisted_turns,
         }
     }
 
@@ -150,6 +190,16 @@ impl Harness {
             std::path::PathBuf::from("/tmp"),
             crate::session::fs_watch::FsWatchCapabilities::none(),
         ));
+        // Finish actor setup before a test starts its operation deadline.
+        // Either busy value confirms readiness; fixtures may already own a running turn.
+        let (respond_to, ready) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(SessionCommand::IsBusy { respond_to })
+            .expect("run loop must accept the readiness probe");
+        let _busy = tokio::time::timeout(std::time::Duration::from_secs(10), ready)
+            .await
+            .expect("run loop setup must finish within 10 seconds")
+            .expect("run loop stopped before its readiness reply");
         (cmd_tx, fired)
     }
 
@@ -941,6 +991,235 @@ async fn teardown_runs_queued_reports_before_the_session_end_hooks() {
     }
 }
 
+#[test]
+fn subagent_completion_settles_promoted_task_wake_before_accounting() {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(run(async {
+                // Exercise the real prompt loop, but block sampling before any transport.
+                let mut h =
+                    Harness::build(true, None, Some(Arc::new(tokio::sync::Semaphore::new(0))))
+                        .await;
+                let primary = h.queue_turn("primary").await;
+                let primary_epoch = h.actor.turn_report.epoch();
+                let wake_id = "task-completed-bg";
+                let (wake_reply, wake_result) = oneshot::channel();
+                let (committed, wake_started) = oneshot::channel();
+                assert!(
+                    !h.actor
+                        .queue_input(QueueInputRequest {
+                            verbatim: true,
+                            persist_ack: Some(committed),
+                            ..queue_input_request(
+                                vec![acp::ContentBlock::Text(acp::TextContent::new(
+                                    "Background task bg completed.",
+                                ))],
+                                wake_id,
+                                wake_reply,
+                            )
+                        })
+                        .await,
+                    "the queued completion wake must not preempt the primary turn"
+                );
+                let (command, _fired) = h.spawn_loop().await;
+                let (processed, completion) = oneshot::channel();
+                command
+                    .send(SessionCommand::InjectTurnCompletion {
+                        prompt_id: "primary".into(),
+                        epoch: primary_epoch,
+                        result: Box::new(crate::session::commands::ok_end_turn(0, None)),
+                        elapsed_ms: Some(1),
+                        processed,
+                    })
+                    .unwrap();
+                completion.await.unwrap();
+                assert_eq!(
+                    primary.await.unwrap().unwrap().stop_reason,
+                    acp::StopReason::EndTurn
+                );
+                tokio::time::timeout(std::time::Duration::from_secs(5), wake_started)
+                    .await
+                    .expect("queued completion wake must start")
+                    .unwrap();
+                let wake_task = h
+                    .actor
+                    .state
+                    .lock()
+                    .await
+                    .running_task
+                    .as_ref()
+                    .unwrap()
+                    .handle
+                    .clone();
+                let wake_epoch = h.actor.turn_report.epoch();
+                let (prefire_guard, prefire_dropped) = oneshot::channel::<()>();
+                let prefire = tokio::task::spawn_local(async move {
+                    let _guard = prefire_guard;
+                    std::future::pending::<()>().await;
+                });
+                let prefire_task = prefire.abort_handle();
+                h.actor.compaction.prefire.set_handle(prefire);
+                let (respond_to, settled) = oneshot::channel();
+                command
+                    .send(SessionCommand::SettleSubagentCompletion { respond_to })
+                    .unwrap();
+                let settled = tokio::time::timeout(std::time::Duration::from_secs(5), settled)
+                    .await
+                    .expect("settlement is bounded")
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    settled.cancellation_may_hide_usage,
+                    "interrupted work must not become a zero bill"
+                );
+                assert!(
+                    wake_task.is_finished(),
+                    "usage guards must finish before the accounting ack"
+                );
+                assert!(prefire_task.is_finished());
+                assert!(prefire_dropped.await.is_err());
+                assert_eq!(
+                    wake_result.await.unwrap().unwrap().stop_reason,
+                    acp::StopReason::Cancelled
+                );
+                assert!(
+                    h.persisted_turns
+                        .borrow()
+                        .contains(&(wake_id.into(), "cancelled".into())),
+                    "the wake cancellation must be durable before final accounting"
+                );
+                assert_eq!(h.lifecycle.aborts.get(), 1);
+
+                // A completion racing the final snapshot cannot open another turn.
+                let (processed, completion) = oneshot::channel();
+                command
+                    .send(SessionCommand::InjectTurnCompletion {
+                        prompt_id: wake_id.into(),
+                        epoch: wake_epoch,
+                        result: Box::new(crate::session::commands::ok_end_turn(0, None)),
+                        elapsed_ms: Some(1),
+                        processed,
+                    })
+                    .unwrap();
+                completion.await.unwrap();
+                command
+                    .send(SessionCommand::InjectNotification {
+                        prompt_id: "bash-completed-late".into(),
+                        prompt_blocks: vec![],
+                        priority: NotificationPriority::Later,
+                        source: NotificationSource::BashTaskCompleted {
+                            task_id: "late".into(),
+                        },
+                    })
+                    .unwrap();
+                let (late_reply, late_result) = oneshot::channel();
+                command
+                    .send(SessionCommand::Prompt {
+                        prompt_id: "task-completed-late".into(),
+                        prompt_blocks: vec![],
+                        prompt_mode: PromptMode::Agent,
+                        artifact_upload_ctx: None,
+                        client_identifier: None,
+                        screen_mode: None,
+                        verbatim: true,
+                        traceparent: None,
+                        json_schema: None,
+                        send_now: false,
+                        admission: None,
+                        tool_overrides_update: None,
+                        respond_to: late_reply,
+                        prompt_admitted: None,
+                        persist_ack: None,
+                        parsed_prompt_tx: None,
+                    })
+                    .unwrap();
+                assert!(matches!(
+                    late_result.await.unwrap().unwrap().completion_kind,
+                    PromptCompletionKind::RemovedFromQueue
+                ));
+                let state = h.actor.state.lock().await;
+                assert!(state.running_task.is_none());
+                assert!(state.pending_inputs.is_empty());
+                assert!(state.pending_notifications.is_empty());
+                drop(state);
+                command
+                    .send(SessionCommand::Shutdown(
+                        crate::session::ShutdownKind::Graceful,
+                    ))
+                    .unwrap();
+            }));
+        })
+        .expect("spawn large-stack wake test thread")
+        .join()
+        .expect("wake test thread");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn subagent_completion_refuses_root_and_unsettled_protected_prompt() {
+    for is_subagent in [false, true] {
+        run(async move {
+            let mut h = Harness::build(is_subagent, None, None).await;
+            let mut protected = h.queue_turn("protected").await;
+            let (command, _) = h.spawn_loop().await;
+            let (respond_to, settled) = oneshot::channel();
+            command
+                .send(SessionCommand::SettleSubagentCompletion { respond_to })
+                .unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), settled)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert!(matches!(
+                protected.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            assert!(h.actor.state.lock().await.running_task.is_some());
+            assert_eq!(
+                h.lifecycle.aborts.get(),
+                0,
+                "protected receipt must retain its turn"
+            );
+            if !is_subagent {
+                assert!(!h.actor.state.lock().await.notifications_suppressed);
+            } else {
+                // An active task with no matching origin row is not proven synthetic.
+                let protected_row = h.actor.state.lock().await.pending_inputs.pop_front();
+                let (respond_to, settled) = oneshot::channel();
+                command
+                    .send(SessionCommand::SettleSubagentCompletion { respond_to })
+                    .unwrap();
+                assert!(settled.await.unwrap().is_err());
+                assert!(h.actor.state.lock().await.running_task.is_some());
+                assert_eq!(h.lifecycle.aborts.get(), 0);
+                assert!(matches!(
+                    protected.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                h.actor
+                    .state
+                    .lock()
+                    .await
+                    .pending_inputs
+                    .push_front(protected_row.unwrap());
+            }
+            command
+                .send(SessionCommand::Shutdown(
+                    crate::session::ShutdownKind::CancelRunningTurn,
+                ))
+                .unwrap();
+        })
+        .await;
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn stale_completion_does_not_post_process_the_successor_turn() {
     run(async {
@@ -1126,7 +1405,7 @@ async fn a_flush_leaves_the_queue_open() {
             h.actor.turn_report.start_next_turn();
             h.start_turn(prompt_id).await;
             let _ = h.cancel(CancelTrigger::CtrlC).await;
-            h.queue.as_mut().expect("a live queue").flush().await;
+            assert!(h.queue.as_mut().expect("a live queue").flush().await);
         }
 
         h.drain_turn_ends().await;
@@ -1134,6 +1413,44 @@ async fn a_flush_leaves_the_queue_open() {
         assert_eq!(fired.len(), 2);
         assert_eq!(j(at(&fired, 0), "promptId"), "p1");
         assert_eq!(j(at(&fired, 1), "promptId"), "p2");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn turn_end_flush_does_not_confirm_a_running_hook() {
+    run(async {
+        let mut h = Harness::with_hook_workspace().await;
+        let gate = tempfile::TempDir::new().unwrap();
+        let entered = gate.path().join("entered");
+        let release = gate.path().join("release");
+        *h.actor.hook_registry.borrow_mut() = Some(Arc::new(
+            super::client_hooks_tests::file_registry_with_spec(
+                HookEventName::StopCancelled,
+                &format!(
+                    "touch '{}'; while [ ! -f '{}' ]; do sleep 0.01; done",
+                    entered.display(),
+                    release.display(),
+                ),
+            ),
+        ));
+        h.start_turn("hook-turn").await;
+        let _ = h.cancel(CancelTrigger::CtrlC).await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !entered.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("hook starts");
+        assert!(!h.queue.as_mut().unwrap().flush().await);
+        std::fs::write(release, b"release").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !h.queue.as_mut().unwrap().flush().await {}
+        })
+        .await
+        .expect("released hook completion is acknowledged");
+        h.drain_turn_ends().await;
     })
     .await;
 }

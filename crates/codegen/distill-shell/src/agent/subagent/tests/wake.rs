@@ -719,6 +719,287 @@ async fn acknowledge_parent_usage(mut parent_cmd_rx: mpsc::UnboundedReceiver<Ses
     }
 }
 
+#[test]
+fn child_completion_settlement_preserves_output_and_parent_usage() {
+    use crate::session::persistence::{ExplicitSessionOpen, PersistenceMsg, new_with_explicit_dir};
+    use crate::session::usage_file::{SessionUsageFile, UsageSummary};
+    use distill_test_support::{
+        InferenceEndpoint, InferenceRequestMatcher, MockInferenceServer, ScriptedResponse,
+    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
+    use distill_tools::implementations::distill::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+                for interrupt_wake in [false, true] {
+                    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+                        let temp = tempfile::tempdir().unwrap();
+                        let meta_dir = temp.path().join("meta");
+                        let parent_dir = temp.path().join("parent");
+                        let parent_chat = spawn_test_parent_chat_state("test-model");
+                        let persistence = new_with_explicit_dir(
+                            &SessionInfo {
+                                id: acp::SessionId::new("setup-parent"),
+                                cwd: temp.path().to_string_lossy().into_owned(),
+                            },
+                            parent_dir.clone(),
+                            acp::ModelId::new("test-model"),
+                            "parent usage".into(),
+                            ExplicitSessionOpen::New {
+                                identity: None,
+                                next_trace_turn: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        let server = MockInferenceServer::start().await.unwrap();
+                        let matcher =
+                            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses);
+                        let response = |text| {
+                            ScriptedResponse::sse(
+                                distill_test_support::sse::responses_api_script_exact(
+                                    text,
+                                    "test-model",
+                                ),
+                            )
+                        };
+                        let mut primary = server.expect_response_blocked(
+                            "primary",
+                            matcher,
+                            response("primary result"),
+                        );
+                        let mut protected = server.expect_response_blocked(
+                            "protected",
+                            matcher,
+                            response("protected result"),
+                        );
+                        let mut wake = interrupt_wake.then(|| {
+                            server.expect_response("wake", matcher, ScriptedResponse::hang())
+                        });
+                        let (settlement_tx, mut settlement_rx) = mpsc::unbounded_channel();
+                        let mut harness = RunShellChildHarnessConfig::new(
+                            meta_dir.clone(),
+                            InitialAttemptBehavior::Normal,
+                        );
+                        harness.completion_settlement_tx = Some(settlement_tx);
+                        let mut ctx = ctx_with_toggle(HashMap::new());
+                        configure_completion_harness(&mut ctx, &server, harness);
+                        ctx.parent_cwd = temp.path().to_path_buf();
+                        let (parent_cmd_tx, mut parent_cmd_rx) = mpsc::unbounded_channel();
+                        ctx.parent_cmd_tx = Some(parent_cmd_tx);
+                        let (gateway, _gateway_rx) = test_gateway_with_receiver();
+                        let (command_tx, command_rx) =
+                            SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                        let backend =
+                            ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+                        // ctx_with_toggle's stub receiver is closed. Usage freeze must
+                        // query this real coordinator, including when no descendants exist.
+                        ctx.subagent_event_tx = backend.sender();
+                        let coordinator = tokio::task::spawn_local(
+                            SubagentCoordinator::from_channel(
+                                command_rx,
+                                RunShellChildTestRunner::new([ctx], false, gateway),
+                                CoordinatorConfig::default(),
+                            )
+                            .run(),
+                        );
+                        let id = uuid::Uuid::now_v7().to_string();
+                        let mut request = auto_wake_test_request(&id);
+                        request.prompt = "primary work".into();
+                        request.parent_prompt_id = Some("parent-prompt".into());
+                        request.run_in_background = false;
+                        let spawned = tokio::task::spawn_local({
+                            let backend = backend.clone();
+                            async move { backend.spawn(request, None).await }
+                        });
+                        primary.wait_blocked().await;
+                        while !matches!(
+                            backend.query(&id, false, None).await.unwrap().status,
+                            SubagentSnapshotStatus::Running { .. }
+                        ) {
+                            tokio::task::yield_now().await;
+                        }
+                        assert!(matches!(
+                            backend
+                                .send_active_message(
+                                    ActiveAgentMessageRequest::try_new(&id, "protected followup")
+                                        .unwrap()
+                                )
+                                .await,
+                            ActiveAgentMessageOutcome::Accepted { .. }
+                        ));
+                        primary.release();
+                        protected.wait_blocked().await;
+                        assert!(
+                            settlement_rx.try_recv().is_err(),
+                            "finalization must wait for the accepted parent receipt"
+                        );
+                        protected.release();
+                        let (child_cmd, release) = settlement_rx.recv().await.unwrap();
+                        primary.assert_satisfied();
+                        protected.assert_satisfied();
+
+                        let (wake_reply, mut wake_result) = oneshot::channel();
+                        if let Some(wake) = wake.as_mut() {
+                            child_cmd
+                                .send(SessionCommand::Prompt {
+                                    prompt_id: "task-completed-background".into(),
+                                    prompt_blocks: vec![acp::ContentBlock::Text(
+                                        acp::TextContent::new("Background task completed."),
+                                    )],
+                                    prompt_mode: crate::session::plan_mode::PromptMode::Agent,
+                                    artifact_upload_ctx: None,
+                                    client_identifier: None,
+                                    screen_mode: None,
+                                    verbatim: true,
+                                    traceparent: None,
+                                    json_schema: None,
+                                    send_now: false,
+                                    admission: None,
+                                    tool_overrides_update: None,
+                                    respond_to: wake_reply,
+                                    prompt_admitted: None,
+                                    persist_ack: None,
+                                    parsed_prompt_tx: None,
+                                })
+                                .unwrap();
+                            wake.wait_received().await;
+                        }
+                        release.send(()).unwrap();
+
+                        // Consume the real runner's usage command, applying the canonical parent
+                        // ledger and persistence primitives before acknowledging its fold.
+                        let (
+                            by_model,
+                            attributions,
+                            pending_attempts,
+                            parent_prompt_id,
+                            incomplete,
+                            respond_to,
+                        ) = loop {
+                            if let SessionCommand::RecordSubagentUsage {
+                                by_model,
+                                attributions,
+                                pending_attempts,
+                                parent_prompt_id,
+                                incomplete,
+                                respond_to,
+                            } = parent_cmd_rx.recv().await.unwrap()
+                            {
+                                break (
+                                    by_model,
+                                    attributions,
+                                    pending_attempts,
+                                    parent_prompt_id,
+                                    incomplete,
+                                    respond_to,
+                                );
+                            }
+                        };
+                        assert_eq!(parent_prompt_id.as_deref(), Some("parent-prompt"));
+                        assert_eq!(incomplete, interrupt_wake);
+                        if interrupt_wake {
+                            assert_eq!(
+                                wake_result
+                                    .try_recv()
+                                    .expect("wake settled before usage fold")
+                                    .unwrap()
+                                    .stop_reason,
+                                acp::StopReason::Cancelled
+                            );
+                        }
+                        assert!(
+                            parent_chat
+                                .record_subagent_usage_with_attributions_and_pending(
+                                    by_model,
+                                    attributions,
+                                    pending_attempts,
+                                    true,
+                                    incomplete,
+                                )
+                                .await
+                        );
+                        let ledger = parent_chat.try_get_session_usage().await.unwrap();
+                        assert_eq!(ledger.is_incomplete(), interrupt_wake);
+                        assert_eq!(
+                            ledger
+                                .attributions
+                                .iter()
+                                .filter(|call| call.role == "main"
+                                    && call.usage_complete
+                                    && call.usage.is_some())
+                                .count(),
+                            2
+                        );
+                        assert!(
+                            ledger.totals.total_tokens() >= 30,
+                            "both completed model turns retain their reported usage"
+                        );
+                        persistence
+                            .tx
+                            .send(PersistenceMsg::UsageTurn {
+                                turn_number: 1,
+                                prompt_id: parent_prompt_id,
+                                live: UsageSummary::from_ledger(&ledger),
+                            })
+                            .unwrap();
+                        let (flushed, ack) = oneshot::channel();
+                        persistence
+                            .tx
+                            .send(PersistenceMsg::FlushAndAck {
+                                respond_to: flushed,
+                            })
+                            .unwrap();
+                        ack.await.unwrap().unwrap();
+                        assert!(
+                            !spawned.is_finished(),
+                            "terminal child result must wait for the parent fold acknowledgement"
+                        );
+                        respond_to.send(()).unwrap();
+                        let result = spawned.await.unwrap().unwrap();
+                        assert!(result.success, "{:?}", result.error);
+                        assert!(!result.cancelled);
+                        assert_eq!(&*result.output, "protected result");
+                        assert_eq!(result.output_usage_incomplete, interrupt_wake);
+                        assert_eq!(result.total_tokens_used, ledger.totals.total_tokens());
+                        let persisted: SessionUsageFile = serde_json::from_slice(
+                            &std::fs::read(parent_dir.join("usage.json")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(persisted.session.usage_is_incomplete, interrupt_wake);
+                        assert_eq!(persisted.session.total_tokens, result.total_tokens_used);
+                        assert_eq!(persisted.session.model_calls, ledger.totals.model_calls);
+                        assert_eq!(
+                            read_subagent_output(&meta_dir).as_deref(),
+                            Some("protected result")
+                        );
+                        let meta: SubagentMeta = serde_json::from_slice(
+                            &std::fs::read(meta_dir.join("meta.json")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(meta.status, "completed");
+                        drop(child_cmd);
+                        drop(backend);
+                        coordinator.await.unwrap();
+                    })
+                    .await
+                    .expect("child settlement integration is bounded");
+                }
+            }));
+        })
+        .expect("spawn large-stack child settlement test thread")
+        .join()
+        .expect("child settlement test thread");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn unpublished_wake_completion_preserves_prior_durable_state_and_worktree() {
     distill_test_utils::require_git!();

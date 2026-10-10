@@ -190,6 +190,12 @@ pub enum ShutdownKind {
     Graceful,
     CancelRunningTurn,
 }
+/// The child is sealed against runtime wakes; this does not change its task result.
+#[derive(Debug)]
+pub struct SubagentCompletionSettlement {
+    /// Interrupted work or unacknowledged hooks may still lack final usage.
+    pub cancellation_may_hide_usage: bool,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CancelTrigger {
     Esc,
@@ -819,6 +825,11 @@ pub enum SessionCommand {
         new_text: Option<String>,
     },
     Cancel(CancelOptions),
+    /// After protected prompt receipts settle, seal child wakes and settle any
+    /// remaining synthetic turn before the runner captures final usage.
+    SettleSubagentCompletion {
+        respond_to: oneshot::Sender<Result<SubagentCompletionSettlement, String>>,
+    },
     Shutdown(ShutdownKind),
     PersistResumeStatus {
         respond_to: oneshot::Sender<()>,

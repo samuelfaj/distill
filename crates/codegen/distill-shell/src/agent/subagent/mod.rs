@@ -164,6 +164,8 @@ pub(crate) struct RunShellChildHarnessConfig {
             distill_tools::types::resources::SharedResources,
         )>,
     >,
+    completion_settlement_tx:
+        Option<mpsc::UnboundedSender<(mpsc::UnboundedSender<SessionCommand>, oneshot::Sender<()>)>>,
 }
 #[cfg(test)]
 impl RunShellChildHarnessConfig {
@@ -175,6 +177,7 @@ impl RunShellChildHarnessConfig {
             hold_wake_abort_flush_ack: false,
             reject_deferred_start_commit: false,
             child_context_tx: None,
+            completion_settlement_tx: None,
         }
     }
     fn hold_wake_flush_acks(mut self) -> Self {

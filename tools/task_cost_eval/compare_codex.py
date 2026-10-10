@@ -145,6 +145,9 @@ def distill_accounting(home, session, *, strict=False):
             result = {'accounting_complete': False, 'reason': f'invalid usage ledger: {error}'}
         if not result['accounting_complete']:
             reasons.append(result.get('reason', 'canonical ledger reconciliation incomplete'))
+        for row in result.get('call_usage', []):
+            if row['owner'] is None:
+                reasons.append(f'{row["attempt"]}: ambiguous owning session in usage ledgers')
         directories = {p.parent.name: p.parent for name in ('usage.json', 'events.jsonl', 'updates.jsonl')
                        for p in sorted((home / 'sessions').rglob(name))}
         ledgers = {sid: read(path / 'usage.json').get('session', {}) for sid, path in directories.items()}
@@ -207,9 +210,9 @@ def distill_accounting(home, session, *, strict=False):
             for identity, row in ledger_rows.items():
                 if canonical.get(identity) != row:
                     reasons.append(f'{sid}: attempt {identity} missing/different in canonical ledger')
-            child_ids = {identity for child, parent in parents.items() if parent == sid
-                         for identity in attempts.get(child, {})}
-            local = {identity: row for identity, row in ledger_rows.items() if identity not in child_ids}
+            local_ids = {row['attempt'] for row in result.get('call_usage', [])
+                         if (row['owner'] or {}).get('session_id') == sid}
+            local = {identity: row for identity, row in ledger_rows.items() if identity in local_ids}
             main = {identity: row for identity, row in local.items() if row.get('role') == 'main'}
             retries = {identity for identity, row in local.items() if row.get('role') == 'main_retry'}
             evidence_logs = [row for row in logs if row.get('sid') == sid]
@@ -289,18 +292,110 @@ def distill_accounting(home, session, *, strict=False):
     attributions = ledger.get('attributions', [])
     root_ids = {row['attempt_id'] for row in attributions}
     child_ids = set()
+    usage_paths = {session: root_file}
+    session_attempts = {session: root_ids}
     for path in files:
         if path == root_file:
             continue
         child = json.loads(path.read_text())['session']
-        child_ids.update(row['attempt_id'] for row in child.get('attributions', []))
+        identities = {row['attempt_id'] for row in child.get('attributions', [])}
+        child_ids.update(identities)
+        usage_paths[path.parent.name] = path
+        session_attempts[path.parent.name] = identities
+    metadata = {}
+    for path in files:
+        for meta_path in sorted((path.parent / 'subagents').glob('*/meta.json')):
+            meta = json.loads(meta_path.read_text())
+            metadata.setdefault(meta.get('child_session_id'), []).append((meta, meta_path))
+    # Native Task results name the child. Join by that ID and
+    # toolCallId, never by prompt text, timing, model, or adjacent notifications.
+    background_headers = (
+        'Subagent started in background.',
+        'Subagent took longer than the foreground budget and was moved to the '
+        'background to keep the conversation responsive. It is still running.',
+        'Subagent took longer than the foreground budget and was moved to the '
+        'background to keep the conversation responsive. It is still running — you will be notified when it completes.',
+    )
+    task_requests = {}
+    for sid, path in usage_paths.items():
+        updates_path = path.parent / 'updates.jsonl'
+        if not updates_path.is_file():
+            continue
+        requests, results = {}, []
+        for line, raw in enumerate(updates_path.read_text().splitlines(), 1):
+            params = json.loads(raw).get('params', {})
+            if params.get('sessionId') != sid:  # Resume copies its source's updates.
+                continue
+            update = params.get('update', {})
+            call_id = update.get('toolCallId')
+            tool = update.get('_meta', {}).get('x.ai/tool', {})
+            if (update.get('sessionUpdate') == 'tool_call' and isinstance(call_id, str)
+                    and (tool.get('namespace'), tool.get('kind'), tool.get('name'))
+                    == ('distill', 'task', 'spawn_subagent') and isinstance(update.get('rawInput'), dict)):
+                requests.setdefault(call_id, []).append({
+                    'origin': 'tool', 'tool_call_id': call_id, 'tool': tool,
+                    'input': {key: value for key, value in update['rawInput'].items()
+                              if key not in ('prompt', 'description')},
+                    'artifact': str(updates_path), 'request_line': line})
+            output = update.get('rawOutput')
+            if (isinstance(output, dict) and output.get('type') == 'SubagentCompleted'
+                    and isinstance(output.get('subagent_id'), str)):
+                results.append((call_id, output['subagent_id'], line))
+            elif (isinstance(output, dict) and output.get('type') == 'Text'
+                    and call_id in requests and update.get('status') == 'completed'
+                    and isinstance(output.get('text'), str)):
+                # task.rs format_subagent_{started_background,auto_backgrounded}:
+                # only the generated header and immediately following ID line.
+                notice = output['text'].split('\n', 2)
+                if (len(notice) == 3 and notice[0] in background_headers
+                        and notice[1].startswith('subagent_id: ')):
+                    child = notice[1].removeprefix('subagent_id: ')
+                    if child and child == child.strip():
+                        results.append((call_id, child, line))
+        for call_id, child, line in results:
+            candidates = requests.get(call_id, [])
+            task_requests.setdefault((sid, child), []).append(
+                {**candidates[0], 'result_line': line} if len(candidates) == 1 else None)
+    # A parent ledger folds descendants. Attribute each physical call to the
+    # deepest ledger supported by durable parent/child metadata, not its model.
+    # Resumed sessions also copy their source ledger; those calls keep the source owner.
+    owners = {}
+    for sid, identities in session_attempts.items():
+        folded = child_ids if sid == session else {
+            identity for child, records in metadata.items() if len(records) == 1
+            and records[0][0].get('parent_session_id') == sid
+            for identity in session_attempts.get(child, set())}
+        records = metadata.get(sid, [])
+        meta, meta_path = records[0] if len(records) == 1 and sid != session else ({}, None)
+        if meta.get('resumed_from'):
+            sources = [source for records in metadata.values() for source, _ in records
+                       if source.get('subagent_id') == meta['resumed_from']]
+            if len(sources) == 1:
+                folded = folded | session_attempts.get(sources[0].get('child_session_id'), set())
+        requests = task_requests.get((meta.get('parent_session_id'), meta.get('subagent_id')), [])
+        owner = {'session_id': sid, 'parent_session_id': meta.get('parent_session_id'),
+                 'subagent_id': meta.get('subagent_id'), 'spawn_attempt_id': meta.get('attempt_id'),
+                 'subagent_type': meta.get('subagent_type'),
+                 'effective_model_id': meta.get('effective_model_id'),
+                 'effective_context_source': meta.get('effective_context_source'),
+                 'resumed_from': meta.get('resumed_from'), 'effort_auto': meta.get('effort_auto'),
+                 'model_routing_locked': meta.get('model_routing_locked'),
+                 'spawn_request': requests[0] if len(requests) == 1 else None,
+                 'usage_path': str(usage_paths[sid]),
+                 'metadata_path': str(meta_path) if meta_path is not None else None}
+        for identity in identities - folded:
+            owners.setdefault(identity, []).append(owner)
     rows = []
     for attribution in attributions:
         usage = attribution.get('usage')
+        call_owners = owners.get(attribution['attempt_id'], [])
         identity = {'attempt': attribution['attempt_id'], 'model': attribution['model_id'],
+                    'request_id': attribution.get('request_id'), 'task_id': attribution.get('task_id'),
+                    'source_kind': attribution.get('source_kind'),
                     'role': attribution['role'], 'status': attribution['status'],
                     'agent': 'worker' if attribution['attempt_id'] in child_ids else 'main',
                     'endpoint': attribution.get('endpoint'),
+                    'owner': call_owners[0] if len(call_owners) == 1 else None,
                     'requested_effort': attribution.get('requested_effort'),
                     'effort': attribution.get('applied_effort')}
         if not usage:

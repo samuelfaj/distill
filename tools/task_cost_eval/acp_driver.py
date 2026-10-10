@@ -34,8 +34,16 @@ class OwnedTree:
     def refresh(self, force=False):
         if not force and time.monotonic() - self.checked < 0.1:
             return
-        table = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,pgid=,stat='],
-                               capture_output=True, text=True, check=True, timeout=1)
+        # A transient scheduler delay is not an inference deadline. Retry once;
+        # persistent failure still propagates, including during forced cleanup.
+        for attempt in range(2):
+            try:
+                table = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,pgid=,stat='],
+                                       capture_output=True, text=True, check=True, timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                if attempt:
+                    raise
         rows = [line.split() for line in table.stdout.splitlines()]
         descendants = {int(pid) for pid, _, group, _ in rows if int(group) == self.process.pid}
         descendants.update(self.pids.intersection(int(row[0]) for row in rows))

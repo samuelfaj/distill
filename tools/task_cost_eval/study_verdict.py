@@ -18,6 +18,7 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
     cases = substantial | controls
     reasons, invalid = [], False
     utility_request_policy_used = False
+    builtin_main_role_used = False
 
     def inconclusive(reason):
         nonlocal invalid
@@ -138,8 +139,47 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
                         continue
                     agent, model, effort = call.get('agent'), call.get('model'), call.get('effort')
                     role = str(call.get('role', '')).lower()
+                    owner = call.get('owner')
+                    spawn = owner.get('spawn_request') if isinstance(owner, dict) else None
+                    spawn_tool = spawn.get('tool') if isinstance(spawn, dict) else None
+                    spawn_input = spawn.get('input') if isinstance(spawn, dict) else None
+                    native_spawn = (
+                        isinstance(spawn, dict) and spawn.get('origin') == 'tool' and
+                        isinstance(spawn_tool, dict) and
+                        tuple(spawn_tool.get(key) for key in ('namespace', 'kind', 'name'))
+                        == ('distill', 'task', 'spawn_subagent') and
+                        isinstance(spawn_input, dict) and
+                        spawn_input.get('subagent_type') == owner.get('subagent_type') and
+                        all(spawn_input.get(key) is None for key in
+                            ('model', 'effort', 'reasoning_effort', 'resume_from')) and
+                        (spawn_input.get('fork_context') is None or spawn_input.get('fork_context') is False) and
+                        spawn_input.get('context_source') in (None, 'new') and
+                        isinstance(spawn.get('tool_call_id'), str) and bool(spawn['tool_call_id'].strip()) and
+                        isinstance(spawn.get('artifact'), str) and bool(spawn['artifact'].strip()) and
+                        type(spawn.get('request_line')) is int and spawn['request_line'] > 0 and
+                        type(spawn.get('result_line')) is int and spawn['result_line'] > spawn['request_line']
+                    )
+                    normalized_model = {'gpt-6-luna': LUNA_MODEL, 'gpt-6.1-sol': MAIN_MODEL}.get(model, model)
+                    normalized_effort = {'effort:medium': 'medium', 'effort:low': 'low'}.get(effort, effort)
+                    owner_proves_builtin_main = (
+                        isinstance(owner, dict) and
+                        role in ('main', 'main_retry') and
+                        owner.get('subagent_type') in ('plan', 'code-reviewer') and
+                        native_spawn and owner.get('effective_context_source') == 'new' and
+                        owner.get('resumed_from') is None and owner.get('effort_auto') is False and
+                        owner.get('model_routing_locked') is False and
+                        all(isinstance(owner.get(field), str) and owner[field].strip() for field in
+                            ('session_id', 'parent_session_id', 'usage_path', 'metadata_path')) and
+                        {'gpt-6-luna': LUNA_MODEL, 'gpt-6.1-sol': MAIN_MODEL}.get(
+                            owner.get('effective_model_id'), owner.get('effective_model_id')) == MAIN_MODEL and
+                        normalized_model == MAIN_MODEL and normalized_effort == 'medium' and
+                        settings.get('model') == MAIN_MODEL
+                    )
                     if str(call.get('attempt', '')).startswith('initial-title:') and role == 'auxiliary':
                         expected_call = (LUNA_MODEL, 'low')
+                    elif owner_proves_builtin_main and agent == 'worker':
+                        expected_call = (MAIN_MODEL, 'medium')
+                        builtin_main_role_used = True
                     elif agent == 'worker':
                         expected_call = (LUNA_MODEL, 'medium')
                     elif agent == 'main' and role == 'main':
@@ -151,8 +191,6 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
                     else:
                         inconclusive(f'{variant} {case}#{rep}: unproven applied call policy')
                         continue
-                    normalized_model = {'gpt-6-luna': LUNA_MODEL, 'gpt-6.1-sol': MAIN_MODEL}.get(model, model)
-                    normalized_effort = {'effort:medium': 'medium', 'effort:low': 'low'}.get(effort, effort)
                     request_policy_utility = (
                         expected_call == (LUNA_MODEL, 'medium') and
                         role == 'utility' and agent in ('main', 'worker') and
@@ -228,6 +266,10 @@ def analyze(runs, substantial_case_ids, control_case_ids, expected_repetitions, 
         report['policy_disclosures'] = [
             'Sampler utility uses source-backed persisted requested effort; applied marker unavailable.'
         ]
+    if builtin_main_role_used:
+        report.setdefault('policy_disclosures', []).append(
+            'Built-in plan/code-reviewer child usage ran on the configured main model, proven by per-call owner metadata.'
+        )
     return {'performance_verdict': 'NO_GO' if reasons else 'GO', 'reasons': reasons, 'performance': report,
             'blind_review': 'required external confirmation receipt; not evaluated'}
 

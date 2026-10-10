@@ -214,6 +214,124 @@ class StrictDistillAccountingTest(unittest.TestCase):
             self.assertIsNone(calls['initial-title:t']['effort'])
             self.assertEqual(calls['sampler:a']['requested_effort'], 'high')
             self.assertEqual(calls['sampler:a']['effort'], 'effort:medium')
+            self.assertEqual(calls['initial-title:t']['task_id'], 'select_units')
+            self.assertEqual(calls['initial-title:t']['source_kind'], 'tool_families')
+
+    def test_call_owner_uses_deepest_ledger_and_durable_child_type_without_model_relabeling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main, child, rows = self.fixture(root)
+            meta_path = main / 'subagents/child/meta.json'
+            meta = json.loads(meta_path.read_text())
+            meta.update(subagent_type='code-reviewer', effective_model_id='chatgpt/gpt-6.1-sol')
+            meta_path.write_text(json.dumps(meta))
+            grandchild = root / 'sessions/cwd/grandchild'
+            grandchild.mkdir()
+            nested = {**rows[2], 'attempt_id': 'sampler:nested', 'request_id': 'resp_nested', 'model_id': 'gpt-6-luna'}
+            self.write_ledger(grandchild, [nested])
+            self.write_ledger(child, [rows[2], nested])
+            self.write_ledger(main, rows + [nested])
+            nested_meta = child / 'subagents/grandchild/meta.json'
+            nested_meta.parent.mkdir(parents=True)
+            nested_meta.write_text(json.dumps({'child_session_id': 'grandchild', 'parent_session_id': 'child',
+                'subagent_type': 'explore', 'effective_model_id': 'chatgpt/gpt-6-luna'}))
+            result = distill_accounting(root, 'main')
+            self.assertTrue(result['accounting_complete'])
+            calls = {row['attempt']: row for row in result['call_usage']}
+            self.assertEqual(calls['sampler:a']['owner']['session_id'], 'main')
+            self.assertIsNone(calls['sampler:a']['owner']['subagent_type'])
+            self.assertEqual(calls['sampler:c']['model'], 'gpt-6.1-sol')
+            self.assertEqual(calls['sampler:c']['owner'], {
+                'session_id': 'child', 'parent_session_id': 'main', 'subagent_type': 'code-reviewer',
+                'subagent_id': 'child', 'spawn_attempt_id': 'at1.child',
+                'effective_model_id': 'chatgpt/gpt-6.1-sol', 'usage_path': str(child / 'usage.json'),
+                'effective_context_source': None, 'resumed_from': None, 'effort_auto': None,
+                'model_routing_locked': None, 'spawn_request': None,
+                'metadata_path': str(meta_path)})
+            self.assertEqual(calls['sampler:nested']['owner']['session_id'], 'grandchild')
+            self.assertEqual(calls['sampler:nested']['owner']['subagent_type'], 'explore')
+            self.assertEqual(calls['sampler:nested']['model'], 'gpt-6-luna')
+            resumed = root / 'sessions/cwd/resumed'
+            resumed.mkdir()
+            resumed_call = {**nested, 'attempt_id': 'sampler:resumed', 'request_id': 'resp_resumed'}
+            self.write_ledger(resumed, [rows[2], nested, resumed_call])
+            self.write_ledger(main, rows + [nested, resumed_call])
+            resume_meta = main / 'subagents/resumed/meta.json'
+            resume_meta.parent.mkdir(parents=True)
+            resume_meta.write_text(json.dumps({'child_session_id': 'resumed', 'parent_session_id': 'main',
+                'subagent_type': 'general-purpose', 'resumed_from': 'child'}))
+            calls = {row['attempt']: row for row in distill_accounting(root, 'main')['call_usage']}
+            self.assertEqual(calls['sampler:c']['owner']['subagent_type'], 'code-reviewer')
+            self.assertEqual(calls['sampler:nested']['owner']['session_id'], 'grandchild')
+            self.assertEqual(calls['sampler:resumed']['owner']['session_id'], 'resumed')
+            nested_meta.unlink()
+            ambiguous = distill_accounting(root, 'main')['call_usage']
+            self.assertIsNone(next(row['owner'] for row in ambiguous if row['attempt'] == 'sampler:nested'))
+
+    def test_native_task_request_requires_exact_result_link_and_preserves_model_omission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main, _, _ = self.fixture(root)
+            meta_path = main / 'subagents/child/meta.json'
+            meta = json.loads(meta_path.read_text())
+            meta.update(subagent_type='code-reviewer', effective_model_id='chatgpt/gpt-6.1-sol',
+                        effective_context_source='new', effort_auto=False, model_routing_locked=False)
+            meta_path.write_text(json.dumps(meta))
+            tool = {'namespace': 'distill', 'kind': 'task', 'name': 'spawn_subagent',
+                    'version': 1, 'label': 'Subagent', 'read_only': False}
+            request = {'sessionUpdate': 'tool_call', 'toolCallId': 'call-review',
+                       '_meta': {'x.ai/tool': tool}, 'rawInput': {
+                           'subagent_type': 'code-reviewer', 'background': False, 'prompt': 'Review the change'}}
+            result = {'sessionUpdate': 'tool_call_update', 'toolCallId': 'call-review', 'status': 'completed',
+                      'rawOutput': {'type': 'SubagentCompleted', 'subagent_id': 'child'}}
+            updates = main / 'updates.jsonl'
+            original = updates.read_text()
+            def write_updates(extra=()):
+                updates.write_text(original + ''.join(json.dumps({'method': 'session/update',
+                    'params': {'sessionId': 'main', 'update': update}}) + '\n'
+                    for update in (request, result, *extra)))
+            write_updates()
+            call = next(row for row in distill_accounting(root, 'main')['call_usage'] if row['attempt'] == 'sampler:c')
+            owner = call['owner']
+            self.assertEqual(call['model'], 'gpt-6.1-sol')
+            self.assertEqual(call['request_id'], 'resp_sampler:c')
+            self.assertEqual(owner['effective_context_source'], 'new')
+            self.assertIs(owner['effort_auto'], False)
+            self.assertIs(owner['model_routing_locked'], False)
+            self.assertEqual(owner['spawn_request'], {
+                'origin': 'tool', 'tool_call_id': 'call-review', 'tool': tool,
+                'input': {'subagent_type': 'code-reviewer', 'background': False},
+                'artifact': str(updates), 'request_line': 3, 'result_line': 4})
+            foreground = result['rawOutput']
+            auto_header = ('Subagent took longer than the foreground budget and was moved to the '
+                           'background to keep the conversation responsive. It is still running')
+            for header, background in (
+                ('Subagent started in background.', True),
+                (auto_header + '.', False),
+                (auto_header + ' — you will be notified when it completes.', False),
+            ):
+                request['rawInput']['background'] = background
+                result['rawOutput'] = {'type': 'Text', 'text':
+                    header + '\nsubagent_id: child\ntype: code-reviewer\ndescription: Review the change\n'}
+                write_updates()
+                call = next(r for r in distill_accounting(root, 'main')['call_usage'] if r['attempt'] == 'sampler:c')
+                with self.subTest(header=header):
+                    self.assertEqual(call['owner']['spawn_request']['tool_call_id'], 'call-review')
+                    self.assertIs(call['owner']['spawn_request']['input']['background'], background)
+            # Neither arbitrary text nor a separate wait call proves the spawn.
+            valid_notice = result['rawOutput']['text']
+            for call_id, notice in (('call-review', 'Reported text:\n' + valid_notice),
+                                    ('wait-call', valid_notice)):
+                result.update(toolCallId=call_id, rawOutput={'type': 'Text', 'text': notice})
+                write_updates()
+                call = next(r for r in distill_accounting(root, 'main')['call_usage'] if r['attempt'] == 'sampler:c')
+                with self.subTest(call_id=call_id, notice=notice):
+                    self.assertIsNone(call['owner']['spawn_request'])
+            result.update(toolCallId='call-review', rawOutput=foreground)
+            # A second result without a matching request makes the child link ambiguous.
+            write_updates(({**result, 'toolCallId': 'unrelated-call'},))
+            call = next(row for row in distill_accounting(root, 'main')['call_usage'] if row['attempt'] == 'sampler:c')
+            self.assertIsNone(call['owner']['spawn_request'])
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -124,6 +125,36 @@ def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium'):
 
 
 class AcpDriverTest(unittest.TestCase):
+    def test_one_process_snapshot_timeout_recovers_without_aborting_inference(self):
+        real_run = subprocess.run
+        delayed = False
+
+        def snapshot(command, **kwargs):
+            nonlocal delayed
+            if command[0] == 'ps':
+                self.assertEqual(kwargs['timeout'], 5)
+                if not delayed:
+                    delayed = True
+                    raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+            return real_run(command, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(acp_driver.subprocess, 'run', side_effect=snapshot):
+            result = drive(Path(directory))
+        self.assertTrue(delayed)
+        self.assertTrue(result['completed'] and result['cleanup_complete'], result)
+        self.assertFalse(result['timed_out'])
+
+    def test_persistent_snapshot_timeout_cannot_confirm_cleanup_from_stale_state(self):
+        tree = acp_driver.OwnedTree(mock.Mock(pid=123))
+        tree.live = set()  # Even a previously empty snapshot cannot prove current cleanup.
+        with mock.patch.object(acp_driver.subprocess, 'run',
+                side_effect=subprocess.TimeoutExpired(['ps'], 5)) as snapshot:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                tree.stop()
+        self.assertEqual(snapshot.call_count, 2)
+        self.assertEqual(tree.checked, 0)
+
     def test_exit_plan_mode_uses_native_headless_approval_and_finishes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

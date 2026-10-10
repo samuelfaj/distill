@@ -123,6 +123,63 @@ class StudyVerdictTest(unittest.TestCase):
         data[0]['call_usage'].append(call)
         self.assertNotEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
 
+    def test_builtin_reviewer_main_model_requires_matching_per_call_owner(self):
+        owner = {'session_id': 'child-session', 'parent_session_id': 'parent-session',
+                 'subagent_type': 'code-reviewer', 'effective_model_id': 'chatgpt/gpt-6.1-sol',
+                 'effective_context_source': 'new', 'resumed_from': None,
+                 'effort_auto': False, 'model_routing_locked': False,
+                 'spawn_request': {'origin': 'tool', 'tool_call_id': 'task-call',
+                     'tool': {'namespace': 'distill', 'kind': 'task', 'name': 'spawn_subagent',
+                              'version': 1, 'label': 'Subagent', 'read_only': False},
+                     'input': {'subagent_type': 'code-reviewer', 'background': False},
+                     'artifact': 'artifacts/updates.jsonl', 'request_line': 12, 'result_line': 15},
+                 'usage_path': 'artifacts/child-usage.jsonl', 'metadata_path': 'artifacts/child.json'}
+        data = rows()
+        call = dict(data[0]['call_usage'][2], model='gpt-6.1-sol', role='main', owner=owner)
+        data[0]['call_usage'].append(call)
+        out = gate(data)
+        self.assertNotEqual(out['performance_verdict'], 'INCONCLUSIVE')
+        self.assertTrue(any('Built-in plan/code-reviewer' in d
+                            for d in out['performance']['policy_disclosures']))
+        for task_input in (
+            {'subagent_type': 'code-reviewer', 'background': True, 'cwd': '/fixture',
+             'isolation': 'none', 'task_id': None},
+            {'subagent_type': 'code-reviewer', 'model': None, 'effort': None,
+             'reasoning_effort': None, 'resume_from': None},
+        ):
+            data = rows()
+            linked_owner = dict(owner, spawn_request=dict(owner['spawn_request'], input=task_input))
+            data[0]['call_usage'].append(dict(call, owner=linked_owner))
+            with self.subTest(task_input=task_input):
+                self.assertNotEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+
+        for mutate in (
+            lambda c: c.update(model='gpt-6.1-sol', owner=None),
+            lambda c: c.update(model='gpt-6.1-sol', owner=dict(owner, effective_model_id='chatgpt/gpt-6-luna')),
+            lambda c: c.update(model='gpt-6.1-sol', owner=dict(owner, subagent_type='general-purpose')),
+            lambda c: c.update(model='gpt-6.1-sol', owner=dict(owner, spawn_request=None)),
+            lambda c: c.update(model='gpt-6.1-sol', owner=dict(owner, spawn_request=dict(
+                owner['spawn_request'], input={'subagent_type': 'plan', 'background': False}))),
+        ):
+            data = rows()
+            call = dict(data[0]['call_usage'][2], role='main', owner=owner)
+            mutate(call)
+            data[0]['call_usage'].append(call)
+            with self.subTest(owner=call.get('owner')):
+                self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+        for change in (
+            {'origin': 'harness'}, {'tool': dict(owner['spawn_request']['tool'], namespace='other')},
+            {'tool_call_id': ''}, {'artifact': ''}, {'request_line': True}, {'result_line': 0},
+            *({'input': dict(owner['spawn_request']['input'], **{field: value})} for field, value in (
+                ('model', 'chatgpt/gpt-6.1-sol'), ('effort', 'medium'), ('reasoning_effort', 'medium'),
+                ('resume_from', 'prior-child'), ('fork_context', True), ('context_source', 'forked'))),
+        ):
+            data = rows()
+            linked_owner = dict(owner, spawn_request=dict(owner['spawn_request'], **change))
+            data[0]['call_usage'].append(dict(data[0]['call_usage'][2], model='gpt-6.1-sol', owner=linked_owner))
+            with self.subTest(spawn_change=change):
+                self.assertEqual(gate(data)['performance_verdict'], 'INCONCLUSIVE')
+
     def test_utility_requested_effort_is_explicitly_disclosed_and_required(self):
         out = gate(rows())
         self.assertNotEqual(out['performance_verdict'], 'INCONCLUSIVE')

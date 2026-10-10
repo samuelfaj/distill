@@ -39,6 +39,9 @@ for line in sys.stdin:
     if method == 'initialize':
         result = {'protocolVersion': 1, 'agentCapabilities': {}, 'authMethods': []}
     elif method == 'session/new':
+        if scenario in ('stop-feedback', 'stop-feedback-scope'):
+            assert request['params']['_meta'] == {'sessionKind': 'headless', 'x.ai/hooks': {
+                'stop': [{'hookCallbackIds': ['benchmark-root-stop']}]}}
         result = {'sessionId': 'runtime-session'}
     elif method == 'session/set_model':
         params = request['params']
@@ -75,6 +78,28 @@ for line in sys.stdin:
             result = None
     elif method == 'session/prompt':
         (root / 'prompt-seen').write_text(request['params']['prompt'][0]['text'])
+        if scenario in ('stop-feedback', 'stop-feedback-scope'):
+            envelope = {'hookCallbackId': 'benchmark-root-stop', 'sessionId': 'runtime-session',
+                        'hookEventName': 'stop', 'reason': 'end_turn', 'stopHookActive': False,
+                        'cwd': str(root), 'workspaceRoot': str(root), 'timestamp': '2026-10-10T00:00:00Z'}
+            calls = []
+            if scenario == 'stop-feedback-scope':
+                send({'method': '_x.ai/hooks/event', 'params': envelope})
+                calls.extend([{**envelope, 'sessionId': 'child-session'},
+                              {**envelope, 'hookCallbackId': 'other-callback'},
+                              {**envelope, 'hookEventName': 'subagent_stop'},
+                              {**envelope, 'reason': 'cancelled'}])
+            calls.extend([envelope, {**envelope, 'stopHookActive': True}])
+            replies = []
+            for index, params in enumerate(calls):
+                identity = f'hook-{index}'
+                send({'id': identity, 'method': '_x.ai/hooks/run', 'params': params})
+                reply = json.loads(sys.stdin.readline())
+                expected = ({'decision': 'deny', 'systemMessage': 'Please check whether the requested work is complete.'}
+                            if index == len(calls) - 2 else {'decision': 'continue'})
+                assert reply == {'jsonrpc': '2.0', 'id': identity, 'result': expected}, reply
+                replies.append(reply)
+            (root / 'hook-responses.json').write_text(json.dumps(replies))
         if scenario == 'exit-plan-mode':
             send({'id': 'plan', 'method': '_x.ai/exit_plan_mode', 'params': {
                 'sessionId': 'runtime-session', 'toolCallId': 'plan-1', 'planContent': '# Plan'}})
@@ -132,14 +157,100 @@ def fake_peer(root, scenario='success'):
     return path
 
 
-def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium'):
+def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium', stop_feedback=None):
     peer = fake_peer(root, scenario)
     return acp_driver.run_acp([str(peer)], cwd=root, environment=os.environ.copy(), prompt='Change fixture',
                              model='chatgpt/gpt-6.1-sol', effort=effort, ultracode=ultracode,
-                             timeout=timeout, output=root)
+                             timeout=timeout, output=root, stop_feedback=stop_feedback)
 
 
 class AcpDriverTest(unittest.TestCase):
+    def test_stop_receipt_tracks_full_write_before_refresh_or_logging_failure(self):
+        params = {'sessionId': 'runtime-session', 'hookCallbackId': acp_driver.STOP_CALLBACK_ID,
+                  'hookEventName': 'stop', 'reason': 'end_turn'}
+        message = {'id': 'hook-0', 'method': acp_driver.HOOK_RUN_METHOD, 'params': params}
+        reply = {'decision': 'deny', 'systemMessage': 'Check completion.'}
+        wire = (json.dumps({'jsonrpc': '2.0', 'id': 'hook-0', 'result': reply}) + '\n').encode()
+        for failure in ('refresh', 'logging', 'partial', 'write'):
+            with self.subTest(failure=failure):
+                process, tree, transcript = mock.Mock(), mock.Mock(), mock.Mock()
+                transmitted = bytearray()
+
+                def write(fd, data):
+                    if failure == 'write':
+                        raise OSError('injected failure')
+                    chunk = data[:1] if failure == 'partial' else data
+                    transmitted.extend(chunk)
+                    return len(chunk)
+
+                if failure in ('refresh', 'partial'):
+                    tree.refresh.side_effect = OSError('injected failure')
+                if failure == 'logging':
+                    transcript.write.side_effect = OSError('injected failure')
+                with mock.patch.object(acp_driver.os, 'set_blocking'), \
+                        mock.patch.object(acp_driver.select, 'select', return_value=([], [process.stdin], [])), \
+                        mock.patch.object(acp_driver.os, 'write', side_effect=write):
+                    client = acp_driver._Client(process, tree, Path.cwd(), time.monotonic() + 3,
+                                                mock.Mock(), transcript, 'Check completion.')
+                    client.session = 'runtime-session'
+                    with self.assertRaisesRegex(OSError, 'injected failure'):
+                        client.handle(message)
+                    sent = failure in ('refresh', 'logging')
+                    self.assertEqual(bytes(transmitted), wire if sent else wire[:1] if failure == 'partial' else b'')
+                    self.assertEqual(client.stop_feedback_sent, sent)
+                    self.assertEqual(client.stop_hook_receipts, [
+                        {'request': {'id': 'hook-0', **params}, 'response': reply, 'feedback_sent': True}
+                    ] if sent else [])
+                    if sent:
+                        tree.refresh.side_effect = transcript.write.side_effect = None
+                        transmitted.clear()
+                        client.handle({**message, 'id': 'hook-1'})
+                        self.assertEqual(json.loads(transmitted)['result'], {'decision': 'continue'})
+                        self.assertFalse(client.stop_hook_receipts[-1]['feedback_sent'])
+
+    def test_opt_in_root_stop_feedback_is_sent_once_then_completes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            feedback = 'Please check whether the requested work is complete.'
+            result = drive(root, 'stop-feedback', stop_feedback=feedback)
+            self.assertTrue(result['completed'] and result['cleanup_complete'], result)
+            self.assertEqual(result['exit_code'], 0)
+            self.assertFalse(result['timed_out'])
+            self.assertTrue(result['stop_feedback_sent'])
+            self.assertEqual(result['stop_hook_receipts'], [
+                {'request': {'id': 'hook-0', 'sessionId': 'runtime-session',
+                             'hookCallbackId': 'benchmark-root-stop', 'hookEventName': 'stop', 'reason': 'end_turn'},
+                 'response': {'decision': 'deny', 'systemMessage': feedback}, 'feedback_sent': True},
+                {'request': {'id': 'hook-1', 'sessionId': 'runtime-session',
+                             'hookCallbackId': 'benchmark-root-stop', 'hookEventName': 'stop', 'reason': 'end_turn'},
+                 'response': {'decision': 'continue'}, 'feedback_sent': False},
+            ])
+            replies = json.loads((root / 'hook-responses.json').read_text())
+            self.assertEqual([r['result'] for r in replies],
+                             [r['response'] for r in result['stop_hook_receipts']])
+            self.assertTrue((root / 'tools-completed').exists())
+            self.assertEqual(result, json.loads((root / 'acp-result.json').read_text()))
+
+    def test_unrelated_hooks_do_not_consume_root_stop_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            feedback = 'Please check whether the requested work is complete.'
+            result = drive(root, 'stop-feedback-scope', stop_feedback=feedback)
+            self.assertTrue(result['completed'] and result['cleanup_complete'], result)
+            self.assertEqual(result['exit_code'], 0)
+            self.assertTrue(result['stop_feedback_sent'])
+            receipts = result['stop_hook_receipts']
+            self.assertEqual(len(receipts), 6)
+            self.assertEqual([r['feedback_sent'] for r in receipts], [False, False, False, False, True, False])
+            self.assertEqual([r['response'] for r in receipts], [
+                {'decision': 'continue'}, {'decision': 'continue'},
+                {'decision': 'continue'}, {'decision': 'continue'},
+                {'decision': 'deny', 'systemMessage': feedback}, {'decision': 'continue'},
+            ])
+            replies = json.loads((root / 'hook-responses.json').read_text())
+            self.assertEqual([r['result'] for r in replies], [r['response'] for r in receipts])
+            self.assertTrue((root / 'tools-completed').exists())
+
     def test_internal_reload_acks_are_logged_without_completing_prompt_or_pending_children(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -272,6 +383,9 @@ class AcpDriverTest(unittest.TestCase):
             requests = [row['message'] for row in transcript if row['direction'] == 'sent' and 'method' in row['message']]
             self.assertEqual([r['method'] for r in requests], [
                 'initialize', 'session/new', 'session/set_model', acp_driver.ULTRACODE_METHOD, 'session/prompt'])
+            self.assertEqual(requests[1]['params']['_meta'], {'sessionKind': 'headless'})
+            self.assertNotIn('stop_hook_receipts', result)
+            self.assertNotIn('stop_feedback_sent', result)
             self.assertEqual(requests[2]['params'], {'sessionId': 'runtime-session',
                 'modelId': 'chatgpt/gpt-6.1-sol', '_meta': {'reasoningEffort': 'medium', 'reasoningEffortAuto': False}})
             self.assertTrue((root / 'tools-completed').exists())

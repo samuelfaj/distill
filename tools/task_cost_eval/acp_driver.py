@@ -16,6 +16,8 @@ import time
 from .runner import _terminate_owned_group
 
 ULTRACODE_METHOD = '_x.ai/session/ultracode/set'
+HOOK_RUN_METHOD = '_x.ai/hooks/run'
+STOP_CALLBACK_ID = 'benchmark-root-stop'
 SHUTDOWN_GRACE = 2.0
 
 
@@ -125,7 +127,7 @@ class OwnedTree:
 
 
 class _Client:
-    def __init__(self, process, tree, cwd, deadline, stdout, transcript):
+    def __init__(self, process, tree, cwd, deadline, stdout, transcript, stop_feedback):
         self.process, self.tree, self.cwd, self.deadline = process, tree, cwd.resolve(), deadline
         self.stdout, self.transcript = stdout, transcript
         self.buffer = b''
@@ -135,6 +137,9 @@ class _Client:
         self.tools = {}
         self.pending = set()
         self.finished = set()
+        self.stop_feedback = stop_feedback
+        self.stop_feedback_sent = False
+        self.stop_hook_receipts = []
         os.set_blocking(process.stdout.fileno(), False)
         os.set_blocking(process.stdin.fileno(), False)
 
@@ -142,7 +147,7 @@ class _Client:
         self.transcript.write(json.dumps({'direction': direction, 'message': message}) + '\n')
         self.transcript.flush()
 
-    def send(self, message, deadline=None):
+    def send(self, message, deadline=None, on_sent=None):
         data = (json.dumps({'jsonrpc': '2.0', **message}) + '\n').encode()
         deadline = self.deadline if deadline is None else deadline
         while data:
@@ -154,6 +159,8 @@ class _Client:
                     data = data[os.write(self.process.stdin.fileno(), data):]
                 except BlockingIOError:
                     continue
+                if not data and on_sent is not None:
+                    on_sent()
             self.tree.refresh(deadline=deadline)
         self.log('sent', {'jsonrpc': '2.0', **message})
 
@@ -248,7 +255,27 @@ class _Client:
         if not isinstance(params, dict):
             raise AcpError(f'{method}: invalid params')
         if 'id' in message:
-            if method == 'session/request_permission':
+            if method == HOOK_RUN_METHOD and self.stop_feedback is not None:
+                feedback_sent = (not self.stop_feedback_sent
+                                 and self.session is not None
+                                 and params.get('sessionId') == self.session
+                                 and params.get('hookCallbackId') == STOP_CALLBACK_ID
+                                 and params.get('hookEventName') == 'stop'
+                                 and params.get('reason') == 'end_turn')
+                reply = {'decision': 'continue'}
+                if feedback_sent:
+                    reply = {'decision': 'deny', 'systemMessage': self.stop_feedback}
+
+                def record_sent():
+                    self.stop_feedback_sent |= feedback_sent
+                    self.stop_hook_receipts.append({
+                        'request': {'id': message['id'], **{key: params.get(key) for key in
+                            ('sessionId', 'hookCallbackId', 'hookEventName', 'reason')}},
+                        'response': reply, 'feedback_sent': feedback_sent,
+                    })
+
+                self.send({'id': message['id'], 'result': reply}, on_sent=record_sent)
+            elif method == 'session/request_permission':
                 reply = self.permission(params)
                 self.send({'id': message['id'], 'result': reply})
                 if reply['outcome']['outcome'] == 'cancelled':
@@ -294,8 +321,11 @@ class _Client:
                 self.pending.add(key)
 
 
-def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, timeout, output):
-    """Return receipts and failure state; always stop the owned tree before returning."""
+def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, timeout, output, stop_feedback=None):
+    """Return receipts and failure state; optionally deny one root Stop with feedback.
+
+    Always stop the owned tree before returning.
+    """
     result = {'session': None, 'setup_confirmed': False, 'completed': False, 'timed_out': False, 'error': None,
               'exit_code': None, 'cleanup_complete': False}
     process = client = tree = None
@@ -308,7 +338,7 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
                                        stdout=subprocess.PIPE, stderr=stderr, start_new_session=True, bufsize=0)
             tree = OwnedTree(process)
             tree.refresh(force=True, deadline=inference_deadline)
-            client = _Client(process, tree, cwd, inference_deadline, stdout, transcript)
+            client = _Client(process, tree, cwd, inference_deadline, stdout, transcript, stop_feedback)
             init = client.request('initialize', {
                 'protocolVersion': 1, 'clientCapabilities': {'fs': {'readTextFile': False, 'writeTextFile': False}, 'terminal': False},
                 '_meta': {'clientType': 'grok-shell', 'startupHints': {
@@ -316,8 +346,11 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
             })
             if type(init.get('protocolVersion')) is not int or init['protocolVersion'] != 1:
                 raise AcpError('Unsupported ACP protocolVersion')
+            session_meta = {'sessionKind': 'headless'}
+            if stop_feedback is not None:
+                session_meta['x.ai/hooks'] = {'stop': [{'hookCallbackIds': [STOP_CALLBACK_ID]}]}
             session = client.request('session/new', {'cwd': str(cwd.resolve()), 'mcpServers': [],
-                                                    '_meta': {'sessionKind': 'headless'}}).get('sessionId')
+                                                    '_meta': session_meta}).get('sessionId')
             if not isinstance(session, str) or not session:
                 raise AcpError('session/new did not return a sessionId')
             client.session = result['session'] = session
@@ -370,6 +403,9 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
                 result['model_receipt'] = client.receipts.get('session/set_model')
                 result['activation_receipt'] = client.receipts.get(ULTRACODE_METHOD)
                 result['prompt_receipt'] = client.receipts.get('session/prompt')
+            if stop_feedback is not None:
+                result['stop_hook_receipts'] = client.stop_hook_receipts if client is not None else []
+                result['stop_feedback_sent'] = client.stop_feedback_sent if client is not None else False
             if process is not None:
                 if not process.stdin.closed:
                     process.stdin.close()

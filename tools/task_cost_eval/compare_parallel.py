@@ -80,7 +80,7 @@ def run_grader(script, worktree, output, timeout=30):
 def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             frozen_inputs, binary_hash,
             ultracode=False, max_depth=None, model=MODEL, effort=None, transport='cli',
-            worker_effort='auto', utility_effort='auto', order_seed=None):
+            worker_model='chatgpt/gpt-6-luna', worker_effort='auto', utility_effort='auto', order_seed=None):
     output = work_root / f'{variant}-{case["id"]}-{repetition}'
     output.mkdir(parents=True, exist_ok=False)
     worktree = output / 'worktree'
@@ -98,7 +98,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     home = output / 'distill-home'
     home.mkdir()
     auth = home / 'codex-auth.json'
-    config_text = distill_config(main_model=model, worker_effort=worker_effort,
+    config_text = distill_config(main_model=model, worker_model=worker_model, worker_effort=worker_effort,
                                  utility_effort=utility_effort)
     (home / 'config.toml').write_text(config_text)
     configured = tomllib.loads(config_text)
@@ -107,7 +107,9 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                    if not k.endswith('_API_KEY') and k != 'DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY'}
     environment.update(GROK_MANAGED_MCPS_ENABLED='false', GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED='false',
                        DISTILL_HOME=str(home), GROK_HOME=str(home))
-    sanitize = transport == 'acp' or order_seed is not None or (worker_effort, utility_effort) != ('auto', 'auto')
+    sanitize = (transport == 'acp' or order_seed is not None
+                or (worker_effort, utility_effort) != ('auto', 'auto')
+                or worker_model != 'chatgpt/gpt-6-luna')
     removed = []
     if sanitize:
         removed = sorted(k for k in environment if k == 'GROK_AGENT' or (
@@ -248,6 +250,8 @@ def main(argv=None):
                         help='common transport for both binaries; ACP supports builds without --ultracode')
     parser.add_argument('--order-seed', type=int, help='shuffle tasks once; alternate AB/BA across tasks and repetitions')
     parser.add_argument('--worker-effort', default='auto', help='[models].worker_effort for both variants')
+    parser.add_argument('--worker-model', default='chatgpt/gpt-6-luna',
+                        help='[models].worker for both variants')
     parser.add_argument('--utility-effort', default='auto', help='[jev.local].effort for both variants')
     for variant in VARIANTS:
         parser.add_argument(f'--{variant}-ultracode', action='store_true',
@@ -285,7 +289,8 @@ def main(argv=None):
     settings = {variant: {'ultracode': getattr(args, f'{variant}_ultracode'),
                           'max_depth': getattr(args, f'{variant}_max_depth'),
                           'model': args.model, 'effort': args.effort, 'transport': args.transport,
-                          'worker_effort': args.worker_effort, 'utility_effort': args.utility_effort,
+                          'worker_model': args.worker_model, 'worker_effort': args.worker_effort,
+                          'utility_effort': args.utility_effort,
                           'order_seed': args.order_seed} for variant in VARIANTS}
     binaries = {'baseline': args.baseline_binary, 'candidate': args.candidate_binary}
     planned = plan_runs(cohort, args.repetitions, args.order_seed)

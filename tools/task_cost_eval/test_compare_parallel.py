@@ -147,10 +147,12 @@ class DryRunTest(unittest.TestCase):
                 '--baseline-ultracode', '--candidate-ultracode', '--baseline-max-depth', '1',
                 '--order-seed', '20261009', '--effort', 'medium', '--worker-effort', 'medium',
                 '--utility-effort', 'medium', '--timeout', '900', '--repetitions', '3',
+                '--worker-model', 'chatgpt/gpt-6.1-sol',
                 '--work-root', '/unused', '--output', '/unused.json'])
         self.assertEqual(code, 0)
         self.assertIn('"transport": "acp"', out.getvalue())
         self.assertIn('"worker_effort": "medium"', out.getvalue())
+        self.assertIn('"worker_model": "chatgpt/gpt-6.1-sol"', out.getvalue())
         driver.assert_not_called()
         auth.assert_not_called()
 
@@ -336,7 +338,7 @@ class ActivationRunTest(unittest.TestCase):
                     result = compare_parallel.run_one(peer, 'baseline', case, 1, root / 'runs', profile, 3,
                         frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
                         transport='acp', ultracode=True, model='chatgpt/gpt-6-astra', effort='medium',
-                        worker_effort='medium', utility_effort='medium')
+                        worker_model='chatgpt/gpt-6.1-sol', worker_effort='medium', utility_effort='medium')
                 output = Path(result['output_dir'])
                 ledger.assert_called_once_with(output / 'distill-home', 'runtime-session', strict=True)
                 self.assertEqual(result['accounting_evidence'], accounting['accounting_evidence'])
@@ -348,10 +350,13 @@ class ActivationRunTest(unittest.TestCase):
                 self.assertEqual(result['call_usage'], accounting['call_usage'], 'do not invent auxiliary effort parity')
                 self.assertEqual(result['settings']['configured_models']['worker_effort'], 'medium')
                 self.assertEqual(result['settings']['configured_models']['default'], 'chatgpt/gpt-6-astra')
-                self.assertEqual(result['settings']['configured_utility']['effort'], 'medium')
+                self.assertEqual(result['settings']['configured_models']['worker'], 'chatgpt/gpt-6.1-sol')
+                self.assertEqual(result['settings']['configured_utility'],
+                                 {'model': 'chatgpt/gpt-6-luna', 'effort': 'medium'})
                 self.assertIsNone(result['settings']['depth_env'])
                 command = json.loads((output / 'command.json').read_text())
                 self.assertEqual(result['settings']['launch_command'], command)
+                self.assertEqual(json.loads((output / 'settings.json').read_text()), result['settings'])
                 self.assertEqual(command[-1], 'stdio')
                 self.assertEqual(command[command.index('--model') + 1], 'chatgpt/gpt-6-astra')
                 receipt_model = result['settings']['model_receipt']['result']['_meta']['canonicalModelId']

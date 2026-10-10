@@ -81,14 +81,15 @@ class CollectorHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{}')
 
 
-def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_effort='auto', utility_effort='auto'):
+def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_model='chatgpt/gpt-6-luna',
+                   worker_effort='auto', utility_effort='auto'):
     # No third-party model credentials: auto effort retains the native fallback
     # when the optional Jev decision service is unavailable.
     return f'''[cli]
 use_leader = false
 [models]
 default = {json.dumps(main_model)}
-worker = "chatgpt/gpt-6-luna"
+worker = {json.dumps(worker_model)}
 worker_effort = {json.dumps(worker_effort)}
 session_summary = "chatgpt/gpt-6-luna"
 [jev]

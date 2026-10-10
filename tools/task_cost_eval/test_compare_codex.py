@@ -11,12 +11,16 @@ class ProfileConfigTest(unittest.TestCase):
     def test_effort_pins_change_only_worker_and_local_utility_defaults(self):
         default = tomllib.loads(distill_config())
         explicit = tomllib.loads(distill_config(worker_effort='medium', utility_effort='medium'))
+        sol_worker = tomllib.loads(distill_config(worker_model='chatgpt/gpt-6.1-sol'))
         self.assertEqual(default['models']['worker_effort'], 'auto')
         self.assertEqual(default['jev']['local']['effort'], 'auto')
         self.assertEqual(explicit['models']['worker'], 'chatgpt/gpt-6-luna')
         self.assertEqual(explicit['jev']['local']['model'], 'chatgpt/gpt-6-luna')
         self.assertEqual(explicit['models']['worker_effort'], 'medium')
         self.assertEqual(explicit['jev']['local']['effort'], 'medium')
+        self.assertEqual(sol_worker['models']['worker'], 'chatgpt/gpt-6.1-sol')
+        sol_worker['models']['worker'] = default['models']['worker']
+        self.assertEqual(sol_worker, default)
         explicit['models']['worker_effort'] = 'auto'
         explicit['jev']['local']['effort'] = 'auto'
         self.assertEqual(explicit, default)

@@ -407,6 +407,25 @@ pub(crate) async fn run_shell_child(
         agent_address,
         spawner_session_id: _,
     } = run;
+    // Workspace defaults follow the immediate spawner; storage and accounting
+    // remain root-scoped after coordinator reparenting.
+    let root_parent_cwd = ctx.parent_cwd.clone();
+    if let Some(cwd) = request.runtime_overrides.inherited_cwd.as_deref() {
+        let workspace = std::path::PathBuf::from(cwd);
+        if !workspace.is_absolute() || !workspace.is_dir() {
+            return child_run_output(
+                failure_result(
+                    &request,
+                    "Immediate spawner workspace is unavailable; refusing to fall back to the root workspace",
+                ),
+                completion_data,
+                None,
+            );
+        }
+        ctx.parent_cwd = workspace;
+        ctx.inherited_workspace = true;
+        ctx.parent_skills = None;
+    }
     let is_wake = wake_origin.is_some();
     if is_wake {
         // The wake request carries the historical spawn overrides. Durable
@@ -539,10 +558,13 @@ pub(crate) async fn run_shell_child(
         &ctx,
         &mut definition,
     );
-    let cwd = ctx
-        .parent_session_info
-        .as_ref()
-        .map(|i| std::path::Path::new(&i.cwd));
+    let cwd = if ctx.inherited_workspace {
+        Some(ctx.parent_cwd.as_path())
+    } else {
+        ctx.parent_session_info
+            .as_ref()
+            .map(|info| std::path::Path::new(&info.cwd))
+    };
     let mut effective_runtime = distill_subagent_resolution::resolve_runtime_config(
         &request.subagent_type,
         &request.runtime_overrides,
@@ -551,6 +573,7 @@ pub(crate) async fn run_shell_child(
         cwd,
         &definition,
     );
+    apply_inherited_runtime_defaults(&request, &mut effective_runtime, &definition, &ctx);
     let prompt = request.prompt.clone();
     if let Some(ref err) = effective_runtime.persona_error {
         tracing::error!(
@@ -585,12 +608,12 @@ pub(crate) async fn run_shell_child(
                     )
                 })
                 .or_else(|| {
-                    durable_resume_source_for(&request.id, &ctx.parent_session_id, &ctx.parent_cwd)
+                    durable_resume_source_for(&request.id, &ctx.parent_session_id, &root_parent_cwd)
                 })
         }
         #[cfg(not(test))]
         {
-            durable_resume_source_for(&request.id, &ctx.parent_session_id, &ctx.parent_cwd)
+            durable_resume_source_for(&request.id, &ctx.parent_session_id, &root_parent_cwd)
         }
     } else if let Some(resume_id) = request
         .resume_from
@@ -610,7 +633,7 @@ pub(crate) async fn run_shell_child(
             }
             SubagentResumeLookup::Completed(info) => Some(ResumeSourceData::from(*info)),
             SubagentResumeLookup::Missing => {
-                match durable_resume_source_for(resume_id, &ctx.parent_session_id, &ctx.parent_cwd)
+                match durable_resume_source_for(resume_id, &ctx.parent_session_id, &root_parent_cwd)
                 {
                     Some(info) => Some(info),
                     None => {
@@ -636,8 +659,11 @@ pub(crate) async fn run_shell_child(
     // Legacy records stay `None` and use the conservative policy below.
     let mut resume_source = resume_source;
     if let Some(source) = resume_source.as_mut()
-        && let Some(durable) =
-            durable_resume_source_for(&source.subagent_id, &ctx.parent_session_id, &ctx.parent_cwd)
+        && let Some(durable) = durable_resume_source_for(
+            &source.subagent_id,
+            &ctx.parent_session_id,
+            &root_parent_cwd,
+        )
     {
         if source.effort_auto.is_none() {
             source.effort_auto = durable.effort_auto;
@@ -661,6 +687,20 @@ pub(crate) async fn run_shell_child(
             request.id
         );
         return child_run_output(failure_result(&request, &error), completion_data, None);
+    }
+    if request.runtime_overrides.ultracode.is_some()
+        && let Some(source) = resume_source.as_ref()
+        && source.worktree_path.is_none()
+        && !std::path::Path::new(&source.child_cwd).is_dir()
+    {
+        return child_run_output(
+            failure_result(
+                &request,
+                "Resumed Ultracode workspace is unavailable; refusing to fall back to the root workspace",
+            ),
+            completion_data,
+            None,
+        );
     }
     let explicit_model_override = request.runtime_overrides.model.is_some();
     let model_routing_locked = explicit_model_override
@@ -893,8 +933,63 @@ pub(crate) async fn run_shell_child(
         ctx.parent_depth,
         request.runtime_overrides.spawn_depth,
     );
+    let parent_ultracode = ctx
+        .parent_ultracode_policy
+        .as_ref()
+        .is_some_and(|policy| policy.is_enabled());
+    let inherited_ultracode = request.runtime_overrides.ultracode.is_some();
+    let mut ultracode_policy = request.runtime_overrides.ultracode.clone().filter(|_| {
+        parent_ultracode
+            && !request.owner.is_workflow()
+            && request.runtime_overrides.harness_agent_type.is_none()
+            && request.runtime_overrides.model_override_provenance
+                == distill::task::types::ModelOverrideProvenance::Tool
+    });
+    if let (Some(policy), Some(root)) = (
+        ultracode_policy.as_mut(),
+        ctx.parent_ultracode_policy.as_ref(),
+    ) {
+        // Wake requests may hold an old switch after the root was reloaded.
+        // Current root state and configuration remain the authority.
+        policy.enabled = root.enabled.clone();
+        policy.max_depth = policy.max_depth.min(root.max_depth);
+        policy.off_max_depth = policy.off_max_depth.min(root.off_max_depth);
+    }
+    let output_budgeted = request.runtime_overrides.output_token_budget.is_some();
+    let isolated_leaf = worktree_path.is_some();
+    let physical_leaf = isolated_leaf
+        || (output_budgeted && inherited_ultracode)
+        || (parent_ultracode && (request.owner.is_workflow() || ultracode_policy.is_none()));
+    let ordinary_max_depth = if physical_leaf {
+        child_depth
+    } else {
+        ctx.subagents_max_depth
+    };
+    // Eligible shared children retain Task for either mode. The tool and
+    // coordinator enforce the current mode's ceiling when a call is made.
+    let installation_max_depth = if physical_leaf {
+        child_depth
+    } else {
+        ultracode_policy
+            .as_ref()
+            .map_or(ordinary_max_depth, |policy| {
+                policy.max_depth.max(policy.off_max_depth)
+            })
+    };
+    if let Some(policy) = ultracode_policy.as_mut() {
+        if physical_leaf {
+            policy.max_depth = policy.max_depth.min(child_depth);
+            policy.off_max_depth = policy.off_max_depth.min(child_depth);
+        }
+        policy.capability_ceiling = effective_runtime.capability_mode;
+        policy.allowed_subagent_types = definition.allowed_subagent_types.clone();
+        // A plan-mode parent cannot gain write/execute tools through a child.
+        if definition.permission_mode == distill_agent::config::PermissionMode::Plan {
+            policy.capability_ceiling = Some(distill_tool_types::SubagentCapabilityMode::ReadOnly);
+        }
+    }
     let tools_before_policy = definition.tool_config.tools.len();
-    let allow_nested_subagents = child_depth < ctx.subagents_max_depth;
+    let allow_nested_subagents = child_depth < installation_max_depth;
     distill_subagent_resolution::apply_child_tool_policy(
         &mut definition,
         effective_runtime.capability_mode,
@@ -1108,7 +1203,7 @@ pub(crate) async fn run_shell_child(
     }
     let parent_session_dir = session::persistence::session_dir(&SessionInfo {
         id: acp::SessionId::new(ctx.parent_session_id.clone()),
-        cwd: ctx.parent_cwd.to_string_lossy().to_string(),
+        cwd: root_parent_cwd.to_string_lossy().to_string(),
     });
     #[cfg(test)]
     let subagent_meta_dir = ctx
@@ -1401,11 +1496,22 @@ pub(crate) async fn run_shell_child(
         distill_paths::AbsPathBuf::new(std::env::current_dir().unwrap_or_default())
             .expect("current_dir should be absolute")
     });
+    let inherited_fs_root = child_cwd_abs.as_path().to_path_buf();
     let mut tool_ctx = ToolContext::with_preloaded_env(
         child_cwd_abs,
         Some(gateway.clone()),
         Some(child_session_id.clone()),
-        ctx.fs.clone(),
+        if (request.runtime_overrides.inherited_cwd.is_some()
+            || isolated_leaf
+            || (resume_source.is_some() && override_cwd.is_some()))
+            && ctx.fs.root() != inherited_fs_root.as_path()
+        {
+            std::sync::Arc::new(distill_workspace::file_system::LocalFs::new(
+                inherited_fs_root,
+            ))
+        } else {
+            ctx.fs.clone()
+        },
         ctx.terminal.clone(),
         ctx.hunk_tracker_handle.clone(),
         (*ctx.session_env).clone(),
@@ -1424,6 +1530,7 @@ pub(crate) async fn run_shell_child(
         .runtime_overrides
         .output_token_budget
         .map(crate::tools::tool_context::TaskOutputTokenBudget::limited);
+    tool_ctx.ultracode_policy = ultracode_policy;
     tool_ctx.task_output_token_budget = task_output_budget.clone();
     tool_ctx.sampler_retry_only_before_output = task_output_budget.is_some();
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
@@ -1837,10 +1944,11 @@ pub(crate) async fn run_shell_child(
         ctx.managed_mcp_proxy_base_url.clone(),
         effective_model_id.clone(),
         ctx.yolo_mode
-            || matches!(
-                agent_permission_mode,
-                distill_agent::config::PermissionMode::BypassPermissions
-            ),
+            || (!(parent_ultracode || inherited_ultracode)
+                && matches!(
+                    agent_permission_mode,
+                    distill_agent::config::PermissionMode::BypassPermissions
+                )),
         false,
         child_jev_effort_auto,
         crate::session::handle::new_session_worker_state(),
@@ -1859,7 +1967,7 @@ pub(crate) async fn run_shell_child(
         ctx.goal_enabled,
         ctx.background_workflows_enabled,
         true,
-        ctx.subagents_max_depth,
+        ordinary_max_depth,
         ctx.workflow_max_concurrent_agents,
         ctx.media_gen_batch_limits,
         ctx.ask_user_question_enabled,
@@ -1943,6 +2051,18 @@ pub(crate) async fn run_shell_child(
         toolset: child_toolset,
         ..
     } = child_init;
+    #[cfg(test)]
+    if let Some(sender) = ctx
+        .run_shell_child_harness
+        .as_ref()
+        .and_then(|harness| harness.child_context_tx.as_ref())
+    {
+        let _ = sender.send((
+            child_handle.tool_context.clone(),
+            child_toolset.tool_name_for_kind(ToolKind::Task).is_some(),
+            child_toolset.resources.clone(),
+        ));
+    }
     *child_handle.worker_override.write() = ctx.parent_worker.clone();
     crate::jev::register_child_session(&child_session_id.0, &ctx.parent_session_id);
     session::bind_installed_toolset(
@@ -2302,6 +2422,49 @@ pub(crate) async fn run_shell_child(
         folded_settlement.settlement_status,
     )
     .await;
+    // Runtime completion wakes have their own reply channels, outside the
+    // protected parent-message receipt drain. Settle them before any final bill.
+    #[cfg(test)]
+    if let Some(sender) = ctx
+        .run_shell_child_harness
+        .as_ref()
+        .and_then(|harness| harness.completion_settlement_tx.as_ref())
+    {
+        let (release, released) = oneshot::channel();
+        sender
+            .send((child_handle.cmd_tx.clone(), release))
+            .expect("completion settlement rendezvous receiver");
+        tokio::time::timeout(CHILD_ACTOR_ACK_TIMEOUT, released)
+            .await
+            .expect("completion settlement rendezvous is bounded")
+            .expect("completion settlement rendezvous released");
+    }
+    let (respond_to, settlement) = oneshot::channel();
+    let wake_settlement = if child_handle
+        .cmd_tx
+        .send(SessionCommand::SettleSubagentCompletion { respond_to })
+        .is_ok()
+    {
+        child_actor_query(
+            "completion_settlement",
+            async { settlement.await.ok() },
+            None,
+        )
+        .await
+    } else {
+        None
+    };
+    match wake_settlement {
+        Some(Ok(settled)) => {
+            cancellation_may_hide_usage |= settled.cancellation_may_hide_usage;
+        }
+        failure => {
+            tracing::warn!(subagent_id = %request.id, ?failure,
+                "child completion did not settle; final usage is incomplete");
+            cancellation_may_hide_usage = true;
+        }
+    }
+    result.output_usage_incomplete |= cancellation_may_hide_usage;
     let trace_token_totals = child_actor_query(
         "session_usage",
         child_handle.chat_state_handle.try_get_session_usage(),
@@ -2706,7 +2869,7 @@ pub(crate) async fn run_shell_child(
     }
     crate::waterfall::mark(&request.id, crate::waterfall::stage::FLUSH_DONE);
     let _ = child_handle.cmd_tx.send(SessionCommand::Shutdown(
-        crate::session::ShutdownKind::Graceful,
+        crate::session::ShutdownKind::CancelRunningTurn,
     ));
     drop(child_handle);
     if !await_session_thread_exit(&child_thread, UNPROMOTED_SESSION_THREAD_EXIT_TIMEOUT).await {

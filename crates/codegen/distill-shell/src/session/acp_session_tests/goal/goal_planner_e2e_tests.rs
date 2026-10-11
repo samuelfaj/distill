@@ -1467,6 +1467,47 @@ async fn setup_goal_reminder_is_no_plan_when_planner_disabled() {
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn legacy_verifier_infrastructure_failure_pauses_without_spending_attempt() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _tmp) = make_planner_actor(None, false).await;
+            create_test_goal(&actor);
+            let policy = actor.resolve_goal_classifier_policy();
+            let attempt = actor
+                .reserve_classifier_attempt_slot(&policy)
+                .expect("active goal reserves a verifier attempt");
+            let ack = actor
+                .apply_classifier_outcome_legacy(
+                    &policy,
+                    attempt,
+                    crate::session::goal_classifier::GoalClassifierOutcome::FailOpenAchieved {
+                        reason: crate::session::events::GoalClassifierFailOpenReason::SamplerError,
+                        details_path: String::new(),
+                    },
+                    &actor.goal_notify_sender(),
+                )
+                .await;
+
+            let snapshot = actor.goal_tracker.lock().snapshot().cloned().unwrap();
+            assert_eq!(
+                snapshot.status,
+                crate::session::goal_tracker::GoalStatus::InfraPaused
+            );
+            assert_eq!(snapshot.classifier_runs_attempted, 0);
+            assert_ne!(
+                snapshot.last_classifier_verdict,
+                Some(crate::session::goal_tracker::GoalClassifierVerdict::Achieved)
+            );
+            assert!(matches!(
+                ack,
+                distill_tools::implementations::distill::update_goal::UpdateGoalAck::ClassifierInfraPaused { .. }
+            ));
+        })
+        .await;
+}
+
 /// `/goal resume` on a planner-enabled goal with a plan must build a plan-aware reminder (carrying the real `plan_path()` pointer).
 /// Guards against the resume site regressing to `None` while setup_goal stays correct (a prior regression: the sibling branch was untested).
 /// The reminder is returned as the `Inference` turn content (resume flows through to inference now).

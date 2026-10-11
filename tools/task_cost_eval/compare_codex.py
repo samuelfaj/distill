@@ -19,9 +19,10 @@ from .evaluate import _sha256_file, _sha256_tree
 from .runner import _terminate_owned_group
 
 ROOT = Path(__file__).resolve().parent
-# Standard subscription credits / 1M tokens. Retrieved 2026-09-30:
+# Standard subscription credits / 1M tokens. Retrieved 2026-10-10:
 # https://learn.chatgpt.com/docs/pricing#token-rates
-CREDIT_RATES = {'gpt-6.1-sol': (50, 2.5, 250), 'gpt-6-luna': (2.5, .25, 12.5)}
+CREDIT_RATES = {'gpt-6-astra': (250, 25, 1250), 'gpt-6.1-sol': (50, 2.5, 250),
+                'gpt-6-luna': (2.5, .25, 12.5)}
 # Existing operator allowlist for this local-file cohort: shell file operations
 # plus delegation/lifecycle. Internal IDs precede model-facing renames, and
 # children inherit the restriction.
@@ -80,22 +81,23 @@ class CollectorHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{}')
 
 
-def distill_config():
+def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_model='chatgpt/gpt-6-luna',
+                   worker_effort='auto', utility_effort='auto'):
     # No third-party model credentials: auto effort retains the native fallback
     # when the optional Jev decision service is unavailable.
-    return '''[cli]
+    return f'''[cli]
 use_leader = false
 [models]
-default = "chatgpt/gpt-6.1-sol"
-worker = "chatgpt/gpt-6-luna"
-worker_effort = "auto"
+default = {json.dumps(main_model)}
+worker = {json.dumps(worker_model)}
+worker_effort = {json.dumps(worker_effort)}
 session_summary = "chatgpt/gpt-6-luna"
 [jev]
 effort_auto = true
 api_key_env = "DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY"
 [jev.local]
 model = "chatgpt/gpt-6-luna"
-effort = "auto"
+effort = {json.dumps(utility_effort)}
 [features]
 telemetry = false
 [managed_mcps]
@@ -119,7 +121,171 @@ hooks = false
 '''
 
 
-def distill_accounting(home, session):
+def distill_accounting(home, session, *, strict=False):
+    if strict:
+        # Independent persisted evidence, not assistant-message counts: a single
+        # response can contain multiple messages, and side calls have no history.
+        from collections import Counter
+
+        reasons, artifacts = [], {}
+
+        def read(path, *, lines=False):
+            artifacts[str(path)] = path.is_file()
+            try:
+                value = ([json.loads(line) for line in path.read_text().split('\n') if line.strip()]
+                         if lines else json.loads(path.read_text()))
+                if not (all(isinstance(row, dict) for row in value) if lines else isinstance(value, dict)):
+                    raise ValueError('expected JSON objects')
+                return value
+            except (OSError, ValueError) as error:
+                reasons.append(f'{path}: {error}')
+                return [] if lines else {}
+
+        try:
+            result = distill_accounting(home, session)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            result = {'accounting_complete': False, 'reason': f'invalid usage ledger: {error}'}
+        if not result['accounting_complete']:
+            reasons.append(result.get('reason', 'canonical ledger reconciliation incomplete'))
+        for row in result.get('call_usage', []):
+            if row['owner'] is None:
+                reasons.append(f'{row["attempt"]}: ambiguous owning session in usage ledgers')
+        directories = {p.parent.name: p.parent for name in ('usage.json', 'events.jsonl', 'updates.jsonl')
+                       for p in sorted((home / 'sessions').rglob(name))}
+        ledgers = {sid: read(path / 'usage.json').get('session', {}) for sid, path in directories.items()}
+        attempts = {sid: {row['attempt_id']: row for row in ledger.get('attributions', [])}
+                    for sid, ledger in ledgers.items()}
+        canonical = attempts.get(session, {})
+        logs = read(home / 'logs/unified.jsonl', lines=True)
+        logged_sessions = {row.get('sid') for row in logs
+                           if str(row.get('msg', '')).startswith('shell.turn.inference_') and row.get('sid')}
+        for sid in sorted(logged_sessions - directories.keys()):
+            reasons.append(f'{sid}: inference log has no session artifacts/usage ledger')
+        updates, parents, metadata, spawned, finished, descendants = {}, {}, set(), set(), set(), []
+
+        def child_record(row, parent, path):
+            child = row.get('child_session_id')
+            parent = row.get('parent_session_id') or parent
+            if not isinstance(child, str) or not child or child == parent:
+                reasons.append(f'{path}: missing/invalid child session identity')
+                return None
+            if child in parents and parents[child] != parent:
+                reasons.append(f'{child}: conflicting parent identities')
+            parents[child] = parent
+            descendants.append({'parent_session_id': parent, 'child_session_id': child,
+                                'attempt_id': row.get('attempt_id'), 'status': row.get('status'),
+                                'artifact': str(path)})
+            return child, row.get('attempt_id')
+
+        for sid, path in directories.items():
+            updates[sid] = [row.get('params', {}).get('update', {})
+                            for row in read(path / 'updates.jsonl', lines=True)]
+            for update in updates[sid]:
+                tag = update.get('sessionUpdate')
+                if tag in ('subagent_spawned', 'subagent_finished'):
+                    identity = child_record(update, sid, path / 'updates.jsonl')
+                    if identity:
+                        (spawned if tag == 'subagent_spawned' else finished).add(identity)
+            for meta_path in sorted((path / 'subagents').glob('*/meta.json')):
+                meta = read(meta_path)
+                identity = child_record(meta, sid, meta_path)
+                if identity:
+                    metadata.add(identity[0])
+                    if not meta.get('completed_at'):
+                        reasons.append(f'{identity[0]}: child metadata has no terminal timestamp')
+        for child, parent in parents.items():
+            if child not in attempts:
+                reasons.append(f'{child}: observed child has no usage ledger')
+            if parent not in attempts:
+                reasons.append(f'{child}: parent {parent} has no usage ledger')
+            if child not in metadata:
+                reasons.append(f'{child}: missing child metadata')
+        for child, attempt in sorted(spawned - finished, key=str):
+            reasons.append(f'{child} ({attempt}): spawn has no finished notification')
+        for sid in directories.keys() - parents.keys() - {session}:
+            reasons.append(f'{sid}: session artifacts have no parent lifecycle evidence')
+
+        sessions = []
+        token_keys = ('prompt_tokens', 'cached_prompt_tokens', 'completion_tokens', 'reasoning_tokens')
+        for sid, path in directories.items():
+            ledger_rows = attempts[sid]
+            for identity, row in ledger_rows.items():
+                if canonical.get(identity) != row:
+                    reasons.append(f'{sid}: attempt {identity} missing/different in canonical ledger')
+            local_ids = {row['attempt'] for row in result.get('call_usage', [])
+                         if (row['owner'] or {}).get('session_id') == sid}
+            local = {identity: row for identity, row in ledger_rows.items() if identity in local_ids}
+            main = {identity: row for identity, row in local.items() if row.get('role') == 'main'}
+            retries = {identity for identity, row in local.items() if row.get('role') == 'main_retry'}
+            evidence_logs = [row for row in logs if row.get('sid') == sid]
+            starts = [row for row in evidence_logs if row.get('msg') == 'shell.turn.inference_start']
+            done = [row.get('ctx', {}) for row in evidence_logs if row.get('msg') == 'shell.turn.inference_done']
+            retry_ids, failed_ids = set(), set()
+            for row in evidence_logs:
+                if row.get('msg') not in ('shell.turn.inference_retry', 'shell.turn.inference_failed'):
+                    continue
+                ctx = row.get('ctx', {})
+                request = ctx.get('sampler_request_id')
+                if not request:
+                    reasons.append(f'{sid}: inference retry/failure lacks sampler_request_id')
+                    continue
+                identity = f'sampler:{request}'
+                if row['msg'] == 'shell.turn.inference_retry':
+                    retry_ids.add(f'{identity}:retry:{ctx.get("kind")}:{ctx.get("attempt")}')
+                else:
+                    failed_ids.add(identity)
+            completed = [row for row in main.values() if row.get('status') == 'completed']
+            # inference_start is a turn submission, not a physical-attempt ID.
+            # Routing can submit more than once; count it only as a lower bound.
+            if not starts or len(main) < len(starts) or len(completed) != len(done):
+                reasons.append(f'{sid}: foreground submissions/completions disagree with local ledger')
+            usage_match = (Counter(tuple(row.get(key) for key in token_keys) for row in done)
+                           == Counter(tuple((row.get('usage') or {}).get(key) for key in token_keys)
+                                      for row in completed))
+            if not usage_match:
+                reasons.append(f'{sid}: foreground completion token evidence disagrees with ledger')
+            reported_attempts = [row.get('attempts') for row in done]
+            if any(type(count) is not int or count < 1 for count in reported_attempts):
+                reasons.append(f'{sid}: completion evidence lacks a valid physical-attempt count')
+            reported_retries = sum(count - 1 for count in reported_attempts if type(count) is int and count >= 1)
+            retry_updates = sum(u.get('sessionUpdate') == 'retry_state' and u.get('type') == 'retrying'
+                                for u in updates[sid])
+            if retry_ids != retries or reported_retries > len(retry_ids) or retry_updates > len(retry_ids):
+                reasons.append(f'{sid}: retry evidence cannot be reconciled with physical retry ledger IDs')
+            if not failed_ids <= main.keys():
+                reasons.append(f'{sid}: failed request IDs absent from ledger: {sorted(failed_ids - main.keys())}')
+            events = read(path / 'events.jsonl', lines=True)
+            turns_started = sum(row.get('type') == 'turn_started' for row in events)
+            turns_ended = sum(row.get('type') == 'turn_ended' for row in events)
+            if not turns_started or turns_started != turns_ended:
+                reasons.append(f'{sid}: missing/unclosed turn lifecycle evidence')
+            sessions.append({'session_id': sid, 'artifact_dir': str(path),
+                             'local_attempt_ids': sorted(local),
+                             'ledger_request_ids': sorted({r['request_id'] for r in local.values() if r.get('request_id')}),
+                             'inference_starts': len(starts), 'inference_completions': len(done),
+                             'ledger_main_calls': len(main), 'completion_tokens_match': usage_match,
+                             'reported_retries': reported_retries, 'retry_notifications': retry_updates,
+                             'retry_attempt_ids': sorted(retry_ids), 'failed_attempt_ids': sorted(failed_ids),
+                             'turns_started': turns_started, 'turns_ended': turns_ended})
+        # Neither successful auxiliary requests nor their absence have an
+        # independent exhaustive trace in these runtimes. A ledger-only row (or
+        # its deletion) cannot prove that coverage. Disclose this separately from
+        # the protocol's canonical-ledger plus available-evidence completeness.
+        coverage_gaps = ['Runtime lacks an independent exhaustive physical-request trace for auxiliary calls; '
+                         'omitted auxiliary attempts cannot be ruled out.']
+        evidence = {'complete': not reasons, 'reasons': reasons,
+                    'available_evidence_matches': not reasons, 'coverage_gaps': coverage_gaps,
+                    'logged_session_ids': sorted(logged_sessions),
+                    'canonical_attempt_ids': sorted(canonical), 'sessions': sessions,
+                    'descendants': descendants, 'artifacts': artifacts,
+                    'ledger_only_attempt_ids': sorted(identity for identity, row in canonical.items()
+                                                      if row.get('role') not in ('main', 'main_retry'))}
+        result['accounting_evidence'] = evidence
+        result['accounting_complete'] = result['accounting_complete'] and evidence['complete']
+        if not result['accounting_complete']:
+            result['credit_estimate'] = None
+        return result
+
     files = list((home / 'sessions').rglob('usage.json'))
     root_file = next((p for p in files if p.parent.name == session), None)
     if root_file is None:
@@ -128,18 +294,113 @@ def distill_accounting(home, session):
     attributions = ledger.get('attributions', [])
     root_ids = {row['attempt_id'] for row in attributions}
     child_ids = set()
+    usage_paths = {session: root_file}
+    session_attempts = {session: root_ids}
     for path in files:
         if path == root_file:
             continue
         child = json.loads(path.read_text())['session']
-        child_ids.update(row['attempt_id'] for row in child.get('attributions', []))
+        identities = {row['attempt_id'] for row in child.get('attributions', [])}
+        child_ids.update(identities)
+        usage_paths[path.parent.name] = path
+        session_attempts[path.parent.name] = identities
+    metadata = {}
+    for path in files:
+        for meta_path in sorted((path.parent / 'subagents').glob('*/meta.json')):
+            meta = json.loads(meta_path.read_text())
+            metadata.setdefault(meta.get('child_session_id'), []).append((meta, meta_path))
+    # Native Task results name the child. Join by that ID and
+    # toolCallId, never by prompt text, timing, model, or adjacent notifications.
+    background_headers = (
+        'Subagent started in background.',
+        'Subagent took longer than the foreground budget and was moved to the '
+        'background to keep the conversation responsive. It is still running.',
+        'Subagent took longer than the foreground budget and was moved to the '
+        'background to keep the conversation responsive. It is still running — you will be notified when it completes.',
+    )
+    task_requests = {}
+    for sid, path in usage_paths.items():
+        updates_path = path.parent / 'updates.jsonl'
+        if not updates_path.is_file():
+            continue
+        requests, results = {}, []
+        for line, raw in enumerate(updates_path.read_text().split('\n'), 1):
+            if not raw.strip():
+                continue
+            params = json.loads(raw).get('params', {})
+            if params.get('sessionId') != sid:  # Resume copies its source's updates.
+                continue
+            update = params.get('update', {})
+            call_id = update.get('toolCallId')
+            tool = update.get('_meta', {}).get('x.ai/tool', {})
+            if (update.get('sessionUpdate') == 'tool_call' and isinstance(call_id, str)
+                    and (tool.get('namespace'), tool.get('kind'), tool.get('name'))
+                    == ('distill', 'task', 'spawn_subagent') and isinstance(update.get('rawInput'), dict)):
+                requests.setdefault(call_id, []).append({
+                    'origin': 'tool', 'tool_call_id': call_id, 'tool': tool,
+                    'input': {key: value for key, value in update['rawInput'].items()
+                              if key not in ('prompt', 'description')},
+                    'artifact': str(updates_path), 'request_line': line})
+            output = update.get('rawOutput')
+            if (isinstance(output, dict) and output.get('type') == 'SubagentCompleted'
+                    and isinstance(output.get('subagent_id'), str)):
+                results.append((call_id, output['subagent_id'], line))
+            elif (isinstance(output, dict) and output.get('type') == 'Text'
+                    and call_id in requests and update.get('status') == 'completed'
+                    and isinstance(output.get('text'), str)):
+                # task.rs format_subagent_{started_background,auto_backgrounded}:
+                # only the generated header and immediately following ID line.
+                notice = output['text'].split('\n', 2)
+                if (len(notice) == 3 and notice[0] in background_headers
+                        and notice[1].startswith('subagent_id: ')):
+                    child = notice[1].removeprefix('subagent_id: ')
+                    if child and child == child.strip():
+                        results.append((call_id, child, line))
+        for call_id, child, line in results:
+            candidates = requests.get(call_id, [])
+            task_requests.setdefault((sid, child), []).append(
+                {**candidates[0], 'result_line': line} if len(candidates) == 1 else None)
+    # A parent ledger folds descendants. Attribute each physical call to the
+    # deepest ledger supported by durable parent/child metadata, not its model.
+    # Resumed sessions also copy their source ledger; those calls keep the source owner.
+    owners = {}
+    for sid, identities in session_attempts.items():
+        folded = child_ids if sid == session else {
+            identity for child, records in metadata.items() if len(records) == 1
+            and records[0][0].get('parent_session_id') == sid
+            for identity in session_attempts.get(child, set())}
+        records = metadata.get(sid, [])
+        meta, meta_path = records[0] if len(records) == 1 and sid != session else ({}, None)
+        if meta.get('resumed_from'):
+            sources = [source for records in metadata.values() for source, _ in records
+                       if source.get('subagent_id') == meta['resumed_from']]
+            if len(sources) == 1:
+                folded = folded | session_attempts.get(sources[0].get('child_session_id'), set())
+        requests = task_requests.get((meta.get('parent_session_id'), meta.get('subagent_id')), [])
+        owner = {'session_id': sid, 'parent_session_id': meta.get('parent_session_id'),
+                 'subagent_id': meta.get('subagent_id'), 'spawn_attempt_id': meta.get('attempt_id'),
+                 'subagent_type': meta.get('subagent_type'),
+                 'effective_model_id': meta.get('effective_model_id'),
+                 'effective_context_source': meta.get('effective_context_source'),
+                 'resumed_from': meta.get('resumed_from'), 'effort_auto': meta.get('effort_auto'),
+                 'model_routing_locked': meta.get('model_routing_locked'),
+                 'spawn_request': requests[0] if len(requests) == 1 else None,
+                 'usage_path': str(usage_paths[sid]),
+                 'metadata_path': str(meta_path) if meta_path is not None else None}
+        for identity in identities - folded:
+            owners.setdefault(identity, []).append(owner)
     rows = []
     for attribution in attributions:
         usage = attribution.get('usage')
+        call_owners = owners.get(attribution['attempt_id'], [])
         identity = {'attempt': attribution['attempt_id'], 'model': attribution['model_id'],
+                    'request_id': attribution.get('request_id'), 'task_id': attribution.get('task_id'),
+                    'source_kind': attribution.get('source_kind'),
                     'role': attribution['role'], 'status': attribution['status'],
                     'agent': 'worker' if attribution['attempt_id'] in child_ids else 'main',
                     'endpoint': attribution.get('endpoint'),
+                    'owner': call_owners[0] if len(call_owners) == 1 else None,
+                    'requested_effort': attribution.get('requested_effort'),
                     'effort': attribution.get('applied_effort')}
         if not usage:
             rows.append({**identity, 'complete': False})

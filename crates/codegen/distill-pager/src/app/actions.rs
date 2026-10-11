@@ -2539,6 +2539,8 @@ pub enum TaskResult {
     WithPinnedMemoryMode {
         agent_id: AgentId,
         memory_mode: Option<distill_shell::config::MemoryMode>,
+        /// Actual session mode from ACP; older responses omit it and default off.
+        ultracode: Option<bool>,
         result: Box<TaskResult>,
     },
     /// A `command` status line finished.

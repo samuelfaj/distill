@@ -2428,6 +2428,11 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         args.prompt_json.as_deref(),
         args.prompt_file.as_deref(),
     )?;
+    if args.ultracode && headless_prompt.is_none() {
+        anyhow::bail!(
+            "--ultracode requires -p/--single, --prompt-file or --prompt-json; use /ultracode on in the interactive UI"
+        );
+    }
     if headless_prompt.is_some() || args.memory_flush {
         if args.memory_flush
             && headless_prompt.is_none()
@@ -2491,6 +2496,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 max_turns: args.max_turns,
                 permission_mode_flag: args.permission_mode_flag.clone(),
                 reasoning_effort: args.reasoning_effort.clone(),
+                ultracode: args.ultracode,
                 wait_for_background: !args.no_wait_for_background,
                 background_wait_timeout: std::time::Duration::from_secs(
                     args.background_wait_timeout_secs,

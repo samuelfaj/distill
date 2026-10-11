@@ -90,6 +90,8 @@ pub struct HeadlessOptions {
     pub permission_mode_flag: Option<String>,
     /// Effort token (`--reasoning-effort` / `--effort`); resolved like `/effort` after models load.
     pub reasoning_effort: Option<String>,
+    /// Explicitly enable the real session mode before sending the prompt.
+    pub ultracode: bool,
     /// Wait for background tasks to report `task_completed` before exiting (default true).
     pub wait_for_background: bool,
     /// Max time to wait for background work to finish after the first turn ends.
@@ -828,6 +830,43 @@ fn headless_materialize_ctx(
     }
 }
 
+/// Keep activation and prompt transmission in one ordered ACP path. An activation
+/// failure must never silently run the requested comparison with UltraCode off.
+async fn send_headless_prompt(
+    acp_tx: &AcpAgentTx,
+    request: acp::PromptRequest,
+    ultracode: bool,
+) -> distill_acp_lib::AcpResult<acp::PromptResponse> {
+    if ultracode {
+        let params = serde_json::value::to_raw_value(&serde_json::json!({
+            "sessionId": request.session_id.0.as_ref(),
+            "enabled": true,
+        }))
+        .map_err(|e| distill_acp_lib::acp_internal_error(format!("UltraCode activation: {e}")))?;
+        let response: acp::ExtResponse = acp_send(
+            acp::ExtRequest::new(
+                distill_shell::extensions::session_ultracode::SET_METHOD,
+                params.into(),
+            ),
+            acp_tx,
+        )
+        .await?;
+        let response: serde_json::Value = serde_json::from_str(response.0.get()).map_err(|e| {
+            distill_acp_lib::acp_internal_error(format!("UltraCode activation: {e}"))
+        })?;
+        if response.get("enabled").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Err(distill_acp_lib::acp_internal_error(
+                "UltraCode activation did not confirm enabled=true",
+            ));
+        }
+        eprint_line(&format!(
+            "UltraCode enabled for session {}",
+            request.session_id.0
+        ));
+    }
+    acp_send(request, acp_tx).await
+}
+
 /// Run a headless single-turn prompt: spawn the agent, drive the ACP lifecycle, stream to stdout.
 pub async fn run_single_turn(
     prompt: Option<HeadlessPrompt>,
@@ -1241,7 +1280,11 @@ pub async fn run_single_turn(
             let request =
                 acp::PromptRequest::new(session_id.clone(), prompt_blocks).meta(Some(meta));
             (
-                Some(Box::pin(acp_send(request, &acp_tx))),
+                Some(Box::pin(send_headless_prompt(
+                    &acp_tx,
+                    request,
+                    options.ultracode,
+                ))),
                 Some(PromptAckWatch::new(prompt_id, Instant::now())),
             )
         }

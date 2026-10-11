@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -346,23 +347,38 @@ def _command_for(
     raise EvaluationError(f"unsupported runner: {variant['runner']}")
 
 
-def _terminate_owned_group(process: subprocess.Popen[Any]) -> None:
+def _terminate_owned_group(process: subprocess.Popen[Any], deadline: float | None = None) -> None:
     if process.poll() is not None:
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        process.wait()
+        if deadline is None:
+            process.wait()
+        else:
+            try:
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
         return
     try:
-        process.wait(timeout=TERMINATE_GRACE_SECONDS)
+        grace = TERMINATE_GRACE_SECONDS
+        if deadline is not None:
+            grace = min(grace, max(0, deadline - time.monotonic()) / 2)
+        process.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        process.wait()
+        if deadline is None:
+            process.wait()
+        else:
+            try:
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def _run_owned_process(

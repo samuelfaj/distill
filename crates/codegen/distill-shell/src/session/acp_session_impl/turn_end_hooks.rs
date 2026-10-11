@@ -209,9 +209,10 @@ impl TurnEndQueue {
         }
     }
 
-    /// Waits for what is queued, leaving the queue open.
+    /// Waits for what is queued, leaving the queue open. Only `true` confirms
+    /// the worker acknowledged every report preceding the barrier.
     /// Teardown needs an earlier turn's report to precede the session-end `Stop`, but a `Graceful` shutdown leaves the turn running.
-    pub(super) async fn flush(&mut self) {
+    pub(super) async fn flush(&mut self) -> bool {
         let (reached, wait) = tokio::sync::oneshot::channel();
         // Through this queue's own sender, so the flush and the later drain wait on one worker.
         let sent = self
@@ -219,16 +220,18 @@ impl TurnEndQueue {
             .as_ref()
             .is_some_and(|tx| tx.send(QueueItem::Barrier(reached)).is_ok());
         if !sent {
-            return;
+            return false;
         }
-        if tokio::time::timeout(TURN_END_DRAIN_BUDGET, wait)
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                budget_ms = TURN_END_DRAIN_BUDGET.as_millis(),
-                "a turn-end hook is still running; the session is not waiting for it"
-            );
+        match tokio::time::timeout(TURN_END_DRAIN_BUDGET, wait).await {
+            Ok(Ok(())) => true,
+            outcome => {
+                tracing::warn!(
+                    ?outcome,
+                    budget_ms = TURN_END_DRAIN_BUDGET.as_millis(),
+                    "turn-end hook completion was not acknowledged"
+                );
+                false
+            }
         }
     }
 

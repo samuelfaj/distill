@@ -42,10 +42,15 @@ pub const TASK_TOOL_NAME: &str = "task";
 pub const MAX_SUBAGENT_DEPTH: u32 = 1;
 
 pub fn effective_max_subagent_depth(resources: &crate::types::resources::Resources) -> u32 {
-    resources
+    let ordinary = resources
         .get::<MaxSubagentDepth>()
         .map(|d| d.0)
-        .unwrap_or(MAX_SUBAGENT_DEPTH)
+        .unwrap_or(MAX_SUBAGENT_DEPTH);
+    match resources.get::<UltracodePolicy>() {
+        Some(policy) if policy.is_enabled() => policy.max_depth,
+        Some(policy) => ordinary.min(policy.off_max_depth),
+        None => ordinary,
+    }
 }
 
 fn user_text_from_json(content: &serde_json::Value) -> String {
@@ -375,6 +380,7 @@ impl distill_tool_runtime::Tool for TaskTool {
             parent_session_id,
             parent_prompt_id,
             foreground_wait,
+            ultracode,
         ) = {
             let res = resources.lock().await;
 
@@ -412,8 +418,22 @@ impl distill_tool_runtime::Tool for TaskTool {
                 parent_session_id,
                 parent_prompt_id,
                 foreground_wait,
+                res.get::<UltracodePolicy>()
+                    .filter(|policy| policy.is_enabled() || depth > 0)
+                    .cloned(),
             )
         };
+
+        if let Some(allowed) = ultracode
+            .as_ref()
+            .and_then(|policy| policy.allowed_subagent_types.as_ref())
+            && !allowed.iter().any(|name| name == &input.subagent_type)
+        {
+            return Err(distill_tool_runtime::ToolError::invalid_arguments(format!(
+                "Ultracode parent permits only these subagent types: {}",
+                allowed.join(", ")
+            )));
+        }
 
         if depth >= max_depth {
             return Err(distill_tool_runtime::ToolError::invalid_arguments(format!(
@@ -613,13 +633,22 @@ impl distill_tool_runtime::Tool for TaskTool {
             resume_from,
             cwd,
             runtime_overrides: SubagentRuntimeOverrides {
+                ultracode: ultracode.clone(),
+                inherited_model: None,
+                inherited_reasoning_effort: None,
+                inherited_cwd: None,
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
                 reasoning_effort: None,
                 persona: None,
                 // JSON cannot set this field. Compat-harness adapters still
                 // populate it in-process; model-facing spawns stay `None`.
-                capability_mode: input.capability_mode,
+                capability_mode: intersect_capability_modes(
+                    input.capability_mode,
+                    ultracode
+                        .as_ref()
+                        .and_then(|policy| policy.capability_ceiling),
+                ),
                 isolation: input.isolation,
                 // Model-issued `task` spawns never override the harness; the
                 // parent agent decides the flavor (the `/goal` harness override
@@ -943,6 +972,66 @@ mod tests {
             "expected Ok at depth 1 with max 2: {result:?}"
         );
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), drain).await;
+    }
+
+    #[tokio::test]
+    async fn ultracode_task_inherits_shared_mode_and_capability_and_off_restores_depth() {
+        let (backend, mut rx) = make_backend();
+        let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut resources = Resources::new();
+        resources.insert(backend);
+        resources.insert(SubagentDepthCounter(2));
+        resources.insert(MaxSubagentDepth(3));
+        resources.insert(UltracodePolicy {
+            enabled: enabled.clone(),
+            max_depth: 2,
+            off_max_depth: 3,
+            capability_ceiling: Some(distill_tool_types::SubagentCapabilityMode::ReadOnly),
+            allowed_subagent_types: None,
+        });
+        resources.insert(SessionIdResource("child".into()));
+        let shared = resources.into_shared();
+        let on = distill_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared.clone()),
+            task_input("explore", true),
+        )
+        .await;
+        assert!(on.unwrap_err().to_string().contains("depth limit"));
+        assert!(rx.try_recv().is_err());
+        enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+        let inherited_enabled = enabled.clone();
+        let drain = tokio::spawn(async move {
+            let mut request = unwrap_spawn(rx.recv().await.expect("nested spawn"));
+            let inherited = request
+                .runtime_overrides
+                .ultracode
+                .as_ref()
+                .expect("inherited policy");
+            assert!(Arc::ptr_eq(&inherited.enabled, &inherited_enabled));
+            assert_eq!(
+                request.runtime_overrides.capability_mode,
+                Some(distill_tool_types::SubagentCapabilityMode::ReadOnly)
+            );
+            request.notify_registered();
+        });
+        let mut input = task_input("explore", true);
+        input.capability_mode = Some(distill_tool_types::SubagentCapabilityMode::All);
+        let result =
+            distill_tool_runtime::Tool::run(&TaskTool, test_ctx(shared.clone()), input).await;
+        assert!(
+            result.is_ok(),
+            "off restores ordinary depth three for the same depth-two child"
+        );
+        drain.await.unwrap();
+        enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+        let result = distill_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared),
+            task_input("explore", true),
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("depth limit"));
     }
 
     #[tokio::test]

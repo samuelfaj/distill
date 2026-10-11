@@ -20,22 +20,7 @@ fn parse_enum_from_str<T: DeserializeOwned>(s: &str) -> Option<T> {
     serde_json::from_value::<T>(serde_json::Value::String(s.to_string())).ok()
 }
 
-pub fn intersect_capability_modes(
-    requested: Option<SubagentCapabilityMode>,
-    ceiling: Option<SubagentCapabilityMode>,
-) -> Option<SubagentCapabilityMode> {
-    use SubagentCapabilityMode as Mode;
-    match (requested, ceiling) {
-        (None, None) => None,
-        (Some(mode), None) | (None, Some(mode)) => Some(mode),
-        (Some(Mode::All), Some(mode)) | (Some(mode), Some(Mode::All)) => Some(mode),
-        (Some(Mode::ReadOnly), Some(_)) | (Some(_), Some(Mode::ReadOnly)) => Some(Mode::ReadOnly),
-        (Some(Mode::ReadWrite), Some(Mode::ReadWrite)) => Some(Mode::ReadWrite),
-        (Some(Mode::Execute), Some(Mode::Execute)) => Some(Mode::Execute),
-        (Some(Mode::ReadWrite), Some(Mode::Execute))
-        | (Some(Mode::Execute), Some(Mode::ReadWrite)) => Some(Mode::ReadOnly),
-    }
-}
+pub use distill_tools::implementations::distill::task::types::intersect_capability_modes;
 
 /// Precedence for each field: If the file cannot be read, a fatal `persona_error` is set and the function returns early
 /// with only the persona name and error populated. A role prompt file failure is softer: if `prompt_file` cannot be read,
@@ -210,6 +195,10 @@ mod tests {
         reasoning_effort: Option<&str>,
     ) -> SubagentRuntimeOverrides {
         SubagentRuntimeOverrides {
+            ultracode: None,
+            inherited_model: None,
+            inherited_reasoning_effort: None,
+            inherited_cwd: None,
             model: model.map(String::from),
             model_override_provenance: ModelOverrideProvenance::Harness,
             reasoning_effort: reasoning_effort.map(String::from),

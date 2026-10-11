@@ -88,7 +88,19 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 .insert_root_child(&id, &request.parent_session_id),
         }
         let running = self.session_running_count(&request.parent_session_id);
-        match self.admission.admit(&request, running) {
+        let decision = if spawner_session_id.is_some()
+            && request.runtime_overrides.ultracode.is_some()
+            && !self.admission.has_capacity(running)
+        {
+            // Keeping a waiting parent in the live-agent limit is conservative.
+            // Reject instead of parking its child behind that same parent.
+            AdmissionDecision::Reject(AdmissionError::ConcurrentLimitReached {
+                limit: self.admission.max_concurrent(),
+            })
+        } else {
+            self.admission.admit(&request, running)
+        };
+        match decision {
             AdmissionDecision::Start => self.start_child(
                 *request,
                 Some(result_tx),
@@ -152,7 +164,17 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                         }
                     },
                 );
-                let result = SubagentResult::failed(id.clone(), id, error.message());
+                let message = if spawner_session_id.is_some()
+                    && request.runtime_overrides.ultracode.is_some()
+                {
+                    format!(
+                        "{} Execute this bounded task locally; do not wait for a queued child.",
+                        error.message()
+                    )
+                } else {
+                    error.message()
+                };
+                let result = SubagentResult::failed(id.clone(), id, message);
                 self.finish_never_started(
                     *request,
                     Some(result_tx),
@@ -180,6 +202,71 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 "parent subagent is being torn down",
                 true,
             ));
+        }
+        // Actual checkout ownership is authoritative, including ordinary/off
+        // sessions and resumed/woken children. No nested spawn may share this checkout.
+        if spawner.worktree_path.is_some() {
+            return Err(rejected_spawn_result(
+                &request.id,
+                "Isolated worktree agents are leaves; execute this task locally in the owned checkout.",
+                false,
+            ));
+        }
+        if let Some(policy) = &spawner.request.runtime_overrides.ultracode {
+            if spawner.request.owner.is_workflow() {
+                return Err(rejected_spawn_result(
+                    &request.id,
+                    "workflow agents cannot delegate outside their logical agent budget",
+                    false,
+                ));
+            }
+            if spawner
+                .request
+                .runtime_overrides
+                .output_token_budget
+                .is_some()
+            {
+                return Err(rejected_spawn_result(
+                    &request.id,
+                    "output-budgeted Ultracode agents cannot delegate; execute this task locally",
+                    false,
+                ));
+            }
+            let depth = self.graph.depth(&spawner.request.id).unwrap_or(u32::MAX);
+            let max_depth = if policy.is_enabled() {
+                policy.max_depth
+            } else {
+                policy.off_max_depth
+            };
+            if depth >= max_depth {
+                return Err(rejected_spawn_result(
+                    &request.id,
+                    "Ultracode subagent depth limit reached; execute this task locally",
+                    false,
+                ));
+            }
+            request.runtime_overrides.inherited_model = Some(spawner.effective_model_id.clone());
+            request.runtime_overrides.inherited_reasoning_effort = spawner
+                .request
+                .runtime_overrides
+                .reasoning_effort
+                .clone()
+                .or_else(|| {
+                    spawner
+                        .request
+                        .runtime_overrides
+                        .inherited_reasoning_effort
+                        .clone()
+                });
+            request.runtime_overrides.inherited_cwd = Some(spawner.child_cwd.clone());
+            request.parent_prompt_id = spawner.request.parent_prompt_id.clone();
+            request.runtime_overrides.spawn_depth = Some(depth.saturating_add(1));
+            request.runtime_overrides.ultracode = policy.is_enabled().then(|| policy.clone());
+            request.runtime_overrides.capability_mode =
+                super::super::types::intersect_capability_modes(
+                    request.runtime_overrides.capability_mode,
+                    spawner.request.runtime_overrides.capability_mode,
+                );
         }
         let root_parent = spawner.request.parent_session_id.clone();
         let spawner_session_id = std::mem::replace(&mut request.parent_session_id, root_parent);

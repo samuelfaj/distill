@@ -11,6 +11,12 @@ runs the subagents the main model delegates to. Utility tasks receive a bounded
 payload, such as a tool result, log excerpt, or candidate list, instead of the
 full conversation.
 
+UltraCode is a separate session mode. It permits bounded recursive task
+delegation when useful, while model and effort selections keep their existing
+precedence. See [UltraCode](ultracode.md) for activation, runtime limits and paired
+off/flat/hierarchical comparisons. Turning it on does not guarantee delegation
+or a cheaper result.
+
 ```text
    Main model: owns the session, plans, delegates, reviews
       |                     |                        |

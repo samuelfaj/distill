@@ -208,6 +208,12 @@ pub enum ModelOverrideProvenance {
 
 #[derive(Debug, Clone, Default)]
 pub struct SubagentRuntimeOverrides {
+    /// Host-owned recursive policy; never accepted from model JSON.
+    pub ultracode: Option<UltracodePolicy>,
+    /// Coordinator-owned immediate-spawner defaults, separate from caller pins.
+    pub inherited_model: Option<String>,
+    pub inherited_reasoning_effort: Option<String>,
+    pub inherited_cwd: Option<String>,
     /// Override the model (e.g. "test-model").
     pub model: Option<String>,
     /// Whether `model` came from a model-facing Task call or internal harness logic.
@@ -231,6 +237,41 @@ pub struct SubagentRuntimeOverrides {
     pub output_schema: Option<serde_json::Value>,
     pub loop_task_id: Option<String>,
 }
+
+pub fn intersect_capability_modes(
+    requested: Option<SubagentCapabilityMode>,
+    ceiling: Option<SubagentCapabilityMode>,
+) -> Option<SubagentCapabilityMode> {
+    use SubagentCapabilityMode as Mode;
+    match (requested, ceiling) {
+        (None, None) => None,
+        (Some(mode), None) | (None, Some(mode)) => Some(mode),
+        (Some(Mode::All), Some(mode)) | (Some(mode), Some(Mode::All)) => Some(mode),
+        (Some(Mode::ReadOnly), Some(_)) | (Some(_), Some(Mode::ReadOnly)) => Some(Mode::ReadOnly),
+        (Some(Mode::ReadWrite), Some(Mode::ReadWrite)) => Some(Mode::ReadWrite),
+        (Some(Mode::Execute), Some(Mode::Execute)) => Some(Mode::Execute),
+        (Some(Mode::ReadWrite), Some(Mode::Execute))
+        | (Some(Mode::Execute), Some(Mode::ReadWrite)) => Some(Mode::ReadOnly),
+    }
+}
+
+/// Eligible Task descendants share the root switch and depth ceiling. Fresh
+/// ordinary roots keep a disabled switch; harness roles never inherit it.
+#[derive(Debug, Clone)]
+pub struct UltracodePolicy {
+    pub enabled: Arc<std::sync::atomic::AtomicBool>,
+    pub max_depth: u32,
+    pub off_max_depth: u32,
+    pub capability_ceiling: Option<SubagentCapabilityMode>,
+    pub allowed_subagent_types: Option<Vec<String>>,
+}
+
+impl UltracodePolicy {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+register_resource!("distill", "UltracodePolicy", UltracodePolicy);
 
 /// Re-export of [`distill_tool_types::is_not_sentinel`] for existing call sites.
 pub use distill_tool_types::is_not_sentinel;

@@ -133,6 +133,76 @@ async fn finish_session_exit_feedback(session: &SessionActor, timer: &SharedSess
     cleanup_session_scratch(session);
 }
 impl SessionActor {
+    async fn settle_subagent_completion(
+        &self,
+    ) -> Result<crate::session::commands::SubagentCompletionSettlement, String> {
+        let running = {
+            let mut state = self.state.lock().await;
+            state.notifications_suppressed = true;
+            if let Some(gate) = &self.tool_context.task_wake_suppressed {
+                gate.set(true);
+            }
+            if state.finalization_gate.is_active()
+                || state.running_task.as_ref().is_some_and(|task| {
+                    !state.pending_inputs.front().is_some_and(|input| {
+                        input.prompt_id == task.prompt_id
+                            && input.input_origin.is_preemptible_runtime_wake()
+                    })
+                })
+                || state
+                    .pending_inputs
+                    .iter()
+                    .any(|input| !input.input_origin.is_preemptible_runtime_wake())
+            {
+                return Err("child still has protected or finalizing work".into());
+            }
+            state
+                .running_task
+                .as_ref()
+                .map(|task| (task.prompt_id.clone(), task.handle.clone()))
+        };
+        let mut cancellation_may_hide_usage = running.is_some();
+        if let Some((prompt_id, task)) = running {
+            self.cancel_running_turn_subagents(&prompt_id);
+            let outcome = self
+                .cancel_running_task(crate::session::CancelOptions {
+                    cancel_subagents: false,
+                    kill_background_tasks: false,
+                    trigger: Some(crate::session::CancelTrigger::Shutdown),
+                    ..Default::default()
+                })
+                .await;
+            if !outcome.settled {
+                return Err("child synthetic turn cancellation did not settle".into());
+            }
+            // abort() schedules destruction: do not snapshot ahead of usage guards.
+            while !task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        }
+        cancellation_may_hide_usage |= self.compaction.prefire.is_in_flight();
+        if let Some(prefire) = self.compaction.prefire.take_handle() {
+            cancellation_may_hide_usage |= !prefire.is_finished();
+            prefire.abort();
+            cancellation_may_hide_usage |= prefire.await.is_err();
+        }
+        self.drop_pending_synthetic_items().await;
+        let state = self.state.lock().await;
+        if state.running_task.is_some()
+            || state.finalization_gate.is_active()
+            || !state.pending_inputs.is_empty()
+            || self.active_work.load(std::sync::atomic::Ordering::Acquire) > 0
+            || crate::session::pending_interaction::has_parked_plan_approval(
+                &self.pending_interactions,
+            )
+        {
+            return Err("child work remains after completion settlement".into());
+        }
+        Ok(crate::session::commands::SubagentCompletionSettlement {
+            cancellation_may_hide_usage,
+        })
+    }
+
     /// Admits or refuses a finished task's wake under the state lock, so an interactive cancel cannot race the admission.
     pub(super) async fn admit_task_completion_wake(
         &self,
@@ -369,6 +439,7 @@ pub(super) async fn run_session(
     let mut turn_end_queue = super::turn_end_hooks::TurnEndQueue::spawn(session.clone());
     tracing::debug!("fs_notify_config: {:?}", fs_notify_config);
     let mut replay_buffer = ReplayBuffer::new(session.buffering_settings.clone());
+    let mut subagent_completion_sealed = false;
     let event_tx_for_flush_timer = session.event_tx.clone();
     let buffering_flush_interval = replay_buffer.max_wait_duration_ms();
     if let Some(buffering_flush_interval) = buffering_flush_interval {
@@ -503,7 +574,9 @@ pub(super) async fn run_session(
             .await;
         });
     }
-    let startup_tasks = StartupTasks::spawn(&session, completion_tx.clone());
+    let mut startup_tasks = StartupTasks::spawn(&session, completion_tx.clone());
+    let mut auxiliary_tasks = tokio::task::JoinSet::new();
+    let mut auxiliary_usage_uncertain = false;
     session.resume_v2_capture().await;
     let mut model_switch_rx = session.models_manager.subscribe_model_switch();
     let _ = *model_switch_rx.borrow_and_update();
@@ -523,10 +596,14 @@ pub(super) async fn run_session(
         dream_task = Some(spawn_dream_check(&session));
     }
     loop {
+        while let Some(finished) = auxiliary_tasks.try_join_next() {
+            auxiliary_usage_uncertain |= finished.is_err();
+        }
         tokio::select! {
                 biased;
                 // Idle flush timer fired: run background flush
                 _ = &mut idle_flush_sleep, if session.idle_flush_timeout.is_some()
+                    && !subagent_completion_sealed
                     && session.memory.uses_legacy_pipeline()
                     && !session.memory.is_flushing.load(std::sync::atomic::Ordering::Relaxed) => {
                     // Skip if no new messages since last idle flush
@@ -538,7 +615,7 @@ pub(super) async fn run_session(
                             "MEMORY_IDLE_FLUSH: timer fired (conversation {last_len} → {current_len})");
                         session.last_idle_flush_conversation_len
                             .store(current_len, std::sync::atomic::Ordering::Relaxed);
-                        tokio::task::spawn_local({
+                        auxiliary_tasks.spawn_local({
                             let session = session.clone();
                             async move {
                                 if !session.run_memory_flush("interval", None).await {
@@ -727,6 +804,20 @@ pub(super) async fn run_session(
                         }
                         SessionCommand::Prompt { prompt_id, prompt_blocks, prompt_mode, artifact_upload_ctx, client_identifier, screen_mode, verbatim, traceparent, json_schema, send_now, admission, tool_overrides_update, respond_to, prompt_admitted, persist_ack, parsed_prompt_tx } => {
                             let origin = super::PromptOrigin::from_prompt_id(&prompt_id);
+                            if subagent_completion_sealed
+                                && InputOrigin::new(origin.clone()).is_preemptible_runtime_wake()
+                            {
+                                if let Some(admission) = admission {
+                                    let _ = admission.respond_to.send(false);
+                                }
+                                if let Some(task_id) = origin.completion_id()
+                                    && let Some(reservations) = &session.tool_context.task_completion_reservations
+                                {
+                                    reservations.release(task_id);
+                                }
+                                SessionActor::respond_removed_prompt(respond_to);
+                                continue;
+                            }
                             let (actor_admitted, task_wake_fallback) = match admission {
                                 Some(admission) => {
                                     let fallback = session
@@ -1030,6 +1121,9 @@ pub(super) async fn run_session(
                             }
                         }
                         SessionCommand::InjectNotification { prompt_id, prompt_blocks, priority, source } => {
+                            if subagent_completion_sealed {
+                                continue;
+                            }
                             let is_turn_active = session
                                 .session_turn_active
                                 .load(std::sync::atomic::Ordering::SeqCst);
@@ -2104,6 +2198,9 @@ pub(super) async fn run_session(
                             }
                         }
                         SessionCommand::GoalSummaryTurn { prompt_text } => {
+                            if subagent_completion_sealed {
+                                continue;
+                            }
                             // Queue a synthetic prompt so the model gets a turn to print a visible progress summary
                             // Mirrors the pattern used by `maybe_drain_notifications`
                             let prompt_id = format!("goal-summary-{}", uuid::Uuid::now_v7());
@@ -2137,10 +2234,16 @@ pub(super) async fn run_session(
                             SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
                         }
                         SessionCommand::GoalInfraRetry { goal_id, generation } => {
+                            if subagent_completion_sealed {
+                                continue;
+                            }
                             // Boxed: keeps the resume path's state out of the run-loop future (debug-build stack depth)
                             Box::pin(session.clone().handle_goal_infra_retry(goal_id, generation, completion_tx.clone())).await;
                         }
                         SessionCommand::WorkflowCompletionTurn { run_id, revision } => {
+                            if subagent_completion_sealed {
+                                continue;
+                            }
                             let state_suppressed = session.state.lock().await.notifications_suppressed;
                             let wake_suppressed = state_suppressed
                                 || session.goal_loop_active()
@@ -2248,6 +2351,41 @@ pub(super) async fn run_session(
                         SessionCommand::PersistResumeStatus { respond_to } => {
                             session.persist_resume_status().await;
                             let _ = respond_to.send(());
+                        }
+                        SessionCommand::SettleSubagentCompletion { respond_to } => {
+                            if !session.startup_hints.is_subagent {
+                                let _ = respond_to.send(Err("completion settlement requires a subagent".into()));
+                                continue;
+                            }
+                            subagent_completion_sealed = true;
+                            let settlement = tokio::time::timeout(Duration::from_secs(5), async {
+                                // This startup task can promote outside the command loop.
+                                // Stop it before inspecting/cancelling the current queue.
+                                if !startup_tasks._mcp_init_prompt_promote.0.is_finished() {
+                                    startup_tasks._mcp_init_prompt_promote.0.abort();
+                                    let _ = (&mut startup_tasks._mcp_init_prompt_promote.0).await;
+                                }
+                                if let Some(notification) = replay_buffer.flush() {
+                                    session.emit_buffered(notification).await;
+                                }
+                                let mut settlement = session.settle_subagent_completion().await?;
+                                settlement.cancellation_may_hide_usage |= auxiliary_usage_uncertain;
+                                while let Some(finished) = auxiliary_tasks.try_join_next() {
+                                    settlement.cancellation_may_hide_usage |= finished.is_err();
+                                }
+                                settlement.cancellation_may_hide_usage |= !auxiliary_tasks.is_empty();
+                                auxiliary_tasks.abort_all();
+                                while auxiliary_tasks.join_next().await.is_some() {}
+                                settlement.cancellation_may_hide_usage |= !turn_end_queue.flush().await;
+                                let (flushed, ack) = tokio::sync::oneshot::channel();
+                                session.notifications.persistence_tx
+                                    .send(PersistenceMsg::FlushAndAck { respond_to: flushed })
+                                    .map_err(|_| "child persistence actor closed".to_owned())?;
+                                ack.await.map_err(|_| "child persistence flush unacknowledged".to_owned())?
+                                    .map_err(|error| error.to_string())?;
+                                Ok(settlement)
+                            }).await.unwrap_or_else(|_| Err("child completion settlement timed out".into()));
+                            let _ = respond_to.send(settlement);
                         }
                         SessionCommand::Shutdown(kind) => {
                             let end_timer = session_end::SessionEndTimer::new_shared();
@@ -2399,6 +2537,9 @@ pub(super) async fn run_session(
                     if let Some(processed) = processed {
                         let _ = processed.send(());
                     }
+                    if subagent_completion_sealed {
+                        continue;
+                    }
                     // Drain monitor events that were routed to the mid-turn buffer but arrived after the turn ended
                     // The is_turn_active check races the buffer push
                     session.drain_monitor_buffer_to_pending().await;
@@ -2435,7 +2576,7 @@ pub(super) async fn run_session(
                     // No classification cost is incurred without explicit opt-in.
                     {
                         let s = session.clone();
-                        tokio::task::spawn_local(async move {
+                        auxiliary_tasks.spawn_local(async move {
                             s.maybe_fire_laziness_check().await;
                         });
                     }

@@ -459,12 +459,32 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::WithPinnedMemoryMode {
             agent_id,
             memory_mode,
+            ultracode,
             result,
         } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent.memory_mode = memory_mode;
             }
-            *result
+            let session_id = match result.as_ref() {
+                TaskResult::SessionCreated { session_id, .. }
+                | TaskResult::WorktreeSessionCreated { session_id, .. }
+                | TaskResult::SessionLoaded { session_id, .. } => Some(session_id.clone()),
+                _ => None,
+            };
+            // Lifecycle handlers can replace ModelState. Apply readback afterwards,
+            // only to the session that actually accepted this lifecycle response.
+            let effects = dispatch_task_result(*result, app);
+            if let Some(agent) = app.agents.get_mut(&agent_id)
+                && session_id.is_some()
+                && agent.session.session_id == session_id
+            {
+                let enabled = ultracode.unwrap_or(false);
+                agent.session.models.ultracode = enabled;
+                if app.active_view == ActiveView::Agent(agent_id) {
+                    app.models.ultracode = enabled;
+                }
+            }
+            return effects;
         }
         result => result,
     };

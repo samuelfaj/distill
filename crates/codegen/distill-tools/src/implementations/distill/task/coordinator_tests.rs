@@ -8,7 +8,7 @@ use crate::implementations::distill::task::types::{
     SubagentCancelRequest, SubagentClearUsageNotAppliedRequest, SubagentCompletionsRequest,
     SubagentListActiveRequest, SubagentLoopUnitActiveRequest, SubagentMarkUsageNotAppliedRequest,
     SubagentOutstandingReply, SubagentOutstandingRequest, SubagentOwner, SubagentRegistryCounts,
-    SubagentRequest, SubagentSnapshotStatus, SubagentWaitPromptDrainedRequest,
+    SubagentRequest, SubagentSnapshotStatus, SubagentWaitPromptDrainedRequest, UltracodePolicy,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -235,7 +235,9 @@ impl ChildRunner for TestRunner {
                 persona: None,
                 resumed_from: request.resume_from.clone(),
                 child_cwd: request.cwd.clone().unwrap_or_default(),
-                worktree_path: None,
+                // Test-only definition with authoritative checkout ownership.
+                worktree_path: (request.subagent_type == "isolated-parent")
+                    .then(|| request.cwd.clone().unwrap_or_default()),
                 effective_model_id: "test-model".to_owned(),
                 // Mock definition resolution: this type declares background.
                 definition_background: request.subagent_type == "background-default",
@@ -4168,5 +4170,228 @@ async fn workflow_spawns_bypass_the_session_concurrent_limit() {
             .expect("spawn round-trips")
             .success
     );
+    harness.actor.abort();
+}
+
+fn ultracode_request(id: &str) -> SubagentRequest {
+    let mut request = request(id, true);
+    request.runtime_overrides.ultracode = Some(UltracodePolicy {
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        max_depth: 2,
+        off_max_depth: 1,
+        capability_ceiling: None,
+        allowed_subagent_types: None,
+    });
+    request
+}
+
+#[tokio::test]
+async fn ultracode_nested_spawn_at_capacity_returns_local_fallback_without_queueing() {
+    let mut harness = harness_with_config(false, limited(1, LimitBehavior::Queue));
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(ultracode_request("outer"), None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        child_backend.spawn(ultracode_request("nested"), None),
+    )
+    .await
+    .expect("nested admission must return without parent completion")
+    .expect("coordinator reply");
+    assert!(!result.success);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Execute this bounded task locally")
+    );
+    assert_eq!(harness.backend.registry_counts().await.queued, 0);
+    assert!(harness.requests.try_recv().is_err());
+    let _ = harness.backend.cancel("outer").await;
+    assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+#[tokio::test]
+async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_one_tree() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut pinned_outer = ultracode_request("outer");
+    let policy = pinned_outer.runtime_overrides.ultracode.as_mut().unwrap();
+    policy.off_max_depth = 3;
+    let enabled = policy.enabled.clone();
+    pinned_outer.cwd = Some("/isolated-parent".into());
+    pinned_outer.runtime_overrides.model = Some("test-model".into());
+    pinned_outer.runtime_overrides.reasoning_effort = Some("high".into());
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(pinned_outer, None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let mut nested = ultracode_request("nested");
+    nested.parent_prompt_id = Some("child-turn".into());
+    nested.runtime_overrides.spawn_depth = Some(0);
+    let nested = tokio::spawn({
+        let backend = child_backend.clone();
+        async move { backend.spawn(nested, None).await }
+    });
+    let observed = harness.requests.recv().await.expect("nested observed");
+    assert_eq!(observed.parent_session_id, "parent");
+    assert_eq!(observed.parent_prompt_id.as_deref(), Some("prompt"));
+    assert_eq!(observed.runtime_overrides.spawn_depth, Some(2));
+    assert!(observed.cwd.is_none());
+    assert_eq!(
+        observed.runtime_overrides.inherited_cwd.as_deref(),
+        Some("/isolated-parent")
+    );
+    assert!(observed.runtime_overrides.model.is_none());
+    assert!(observed.runtime_overrides.reasoning_effort.is_none());
+    assert_eq!(
+        observed.runtime_overrides.inherited_model.as_deref(),
+        Some("test-model")
+    );
+    assert_eq!(
+        observed
+            .runtime_overrides
+            .inherited_reasoning_effort
+            .as_deref(),
+        Some("high")
+    );
+    harness.started.recv().await.expect("nested active");
+    let grandchild_backend = session_backend(&harness, "nested");
+    let refused = grandchild_backend
+        .spawn(ultracode_request("too-deep"), None)
+        .await
+        .unwrap();
+    assert!(!refused.success);
+    assert!(refused.error.unwrap().contains("depth limit"));
+    enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+    let third = tokio::spawn({
+        let backend = grandchild_backend.clone();
+        async move {
+            backend
+                .spawn(ultracode_request("ordinary-third"), None)
+                .await
+        }
+    });
+    let observed = harness
+        .requests
+        .recv()
+        .await
+        .expect("off-mode depth-three child admitted");
+    assert_eq!(observed.runtime_overrides.spawn_depth, Some(3));
+    assert!(
+        observed.runtime_overrides.ultracode.is_none(),
+        "off must not reactivate adaptive mode"
+    );
+    harness
+        .started
+        .recv()
+        .await
+        .expect("depth-three child active");
+    enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+    let refused = grandchild_backend
+        .spawn(ultracode_request("on-again-too-deep"), None)
+        .await
+        .unwrap();
+    assert!(refused.error.unwrap().contains("depth limit"));
+    let _ = harness.backend.cancel("outer").await;
+    assert!(third.await.unwrap().unwrap().cancelled);
+    assert!(nested.await.unwrap().unwrap().cancelled);
+    assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+#[tokio::test]
+async fn ultracode_output_budgeted_parent_remains_a_leaf_when_mode_is_off_or_on() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut outer_request = ultracode_request("budgeted");
+    outer_request.runtime_overrides.output_token_budget = Some(32);
+    let enabled = outer_request
+        .runtime_overrides
+        .ultracode
+        .as_ref()
+        .unwrap()
+        .enabled
+        .clone();
+    let outer = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(outer_request, None).await }
+    });
+    harness
+        .requests
+        .recv()
+        .await
+        .expect("budgeted parent observed");
+    harness
+        .started
+        .recv()
+        .await
+        .expect("budgeted parent active");
+    let child_backend = session_backend(&harness, "budgeted");
+    enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+    let refused = child_backend
+        .spawn(request("off-nested", true), None)
+        .await
+        .unwrap();
+    assert!(refused.error.unwrap().contains("output-budgeted"));
+    enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+    let refused = child_backend
+        .spawn(ultracode_request("on-nested"), None)
+        .await
+        .unwrap();
+    assert!(refused.error.unwrap().contains("output-budgeted"));
+    assert_eq!(harness.backend.registry_counts().await.queued, 0);
+    assert!(harness.requests.try_recv().is_err());
+    harness.backend.cancel("budgeted").await;
+    assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+#[tokio::test]
+async fn ultracode_isolated_spawner_is_a_leaf_before_admission_even_when_off_or_resuming() {
+    let mut harness = harness_with_config(false, limited(1, LimitBehavior::Queue));
+    let mut owner_request = ultracode_request("isolated-owner");
+    owner_request.subagent_type = "isolated-parent".into();
+    owner_request.cwd = Some("/isolated-checkout".into());
+    owner_request.resume_from = Some("durable-source-outside-completed-cache".into());
+    let enabled = owner_request
+        .runtime_overrides
+        .ultracode
+        .as_ref()
+        .unwrap()
+        .enabled
+        .clone();
+    let owner = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(owner_request, None).await }
+    });
+    harness.requests.recv().await.unwrap();
+    harness.started.recv().await.unwrap();
+    let child_backend = session_backend(&harness, "isolated-owner");
+    for (index, mode) in [true, false, true].into_iter().enumerate() {
+        enabled.store(mode, std::sync::atomic::Ordering::Relaxed);
+        let mut nested = ultracode_request(&format!("denied-{index}"));
+        nested.run_in_background = index == 2;
+        nested.resume_from = Some("another-durable-source".into());
+        let refused = child_backend.spawn(nested, None).await.unwrap();
+        assert!(!refused.success);
+        assert!(
+            refused
+                .error
+                .unwrap()
+                .contains("Isolated worktree agents are leaves")
+        );
+        assert_eq!(harness.backend.registry_counts().await.queued, 0);
+        assert!(harness.requests.try_recv().is_err());
+    }
+    harness.backend.cancel("isolated-owner").await;
+    assert!(owner.await.unwrap().unwrap().cancelled);
     harness.actor.abort();
 }

@@ -1,6 +1,6 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Session-scoped Ultracode toggle for ACP clients (`x.ai/session/ultracode/set`).
-//! The flag lives in memory on the session handle and never touches effort or `config.toml`.
+//! Root mode is persisted with the session; it never touches effort or `config.toml`.
 
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ struct SetSessionUltracodeRequest {
     enabled: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct SetSessionUltracodeResponse {
     enabled: bool,
 }
@@ -35,13 +35,39 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             request.session_id
         ))));
     };
+    if handle.tool_context.subagent_depth > 0 {
+        return Err(acp::Error::invalid_params()
+            .data("Ultracode mode can only be changed on the root session"));
+    }
     let flag = &handle.ultracode;
-    let enabled = match request.enabled {
-        Some(enabled) => {
-            flag.store(enabled, std::sync::atomic::Ordering::Relaxed);
-            enabled
-        }
-        None => !flag.fetch_xor(true, std::sync::atomic::Ordering::Relaxed),
-    };
+    let enabled = request
+        .enabled
+        .unwrap_or_else(|| !flag.load(std::sync::atomic::Ordering::Relaxed));
+    // The atomic file writer is shared with the existing session state. Commit
+    // mode before exposing success so a resume cannot contradict the ACP ack.
+    persist_ultracode(&handle.info, enabled)
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+    flag.store(enabled, std::sync::atomic::Ordering::Relaxed);
     to_raw_response(&SetSessionUltracodeResponse { enabled })
+}
+
+pub(crate) fn load_ultracode(info: &crate::session::info::Info) -> std::io::Result<bool> {
+    let path = crate::session::persistence::session_dir(info).join("ultracode.json");
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<SetSessionUltracodeResponse>(&bytes)
+            .map(|state| state.enabled)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn persist_ultracode(
+    info: &crate::session::info::Info,
+    enabled: bool,
+) -> std::io::Result<()> {
+    let dir = crate::session::persistence::ensure_owner_only_session_dir(info)?;
+    let bytes = serde_json::to_vec(&SetSessionUltracodeResponse { enabled })
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    crate::session::storage::write_bytes_atomic(&dir.join("ultracode.json"), &bytes)
 }

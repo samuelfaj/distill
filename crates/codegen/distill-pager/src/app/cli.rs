@@ -534,6 +534,9 @@ pub struct PagerArgs {
         overrides_with = "reasoning_effort"
     )]
     pub reasoning_effort: Option<String>,
+    /// Enable session-scoped UltraCode before a headless prompt; independent of effort.
+    #[clap(long)]
+    pub ultracode: bool,
     /// Extra rules to append to the system prompt.
     #[clap(long = "rules", alias = "append-system-prompt")]
     pub rules: Option<String>,
@@ -1500,5 +1503,32 @@ mod tests {
             panic!("expected agent subcommand");
         };
         assert_eq!(agent.reasoning_effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn ultracode_is_opt_in_and_preserves_model_effort_and_permissions() {
+        assert!(
+            !PagerArgs::try_parse_from(["distill", "-p", "task"])
+                .unwrap()
+                .ultracode
+        );
+        let args = PagerArgs::try_parse_from([
+            "distill",
+            "-p",
+            "task",
+            "--ultracode",
+            "--model",
+            "chatgpt/gpt-6.1-sol",
+            "--effort",
+            "high",
+            "--permission-mode",
+            "default",
+        ])
+        .unwrap();
+        assert!(args.ultracode);
+        assert_eq!(args.model.as_deref(), Some("chatgpt/gpt-6.1-sol"));
+        assert_eq!(args.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(args.permission_mode_flag.as_deref(), Some("default"));
+        assert!(!args.yolo);
     }
 }

@@ -202,6 +202,9 @@ pub struct ToolContext {
     pub(crate) active_message_parent_prompt_index: Arc<std::sync::atomic::AtomicUsize>,
     /// Top-level sessions start at 0; child sessions are parent_depth + 1.
     pub subagent_depth: u32,
+    /// Host policy shared with the root switch and inherited by eligible Task children.
+    pub(crate) ultracode_policy:
+        Option<distill_tools::implementations::distill::task::types::UltracodePolicy>,
     /// Carries spawn, query, cancel, list-active, completions, and outstanding messages to the coordinator.
     /// `None` if subagent support is not enabled.
     pub subagent_event_tx: Option<
@@ -331,6 +334,7 @@ impl ToolContext {
             prompt_index: Arc::new(tokio::sync::Mutex::new(0)),
             active_message_parent_prompt_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             subagent_depth: 0,
+            ultracode_policy: None,
             subagent_event_tx: None,
             subagent_coordinator_sender: None,
             lsp: None,
@@ -427,6 +431,7 @@ mod tests {
                     0,
                 )),
                 subagent_depth: 0,
+                ultracode_policy: None,
                 subagent_event_tx: None,
                 subagent_coordinator_sender: None,
                 lsp: None,

@@ -333,6 +333,7 @@ mod tests {
         TaskResult::WithPinnedMemoryMode {
             agent_id: AgentId(id),
             memory_mode: Some(distill_shell::config::MemoryMode::V2),
+            ultracode: None,
             result: Box::new(loaded(id, session)),
         }
     }

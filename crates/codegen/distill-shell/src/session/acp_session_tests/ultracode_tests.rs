@@ -47,3 +47,55 @@ async fn ultracode_reminder_only_when_on_and_effort_untouched() {
         })
         .await;
 }
+
+#[tokio::test]
+async fn ultracode_policy_survives_agent_rebuild_and_shared_off() {
+    use distill_tools::implementations::distill::task::types::UltracodePolicy;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut spec = crate::session::agent_rebuild::test_rebuild_spec_default();
+            let enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let mutable = std::sync::Arc::get_mut(&mut spec).unwrap();
+            mutable.ultracode_policy = Some(UltracodePolicy {
+                enabled: enabled.clone(),
+                max_depth: 2,
+                off_max_depth: 1,
+                capability_ceiling: None,
+                allowed_subagent_types: None,
+            });
+            mutable.subagent_event_tx = Some(tokio::sync::mpsc::unbounded_channel().0);
+            let first = spec
+                .build_agent(
+                    distill_agent::config::AgentDefinition::default_distill(),
+                    distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                    crate::test_support::TEST_MODEL,
+                )
+                .await
+                .unwrap();
+            let rebuilt = spec
+                .build_agent(
+                    distill_agent::config::AgentDefinition::default_distill(),
+                    distill_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                    crate::test_support::TEST_MODEL,
+                )
+                .await
+                .unwrap();
+            let before = first
+                .tool_bridge()
+                .toolset()
+                .get_resource_cloned::<UltracodePolicy>()
+                .await
+                .unwrap();
+            let after = rebuilt
+                .tool_bridge()
+                .toolset()
+                .get_resource_cloned::<UltracodePolicy>()
+                .await
+                .unwrap();
+            assert!(std::sync::Arc::ptr_eq(&before.enabled, &after.enabled));
+            assert_eq!(after.max_depth, 2);
+            enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+            assert!(!before.is_enabled() && !after.is_enabled());
+        })
+        .await;
+}

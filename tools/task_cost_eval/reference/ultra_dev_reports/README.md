@@ -1,0 +1,12 @@
+Implement the dispatch reporting extension in tools/task_cost_eval/fixtures/ultra_dev_reports.
+This is a stdlib-only Python repository. Read the existing modules and preserve the existing totals report and order normalization. Add the revenue, backlog and aging reports and wire them into the shared registry, service and CLI. Edit this repository, not just describe the answer.
+
+Public contracts:
+- orders.normalize(orders) returns a detached copy; valid orders have unique string id, region, ISO date placed, status open/shipped/cancelled, and items with sku, quantity, shipped and unit_cents. Quantities and cents are nonnegative integers, shipped <= quantity. Validation and existing totals behavior stay unchanged. Reports accept the normalized shape and never mutate inputs.
+- revenue.report(orders, as_of=None): count shipped units for every non-cancelled order, including partially shipped open orders. Return rows {region, units, revenue_cents} sorted lexically by region; omit regions with no shipped units. Revenue is shipped * unit_cents; no floating point.
+- backlog.report(orders, as_of=None): only open orders contribute quantity - shipped, summed by sku across orders. Return rows {sku, units, order_ids}, sorted by sku; ids are sorted, unique and include only orders with positive outstanding units for that sku. Omit zero outstanding items and cancelled/shipped orders.
+- aging.report(orders, as_of=None): require an ISO as_of date (ValueError if missing or invalid). Include only open orders with positive total outstanding units. Age is days since placed, clamped at zero for future orders. Return all three rows in order with bucket '0-7', '8-30', '31+', and fields orders and units, including zero buckets. Count each order once in its bucket, sum its outstanding units.
+- registry.REPORTS must expose 'totals', 'revenue', 'backlog', 'aging'. Preserve totals exactly: {orders: number of all orders including cancelled, ordered_units: sum of all quantity}.
+- service.render(name, orders, as_of=None) normalizes then dispatches; an unknown report raises ValueError. Return the report's object directly, not wrapped.
+- python cli.py REPORT INPUT_JSON [--as-of YYYY-MM-DD] prints one JSON result, exits 0 on success. Invalid input/report/date exits 2, writes a diagnostic to stderr, and prints no JSON to stdout. Preserve existing totals CLI behavior.
+Use existing signatures; implementation choices are free. No dependencies. Run PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -v in this slice.

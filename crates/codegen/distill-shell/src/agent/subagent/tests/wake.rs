@@ -719,6 +719,287 @@ async fn acknowledge_parent_usage(mut parent_cmd_rx: mpsc::UnboundedReceiver<Ses
     }
 }
 
+#[test]
+fn child_completion_settlement_preserves_output_and_parent_usage() {
+    use crate::session::persistence::{ExplicitSessionOpen, PersistenceMsg, new_with_explicit_dir};
+    use crate::session::usage_file::{SessionUsageFile, UsageSummary};
+    use distill_test_support::{
+        InferenceEndpoint, InferenceRequestMatcher, MockInferenceServer, ScriptedResponse,
+    };
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
+    use distill_tools::implementations::distill::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+                for interrupt_wake in [false, true] {
+                    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+                        let temp = tempfile::tempdir().unwrap();
+                        let meta_dir = temp.path().join("meta");
+                        let parent_dir = temp.path().join("parent");
+                        let parent_chat = spawn_test_parent_chat_state("test-model");
+                        let persistence = new_with_explicit_dir(
+                            &SessionInfo {
+                                id: acp::SessionId::new("setup-parent"),
+                                cwd: temp.path().to_string_lossy().into_owned(),
+                            },
+                            parent_dir.clone(),
+                            acp::ModelId::new("test-model"),
+                            "parent usage".into(),
+                            ExplicitSessionOpen::New {
+                                identity: None,
+                                next_trace_turn: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        let server = MockInferenceServer::start().await.unwrap();
+                        let matcher =
+                            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses);
+                        let response = |text| {
+                            ScriptedResponse::sse(
+                                distill_test_support::sse::responses_api_script_exact(
+                                    text,
+                                    "test-model",
+                                ),
+                            )
+                        };
+                        let mut primary = server.expect_response_blocked(
+                            "primary",
+                            matcher,
+                            response("primary result"),
+                        );
+                        let mut protected = server.expect_response_blocked(
+                            "protected",
+                            matcher,
+                            response("protected result"),
+                        );
+                        let mut wake = interrupt_wake.then(|| {
+                            server.expect_response("wake", matcher, ScriptedResponse::hang())
+                        });
+                        let (settlement_tx, mut settlement_rx) = mpsc::unbounded_channel();
+                        let mut harness = RunShellChildHarnessConfig::new(
+                            meta_dir.clone(),
+                            InitialAttemptBehavior::Normal,
+                        );
+                        harness.completion_settlement_tx = Some(settlement_tx);
+                        let mut ctx = ctx_with_toggle(HashMap::new());
+                        configure_completion_harness(&mut ctx, &server, harness);
+                        ctx.parent_cwd = temp.path().to_path_buf();
+                        let (parent_cmd_tx, mut parent_cmd_rx) = mpsc::unbounded_channel();
+                        ctx.parent_cmd_tx = Some(parent_cmd_tx);
+                        let (gateway, _gateway_rx) = test_gateway_with_receiver();
+                        let (command_tx, command_rx) =
+                            SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                        let backend =
+                            ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+                        // ctx_with_toggle's stub receiver is closed. Usage freeze must
+                        // query this real coordinator, including when no descendants exist.
+                        ctx.subagent_event_tx = backend.sender();
+                        let coordinator = tokio::task::spawn_local(
+                            SubagentCoordinator::from_channel(
+                                command_rx,
+                                RunShellChildTestRunner::new([ctx], false, gateway),
+                                CoordinatorConfig::default(),
+                            )
+                            .run(),
+                        );
+                        let id = uuid::Uuid::now_v7().to_string();
+                        let mut request = auto_wake_test_request(&id);
+                        request.prompt = "primary work".into();
+                        request.parent_prompt_id = Some("parent-prompt".into());
+                        request.run_in_background = false;
+                        let spawned = tokio::task::spawn_local({
+                            let backend = backend.clone();
+                            async move { backend.spawn(request, None).await }
+                        });
+                        primary.wait_blocked().await;
+                        while !matches!(
+                            backend.query(&id, false, None).await.unwrap().status,
+                            SubagentSnapshotStatus::Running { .. }
+                        ) {
+                            tokio::task::yield_now().await;
+                        }
+                        assert!(matches!(
+                            backend
+                                .send_active_message(
+                                    ActiveAgentMessageRequest::try_new(&id, "protected followup")
+                                        .unwrap()
+                                )
+                                .await,
+                            ActiveAgentMessageOutcome::Accepted { .. }
+                        ));
+                        primary.release();
+                        protected.wait_blocked().await;
+                        assert!(
+                            settlement_rx.try_recv().is_err(),
+                            "finalization must wait for the accepted parent receipt"
+                        );
+                        protected.release();
+                        let (child_cmd, release) = settlement_rx.recv().await.unwrap();
+                        primary.assert_satisfied();
+                        protected.assert_satisfied();
+
+                        let (wake_reply, mut wake_result) = oneshot::channel();
+                        if let Some(wake) = wake.as_mut() {
+                            child_cmd
+                                .send(SessionCommand::Prompt {
+                                    prompt_id: "task-completed-background".into(),
+                                    prompt_blocks: vec![acp::ContentBlock::Text(
+                                        acp::TextContent::new("Background task completed."),
+                                    )],
+                                    prompt_mode: crate::session::plan_mode::PromptMode::Agent,
+                                    artifact_upload_ctx: None,
+                                    client_identifier: None,
+                                    screen_mode: None,
+                                    verbatim: true,
+                                    traceparent: None,
+                                    json_schema: None,
+                                    send_now: false,
+                                    admission: None,
+                                    tool_overrides_update: None,
+                                    respond_to: wake_reply,
+                                    prompt_admitted: None,
+                                    persist_ack: None,
+                                    parsed_prompt_tx: None,
+                                })
+                                .unwrap();
+                            wake.wait_received().await;
+                        }
+                        release.send(()).unwrap();
+
+                        // Consume the real runner's usage command, applying the canonical parent
+                        // ledger and persistence primitives before acknowledging its fold.
+                        let (
+                            by_model,
+                            attributions,
+                            pending_attempts,
+                            parent_prompt_id,
+                            incomplete,
+                            respond_to,
+                        ) = loop {
+                            if let SessionCommand::RecordSubagentUsage {
+                                by_model,
+                                attributions,
+                                pending_attempts,
+                                parent_prompt_id,
+                                incomplete,
+                                respond_to,
+                            } = parent_cmd_rx.recv().await.unwrap()
+                            {
+                                break (
+                                    by_model,
+                                    attributions,
+                                    pending_attempts,
+                                    parent_prompt_id,
+                                    incomplete,
+                                    respond_to,
+                                );
+                            }
+                        };
+                        assert_eq!(parent_prompt_id.as_deref(), Some("parent-prompt"));
+                        assert_eq!(incomplete, interrupt_wake);
+                        if interrupt_wake {
+                            assert_eq!(
+                                wake_result
+                                    .try_recv()
+                                    .expect("wake settled before usage fold")
+                                    .unwrap()
+                                    .stop_reason,
+                                acp::StopReason::Cancelled
+                            );
+                        }
+                        assert!(
+                            parent_chat
+                                .record_subagent_usage_with_attributions_and_pending(
+                                    by_model,
+                                    attributions,
+                                    pending_attempts,
+                                    true,
+                                    incomplete,
+                                )
+                                .await
+                        );
+                        let ledger = parent_chat.try_get_session_usage().await.unwrap();
+                        assert_eq!(ledger.is_incomplete(), interrupt_wake);
+                        assert_eq!(
+                            ledger
+                                .attributions
+                                .iter()
+                                .filter(|call| call.role == "main"
+                                    && call.usage_complete
+                                    && call.usage.is_some())
+                                .count(),
+                            2
+                        );
+                        assert!(
+                            ledger.totals.total_tokens() >= 30,
+                            "both completed model turns retain their reported usage"
+                        );
+                        persistence
+                            .tx
+                            .send(PersistenceMsg::UsageTurn {
+                                turn_number: 1,
+                                prompt_id: parent_prompt_id,
+                                live: UsageSummary::from_ledger(&ledger),
+                            })
+                            .unwrap();
+                        let (flushed, ack) = oneshot::channel();
+                        persistence
+                            .tx
+                            .send(PersistenceMsg::FlushAndAck {
+                                respond_to: flushed,
+                            })
+                            .unwrap();
+                        ack.await.unwrap().unwrap();
+                        assert!(
+                            !spawned.is_finished(),
+                            "terminal child result must wait for the parent fold acknowledgement"
+                        );
+                        respond_to.send(()).unwrap();
+                        let result = spawned.await.unwrap().unwrap();
+                        assert!(result.success, "{:?}", result.error);
+                        assert!(!result.cancelled);
+                        assert_eq!(&*result.output, "protected result");
+                        assert_eq!(result.output_usage_incomplete, interrupt_wake);
+                        assert_eq!(result.total_tokens_used, ledger.totals.total_tokens());
+                        let persisted: SessionUsageFile = serde_json::from_slice(
+                            &std::fs::read(parent_dir.join("usage.json")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(persisted.session.usage_is_incomplete, interrupt_wake);
+                        assert_eq!(persisted.session.total_tokens, result.total_tokens_used);
+                        assert_eq!(persisted.session.model_calls, ledger.totals.model_calls);
+                        assert_eq!(
+                            read_subagent_output(&meta_dir).as_deref(),
+                            Some("protected result")
+                        );
+                        let meta: SubagentMeta = serde_json::from_slice(
+                            &std::fs::read(meta_dir.join("meta.json")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(meta.status, "completed");
+                        drop(child_cmd);
+                        drop(backend);
+                        coordinator.await.unwrap();
+                    })
+                    .await
+                    .expect("child settlement integration is bounded");
+                }
+            }));
+        })
+        .expect("spawn large-stack child settlement test thread")
+        .join()
+        .expect("child settlement test thread");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn unpublished_wake_completion_preserves_prior_durable_state_and_worktree() {
     distill_test_utils::require_git!();
@@ -1890,6 +2171,344 @@ async fn lone_background_child_still_wakes_on_its_own() {
             assert!(body.contains("Background subagent \"sa-a\""), "{body}");
             assert!(body.contains("sa-a output"), "{body}");
             assert!(!body.contains("background subagents completed:"), "{body}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ultracode_nested_shell_inherits_distinct_shared_cwd_without_reparenting_root_state() {
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
+    use distill_tools::implementations::distill::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("root");
+            let ordinary = temp.path().join("ordinary-parent");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::create_dir_all(&ordinary).unwrap();
+            std::fs::write(root.join("marker"), b"root").unwrap();
+            std::fs::write(ordinary.join("marker"), b"ordinary").unwrap();
+            let meta_dir = temp.path().join("meta");
+            let server = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            server.set_response("bounded descendant completed");
+            let (context_tx, mut context_rx) = mpsc::unbounded_channel();
+            let mut harness =
+                RunShellChildHarnessConfig::new(meta_dir.clone(), InitialAttemptBehavior::Normal);
+            harness.child_context_tx = Some(context_tx);
+            let mut ctx = ctx_with_toggle(HashMap::new());
+            configure_completion_harness(&mut ctx, &server, harness);
+            ctx.parent_cwd = root.clone();
+            ctx.parent_session_info = Some(SessionInfo {
+                id: acp::SessionId::new("setup-parent"),
+                cwd: root.to_string_lossy().into_owned(),
+            });
+            ctx.fs = Arc::new(distill_workspace::file_system::LocalFs::new(root.clone()));
+            let root_fs = ctx.fs.clone();
+            let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let policy = UltracodePolicy {
+                enabled: enabled.clone(),
+                max_depth: 2,
+                off_max_depth: 3,
+                capability_ceiling: None,
+                allowed_subagent_types: None,
+            };
+            ctx.parent_ultracode_policy = Some(policy.clone());
+            ctx.subagents_max_depth = 3;
+            let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+            ctx.parent_cmd_tx = Some(parent_cmd_tx);
+            let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+            let (gateway, _gateway_rx) = test_gateway_with_receiver();
+            let (command_tx, command_rx) =
+                SubagentCoordinator::<RunShellChildTestRunner>::channel();
+            let coordinator = tokio::task::spawn_local(
+                SubagentCoordinator::from_channel(
+                    command_rx,
+                    RunShellChildTestRunner::new([ctx], false, gateway),
+                    CoordinatorConfig::default(),
+                )
+                .run(),
+            );
+            let backend = ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+            let id = uuid::Uuid::now_v7().to_string();
+            let mut request = auto_wake_test_request(&id);
+            request.run_in_background = false;
+            request.prompt = "Verify the bounded descendant objective".into();
+            request.runtime_overrides.ultracode = Some(policy);
+            request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+            request.runtime_overrides.spawn_depth = Some(2);
+            request.runtime_overrides.inherited_cwd = Some(ordinary.to_string_lossy().into_owned());
+            assert!(request.cwd.is_none());
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                backend.spawn(request, None),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(result.success, "{:?}", result.error);
+            let (child, has_task, resources) = context_rx.recv().await.unwrap();
+            assert!(
+                has_task,
+                "existing depth-two shared child needs installed Task for ordinary off depth three"
+            );
+            {
+                let resources = resources.lock().await;
+                assert_eq!(resources.get::<MaxSubagentDepth>().unwrap().0, 3);
+                assert_eq!(
+                    distill_tools::implementations::distill::task::effective_max_subagent_depth(
+                        &resources
+                    ),
+                    2
+                );
+            }
+            enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(
+                distill_tools::implementations::distill::task::effective_max_subagent_depth(
+                    &*resources.lock().await
+                ),
+                3
+            );
+            enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(
+                distill_tools::implementations::distill::task::effective_max_subagent_depth(
+                    &*resources.lock().await
+                ),
+                2
+            );
+            assert_eq!(child.cwd.as_path(), ordinary.as_path());
+            assert_eq!(child.fs.root(), ordinary.as_path());
+            assert_eq!(root_fs.root(), root.as_path());
+            assert_eq!(child.fs.read_file("marker").await.unwrap(), b"ordinary");
+            child
+                .fs
+                .write_file("descendant.txt", b"verified")
+                .await
+                .unwrap();
+            assert!(ordinary.join("descendant.txt").exists());
+            assert!(!root.join("descendant.txt").exists());
+            let meta: SubagentMeta =
+                serde_json::from_slice(&std::fs::read(meta_dir.join("meta.json")).unwrap())
+                    .unwrap();
+            assert_eq!(meta.parent_session_id, "setup-parent");
+            assert_eq!(meta.child_cwd.as_deref(), ordinary.to_str());
+            assert!(
+                meta.worktree_path.is_none(),
+                "shared-cwd descendant does not own an isolated checkout"
+            );
+            assert!(ordinary.is_dir());
+            drop(backend);
+            coordinator.await.unwrap();
+            usage_ack.abort();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
+    // Re-exec before the cached home is read, using the existing isolated-home pattern.
+    const CHILD: &str = "DISTILL_ULTRACODE_DURABLE_RESUME_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let module = module_path!().split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!(
+                    "{module}::ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off"
+                ),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("DISTILL_HOME", home.path())
+            .env("GROK_HOME", home.path())
+            // Match the 16 MiB stack used by the neighboring resume tests.
+            .env("RUST_MIN_STACK", (16 * 1024 * 1024).to_string())
+            .output()
+            .expect("isolated durable UltraCode test process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child filter must run one test"
+        );
+        return;
+    }
+
+    distill_test_utils::require_git!();
+    use crate::session::storage::StorageAdapter;
+    use distill_test_utils::git::seed_repo_with_remote;
+    use distill_tools::implementations::distill::task::backend::{ChannelBackend, SubagentBackend};
+    use distill_tools::implementations::distill::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (root, _remote) = seed_repo_with_remote(temp.path());
+            let isolated = temp.path().join("isolated-source");
+            distill_fast_worktree::WorktreeBuilder::new(&root, &isolated)
+                .create()
+                .unwrap();
+            let source_id = uuid::Uuid::now_v7().to_string();
+            let root_info = SessionInfo {
+                id: acp::SessionId::new("setup-parent"),
+                cwd: root.to_string_lossy().into_owned(),
+            };
+            let source_info = SessionInfo {
+                id: acp::SessionId::new(source_id.clone()),
+                cwd: isolated.to_string_lossy().into_owned(),
+            };
+            let shared = temp.path().join("saved-shared-source");
+            std::fs::create_dir_all(&shared).unwrap();
+            std::fs::write(root.join("marker"), b"root").unwrap();
+            std::fs::write(shared.join("marker"), b"saved-shared").unwrap();
+            let shared_source_info = SessionInfo {
+                id: acp::SessionId::new(uuid::Uuid::now_v7().to_string()),
+                cwd: shared.to_string_lossy().into_owned(),
+            };
+            let storage = crate::session::storage::jsonl::JsonlStorageAdapter::with_root(
+                crate::util::distill_home::distill_home(),
+            );
+            for source in [&source_info, &shared_source_info] {
+                let source_meta_dir = crate::session::persistence::session_dir(&root_info)
+                    .join("subagents")
+                    .join(source.id.to_string());
+                let mut source_meta = prior_wake_meta(&source.id.to_string(), "test-model");
+                source_meta.child_cwd = Some(source.cwd.clone());
+                source_meta.worktree_path =
+                    (source.id == source_info.id).then(|| source.cwd.clone());
+                source_meta.snapshot_ref = None;
+                assert!(write_subagent_meta(&source_meta_dir, &source_meta));
+                storage
+                    .init_session(source, acp::ModelId::new("test-model"))
+                    .await
+                    .unwrap();
+                storage
+                    .append_chat_message(source, &ConversationItem::system("prior source system"))
+                    .await
+                    .unwrap();
+                storage
+                    .append_chat_message(source, &ConversationItem::assistant("prior source work"))
+                    .await
+                    .unwrap();
+            }
+            let server = distill_test_support::MockInferenceServer::start()
+                .await
+                .unwrap();
+            server.set_response("isolated leaf completed");
+            let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            for (mode, resumed_source) in [
+                (true, &source_info),
+                (false, &source_info),
+                (true, &shared_source_info),
+            ] {
+                enabled.store(mode, std::sync::atomic::Ordering::Relaxed);
+                let policy = UltracodePolicy {
+                    enabled: enabled.clone(),
+                    max_depth: 2,
+                    off_max_depth: 3,
+                    capability_ceiling: None,
+                    allowed_subagent_types: None,
+                };
+                let (context_tx, mut context_rx) = mpsc::unbounded_channel();
+                let mut harness = RunShellChildHarnessConfig::new(
+                    temp.path().join(if mode { "on-meta" } else { "off-meta" }),
+                    InitialAttemptBehavior::Normal,
+                );
+                harness.child_context_tx = Some(context_tx);
+                let mut ctx = ctx_with_toggle(HashMap::new());
+                configure_completion_harness(&mut ctx, &server, harness);
+                ctx.parent_cwd = root.clone();
+                ctx.parent_session_info = Some(root_info.clone());
+                ctx.parent_ultracode_policy = Some(policy.clone());
+                let mut config = crate::agent::config::Config::default();
+                config.feature_values.insert(
+                    crate::agent::config::Feature::SubagentWorktreeSnapshot,
+                    false,
+                );
+                ctx.agent_config = Some(config);
+                ctx.subagents_max_depth = 3;
+                ctx.fs = Arc::new(distill_workspace::file_system::LocalFs::new(root.clone()));
+                let root_fs = ctx.fs.clone();
+                let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+                ctx.parent_cmd_tx = Some(parent_cmd_tx);
+                let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+                let (gateway, _gateway_rx) = test_gateway_with_receiver();
+                // A new coordinator has no completed source: this must restore from disk.
+                let (command_tx, command_rx) =
+                    SubagentCoordinator::<RunShellChildTestRunner>::channel();
+                let coordinator = tokio::task::spawn_local(
+                    SubagentCoordinator::from_channel(
+                        command_rx,
+                        RunShellChildTestRunner::new([ctx], false, gateway),
+                        CoordinatorConfig::default(),
+                    )
+                    .run(),
+                );
+                let backend = ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+                assert_eq!(backend.registry_counts().await.completed, 0);
+                let mut request = auto_wake_test_request(&uuid::Uuid::now_v7().to_string());
+                request.prompt = "Continue in this isolated checkout locally".into();
+                request.resume_from = Some(resumed_source.id.to_string());
+                request.runtime_overrides.ultracode = mode.then_some(policy);
+                request.runtime_overrides.model_override_provenance = ModelOverrideProvenance::Tool;
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    backend.spawn(request, None),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(result.success, "{:?}", result.error);
+                let (child, has_task, resources) = context_rx.recv().await.unwrap();
+                assert_eq!(
+                    child.cwd.as_path(),
+                    std::path::Path::new(&resumed_source.cwd)
+                );
+                assert_eq!(child.fs.root(), child.cwd.as_path());
+                assert_eq!(root_fs.root(), root.as_path());
+                if resumed_source.id == source_info.id {
+                    assert_eq!(
+                        resources.lock().await.get::<MaxSubagentDepth>().unwrap().0,
+                        child.subagent_depth
+                    );
+                    assert!(
+                        !has_task,
+                        "restored isolated children remain leaves at ordinary depth 3"
+                    );
+                    if mode {
+                        let leaf = child.ultracode_policy.as_ref().unwrap();
+                        assert_eq!(leaf.max_depth, child.subagent_depth);
+                        assert_eq!(leaf.off_max_depth, child.subagent_depth);
+                        enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+                        assert!(!leaf.is_enabled());
+                        enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        assert_eq!(leaf.max_depth, child.subagent_depth);
+                    }
+                } else {
+                    assert!(has_task, "restored shared cwd retains ordinary hierarchy");
+                    assert_eq!(child.fs.read_file("marker").await.unwrap(), b"saved-shared");
+                    child
+                        .fs
+                        .write_file("resume-proof.txt", b"verified")
+                        .await
+                        .unwrap();
+                    assert!(shared.join("resume-proof.txt").is_file());
+                    assert!(!root.join("resume-proof.txt").exists());
+                }
+                drop(backend);
+                coordinator.await.unwrap();
+                usage_ack.abort();
+            }
         })
         .await;
 }

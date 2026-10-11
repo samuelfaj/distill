@@ -39,7 +39,7 @@ for line in sys.stdin:
     if method == 'initialize':
         result = {'protocolVersion': 1, 'agentCapabilities': {}, 'authMethods': []}
     elif method == 'session/new':
-        if scenario in ('stop-feedback', 'stop-feedback-scope'):
+        if scenario in ('stop-feedback', 'stop-feedback-scope', 'stop-feedback-failure'):
             assert request['params']['_meta'] == {'sessionKind': 'headless', 'x.ai/hooks': {
                 'stop': [{'hookCallbackIds': ['benchmark-root-stop']}]}}
         result = {'sessionId': 'runtime-session'}
@@ -56,7 +56,7 @@ for line in sys.stdin:
         if scenario == 'activation-error':
             send({'id': request['id'], 'error': {'code': -32601, 'message': 'unsupported'}})
             continue
-        if scenario in ('timeout', 'eof', 'stubborn'):
+        if scenario in ('timeout', 'eof', 'stubborn', 'stop-feedback-failure'):
             # A writer in a separate session proves cleanup is not just wait(parent).
             code = "import pathlib,signal,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True:\n pathlib.Path('pulse').write_text(str(time.time()))\n time.sleep(.02)"
             child = subprocess.Popen([sys.executable, '-c', code], start_new_session=True)
@@ -67,8 +67,9 @@ for line in sys.stdin:
             if scenario == 'stubborn':
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
                 time.sleep(60)
-            # Consume cancellation but never answer the activation request.
-            continue
+            if scenario != 'stop-feedback-failure':
+                # Consume cancellation but never answer the activation request.
+                continue
         result = {'enabled': request['params']['enabled']}
         if scenario == 'activation-false':
             result = {'enabled': False}
@@ -78,17 +79,25 @@ for line in sys.stdin:
             result = None
     elif method == 'session/prompt':
         (root / 'prompt-seen').write_text(request['params']['prompt'][0]['text'])
-        if scenario in ('stop-feedback', 'stop-feedback-scope'):
+        if scenario in ('stop-feedback', 'stop-feedback-scope', 'stop-feedback-failure'):
             envelope = {'hookCallbackId': 'benchmark-root-stop', 'sessionId': 'runtime-session',
                         'hookEventName': 'stop', 'reason': 'end_turn', 'stopHookActive': False,
                         'cwd': str(root), 'workspaceRoot': str(root), 'timestamp': '2026-10-10T00:00:00Z'}
+            (root / 'artifact.py').write_text('before feedback\n')
+            if scenario == 'stop-feedback-failure':
+                send({'id': 'hook-0', 'method': '_x.ai/hooks/run', 'params': envelope})
+                reply = json.loads(sys.stdin.readline())
+                assert reply['method'] == 'session/cancel', reply
+                (root / 'cancelled').write_text('yes')
+                continue
             calls = []
             if scenario == 'stop-feedback-scope':
                 send({'method': '_x.ai/hooks/event', 'params': envelope})
                 calls.extend([{**envelope, 'sessionId': 'child-session'},
                               {**envelope, 'hookCallbackId': 'other-callback'},
                               {**envelope, 'hookEventName': 'subagent_stop'},
-                              {**envelope, 'reason': 'cancelled'}])
+                              {**envelope, 'reason': 'cancelled'},
+                              {**envelope, 'reason': 'session_end'}])
             calls.extend([envelope, {**envelope, 'stopHookActive': True}])
             replies = []
             for index, params in enumerate(calls):
@@ -98,6 +107,8 @@ for line in sys.stdin:
                 expected = ({'decision': 'deny', 'systemMessage': 'Please check whether the requested work is complete.'}
                             if index == len(calls) - 2 else {'decision': 'continue'})
                 assert reply == {'jsonrpc': '2.0', 'id': identity, 'result': expected}, reply
+                if reply['result']['decision'] == 'deny':
+                    (root / 'artifact.py').write_text('after feedback\n')
                 replies.append(reply)
             (root / 'hook-responses.json').write_text(json.dumps(replies))
         if scenario == 'exit-plan-mode':
@@ -157,11 +168,13 @@ def fake_peer(root, scenario='success'):
     return path
 
 
-def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium', stop_feedback=None):
+def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium', stop_feedback=None,
+          before_stop_feedback=None):
     peer = fake_peer(root, scenario)
     return acp_driver.run_acp([str(peer)], cwd=root, environment=os.environ.copy(), prompt='Change fixture',
                              model='chatgpt/gpt-6.1-sol', effort=effort, ultracode=ultracode,
-                             timeout=timeout, output=root, stop_feedback=stop_feedback)
+                             timeout=timeout, output=root, stop_feedback=stop_feedback,
+                             before_stop_feedback=before_stop_feedback)
 
 
 class AcpDriverTest(unittest.TestCase):
@@ -187,14 +200,16 @@ class AcpDriverTest(unittest.TestCase):
                     tree.refresh.side_effect = OSError('injected failure')
                 if failure == 'logging':
                     transcript.write.side_effect = OSError('injected failure')
+                observer = mock.Mock()
                 with mock.patch.object(acp_driver.os, 'set_blocking'), \
                         mock.patch.object(acp_driver.select, 'select', return_value=([], [process.stdin], [])), \
                         mock.patch.object(acp_driver.os, 'write', side_effect=write):
                     client = acp_driver._Client(process, tree, Path.cwd(), time.monotonic() + 3,
-                                                mock.Mock(), transcript, 'Check completion.')
+                                                mock.Mock(), transcript, 'Check completion.', observer)
                     client.session = 'runtime-session'
                     with self.assertRaisesRegex(OSError, 'injected failure'):
                         client.handle(message)
+                    observer.assert_called_once_with(params, client.deadline)
                     sent = failure in ('refresh', 'logging')
                     self.assertEqual(bytes(transmitted), wire if sent else wire[:1] if failure == 'partial' else b'')
                     self.assertEqual(client.stop_feedback_sent, sent)
@@ -207,6 +222,7 @@ class AcpDriverTest(unittest.TestCase):
                         client.handle({**message, 'id': 'hook-1'})
                         self.assertEqual(json.loads(transmitted)['result'], {'decision': 'continue'})
                         self.assertFalse(client.stop_hook_receipts[-1]['feedback_sent'])
+                        observer.assert_called_once_with(params, client.deadline)
 
     def test_opt_in_root_stop_feedback_is_sent_once_then_completes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -235,21 +251,82 @@ class AcpDriverTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             feedback = 'Please check whether the requested work is complete.'
-            result = drive(root, 'stop-feedback-scope', stop_feedback=feedback)
+            observed = []
+
+            def observe(params, deadline):
+                self.assertGreater(deadline, time.monotonic())
+                observed.append(params.copy())
+                (root / 'captured.py').write_bytes((root / 'artifact.py').read_bytes())
+
+            result = drive(root, 'stop-feedback-scope', stop_feedback=feedback, before_stop_feedback=observe)
             self.assertTrue(result['completed'] and result['cleanup_complete'], result)
             self.assertEqual(result['exit_code'], 0)
             self.assertTrue(result['stop_feedback_sent'])
             receipts = result['stop_hook_receipts']
-            self.assertEqual(len(receipts), 6)
-            self.assertEqual([r['feedback_sent'] for r in receipts], [False, False, False, False, True, False])
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0]['sessionId'], 'runtime-session')
+            self.assertEqual(observed[0]['hookCallbackId'], acp_driver.STOP_CALLBACK_ID)
+            self.assertEqual(observed[0]['reason'], 'end_turn')
+            self.assertEqual((root / 'captured.py').read_text(), 'before feedback\n')
+            self.assertEqual((root / 'artifact.py').read_text(), 'after feedback\n')
+            self.assertEqual(len(receipts), 7)
+            self.assertEqual([r['feedback_sent'] for r in receipts], [False, False, False, False, False, True, False])
             self.assertEqual([r['response'] for r in receipts], [
                 {'decision': 'continue'}, {'decision': 'continue'},
-                {'decision': 'continue'}, {'decision': 'continue'},
+                {'decision': 'continue'}, {'decision': 'continue'}, {'decision': 'continue'},
                 {'decision': 'deny', 'systemMessage': feedback}, {'decision': 'continue'},
             ])
             replies = json.loads((root / 'hook-responses.json').read_text())
             self.assertEqual([r['result'] for r in replies], [r['response'] for r in receipts])
             self.assertTrue((root / 'tools-completed').exists())
+
+    def test_observer_elapsed_deadline_prevents_feedback_write(self):
+        process, tree = mock.Mock(), mock.Mock()
+        deadline = time.monotonic() + 3
+        params = {'sessionId': 'runtime-session', 'hookCallbackId': acp_driver.STOP_CALLBACK_ID,
+                  'hookEventName': 'stop', 'reason': 'end_turn'}
+        observer = mock.Mock()
+        with mock.patch.object(acp_driver.os, 'set_blocking'):
+            client = acp_driver._Client(process, tree, Path.cwd(), deadline, mock.Mock(), mock.Mock(),
+                                        'Check completion.', observer)
+        client.session = 'runtime-session'
+        with mock.patch.object(acp_driver.time, 'monotonic', return_value=deadline - .1) as clock, \
+                mock.patch.object(acp_driver.os, 'write') as write:
+            observer.side_effect = lambda params, deadline: setattr(clock, 'return_value', deadline)
+            with self.assertRaisesRegex(TimeoutError, 'before Stop feedback deadline exceeded'):
+                client.handle({'id': 'hook-0', 'method': acp_driver.HOOK_RUN_METHOD, 'params': params})
+        observer.assert_called_once_with(params, deadline)
+        self.assertIs(observer.call_args.args[0], params)
+        write.assert_not_called()
+        self.assertFalse(client.stop_feedback_sent)
+        self.assertEqual(client.stop_hook_receipts, [])
+
+    def test_observer_failure_aborts_feedback_and_stops_owned_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observer = mock.Mock(side_effect=RuntimeError('capture failed'))
+            started = time.monotonic()
+            result = drive(root, 'stop-feedback-failure', timeout=3,
+                           stop_feedback='Check completion.', before_stop_feedback=observer)
+            self.assertLess(time.monotonic() - started, 3.1)
+            observer.assert_called_once()
+            self.assertFalse(result['completed'])
+            self.assertFalse(result['timed_out'])
+            self.assertIn('Before Stop feedback observer failed: capture failed', result['error'])
+            self.assertTrue(result['cleanup_complete'], result)
+            self.assertFalse(result['stop_feedback_sent'])
+            self.assertEqual(result['stop_hook_receipts'], [])
+            sent = [row['message'] for row in map(json.loads, (root / 'acp-transcript.jsonl').read_text().splitlines())
+                    if row['direction'] == 'sent']
+            self.assertFalse(any(message.get('id') == 'hook-0' for message in sent))
+            self.assertEqual(sent[-1]['method'], 'session/cancel')
+            self.assertEqual((root / 'artifact.py').read_text(), 'before feedback\n')
+            pulse = root / 'pulse'
+            self.assertTrue(pulse.exists())
+            last = pulse.read_text()
+            time.sleep(.06)
+            self.assertEqual(pulse.read_text(), last, 'owned writer survived observer failure')
+            self.assertEqual(result, json.loads((root / 'acp-result.json').read_text()))
 
     def test_internal_reload_acks_are_logged_without_completing_prompt_or_pending_children(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -374,7 +451,9 @@ class AcpDriverTest(unittest.TestCase):
     def test_real_order_model_effort_activation_permission_and_completion_receipts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            result = drive(root)
+            observer = mock.Mock(side_effect=AssertionError('observer needs opted-in feedback'))
+            result = drive(root, before_stop_feedback=observer)
+            observer.assert_not_called()
             self.assertTrue(result['completed'], result)
             self.assertEqual(result['exit_code'], 0)
             self.assertEqual(result['session'], 'runtime-session')

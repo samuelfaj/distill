@@ -127,7 +127,7 @@ class OwnedTree:
 
 
 class _Client:
-    def __init__(self, process, tree, cwd, deadline, stdout, transcript, stop_feedback):
+    def __init__(self, process, tree, cwd, deadline, stdout, transcript, stop_feedback, before_stop_feedback=None):
         self.process, self.tree, self.cwd, self.deadline = process, tree, cwd.resolve(), deadline
         self.stdout, self.transcript = stdout, transcript
         self.buffer = b''
@@ -138,6 +138,7 @@ class _Client:
         self.pending = set()
         self.finished = set()
         self.stop_feedback = stop_feedback
+        self.before_stop_feedback = before_stop_feedback
         self.stop_feedback_sent = False
         self.stop_hook_receipts = []
         os.set_blocking(process.stdout.fileno(), False)
@@ -264,6 +265,15 @@ class _Client:
                                  and params.get('reason') == 'end_turn')
                 reply = {'decision': 'continue'}
                 if feedback_sent:
+                    if self.before_stop_feedback is not None:
+                        try:
+                            self.before_stop_feedback(params, self.deadline)
+                        except (TimeoutError, subprocess.TimeoutExpired):
+                            raise
+                        except Exception as error:
+                            raise AcpError(f'Before Stop feedback observer failed: {error}') from error
+                        if time.monotonic() >= self.deadline:
+                            raise TimeoutError('ACP before Stop feedback deadline exceeded')
                     reply = {'decision': 'deny', 'systemMessage': self.stop_feedback}
 
                 def record_sent():
@@ -321,9 +331,14 @@ class _Client:
                 self.pending.add(key)
 
 
-def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, timeout, output, stop_feedback=None):
+def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, timeout, output, stop_feedback=None,
+            before_stop_feedback=None):
     """Return receipts and failure state; optionally deny one root Stop with feedback.
 
+    before_stop_feedback(params, deadline) observes only the first eligible feedback
+    before transmission. Trusted controller code may read/copy bounded local files;
+    it must honor the original monotonic inference deadline, avoid task mutations
+    and model calls, and let failures abort the run. Omitted by default.
     Always stop the owned tree before returning.
     """
     result = {'session': None, 'setup_confirmed': False, 'completed': False, 'timed_out': False, 'error': None,
@@ -338,7 +353,8 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode, time
                                        stdout=subprocess.PIPE, stderr=stderr, start_new_session=True, bufsize=0)
             tree = OwnedTree(process)
             tree.refresh(force=True, deadline=inference_deadline)
-            client = _Client(process, tree, cwd, inference_deadline, stdout, transcript, stop_feedback)
+            client = _Client(process, tree, cwd, inference_deadline, stdout, transcript, stop_feedback,
+                             before_stop_feedback)
             init = client.request('initialize', {
                 'protocolVersion': 1, 'clientCapabilities': {'fs': {'readTextFile': False, 'writeTextFile': False}, 'terminal': False},
                 '_meta': {'clientType': 'grok-shell', 'startupHints': {

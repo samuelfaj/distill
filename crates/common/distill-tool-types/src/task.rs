@@ -967,6 +967,7 @@ Strengths:
 - Multi-step research requiring exploration of many files
 
 Guidelines:\
+For uncertain, evidence-backed choices, rankings, or scores, use `jev_decide` when useful. Batch independent questions, pass source identifiers instead of copying large payloads, and state exact options and criteria. Jev advises only; do not treat it as authority or ask it to generate options. Never retry your own Jev consultation recursively.\
 ${%- if tools.by_kind.search and tools.by_kind.list %}
 - Use ${{ tools.by_kind.search }} or ${{ tools.by_kind.list }} for broad searches; ${{ tools.by_kind.read }} for known paths.\
 ${%- endif %}
@@ -1002,6 +1003,7 @@ Strengths:
 - Reading and analyzing file contents
 
 Guidelines:
+- For uncertain, evidence-backed choices or rankings, use `jev_decide` when useful. Batch independent questions, pass source identifiers instead of large payloads, and state exact options and criteria. Jev advises only; it is not authority or a source of free-form options. Never retry your own Jev consultation recursively.
 - Use ${{ tools.by_kind.list }} for file pattern matching, ${{ tools.by_kind.search }} for content search, ${{ tools.by_kind.read }} for known paths.
 - Adapt search approach based on the thoroughness level specified by the caller.
 - Locate code with ${{ tools.by_kind.search }} and a few context lines first, then read only the line ranges you need instead of whole files.
@@ -1027,6 +1029,8 @@ ${%- if tools.by_kind.execute %} \
 Use ${{ tools.by_kind.execute }} only for read-only commands \
 (ls, git status, git log, git diff, find, cat, head, tail).\
 ${%- endif %}
+
+For uncertain, evidence-backed choices or rankings, use `jev_decide` when useful. Batch independent questions, pass source identifiers instead of large payloads, and state exact options and criteria. Jev advises only; it is not authority or a source of free-form options. Never retry your own Jev consultation recursively.
 
 Process:
 1. **Understand** the requirements and any assigned perspective.

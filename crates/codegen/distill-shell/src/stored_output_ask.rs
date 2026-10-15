@@ -49,6 +49,11 @@ fn resolve_in_store(store: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+pub(crate) fn resolve_stored_original(path: &str) -> Result<PathBuf, String> {
+    resolve_in_store(&crate::jev_store::store_dir(), path)
+        .or_else(|err| resolve_terminal_log(&sessions_dir(), path).ok_or(err))
+}
+
 fn sessions_dir() -> PathBuf {
     crate::util::distill_home::distill_home().join("sessions")
 }

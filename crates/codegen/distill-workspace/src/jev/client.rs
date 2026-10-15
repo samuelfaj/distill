@@ -23,20 +23,26 @@ use super::types::{
     SystemOneRequest, SystemOneResponse, Usage,
 };
 
-/// Default endpoint root; overridable per config (never from project config).
-pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
-/// Default model alias; pin a version when thresholds are calibrated (item 89).
-pub const DEFAULT_MODEL: &str = "jev-latest";
+/// Fixed OpenRouter endpoint root for production Jev traffic.
+pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api";
+/// OpenRouter alias for the latest Jev model.
+pub const DEFAULT_MODEL: &str = "~typesafe/jev-latest";
 /// Per-operation deadline (plan §12.5: 10 s, and it must cover the body read).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Environment variable consulted when no resolver is injected.
-pub const DEFAULT_API_KEY_ENV: &str = "JEV_API_KEY";
+pub const DEFAULT_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 /// State ceiling for one request (Jev's own budget is 32k tokens for state +
 /// longest question; we stop far below it so a request is cheap and focused).
 pub const DEFAULT_MAX_STATE_BYTES: usize = 32 * 1024;
 /// Hard ceiling for the complete serialized request: the configured state
 /// allowance plus one equally bounded question/catalogue allowance.
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = DEFAULT_MAX_STATE_BYTES * 2;
+/// State allowance for explicitly opted-in OpenRouter long-context requests.
+pub const LONG_CONTEXT_MAX_STATE_BYTES: usize = 768 * 1024;
+/// Serialized request allowance for long-context state plus typed questions.
+pub const LONG_CONTEXT_MAX_REQUEST_BYTES: usize = 1024 * 1024;
+/// Minimum deadline for requests carrying the long-context capability header.
+pub const LONG_CONTEXT_MIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Completion ceiling for a chat-completions backend: a typed answer is a small
 /// JSON object, and a lower ceiling is what keeps a decision call cheap.
 pub const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
@@ -83,7 +89,7 @@ impl Default for JevClientConfig {
             timeout: DEFAULT_TIMEOUT,
             api_key_env: DEFAULT_API_KEY_ENV.to_owned(),
             max_state_bytes: DEFAULT_MAX_STATE_BYTES,
-            provider: JevProvider::default(),
+            provider: JevProvider::OpenRouterDecisions,
             reasoning_shape: ReasoningShape::default(),
             reasoning_effort: DEFAULT_REASONING_EFFORT.to_owned(),
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
@@ -118,6 +124,10 @@ struct DecisionMemo {
     answers: JevAnswerSet,
 }
 
+fn is_jev_model(model: &str) -> bool {
+    model.starts_with("~typesafe/jev") || model.starts_with("typesafe/jev")
+}
+
 fn env_key_resolver() -> ApiKeyResolver {
     Arc::new(|name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
 }
@@ -134,8 +144,26 @@ impl JevClient {
         config: JevClientConfig,
         key_resolver: ApiKeyResolver,
     ) -> Result<Self, JevError> {
+        if config.provider != JevProvider::OpenRouterDecisions {
+            return Err(JevError::invalid("Jev requires the OpenRouter Decisions provider"));
+        }
+        if config.api_key_env != DEFAULT_API_KEY_ENV {
+            return Err(JevError::invalid("Jev requires OPENROUTER_API_KEY"));
+        }
+        if !is_jev_model(&config.model) {
+            return Err(JevError::invalid("Jev model must be a typesafe/jev model"));
+        }
+        let production_url = config.base_url.trim_end_matches('/') == DEFAULT_BASE_URL;
+        #[cfg(test)]
+        let test_url = config.base_url.starts_with("http://127.0.0.1:") || config.base_url.starts_with("http://localhost:");
+        #[cfg(not(test))]
+        let test_url = false;
+        if !production_url && !test_url {
+            return Err(JevError::invalid("Jev endpoint must use https://openrouter.ai/api"));
+        }
         let http = distill_extra_ca::build_reqwest_client(|builder| {
             builder
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(5))
                 .pool_idle_timeout(Duration::from_secs(30))
                 .user_agent("grok-jev-client")
@@ -148,6 +176,18 @@ impl JevClient {
             observer: None,
             memo: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    #[cfg(test)]
+    pub fn with_test_base_url(mut config: JevClientConfig, base_url: String, key_resolver: ApiKeyResolver) -> Result<Self, JevError> {
+        if !base_url.starts_with("http://127.0.0.1:") && !base_url.starts_with("http://localhost:") {
+            return Err(JevError::invalid("test Jev endpoint must be localhost"));
+        }
+        if config.provider != JevProvider::OpenRouterDecisions {
+            return Err(JevError::invalid("Jev requires the OpenRouter Decisions provider"));
+        }
+        config.base_url = base_url;
+        Self::with_key_resolver(config, key_resolver)
     }
 
     /// Clone the transport with a turn-scoped observer. The original cached
@@ -229,6 +269,25 @@ impl JevClient {
         state: &Json,
         questions: &BTreeMap<QuestionId, Question>,
     ) -> Result<JevAnswerSet, JevError> {
+        self.ask_inner(state, questions, false).await
+    }
+
+    /// Sends one typed request with OpenRouter's documented long-context header.
+    /// This request alone receives the larger state/body limits and timeout.
+    pub async fn ask_long(
+        &self,
+        state: &Json,
+        questions: &BTreeMap<QuestionId, Question>,
+    ) -> Result<JevAnswerSet, JevError> {
+        self.ask_inner(state, questions, true).await
+    }
+
+    async fn ask_inner(
+        &self,
+        state: &Json,
+        questions: &BTreeMap<QuestionId, Question>,
+        long_context: bool,
+    ) -> Result<JevAnswerSet, JevError> {
         if questions.is_empty() {
             return Err(JevError::invalid("questions must not be empty"));
         }
@@ -241,15 +300,23 @@ impl JevClient {
         let state_bytes = serde_json::to_vec(state)
             .map_err(|e| JevError::invalid(format!("state serialization failed: {e}")))?
             .len();
-        if state_bytes > self.config.max_state_bytes {
+        let state_limit = if long_context {
+            LONG_CONTEXT_MAX_STATE_BYTES
+        } else {
+            self.config.max_state_bytes
+        };
+        if state_bytes > state_limit {
             return Err(JevError::invalid(format!(
-                "state is {state_bytes} bytes, over the {} byte ceiling for one request",
-                self.config.max_state_bytes
+                "state is {state_bytes} bytes, over the {state_limit} byte ceiling for one request"
             )));
         }
 
         let body = self.request_body(state, questions)?;
-        let request_limit = self.config.max_state_bytes.saturating_mul(2);
+        let request_limit = if long_context {
+            LONG_CONTEXT_MAX_REQUEST_BYTES
+        } else {
+            self.config.max_state_bytes.saturating_mul(2)
+        };
         if body.len() > request_limit {
             return Err(JevError::invalid(format!(
                 "request is {} bytes, over the {} byte ceiling for one request",
@@ -266,7 +333,11 @@ impl JevClient {
         })?;
 
         let started = Instant::now();
-        let deadline = self.config.timeout;
+        let deadline = if long_context {
+            self.config.timeout.max(LONG_CONTEXT_MIN_TIMEOUT)
+        } else {
+            self.config.timeout
+        };
         let http = self.http.clone();
         let url = self.config.endpoint();
         let mut attempt_guard = AttemptGuard::new(
@@ -286,10 +357,14 @@ impl JevClient {
 
         // One attempt; the deadline covers connection, response *and body read*.
         let attempt = async {
-            let response = http
+            let mut request = http
                 .post(&url)
                 .bearer_auth(&secret)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if long_context {
+                request = request.header("TypeSafe-Danger-Zone-Long-Context", "true");
+            }
+            let response = request
                 .body(body)
                 .send()
                 .await
@@ -520,6 +595,7 @@ mod tests {
     enum StubReply {
         Json(u16, String),
         SleepThenJson(u64, String),
+        Redirect(String),
     }
 
     #[derive(Clone)]
@@ -528,6 +604,7 @@ mod tests {
         hits: Arc<Mutex<Vec<()>>>,
         seen_auth: Arc<Mutex<Vec<String>>>,
         seen_body: Arc<Mutex<Vec<String>>>,
+        seen_long_context: Arc<Mutex<Vec<bool>>>,
     }
 
     impl Stub {
@@ -537,6 +614,7 @@ mod tests {
                 hits: Arc::new(Mutex::new(Vec::new())),
                 seen_auth: Arc::new(Mutex::new(Vec::new())),
                 seen_body: Arc::new(Mutex::new(Vec::new())),
+                seen_long_context: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -565,6 +643,10 @@ mod tests {
         fn set(&self, reply: StubReply) {
             *self.reply.lock().expect("stub lock") = reply;
         }
+
+        fn long_context_headers(&self) -> Vec<bool> {
+            self.seen_long_context.lock().expect("stub lock").clone()
+        }
     }
 
     async fn handler(
@@ -573,6 +655,9 @@ mod tests {
         body: axum::body::Bytes,
     ) -> impl IntoResponse {
         stub.hits.lock().expect("stub lock").push(());
+        stub.seen_long_context.lock().expect("stub lock").push(
+            headers.get("TypeSafe-Danger-Zone-Long-Context").and_then(|v| v.to_str().ok()) == Some("true"),
+        );
         stub.seen_auth.lock().expect("stub lock").push(
             headers
                 .get("authorization")
@@ -593,7 +678,16 @@ mod tests {
                     ("x-typesafe-request-id", "req-stub-1"),
                 ],
                 body,
-            ),
+            )
+                .into_response(),
+            StubReply::Redirect(location) => {
+                let mut response = (StatusCode::TEMPORARY_REDIRECT, String::new()).into_response();
+                response.headers_mut().insert(
+                    axum::http::header::LOCATION,
+                    axum::http::HeaderValue::from_str(&location).expect("valid location"),
+                );
+                response
+            }
             StubReply::SleepThenJson(ms, body) => {
                 tokio::time::sleep(Duration::from_millis(ms)).await;
                 (
@@ -604,6 +698,7 @@ mod tests {
                     ],
                     body,
                 )
+                    .into_response()
             }
         }
     }
@@ -626,12 +721,12 @@ mod tests {
 
     fn test_client(base_url: String, timeout: Duration) -> JevClient {
         let config = JevClientConfig {
-            base_url,
+            base_url: base_url.clone(),
             timeout,
             ..JevClientConfig::default()
         };
         let resolver: ApiKeyResolver = Arc::new(|_| Some(TEST_KEY.to_owned()));
-        JevClient::with_key_resolver(config, resolver).expect("client builds")
+        JevClient::with_test_base_url(config, base_url, resolver).expect("client builds")
     }
 
     fn ok_body() -> String {
@@ -711,7 +806,7 @@ mod tests {
         // Wire shape (§12.5): state/model/questions with type tags and criteria.
         let body: Json = serde_json::from_str(&stub.last_body()).expect("stub saw JSON");
         assert!(body["state"]["proposed_action"]["command"].is_string());
-        assert_eq!(body["model"], "jev-latest");
+        assert_eq!(body["model"], "~typesafe/jev-latest");
         assert_eq!(body["questions"]["risk"]["type"], "choice");
         assert!(body["questions"]["risk"]["criteria"].is_object());
         assert_eq!(body["questions"]["escapes"]["type"], "noul");
@@ -866,7 +961,7 @@ mod tests {
             "the base's trailing slash does not double up"
         );
         let resolver: ApiKeyResolver = Arc::new(|_| Some(TEST_KEY.to_owned()));
-        let client = JevClient::with_key_resolver(config, resolver).expect("client builds");
+        let client = JevClient::with_test_base_url(config, base, resolver).expect("client builds");
         let answers = client
             .ask(
                 &serde_json::json!({"proposed_action": {"tool": "bash"}}),
@@ -1016,7 +1111,7 @@ mod tests {
             records[0].usage.and_then(|usage| usage.input_tokens),
             Some(321)
         );
-        assert!(records[0].endpoint.ends_with("/v1/systemone"));
+        assert!(records[0].endpoint.ends_with("/alpha/decisions"));
         assert_eq!(records[0].applied_effort.as_deref(), Some("absent"));
     }
 
@@ -1072,16 +1167,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn production_client_rejects_non_openrouter_config() {
+        let resolver: ApiKeyResolver = Arc::new(|_| Some(TEST_KEY.to_owned()));
+        let mut config = JevClientConfig::default();
+        config.provider = JevProvider::Typesafe;
+        assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err());
+        let mut config = JevClientConfig::default();
+        config.provider = JevProvider::OpenRouter;
+        assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err());
+        let mut config = JevClientConfig::default();
+        config.base_url = "https://api.typesafe.ai".to_owned();
+        assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err());
+        let mut config = JevClientConfig::default();
+        config.api_key_env = "JEV_API_KEY".to_owned();
+        assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err(), "a TypeSafe key never goes to OpenRouter");
+        let mut config = JevClientConfig::default();
+        config.model = "other-model".to_owned();
+        assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err());
+        let mut config = JevClientConfig::default();
+        config.model = "typesafe/jev-1.14-20261014".to_owned();
+        assert!(JevClient::with_key_resolver(config, resolver).is_ok(), "a pinned Jev version is accepted");
+    }
+
+    #[tokio::test]
+    async fn redirect_is_not_followed() {
+        let stub = Stub::new(StubReply::Redirect("http://127.0.0.1:1/collect".to_owned()));
+        let base = spawn_stub(stub.clone()).await;
+        let client = test_client(base, Duration::from_secs(5));
+        assert!(client.ask(&serde_json::json!({"a": 1}), &sample_questions()).await.is_err());
+        assert_eq!(stub.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn long_context_is_request_scoped_and_has_separate_size_limit() {
+        let stub = Stub::new(StubReply::Json(200, ok_body()));
+        let base = spawn_stub(stub.clone()).await;
+        let client = test_client(base, Duration::from_secs(1));
+        let questions = sample_questions();
+        let state = serde_json::json!({"context": "x".repeat(40 * 1024)});
+
+        client.ask(&serde_json::json!({"small": true}), &questions).await.expect("ordinary request accepted");
+        client.ask_long(&state, &questions).await.expect("long state exceeds ordinary limit only");
+        assert_eq!(stub.long_context_headers(), vec![false, true]);
+
+        let error = client.ask(&state, &questions).await.expect_err("ordinary state cap remains unchanged");
+        assert_eq!(error.kind(), JevErrorKind::Invalid);
+        let oversized = serde_json::json!({"context": "x".repeat(LONG_CONTEXT_MAX_STATE_BYTES + 1)});
+        let error = client.ask_long(&oversized, &questions).await.expect_err("long state cap enforced");
+        assert_eq!(error.kind(), JevErrorKind::Invalid);
+        assert_eq!(stub.hits(), 2, "oversized requests rejected before network");
+    }
+
     #[tokio::test]
     async fn missing_credential_fails_before_any_io() {
         let stub = Stub::new(StubReply::Json(200, ok_body()));
         let base = spawn_stub(stub.clone()).await;
         let config = JevClientConfig {
-            base_url: base,
+            base_url: base.clone(),
             ..JevClientConfig::default()
         };
         let resolver: ApiKeyResolver = Arc::new(|_| None);
-        let client = JevClient::with_key_resolver(config, resolver).expect("client builds");
+        let client = JevClient::with_test_base_url(config, base, resolver).expect("client builds");
         assert!(!client.credential_present());
         let err = client
             .ask(&serde_json::json!({"a": 1}), &sample_questions())

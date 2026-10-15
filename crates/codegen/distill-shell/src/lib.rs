@@ -44,6 +44,7 @@ mod codex_models;
 pub mod inspect;
 pub mod instrumentation;
 pub mod jev;
+pub mod jev_decide;
 pub mod jev_cheap;
 pub mod jev_lanes;
 mod jev_model_facts;

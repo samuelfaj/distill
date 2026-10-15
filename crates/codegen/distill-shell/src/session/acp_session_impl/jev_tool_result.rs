@@ -3893,28 +3893,50 @@ impl SessionActor {
             } else {
                 Vec::new()
             };
-            if errors.len() > 1
-                && let Ok(questions) = verify::error_priority_questions(&errors)
-                && let Some(answers) = crate::jev::ask_item(
-                    JevLever::C5ErrorPriority,
+            let priority_questions = (errors.len() > 1)
+                .then(|| verify::error_priority_questions(&errors).ok())
+                .flatten();
+            let triage_questions = output
+                .is_error()
+                .then(|| verify::failure_triage_questions().ok())
+                .flatten();
+            if priority_questions.is_some() || triage_questions.is_some() {
+                let [priority_answers, triage_answers] = crate::jev::ask_items(
                     state_for(tool, &body, &request),
-                    questions,
+                    [
+                        (JevLever::C5ErrorPriority, priority_questions),
+                        (JevLever::C5ErrorPriority, triage_questions),
+                    ],
                 )
-                .await
-            {
-                let ranked = verify::compose_error_order(&answers, &errors);
-                if !ranked.is_deferred()
-                    && let Some(first) = ranked.keep.first()
-                {
-                    hints.push(format!("fix this first: {first}"));
+                .await;
+                if let Some(answers) = priority_answers {
+                    let ranked = verify::compose_error_order(&answers, &errors);
+                    if !ranked.is_deferred()
+                        && let Some(first) = ranked.keep.first()
+                    {
+                        hints.push(format!("fix this first: {first}"));
+                    }
+                    crate::jev::record_item(
+                        JevLever::C5ErrorPriority,
+                        "rank",
+                        "failure priority",
+                        None,
+                        Some(&answers),
+                    );
                 }
-                crate::jev::record_item(
-                    JevLever::C5ErrorPriority,
-                    "rank",
-                    "failure priority",
-                    None,
-                    Some(&answers),
-                );
+                if let Some(answers) = triage_answers {
+                    let triage = verify::compose_failure_triage(&answers);
+                    if let Some(hint) = failure_triage_hint(&triage) {
+                        hints.push(hint);
+                    }
+                    crate::jev::record_item(
+                        JevLever::C5ErrorPriority,
+                        if triage.deferred { "defer" } else { "triage" },
+                        "failure category advisory",
+                        None,
+                        Some(&answers),
+                    );
+                }
             }
 
             // ---- A6: which failing test to look at first ----
@@ -4051,9 +4073,29 @@ impl SessionActor {
                 );
                 let execution = self.jev_ledger.borrow().last_execution.clone();
                 state["execution"] = serde_json::json!(execution);
-                if let Some(answers) =
-                    crate::jev::ask_item(JevLever::C4DiffRisk, state, questions).await
-                {
+                let change_questions = verify::change_type_questions().ok();
+                let [review_answers, change_answers] = crate::jev::ask_items(
+                    state,
+                    [
+                        (JevLever::C4DiffRisk, Some(questions)),
+                        (JevLever::C4DiffRisk, change_questions),
+                    ],
+                )
+                .await;
+                if let Some(answers) = change_answers {
+                    let change_type = verify::compose_change_type(&answers);
+                    if let Some(hint) = change_type_hint(&change_type) {
+                        hints.push(hint);
+                    }
+                    crate::jev::record_item(
+                        JevLever::C4DiffRisk,
+                        if change_type.deferred { "defer" } else { "classify" },
+                        "change category advisory",
+                        None,
+                        Some(&answers),
+                    );
+                }
+                if let Some(answers) = review_answers {
                     let mut review = verify::compose_diff_review(&answers);
                     // Documentation feedback cannot trigger redo, escalation or another model.
                     if prose_only {
@@ -4160,6 +4202,28 @@ impl SessionActor {
         }
         body
     }
+}
+
+fn failure_triage_hint(triage: &verify::FailureTriage) -> Option<String> {
+    let category = triage.category.as_deref()?;
+    let cause = triage.in_user_code?;
+    let cause_hint = if cause {
+        "likely requires a project-code fix"
+    } else {
+        "triage marks a likely non-project cause; verify before changing project code"
+    };
+    Some(format!("failure triage suggests {category}; {cause_hint}"))
+}
+
+fn change_type_hint(change: &verify::ChangeType) -> Option<String> {
+    let label = change.label.as_deref()?;
+    let recommendation = match label {
+        "test" => "review test coverage and run relevant tests",
+        "docs" => "review documentation scope",
+        "fix" | "feat" | "refactor" | "chore" => "choose review and tests that match this change",
+        _ => return None,
+    };
+    Some(format!("change category {label}: {recommendation}"))
 }
 
 /// The allowlisted `state` for a result pass: the tool name, the result size and
@@ -4376,6 +4440,36 @@ mod tests {
             text: String::new(),
             consumed_completion_task_id: None,
         })
+    }
+
+    #[test]
+    fn lifecycle_hints_are_advisory_and_defer_without_evidence() {
+        let failure = verify::FailureTriage {
+            category: Some("environment".to_owned()),
+            in_user_code: Some(false),
+            deferred: false,
+        };
+        let hint = failure_triage_hint(&failure).expect("complete triage");
+        assert!(hint.contains("environment"));
+        assert!(hint.contains("non-project cause"));
+        assert!(hint.contains("verify before changing project code"));
+        assert!(failure_triage_hint(&verify::FailureTriage {
+            category: None,
+            in_user_code: Some(true),
+            deferred: true,
+        }).is_none(), "partial triage must not alter failure handling");
+
+        let test_change = verify::ChangeType {
+            label: Some("test".to_owned()),
+            breaking: None,
+            deferred: false,
+        };
+        assert!(change_type_hint(&test_change).unwrap().contains("run relevant tests"));
+        assert!(change_type_hint(&verify::ChangeType {
+            label: None,
+            breaking: None,
+            deferred: true,
+        }).is_none(), "missing category must preserve existing review behavior");
     }
 
     /// Without the call, a whole-file read was selected against the session's

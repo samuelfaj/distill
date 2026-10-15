@@ -85,7 +85,7 @@ pub struct JevLadderOverlay {
     pub a6_test_to_run: Option<bool>,
     /// B1: classify the turn's intent and complexity.
     pub b1_intent_routing: Option<bool>,
-    /// B2: money lever (model tier); off until its own gate passes.
+    /// B2: model-tier choice; the caller restricts it to automatic effort mode.
     pub b2_model_tier: Option<bool>,
     /// B2 (auto): the per-model-call effort the user opts into with `/effort auto`.
     pub b2_micro_effort: Option<bool>,
@@ -150,15 +150,15 @@ impl JevFlags {
             a5_memory_rank: true,
             a6_test_to_run: true,
             b1_intent_routing: true,
-            b2_model_tier: false,
+            b2_model_tier: true,
             b2_micro_effort: true,
             // Nothing routes a whole main round to the utility any more: a
             // round on another model replays the history uncached.
             b2_local_model: false,
             b3_subagent_type: true,
-            b6_delegation_hint: false,
-            c1_premature_stop: false,
-            c3_completion_check: false,
+            b6_delegation_hint: true,
+            c1_premature_stop: true,
+            c3_completion_check: true,
             c4_diff_risk: true,
             c5_error_priority: true,
             c6_injection_screen: false,
@@ -324,7 +324,7 @@ pub struct JevFlags {
     pub a6_test_to_run: bool,
     /// B1: classify the turn's intent and complexity.
     pub b1_intent_routing: bool,
-    /// B2: money lever (model tier); off until its own gate passes.
+    /// B2: model-tier choice; the caller restricts it to automatic effort mode.
     pub b2_model_tier: bool,
     /// B2 (auto): pick the effort for every model call (only runs in auto mode).
     pub b2_micro_effort: bool,
@@ -694,26 +694,19 @@ mod tests {
             JevLever::C1PrematureStop,
             JevLever::C3CompletionCheck,
         ] {
-            assert!(
-                !flags.lever_active(lever),
-                "{} must stay off",
-                lever.as_str()
-            );
+            assert!(flags.lever_active(lever), "{} must be on", lever.as_str());
         }
         assert!(!flags.is_off());
     }
 
-    /// B6 is measured before it acts: its questions go out on the master
-    /// switch alone, and only its own flag lets the hint reach a prompt.
+    /// B6 asks only when a worker is available; its consumer handles that gate.
     #[test]
-    fn b6_is_asked_in_shadow_while_its_hint_stays_off() {
+    fn b6_delegation_hint_is_enabled_by_default() {
         let flags = JevFlags::harness_default();
-        assert!(!flags.lever_active(JevLever::B6DelegationHint));
+        assert!(flags.lever_active(JevLever::B6DelegationHint));
         assert!(flags.lever_asks(JevLever::B6DelegationHint));
-        assert!(
-            !flags.lever_asks(JevLever::C1PrematureStop),
-            "other levers that are off stay silent"
-        );
+        assert!(flags.lever_asks(JevLever::C1PrematureStop));
+        assert!(flags.lever_asks(JevLever::C3CompletionCheck));
         assert!(!flags.with_enabled(false).lever_asks(JevLever::B6DelegationHint));
     }
 
@@ -795,10 +788,10 @@ mod tests {
     }
 
     #[test]
-    fn items_with_a_pending_gate_are_off_by_default() {
+    fn b2_model_tier_defaults_on_while_c6_remains_off() {
         let flags = JevFlags::harness_default();
-        // Both levers are switchable and documented as pending their own gate.
-        assert!(!flags.b2_model_tier, "B2 (money lever) waits for its gate");
+        // B2 is still limited to the caller's automatic-effort mode gate.
+        assert!(flags.b2_model_tier);
         assert!(
             !flags.c6_injection_screen,
             "C6 (per-output cost) waits for its gate"

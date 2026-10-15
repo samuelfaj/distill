@@ -2335,7 +2335,7 @@ mod tests {
         assert!(
             general_purpose.ends_with(
                 "Has access to: ask_stored_output, get_command_or_subagent_output, grep, \
-                 kill_command_or_subagent, list_dir, monitor, read_file, run_terminal_command, \
+                 jev_decide, kill_command_or_subagent, list_dir, monitor, read_file, run_terminal_command, \
                  scheduler_create, scheduler_delete, scheduler_list, search_replace, search_tool, \
                  todo_write, update_goal, use_tool, wait_commands_or_subagents, and write."
             ),
@@ -2343,13 +2343,15 @@ mod tests {
         );
         let explore = task_type_line(&defs, "explore");
         assert!(
-            explore.ends_with("Read-only \u{2014} has access to: grep, list_dir, and read_file."),
+            explore.ends_with(
+                "Read-only \u{2014} has access to: grep, jev_decide, list_dir, and read_file."
+            ),
             "{explore}"
         );
         let plan = task_type_line(&defs, "plan");
         assert!(
             plan.ends_with(
-                "Read-only \u{2014} has access to: grep, list_dir, read_file, and todo_write."
+                "Read-only \u{2014} has access to: grep, jev_decide, list_dir, read_file, and todo_write."
             ),
             "{plan}"
         );
@@ -2370,7 +2372,7 @@ mod tests {
         let plan = task_type_line(&defs, "plan");
         assert!(
             plan.ends_with(
-                "Read-only \u{2014} has access to: grep, list_dir, read_file, todo_write, and web_search."
+                "Read-only \u{2014} has access to: grep, jev_decide, list_dir, read_file, todo_write, and web_search."
             ),
             "{plan}"
         );

@@ -1874,6 +1874,7 @@ pub(crate) async fn spawn_session_actor(
             startup_hints.non_interactive,
         )),
         startup_hints,
+        jev_final_check_prompt: std::cell::RefCell::new(None),
         forked_tool_override,
         compaction: super::compaction_config::CompactionConfig {
             threshold_percent: std::cell::Cell::new(auto_compact_threshold_percent),

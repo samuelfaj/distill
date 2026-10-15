@@ -20,6 +20,7 @@ pub mod enter_plan_mode;
 pub mod exit_plan_mode;
 pub mod grep;
 pub mod image_edit;
+pub mod jev_decide;
 pub mod image_gen;
 #[path = "init_or_update_app_stub.rs"]
 pub mod init_or_update_app;
@@ -66,6 +67,7 @@ pub use scheduler::delete::{SCHEDULER_DELETE_TOOL_NAME, SchedulerDeleteTool};
 pub use scheduler::list::SchedulerListTool;
 pub use search_replace::SearchReplaceTool;
 pub use ask_stored_output::{ASK_STORED_OUTPUT_TOOL_NAME, AskStoredOutputTool};
+pub use jev_decide::{JEV_DECIDE_TOOL_NAME, JevDecideTool};
 pub use send_feedback::{SEND_FEEDBACK_TOOL_NAME, SendFeedbackTool};
 pub use send_subagent_message::{
     SEND_SUBAGENT_MESSAGE_TOOL_NAME, SendSubagentMessageDisposition, SendSubagentMessageTool,

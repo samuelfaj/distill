@@ -509,6 +509,21 @@ impl std::fmt::Debug for StoredOutputAskerClient {
         f.debug_struct("StoredOutputAskerClient").finish()
     }
 }
+/// Performs typed Jev decisions for this session.
+#[async_trait::async_trait]
+pub trait JevDecider: Send + Sync {
+    async fn decide(
+        &self,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, distill_tool_runtime::ToolError>;
+}
+#[derive(Clone)]
+pub struct JevDeciderClient(pub Arc<dyn JevDecider>);
+impl std::fmt::Debug for JevDeciderClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JevDeciderClient").finish()
+    }
+}
 /// Whether streaming output is enabled for this invocation.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamEnabled(pub bool);

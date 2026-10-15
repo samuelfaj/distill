@@ -490,6 +490,11 @@ impl AgentRebuildSpec {
                 if let Some(client) = managed_gateway_tool_client.clone() {
                     resources.insert(client);
                 }
+                resources.insert(distill_tools::types::resources::JevDeciderClient(
+                    Arc::new(crate::jev_decide::ShellJevDecider {
+                        session_id: session_id_str.clone(),
+                    }),
+                ));
                 resources.insert(distill_tools::types::resources::StoredOutputAskerClient(
                     Arc::new(crate::stored_output_ask::ShellStoredOutputAsker {
                         models_manager: models_manager.clone(),

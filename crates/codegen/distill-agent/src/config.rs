@@ -278,6 +278,7 @@ fn distill_core_toolset_with(
         (&use_tool::UseTool).into(),
         (&distill::UpdateGoalTool).into(),
         (&distill::AskStoredOutputTool).into(),
+        (&distill::JevDecideTool).into(),
     ];
     if include_workflow {
         tools.push((&distill::WorkflowTool).into());
@@ -307,6 +308,7 @@ fn distill_concise_toolset() -> ToolServerConfig {
             (&distill::MonitorTool).into(),
             (&distill::UpdateGoalTool).into(),
             (&distill::AskStoredOutputTool).into(),
+            (&distill::JevDecideTool).into(),
             (&distill::WorkflowTool).into(),
         ],
         behavior_preset: None,
@@ -335,6 +337,7 @@ pub fn distill_hashline_toolset(
         (&use_tool::UseTool).into(),
         (&distill::UpdateGoalTool).into(),
         (&distill::AskStoredOutputTool).into(),
+        (&distill::JevDecideTool).into(),
         (&distill::WorkflowTool).into(),
     ]);
     ToolServerConfig {
@@ -368,6 +371,7 @@ fn explore_toolset() -> ToolServerConfig {
             (&distill::ReadFileTool).into(),
             (&distill::ListDirTool).into(),
             (&distill::GrepTool).into(),
+            (&distill::JevDecideTool).into(),
         ],
         behavior_preset: None,
     }
@@ -383,6 +387,7 @@ fn plan_toolset() -> ToolServerConfig {
             (&distill::GrepTool).into(),
             // (&distill::SkillTool).into(),
             (&distill::TodoWriteTool).into(),
+            (&distill::JevDecideTool).into(),
             // search_replace and run_terminal_command intentionally omitted (read-only)
         ],
         behavior_preset: None,
@@ -411,6 +416,7 @@ fn distill_plan_toolset() -> ToolServerConfig {
             (&use_tool::UseTool).into(),
             (&distill::UpdateGoalTool).into(),
             (&distill::AskStoredOutputTool).into(),
+            (&distill::JevDecideTool).into(),
             (&distill::WorkflowTool).into(),
             // Plan mode tools
             (&distill::EnterPlanModeTool).into(),
@@ -445,6 +451,7 @@ fn orchestrator_toolset() -> ToolServerConfig {
             (&distill::AskUserQuestionTool).into(),
             (&distill::UpdateGoalTool).into(),
             (&distill::AskStoredOutputTool).into(),
+            (&distill::JevDecideTool).into(),
             (&distill::WorkflowTool).into(),
             // Scheduling and monitoring
             (&distill::SchedulerCreateTool).into(),
@@ -491,6 +498,7 @@ fn distill_plan_no_subagents_toolset() -> ToolServerConfig {
             (&use_tool::UseTool).into(),
             (&distill::UpdateGoalTool).into(),
             (&distill::AskStoredOutputTool).into(),
+            (&distill::JevDecideTool).into(),
             (&distill::WorkflowTool).into(),
             // Plan mode tools
             (&distill::EnterPlanModeTool).into(),
@@ -522,6 +530,7 @@ fn distill_ask_user_toolset() -> ToolServerConfig {
             (&use_tool::UseTool).into(),
             (&distill::UpdateGoalTool).into(),
             (&distill::AskStoredOutputTool).into(),
+            (&distill::JevDecideTool).into(),
             (&distill::WorkflowTool).into(),
             (&distill::AskUserQuestionTool).into(),
         ],
@@ -1567,8 +1576,11 @@ impl AgentDefinition {
                  from real runs; being unable to rerun or view one is an evidence limit to report, \
                  not a defect. Report only concrete defects with a path, \
                  location, impact and how to verify them. Distinguish verified defects from uncertainty. \
-                 Do not edit files or claim checks you did not run. If no defect is supported, say so \
-                 and state the limits of the review."
+                 Do not edit files or claim checks you did not run. For uncertain, evidence-backed \
+                 choices or rankings, use `jev_decide` when useful: batch questions and cite source \
+                 identifiers. Jev advises only, not authority or free-form generation; never retry \
+                 your own consultation recursively. If no defect is supported, say so and state the limits \
+                 of the review."
                     .to_string(),
             ),
             inherit_skills: false,
@@ -1658,6 +1670,33 @@ mod tests {
             Some(distill_tools::types::tool::ToolKind::Execute)
         );
     }
+    #[test]
+    fn jev_decide_is_available_in_main_and_supported_subagent_toolsets() {
+        let jev_id = ToolConfig::from(&distill::JevDecideTool).id;
+        let contains_jev = |config: &ToolServerConfig| config.tools.iter().any(|tool| tool.id == jev_id);
+        for (name, config) in [
+            ("main", workspace_distill_toolset()),
+            ("general-purpose", general_purpose_toolset()),
+            ("explore", explore_toolset()),
+            ("plan", plan_toolset()),
+            ("distill-concise", distill_concise_toolset()),
+            ("distill-plan", distill_plan_toolset()),
+            ("distill-plan-no-subagents", distill_plan_no_subagents_toolset()),
+            ("distill-ask-user", distill_ask_user_toolset()),
+            ("hashline", distill_hashline_toolset(Vec::new())),
+        ] {
+            assert!(contains_jev(&config), "{name} toolset must include jev_decide");
+        }
+        for (name, definition) in [
+            ("general-purpose", AgentDefinition::general_purpose()),
+            ("explore", AgentDefinition::explore()),
+            ("plan", AgentDefinition::plan()),
+            ("code-reviewer", AgentDefinition::code_reviewer()),
+        ] {
+            assert!(contains_jev(&definition.tool_config), "{name} agent must include jev_decide");
+        }
+    }
+
     /// Native presets only.
     #[test]
     fn toolset_for_preset_resolves_known_names() {

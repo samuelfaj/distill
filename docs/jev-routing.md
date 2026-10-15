@@ -347,7 +347,35 @@ B2 as `turn_intent`.
 
 Retired levers are `e_cheap_task`, `e_lane_choice`, `e_breaker`, `a3_log_lines`,
 `c2_failure_triage` and `c7_change_type`. Their configuration keys are ignored,
-and config load warns once per key that it is retired.
+and config load warns once per key that it is retired. Failure triage (C2) and
+change categorization (C7) now ride along as extra questions in the C5 and C4
+requests, under those levers' switches; their answers only add advisory hints.
+
+These levers are on by default:
+
+| Lever | Decision | Effect |
+|---|---|---|
+| `b6_delegation_hint` | Whether the turn has independent work for a worker | A delegation hint, only when a worker model is configured |
+| `b2_model_tier` | Whether a call can run on a cheaper tier | Downgrades only, and only in automatic effort mode |
+| `c1_premature_stop` / `c3_completion_check` | Whether the main turn is ending with requested work or proof missing | One advisory reminder per user turn, then the turn ends normally |
+
+## The `jev_decide` tool
+
+The main model and its `general-purpose`, `explore`, `plan` and
+`code-reviewer` subagents can call Jev directly with `jev_decide`. It takes
+`questions` (a map of `noul`, `choice` or `score` questions in the API's shape),
+an optional small `state`, and `sources`: paths of stored tool outputs (the
+same files `ask_stored_output` accepts). The harness reads each source,
+numbers its lines verbatim, and returns the typed answers with the served
+model, usage, latency and per-source coverage (`sent_lines`, `complete`).
+Sources over 32 KiB go out as one long-context request (up to about 700 KiB of
+source text); a source that does not fit is reported as incomplete, never as
+fully read. Secret-bearing sources are refused. Jev advises on the choices
+the caller supplies; it does not generate text or approve anything.
+
+Images are refused for now: on 2026-10-15 OpenRouter's Decisions endpoint
+accepted `assets` but answered the same with and without the image, so a
+visual question cannot be trusted there yet.
 
 ## Other decisions
 
@@ -374,9 +402,13 @@ b2_micro_effort = true
 e_cheap_agent = true             # opt-in: utility explore children
 ```
 
-Jev needs credentials for its configured decision endpoint. Without them, the
-harness still runs: routing decisions fall back to the session model, and
-unavailable utility routes stay out of the way.
+Jev runs only through OpenRouter's Decisions endpoint
+(`https://openrouter.ai/api/alpha/decisions`, model `~typesafe/jev-latest`,
+key `OPENROUTER_API_KEY`). Any other `provider`, `base_url` or `api_key_env`
+is rejected at startup and Jev stays off, rather than sending decisions
+elsewhere; redirects are not followed. Without the key, the harness still
+runs: routing decisions fall back to the session model, and unavailable
+utility routes stay out of the way.
 
 To inspect decisions:
 

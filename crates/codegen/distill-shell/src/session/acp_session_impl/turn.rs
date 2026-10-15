@@ -10,6 +10,46 @@ use distill_tools::types::tool::ToolKind;
 use tracing::Instrument;
 static TURNS_ACTIVE: distill_telemetry::activity::ActivityGauge =
     distill_telemetry::activity::ActivityGauge::work(distill_telemetry::activity::TURNS_ACTIVE_KEY);
+const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done.";
+
+fn bounded_utf8(text: &str, max_bytes: usize, tail: bool) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let start = if tail {
+        text.char_indices()
+            .find(|(index, _)| text.len() - index <= max_bytes)
+            .map_or(text.len(), |(index, _)| index)
+    } else {
+        let end = text
+            .char_indices()
+            .take_while(|(index, ch)| *index + ch.len_utf8() <= max_bytes)
+            .last()
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
+        return text[..end].to_owned();
+    };
+    text[start..].to_owned()
+}
+
+fn final_check_reminder(
+    c1: Option<&distill_workspace::jev::catalog::verify::PrematureStop>,
+    c3: Option<&distill_workspace::jev::catalog::verify::CompletionCheck>,
+    already_sent: bool,
+) -> Option<&'static str> {
+    if already_sent {
+        return None;
+    }
+    let c1_incomplete = c1.is_some_and(|check| {
+        !check.deferred
+            && check.continue_working
+            && check.confidence.is_some_and(|confidence| {
+                confidence >= distill_workspace::jev::catalog::verify::ITEM_DONE_FLOOR
+            })
+    });
+    let c3_incomplete = c3.is_some_and(|check| !check.deferred && !check.complete);
+    (c1_incomplete || c3_incomplete).then_some(JEV_FINAL_CHECK_REMINDER)
+}
+
 /// Synthetic tool for schema-constrained final answers on backends without native
 /// output constraints (Messages API); intercepted in the loop, never really executed.
 const STRUCTURED_OUTPUT_TOOL: &str = "StructuredOutput";
@@ -2714,6 +2754,7 @@ impl SessionActor {
         self.record_turn_model().await;
         let mut metrics_drop_guard = TurnMetrics::new();
         let mut turn_tools_called: Vec<String> = Vec::new();
+        let prompt_id = req_id.to_owned();
         let mut tool_turn_count: usize = 1;
         let mut last_progress_checkpoint: usize = 1;
         let mut loop_index: u32 = 0;
@@ -3757,6 +3798,18 @@ impl SessionActor {
                     tracing::info!("Drained interjection(s) before turn completion; continuing");
                     continue;
                 }
+                if self.jev_final_check_prompt.borrow().as_ref() != Some(&prompt_id)
+                    && !self.startup_hints.is_subagent
+                    && !turn_tools_called.is_empty()
+                    && !turn_refused
+                    && !salvage.is_truncated()
+                    && Box::pin(self.jev_final_check(req_id, &turn_tools_called)).await
+                {
+                    *self.jev_final_check_prompt.borrow_mut() = Some(prompt_id.clone());
+                    self.push_system_reminder(JEV_FINAL_CHECK_REMINDER);
+                    salvage.step_boundary();
+                    continue;
+                }
                 self.finalize_turn_bookkeeping(
                     req_id,
                     std::mem::take(&mut turn_span_totals),
@@ -4095,6 +4148,140 @@ impl IdenticalToolCallRun {
         }
     }
 }
+impl SessionActor {
+    /// C1/C3 at the end of a main turn: whether Jev confidently finds requested
+    /// work or proof missing. Advisory; any failure or doubt returns `false`.
+    async fn jev_final_check(&self, req_id: &str, turn_tools_called: &[String]) -> bool {
+        use distill_workspace::jev::catalog::verify;
+        use distill_workspace::jev::flags::JevLever;
+        let Some(request_text) = self.jev_last_human_request().await else {
+            return false;
+        };
+        let user_request = bounded_utf8(&request_text, 4 * 1024, false);
+        let final_message = self
+            .chat_state_handle
+            .get_trailing_assistant_report()
+            .await
+            .unwrap_or_default();
+        let final_message = bounded_utf8(&final_message, 4 * 1024, true);
+        let collected = self.collect_todo_gate_input(req_id).await;
+        let todos: Vec<_> = collected
+            .todos
+            .iter()
+            .map(|(id, content, status)| {
+                serde_json::json!({"id": id, "content": content, "status": format!("{status:?}")})
+            })
+            .collect();
+        let edits_made = turn_tools_called.iter().any(|tool| {
+            matches!(tool.as_str(), "search_replace" | "write" | "hashline_edit" | "apply_patch")
+        });
+        let state = serde_json::json!({
+            "user_request": user_request,
+            "final_message": final_message,
+            "todos": todos,
+            "edits_made": edits_made,
+            "last_execution": self.jev_ledger.borrow().last_execution.clone(),
+        });
+        let items = vec!["user request".to_owned()];
+        let (Ok(c1_questions), Ok(c3_questions)) = (
+            verify::premature_stop_questions(&items),
+            verify::completion_questions(&items),
+        ) else {
+            return false;
+        };
+        let [c1_answers, c3_answers] = crate::jev::ask_items(
+            state,
+            [
+                (JevLever::C1PrematureStop, Some(c1_questions)),
+                (JevLever::C3CompletionCheck, Some(c3_questions)),
+            ],
+        )
+        .await;
+        let c1 = c1_answers.map(|answers| {
+            let result = verify::compose_premature_stop(&answers, &items);
+            let label = if result.deferred {
+                "defer"
+            } else if result.continue_working {
+                "incomplete"
+            } else {
+                "complete"
+            };
+            crate::jev::record_item(
+                JevLever::C1PrematureStop,
+                label,
+                "final-turn completeness advisory",
+                result.confidence,
+                Some(&answers),
+            );
+            result
+        });
+        let c3 = c3_answers.map(|answers| {
+            let result = verify::compose_completion(&answers, &items);
+            let label = if result.deferred {
+                "defer"
+            } else if result.complete {
+                "complete"
+            } else {
+                "incomplete"
+            };
+            crate::jev::record_item(
+                JevLever::C3CompletionCheck,
+                label,
+                "final-turn requirement/proof advisory",
+                None,
+                Some(&answers),
+            );
+            result
+        });
+        final_check_reminder(c1.as_ref(), c3.as_ref(), false).is_some()
+    }
+}
+#[cfg(test)]
+mod jev_final_check_tests {
+    use super::{JEV_FINAL_CHECK_REMINDER, bounded_utf8, final_check_reminder};
+    use distill_workspace::jev::catalog::verify::{CompletionCheck, PrematureStop};
+
+    fn c1(continue_working: bool) -> PrematureStop {
+        PrematureStop {
+            pending: if continue_working { vec!["user request".into()] } else { Vec::new() },
+            continue_working,
+            deferred: false,
+            confidence: continue_working.then_some(0.9),
+        }
+    }
+
+    fn c3(complete: bool) -> CompletionCheck {
+        CompletionCheck {
+            unsatisfied: if complete { Vec::new() } else { vec!["user request".into()] },
+            complete,
+            deferred: false,
+        }
+    }
+
+    #[test]
+    fn complete_work_adds_no_reminder() {
+        assert!(final_check_reminder(Some(&c1(false)), Some(&c3(true)), false).is_none());
+    }
+
+    #[test]
+    fn incomplete_work_gets_one_reminder_and_not_a_second() {
+        let first = final_check_reminder(Some(&c1(true)), Some(&c3(false)), false);
+        assert_eq!(first, Some(JEV_FINAL_CHECK_REMINDER));
+        assert!(final_check_reminder(Some(&c1(true)), Some(&c3(false)), true).is_none());
+    }
+
+    #[test]
+    fn unavailable_jev_keeps_finalization_unchanged() {
+        assert!(final_check_reminder(None, None, false).is_none());
+    }
+
+    #[test]
+    fn request_and_final_message_bounds_preserve_utf8() {
+        assert_eq!(bounded_utf8("éé", 2, false), "é");
+        assert_eq!(bounded_utf8("aé", 2, true), "é");
+    }
+}
+
 #[cfg(test)]
 mod identical_tool_call_run_tests {
     use super::{

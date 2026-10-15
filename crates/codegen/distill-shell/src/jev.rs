@@ -91,72 +91,48 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
     )
 }
 
-/// Item budget for a chat backend, where the answer is generated token by token
-/// (measured: 8 s for the permission battery on `qwen/qwen3.7-flash`).
-const CHAT_ITEM_BUDGET: core::time::Duration = core::time::Duration::from_millis(15_000);
-
-/// Client configuration from `[jev]`, falling back to the plan's defaults.
-pub fn client_config_from(cfg: &JevConfig) -> JevClientConfig {
+/// Validates `[jev]` transport settings and applies safe defaults.
+pub fn client_config_from(cfg: &JevConfig) -> Result<JevClientConfig, distill_workspace::jev::JevError> {
     use distill_workspace::jev::provider::{JevProvider, ReasoningShape};
-
     let defaults = JevClientConfig::default();
-    // An unknown provider/shape name is ignored rather than fatal: the decision
-    // path always has a working default, and a typo must not take it down.
-    let provider = cfg
-        .provider
-        .as_deref()
-        .and_then(JevProvider::from_name)
-        .unwrap_or(defaults.provider);
-    let reasoning_shape = cfg
-        .reasoning_shape
-        .as_deref()
-        .and_then(ReasoningShape::from_name)
-        .unwrap_or(defaults.reasoning_shape);
-    JevClientConfig {
-        base_url: cfg.base_url.clone().unwrap_or(defaults.base_url),
-        model: cfg.model.clone().unwrap_or(defaults.model),
-        timeout: cfg
-            .timeout_ms
-            .map(core::time::Duration::from_millis)
-            .unwrap_or(defaults.timeout),
-        api_key_env: cfg.api_key_env.clone().unwrap_or_else(|| match provider {
-            // A TypeSafe key sent to OpenRouter is a 401, so its default follows the host.
-            JevProvider::OpenRouterDecisions | JevProvider::OpenRouter => {
-                crate::openrouter_auth::API_KEY_ENV.to_owned()
-            }
-            JevProvider::Typesafe => defaults.api_key_env,
-        }),
-        max_state_bytes: cfg.max_state_bytes.unwrap_or(defaults.max_state_bytes),
-        provider,
-        reasoning_shape,
-        reasoning_effort: cfg
-            .reasoning_effort
-            .clone()
-            .unwrap_or(defaults.reasoning_effort),
-        max_completion_tokens: cfg
-            .max_completion_tokens
-            .unwrap_or(defaults.max_completion_tokens),
-        item_budget: cfg
-            .item_budget_ms
-            .map(core::time::Duration::from_millis)
-            .unwrap_or_else(|| {
-                if provider.generates_text() {
-                    // A chat backend generates the answer before it can return one.
-                    CHAT_ITEM_BUDGET
-                } else {
-                    // Both TypeSafe hosts answer the battery in about a second
-                    // (measured 1.2 s for nine questions through OpenRouter).
-                    defaults.item_budget
-                }
-            }),
+    let provider = match cfg.provider.as_deref() {
+        None => JevProvider::OpenRouterDecisions,
+        Some(name) => JevProvider::from_name(name)
+            .ok_or_else(|| distill_workspace::jev::JevError::invalid("unknown Jev provider"))?,
+    };
+    if provider != JevProvider::OpenRouterDecisions {
+        return Err(distill_workspace::jev::JevError::invalid("Jev requires OpenRouter Decisions"));
     }
+    let base_url = cfg.base_url.clone().unwrap_or(defaults.base_url);
+    if base_url.trim_end_matches('/') != distill_workspace::jev::client::DEFAULT_BASE_URL {
+        return Err(distill_workspace::jev::JevError::invalid("Jev endpoint must use https://openrouter.ai/api"));
+    }
+    if cfg.api_key_env.as_deref().is_some_and(|key| key != "OPENROUTER_API_KEY") {
+        return Err(distill_workspace::jev::JevError::invalid("Jev requires OPENROUTER_API_KEY"));
+    }
+    let model = cfg.model.clone().unwrap_or(defaults.model);
+    if !(model.starts_with("~typesafe/jev") || model.starts_with("typesafe/jev")) {
+        return Err(distill_workspace::jev::JevError::invalid("Jev model must be a typesafe/jev model"));
+    }
+    let reasoning_shape = cfg.reasoning_shape.as_deref()
+        .map(|name| ReasoningShape::from_name(name).ok_or_else(|| distill_workspace::jev::JevError::invalid("unknown Jev reasoning shape")))
+        .transpose()?.unwrap_or(defaults.reasoning_shape);
+    Ok(JevClientConfig {
+        base_url, model,
+        timeout: cfg.timeout_ms.map(core::time::Duration::from_millis).unwrap_or(defaults.timeout),
+        api_key_env: "OPENROUTER_API_KEY".to_owned(),
+        max_state_bytes: cfg.max_state_bytes.unwrap_or(defaults.max_state_bytes), provider,
+        reasoning_shape, reasoning_effort: cfg.reasoning_effort.clone().unwrap_or(defaults.reasoning_effort),
+        max_completion_tokens: cfg.max_completion_tokens.unwrap_or(defaults.max_completion_tokens),
+        item_budget: cfg.item_budget_ms.map(core::time::Duration::from_millis).unwrap_or(defaults.item_budget),
+    })
 }
 
 /// Whether the Jev path can act, for display: enabled, not shadowed, and a
 /// credential is resolvable under the configured environment variable.
 pub fn status_from(cfg: &JevConfig) -> JevStatus {
     let flags = flags_from(cfg);
-    flags.status(credential_in_env(&client_config_from(cfg).api_key_env))
+    flags.status(client_config_from(cfg).ok().is_some_and(|config| credential_in_env(&config.api_key_env)))
 }
 
 /// The status the TUI badge renders, resolved once per process.
@@ -308,7 +284,11 @@ mod tests {
     async fn a_shadow_pack_rides_along_but_never_asks_alone() {
         use distill_workspace::jev::flags::JevLever;
         use distill_workspace::jev::types::{Answer, JevAnswerSet, Question};
-        let flags = JevFlags::harness_default();
+        // B6 is the only lever asked in shadow; switch its hint off to test that path.
+        let flags = JevFlags {
+            b6_delegation_hint: false,
+            ..JevFlags::harness_default()
+        };
         let pack = || {
             Some(
                 [("q".to_owned(), Question::noul("Is it?"))]
@@ -399,26 +379,22 @@ c7_change_type = true"#,
 
     #[test]
     fn client_config_defaults_match_the_contract() {
-        let config = client_config_from(&JevConfig::default());
-        assert_eq!(config.base_url, "https://api.typesafe.ai");
-        assert_eq!(config.api_key_env, "JEV_API_KEY");
-        assert_eq!(config.endpoint(), "https://api.typesafe.ai/v1/systemone");
+        let config = client_config_from(&JevConfig::default()).expect("defaults valid");
+        assert_eq!(config.base_url, "https://openrouter.ai/api");
+        assert_eq!(config.model, "~typesafe/jev-latest");
+        assert_eq!(config.api_key_env, "OPENROUTER_API_KEY");
+        assert_eq!(config.endpoint(), "https://openrouter.ai/api/alpha/decisions");
     }
 
     #[test]
-    fn api_key_env_default_follows_the_provider() {
-        let env_for = |provider: &str, api_key_env: Option<&str>| {
-            client_config_from(&JevConfig {
-                provider: Some(provider.to_owned()),
-                api_key_env: api_key_env.map(str::to_owned),
-                ..JevConfig::default()
-            })
-            .api_key_env
-        };
-        assert_eq!(env_for("typesafe", None), "JEV_API_KEY");
-        assert_eq!(env_for("openrouter_decisions", None), "OPENROUTER_API_KEY");
-        assert_eq!(env_for("openrouter", None), "OPENROUTER_API_KEY");
-        assert_eq!(env_for("openrouter_decisions", Some("MY_KEY")), "MY_KEY");
+    fn config_rejects_legacy_provider_host_and_key() {
+        for cfg in [
+            JevConfig { provider: Some("typesafe".into()), ..JevConfig::default() },
+            JevConfig { provider: Some("openrouter".into()), ..JevConfig::default() },
+            JevConfig { provider: Some("bogus".into()), ..JevConfig::default() },
+            JevConfig { base_url: Some("https://api.typesafe.ai".into()), ..JevConfig::default() },
+            JevConfig { api_key_env: Some("JEV_API_KEY".into()), ..JevConfig::default() },
+        ] { assert!(client_config_from(&cfg).is_err()); }
     }
 
     #[tokio::test]
@@ -639,21 +615,7 @@ pub async fn ask_item(
     }
     let session_id = active_session_id();
     let memo_key = decision_memo_key(client, lever, &state, &questions);
-    let observed_client = active_usage_recorder().map(|recorder| {
-        let turn_id = telemetry_context().1;
-        let observer: distill_workspace::jev::types::AttemptObserver =
-            std::sync::Arc::new(move |attempt| {
-                record_workspace_attempt(
-                    attempt,
-                    "jev",
-                    Some(lever.as_str().to_owned()),
-                    Some(turn_id.clone()),
-                    recorder.clone(),
-                    true,
-                );
-            });
-        client.with_call_observer(observer)
-    });
+    let observed_client = observed_client(client, lever.as_str());
     let request_client = observed_client.as_ref().unwrap_or(client);
     let budget = item_budget(request_client);
     let in_flight = JevInFlight::begin();
@@ -1644,19 +1606,49 @@ fn flags_cached() -> distill_workspace::jev::flags::JevFlags {
     *FLAGS.get_or_init(|| flags_from(&resolve_config_from_disk()))
 }
 
+/// A copy of `client` that records each attempt in the active session's usage
+/// under `label`; `None` outside a session with a usage recorder.
+pub(crate) fn observed_client(
+    client: &distill_workspace::jev::JevClient,
+    label: &str,
+) -> Option<distill_workspace::jev::JevClient> {
+    let recorder = active_usage_recorder()?;
+    let turn_id = telemetry_context().1;
+    let label = label.to_owned();
+    let observer: distill_workspace::jev::types::AttemptObserver =
+        std::sync::Arc::new(move |attempt| {
+            record_workspace_attempt(
+                attempt,
+                "jev",
+                Some(label.clone()),
+                Some(turn_id.clone()),
+                recorder.clone(),
+                true,
+            );
+        });
+    Some(client.with_call_observer(observer))
+}
+
 /// One client per process, built lazily and only when a credential exists.
-fn client_cached() -> Option<&'static distill_workspace::jev::JevClient> {
+pub(crate) fn client_cached() -> Option<&'static distill_workspace::jev::JevClient> {
     static CLIENT: OnceLock<Option<distill_workspace::jev::JevClient>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             let cfg = resolve_config_from_disk();
-            match distill_workspace::jev::JevClient::new(client_config_from(&cfg)) {
+            let config = match client_config_from(&cfg) {
+                Ok(config) => config,
+                Err(error) => {
+                    tracing::warn!(%error, "jev configuration invalid; decisions are off");
+                    return None;
+                }
+            };
+            match distill_workspace::jev::JevClient::new(config) {
                 Ok(client) if client.credential_present() => Some(client),
                 Ok(_) => {
                     if flags_from(&cfg).enabled {
                         tracing::warn!(
                             "Jev is enabled but environment variable `{}` is not set; Jev decisions are off",
-                            client_config_from(&cfg).api_key_env
+                            "OPENROUTER_API_KEY"
                         );
                     }
                     None
@@ -1693,27 +1685,17 @@ mod catalogue_helper_tests {
         // The decision service answers in well under a second: a short cap keeps
         // the tool-result path moving if it ever stops doing so.
         let cfg = JevConfig::default();
-        let client = distill_workspace::jev::JevClient::new(client_config_from(&cfg))
+        let client = distill_workspace::jev::JevClient::new(client_config_from(&cfg).expect("valid Jev config"))
             .expect("client builds without I/O");
         let budget = item_budget(&client);
         assert!(budget <= std::time::Duration::from_millis(4_000));
         assert!(!budget.is_zero());
 
-        // A chat backend generates its answer token by token; measured at 8 s for
-        // the permission battery, so the cap must let it finish (and never
-        // exceed the client's own deadline).
         let chat = JevConfig {
             provider: Some("openrouter".to_owned()),
             ..JevConfig::default()
         };
-        let client = distill_workspace::jev::JevClient::new(client_config_from(&chat))
-            .expect("client builds without I/O");
-        let budget = item_budget(&client);
-        assert!(
-            budget > std::time::Duration::from_millis(8_000),
-            "a chat backend gets room to answer, got {budget:?}"
-        );
-        assert!(budget <= client.config().timeout);
+        assert!(client_config_from(&chat).is_err());
     }
 
     #[test]
@@ -1723,7 +1705,7 @@ mod catalogue_helper_tests {
         use std::collections::BTreeMap;
 
         let client = distill_workspace::jev::JevClient::new(
-            client_config_from(&JevConfig::default()),
+            client_config_from(&JevConfig::default()).expect("valid Jev config"),
         )
         .expect("client builds without I/O");
         let state = serde_json::json!({"evidence": "first"});
@@ -1759,11 +1741,11 @@ mod catalogue_helper_tests {
             .expect("changed criteria key")
         );
         let changed_model = JevConfig {
-            model: Some("jev-pinned".to_owned()),
+            model: Some("typesafe/jev-1.14-20261014".to_owned()),
             ..JevConfig::default()
         };
         let changed_client = distill_workspace::jev::JevClient::new(
-            client_config_from(&changed_model),
+            client_config_from(&changed_model).expect("valid Jev config"),
         )
         .expect("changed client builds without I/O");
         assert_ne!(

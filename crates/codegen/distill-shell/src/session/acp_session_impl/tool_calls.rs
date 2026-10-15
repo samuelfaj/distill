@@ -2996,6 +2996,7 @@ impl SessionActor {
             None => prompt_text,
             // A hook chose this text: only a large one is narrowed, by the
             // utility alone.
+            Some((body, notices)) if effective_tool_name == "jev_decide" => format!("{body}{notices}"),
             Some((body, notices)) if output_replaced => {
                 let body = self
                     .select_hook_output(

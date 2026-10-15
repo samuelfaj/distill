@@ -1,5 +1,5 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
-//! Live integration tests against the real Jev API (`api.typesafe.ai`).
+//! Live integration tests against the real Jev API (`openrouter.ai`).
 //!
 //! Both tests are `#[ignore]`d so the normal suite stays hermetic; run them with
 //! a credential in the environment:
@@ -29,7 +29,7 @@ use distill_workspace::permission::auto_mode::{
     ClassifierContext, ClassifierTurn, ClassifierVerdict, HeuristicPermissionClassifier,
 };
 
-const KEY_ENV: &str = "JEV_API_KEY";
+const KEY_ENV: &str = "OPENROUTER_API_KEY";
 
 fn client() -> JevClient {
     let config = JevClientConfig {
@@ -683,11 +683,11 @@ fn require_openrouter_key() -> bool {
 
 fn openrouter_client() -> JevClient {
     let config = JevClientConfig {
-        base_url: "https://openrouter.ai/api/v1".to_owned(),
-        model: OPENROUTER_MODEL.to_owned(),
+        base_url: "https://openrouter.ai/api".to_owned(),
+        model: "typesafe/jev-1.14-20261014".to_owned(),
         api_key_env: OPENROUTER_KEY_ENV.to_owned(),
         timeout: std::time::Duration::from_secs(60),
-        provider: distill_workspace::jev::provider::JevProvider::OpenRouter,
+        provider: distill_workspace::jev::provider::JevProvider::OpenRouterDecisions,
         reasoning_shape: distill_workspace::jev::provider::ReasoningShape::MaxTokens,
         reasoning_effort: "low".to_owned(),
         max_completion_tokens: 2_048,
@@ -695,7 +695,7 @@ fn openrouter_client() -> JevClient {
     };
     assert_eq!(
         config.endpoint(),
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://openrouter.ai/api/chat/completions",
         "the provider decides the path, and this is the shipped client's"
     );
     JevClient::new(config).expect("client builds without network I/O")
@@ -979,4 +979,47 @@ async fn live_direct_cheap_call_summarizes_a_tool_result() {
         answer.text
     );
     assert!(answer.text.len() <= task.max_answer_chars);
+}
+
+/// The shipped transport against OpenRouter: one standard request and one
+/// long-context request well past the 32 KiB standard state cap. The long one
+/// carries a marker at the very end, so a truncated state would miss it.
+#[tokio::test]
+#[ignore = "network: needs OPENROUTER_API_KEY"]
+async fn openrouter_decisions_answers_standard_and_long_requests() {
+    if !require_openrouter_key() {
+        return;
+    }
+    let client = JevClient::new(JevClientConfig::default()).expect("default config is OpenRouter");
+    let mut questions: BTreeMap<QuestionId, Question> = BTreeMap::new();
+    questions.insert("failed".to_owned(), Question::noul("Did the build fail?"));
+    let short = client
+        .ask(&serde_json::json!({"build": "exit code 1"}), &questions)
+        .await
+        .expect("standard request answers");
+    assert!(short.model.starts_with("typesafe/jev"), "served by Jev: {}", short.model);
+    assert!(short.noul("failed").expect("noul") > 0.5);
+
+    let mut marker = BTreeMap::new();
+    marker.insert(
+        "marker".to_owned(),
+        Question::choice(
+            "Which exact END_MARKER appears at the end of the evidence?",
+            [
+                ("orchid", "END_MARKER_ORCHID_4821"),
+                ("other", "A different marker"),
+                ("absent", "No marker"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), serde_json::json!(v)))
+            .collect(),
+        )
+        .expect("valid choice"),
+    );
+    let state = serde_json::json!({
+        "evidence": format!("{} END_MARKER_ORCHID_4821", "alpha beta ".repeat(40_000)),
+    });
+    let long = client.ask_long(&state, &marker).await.expect("long-context request answers");
+    assert_eq!(long.choice("marker"), Some("orchid"));
+    assert!(long.usage.input() > 64_000, "past the default 64k context: {}", long.usage.input());
 }

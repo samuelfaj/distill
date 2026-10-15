@@ -178,7 +178,7 @@ impl Question {
 }
 
 /// One typed answer. Deserialized from the `answers` map (plan §12.5).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Answer {
     Noul {
@@ -476,7 +476,7 @@ pub struct SystemOneResponse {
 
 /// One completed round trip: typed answers plus the metadata the plan records
 /// as evidence (model version, tokens, request id, observed latency).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JevAnswerSet {
     pub model: String,
     pub answers: BTreeMap<QuestionId, Answer>,

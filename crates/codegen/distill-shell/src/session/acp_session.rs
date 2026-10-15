@@ -860,6 +860,7 @@ pub(crate) struct SessionActor {
     /// Startup hints for the session: they customize the user message prefix and the git status mode.
     /// (Non-interactive mode gets the fast no-untracked git status.)
     pub(crate) startup_hints: StartupHints,
+    pub(crate) jev_final_check_prompt: std::cell::RefCell<Option<String>>,
     /// Wakes the status-line emitter task, and on drop ends it.
     /// See [`status_line::run_status_emitter`] and the `Drop` beside it.
     pub(crate) status_wake: status_line::StatusWake,

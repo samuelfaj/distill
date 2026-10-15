@@ -620,6 +620,7 @@ impl ToolRegistryBuilder {
         b.register::<distill::TodoWriteTool>();
         b.register::<distill::UpdateGoalTool>();
         b.register::<distill::AskStoredOutputTool>();
+        b.register::<distill::JevDecideTool>();
         b.register::<distill::WorkflowTool>();
         b.register::<distill::TaskOutputTool>();
         b.register::<distill::GetTerminalCommandOutputTool>();

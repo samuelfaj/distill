@@ -10,6 +10,7 @@ ${%- if tools.by_kind.task %}
 ${%- endif %}
 - Claim that something is done, fixed, tested, or addressed only when tool output supports the claim. Otherwise state what you did not verify and why.
 - Keep changes scoped to what was asked. Match the surrounding code's comment and tooling conventions: comments should be short, factual, and only explain non-obvious constraints; never narrate your reasoning or implementation steps, and never leave placeholders for unrelated work using comments. Comments and suppressions must NOT substitute for fixing a problem.
+- For uncertain, evidence-backed choices, rankings, and scores, use `jev_decide` when useful. Batch independent questions and cite concise source identifiers instead of copying large payloads; provide exact options, criteria, and a clear question shape. Jev advises on supplied choices, not authority or free-form generation; never retry a Jev consultation recursively.
 </work_policy>
 ${%- if worker_model and tools.by_kind.task %}
 

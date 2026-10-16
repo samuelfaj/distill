@@ -1,0 +1,170 @@
+{
+  "source": "https://openrouter.ai/api/v1/models",
+  "retrieved_at": "2026-10-16T15:19:18.777668+00:00",
+  "models": {
+    "openai/gpt-6-luna": {
+      "id": "openai/gpt-6-luna",
+      "reasoning": {
+        "mandatory": false,
+        "default_enabled": true,
+        "supported_efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "none"
+        ],
+        "default_effort": "medium"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ],
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000001",
+        "input_cache_write": "0.000000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.0000002",
+            "completion": "0.00000075",
+            "input_cache_read": "0.00000002",
+            "input_cache_write": "0.00000025"
+          }
+        ]
+      }
+    },
+    "inclusionai/ling-3.0-flash-vl": {
+      "id": "inclusionai/ling-3.0-flash-vl",
+      "reasoning": {
+        "mandatory": false,
+        "default_enabled": true
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ],
+      "pricing": {
+        "prompt": "0.00000006",
+        "completion": "0.00000018",
+        "input_cache_read": "0.000000012"
+      }
+    },
+    "openai/gpt-6-astra": {
+      "id": "openai/gpt-6-astra",
+      "reasoning": {
+        "mandatory": true,
+        "default_enabled": true,
+        "supported_efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "default_effort": "medium"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ],
+      "pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00005",
+        "web_search": "0.01",
+        "input_cache_read": "0.000001",
+        "input_cache_write": "0.0000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00002",
+            "completion": "0.000075",
+            "input_cache_read": "0.000002",
+            "input_cache_write": "0.000025"
+          }
+        ]
+      }
+    },
+    "qwen/qwen3.7-flash": {
+      "id": "qwen/qwen3.7-flash",
+      "reasoning": {
+        "mandatory": false,
+        "default_enabled": true,
+        "supports_max_tokens": true
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "reasoning",
+        "response_format",
+        "seed",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "top_p"
+      ],
+      "pricing": {
+        "prompt": "0.00000003",
+        "completion": "0.00000013",
+        "input_cache_read": "0.000000006",
+        "input_cache_write": "0.000000038",
+        "overrides": [
+          {
+            "min_prompt_tokens": 32000,
+            "prompt": "0.0000001",
+            "completion": "0.0000004",
+            "input_cache_read": "0.00000002",
+            "input_cache_write": "0.000000125"
+          },
+          {
+            "min_prompt_tokens": 256000,
+            "prompt": "0.0000002",
+            "completion": "0.0000008",
+            "input_cache_read": "0.00000004",
+            "input_cache_write": "0.00000025"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -311,5 +311,50 @@ class TierChecks(unittest.TestCase):
             self.assertEqual(record["cost_usd"], 0.02)
 
 
+class RetainedTierChecks(unittest.TestCase):
+    def test_completed_run_preserves_pairing_billing_and_literal_evidence(self):
+        report = json.loads(Path(__file__).with_name("tiers-qwen-results-2026-10-16.json").read_text())
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(len(report["pairs"]), 12)
+        self.assertEqual(len(report["physical_calls"]), 72)
+        self.assertEqual(report["summary"], tiers.summarize(report["rows"]))
+        actual = sum(call["cost_usd"] for call in report["physical_calls"])
+        shared = sum(call["cost_usd"] for call in report["physical_calls"] if call["tier"] == "jev")
+        self.assertAlmostEqual(actual, report["physical_cost_usd"])
+        self.assertAlmostEqual(sum(row["total_cost_usd"] for row in report["rows"]), actual + 2 * shared)
+        for call in report["physical_calls"]:
+            if call["tier"] != "jev":
+                self.assertEqual(call["response_model"], report["models"][call["tier"]])
+        for arm in tiers.ARMS:
+            rows = [row for row in report["rows"] if row["arm"] == arm]
+            self.assertEqual(len(rows), 12)
+            self.assertEqual(len({(row["trial"], row["task"], row["turn"]) for row in rows}), 12)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "fixtures"
+            generate(root)
+            manifest, sources = tiers.load_fixtures(root)
+            queries = {query["id"]: query for query in manifest["queries"]}
+            for index, pair in enumerate(report["pairs"]):
+                original = pair["retrieval"]
+                query = queries[pair["task"]]
+                self.assertEqual(pair["raw_before"], tiers.score(query, sources, original))
+                normalized = tiers.normalize(original)
+                self.assertEqual(pair["common_rendered_baseline"], normalized["rendered_text"])
+                rows = [row for row in report["rows"] if row["pair_index"] == index]
+                self.assertEqual({row["arm"] for row in rows}, set(tiers.ARMS))
+                for row in rows:
+                    selected = normalized if row["arm"] == "jev" else tiers.extract(
+                        normalized, row["extra"]["selection_response"])
+                    self.assertEqual(row["extra_status"], "not_applicable" if row["arm"] == "jev" else "selected")
+                    self.assertEqual(row["before"], pair["raw_before"])
+                    self.assertEqual(row["evidence"], selected["rendered_text"])
+                    self.assertEqual(row["after"], tiers.score(query, sources, selected))
+                    self.assertEqual(row["quality"], tiers.live.quality(query, row["answer"]))
+                    self.assertEqual(row["task_quality"], tiers.live.task_quality(query["id"], row["answer"]))
+                    self.assertEqual(row["main"]["finish_reason"], "stop")
+                    self.assertAlmostEqual(row["total_cost_usd"], row["jev_cost_usd"] +
+                                           row["extra_cost_usd"] + row["main"]["cost_usd"])
+
+
 if __name__ == "__main__":
     unittest.main()

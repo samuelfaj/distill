@@ -1,0 +1,441 @@
+{
+  "schema_version": 1,
+  "scope": "Paired API controlled replay, not the full agent harness",
+  "run_id": "e93358f8227242ccb93f47abd367f410",
+  "models": {
+    "main": "openai/gpt-6-astra",
+    "worker": "openai/gpt-6-luna",
+    "utility": "inclusionai/ling-3.0-flash-vl"
+  },
+  "endpoint_snapshots": {
+    "main": {
+      "name": "OpenAI | openai/gpt-6-astra-20260903",
+      "model_id": "openai/gpt-6-astra",
+      "model_name": "OpenAI: GPT-6 Astra",
+      "context_length": 1050000,
+      "pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00005",
+        "web_search": "0.01",
+        "input_cache_read": "0.000001",
+        "input_cache_write": "0.0000125",
+        "discount": 0,
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00002",
+            "completion": "0.000075",
+            "input_cache_read": "0.000002",
+            "input_cache_write": "0.000025"
+          }
+        ]
+      },
+      "provider_name": "OpenAI",
+      "tag": "openai",
+      "service_tier": null,
+      "quantization": "unknown",
+      "max_completion_tokens": 128000,
+      "max_prompt_tokens": 922000,
+      "supported_parameters": [
+        "reasoning",
+        "include_reasoning",
+        "seed",
+        "max_tokens",
+        "response_format",
+        "structured_outputs",
+        "tools",
+        "tool_choice",
+        "verbosity",
+        "reasoning_effort"
+      ],
+      "supports_tool_choice": {
+        "none": true,
+        "auto": true,
+        "required": true,
+        "function": true
+      },
+      "status": 0,
+      "uptime_last_30m": 100,
+      "uptime_last_5m": 100,
+      "uptime_last_1d": 99.92932862190813,
+      "supports_implicit_caching": false,
+      "native_tools": {
+        "openrouter:web_search": {
+          "type": "web_search"
+        },
+        "openrouter:apply_patch": {
+          "type": "apply_patch"
+        }
+      },
+      "supports_voice_cloning": false,
+      "supports_multiple_audio_references": false,
+      "supports_image_reference": false,
+      "supports_diarization": false,
+      "latency_last_30m": null,
+      "throughput_last_30m": null
+    },
+    "worker": {
+      "name": "OpenAI | openai/gpt-6-luna-20260922",
+      "model_id": "openai/gpt-6-luna",
+      "model_name": "OpenAI: GPT-6 Luna",
+      "context_length": 1050000,
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000001",
+        "input_cache_write": "0.000000125",
+        "discount": 0,
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.0000002",
+            "completion": "0.00000075",
+            "input_cache_read": "0.00000002",
+            "input_cache_write": "0.00000025"
+          }
+        ]
+      },
+      "provider_name": "OpenAI",
+      "tag": "openai",
+      "service_tier": null,
+      "quantization": "unknown",
+      "max_completion_tokens": 128000,
+      "max_prompt_tokens": 922000,
+      "supported_parameters": [
+        "reasoning",
+        "include_reasoning",
+        "seed",
+        "max_tokens",
+        "response_format",
+        "structured_outputs",
+        "tools",
+        "tool_choice",
+        "verbosity",
+        "reasoning_effort"
+      ],
+      "supports_tool_choice": {
+        "none": true,
+        "auto": true,
+        "required": true,
+        "function": true
+      },
+      "status": 0,
+      "uptime_last_30m": 100,
+      "uptime_last_5m": 100,
+      "uptime_last_1d": 100,
+      "supports_implicit_caching": false,
+      "native_tools": {
+        "openrouter:web_search": {
+          "type": "web_search"
+        },
+        "openrouter:apply_patch": {
+          "type": "apply_patch"
+        }
+      },
+      "supports_voice_cloning": false,
+      "supports_multiple_audio_references": false,
+      "supports_image_reference": false,
+      "supports_diarization": false,
+      "latency_last_30m": null,
+      "throughput_last_30m": null
+    },
+    "utility": {
+      "name": "DeepInfra | inclusionai/ling-3.0-flash-vl-20260910",
+      "model_id": "inclusionai/ling-3.0-flash-vl",
+      "model_name": "inclusionAI: Ling 3.0 Flash VL",
+      "context_length": 131072,
+      "pricing": {
+        "prompt": "0.00000006",
+        "completion": "0.00000018",
+        "input_cache_read": "0.000000012",
+        "discount": 0
+      },
+      "provider_name": "DeepInfra",
+      "tag": "deepinfra/fp16",
+      "service_tier": null,
+      "quantization": "fp16",
+      "max_completion_tokens": 32768,
+      "max_prompt_tokens": null,
+      "supported_parameters": [
+        "reasoning",
+        "include_reasoning",
+        "max_tokens",
+        "temperature",
+        "top_p",
+        "stop",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "top_k",
+        "seed",
+        "min_p",
+        "logit_bias",
+        "tools",
+        "tool_choice",
+        "structured_outputs",
+        "response_format"
+      ],
+      "supports_tool_choice": {
+        "none": true,
+        "auto": true,
+        "required": true,
+        "function": true
+      },
+      "status": 0,
+      "uptime_last_30m": 100,
+      "uptime_last_5m": 100,
+      "uptime_last_1d": 99.24306139613121,
+      "supports_implicit_caching": true,
+      "native_tools": {},
+      "supports_voice_cloning": false,
+      "supports_multiple_audio_references": false,
+      "supports_image_reference": false,
+      "supports_diarization": false,
+      "latency_last_30m": null,
+      "throughput_last_30m": null
+    }
+  },
+  "formatting_caveat": "All arms, including Jev, use the same normalized source:line plus literal text rendering. Jev is not the production-default rendered baseline. Original Rust rendering and raw before scores are retained per pair.",
+  "requested_reasoning": {
+    "enabled": false
+  },
+  "tier_caveat": "Worker API equivalent of configured chatgpt/gpt-6-luna; no subscription transport. Utility is a pinned experimental tier, not the automatic utility resolver.",
+  "fixture_manifest_sha256": "2c3ee531ec7aa674a549f2bd91306b8164b4ac2d33570ab8a4b6df2647e84f93",
+  "adapter_sha256": "ab3c55ba9146124d45bf6a6b2a01cb52940ec481693584aa135edffd29ef8b62",
+  "runner_sha256": "d7f69029118b7b38afbd9ec9e94e81515962bf47262628f2e44109ebf000fbd3",
+  "preflight": {
+    "budget_usd": 40.0,
+    "spend_limit_usd": 5.0,
+    "conservative_bound_usd": 37.051073280000004,
+    "planning_bytes_div_4_usd": 10.185235200000001,
+    "planning_caveat": "Unmeasured bytes/4 input heuristic, full output limits, no cache discount; not a billing estimate or spending guard.",
+    "jev_reserve_usd": 0.3,
+    "note": "Best-effort stop, not a provider dollar cap. Jev has no dispatch dollar ceiling. Byte/token bound assumes at most one input token per decoded UTF-8 byte plus framing allowance; no cache discount. In-flight billing can exceed reserve.",
+    "main_input_byte_bound": 79360,
+    "helper_input_byte_bound": 49152,
+    "jev_calls": 12,
+    "main_calls": 36,
+    "helper_calls": 24
+  },
+  "rows": [
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "jev",
+      "pair_index": 0,
+      "jev_cost_usd": 0.000193578,
+      "before": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1359.3642909999999
+      },
+      "extra_cost_usd": 0.0,
+      "extra_status": "not_applicable",
+      "after": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1141,
+        "returned_token_estimate_bytes_div_4": 285.25,
+        "returned_to_raw_byte_ratio": 0.007627413230654046,
+        "retrieval_latency_ms": 1359.3642909999999
+      },
+      "evidence": "test-log:505 2026-10-15T09:00:00Z test shard=0 case=cache_roundtrip_0504 status=ok elapsed_ms=3\ntest-log:506 2026-10-15T09:00:00Z test shard=1 case=cache_roundtrip_0505 status=ok elapsed_ms=3\ntest-log:507 2026-10-15T09:00:00Z test shard=2 case=cache_roundtrip_0506 status=ok elapsed_ms=3\ntest-log:508 2026-10-15T09:00:00Z test shard=3 case=cache_roundtrip_0507 status=ok elapsed_ms=3\ntest-log:509 2026-10-15T09:00:00Z test shard=4 case=cache_roundtrip_0508 status=ok elapsed_ms=3\ntest-log:510 2026-10-15T09:00:00Z test shard=5 case=cache_roundtrip_0509 status=ok elapsed_ms=3\ntest-log:511 FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\ntest-log:512 CAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\ntest-log:513 2026-10-15T09:00:00Z test shard=8 case=cache_roundtrip_0512 status=ok elapsed_ms=3\ntest-log:514 2026-10-15T09:00:00Z test shard=9 case=cache_roundtrip_0513 status=ok elapsed_ms=3\ntest-log:515 2026-10-15T09:00:00Z test shard=10 case=cache_roundtrip_0514 status=ok elapsed_ms=3\ntest-log:516 2026-10-15T09:00:00Z test shard=11 case=cache_roundtrip_0515 status=ok elapsed_ms=3\n",
+      "main": {
+        "trial": 0,
+        "task": "failure-vs-keyword-decoys",
+        "turn": 0,
+        "arm": "jev",
+        "tier": "main",
+        "cost_usd": null,
+        "error": "HTTPError",
+        "http_status": 400,
+        "wall_ms": 1087.8062919946387,
+        "usage": {}
+      },
+      "total_cost_usd": null
+    }
+  ],
+  "pairs": [
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "physical_call_index": 0,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:0035692e42902a31ce1e98c34bdf0e563ebf2642200dfbdf20a0302b46a1201c",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "rendered_text": "Session output search: 1 selected chunks (at most 8); 1 sources or lines unavailable, secret-bearing, or oversized. Lines over 2048 bytes and sources over 16 MiB unsupported. Selection: Jev explicit include/exclude; lexical order preserved. Only registered session outputs searched.\n\n/var/folders/wp/st3y6js14rs708k9pgyxr7jr0000gn/T/.tmpYciVlb/store/f4357cfe1d070127.txt:505-516 [tool=terminal, call=test-log, is_error=false]\n505→2026-10-15T09:00:00Z test shard=0 case=cache_roundtrip_0504 status=ok elapsed_ms=3\n506→2026-10-15T09:00:00Z test shard=1 case=cache_roundtrip_0505 status=ok elapsed_ms=3\n507→2026-10-15T09:00:00Z test shard=2 case=cache_roundtrip_0506 status=ok elapsed_ms=3\n508→2026-10-15T09:00:00Z test shard=3 case=cache_roundtrip_0507 status=ok elapsed_ms=3\n509→2026-10-15T09:00:00Z test shard=4 case=cache_roundtrip_0508 status=ok elapsed_ms=3\n510→2026-10-15T09:00:00Z test shard=5 case=cache_roundtrip_0509 status=ok elapsed_ms=3\n511→FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\n512→CAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\n513→2026-10-15T09:00:00Z test shard=8 case=cache_roundtrip_0512 status=ok elapsed_ms=3\n514→2026-10-15T09:00:00Z test shard=9 case=cache_roundtrip_0513 status=ok elapsed_ms=3\n515→2026-10-15T09:00:00Z test shard=10 case=cache_roundtrip_0514 status=ok elapsed_ms=3\n516→2026-10-15T09:00:00Z test shard=11 case=cache_roundtrip_0515 status=ok elapsed_ms=3\n",
+        "excerpts": [
+          {
+            "source_id": "test-log",
+            "session_id": "session-active",
+            "sha256": "eb70df70111b27dd1c528a6d766e0b4c67471db511297ea03f266d5c7423ddb4",
+            "start_line": 505,
+            "end_line": 516,
+            "text": "2026-10-15T09:00:00Z test shard=0 case=cache_roundtrip_0504 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=1 case=cache_roundtrip_0505 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=2 case=cache_roundtrip_0506 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=3 case=cache_roundtrip_0507 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=4 case=cache_roundtrip_0508 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=5 case=cache_roundtrip_0509 status=ok elapsed_ms=3\nFAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\n2026-10-15T09:00:00Z test shard=8 case=cache_roundtrip_0512 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=9 case=cache_roundtrip_0513 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=10 case=cache_roundtrip_0514 status=ok elapsed_ms=3\n2026-10-15T09:00:00Z test shard=11 case=cache_roundtrip_0515 status=ok elapsed_ms=3\n"
+          }
+        ],
+        "retrieval_latency_ms": 1359.3642909999999,
+        "jev_usage": {
+          "input_tokens": 4609,
+          "output_tokens": 312,
+          "request_id": "gen-dec-1792163561-grWiTqSMFPa3JM9twkTq",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "43bd0631-1072-4bec-8729-c9b1023e4789",
+            "request_id": "gen-dec-1792163561-grWiTqSMFPa3JM9twkTq",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 4609,
+              "output_tokens": 312
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1935780
+            },
+            "status": "Completed",
+            "latency_ms": 1230
+          }
+        ]
+      },
+      "raw_before": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1359.3642909999999
+      },
+      "common_rendered_baseline": "test-log:505 2026-10-15T09:00:00Z test shard=0 case=cache_roundtrip_0504 status=ok elapsed_ms=3\ntest-log:506 2026-10-15T09:00:00Z test shard=1 case=cache_roundtrip_0505 status=ok elapsed_ms=3\ntest-log:507 2026-10-15T09:00:00Z test shard=2 case=cache_roundtrip_0506 status=ok elapsed_ms=3\ntest-log:508 2026-10-15T09:00:00Z test shard=3 case=cache_roundtrip_0507 status=ok elapsed_ms=3\ntest-log:509 2026-10-15T09:00:00Z test shard=4 case=cache_roundtrip_0508 status=ok elapsed_ms=3\ntest-log:510 2026-10-15T09:00:00Z test shard=5 case=cache_roundtrip_0509 status=ok elapsed_ms=3\ntest-log:511 FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\ntest-log:512 CAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\ntest-log:513 2026-10-15T09:00:00Z test shard=8 case=cache_roundtrip_0512 status=ok elapsed_ms=3\ntest-log:514 2026-10-15T09:00:00Z test shard=9 case=cache_roundtrip_0513 status=ok elapsed_ms=3\ntest-log:515 2026-10-15T09:00:00Z test shard=10 case=cache_roundtrip_0514 status=ok elapsed_ms=3\ntest-log:516 2026-10-15T09:00:00Z test shard=11 case=cache_roundtrip_0515 status=ok elapsed_ms=3\n"
+    }
+  ],
+  "physical_calls": [
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "tier": "jev",
+      "cost_usd": 0.000193578,
+      "wall_ms": 1874.6307500405237,
+      "cost_basis": "provider response billing via existing attempt observer"
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "jev",
+      "tier": "main",
+      "cost_usd": null,
+      "error": "HTTPError",
+      "http_status": 400,
+      "wall_ms": 1087.8062919946387,
+      "usage": {}
+    }
+  ],
+  "status": "failed",
+  "summary": {
+    "jev": {
+      "rows": 1,
+      "counterfactual_cost_usd": null,
+      "before_hit_groups": 2,
+      "after_hit_groups": 2,
+      "gold_groups": 2,
+      "main_complete_answers": 0,
+      "main_task_complete_answers": 0,
+      "fallbacks": 0,
+      "main_prompt_tokens": null,
+      "main_cached_tokens": null,
+      "main_cached_fraction": null,
+      "main_completion_tokens": null,
+      "main_reasoning_tokens": null
+    },
+    "jev_worker": {
+      "rows": 0,
+      "counterfactual_cost_usd": 0,
+      "before_hit_groups": 0,
+      "after_hit_groups": 0,
+      "gold_groups": 0,
+      "main_complete_answers": 0,
+      "main_task_complete_answers": 0,
+      "fallbacks": 0,
+      "main_prompt_tokens": 0,
+      "main_cached_tokens": 0,
+      "main_cached_fraction": null,
+      "main_completion_tokens": 0,
+      "main_reasoning_tokens": 0
+    },
+    "jev_utility": {
+      "rows": 0,
+      "counterfactual_cost_usd": 0,
+      "before_hit_groups": 0,
+      "after_hit_groups": 0,
+      "gold_groups": 0,
+      "main_complete_answers": 0,
+      "main_task_complete_answers": 0,
+      "fallbacks": 0,
+      "main_prompt_tokens": 0,
+      "main_cached_tokens": 0,
+      "main_cached_fraction": null,
+      "main_completion_tokens": 0,
+      "main_reasoning_tokens": 0
+    }
+  },
+  "physical_cost_usd": null,
+  "known_physical_cost_usd": 0.000193578,
+  "error": "ValueError"
+}

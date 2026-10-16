@@ -187,8 +187,10 @@ pub struct PromptStyle {
     /// Paint image-chip overlay into `overlay_area` (default true).
     pub image_preview: bool,
     /// Ultracode border animation phase in `[0, 1)`: where the highlight band sits on the border perimeter.
-    /// When `Some`, the border is purple with a travelling highlight and takes precedence over `border_color_override`.
+    /// When `Some`, the border uses Ultracode's travelling highlight unless `side_phase` is set.
     pub ultracode_phase: Option<f32>,
+    /// Side-mode breathing phase in `[0, 1)`, synchronized across the whole border.
+    pub side_phase: Option<f32>,
 }
 
 /// Seconds per highlight lap around the Ultracode border.
@@ -203,6 +205,29 @@ pub fn ultracode_phase_now() -> f32 {
     static START: OnceLock<Instant> = OnceLock::new();
     let secs = START.get_or_init(Instant::now).elapsed().as_secs_f32();
     (secs / ULTRACODE_LAP_SECS).fract()
+}
+
+/// Wall-clock phase for the subtle side-mode border pulse; full cycle takes eight seconds.
+pub fn side_phase_now() -> f32 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let secs = START.get_or_init(Instant::now).elapsed().as_secs_f32();
+    (secs / 8.0).fract()
+}
+
+/// Whole-border side-mode color; every border cell shares same color at each phase.
+pub fn side_border_color(theme: &Theme, phase: f32) -> ratatui::style::Color {
+    let contrast_tone = if theme.is_dark() {
+        ratatui::style::Color::Rgb(255, 255, 255)
+    } else {
+        ratatui::style::Color::Rgb(0, 0, 0)
+    };
+    let low = crate::render::color::blend_color(theme.accent_side, contrast_tone, 0.35)
+        .unwrap_or(theme.accent_side);
+    let intensity = 0.5 - 0.5 * (std::f32::consts::TAU * phase).cos();
+    crate::render::color::blend_color(low, theme.accent_side, intensity)
+        .unwrap_or(theme.accent_side)
 }
 
 /// Border glyph color at perimeter position `t` in `[0, 1)` while the Ultracode band is centered at `phase`.
@@ -290,6 +315,7 @@ impl Default for PromptStyle {
             title: None,
             image_preview: true,
             ultracode_phase: None,
+            side_phase: None,
         }
     }
 }
@@ -326,6 +352,7 @@ impl PromptStyle {
             title: None,
             image_preview: true,
             ultracode_phase: None,
+            side_phase: None,
         }
     }
 
@@ -3038,11 +3065,12 @@ impl PromptWidget {
         });
 
         let border_style_at = |x: u16, y: u16| {
-            let fg = match style.ultracode_phase {
-                Some(phase) => {
-                    ultracode_border_color(&theme, border_perimeter_t(area, x, y), phase)
-                }
-                None => border_color,
+            let fg = if let Some(phase) = style.side_phase {
+                side_border_color(&theme, phase)
+            } else if let Some(phase) = style.ultracode_phase {
+                ultracode_border_color(&theme, border_perimeter_t(area, x, y), phase)
+            } else {
+                border_color
             };
             Style::default().fg(fg).bg(bg)
         };

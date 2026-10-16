@@ -223,6 +223,7 @@ impl Theme {
             accent_success: q(self.accent_success),
             accent_running: q(self.accent_running),
             accent_skill: q(self.accent_skill),
+            accent_side: q(self.accent_side),
 
             text_primary: q(self.text_primary),
             text_secondary: q(self.text_secondary),
@@ -524,6 +525,7 @@ impl Theme {
             // Blue family: system messages, skill invocations, fuzzy search matches
             accent_system: blue,
             accent_skill: blue,
+            accent_side: blue,
             fuzzy_accent: blue,
             // Cyan family: model name and the legacy `running` indicator (distinct from the magenta `accent_running` used for subagents).
             // ANSI16 has no separate teal slot, so the truecolor teal model accent folds onto cyan here.

@@ -46,6 +46,7 @@ impl Theme {
             accent_success: Color::Green,
             accent_running: Color::Magenta,
             accent_skill: Color::Blue,
+            accent_side: Color::LightBlue,
 
             text_primary: Color::Reset,
             text_secondary: MUTED,

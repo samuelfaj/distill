@@ -792,6 +792,20 @@ fn needs_animation_ignores_tracing_rx_outside_dev_builds() {
     );
 }
 #[test]
+fn side_mode_demands_animation_even_when_idle() {
+    let mut app = test_app_with_agent();
+    let id = super::super::agent::AgentId(0);
+    assert!(
+        !app.needs_animation(),
+        "ordinary idle agent must stay still"
+    );
+    app.agents.get_mut(&id).unwrap().side_parent = Some(id);
+    assert!(
+        app.needs_animation(),
+        "side prompt animation must tick while idle"
+    );
+}
+#[test]
 fn needs_animation_gates_prompt_history_tick_delivery() {
     let mut app = test_app_with_agent();
     let id = super::super::agent::AgentId(0);

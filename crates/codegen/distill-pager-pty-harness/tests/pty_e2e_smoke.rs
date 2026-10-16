@@ -45,6 +45,8 @@ mod renders_on_action;
 mod requirements_version_failure_exits_2_with_guidance;
 #[path = "pty_e2e/shift_selection_key_encodings.rs"]
 mod shift_selection_key_encodings;
+#[path = "pty_e2e/side_chat_returns_to_parent.rs"]
+mod side_chat_returns_to_parent;
 #[path = "pty_e2e/shift_tab_in_session_cycles_mode.rs"]
 mod shift_tab_in_session_cycles_mode;
 #[path = "pty_e2e/shift_tab_on_welcome_starts_session_in_plan_mode.rs"]

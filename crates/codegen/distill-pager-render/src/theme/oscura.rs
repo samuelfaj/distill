@@ -12,6 +12,7 @@ mod palette {
     use super::*;
 
     // -- backgrounds (OKLCH hue 265 backgrounds, OKLCH hue 265) -------
+    pub const SIDE_BLUE: Color = rgb(100, 170, 255);
     pub const BASE: Color = rgb(3, 3, 4); // #030304  oklch(0.1 0.005 265)
     pub const SURFACE: Color = rgb(4, 5, 7); // #040507  oklch(0.115 0.005 265)
     pub const ELEVATED: Color = rgb(15, 18, 22); // #0F1216  oklch(0.18 0.01 265)
@@ -65,6 +66,7 @@ impl Theme {
             accent_success: TEAL,
             accent_running: PURPLE_DIM,
             accent_skill: PURPLE,
+            accent_side: SIDE_BLUE,
 
             text_primary: TEXT,
             text_secondary: TEXT_DIM,

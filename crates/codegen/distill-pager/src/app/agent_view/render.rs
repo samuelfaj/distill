@@ -720,14 +720,19 @@ impl AgentView {
             chrome_pad_left: layout_cfg.block_pad_left,
             chrome_pad_right: layout_cfg.block_pad_right,
             bg: PromptBg::Default,
-            accent_color_override: if let Some(c) = self.prompt_input_mode.accent_color(&theme) {
+            accent_color_override: if self.side_parent.is_some() {
+                Some(theme.accent_side)
+            } else if let Some(c) = self.prompt_input_mode.accent_color(&theme) {
                 Some(c)
             } else if effective_plan || casual_commenting {
                 Some(theme.accent_plan)
             } else {
                 None
             },
-            border_color_override: if effective_plan || casual_commenting {
+            border_color_override: if self.side_parent.is_some() {
+                crate::render::color::blend_color(theme.bg_base, theme.accent_side, 0.4)
+                    .or(Some(theme.accent_side))
+            } else if effective_plan || casual_commenting {
                 crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
                     .or(Some(theme.accent_plan))
             } else {
@@ -738,6 +743,10 @@ impl AgentView {
                 .models
                 .ultracode
                 .then(crate::views::prompt_widget::ultracode_phase_now),
+            side_phase: self
+                .side_parent
+                .is_some()
+                .then(crate::views::prompt_widget::side_phase_now),
             prefix_override: if let Some(p) = self.prompt_input_mode.prefix_override(&theme) {
                 Some(p)
             } else if casual_commenting
@@ -918,6 +927,7 @@ impl AgentView {
             title: None,
             image_preview: !self.resize_hides_prompt_preview(),
             ultracode_phase: None,
+            side_phase: None,
         };
         let inline_prompt_max = ((area.height as u32) / 3).clamp(3, 15) as u16;
         let question_prompt_body_h = if question_view_h == 0 || !is_question_input_mode {
@@ -949,6 +959,7 @@ impl AgentView {
                 title: None,
                 image_preview: !self.resize_hides_prompt_preview(),
                 ultracode_phase: None,
+                side_phase: None,
             };
             let perm_text_w = crate::views::permission_view::inline_text_width(inner_width);
             self.prompt
@@ -1368,20 +1379,29 @@ impl AgentView {
                 super::SideParentStatus::Idle => "side - parent idle",
                 super::SideParentStatus::Gone => "side",
             };
-            let return_hint = self.side_parent_status != super::SideParentStatus::Gone
+            let can_return = self.side_parent_status != super::SideParentStatus::Gone
                 && self.session.state.is_idle()
                 && self.active_subagent.is_none()
                 && self.running_wake_turn.is_none()
                 && self.prompt.text().is_empty()
                 && self.prompt.images.is_empty();
-            let label = if return_hint {
-                format!("{label} · Ctrl+C to return")
+            let guidance = if can_return {
+                "Ctrl+C to return"
+            } else if !self.session.state.is_idle() {
+                "Ctrl+C cancels response"
+            } else if !self.prompt.text().is_empty() || !self.prompt.images.is_empty() {
+                "clear prompt, Ctrl+C to return"
+            } else if self.side_parent_status == super::SideParentStatus::Gone {
+                "parent ended"
             } else {
-                label.to_string()
+                "finish activity, Ctrl+C to return"
             };
             status.push(
                 "side",
-                Line::from(Span::styled(label, bg.fg(theme.gray))),
+                Line::from(Span::styled(
+                    format!("{label} · {guidance}"),
+                    bg.fg(theme.accent_side),
+                )),
             );
         }
         let hover_or = |hovered: bool, resting: Style| {
@@ -2520,6 +2540,7 @@ impl AgentView {
                         title: None,
                         image_preview: !self.resize_hides_prompt_preview(),
                         ultracode_phase: None,
+                        side_phase: None,
                     };
                     let prompt_h = remaining_h.saturating_sub(1).max(1);
                     let prompt_draw_area = Rect {
@@ -5184,6 +5205,78 @@ mod status_line_draw_tests {
         assert_eq!(
             agent.last_status_line_size, painted,
             "a frame with no row must not export a width the script would read as the 80-column fallback"
+        );
+    }
+}
+
+#[cfg(test)]
+mod side_mode_render_tests {
+    use super::super::test_fixtures::make_agent;
+    use super::*;
+    use crate::actions::ActionRegistry;
+    use crate::app::bundle::BundleState;
+    use crate::scrollback::render::ScratchBuffer;
+
+    fn render_text(agent: &mut AgentView) -> String {
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buf = Buffer::empty(area);
+        agent.draw(
+            area,
+            &mut buf,
+            &ActionRegistry::defaults(),
+            &mut ScratchBuffer::new(),
+            None,
+            false,
+            crate::app::agent_view::BannerSlotParams::none(),
+            &BundleState::default(),
+            false,
+            &mut Vec::new(),
+            AppRenderParams::default(),
+        );
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn side_status_shows_return_guidance_when_idle_even_if_parent_busy() {
+        for parent_status in [
+            super::super::SideParentStatus::Idle,
+            super::super::SideParentStatus::Running,
+        ] {
+            let mut agent = make_agent();
+            agent.side_parent = Some(crate::app::agent::AgentId(0));
+            agent.side_parent_status = parent_status;
+            let text = render_text(&mut agent);
+            assert!(
+                text.contains("side - parent"),
+                "side label missing:\n{text}"
+            );
+            assert!(
+                text.contains("Ctrl+C to return"),
+                "idle return guidance missing:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn busy_side_status_says_ctrl_c_cancels_not_returns() {
+        let mut agent = make_agent();
+        agent.side_parent = Some(crate::app::agent::AgentId(0));
+        agent.session.state = crate::app::agent::AgentState::TurnRunning;
+        let text = render_text(&mut agent);
+        assert!(
+            text.contains("Ctrl+C cancels response"),
+            "cancel guidance missing:\n{text}"
+        );
+        assert!(
+            !text.contains("Ctrl+C to return"),
+            "must not claim busy Ctrl+C returns:\n{text}"
         );
     }
 }

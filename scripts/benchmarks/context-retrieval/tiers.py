@@ -146,6 +146,9 @@ def completion(payload, key, record):
     if not isinstance(body, dict):
         record.setdefault("error", "InvalidResponse")
         return None
+    provider_error = body.get("error")
+    if isinstance(provider_error, dict) and type(provider_error.get("code")) is int:
+        record["provider_error_code"] = provider_error["code"]
     record["usage"] = safe_usage(body.get("usage"))
     for name in ("model", "provider"):
         if isinstance(body.get(name), str):
@@ -169,10 +172,11 @@ def completion(payload, key, record):
         return None
 
 
-def payload(model, snapshot, messages, max_output):
+def payload(model, snapshot, messages, max_output, reasoning_effort=None):
     result = {"model": model, "provider": {"only": [snapshot["tag"]], "allow_fallbacks": False},
               "messages": messages, "max_tokens": max_output,
-              "reasoning": {"enabled": False}, "usage": {"include": True}}
+              "reasoning": {"effort": reasoning_effort} if reasoning_effort else {"enabled": False},
+              "usage": {"include": True}}
     if "temperature" in snapshot.get("supported_parameters", []):
         result["temperature"] = 0
     return result
@@ -211,24 +215,27 @@ def run(args):
     require(money(args.budget_usd) is not None and args.budget_usd > 0, "invalid budget")
     require(money(args.jev_reserve_usd) is not None, "invalid Jev reserve")
     require(money(args.spend_limit_usd) is not None and args.spend_limit_usd > 0, "invalid spend limit")
+    require(type(args.main_max_tokens) is int and args.main_max_tokens > 0, "invalid main token limit")
     manifest, sources = load_fixtures(args.fixtures)
     queries = [next(query for query in manifest["queries"] if query["id"] == task) for task in live.TASKS]
     require(args.adapter.is_file(), "missing production adapter")
     models = {tier: getattr(args, tier + "_model") for tier in MODELS}
     snapshots = {tier: endpoint(model, getattr(args, tier + "_provider")) for tier, model in models.items()}
     # A decoded byte per input token, no cache discount, and output tokens at full price.
-    main_bound = len(live.HISTORY.encode()) + 8192 + live.TURNS * (LIMIT + live.MAX_OUTPUT * 8 + 8192)
+    main_bound = len(live.HISTORY.encode()) + 8192 + live.TURNS * (LIMIT + args.main_max_tokens * 8 + 8192)
     helper_bound = 2 * LIMIT + 16384
-    per_pair = len(ARMS) * ceiling(snapshots["main"], main_bound, live.MAX_OUTPUT)
+    per_pair = len(ARMS) * ceiling(snapshots["main"], main_bound, args.main_max_tokens)
     per_pair += sum(ceiling(snapshots[tier], helper_bound, HELPER_OUTPUT) for tier in ("worker", "utility"))
     pairs = live.TRIALS * len(queries) * live.TURNS
     bound = pairs * per_pair + args.jev_reserve_usd
-    planning_pair = len(ARMS) * ceiling(snapshots["main"], main_bound / 4, live.MAX_OUTPUT)
+    planning_pair = len(ARMS) * ceiling(snapshots["main"], main_bound / 4, args.main_max_tokens)
     planning_pair += sum(ceiling(snapshots[tier], helper_bound / 4, HELPER_OUTPUT) for tier in ("worker", "utility"))
     report = {"schema_version": 1, "scope": "Paired API controlled replay, not the full agent harness",
               "run_id": uuid.uuid4().hex, "models": models, "endpoint_snapshots": snapshots,
               "formatting_caveat": "All arms, including Jev, use the same normalized source:line plus literal text rendering. Jev is not the production-default rendered baseline. Original Rust rendering and raw before scores are retained per pair.",
-              "requested_reasoning": {"enabled": False},
+              "requested_reasoning": {"main": {"effort": args.main_reasoning_effort},
+                                      "worker": {"enabled": False}, "utility": {"enabled": False}},
+              "main_max_tokens": args.main_max_tokens,
               "tier_caveat": "Worker API equivalent of configured chatgpt/gpt-6-luna; no subscription transport. Utility is a pinned experimental tier, not the automatic utility resolver.",
               "fixture_manifest_sha256": hashlib.sha256((args.fixtures / "manifest.json").read_bytes()).hexdigest(),
               "adapter_sha256": hashlib.sha256(args.adapter.read_bytes()).hexdigest(),
@@ -265,7 +272,8 @@ def run(args):
         record = {**identity, "tier": tier, "cost_usd": None}
         report["physical_calls"].append(record)
         save()
-        content = completion(payload(models[tier], snapshots[tier], messages, max_output), key, record)
+        content = completion(payload(models[tier], snapshots[tier], messages, max_output,
+                                     args.main_reasoning_effort if tier == "main" else None), key, record)
         save()
         return content, record
 
@@ -343,7 +351,7 @@ def run(args):
                         row["evidence"] = selected["rendered_text"]
                         history = histories[arm]
                         history.append({"role": "user", "content": query["question"] + "\nEvidence:\n" + selected["rendered_text"]})
-                        answer, main = call("main", history, live.MAX_OUTPUT, {**identity, "arm": arm})
+                        answer, main = call("main", history, args.main_max_tokens, {**identity, "arm": arm})
                         row["main"] = main
                         row["total_cost_usd"] = live.total_known([row["jev_cost_usd"], row["extra_cost_usd"], main["cost_usd"]])
                         if answer is not None:
@@ -370,6 +378,10 @@ def parser():
     for name in ("fixtures", "adapter", "output"):
         result.add_argument("--" + name, type=Path, required=True)
     result.add_argument("--allow-network", action="store_true")
+    result.add_argument("--main-reasoning-effort", default="low",
+                        choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"))
+    result.add_argument("--main-max-tokens", type=int, default=2048,
+                        help="Combined main reasoning and answer output token limit")
     result.add_argument("--budget-usd", type=float, default=5.0)
     result.add_argument("--jev-reserve-usd", type=float, default=0.30)
     result.add_argument("--spend-limit-usd", type=float, default=5.0,

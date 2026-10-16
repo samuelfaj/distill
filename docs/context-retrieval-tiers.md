@@ -12,7 +12,7 @@ The experiment is opt-in and changes no production model routing. It tests an ad
 
 The worker is the OpenRouter API equivalent of the configured `chatgpt/gpt-6-luna` worker. This experiment does not use the ChatGPT subscription transport. The utility model is the first paid model in Distill's shipped utility fallback chain. The local configuration has no explicit utility-model override. Pinning that model for the experiment does not exercise the automatic utility resolver or its free-tier fallback attempts.
 
-Astra and Luna use the ordinary `openai` provider; Ling uses `deepinfra/fp16`. Provider fallback is disabled. The report retains the public endpoint snapshots, requested models, actual response model/provider and reported billing. Temperature zero is requested only when an endpoint advertises support. Reasoning is requested disabled; actual reported reasoning tokens remain part of accounting.
+Astra and Luna use the ordinary `openai` provider; Ling uses `deepinfra/fp16`. Provider fallback is disabled. The report retains the public endpoint snapshots, requested models, actual response model/provider and reported billing. Temperature zero is requested only when an endpoint advertises support. Astra requires reasoning, so every main call requests `low` effort with a 2,048-token completion ceiling that also covers reasoning. Helper reasoning is requested disabled. Actual reported reasoning tokens remain part of accounting.
 
 ## Paired method
 
@@ -40,7 +40,7 @@ Each alternative's comparison cost includes its Astra calls, its helper calls if
 
 Cache and reasoning counts come from provider responses. Missing fields stay null. The first and repeated turns are reported separately; advertised cache capability does not substitute for observed usage. Auxiliary calls, invalid responses and fallback costs remain in the comparison. No additional recovery reads or model-driven rescue turns are allowed.
 
-The conservative preflight uses byte-based token ceilings and published applicable price tiers. A separate $5 known-spend limit checks the next-call allowance before dispatch. These are client-side safeguards, not a provider-enforced dollar cap. Unknown charges stop further paid calls. Paid dispatches are never retried automatically.
+The conservative preflight uses byte-based token ceilings and published applicable price tiers. A separate known-spend limit checks the next-call allowance before dispatch. These are client-side safeguards, not a provider-enforced dollar cap. Unknown charges stop further paid calls. Paid dispatches are never retried automatically.
 
 ## Run the experiment
 
@@ -59,7 +59,7 @@ python3 scripts/benchmarks/context-retrieval/tiers.py \
   --fixtures "$work/fixtures" \
   --adapter target/debug/examples/context_retrieval_adapter \
   --output "$work/tiers.json" \
-  --allow-network --budget-usd 40 --spend-limit-usd 5
+  --allow-network --budget-usd 60 --spend-limit-usd 3.9
 ```
 
-The $40 argument admits a deliberately loose whole-run byte ceiling. It does not replace the separate $5 incremental spending check. Model and provider overrides are available through `--main-model`, `--worker-model`, `--utility-model` and their corresponding `--*-provider` options. Changing these choices produces a different experiment.
+The $60 argument admits a deliberately loose whole-run byte ceiling. It does not replace the separate $3.90 incremental spending check. That lower limit reserves more than $1.10 of the original $5 allowance for the earlier rejected main request and its unknown charge. Model and provider overrides are available through `--main-model`, `--worker-model`, `--utility-model` and their corresponding `--*-provider` options. Changing these choices produces a different experiment.

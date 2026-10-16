@@ -252,13 +252,47 @@ class TierChecks(unittest.TestCase):
         self.assertEqual(summary["main_complete_answers"], 0)
         self.assertEqual(summary["main_task_complete_answers"], 0)
 
+    def test_main_mandatory_reasoning_low_and_helpers_disabled(self):
+        report = self.run_mock()
+        self.assertEqual(self.args.main_max_tokens, 2048)
+        for request in self.requests:
+            if request["model"] == self.args.main_model:
+                self.assertEqual(request["reasoning"], {"effort": "low"})
+                self.assertEqual(request["max_tokens"], 2048)
+            else:
+                self.assertEqual(request["reasoning"], {"enabled": False})
+                self.assertEqual(request["max_tokens"], tiers.HELPER_OUTPUT)
+        self.assertEqual(report["requested_reasoning"]["main"], {"effort": "low"})
+        self.assertEqual(report["requested_reasoning"]["worker"], {"enabled": False})
+        self.assertIn("runner_sha256", report)
+        self.assertTrue(all("selection_response" in row["extra"] for row in report["rows"] if "extra" in row))
+
+    def test_main_output_limit_bounds_history_and_full_output_cost(self):
+        self.args.main_max_tokens = 4096
+        self.args.main_reasoning_effort = "medium"
+        report = self.run_mock()
+        expected = len(tiers.live.HISTORY.encode()) + 8192 + tiers.live.TURNS * (tiers.LIMIT + 4096 * 8 + 8192)
+        self.assertEqual(report["preflight"]["main_input_byte_bound"], expected)
+        self.assertEqual(report["main_max_tokens"], 4096)
+        snapshot = report["endpoint_snapshots"]
+        per_pair = 3 * tiers.ceiling(snapshot["main"], expected, 4096)
+        per_pair += sum(tiers.ceiling(snapshot[tier], report["preflight"]["helper_input_byte_bound"], tiers.HELPER_OUTPUT)
+                        for tier in ("worker", "utility"))
+        self.assertAlmostEqual(report["preflight"]["conservative_bound_usd"], 12 * per_pair + self.args.jev_reserve_usd)
+        for request in self.requests:
+            if request["model"] == self.args.main_model:
+                self.assertEqual(request["max_tokens"], 4096)
+                self.assertEqual(request["reasoning"], {"effort": "medium"})
+                self.assertLessEqual(tiers.live.prompt_bytes(request["messages"]), expected)
+
     def test_http_failure_retains_cost_not_error_body(self):
         error = urllib.error.HTTPError("https://test", 502, "secret", {}, io.BytesIO(json.dumps(
-            {"usage": {"cost": 0.02}, "error": {"message": "secret"}}).encode()))
+            {"usage": {"cost": 0.02}, "error": {"code": 400, "message": "secret"}}).encode()))
         record = {}
         with patch.object(tiers.live, "http", side_effect=error):
             self.assertIsNone(tiers.completion({}, "test-only", record))
         self.assertEqual(record["cost_usd"], 0.02)
+        self.assertEqual(record["provider_error_code"], 400)
         self.assertNotIn("secret", json.dumps(record))
 
     def test_timeout_cost_unknown_not_fake_zero(self):

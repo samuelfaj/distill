@@ -70,6 +70,7 @@ impl Theme {
             accent_success: GREEN,
             accent_running: MAGENTA,
             accent_skill: BLUE,
+            accent_side: BLUE,
 
             text_primary: FG,
             text_secondary: FG_DARK,

@@ -711,6 +711,7 @@ fn inline_input_style(theme: &Theme) -> PromptStyle {
         title: None,
         image_preview: true,
         ultracode_phase: None,
+        side_phase: None,
     }
 }
 

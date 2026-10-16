@@ -63,6 +63,7 @@ pub struct Theme {
     pub accent_success: Color,
     pub accent_running: Color, // For tools that are currently running
     pub accent_skill: Color,   // For skill invocations (slash command skills)
+    pub accent_side: Color, // Blue border for side mode
 
     // Text colors
     pub text_primary: Color,
@@ -164,6 +165,7 @@ impl Theme {
             accent_success: GREEN,
             accent_running: MAGENTA,
             accent_skill: rgb(100, 180, 170), // Muted teal
+            accent_side: BLUE,
 
             text_primary: FG,
             text_secondary: FG_DARK,

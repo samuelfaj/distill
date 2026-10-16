@@ -40,6 +40,26 @@ fn is_orchestration_projection_update(update: &SessionUpdate) -> bool {
     )
 }
 
+fn is_side_operational_update(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::Xai(notification)
+            if matches!(
+                &notification.update,
+                crate::extensions::notification::SessionUpdate::SubagentSpawned { .. }
+                    | crate::extensions::notification::SessionUpdate::SubagentProgress { .. }
+                    | crate::extensions::notification::SessionUpdate::SubagentFinished { .. }
+                    | crate::extensions::notification::SessionUpdate::TaskCompleted { .. }
+                    | crate::extensions::notification::SessionUpdate::TaskBackgrounded { .. }
+                    | crate::extensions::notification::SessionUpdate::BackgroundTasks { .. }
+                    | crate::extensions::notification::SessionUpdate::MonitorEvent { .. }
+                    | crate::extensions::notification::SessionUpdate::ScheduledTaskCreated { .. }
+                    | crate::extensions::notification::SessionUpdate::ScheduledTaskFired { .. }
+                    | crate::extensions::notification::SessionUpdate::ScheduledTaskDeleted { .. }
+            )
+    )
+}
+
 /// Updates written plus the `compaction_checkpoints/{uuid}.json` files the surviving records reference, collected in the same pass.
 #[derive(Default)]
 struct CopiedUpdates {
@@ -148,6 +168,7 @@ struct UpdateLineWriter<'a> {
     writer: BufWriter<std::fs::File>,
     source: &'a Path,
     target_session_id: &'a acp::SessionId,
+    filter_side_operational_updates: bool,
     copied: CopiedUpdates,
     skipped_lines: usize,
 }
@@ -157,11 +178,13 @@ impl<'a> UpdateLineWriter<'a> {
         target: &Path,
         source: &'a Path,
         target_session_id: &'a acp::SessionId,
+        filter_side_operational_updates: bool,
     ) -> io::Result<Self> {
         Ok(Self {
             writer: BufWriter::new(std::fs::File::create(target)?),
             source,
             target_session_id,
+            filter_side_operational_updates,
             copied: CopiedUpdates::default(),
             skipped_lines: 0,
         })
@@ -179,7 +202,9 @@ impl<'a> UpdateLineWriter<'a> {
                 return Ok(());
             }
         };
-        if is_orchestration_projection_update(&update) {
+        if is_orchestration_projection_update(&update)
+            || (self.filter_side_operational_updates && is_side_operational_update(&update))
+        {
             return Ok(());
         }
         if let SessionUpdate::Xai(notification) = &update
@@ -232,8 +257,14 @@ fn copy_updates_streaming(
     target: &Path,
     target_session_id: &acp::SessionId,
     target_prompt_index: Option<usize>,
+    filter_side_operational_updates: bool,
 ) -> io::Result<CopiedUpdates> {
-    let mut writer = UpdateLineWriter::try_new(target, source, target_session_id)?;
+    let mut writer = UpdateLineWriter::try_new(
+        target,
+        source,
+        target_session_id,
+        filter_side_operational_updates,
+    )?;
     let mut file = match std::fs::File::open(source) {
         Ok(file) => file,
         // A missing source is an empty transcript; still write the target.
@@ -353,6 +384,8 @@ impl JsonlStorageAdapter {
                 &self.updates_file(target_info),
                 &target_info.id,
                 options.target_prompt_index,
+                options.session_kind.as_deref()
+                    == Some(crate::session::visibility::SIDE_SESSION_KIND),
             )?
         };
         let checkpoint_files = copied_updates.checkpoint_files;
@@ -384,7 +417,9 @@ impl JsonlStorageAdapter {
             &self.signals_file(target_info),
         )?;
         let usage_copied = copy_sidecar_file(
-            options.copy_usage,
+            options.copy_usage
+                && options.session_kind.as_deref()
+                    != Some(crate::session::visibility::SIDE_SESSION_KIND),
             &self.usage_file(source_info),
             &self.usage_file(target_info),
         )?;

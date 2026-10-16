@@ -5792,7 +5792,7 @@ impl AppView {
                 && spinner_frame_tick;
             needs_redraw |= agent.drain_blocked();
             needs_redraw |= agent.goal_retry_secs() != agent.goal_retry_shown_secs;
-            needs_redraw |= agent.session.models.ultracode;
+            needs_redraw |= agent.session.models.ultracode || agent.side_parent.is_some();
             agent.prompt.slash_controller.set_workflows_available(
                 agent
                     .session
@@ -6092,7 +6092,8 @@ impl AppView {
                 let Some(agent) = self.agents.get(&id) else {
                     return TickDemand::None;
                 };
-                let fast = agent.scrollback.needs_animation()
+                let fast = agent.side_parent.is_some()
+                    || agent.scrollback.needs_animation()
                     || agent.todo.list_state.needs_tick()
                     || agent.tasks.needs_tick()
                     || agent.resize_preview_needs_tick()

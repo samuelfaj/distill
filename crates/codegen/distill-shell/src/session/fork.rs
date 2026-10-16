@@ -248,6 +248,20 @@ async fn sync_forked_session_to_backend(
 mod tests {
     use super::*;
 
+    fn xai_update(
+        session_id: &str,
+        update: serde_json::Value,
+    ) -> crate::session::storage::SessionUpdate {
+        crate::session::storage::SessionUpdateEnvelope::from_value(serde_json::json!({
+            "method": "_x.ai/session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": update,
+            }
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn test_generate_fork_session_id_format() {
         let fork_id = generate_fork_session_id("abc123");
@@ -429,6 +443,231 @@ mod tests {
             session_kind: Some(SIDE_SESSION_KIND.into()),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn side_fork_copies_chat_but_not_parent_operational_updates() {
+        use crate::sampling::ConversationItem;
+        use crate::session::persistence::default_model_id;
+        use crate::session::storage::SessionUpdate;
+        use crate::session::storage::StorageAdapter;
+        use crate::session::usage_file::{SessionUsageFile, UsageSummary};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let adapter = JsonlStorageAdapter::with_root(tmp.path().to_path_buf());
+        let parent = Info {
+            id: acp::SessionId::new("side-copy-parent"),
+            cwd: "/src".into(),
+        };
+        adapter
+            .init_session(&parent, default_model_id())
+            .await
+            .unwrap();
+        let mut parent_usage = SessionUsageFile::new(parent.id.to_string());
+        parent_usage.apply_turn(
+            1,
+            "parent-turn",
+            &UsageSummary {
+                input_tokens: 10,
+                total_tokens: 10,
+                model_calls: 1,
+                turn_count: 1,
+                ..Default::default()
+            },
+            None,
+        );
+        adapter.write_usage(&parent, &parent_usage).await.unwrap();
+        adapter
+            .append_chat_message(&parent, &ConversationItem::user("retain this context"))
+            .await
+            .unwrap();
+        for update in [
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "subagent_spawned",
+                    "subagent_id": "child",
+                    "parent_session_id": "side-copy-parent",
+                    "child_session_id": "child-session",
+                    "subagent_type": "explore",
+                    "description": "parent task",
+                }),
+            ),
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "background_tasks",
+                    "tasks": [],
+                }),
+            ),
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "task_backgrounded",
+                    "tool_call_id": "call-parent",
+                    "task_id": "task-parent",
+                    "command": "parent command",
+                    "cwd": "/src",
+                    "output_file": "/tmp/parent.log",
+                }),
+            ),
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "scheduled_task_created",
+                    "task_id": "scheduled-parent",
+                    "prompt": "parent scheduled prompt",
+                    "human_schedule": "every minute",
+                    "next_fire_at": null,
+                }),
+            ),
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "scheduled_task_fired",
+                    "task_id": "scheduled-parent",
+                    "prompt": "parent scheduled prompt",
+                    "human_schedule": "every minute",
+                    "next_fire_at": null,
+                    "subagent_id": null,
+                }),
+            ),
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "scheduled_task_deleted",
+                    "task_id": "scheduled-parent",
+                    "reason": "user_cancelled",
+                }),
+            ),
+            xai_update(
+                "side-copy-parent",
+                serde_json::json!({
+                    "sessionUpdate": "session_recap",
+                    "summary": "contextual recap",
+                }),
+            ),
+        ] {
+            adapter.append_update(&parent, &update).await.unwrap();
+        }
+
+        let side = fork_session_with_storage(
+            side_fork_request("side-copy-parent", "side-copy-child"),
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
+        let side_info = Info {
+            id: acp::SessionId::new(side.new_session_id),
+            cwd: "/dst".into(),
+        };
+        let copied = adapter.load_session(&side_info).await.unwrap();
+        assert!(adapter.read_usage(&side_info).await.unwrap().is_none());
+        assert_eq!(copied.chat_history.len(), 1);
+        assert!(matches!(
+            &copied.chat_history[0],
+            ConversationItem::User(user)
+                if serde_json::to_string(&user.content)
+                    .unwrap()
+                    .contains("retain this context")
+        ));
+        assert_eq!(copied.updates.len(), 1, "keep contextual recap only");
+        assert!(!copied.updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::Xai(n) if matches!(
+                &n.update,
+                crate::extensions::notification::SessionUpdate::ScheduledTaskCreated { task_id, .. }
+                    | crate::extensions::notification::SessionUpdate::ScheduledTaskFired { task_id, .. }
+                    | crate::extensions::notification::SessionUpdate::ScheduledTaskDeleted { task_id, .. }
+                    if task_id == "scheduled-parent"
+            )
+        )));
+        assert!(matches!(
+            &copied.updates[0],
+            SessionUpdate::Xai(n) if matches!(
+                &n.update,
+                crate::extensions::notification::SessionUpdate::SessionRecap { .. }
+            )
+        ));
+
+        let own_task = xai_update(
+            "side-copy-child",
+            serde_json::json!({
+                "sessionUpdate": "task_backgrounded",
+                "tool_call_id": "call-side",
+                "task_id": "task-side",
+                "command": "side command",
+                "cwd": "/dst",
+                "output_file": "/tmp/side.log",
+            }),
+        );
+        adapter.append_update(&side_info, &own_task).await.unwrap();
+        let own_schedule = xai_update(
+            "side-copy-child",
+            serde_json::json!({
+                "sessionUpdate": "scheduled_task_created",
+                "task_id": "scheduled-side",
+                "prompt": "side scheduled prompt",
+                "human_schedule": "every hour",
+                "next_fire_at": null,
+            }),
+        );
+        adapter
+            .append_update(&side_info, &own_schedule)
+            .await
+            .unwrap();
+        let reloaded = adapter.load_session(&side_info).await.unwrap();
+        assert!(reloaded.updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::Xai(n) if matches!(
+                &n.update,
+                crate::extensions::notification::SessionUpdate::ScheduledTaskCreated { task_id, .. }
+                    if task_id == "scheduled-side"
+            )
+        )));
+        assert!(reloaded.updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::Xai(n) if matches!(
+                &n.update,
+                crate::extensions::notification::SessionUpdate::TaskBackgrounded { task_id, .. }
+                    if task_id == "task-side"
+            )
+        )));
+
+        let regular = fork_session_with_storage(
+            ForkSessionRequest {
+                source_session_id: "side-copy-parent".into(),
+                source_cwd: "/src".into(),
+                new_cwd: "/dst".into(),
+                new_session_id: Some("regular-copy-child".into()),
+                ..Default::default()
+            },
+            adapter.clone(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
+        let regular_info = Info {
+            id: acp::SessionId::new(regular.new_session_id),
+            cwd: "/dst".into(),
+        };
+        let regular_copy = adapter.load_session(&regular_info).await.unwrap();
+        assert!(adapter.read_usage(&regular_info).await.unwrap().is_some());
+        assert!(
+            regular_copy.updates.iter().any(|update| matches!(
+                update,
+                SessionUpdate::Xai(n) if matches!(
+                    &n.update,
+                    crate::extensions::notification::SessionUpdate::TaskBackgrounded { task_id, .. }
+                        if task_id == "task-parent"
+                )
+            )),
+            "ordinary fork must retain parent operational updates"
+        );
     }
 
     #[tokio::test]

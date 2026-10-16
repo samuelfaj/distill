@@ -10,6 +10,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
 mod palette {
     use super::*;
 
+    pub const SIDE_BLUE: Color = rgb(100, 170, 255);
     pub const BASE: Color = rgb(35, 33, 54);
     pub const SURFACE: Color = rgb(42, 39, 63);
     pub const OVERLAY: Color = rgb(57, 53, 82);
@@ -47,6 +48,7 @@ impl Theme {
             accent_success: FOAM,
             accent_running: MUTED,
             accent_skill: SUBTLE,
+            accent_side: SIDE_BLUE,
 
             text_primary: TEXT,
             text_secondary: SUBTLE,

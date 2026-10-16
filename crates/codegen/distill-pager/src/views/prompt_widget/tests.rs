@@ -4794,6 +4794,29 @@
         out
     }
 
+    fn relative_luminance(c: ratatui::style::Color) -> f64 {
+        let ratatui::style::Color::Rgb(r, g, b) = c else {
+            panic!("expected resolved RGB color, got {c:?}");
+        };
+        [r, g, b]
+            .into_iter()
+            .map(|v| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            })
+            .zip([0.2126, 0.7152, 0.0722])
+            .map(|(v, weight)| v * weight)
+            .sum()
+    }
+
+    fn wcag_contrast(a: ratatui::style::Color, b: ratatui::style::Color) -> f64 {
+        let (lighter, darker) = {
+            let (a, b) = (relative_luminance(a), relative_luminance(b));
+            if a > b { (a, b) } else { (b, a) }
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
     fn luma(c: ratatui::style::Color) -> u32 {
         match c {
             ratatui::style::Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
@@ -4810,8 +4833,47 @@
         PromptStyle {
             focused: true,
             ultracode_phase: phase,
+            side_phase: None,
             ..Default::default()
         }
+    }
+
+    fn side_style(phase: f32) -> PromptStyle {
+        PromptStyle {
+            focused: true,
+            ultracode_phase: Some(0.3),
+            side_phase: Some(phase),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn side_border_pulses_synchronously_without_travelling_band() {
+        let _guard = crate::theme::cache::pin_theme();
+        let theme = Theme::current();
+        let dim = side_border_color(&theme, 0.0);
+        let bright = side_border_color(&theme, 0.5);
+        assert_ne!(dim, bright, "pulse must visibly change with phase");
+        for (name, endpoint) in [("dark", Theme::tokyonight()), ("light", Theme::grokday())] {
+            for (phase_name, phase) in [("low", 0.0), ("high", 0.5)] {
+                let color = side_border_color(&endpoint, phase);
+                assert!(
+                    wcag_contrast(color, endpoint.bg_base) >= 3.0,
+                    "{name} {phase_name}-phase contrast below 3:1: {}",
+                    wcag_contrast(color, endpoint.bg_base)
+                );
+            }
+        }
+        let cells = border_cells(&draw_bordered(40, &side_style(0.0)));
+        assert!(
+            cells.iter().all(|cell| cell.3 == dim),
+            "all border cells share pulse color"
+        );
+        let ultra = border_cells(&draw_bordered(40, &ultracode_style(Some(0.3))));
+        assert!(
+            ultra.iter().any(|cell| cell.3 != ultra[0].3),
+            "Ultracode keeps spatial band"
+        );
     }
 
     #[test]

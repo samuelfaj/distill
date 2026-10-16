@@ -1,0 +1,4662 @@
+{
+  "schema_version": 1,
+  "scope": "controlled multi-turn evidence replay, not full Distill harness",
+  "run_id": "efe8a095a0684085ab95da38ca307a03",
+  "model": "xiaomi/mimo-v2.6-flash",
+  "provider": "xiaomi/fp8",
+  "endpoint_snapshot": {
+    "name": "Xiaomi | xiaomi/mimo-v2.6-flash-20260921",
+    "model_id": "xiaomi/mimo-v2.6-flash",
+    "model_name": "Xiaomi: MiMo-V2.6-Flash",
+    "context_length": 1048576,
+    "pricing": {
+      "prompt": "0.00000014",
+      "completion": "0.00000028",
+      "input_cache_read": "0.0000000028",
+      "discount": 0
+    },
+    "provider_name": "Xiaomi",
+    "tag": "xiaomi/fp8",
+    "service_tier": null,
+    "quantization": "fp8",
+    "max_completion_tokens": 131072,
+    "max_prompt_tokens": null,
+    "supported_parameters": [
+      "reasoning",
+      "include_reasoning",
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "stop",
+      "response_format",
+      "tools",
+      "tool_choice",
+      "frequency_penalty",
+      "presence_penalty",
+      "structured_outputs"
+    ],
+    "supports_tool_choice": {
+      "none": false,
+      "auto": true,
+      "required": true,
+      "function": false
+    },
+    "status": 0,
+    "uptime_last_30m": 100,
+    "uptime_last_5m": 100,
+    "uptime_last_1d": 99.78947368421053,
+    "supports_implicit_caching": true,
+    "native_tools": {},
+    "supports_voice_cloning": false,
+    "supports_multiple_audio_references": false,
+    "supports_image_reference": false,
+    "supports_diarization": false,
+    "latency_last_30m": null,
+    "throughput_last_30m": null
+  },
+  "fixture_manifest_sha256": "2c3ee531ec7aa674a549f2bd91306b8164b4ac2d33570ab8a4b6df2647e84f93",
+  "adapter_sha256": "0c6b56ffdb0301e0388ea8ed3885da1371a2327db05bf580eef1dc643a284c7d",
+  "preflight": {
+    "budget_usd": 2.0,
+    "conservative_main_plus_aux_reserve_usd": 1.3567430400000002,
+    "auxiliary_reserve_usd": 0.25,
+    "known_sources_from_task_history": {
+      "failure-vs-keyword-decoys": "test-log",
+      "html-policy": "html-policy",
+      "unicode-literal": "mcp-json"
+    },
+    "max_main_calls": 48,
+    "max_jev_calls": 12,
+    "max_output_tokens": 512,
+    "max_input_byte_token_bound_per_call": 333488,
+    "prior_spend_reserve_usd": 0.06,
+    "note": "Jev production single attempt/3s deadline has no client dollar ceiling; reserve is not server spend enforcement."
+  },
+  "rows": [
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 11295.675166067667,
+      "response_id": "gen-1792157357-R5btWjuLAPB2DtPeyAG7",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56139,
+        "completion_tokens": 51,
+        "total_tokens": 56190,
+        "cost": 0.00787374,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00787374,
+          "upstream_inference_prompt_cost": 0.00785946,
+          "upstream_inference_completions_cost": 1.428e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00787374,
+      "finish_reason": "stop",
+      "answer": "The evidence for req-73 is:\n\nFAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 519.4634170038626,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 6.753583,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 54141,
+        "raw_unique_content_bytes": 54141,
+        "raw_baseline_token_estimate_bytes_div_4": 13535.25,
+        "returned_bytes": 4146,
+        "returned_token_estimate_bytes_div_4": 1036.5,
+        "returned_to_raw_byte_ratio": 0.07657782456918047,
+        "retrieval_latency_ms": 6.753583
+      },
+      "recovery": {
+        "source_id": "test-log",
+        "bytes": 54141,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 4309.921375010163,
+      "response_id": "gen-1792157376-EIDS4o2Li4RBndcHK30m",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 26566,
+        "completion_tokens": 42,
+        "total_tokens": 26608,
+        "cost": 0.003731,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.003731,
+          "upstream_inference_prompt_cost": 0.00371924,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.003731,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 83.60950008500367,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 5.337958,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 88,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.022727272727272728,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 9989,
+        "returned_token_estimate_bytes_div_4": 2497.25,
+        "returned_to_raw_byte_ratio": 0.06677496122787314,
+        "retrieval_latency_ms": 5.337958
+      },
+      "main_wall_ms": 16386.739499983378,
+      "response_id": "gen-1792157386-xXoK8k7dJ3cx6yJa9QfZ",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 5963,
+        "completion_tokens": 268,
+        "total_tokens": 6231,
+        "cost": 0.00090986,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00090986,
+          "upstream_inference_prompt_cost": 0.00083482,
+          "upstream_inference_completions_cost": 7.504e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00090986,
+      "finish_reason": "stop",
+      "answer": "MISSING\n\nThe evidence contains no current failure record for `req-73` with lock owner and transaction details. The only `req-73` lines found are:\n\n- `FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted`\n- `CAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false`\n\nThese two lines do appear to give the failure and its lock owner (`worker-9`) and transaction (`tx-448`), but they come from a `test-log` shard output, and the surrounding context is a synthetic test suite (`cache_roundtrip_*` cases, `SUMMARY failed=1 passed=639 suite=checkout integration`). There is no independent production log, request record, or lock-manager output confirming this is the current failed `payment_commit` request rather than a test fixture. The archived `retry_budget_exhausted ... timeout archived example` lines were correctly excluded per your instruction, but nothing else in the retrieved evidence corroborates `req-73`'s failure, lock owner, or transaction from a non-test source.\n\nIf you can point me to the production log or lock table for `req-73`, I can re-check. Otherwise the answer is MISSING.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000193578,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2246.92775006406,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1390.839333,
+        "jev_usage": {
+          "input_tokens": 4609,
+          "output_tokens": 312,
+          "request_id": "gen-dec-1792157411-rqYPRXOGTlav8HVZwfeK",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "c3c872a2-7f91-41c5-ba57-4a0b2793bacf",
+            "request_id": "gen-dec-1792157411-rqYPRXOGTlav8HVZwfeK",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 4609,
+              "output_tokens": 312
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1935780
+            },
+            "status": "Completed",
+            "latency_ms": 1231
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1390.839333
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 6727.703624987043,
+      "response_id": "gen-1792157412-rRJOtRz4nZC4zPBDcL7t",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3079,
+        "completion_tokens": 141,
+        "total_tokens": 3220,
+        "cost": 0.00047054,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00047054,
+          "upstream_inference_prompt_cost": 0.00043106,
+          "upstream_inference_completions_cost": 3.948e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00047054,
+      "finish_reason": "stop",
+      "answer": "MISSING\n\nThe available evidence shows the failure line and its cause for req-73, but no lock owner/transaction detail beyond what is present:\n\n- `FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted`\n- `CAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false`\n\nThe lock owner (`worker-9`) and transaction (`tx-448`) are present in the CAUSE line. No archived timeout examples were used. If additional lock/transaction detail (e.g., lease timestamps, holder metadata) is required, that evidence is not present in the searched output — MISSING.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 82.38962502218783,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 7.044334,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 54141,
+        "raw_unique_content_bytes": 54141,
+        "raw_baseline_token_estimate_bytes_div_4": 13535.25,
+        "returned_bytes": 4146,
+        "returned_token_estimate_bytes_div_4": 1036.5,
+        "returned_to_raw_byte_ratio": 0.07657782456918047,
+        "retrieval_latency_ms": 7.044334
+      },
+      "recovery": {
+        "source_id": "test-log",
+        "bytes": 54141,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 7617.323208018206,
+      "response_id": "gen-1792157426-o6YCV7h9mfIsFimFliUq",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 50779,
+        "completion_tokens": 42,
+        "total_tokens": 50821,
+        "cost": 0.003476788,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 26560,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.003476788,
+          "upstream_inference_prompt_cost": 0.003465028,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.003476788,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 79.09216696862131,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.980499999999999,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 88,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.022727272727272728,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 9989,
+        "returned_token_estimate_bytes_div_4": 2497.25,
+        "returned_to_raw_byte_ratio": 0.06677496122787314,
+        "retrieval_latency_ms": 4.980499999999999
+      },
+      "main_wall_ms": 10770.645707962103,
+      "response_id": "gen-1792157440-1PEhnDVORLMPa8Bh4Ja9",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 9775,
+        "completion_tokens": 115,
+        "total_tokens": 9890,
+        "cost": 0.0005840856,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 5952,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0005840856,
+          "upstream_inference_prompt_cost": 0.0005518856,
+          "upstream_inference_completions_cost": 3.22e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0005840856,
+      "finish_reason": "stop",
+      "answer": "The current failure for `req-73` is:\n\nFAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\n\n- Failure: `retry_budget_exhausted` on attempt 4\n- Lock owner: `worker-9`\n- Transaction: `tx-448`\n- Lease expired: `false`\n\nThe archived `retry_budget_exhausted payment_commit timeout` DEBUG lines are excluded as requested.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000193578,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2275.778125040233,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1375.851958,
+        "jev_usage": {
+          "input_tokens": 4609,
+          "output_tokens": 312,
+          "request_id": "gen-dec-1792157459-OOGxgqv60lrBAnMOCFXA",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "42b7cb74-d6a3-43c4-a791-34753cf3fed7",
+            "request_id": "gen-dec-1792157459-OOGxgqv60lrBAnMOCFXA",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 4609,
+              "output_tokens": 312
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1935780
+            },
+            "status": "Completed",
+            "latency_ms": 1194
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1375.851958
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 4948.030041065067,
+      "response_id": "gen-1792157461-GiNIseYrrDsrWIoDlXY0",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3906,
+        "completion_tokens": 116,
+        "total_tokens": 4022,
+        "cost": 0.0001578416,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 3072,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0001578416,
+          "upstream_inference_prompt_cost": 0.0001253616,
+          "upstream_inference_completions_cost": 3.248e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0001578416,
+      "finish_reason": "stop",
+      "answer": "For the current failed `payment_commit` request=req-73:\n\n- **Failure:** `FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted`\n- **Lock owner:** `worker-9`\n- **Transaction:** `tx-448`\n- **Lease expired:** `false`\n\nSource: `CAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false` (test-log output, lines 511-512). No archived timeout examples involved.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 8001.126375049353,
+      "response_id": "gen-1792157473-tjzT4iw8o8JwW4ewBUm5",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 109937,
+        "completion_tokens": 42,
+        "total_tokens": 109979,
+        "cost": 0.0077021784,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 56128,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0077021784,
+          "upstream_inference_prompt_cost": 0.0076904184,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0077021784,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 103.28654095064849,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 3.800917,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 28695,
+        "raw_unique_content_bytes": 28695,
+        "raw_baseline_token_estimate_bytes_div_4": 7173.75,
+        "returned_bytes": 4027,
+        "returned_token_estimate_bytes_div_4": 1006.75,
+        "returned_to_raw_byte_ratio": 0.1403380379857118,
+        "retrieval_latency_ms": 3.800917
+      },
+      "recovery": {
+        "source_id": "html-policy",
+        "bytes": 28695,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 4694.500749930739,
+      "response_id": "gen-1792157488-IYAmGIs0eG5AXUC2ok7C",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 11598,
+        "completion_tokens": 44,
+        "total_tokens": 11642,
+        "cost": 0.00163604,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00163604,
+          "upstream_inference_prompt_cost": 0.00162372,
+          "upstream_inference_completions_cost": 1.232e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00163604,
+      "finish_reason": "stop",
+      "answer": "<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 89.59737501572818,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 5.703708,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.020833333333333332,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10642,
+        "returned_token_estimate_bytes_div_4": 2660.5,
+        "returned_to_raw_byte_ratio": 0.07114016792341836,
+        "retrieval_latency_ms": 5.703708
+      },
+      "main_wall_ms": 3038.042915984988,
+      "response_id": "gen-1792157500-jSojhRjWrR8Go2ja35GI",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 6001,
+        "completion_tokens": 3,
+        "total_tokens": 6004,
+        "cost": 0.00084098,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00084098,
+          "upstream_inference_prompt_cost": 0.00084014,
+          "upstream_inference_completions_cost": 8.4e-07
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00084098,
+      "finish_reason": "stop",
+      "answer": "MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000157878,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2008.784166071564,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1126.39725,
+        "jev_usage": {
+          "input_tokens": 3759,
+          "output_tokens": 255,
+          "request_id": "gen-dec-1792157510-d5tu7kfaxaNjQ9EJ8O72",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "ccb297f0-bd3f-4b3f-80bd-5ec4b4699c3b",
+            "request_id": "gen-dec-1792157510-d5tu7kfaxaNjQ9EJ8O72",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 3759,
+              "output_tokens": 255
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1578780
+            },
+            "status": "Completed",
+            "latency_ms": 938
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 0.5,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1352,
+        "returned_token_estimate_bytes_div_4": 338.0,
+        "returned_to_raw_byte_ratio": 0.009037916466121183,
+        "retrieval_latency_ms": 1126.39725
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 3259.2291670152918,
+      "response_id": "gen-1792157512-06VO1GxRfncGbJLyscoT",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 2859,
+        "completion_tokens": 3,
+        "total_tokens": 2862,
+        "cost": 0.0004011,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0004011,
+          "upstream_inference_prompt_cost": 0.00040026,
+          "upstream_inference_completions_cost": 8.4e-07
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0004011,
+      "finish_reason": "stop",
+      "answer": "MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 10058.236874989234,
+      "response_id": "gen-1792157524-0QuPo0M1N5DF8Xv9OBoP",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56124,
+        "completion_tokens": 118,
+        "total_tokens": 56242,
+        "cost": 0.0078904,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0078904,
+          "upstream_inference_prompt_cost": 0.00785736,
+          "upstream_inference_completions_cost": 3.304e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0078904,
+      "finish_reason": "stop",
+      "answer": "The current production policy heading and grace_period are:\n\n**Evidence (SOURCE html-policy):**\n<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>\n\n- **Heading:** `rotate_signing_key`\n- **grace_period:** `48h`\n\nThe `grace_period=0` entries are explicitly marked as deprecated samples (`class=\"example\"` — \"deprecated sample, not policy\") and are excluded per your request.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 79.1095420718193,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.34425,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.020833333333333332,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10642,
+        "returned_token_estimate_bytes_div_4": 2660.5,
+        "returned_to_raw_byte_ratio": 0.07114016792341836,
+        "retrieval_latency_ms": 4.34425
+      },
+      "main_wall_ms": 11439.382999902591,
+      "response_id": "gen-1792157540-FjBf3JZg6qMmbCt3UCNk",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 9634,
+        "completion_tokens": 156,
+        "total_tokens": 9790,
+        "cost": 0.0005758256,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 5952,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0005758256,
+          "upstream_inference_prompt_cost": 0.0005321456,
+          "upstream_inference_completions_cost": 4.368e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0005758256,
+      "finish_reason": "stop",
+      "answer": "Evidence:\n\n/var/folders/wp/st3y6js14rs708k9pgyxr7jr0000gn/T/.tmpoENxRa/store/aad19dbb2c5452e0.txt:228\n<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n\n/var/folders/wp/st3y6js14rs708k9pgyxr7jr0000gn/T/.tmpoENxRa/store/aad19dbb2c5452e0.txt:229\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000157878,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 1854.6276249689981,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1020.2044999999999,
+        "jev_usage": {
+          "input_tokens": 3759,
+          "output_tokens": 255,
+          "request_id": "gen-dec-1792157559-jngmwq9Rg6RooeZBkTKx",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "beabadcd-fa84-4e75-9109-192fe001f0e1",
+            "request_id": "gen-dec-1792157559-jngmwq9Rg6RooeZBkTKx",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 3759,
+              "output_tokens": 255
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1578780
+            },
+            "status": "Completed",
+            "latency_ms": 900
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 0.5,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1352,
+        "returned_token_estimate_bytes_div_4": 338.0,
+        "returned_to_raw_byte_ratio": 0.009037916466121183,
+        "retrieval_latency_ms": 1020.2044999999999
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 2370.278291986324,
+      "response_id": "gen-1792157561-04SoL0rvfJ23SZizpcRI",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3333,
+        "completion_tokens": 3,
+        "total_tokens": 3336,
+        "cost": 8.11048e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 2816,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 8.11048e-05,
+          "upstream_inference_prompt_cost": 8.02648e-05,
+          "upstream_inference_completions_cost": 8.4e-07
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 8.11048e-05,
+      "finish_reason": "stop",
+      "answer": "MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 15017.73104199674,
+      "response_id": "gen-1792157571-Oj5OVj84ze0UcyyGpwbV",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 109980,
+        "completion_tokens": 105,
+        "total_tokens": 110085,
+        "cost": 0.0077346192,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 56064,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0077346192,
+          "upstream_inference_prompt_cost": 0.0077052192,
+          "upstream_inference_completions_cost": 2.94e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0077346192,
+      "finish_reason": "stop",
+      "answer": "**Evidence (SOURCE html-policy):**\n\n<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>\n\n- **Heading:** `rotate_signing_key`\n- **grace_period:** `48h`\n\nThe `grace_period=0` entries are marked `class=\"example\"` — \"deprecated sample, not policy\" — and are excluded per your request.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 90.46845801640302,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.006042,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 28695,
+        "raw_unique_content_bytes": 28695,
+        "raw_baseline_token_estimate_bytes_div_4": 7173.75,
+        "returned_bytes": 4027,
+        "returned_token_estimate_bytes_div_4": 1006.75,
+        "returned_to_raw_byte_ratio": 0.1403380379857118,
+        "retrieval_latency_ms": 4.006042
+      },
+      "recovery": {
+        "source_id": "html-policy",
+        "bytes": 28695,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 4926.393957925029,
+      "response_id": "gen-1792157594-kEZnpYliLpJyguvrrvJw",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 20853,
+        "completion_tokens": 44,
+        "total_tokens": 20897,
+        "cost": 0.0013424152,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 11584,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0013424152,
+          "upstream_inference_prompt_cost": 0.0013300952,
+          "upstream_inference_completions_cost": 1.232e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0013424152,
+      "finish_reason": "stop",
+      "answer": "<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 101.74495796673,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 9.967458,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.010416666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10263,
+        "returned_token_estimate_bytes_div_4": 2565.75,
+        "returned_to_raw_byte_ratio": 0.06860660997914327,
+        "retrieval_latency_ms": 9.967458
+      },
+      "main_wall_ms": 5416.780291940086,
+      "response_id": "gen-1792157606-KyzFozzLK9KNFkfu77cq",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 6661,
+        "completion_tokens": 8,
+        "total_tokens": 6669,
+        "cost": 0.00093478,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00093478,
+          "upstream_inference_prompt_cost": 0.00093254,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00093478,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.000414498,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2213.3766249753535,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1365.294292,
+        "jev_usage": {
+          "input_tokens": 9869,
+          "output_tokens": 544,
+          "request_id": "gen-dec-1792157619-e5l1UMnSfbGXpzrOBY4H",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "eb305ea7-1da3-4442-a227-be4a6043d656",
+            "request_id": "gen-dec-1792157619-e5l1UMnSfbGXpzrOBY4H",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 9869,
+              "output_tokens": 544
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 4144980
+            },
+            "status": "Completed",
+            "latency_ms": 1218
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1564,
+        "returned_token_estimate_bytes_div_4": 391.0,
+        "returned_to_raw_byte_ratio": 0.010455104551045511,
+        "retrieval_latency_ms": 1365.294292
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 4564.138249959797,
+      "response_id": "gen-1792157621-50XjsULlE233vFfP0jmE",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3017,
+        "completion_tokens": 8,
+        "total_tokens": 3025,
+        "cost": 0.00042462,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00042462,
+          "upstream_inference_prompt_cost": 0.00042238,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00042462,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 5342.938291956671,
+      "response_id": "gen-1792157632-PkAMY6ouI9PENwWZ7Feb",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56129,
+        "completion_tokens": 39,
+        "total_tokens": 56168,
+        "cost": 0.00786898,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00786898,
+          "upstream_inference_prompt_cost": 0.00785806,
+          "upstream_inference_completions_cost": 1.092e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00786898,
+      "finish_reason": "stop",
+      "answer": "{\"label\": \"São Paulo — peça №4\", \"status\": \"current\", \"type\": \"mcp.resource\", \"uri\": \"inventory://labels/BR-4\"}",
+      "quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "fallback_recovery",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 90.62262496445328,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 5.935083,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 1,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 1.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 43556,
+        "raw_unique_content_bytes": 43556,
+        "raw_baseline_token_estimate_bytes_div_4": 10889.0,
+        "returned_bytes": 403,
+        "returned_token_estimate_bytes_div_4": 100.75,
+        "returned_to_raw_byte_ratio": 0.009252456607585637,
+        "retrieval_latency_ms": 5.935083
+      },
+      "recovery": {
+        "source_id": "mcp-json",
+        "bytes": 43556,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 2870.604958035983,
+      "response_id": "gen-1792157644-mT3qEWpzFyWjvgX3U83e",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 19155,
+        "completion_tokens": 8,
+        "total_tokens": 19163,
+        "cost": 0.00268394,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00268394,
+          "upstream_inference_prompt_cost": 0.0026817,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00268394,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "jev",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.000414498,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2241.0150000359863,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1352.9482910000002,
+        "jev_usage": {
+          "input_tokens": 9869,
+          "output_tokens": 544,
+          "request_id": "gen-dec-1792157654-3yM5Qw47BjbLkG5p3QtX",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "2ce38351-ce63-493a-9d07-a7b58f8d7225",
+            "request_id": "gen-dec-1792157654-3yM5Qw47BjbLkG5p3QtX",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 9869,
+              "output_tokens": 544
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 4144980
+            },
+            "status": "Completed",
+            "latency_ms": 1214
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1564,
+        "returned_token_estimate_bytes_div_4": 391.0,
+        "returned_to_raw_byte_ratio": 0.010455104551045511,
+        "retrieval_latency_ms": 1352.9482910000002
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 7314.82212501578,
+      "response_id": "gen-1792157656-ez3K8JmBSMLsL1lbwmwH",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3652,
+        "completion_tokens": 8,
+        "total_tokens": 3660,
+        "cost": 0.0001008224,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 3008,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0001008224,
+          "upstream_inference_prompt_cost": 9.85824e-05,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0001008224,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "baseline",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 10626.689583063126,
+      "response_id": "gen-1792157671-4MZYIhkTNpgia8P8Bqrx",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 109908,
+        "completion_tokens": 39,
+        "total_tokens": 109947,
+        "cost": 0.0076972784,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 56128,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0076972784,
+          "upstream_inference_prompt_cost": 0.0076863584,
+          "upstream_inference_completions_cost": 1.092e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0076972784,
+      "finish_reason": "stop",
+      "answer": "{\"label\": \"São Paulo — peça №4\", \"status\": \"current\", \"type\": \"mcp.resource\", \"uri\": \"inventory://labels/BR-4\"}",
+      "quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "fallback_recovery",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 99.2440830450505,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 6.102333,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 1,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 1.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 43556,
+        "raw_unique_content_bytes": 43556,
+        "raw_baseline_token_estimate_bytes_div_4": 10889.0,
+        "returned_bytes": 403,
+        "returned_token_estimate_bytes_div_4": 100.75,
+        "returned_to_raw_byte_ratio": 0.009252456607585637,
+        "retrieval_latency_ms": 6.102333
+      },
+      "recovery": {
+        "source_id": "mcp-json",
+        "bytes": 43556,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 6006.176457973197,
+      "response_id": "gen-1792157688-BE9POrxcrrYM4vO6Xl3T",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 35928,
+        "completion_tokens": 8,
+        "total_tokens": 35936,
+        "cost": 0.0024067008,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 19136,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0024067008,
+          "upstream_inference_prompt_cost": 0.0024044608,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0024067008,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "local",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 76.68020902201533,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 7.923292,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.010416666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10263,
+        "returned_token_estimate_bytes_div_4": 2565.75,
+        "returned_to_raw_byte_ratio": 0.06860660997914327,
+        "retrieval_latency_ms": 7.923292
+      },
+      "main_wall_ms": 8904.733791947365,
+      "response_id": "gen-1792157700-9DP0kMCIRdTaDTWAF6yc",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 10950,
+        "completion_tokens": 8,
+        "total_tokens": 10958,
+        "cost": 0.0006220368,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 6656,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0006220368,
+          "upstream_inference_prompt_cost": 0.0006197968,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0006220368,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 74.65920899994671,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 6.616334,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 54141,
+        "raw_unique_content_bytes": 54141,
+        "raw_baseline_token_estimate_bytes_div_4": 13535.25,
+        "returned_bytes": 4146,
+        "returned_token_estimate_bytes_div_4": 1036.5,
+        "returned_to_raw_byte_ratio": 0.07657782456918047,
+        "retrieval_latency_ms": 6.616334
+      },
+      "recovery": {
+        "source_id": "test-log",
+        "bytes": 54141,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 3628.2968749292195,
+      "response_id": "gen-1792157716-vMc7Mufvn6sjZto1jDWi",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 26565,
+        "completion_tokens": 42,
+        "total_tokens": 26607,
+        "cost": 0.00373086,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00373086,
+          "upstream_inference_prompt_cost": 0.0037191,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00373086,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 72.68654205836356,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.461125,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 88,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.022727272727272728,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 9989,
+        "returned_token_estimate_bytes_div_4": 2497.25,
+        "returned_to_raw_byte_ratio": 0.06677496122787314,
+        "retrieval_latency_ms": 4.461125
+      },
+      "main_wall_ms": 2929.660333087668,
+      "response_id": "gen-1792157726-nSYDGw50lc0c1uGoqfCS",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 5935,
+        "completion_tokens": 3,
+        "total_tokens": 5938,
+        "cost": 0.00083174,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00083174,
+          "upstream_inference_prompt_cost": 0.0008309,
+          "upstream_inference_completions_cost": 8.4e-07
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00083174,
+      "finish_reason": "stop",
+      "answer": "MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000193578,
+      "account_usage_before": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_usage_after": {
+        "usage": 306.257814706,
+        "usage_daily": 1.33699952,
+        "usage_monthly": 209.81740626
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2240.5520419124514,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1387.594375,
+        "jev_usage": {
+          "input_tokens": 4609,
+          "output_tokens": 312,
+          "request_id": "gen-dec-1792157737-Nyiz4Ram74reKtgDrRJg",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "1218395b-d3ba-4226-8b4a-eef4208ea221",
+            "request_id": "gen-dec-1792157737-Nyiz4Ram74reKtgDrRJg",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 4609,
+              "output_tokens": 312
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1935780
+            },
+            "status": "Completed",
+            "latency_ms": 1261
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1387.594375
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 6989.358791033737,
+      "response_id": "gen-1792157739-KWBS7MBqM4vdlYD3yOin",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3079,
+        "completion_tokens": 42,
+        "total_tokens": 3121,
+        "cost": 0.00044282,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00044282,
+          "upstream_inference_prompt_cost": 0.00043106,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00044282,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 11547.673000022769,
+      "response_id": "gen-1792157753-nVOFRjjCN8JZAWv3wOAJ",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56139,
+        "completion_tokens": 111,
+        "total_tokens": 56250,
+        "cost": 0.00789054,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00789054,
+          "upstream_inference_prompt_cost": 0.00785946,
+          "upstream_inference_completions_cost": 3.108e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00789054,
+      "finish_reason": "stop",
+      "answer": "MISSING\n\nThe evidence contains no current failure record for req-73 with lock owner and transaction details. The only req-73 lines found are:\n\nFAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\n\nThese two lines do provide the requested data. The archived timeout examples (DEBUG retry_budget_exhausted payment_commit timeout archived example; not current failure) were excluded per your instruction.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 84.02312500402331,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.193874999999999,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 88,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.022727272727272728,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 9989,
+        "returned_token_estimate_bytes_div_4": 2497.25,
+        "returned_to_raw_byte_ratio": 0.06677496122787314,
+        "retrieval_latency_ms": 4.193874999999999
+      },
+      "main_wall_ms": 4001.4494589995593,
+      "response_id": "gen-1792157771-njjyyOIeoYKDrtovFoGB",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 9496,
+        "completion_tokens": 42,
+        "total_tokens": 9538,
+        "cost": 0.0005333664,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 5888,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0005333664,
+          "upstream_inference_prompt_cost": 0.0005216064,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0005333664,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000193578,
+      "account_usage_before": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_usage_after": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2133.660166990012,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1292.784792,
+        "jev_usage": {
+          "input_tokens": 4609,
+          "output_tokens": 312,
+          "request_id": "gen-dec-1792157782-1Ej0Ic3RtCssXyEAHJej",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "98575c1e-4e24-4d85-8b98-ad140c0ba818",
+            "request_id": "gen-dec-1792157782-1Ej0Ic3RtCssXyEAHJej",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 4609,
+              "output_tokens": 312
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1935780
+            },
+            "status": "Completed",
+            "latency_ms": 1173
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1292.784792
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 2689.5221659215167,
+      "response_id": "gen-1792157784-GLULaL27dGYYpOLcDF6L",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3808,
+        "completion_tokens": 42,
+        "total_tokens": 3850,
+        "cost": 0.0001234016,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 3072,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0001234016,
+          "upstream_inference_prompt_cost": 0.0001116416,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0001234016,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 10191.712041036226,
+      "response_id": "gen-1792157794-CHYqrEK2jrM11ekCgFbR",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 109997,
+        "completion_tokens": 42,
+        "total_tokens": 110039,
+        "cost": 0.0077105784,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 56128,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0077105784,
+          "upstream_inference_prompt_cost": 0.0076988184,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0077105784,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 1,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 84.70187499187887,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 6.955292,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 54141,
+        "raw_unique_content_bytes": 54141,
+        "raw_baseline_token_estimate_bytes_div_4": 13535.25,
+        "returned_bytes": 4146,
+        "returned_token_estimate_bytes_div_4": 1036.5,
+        "returned_to_raw_byte_ratio": 0.07657782456918047,
+        "retrieval_latency_ms": 6.955292
+      },
+      "recovery": {
+        "source_id": "test-log",
+        "bytes": 54141,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 7972.86862495821,
+      "response_id": "gen-1792157811-nlFU0tSavWhJYOBIdjVD",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 50778,
+        "completion_tokens": 42,
+        "total_tokens": 50820,
+        "cost": 0.003476648,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 26560,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.003476648,
+          "upstream_inference_prompt_cost": 0.003464888,
+          "upstream_inference_completions_cost": 1.176e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.003476648,
+      "finish_reason": "stop",
+      "answer": "FAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 80.99212497472763,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.561791,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.020833333333333332,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10642,
+        "returned_token_estimate_bytes_div_4": 2660.5,
+        "returned_to_raw_byte_ratio": 0.07114016792341836,
+        "retrieval_latency_ms": 4.561791
+      },
+      "main_wall_ms": 3669.7579579195008,
+      "response_id": "gen-1792157825-uvvt8fn4RB4MhvFT82Ge",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 6015,
+        "completion_tokens": 3,
+        "total_tokens": 6018,
+        "cost": 0.00084294,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00084294,
+          "upstream_inference_prompt_cost": 0.0008421,
+          "upstream_inference_completions_cost": 8.4e-07
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00084294,
+      "finish_reason": "stop",
+      "answer": "MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000157878,
+      "account_usage_before": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_usage_after": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 1981.4281669678167,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1100.1385830000002,
+        "jev_usage": {
+          "input_tokens": 3759,
+          "output_tokens": 255,
+          "request_id": "gen-dec-1792157836-MOmnyaCfCSvy6gruBESv",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "6cc3b14f-ec3e-4a8a-a96e-3a407dc4c1d5",
+            "request_id": "gen-dec-1792157836-MOmnyaCfCSvy6gruBESv",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 3759,
+              "output_tokens": 255
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1578780
+            },
+            "status": "Completed",
+            "latency_ms": 942
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 0.5,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1352,
+        "returned_token_estimate_bytes_div_4": 338.0,
+        "returned_to_raw_byte_ratio": 0.009037916466121183,
+        "retrieval_latency_ms": 1100.1385830000002
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 4128.205207991414,
+      "response_id": "gen-1792157838-CNSx39et6i7gYYaB8XQ8",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 2858,
+        "completion_tokens": 3,
+        "total_tokens": 2861,
+        "cost": 0.00040096,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00040096,
+          "upstream_inference_prompt_cost": 0.00040012,
+          "upstream_inference_completions_cost": 8.4e-07
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00040096,
+      "finish_reason": "stop",
+      "answer": "MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 8588.36920792237,
+      "response_id": "gen-1792157849-ZAe9qRQ9tziMPjkahGXk",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56124,
+        "completion_tokens": 120,
+        "total_tokens": 56244,
+        "cost": 0.00789096,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00789096,
+          "upstream_inference_prompt_cost": 0.00785736,
+          "upstream_inference_completions_cost": 3.36e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00789096,
+      "finish_reason": "stop",
+      "answer": "The current production policy heading and grace_period:\n\n**rotate_signing_key**\n- grace_period = **48h**\n- owner = security-oncall\n- note: do not revoke old key early\n\nEvidence:\nSOURCE html-policy\n<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>\n\n(The `grace_period=0` entries were excluded — they are marked `class=\"example\"` / \"deprecated sample, not policy\".)",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 0,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 75.45245799701661,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 3.484458,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 28695,
+        "raw_unique_content_bytes": 28695,
+        "raw_baseline_token_estimate_bytes_div_4": 7173.75,
+        "returned_bytes": 4027,
+        "returned_token_estimate_bytes_div_4": 1006.75,
+        "returned_to_raw_byte_ratio": 0.1403380379857118,
+        "retrieval_latency_ms": 3.484458
+      },
+      "recovery": {
+        "source_id": "html-policy",
+        "bytes": 28695,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 6142.9585829610005,
+      "response_id": "gen-1792157864-TRwg0CchDHBshnTG1qSc",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 11598,
+        "completion_tokens": 49,
+        "total_tokens": 11647,
+        "cost": 0.00163744,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00163744,
+          "upstream_inference_prompt_cost": 0.00162372,
+          "upstream_inference_completions_cost": 1.372e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00163744,
+      "finish_reason": "stop",
+      "answer": "MISSING\n\nThe evidence available contains only deprecated samples (`rotate_signing_key grace_period=0 deprecated sample, not policy`) and unrelated deployment notes. No current production policy heading or `grace_period` value appears in the provided evidence.",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 2,
+        "all_facts": false
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.000157878,
+      "account_usage_before": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_usage_after": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 1891.8400829425082,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1062.6345,
+        "jev_usage": {
+          "input_tokens": 3759,
+          "output_tokens": 255,
+          "request_id": "gen-dec-1792157877-MBMCvLFbyZ9n57OX1HMF",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "ef64227a-c92b-4ce0-8beb-c19bc305cd79",
+            "request_id": "gen-dec-1792157877-MBMCvLFbyZ9n57OX1HMF",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 3759,
+              "output_tokens": 255
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 1578780
+            },
+            "status": "Completed",
+            "latency_ms": 922
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 0.5,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1352,
+        "returned_token_estimate_bytes_div_4": 338.0,
+        "returned_to_raw_byte_ratio": 0.009037916466121183,
+        "retrieval_latency_ms": 1062.6345
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 3771.817791974172,
+      "response_id": "gen-1792157879-I6FW0VIr2bduRR52Oiv9",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3333,
+        "completion_tokens": 46,
+        "total_tokens": 3379,
+        "cost": 9.31448e-05,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 2816,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 9.31448e-05,
+          "upstream_inference_prompt_cost": 8.02648e-05,
+          "upstream_inference_completions_cost": 1.288e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 9.31448e-05,
+      "finish_reason": "stop",
+      "answer": "Evidence shows grace_period but no heading for rotate_signing_key policy.\n\ngrace_period: `Current production grace_period=48h; owner=security-oncall; do not revoke old key early.`\n\nHeading: MISSING",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false,
+        "declares_missing": true
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 8378.038584021851,
+      "response_id": "gen-1792157890-1RsMcCBrf0JMhZNciGTX",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 109982,
+        "completion_tokens": 120,
+        "total_tokens": 110102,
+        "cost": 0.0077390992,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 56064,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0077390992,
+          "upstream_inference_prompt_cost": 0.0077054992,
+          "upstream_inference_completions_cost": 3.36e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0077390992,
+      "finish_reason": "stop",
+      "answer": "The current production policy heading and grace_period:\n\n**rotate_signing_key**\n- grace_period = **48h**\n- owner = security-oncall\n- note: do not revoke old key early\n\nEvidence:\nSOURCE html-policy\n<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>\n\n(The `grace_period=0` entries were excluded — they are marked `class=\"example\"` / \"deprecated sample, not policy\".)",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "fallback_recovery",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 79.7712909989059,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 3.5302919999999998,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 0,
+        "returned_unique_lines": 40,
+        "relevant_returned_unique_lines": 0,
+        "evidence_recall": 0.0,
+        "line_precision": 0.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 28695,
+        "raw_unique_content_bytes": 28695,
+        "raw_baseline_token_estimate_bytes_div_4": 7173.75,
+        "returned_bytes": 4027,
+        "returned_token_estimate_bytes_div_4": 1006.75,
+        "returned_to_raw_byte_ratio": 0.1403380379857118,
+        "retrieval_latency_ms": 3.5302919999999998
+      },
+      "recovery": {
+        "source_id": "html-policy",
+        "bytes": 28695,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 10156.46462503355,
+      "response_id": "gen-1792157905-gSzTOOttLFCzHpxUlbTR",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 20857,
+        "completion_tokens": 116,
+        "total_tokens": 20973,
+        "cost": 0.0013631352,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 11584,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0013631352,
+          "upstream_inference_prompt_cost": 0.0013306552,
+          "upstream_inference_completions_cost": 3.248e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0013631352,
+      "finish_reason": "stop",
+      "answer": "Current production policy:\n\n**Heading:** `rotate_signing_key` (from `<section id=\"current-policy\"><h2>rotate_signing_key</h2>`)\n\n**grace_period:** `48h`\n\nEvidence line: `<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>`\n\nThe `grace_period=0` values shown in the grep results are all from `<p class=\"example\">` elements explicitly labeled \"deprecated sample, not policy\" — not the production policy.",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "html-policy",
+      "turn": 1,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 72.21466593910009,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "html-policy",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 4.038291999999999,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "html-policy",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.020833333333333332,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10642,
+        "returned_token_estimate_bytes_div_4": 2660.5,
+        "returned_to_raw_byte_ratio": 0.07114016792341836,
+        "retrieval_latency_ms": 4.038291999999999
+      },
+      "main_wall_ms": 3567.0934999361634,
+      "response_id": "gen-1792157922-9oClv8nZmS2MosGqaNpS",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 9662,
+        "completion_tokens": 46,
+        "total_tokens": 9708,
+        "cost": 0.0005489456,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 5952,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0005489456,
+          "upstream_inference_prompt_cost": 0.0005360656,
+          "upstream_inference_completions_cost": 1.288e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0005489456,
+      "finish_reason": "stop",
+      "answer": "Evidence:\n\n<section id=\"current-policy\"><h2>rotate_signing_key</h2>\n<p>Current production grace_period=48h; owner=security-oncall; do not revoke old key early.</p>",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.000414498,
+      "account_usage_before": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_usage_after": {
+        "usage": 306.261670382,
+        "usage_daily": 1.340855196,
+        "usage_monthly": 209.821261936
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2154.964125016704,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1331.3845419999998,
+        "jev_usage": {
+          "input_tokens": 9869,
+          "output_tokens": 544,
+          "request_id": "gen-dec-1792157933-SaeKO9fTPf7UN2oPOid6",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "fd31fda2-da29-4959-9643-7183e4250005",
+            "request_id": "gen-dec-1792157933-SaeKO9fTPf7UN2oPOid6",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 9869,
+              "output_tokens": 544
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 4144980
+            },
+            "status": "Completed",
+            "latency_ms": 1183
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1564,
+        "returned_token_estimate_bytes_div_4": 391.0,
+        "returned_to_raw_byte_ratio": 0.010455104551045511,
+        "retrieval_latency_ms": 1331.3845419999998
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 3234.9316669860855,
+      "response_id": "gen-1792157935-3w62H7gnLgF1WGf22Xa7",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3018,
+        "completion_tokens": 8,
+        "total_tokens": 3026,
+        "cost": 0.00042476,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00042476,
+          "upstream_inference_prompt_cost": 0.00042252,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00042476,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 11234.41300005652,
+      "response_id": "gen-1792157945-11NPYmUN2nz1mqbwvFVl",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56129,
+        "completion_tokens": 39,
+        "total_tokens": 56168,
+        "cost": 0.00786898,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00786898,
+          "upstream_inference_prompt_cost": 0.00785806,
+          "upstream_inference_completions_cost": 1.092e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00786898,
+      "finish_reason": "stop",
+      "answer": "{\"label\": \"São Paulo — peça №4\", \"status\": \"current\", \"type\": \"mcp.resource\", \"uri\": \"inventory://labels/BR-4\"}",
+      "quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "fallback_recovery",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 76.52383297681808,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 5.696708,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 1,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 1.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 43556,
+        "raw_unique_content_bytes": 43556,
+        "raw_baseline_token_estimate_bytes_div_4": 10889.0,
+        "returned_bytes": 403,
+        "returned_token_estimate_bytes_div_4": 100.75,
+        "returned_to_raw_byte_ratio": 0.009252456607585637,
+        "retrieval_latency_ms": 5.696708
+      },
+      "recovery": {
+        "source_id": "mcp-json",
+        "bytes": 43556,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 4102.886790991761,
+      "response_id": "gen-1792157963-C3kroqclJbkQYmElppEG",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 19156,
+        "completion_tokens": 8,
+        "total_tokens": 19164,
+        "cost": 0.00268408,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00268408,
+          "upstream_inference_prompt_cost": 0.00268184,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00268408,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 81.25000004656613,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 8.359709,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.010416666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10263,
+        "returned_token_estimate_bytes_div_4": 2565.75,
+        "returned_to_raw_byte_ratio": 0.06860660997914327,
+        "retrieval_latency_ms": 8.359709
+      },
+      "main_wall_ms": 4998.976333998144,
+      "response_id": "gen-1792157973-gKMpZkOZagLvlGg8MPa6",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 6653,
+        "completion_tokens": 8,
+        "total_tokens": 6661,
+        "cost": 0.00093366,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00093366,
+          "upstream_inference_prompt_cost": 0.00093142,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00093366,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "baseline",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 11875.103167025372,
+      "response_id": "gen-1792157987-8l7l2LkYJUeyIvI3aLYQ",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 109908,
+        "completion_tokens": 39,
+        "total_tokens": 109947,
+        "cost": 0.0076972784,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 56128,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0076972784,
+          "upstream_inference_prompt_cost": 0.0076863584,
+          "upstream_inference_completions_cost": 1.092e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0076972784,
+      "finish_reason": "stop",
+      "answer": "{\"label\": \"São Paulo — peça №4\", \"status\": \"current\", \"type\": \"mcp.resource\", \"uri\": \"inventory://labels/BR-4\"}",
+      "quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_evidence": true,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "fallback_recovery",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 77.36975001171231,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "production utility-unavailable fallback",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 5.989833,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 1,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 1.0,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 43556,
+        "raw_unique_content_bytes": 43556,
+        "raw_baseline_token_estimate_bytes_div_4": 10889.0,
+        "returned_bytes": 403,
+        "returned_token_estimate_bytes_div_4": 100.75,
+        "returned_to_raw_byte_ratio": 0.009252456607585637,
+        "retrieval_latency_ms": 5.989833
+      },
+      "recovery": {
+        "source_id": "mcp-json",
+        "bytes": 43556,
+        "policy": "always read complete history-known source after production utility-unavailable fallback; no gold line offsets"
+      },
+      "main_wall_ms": 6197.810583980754,
+      "response_id": "gen-1792158005-5ISgHJ7BEkd4ASnKnpDd",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 35929,
+        "completion_tokens": 8,
+        "total_tokens": 35937,
+        "cost": 0.0024068408,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 19136,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0024068408,
+          "upstream_inference_prompt_cost": 0.0024046008,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0024068408,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "local",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 80.42212494183332,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 8.400125,
+        "jev_usage": null,
+        "jev_attempts": []
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 96,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.010416666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 10263,
+        "returned_token_estimate_bytes_div_4": 2565.75,
+        "returned_to_raw_byte_ratio": 0.06860660997914327,
+        "retrieval_latency_ms": 8.400125
+      },
+      "main_wall_ms": 6644.476082990877,
+      "response_id": "gen-1792158017-sEv0GyS77DBhWHdk6IWo",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 10926,
+        "completion_tokens": 8,
+        "total_tokens": 10934,
+        "cost": 0.0006274576,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 6592,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0006274576,
+          "upstream_inference_prompt_cost": 0.0006252176,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.0006274576,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    },
+    {
+      "trial": 1,
+      "task": "unicode-literal",
+      "turn": 1,
+      "arm": "jev",
+      "gold_groups": 1,
+      "auxiliary_cost_usd": 0.000414498,
+      "account_usage_before": {
+        "usage": 306.262382156,
+        "usage_daily": 1.34156697,
+        "usage_monthly": 209.82197371
+      },
+      "account_usage_after": {
+        "usage": 306.262382156,
+        "usage_daily": 1.34156697,
+        "usage_monthly": 209.82197371
+      },
+      "account_delta_usd_unattributed": 0.0,
+      "account_delta_caveat": "account-wide, may lag or include concurrent spend; not exact Jev billing",
+      "retrieval_wall_ms": 2315.6955830054358,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "unicode-literal",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:ae87f075186d4c487fee7342e57451e3fea18bafb2181ba941f73f1c52f85636",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1408.1421249999999,
+        "jev_usage": {
+          "input_tokens": 9869,
+          "output_tokens": 544,
+          "request_id": "gen-dec-1792158033-5TYgY4COvLaQMuFcav2q",
+          "model": "typesafe/jev-1.14-20261014"
+        },
+        "jev_attempts": [
+          {
+            "attempt_id": "7b0f390e-919a-4db9-9e74-e6c2f7461176",
+            "request_id": "gen-dec-1792158033-5TYgY4COvLaQMuFcav2q",
+            "requested_model": "~typesafe/jev-latest",
+            "response_model": "typesafe/jev-1.14-20261014",
+            "endpoint": "https://openrouter.ai/api/alpha/decisions",
+            "requested_effort": "low",
+            "applied_effort": "absent",
+            "usage": {
+              "input_tokens": 9869,
+              "output_tokens": 544
+            },
+            "billing": {
+              "cached_input_tokens": null,
+              "cache_creation_input_tokens": null,
+              "reasoning_tokens": null,
+              "cost_usd_ticks": 4144980
+            },
+            "status": "Completed",
+            "latency_ms": 1256
+          }
+        ]
+      },
+      "retrieval_score": {
+        "query_id": "unicode-literal",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 1,
+        "hit_groups": 1,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 1,
+        "evidence_recall": 1.0,
+        "line_precision": 0.08333333333333333,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1564,
+        "returned_token_estimate_bytes_div_4": 391.0,
+        "returned_to_raw_byte_ratio": 0.010455104551045511,
+        "retrieval_latency_ms": 1408.1421249999999
+      },
+      "auxiliary_cost_basis": "provider response billing via existing attempt observer",
+      "main_wall_ms": 25374.89154189825,
+      "response_id": "gen-1792158035-9fp7UpXpSoKM0AzDJrTo",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 3652,
+        "completion_tokens": 8,
+        "total_tokens": 3660,
+        "cost": 0.00051352,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00051352,
+          "upstream_inference_prompt_cost": 0.00051128,
+          "upstream_inference_completions_cost": 2.24e-06
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00051352,
+      "finish_reason": "stop",
+      "answer": "São Paulo — peça №4",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 1,
+        "all_evidence": false,
+        "declares_missing": false
+      },
+      "task_quality": {
+        "hit_groups": 1,
+        "gold_groups": 1,
+        "all_facts": true
+      }
+    }
+  ],
+  "status": "completed",
+  "summary": {
+    "baseline": {
+      "calls": 12,
+      "main_cost_usd": 0.093564632,
+      "auxiliary_cost_usd": 0.0,
+      "total_cost_usd": 0.093564632,
+      "prompt_tokens": 996496,
+      "cached_tokens": 336640,
+      "cached_fraction": 0.33782373436521573,
+      "completion_tokens": 865,
+      "hit_groups": 20,
+      "gold_groups": 20,
+      "complete_answers": 11,
+      "task_fact_hit_groups": 20,
+      "task_complete_answers": 11,
+      "failures": 0
+    },
+    "fallback_recovery": {
+      "calls": 12,
+      "main_cost_usd": 0.030575888000000002,
+      "auxiliary_cost_usd": 0.0,
+      "total_cost_usd": 0.030575888000000002,
+      "prompt_tokens": 329762,
+      "cached_tokens": 114560,
+      "cached_fraction": 0.3474020657322554,
+      "completion_tokens": 453,
+      "hit_groups": 14,
+      "gold_groups": 20,
+      "complete_answers": 7,
+      "task_fact_hit_groups": 19,
+      "task_complete_answers": 11,
+      "failures": 0
+    },
+    "local": {
+      "calls": 12,
+      "main_cost_usd": 0.0087856776,
+      "auxiliary_cost_usd": 0.0,
+      "total_cost_usd": 0.0087856776,
+      "prompt_tokens": 97671,
+      "cached_tokens": 36992,
+      "cached_fraction": 0.37874087497824327,
+      "completion_tokens": 668,
+      "hit_groups": 10,
+      "gold_groups": 20,
+      "complete_answers": 4,
+      "task_fact_hit_groups": 14,
+      "task_complete_answers": 8,
+      "failures": 0
+    },
+    "jev": {
+      "calls": 12,
+      "main_cost_usd": 0.0036346352,
+      "auxiliary_cost_usd": 0.003063816,
+      "total_cost_usd": 0.0066984512,
+      "prompt_tokens": 39594,
+      "cached_tokens": 14784,
+      "cached_fraction": 0.3733899075617518,
+      "completion_tokens": 428,
+      "hit_groups": 8,
+      "gold_groups": 20,
+      "complete_answers": 3,
+      "task_fact_hit_groups": 14,
+      "task_complete_answers": 7,
+      "failures": 0
+    }
+  },
+  "summary_by_turn": {
+    "0": {
+      "baseline": {
+        "calls": 6,
+        "main_cost_usd": 0.0472836,
+        "auxiliary_cost_usd": 0.0,
+        "total_cost_usd": 0.0472836,
+        "prompt_tokens": 336784,
+        "cached_tokens": 0,
+        "cached_fraction": 0.0,
+        "completion_tokens": 478,
+        "hit_groups": 10,
+        "gold_groups": 10,
+        "complete_answers": 5,
+        "task_fact_hit_groups": 10,
+        "task_complete_answers": 5,
+        "failures": 0
+      },
+      "fallback_recovery": {
+        "calls": 6,
+        "main_cost_usd": 0.01610336,
+        "auxiliary_cost_usd": 0.0,
+        "total_cost_usd": 0.01610336,
+        "prompt_tokens": 114638,
+        "cached_tokens": 0,
+        "cached_fraction": 0.0,
+        "completion_tokens": 193,
+        "hit_groups": 6,
+        "gold_groups": 10,
+        "complete_answers": 3,
+        "task_fact_hit_groups": 9,
+        "task_complete_answers": 5,
+        "failures": 0
+      },
+      "local": {
+        "calls": 6,
+        "main_cost_usd": 0.00529396,
+        "auxiliary_cost_usd": 0.0,
+        "total_cost_usd": 0.00529396,
+        "prompt_tokens": 37228,
+        "cached_tokens": 0,
+        "cached_fraction": 0.0,
+        "completion_tokens": 293,
+        "hit_groups": 2,
+        "gold_groups": 10,
+        "complete_answers": 0,
+        "task_fact_hit_groups": 4,
+        "task_complete_answers": 2,
+        "failures": 0
+      },
+      "jev": {
+        "calls": 6,
+        "main_cost_usd": 0.0025648,
+        "auxiliary_cost_usd": 0.001531908,
+        "total_cost_usd": 0.004096708,
+        "prompt_tokens": 17910,
+        "cached_tokens": 0,
+        "cached_fraction": 0.0,
+        "completion_tokens": 205,
+        "hit_groups": 4,
+        "gold_groups": 10,
+        "complete_answers": 1,
+        "task_fact_hit_groups": 6,
+        "task_complete_answers": 3,
+        "failures": 0
+      }
+    },
+    "1": {
+      "baseline": {
+        "calls": 6,
+        "main_cost_usd": 0.046281032,
+        "auxiliary_cost_usd": 0.0,
+        "total_cost_usd": 0.046281032,
+        "prompt_tokens": 659712,
+        "cached_tokens": 336640,
+        "cached_fraction": 0.5102832751261156,
+        "completion_tokens": 387,
+        "hit_groups": 10,
+        "gold_groups": 10,
+        "complete_answers": 6,
+        "task_fact_hit_groups": 10,
+        "task_complete_answers": 6,
+        "failures": 0
+      },
+      "fallback_recovery": {
+        "calls": 6,
+        "main_cost_usd": 0.014472528,
+        "auxiliary_cost_usd": 0.0,
+        "total_cost_usd": 0.014472528,
+        "prompt_tokens": 215124,
+        "cached_tokens": 114560,
+        "cached_fraction": 0.5325300756772838,
+        "completion_tokens": 260,
+        "hit_groups": 8,
+        "gold_groups": 10,
+        "complete_answers": 4,
+        "task_fact_hit_groups": 10,
+        "task_complete_answers": 6,
+        "failures": 0
+      },
+      "local": {
+        "calls": 6,
+        "main_cost_usd": 0.0034917176,
+        "auxiliary_cost_usd": 0.0,
+        "total_cost_usd": 0.0034917176,
+        "prompt_tokens": 60443,
+        "cached_tokens": 36992,
+        "cached_fraction": 0.6120146253495028,
+        "completion_tokens": 375,
+        "hit_groups": 8,
+        "gold_groups": 10,
+        "complete_answers": 4,
+        "task_fact_hit_groups": 10,
+        "task_complete_answers": 6,
+        "failures": 0
+      },
+      "jev": {
+        "calls": 6,
+        "main_cost_usd": 0.0010698352,
+        "auxiliary_cost_usd": 0.001531908,
+        "total_cost_usd": 0.0026017432,
+        "prompt_tokens": 21684,
+        "cached_tokens": 14784,
+        "cached_fraction": 0.6817930271167681,
+        "completion_tokens": 223,
+        "hit_groups": 4,
+        "gold_groups": 10,
+        "complete_answers": 2,
+        "task_fact_hit_groups": 8,
+        "task_complete_answers": 4,
+        "failures": 0
+      }
+    }
+  },
+  "post_run_review": {
+    "task_fact_metrics": "Computed offline from retained answers after manual review; distinguish label correctness from full source-line reproduction. Facts plus no MISSING/no heading token and no length finish define task_complete_answers. Not a semantic judge or preregistered score.",
+    "retrieval_wall_ms": "For this run only, Jev adapter wall time also includes after-call account lookup; use production retrieval_latency_ms instead."
+  }
+}

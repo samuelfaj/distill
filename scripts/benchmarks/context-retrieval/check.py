@@ -298,5 +298,400 @@ class CacheCostChecks(unittest.TestCase):
             simulate(config)
 
 
+class LiveReplayChecks(unittest.TestCase):
+    def test_arm_and_trial_prefixes_isolate_cache_before_shared_history(self):
+        from live import ARMS, prefix
+        values = [prefix("fixed", trial, "task", arm) for trial in range(2) for arm in ARMS]
+        self.assertEqual(len(set(value.splitlines()[0] for value in values)), 8)
+        self.assertEqual(prefix("fixed", 0, "task", "local"), prefix("fixed", 0, "task", "local"))
+
+    def test_literal_quality_detects_missing_heading_and_unicode_corruption(self):
+        from live import quality
+        query = {"evidence": [{"alternatives": [{"text": "heading"}]},
+                              {"alternatives": [{"text": "São Paulo №4"}]}]}
+        self.assertTrue(quality(query, "heading\nSão Paulo №4")["all_evidence"])
+        self.assertEqual(quality(query, "Sao Paulo No4")["hit_groups"], 0)
+        self.assertFalse(quality(query, "São Paulo №4")["all_evidence"])
+        self.assertTrue(quality(query, "MISSING\nheading\nSão Paulo №4")["declares_missing"])
+        self.assertTrue(quality(query, "Evidence shows grace_period but no heading")["declares_missing"])
+
+    def test_task_quality_accepts_exact_label_without_json_envelope(self):
+        from live import task_quality
+        self.assertTrue(task_quality("unicode-literal", "São Paulo — peça №4")["all_facts"])
+        self.assertFalse(task_quality("unicode-literal", "Sao Paulo — peca No4")["all_facts"])
+        self.assertFalse(task_quality("failure-vs-keyword-decoys", "lock_owner=worker-9 transaction=tx-448")["all_facts"])
+        self.assertFalse(task_quality("html-policy", "grace_period=48h")["all_facts"])
+
+    def test_prompt_bound_counts_decoded_content_not_json_escapes(self):
+        from live import prompt_bytes
+        history = [{"role": "user", "content": '"\\' * 2000}]
+        self.assertEqual(prompt_bytes(history), 4512)
+        self.assertGreater(len(json.dumps(history).encode()), prompt_bytes(history))
+
+    def test_missing_billing_does_not_become_free(self):
+        from live import cost, total_known
+        self.assertIsNone(cost({}, {"data": None}))
+        self.assertIsNone(total_known([0.1, None]))
+        self.assertEqual(cost({}, {"data": {"total_cost": 0.2}}), 0.2)
+        self.assertEqual(cost({"cost": 0}, {"data": {"total_cost": 0.2}}), 0)
+
+    def test_generation_missing_id_makes_no_network_call(self):
+        from live import generation
+        with patch("live.http") as network:
+            self.assertIsNone(generation("not-a-key", None)["data"])
+            network.assert_not_called()
+
+    def test_mocked_replay_accounts_all_arms_and_preserves_warm_history(self):
+        from argparse import Namespace
+        from types import SimpleNamespace
+        import live
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generate(root / "fixtures")
+            manifest, sources = load_fixtures(root / "fixtures")
+            (root / ".distill").mkdir()
+            (root / ".distill/openrouter-auth.json").write_text(json.dumps({"key": "test-only"}))
+            adapter = root / "adapter"
+            adapter.write_bytes(b"test-only")
+            requests = []
+
+            def fake_http(path, key=None, payload=None):
+                if path == "key":
+                    return {"data": {"usage": 0.5}}
+                if path.endswith("/endpoints"):
+                    return {"data": {"endpoints": [{"tag": live.PROVIDER, "supports_implicit_caching": True,
+                                                     "pricing": {"prompt": "0.00000014", "completion": "0.00000028"}}]}}
+                requests.append(json.loads(json.dumps(payload)))
+                query = next(query for query in manifest["queries"]
+                             if query["question"] in payload["messages"][-1]["content"])
+                answer = "\n".join(group["alternatives"][0]["text"] for group in query["evidence"])
+                return {"id": "test-only", "choices": [{"message": {"content": answer}, "finish_reason": "stop"}],
+                        "usage": {"cost": 0.001, "prompt_tokens": 100, "completion_tokens": 10,
+                                  "prompt_tokens_details": {"cached_tokens": 40}}}
+
+            def fake_adapter(command, **kwargs):
+                request = json.loads(kwargs["input"])
+                query = next(query for query in manifest["queries"] if query["id"] == request["query_id"])
+                excerpts = []
+                for group in query["evidence"]:
+                    item = group["alternatives"][0]
+                    source = sources[item["source_id"]]
+                    excerpts.append({"source_id": item["source_id"], "session_id": query["session_id"],
+                                     "sha256": source["sha256"], "start_line": item["line"],
+                                     "end_line": item["line"], "text": item["text"] + "\n"})
+                response = {"schema_version": 1, "query_id": query["id"], "status": "ok",
+                            "retrieval_latency_ms": 1, "excerpts": excerpts,
+                            "rendered_text": "".join(item["text"] for item in excerpts),
+                            "production": {"network_used": request["network_allowed"]},
+                            "jev_usage": {"request_id": "test-only"},
+                            "jev_attempts": [{"billing": {"cost_usd_ticks": 2_000_000}}]}
+                return SimpleNamespace(returncode=0, stdout=json.dumps(response))
+
+            output = root / "report.json"
+            with patch("live.Path.home", return_value=root), patch("live.http", side_effect=fake_http), \
+                    patch("live.subprocess.run", side_effect=fake_adapter), \
+                    patch("live.generation", return_value={"data": {"total_cost": 0.0002}}), patch("builtins.print"):
+                live.run(Namespace(allow_network=True, fixtures=root / "fixtures", adapter=adapter, output=output))
+            report = json.loads(output.read_text())
+            self.assertEqual(report["status"], "completed")
+            self.assertEqual(len(requests), 48)
+            self.assertEqual(sorted(len(request["messages"]) for request in requests), [2] * 24 + [4] * 24)
+            self.assertAlmostEqual(report["summary"]["jev"]["total_cost_usd"], 12 * 0.0012)
+            self.assertEqual(report["summary"]["local"]["complete_answers"], 12)
+            self.assertEqual(report["summary"]["baseline"]["cached_tokens"], 480)
+            recovery = [row for row in report["rows"] if row["arm"] == "fallback_recovery"]
+            self.assertEqual(len(recovery), 12)
+            self.assertTrue(all(row["recovery"]["source_id"] == live.KNOWN_SOURCES[row["task"]] for row in recovery))
+            self.assertTrue(all(request["provider"] == {"only": [live.PROVIDER], "allow_fallbacks": False} for request in requests))
+
+            def unbilled_adapter(command, **kwargs):
+                completed = fake_adapter(command, **kwargs)
+                response = json.loads(completed.stdout)
+                response["jev_attempts"] = [{"billing": {"cost_usd_ticks": None}}]
+                return SimpleNamespace(returncode=0, stdout=json.dumps(response))
+
+            main_calls_before_unknown = len(requests)
+            with patch("live.Path.home", return_value=root), patch("live.http", side_effect=fake_http), \
+                    patch("live.subprocess.run", side_effect=unbilled_adapter) as unknown_adapter, \
+                    patch("live.generation", return_value={"data": {"total_cost": 0.0002}}), patch("builtins.print"):
+                unknown_output = root / "unknown-report.json"
+                with self.assertRaisesRegex(ValueError, "unknown auxiliary charge"):
+                    live.run(Namespace(allow_network=True, fixtures=root / "fixtures", adapter=adapter, output=unknown_output))
+            unknown = json.loads(unknown_output.read_text())
+            self.assertEqual(unknown["status"], "failed")
+            self.assertEqual(len(unknown["rows"]), 4)
+            self.assertEqual(unknown_adapter.call_count, 3)
+            self.assertEqual(len(requests) - main_calls_before_unknown, 3)
+            self.assertIsNone(unknown["summary"]["jev"]["total_cost_usd"])
+            self.assertNotIn("main_cost_usd", unknown["rows"][-1])
+
+    def test_auxiliary_zero_requires_confirmed_no_dispatch(self):
+        from live import auxiliary_cost
+        self.assertEqual(auxiliary_cost({"production": {"network_used": False}, "jev_attempts": []})[0], 0)
+        for response in ({"production": {"network_used": False}},
+                         {"production": {"network_used": True}, "jev_attempts": []},
+                         {"jev_attempts": [{"billing": {"cost_usd_ticks": None}}]},
+                         {"jev_attempts": [{"billing": {"cost_usd_ticks": -1}}]}):
+            self.assertIsNone(auxiliary_cost(response)[0])
+
+    def test_adapter_failures_preserve_billing_and_never_dispatch_main(self):
+        from argparse import Namespace
+        from types import SimpleNamespace
+        import live
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generate(root / "fixtures")
+            (root / ".distill").mkdir()
+            (root / ".distill/openrouter-auth.json").write_text(json.dumps({"key": "test-only"}))
+            adapter = root / "adapter"
+            adapter.write_bytes(b"test-only")
+            for scenario, expected_charge in (("timeout", None), ("nonzero_unknown", None),
+                                               ("nonzero_billed", 0.0002), ("malformed", None),
+                                               ("scoring", 0.0002), ("huge", 2.0)):
+                with self.subTest(scenario=scenario):
+                    main_calls = []
+
+                    def fake_http(path, key=None, payload=None):
+                        if path.endswith("/endpoints"):
+                            return {"data": {"endpoints": [{"tag": live.PROVIDER, "supports_implicit_caching": True,
+                                                             "pricing": {"prompt": "0.00000014", "completion": "0.00000028"}}]}}
+                        if path == "key":
+                            return {"data": {"usage": 0.5}}
+                        main_calls.append(path)
+                        raise AssertionError("paid main request must not dispatch")
+
+                    def fake_adapter(command, **kwargs):
+                        if scenario == "timeout":
+                            raise subprocess.TimeoutExpired(command, 45)
+                        if scenario == "malformed":
+                            return SimpleNamespace(returncode=0, stdout="{")
+                        ticks = None if expected_charge is None else round(expected_charge * 10_000_000_000)
+                        response = {"production": {"network_used": True}, "rendered_text": "evidence",
+                                    "jev_attempts": [{"billing": {"cost_usd_ticks": ticks}}]}
+                        return SimpleNamespace(returncode=1 if scenario.startswith("nonzero") else 0,
+                                               stdout=json.dumps(response))
+
+                    output = root / (scenario + ".json")
+                    with patch("live.Path.home", return_value=root), patch("live.ARMS", ("jev",)), \
+                            patch("live.http", side_effect=fake_http), \
+                            patch("live.subprocess.run", side_effect=fake_adapter) as adapter_call, \
+                            patch("live.score", side_effect=ValueError("invalid excerpt") if scenario == "scoring" else None,
+                                  return_value={}) as scoring, patch("builtins.print"):
+                        with self.assertRaises((ValueError, subprocess.TimeoutExpired)):
+                            live.run(Namespace(allow_network=True, fixtures=root / "fixtures", adapter=adapter, output=output))
+                    report = json.loads(output.read_text())
+                    self.assertEqual(report["status"], "failed")
+                    self.assertEqual(adapter_call.call_count, 1)
+                    self.assertEqual(main_calls, [])
+                    self.assertEqual(report["rows"][0]["auxiliary_cost_usd"], expected_charge)
+                    self.assertEqual(report["summary"]["jev"]["auxiliary_cost_usd"], expected_charge)
+                    if scenario in ("nonzero_unknown", "nonzero_billed", "malformed", "timeout"):
+                        scoring.assert_not_called()
+
+    def test_live_requires_explicit_paid_authorization(self):
+        from argparse import Namespace
+        from live import run as live_run
+        with patch("live.http") as network:
+            with self.assertRaisesRegex(ValueError, "requires --allow-network"):
+                live_run(Namespace(allow_network=False))
+            network.assert_not_called()
+
+
+class MeasuredReportChecks(unittest.TestCase):
+    def test_completed_d1_report_has_full_pairing_and_known_auxiliary_accounting(self):
+        import d1
+        import live
+        report = json.loads(Path(__file__).with_name("d1-completed-results-2026-10-16.json").read_text())
+        self.assertEqual(report["status"], "completed")
+        rows = report["rows"]
+        expected = {(trial, task, turn, arm) for trial in range(2) for task in live.TASKS
+                    for turn in range(2) for arm in d1.ARMS}
+        self.assertEqual(len(rows), 36)
+        self.assertEqual({(row["trial"], row["task"], row["turn"], row["arm"]) for row in rows}, expected)
+        self.assertEqual(report["summary"], live.summary(rows, d1.ARMS))
+        self.assertEqual(report["comparison_metrics"], d1.comparison_metrics(rows))
+        self.assertAlmostEqual(report["measured_cost_usd"], sum(row["main_cost_usd"] + row["auxiliary_cost_usd"] for row in rows))
+        reserve = report["selector_experiment"]["d1_auxiliary_byte_token_bound_usd"]
+        endpoint = next(item for item in report["selector_experiment"]["endpoint_snapshot"]["endpoints"]
+                        if item["tag"] == "liquid")
+        self.assertAlmostEqual(reserve, 12 * d1.MAX_REQUEST_BYTES * d1.MAX_QUESTIONS * float(endpoint["pricing"]["prompt"]))
+        self.assertAlmostEqual(report["preflight"]["auxiliary_reserve_usd"], live.AUX_RESERVE + reserve)
+        self.assertLessEqual(report["preflight"]["estimated_main_plus_aux_reserve_usd"], 2)
+        self.assertEqual(report["preflight"]["max_auxiliary_calls"], 24)
+        for row in rows:
+            self.assertEqual(row["response_provider"], "Xiaomi")
+            self.assertEqual(row["main_cost_usd"], row["usage"]["cost"])
+            self.assertIsInstance(row["usage"]["prompt_tokens_details"]["cached_tokens"], int)
+            self.assertNotIn("error", row)
+            if row["arm"] == "d1":
+                result = row["retrieval"]["selector_response"]
+                self.assertTrue(result["model"].startswith("liquid/d1-ultra"))
+                self.assertEqual(row["auxiliary_cost_usd"], result["usage"]["cost"])
+                self.assertNotIn("selector_error", row["retrieval"])
+            elif row["arm"] == "jev":
+                attempts = row["retrieval"]["jev_attempts"]
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(row["auxiliary_cost_usd"], attempts[0]["billing"]["cost_usd_ticks"] / 10_000_000_000)
+            else:
+                self.assertEqual(row["auxiliary_cost_usd"], 0)
+
+    def test_completed_report_preserves_actual_billing_and_cache_counts(self):
+        from live import summary
+        report = json.loads(Path(__file__).with_name("live-warm-results-2026-10-16.json").read_text())
+        self.assertEqual(report["status"], "completed")
+        rows = report["rows"]
+        self.assertEqual(len(rows), 48)
+        self.assertEqual(len({(row["trial"], row["task"], row["turn"], row["arm"]) for row in rows}), 48)
+        self.assertEqual(report["summary"], summary(rows))
+        for row in rows:
+            self.assertEqual(row["main_cost_usd"], row["usage"]["cost"])
+            self.assertEqual(row["response_provider"], "Xiaomi")
+            self.assertIsNone(row["accounting"]["data"])
+            if row["turn"] == 0:
+                self.assertEqual(row["usage"]["prompt_tokens_details"]["cached_tokens"], 0)
+            if row["arm"] == "jev":
+                attempts = row["retrieval"]["jev_attempts"]
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(row["auxiliary_cost_usd"], attempts[0]["billing"]["cost_usd_ticks"] / 10_000_000_000)
+
+
+class D1Checks(unittest.TestCase):
+    def test_existing_report_is_unchanged_and_never_enters_annotation_lifecycle(self):
+        from argparse import Namespace
+        import d1
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "existing.json"
+            original = b'{"historical":true, "rows":[]}\n'
+            output.write_bytes(original)
+            with patch.object(d1.live, "http") as network, patch.object(d1.live, "run") as replay, \
+                 patch.object(d1, "annotate") as annotate:
+                with self.assertRaisesRegex(ValueError, "refusing to overwrite"):
+                    d1.run(Namespace(allow_network=True, output=output))
+            self.assertEqual(output.read_bytes(), original)
+            network.assert_not_called()
+            replay.assert_not_called()
+            annotate.assert_not_called()
+
+    def test_http_error_retains_only_safe_billing_and_never_applies_selection(self):
+        import io
+        import d1
+        import live
+        exported = {"selector_contract": {"state": {}, "questions": {"0": {}}}, "status": "fallback"}
+        bodies = [
+            ({"id": "gen-dec-test123", "usage": {"cost": 0.003},
+              "error": {"message": "secret-provider-error"}, "answers": {"0": {"choice": "include"}}}, 0.003, "gen-dec-test123"),
+            ({"id": "secret-provider-error", "usage": {"cost": -1}}, None, None),
+            ({"id": "gen-test", "usage": {"cost": True}}, None, "gen-test"),
+            ({"usage": {"cost": float("nan")}}, None, None),
+            ({"usage": "secret-provider-error"}, None, None),
+            ([], None, None),
+        ]
+        for body, charge, request_id in bodies:
+            with self.subTest(body=body):
+                error = d1.urllib.error.HTTPError(d1.ENDPOINT, 502, "secret-provider-error", {},
+                                                 io.BytesIO(json.dumps(body).encode()))
+                with patch.object(d1, "adapter", return_value=subprocess.CompletedProcess([], 0, json.dumps(exported))) as adapter, \
+                     patch.object(d1.urllib.request, "urlopen", side_effect=error):
+                    result = json.loads(d1.select(None, {}, "not-a-real-key", {}).stdout)
+                self.assertEqual(adapter.call_count, 1)
+                self.assertEqual(result["status"], "fallback")
+                self.assertEqual(result["selector_error"], "HTTPError")
+                self.assertEqual(result["selector_http_status"], 502)
+                self.assertEqual(live.auxiliary_cost(result)[0], charge)
+                self.assertEqual(result["selector_billing"].get("request_id"), request_id)
+                self.assertNotIn("secret-provider-error", json.dumps(result))
+                self.assertNotIn("selector_response", result)
+        for body in (b"not JSON secret-provider-error", b"x" * (d1.MAX_REQUEST_BYTES + 2)):
+            error = d1.urllib.error.HTTPError(d1.ENDPOINT, 502, "secret-provider-error", {}, io.BytesIO(body))
+            with patch.object(d1, "adapter", return_value=subprocess.CompletedProcess([], 0, json.dumps(exported))), \
+                 patch.object(d1.urllib.request, "urlopen", side_effect=error):
+                result = json.loads(d1.select(None, {}, "not-a-real-key", {}).stdout)
+            self.assertIsNone(live.auxiliary_cost(result)[0])
+            self.assertNotIn("secret-provider-error", json.dumps(result))
+
+    def test_native_contract_and_literal_renderer_remain_at_benchmark_boundary(self):
+        import d1
+        contract = {"state": {"question": "needle", "candidates": [{"id": "0", "text": "São Paulo — peça №4"}]},
+                    "questions": {"0": {"type": "choice", "instructions": "select", "criteria": {"include": "evidence", "exclude": "decoy"}}}}
+        exported = {"selector_contract": contract, "production": {"network_used": False}, "jev_attempts": [],
+                    "rendered_text": "fallback", "status": "fallback"}
+        rendered = {**exported, "rendered_text": "1→São Paulo — peça №4", "status": "ok"}
+        native_response = {"model": d1.MODEL, "answers": {"0": {"type": "choice", "choice": "include"}},
+                           "usage": {"cost": 0.00001}}
+        with patch.object(d1, "adapter", side_effect=[subprocess.CompletedProcess([], 0, json.dumps(exported)),
+                                                       subprocess.CompletedProcess([], 0, json.dumps(rendered))]) as adapter, \
+             patch.object(d1, "native", return_value=native_response) as native:
+            result = json.loads(d1.select(None, {}, "not-a-real-key", {}).stdout)
+        self.assertEqual(native.call_args.args[1], {"model": d1.MODEL, **contract})
+        self.assertEqual(adapter.call_args_list[1].args[1]["selector_contract"], contract)
+        self.assertEqual(result["rendered_text"], "1→São Paulo — peça №4")
+        self.assertEqual(result["selector_billing"]["cost_usd"], 0.00001)
+
+    def test_failed_native_dispatch_never_claims_zero_cost(self):
+        import d1
+        import live
+        exported = {"selector_contract": {"state": {}, "questions": {"0": {}}},
+                    "production": {"network_used": False}, "jev_attempts": [], "status": "fallback"}
+        with patch.object(d1, "adapter", return_value=subprocess.CompletedProcess([], 0, json.dumps(exported))), \
+             patch.object(d1, "native", side_effect=TimeoutError):
+            result = json.loads(d1.select(None, {}, "not-a-real-key", {}).stdout)
+        self.assertIsNone(live.auxiliary_cost(result)[0])
+        self.assertEqual(result["selector_error"], "TimeoutError")
+
+    def test_billed_rendering_failure_keeps_charge_and_rejects_invalid_billing(self):
+        import d1
+        import live
+        exported = {"selector_contract": {"state": {}, "questions": {"0": {}}}, "status": "fallback"}
+        with patch.object(d1, "adapter", side_effect=[subprocess.CompletedProcess([], 0, json.dumps(exported)),
+                                                       subprocess.CompletedProcess([], 1, "")]), \
+             patch.object(d1, "native", return_value={"answers": {}, "usage": {"cost": 0.03}}):
+            result = json.loads(d1.select(None, {}, "not-a-real-key", {}).stdout)
+        self.assertEqual(live.auxiliary_cost(result)[0], 0.03)
+        self.assertEqual(result["status"], "fallback")
+        for charge in (None, -1, True, float("nan"), float("inf")):
+            self.assertIsNone(live.auxiliary_cost({"selector_billing": {"cost_usd": charge}})[0])
+
+    def test_d1_unknown_and_over_budget_charges_stop_before_main_dispatch(self):
+        from argparse import Namespace
+        import live
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generate(root / "fixtures")
+            (root / ".distill").mkdir()
+            (root / ".distill/openrouter-auth.json").write_text(json.dumps({"key": "test-only"}))
+            adapter = root / "adapter"
+            adapter.write_bytes(b"test-only")
+            for charge in (None, 2.0):
+                output = root / (str(charge) + ".json")
+
+                def fake_http(path, key=None, payload=None):
+                    if path.endswith("/endpoints"):
+                        return {"data": {"endpoints": [{"tag": live.PROVIDER, "supports_implicit_caching": True,
+                            "pricing": {"prompt": "0.00000014", "completion": "0.00000028"}}]}}
+                    if path == "key":
+                        return {"data": {"usage": 0}}
+                    self.fail("paid main request must not dispatch")
+
+                response = {"selector_billing": {"cost_usd": charge}, "rendered_text": "evidence"}
+                with patch("live.Path.home", return_value=root), patch("live.http", side_effect=fake_http), \
+                     patch("live.score", return_value={}), patch("builtins.print"):
+                    with self.assertRaisesRegex(ValueError, "unknown auxiliary charge|remaining budget insufficient"):
+                        live.run(Namespace(allow_network=True, fixtures=root / "fixtures", adapter=adapter,
+                                           output=output, selector_experiment={}),
+                                 selector=lambda *args: subprocess.CompletedProcess([], 0, json.dumps(response)),
+                                 arms=("d1",))
+                report = json.loads(output.read_text())
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["rows"][0]["auxiliary_cost_usd"], charge)
+                self.assertNotIn("main_cost_usd", report["rows"][0])
+
+    def test_request_bound_rejects_before_network(self):
+        import d1
+        with patch.object(d1.urllib.request, "urlopen") as network:
+            with self.assertRaisesRegex(ValueError, "ceiling"):
+                d1.native("not-a-real-key", {"state": "x" * d1.MAX_REQUEST_BYTES})
+            network.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

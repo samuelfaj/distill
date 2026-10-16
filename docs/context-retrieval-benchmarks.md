@@ -14,6 +14,12 @@ index, deduplicates candidates, and optionally asks Jev to select relevance.
 Evidence stays literal, with source and line provenance; Jev selects evidence
 rather than rewriting it. Distill continues to use OpenRouter for Jev transport.
 
+Jev is the only production decision model, regardless of request size. The
+production client rejects d1-ultra and other non-Jev model IDs. Disable controls,
+shadow mode and local fallback still apply; they do not route to another decision
+model. The d1 comparison uses a task-local bridge gated by `test-support` and
+cannot reconfigure a normal production task.
+
 Registration gives new outputs session-scoped ownership. The legacy original
 policy deliberately retains old explicit-path access; that compatibility is not
 authorization to discover all historical outputs through session search. Limit

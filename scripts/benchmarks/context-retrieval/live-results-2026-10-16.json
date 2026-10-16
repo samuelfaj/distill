@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "scope": "controlled multi-turn evidence replay, not full Distill harness",
+  "run_id": "4a1e06102b1541488ee6fe99113a9a7b",
+  "model": "xiaomi/mimo-v2.6-flash",
+  "provider": "xiaomi/fp8",
+  "endpoint_snapshot": {
+    "name": "Xiaomi | xiaomi/mimo-v2.6-flash-20260921",
+    "model_id": "xiaomi/mimo-v2.6-flash",
+    "model_name": "Xiaomi: MiMo-V2.6-Flash",
+    "context_length": 1048576,
+    "pricing": {
+      "prompt": "0.00000014",
+      "completion": "0.00000028",
+      "input_cache_read": "0.0000000028",
+      "discount": 0
+    },
+    "provider_name": "Xiaomi",
+    "tag": "xiaomi/fp8",
+    "service_tier": null,
+    "quantization": "fp8",
+    "max_completion_tokens": 131072,
+    "max_prompt_tokens": null,
+    "supported_parameters": [
+      "reasoning",
+      "include_reasoning",
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "stop",
+      "response_format",
+      "tools",
+      "tool_choice",
+      "frequency_penalty",
+      "presence_penalty",
+      "structured_outputs"
+    ],
+    "supports_tool_choice": {
+      "none": false,
+      "auto": true,
+      "required": true,
+      "function": false
+    },
+    "status": 0,
+    "uptime_last_30m": 100,
+    "uptime_last_5m": 100,
+    "uptime_last_1d": 99.78947368421053,
+    "supports_implicit_caching": true,
+    "native_tools": {},
+    "supports_voice_cloning": false,
+    "supports_multiple_audio_references": false,
+    "supports_image_reference": false,
+    "supports_diarization": false,
+    "latency_last_30m": null,
+    "throughput_last_30m": null
+  },
+  "fixture_manifest_sha256": "2c3ee531ec7aa674a549f2bd91306b8164b4ac2d33570ab8a4b6df2647e84f93",
+  "adapter_sha256": "40195476d94d4333cade4c1bcac04d1972a0d3b8eb056238afb6422e9c9c1fb5",
+  "preflight": {
+    "budget_usd": 2.0,
+    "conservative_main_plus_aux_reserve_usd": 1.9359404800000002,
+    "auxiliary_reserve_usd": 0.25,
+    "max_main_calls": 36,
+    "max_jev_calls": 12,
+    "max_output_tokens": 512,
+    "max_input_byte_token_bound_per_call": 333488,
+    "note": "Jev production single attempt/3s deadline has no client dollar ceiling; reserve is not server spend enforcement."
+  },
+  "rows": [
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "baseline",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "main_wall_ms": 9170.37295899354,
+      "response_id": "gen-1792156987-KBAqDxPWk1l2yv5rlN5V",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 56128,
+        "completion_tokens": 127,
+        "total_tokens": 56255,
+        "cost": 0.00789348,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00789348,
+          "upstream_inference_prompt_cost": 0.00785792,
+          "upstream_inference_completions_cost": 3.556e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00789348,
+      "finish_reason": "stop",
+      "answer": "MISSING\n\nThe evidence contains no current failure record for req-73 with lock owner and transaction details. The only matching lines are:\n\nFAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false\n\nThese two lines do provide the requested failure, lock owner, and transaction:\n\nFAIL test payment_commit request=req-73 attempt=4 retry_budget_exhausted\nCAUSE request=req-73 lock_owner=worker-9 transaction=tx-448 lease_expired=false",
+      "quality": {
+        "hit_groups": 2,
+        "gold_groups": 2,
+        "all_evidence": true
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "local",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": 0.0,
+      "retrieval_wall_ms": 1036.0637919511646,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:503ebf51d9d1cb15cd1542d26056bae4b38fbf05db9e26babec3b5beb4b707ea",
+          "mode": "lexical",
+          "network_used": false,
+          "selection": "lexical only",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 5.801708,
+        "jev_usage": null
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 88,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.022727272727272728,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 9989,
+        "returned_token_estimate_bytes_div_4": 2497.25,
+        "returned_to_raw_byte_ratio": 0.06677496122787314,
+        "retrieval_latency_ms": 5.801708
+      },
+      "main_wall_ms": 10468.008375028148,
+      "response_id": "gen-1792157004-9uQ8txd8t4tYDezHsA2M",
+      "response_model": "xiaomi/mimo-v2.6-flash",
+      "response_provider": "Xiaomi",
+      "usage": {
+        "prompt_tokens": 5924,
+        "completion_tokens": 206,
+        "total_tokens": 6130,
+        "cost": 0.00088704,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00088704,
+          "upstream_inference_prompt_cost": 0.00082936,
+          "upstream_inference_completions_cost": 5.768e-05
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "main_cost_usd": 0.00088704,
+      "finish_reason": "stop",
+      "answer": "MISSING (relevant evidence not present in the provided chunks)\n\nThe retrieved evidence does not contain the current failure record for `req-73`. What is present:\n\n- Lines 41-60 of `f4357cfe1d070127.txt` are explicitly labeled `DEBUG retry_budget_exhausted payment_commit timeout archived example; not current failure` — these are the archived timeout examples the request excludes, and they carry no lock owner or transaction.\n- Lines 505-516, 637-640, and the `aad19dbb2c5452e0.txt` chunks contain only passing `cache_roundtrip` test lines, a suite summary, and unrelated deployment/rotation notes — no `req-73` failure, lock owner, or transaction.\n\nNo line in the evidence shows a current (non-archived) failure for `req-73` with its lock owner and transaction.",
+      "quality": {
+        "hit_groups": 0,
+        "gold_groups": 2,
+        "all_evidence": false
+      }
+    },
+    {
+      "trial": 0,
+      "task": "failure-vs-keyword-decoys",
+      "turn": 0,
+      "arm": "jev",
+      "gold_groups": 2,
+      "auxiliary_cost_usd": null,
+      "retrieval_wall_ms": 1397.84387499094,
+      "retrieval": {
+        "schema_version": 1,
+        "query_id": "failure-vs-keyword-decoys",
+        "production": {
+          "implementation": "rust-production",
+          "revision": "compiled-production-source-sha256:503ebf51d9d1cb15cd1542d26056bae4b38fbf05db9e26babec3b5beb4b707ea",
+          "mode": "jev",
+          "network_used": true,
+          "selection": "Jev explicit include/exclude; lexical order preserved",
+          "explicit_path_selector": "production utility-unavailable fallback"
+        },
+        "status": "ok",
+        "retrieval_latency_ms": 1321.956458,
+        "jev_usage": {
+          "input_tokens": 4609,
+          "output_tokens": 312,
+          "request_id": "gen-dec-1792157021-JA15mNSQPRCybD03t0bC",
+          "model": "typesafe/jev-1.14-20261014"
+        }
+      },
+      "retrieval_score": {
+        "query_id": "failure-vs-keyword-decoys",
+        "status": "ok",
+        "unsupported_reason": null,
+        "gold_groups": 2,
+        "hit_groups": 2,
+        "returned_unique_lines": 12,
+        "relevant_returned_unique_lines": 2,
+        "evidence_recall": 1.0,
+        "line_precision": 0.16666666666666666,
+        "no_match_correct": null,
+        "raw_baseline_bytes": 149592,
+        "raw_unique_content_bytes": 141367,
+        "raw_baseline_token_estimate_bytes_div_4": 37398.0,
+        "returned_bytes": 1483,
+        "returned_token_estimate_bytes_div_4": 370.75,
+        "returned_to_raw_byte_ratio": 0.009913631745013102,
+        "retrieval_latency_ms": 1321.956458
+      },
+      "auxiliary_accounting": {
+        "data": null,
+        "error": "generation HTTP 404"
+      },
+      "error": "ValueError"
+    }
+  ],
+  "status": "failed",
+  "summary": {
+    "baseline": {
+      "calls": 1,
+      "main_cost_usd": 0.00789348,
+      "auxiliary_cost_usd": 0.0,
+      "total_cost_usd": 0.00789348,
+      "prompt_tokens": 56128,
+      "cached_tokens": 0,
+      "cached_fraction": 0.0,
+      "completion_tokens": 127,
+      "hit_groups": 2,
+      "gold_groups": 2,
+      "complete_answers": 1,
+      "failures": 0
+    },
+    "local": {
+      "calls": 1,
+      "main_cost_usd": 0.00088704,
+      "auxiliary_cost_usd": 0.0,
+      "total_cost_usd": 0.00088704,
+      "prompt_tokens": 5924,
+      "cached_tokens": 0,
+      "cached_fraction": 0.0,
+      "completion_tokens": 206,
+      "hit_groups": 0,
+      "gold_groups": 2,
+      "complete_answers": 0,
+      "failures": 0
+    },
+    "jev": {
+      "calls": 1,
+      "main_cost_usd": null,
+      "auxiliary_cost_usd": null,
+      "total_cost_usd": null,
+      "prompt_tokens": null,
+      "cached_tokens": null,
+      "cached_fraction": null,
+      "completion_tokens": null,
+      "hit_groups": 0,
+      "gold_groups": 2,
+      "complete_answers": 0,
+      "failures": 1
+    }
+  },
+  "error": "ValueError"
+}

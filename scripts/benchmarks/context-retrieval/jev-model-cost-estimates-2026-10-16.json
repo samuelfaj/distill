@@ -1,0 +1,930 @@
+{
+  "schema_version": 1,
+  "kind": "model_price_projection_not_new_benchmark",
+  "pricing_source": "https://openrouter.ai/api/v1/models",
+  "pricing_retrieved_at": "2026-10-16T14:34:48.795297+00:00",
+  "token_source": "d1-completed-results-2026-10-16.json",
+  "output_tokens_per_12_calls": 1298,
+  "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim.",
+  "models": [
+    {
+      "model": "openai/gpt-6.1-sol",
+      "pricing_snapshot": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.0000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.000004",
+            "completion": "0.000015",
+            "input_cache_read": "0.0000002",
+            "input_cache_write": "0.000005"
+          }
+        ]
+      },
+      "simulation_input": {
+        "schema_version": 1,
+        "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Uses each measured arm cache-read count.",
+        "rates_usd_per_million_tokens": {
+          "uncached_input": 2.0,
+          "cache_read": 0.09999999999999999,
+          "cache_write": 2.5,
+          "output": 10.0
+        },
+        "baseline": "local_baseline",
+        "scenarios": [
+          {
+            "name": "local_baseline",
+            "estimated_tokens": {
+              "uncached_input": 61154,
+              "cache_read": 37056,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_auxiliary_jev_usd": 0.0
+          },
+          {
+            "name": "jev",
+            "estimated_tokens": {
+              "uncached_input": 21709,
+              "cache_read": 17792,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_auxiliary_jev_usd": 0.003063816
+          }
+        ]
+      },
+      "simulation": {
+        "schema_version": 1,
+        "kind": "cache_cost_simulation_not_observed_savings",
+        "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Uses each measured arm cache-read count.",
+        "rates_usd_per_million_tokens": {
+          "uncached_input": 2.0,
+          "cache_read": 0.09999999999999999,
+          "cache_write": 2.5,
+          "output": 10.0
+        },
+        "baseline": "local_baseline",
+        "scenarios": [
+          {
+            "name": "local_baseline",
+            "estimated_tokens": {
+              "uncached_input": 61154,
+              "cache_read": 37056,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_input_tokens": 98210,
+            "estimated_cost_components_usd": {
+              "uncached_input": 0.122308,
+              "cache_read": 0.0037056,
+              "cache_write": 0.0,
+              "output": 0.01298,
+              "auxiliary_jev": 0.0
+            },
+            "estimated_total_usd": 0.1389936,
+            "simulated_baseline_minus_scenario_usd": 0.0,
+            "break_even_additional_cache_read_tokens": 0.0,
+            "break_even_feasible_by_reclassifying_uncached_tokens": true
+          },
+          {
+            "name": "jev",
+            "estimated_tokens": {
+              "uncached_input": 21709,
+              "cache_read": 17792,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_input_tokens": 39501,
+            "estimated_cost_components_usd": {
+              "uncached_input": 0.043418,
+              "cache_read": 0.0017791999999999999,
+              "cache_write": 0.0,
+              "output": 0.01298,
+              "auxiliary_jev": 0.003063816
+            },
+            "estimated_total_usd": 0.061241015999999995,
+            "simulated_baseline_minus_scenario_usd": 0.077752584,
+            "break_even_additional_cache_read_tokens": 0.0,
+            "break_even_feasible_by_reclassifying_uncached_tokens": true
+          }
+        ],
+        "observed_provider_usage": null,
+        "observed_provider_cost_usd": null,
+        "observed_jev_usage": null,
+        "observed_cache_hit_rate": null
+      },
+      "estimated_baseline_usd_per_1000_calls": 11.582799999999999,
+      "estimated_jev_usd_per_1000_calls": 5.103418,
+      "estimated_saving_percent": 55.93968643160549,
+      "cache_sensitivity": [
+        {
+          "common_cache_read_fraction": 0,
+          "estimated_saving_percent": 54.61040305635147,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 2.0,
+              "cache_read": 0.09999999999999999,
+              "cache_write": 2.5,
+              "output": 10.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 98210,
+                  "cache_read": 0,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.19642,
+                  "cache_read": 0.0,
+                  "cache_write": 0.0,
+                  "output": 0.01298,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.2094,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 39501,
+                  "cache_read": 0,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.079002,
+                  "cache_read": 0.0,
+                  "cache_write": 0.0,
+                  "output": 0.01298,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.095045816,
+                "simulated_baseline_minus_scenario_usd": 0.114354184,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        },
+        {
+          "common_cache_read_fraction": 0.75,
+          "estimated_saving_percent": 44.195144040921086,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.75.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 2.0,
+              "cache_read": 0.09999999999999999,
+              "cache_write": 2.5,
+              "output": 10.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 24552.5,
+                  "cache_read": 73657.5,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.049105,
+                  "cache_read": 0.007365749999999999,
+                  "cache_write": 0.0,
+                  "output": 0.01298,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.06945075,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 9875.25,
+                  "cache_read": 29625.75,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.0197505,
+                  "cache_read": 0.002962575,
+                  "cache_write": 0.0,
+                  "output": 0.01298,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.038756891,
+                "simulated_baseline_minus_scenario_usd": 0.030693859000000004,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        },
+        {
+          "common_cache_read_fraction": 0.95,
+          "estimated_saving_percent": 26.094587928461475,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.95.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 2.0,
+              "cache_read": 0.09999999999999999,
+              "cache_write": 2.5,
+              "output": 10.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 4910.5,
+                  "cache_read": 93299.5,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.009821,
+                  "cache_read": 0.009329949999999998,
+                  "cache_write": 0.0,
+                  "output": 0.01298,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.03213095,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 1975.050000000003,
+                  "cache_read": 37525.95,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.003950100000000006,
+                  "cache_read": 0.003752594999999999,
+                  "cache_write": 0.0,
+                  "output": 0.01298,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.023746511000000005,
+                "simulated_baseline_minus_scenario_usd": 0.008384438999999994,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        }
+      ]
+    },
+    {
+      "model": "openai/gpt-6-astra",
+      "pricing_snapshot": {
+        "prompt": "0.00001",
+        "completion": "0.00005",
+        "web_search": "0.01",
+        "input_cache_read": "0.000001",
+        "input_cache_write": "0.0000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00002",
+            "completion": "0.000075",
+            "input_cache_read": "0.000002",
+            "input_cache_write": "0.000025"
+          }
+        ]
+      },
+      "simulation_input": {
+        "schema_version": 1,
+        "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Uses each measured arm cache-read count.",
+        "rates_usd_per_million_tokens": {
+          "uncached_input": 10.0,
+          "cache_read": 1.0,
+          "cache_write": 12.5,
+          "output": 50.0
+        },
+        "baseline": "local_baseline",
+        "scenarios": [
+          {
+            "name": "local_baseline",
+            "estimated_tokens": {
+              "uncached_input": 61154,
+              "cache_read": 37056,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_auxiliary_jev_usd": 0.0
+          },
+          {
+            "name": "jev",
+            "estimated_tokens": {
+              "uncached_input": 21709,
+              "cache_read": 17792,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_auxiliary_jev_usd": 0.003063816
+          }
+        ]
+      },
+      "simulation": {
+        "schema_version": 1,
+        "kind": "cache_cost_simulation_not_observed_savings",
+        "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Uses each measured arm cache-read count.",
+        "rates_usd_per_million_tokens": {
+          "uncached_input": 10.0,
+          "cache_read": 1.0,
+          "cache_write": 12.5,
+          "output": 50.0
+        },
+        "baseline": "local_baseline",
+        "scenarios": [
+          {
+            "name": "local_baseline",
+            "estimated_tokens": {
+              "uncached_input": 61154,
+              "cache_read": 37056,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_input_tokens": 98210,
+            "estimated_cost_components_usd": {
+              "uncached_input": 0.61154,
+              "cache_read": 0.037056,
+              "cache_write": 0.0,
+              "output": 0.0649,
+              "auxiliary_jev": 0.0
+            },
+            "estimated_total_usd": 0.713496,
+            "simulated_baseline_minus_scenario_usd": 0.0,
+            "break_even_additional_cache_read_tokens": 0.0,
+            "break_even_feasible_by_reclassifying_uncached_tokens": true
+          },
+          {
+            "name": "jev",
+            "estimated_tokens": {
+              "uncached_input": 21709,
+              "cache_read": 17792,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_input_tokens": 39501,
+            "estimated_cost_components_usd": {
+              "uncached_input": 0.21709,
+              "cache_read": 0.017792,
+              "cache_write": 0.0,
+              "output": 0.0649,
+              "auxiliary_jev": 0.003063816
+            },
+            "estimated_total_usd": 0.302845816,
+            "simulated_baseline_minus_scenario_usd": 0.41065018400000003,
+            "break_even_additional_cache_read_tokens": 0.0,
+            "break_even_feasible_by_reclassifying_uncached_tokens": true
+          }
+        ],
+        "observed_provider_usage": null,
+        "observed_provider_cost_usd": null,
+        "observed_jev_usage": null,
+        "observed_cache_hit_rate": null
+      },
+      "estimated_baseline_usd_per_1000_calls": 59.458000000000006,
+      "estimated_jev_usd_per_1000_calls": 25.237151333333333,
+      "estimated_saving_percent": 57.554658190094976,
+      "cache_sensitivity": [
+        {
+          "common_cache_read_fraction": 0,
+          "estimated_saving_percent": 55.78091537726839,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 10.0,
+              "cache_read": 1.0,
+              "cache_write": 12.5,
+              "output": 50.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 98210,
+                  "cache_read": 0,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.9821,
+                  "cache_read": 0.0,
+                  "cache_write": 0.0,
+                  "output": 0.0649,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 1.047,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 39501,
+                  "cache_read": 0,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.39501,
+                  "cache_read": 0.0,
+                  "cache_write": 0.0,
+                  "output": 0.0649,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.462973816,
+                "simulated_baseline_minus_scenario_usd": 0.584026184,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        },
+        {
+          "common_cache_read_fraction": 0.75,
+          "estimated_saving_percent": 48.880236407542654,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.75.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 10.0,
+              "cache_read": 1.0,
+              "cache_write": 12.5,
+              "output": 50.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 24552.5,
+                  "cache_read": 73657.5,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.245525,
+                  "cache_read": 0.0736575,
+                  "cache_write": 0.0,
+                  "output": 0.0649,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.3840825,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 9875.25,
+                  "cache_read": 29625.75,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.0987525,
+                  "cache_read": 0.02962575,
+                  "cache_write": 0.0,
+                  "output": 0.0649,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.19634206599999998,
+                "simulated_baseline_minus_scenario_usd": 0.187740434,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        },
+        {
+          "common_cache_read_fraction": 0.95,
+          "estimated_saving_percent": 39.586325429501045,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.95.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 10.0,
+              "cache_read": 1.0,
+              "cache_write": 12.5,
+              "output": 50.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 4910.5,
+                  "cache_read": 93299.5,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.049105,
+                  "cache_read": 0.0932995,
+                  "cache_write": 0.0,
+                  "output": 0.0649,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.2073045,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 1975.050000000003,
+                  "cache_read": 37525.95,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.01975050000000003,
+                  "cache_read": 0.037525949999999995,
+                  "cache_write": 0.0,
+                  "output": 0.0649,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.12524026600000002,
+                "simulated_baseline_minus_scenario_usd": 0.08206423399999999,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        }
+      ]
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "pricing_snapshot": {
+        "prompt": "0.000004",
+        "completion": "0.00002",
+        "web_search": "0.01",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.000005",
+        "input_cache_write_1h": "0.000008"
+      },
+      "simulation_input": {
+        "schema_version": 1,
+        "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Uses each measured arm cache-read count.",
+        "rates_usd_per_million_tokens": {
+          "uncached_input": 4.0,
+          "cache_read": 0.19999999999999998,
+          "cache_write": 5.0,
+          "output": 20.0
+        },
+        "baseline": "local_baseline",
+        "scenarios": [
+          {
+            "name": "local_baseline",
+            "estimated_tokens": {
+              "uncached_input": 61154,
+              "cache_read": 37056,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_auxiliary_jev_usd": 0.0
+          },
+          {
+            "name": "jev",
+            "estimated_tokens": {
+              "uncached_input": 21709,
+              "cache_read": 17792,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_auxiliary_jev_usd": 0.003063816
+          }
+        ]
+      },
+      "simulation": {
+        "schema_version": 1,
+        "kind": "cache_cost_simulation_not_observed_savings",
+        "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Uses each measured arm cache-read count.",
+        "rates_usd_per_million_tokens": {
+          "uncached_input": 4.0,
+          "cache_read": 0.19999999999999998,
+          "cache_write": 5.0,
+          "output": 20.0
+        },
+        "baseline": "local_baseline",
+        "scenarios": [
+          {
+            "name": "local_baseline",
+            "estimated_tokens": {
+              "uncached_input": 61154,
+              "cache_read": 37056,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_input_tokens": 98210,
+            "estimated_cost_components_usd": {
+              "uncached_input": 0.244616,
+              "cache_read": 0.0074112,
+              "cache_write": 0.0,
+              "output": 0.02596,
+              "auxiliary_jev": 0.0
+            },
+            "estimated_total_usd": 0.2779872,
+            "simulated_baseline_minus_scenario_usd": 0.0,
+            "break_even_additional_cache_read_tokens": 0.0,
+            "break_even_feasible_by_reclassifying_uncached_tokens": true
+          },
+          {
+            "name": "jev",
+            "estimated_tokens": {
+              "uncached_input": 21709,
+              "cache_read": 17792,
+              "cache_write": 0,
+              "output": 1298
+            },
+            "estimated_input_tokens": 39501,
+            "estimated_cost_components_usd": {
+              "uncached_input": 0.086836,
+              "cache_read": 0.0035583999999999998,
+              "cache_write": 0.0,
+              "output": 0.02596,
+              "auxiliary_jev": 0.003063816
+            },
+            "estimated_total_usd": 0.119418216,
+            "simulated_baseline_minus_scenario_usd": 0.158568984,
+            "break_even_additional_cache_read_tokens": 0.0,
+            "break_even_feasible_by_reclassifying_uncached_tokens": true
+          }
+        ],
+        "observed_provider_usage": null,
+        "observed_provider_cost_usd": null,
+        "observed_jev_usage": null,
+        "observed_cache_hit_rate": null
+      },
+      "estimated_baseline_usd_per_1000_calls": 23.165599999999998,
+      "estimated_jev_usd_per_1000_calls": 9.951518,
+      "estimated_saving_percent": 57.04182926408122,
+      "cache_sensitivity": [
+        {
+          "common_cache_read_fraction": 0,
+          "estimated_saving_percent": 55.34197325692454,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 4.0,
+              "cache_read": 0.19999999999999998,
+              "cache_write": 5.0,
+              "output": 20.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 98210,
+                  "cache_read": 0,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.39284,
+                  "cache_read": 0.0,
+                  "cache_write": 0.0,
+                  "output": 0.02596,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.4188,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 39501,
+                  "cache_read": 0,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.158004,
+                  "cache_read": 0.0,
+                  "cache_write": 0.0,
+                  "output": 0.02596,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.187027816,
+                "simulated_baseline_minus_scenario_usd": 0.231772184,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        },
+        {
+          "common_cache_read_fraction": 0.75,
+          "estimated_saving_percent": 46.400891279071864,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.75.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 4.0,
+              "cache_read": 0.19999999999999998,
+              "cache_write": 5.0,
+              "output": 20.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 24552.5,
+                  "cache_read": 73657.5,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.09821,
+                  "cache_read": 0.014731499999999998,
+                  "cache_write": 0.0,
+                  "output": 0.02596,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.1389015,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 9875.25,
+                  "cache_read": 29625.75,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.039501,
+                  "cache_read": 0.00592515,
+                  "cache_write": 0.0,
+                  "output": 0.02596,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.074449966,
+                "simulated_baseline_minus_scenario_usd": 0.064451534,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        },
+        {
+          "common_cache_read_fraction": 0.95,
+          "estimated_saving_percent": 30.862290097242663,
+          "simulation": {
+            "schema_version": 1,
+            "kind": "cache_cost_simulation_not_observed_savings",
+            "assumptions": "Reprice the local and Jev arms of d1-completed-results-2026-10-16.json at published OpenRouter model-level API rates. Each arm has 12 calls. Input and cached-read token counts are borrowed from Xiaomi, not measured on these models. Fix output at 1298 tokens per arm (the larger observed arm total) to avoid treating shorter incomplete answers as savings. Cache-write tokens are zero because the source replay reported implicit cache reads, not explicit writes; explicit provider writes, reasoning, tools, retries, rescue reads and subscription fees are not modeled. Add actual Jev auxiliary charge $0.003063816. Ordinary non-batch rates below the 272000-token high-context threshold. No equivalent-quality or whole-session savings claim. Common hypothetical cache-read fraction 0.95.",
+            "rates_usd_per_million_tokens": {
+              "uncached_input": 4.0,
+              "cache_read": 0.19999999999999998,
+              "cache_write": 5.0,
+              "output": 20.0
+            },
+            "baseline": "local_baseline",
+            "scenarios": [
+              {
+                "name": "local_baseline",
+                "estimated_tokens": {
+                  "uncached_input": 4910.5,
+                  "cache_read": 93299.5,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 98210.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.019642,
+                  "cache_read": 0.018659899999999997,
+                  "cache_write": 0.0,
+                  "output": 0.02596,
+                  "auxiliary_jev": 0.0
+                },
+                "estimated_total_usd": 0.0642619,
+                "simulated_baseline_minus_scenario_usd": 0.0,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              },
+              {
+                "name": "jev",
+                "estimated_tokens": {
+                  "uncached_input": 1975.050000000003,
+                  "cache_read": 37525.95,
+                  "cache_write": 0,
+                  "output": 1298
+                },
+                "estimated_input_tokens": 39501.0,
+                "estimated_cost_components_usd": {
+                  "uncached_input": 0.007900200000000012,
+                  "cache_read": 0.007505189999999998,
+                  "cache_write": 0.0,
+                  "output": 0.02596,
+                  "auxiliary_jev": 0.003063816
+                },
+                "estimated_total_usd": 0.04442920600000001,
+                "simulated_baseline_minus_scenario_usd": 0.019832693999999984,
+                "break_even_additional_cache_read_tokens": 0.0,
+                "break_even_feasible_by_reclassifying_uncached_tokens": true
+              }
+            ],
+            "observed_provider_usage": null,
+            "observed_provider_cost_usd": null,
+            "observed_jev_usage": null,
+            "observed_cache_hit_rate": null
+          }
+        }
+      ]
+    }
+  ]
+}

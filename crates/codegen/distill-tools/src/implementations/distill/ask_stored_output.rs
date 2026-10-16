@@ -11,12 +11,12 @@ use crate::types::tool_io::ToolInput;
 
 pub const ASK_STORED_OUTPUT_TOOL_NAME: &str = "ask_stored_output";
 
-const DESCRIPTION: &str = "Ask a question about a stored tool output (the path in a `full output stored at …` or truncated `full output at:` footer). The answer is verbatim excerpts from it; cheaper than reading the whole file.";
+const DESCRIPTION: &str = "Ask a question about a stored tool output (the path in a `full output stored at …` or truncated `full output at:` footer). Omit path to search outputs from this session. Returns verbatim excerpts with original paths and line ranges.";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AskStoredOutputInput {
-    /// Path from a `full output stored at …` footer.
-    pub path: String,
+    /// Path from a stored-output footer. Omit to search this session’s outputs.
+    pub path: Option<String>,
     /// What to find in that output.
     pub question: String,
 }
@@ -115,7 +115,10 @@ impl distill_tool_runtime::Tool for AskStoredOutputTool {
                     "ask_stored_output is unavailable in this session; read the file with read_file offset/limit or grep.",
                 )
             })?;
-        let text = asker.0.ask(&input.path, &input.question).await?;
+        let text = match input.path {
+            Some(path) => asker.0.ask(&path, &input.question).await?,
+            None => asker.0.search(&input.question).await?,
+        };
         Ok(AskStoredOutputOutput { text })
     }
 }

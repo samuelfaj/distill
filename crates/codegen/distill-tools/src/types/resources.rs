@@ -496,6 +496,8 @@ impl std::fmt::Debug for ManagedGatewayToolClient {
 /// Answers a question about a stored (compressed or elided) tool output using the session's utility model.
 #[async_trait::async_trait]
 pub trait StoredOutputAsker: Send + Sync {
+    /// Search only outputs registered to this session.
+    async fn search(&self, question: &str) -> Result<String, distill_tool_runtime::ToolError>;
     async fn ask(
         &self,
         path: &str,

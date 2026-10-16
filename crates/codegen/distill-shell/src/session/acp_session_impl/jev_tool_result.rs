@@ -300,6 +300,9 @@ fn reads_stored_original(
     output: &distill_tools::types::output::ToolOutput,
 ) -> bool {
     use distill_tools::types::output::{ReadFileOutput, ToolOutput};
+    if tool == "ask_stored_output" {
+        return true;
+    }
     match output {
         ToolOutput::ReadFile(ReadFileOutput::FileContent(file)) => {
             crate::stored_output_ask::is_stored_original(&file.absolute_path.display().to_string())
@@ -2813,6 +2816,110 @@ impl SessionActor {
 
     /// Runs the Jev pass over a finished tool result and returns the text the
     /// model will see. See the module docs for the authority rules.
+    /// Capture sidecars only; no conversation or existing tool message is modified.
+    pub(super) async fn capture_session_output(
+        &self, tool: &str, command: &str, args: &serde_json::Value, call_id: &str,
+        output: &ToolOutput, replacement: Option<&str>,
+    ) -> Vec<String> {
+        if reads_stored_original(tool, command, args, output) { return Vec::new(); }
+        let session_id = self.session_id_string();
+        // A hook replacement is the complete approved view, including provenance.
+        let metadata = if replacement.is_some() { None } else { typed_tool_metadata(output) };
+        let tool = args.get("tool_name").and_then(serde_json::Value::as_str).unwrap_or(tool).to_owned();
+        let text = replacement.map(str::to_owned).unwrap_or_else(|| output.to_prompt_format());
+        let is_error = output.is_error();
+        let call_id = call_id.to_owned();
+        let session_root = crate::session::persistence::session_dir(&self.session_info);
+        let mut failures = Vec::new();
+        let mut paths: Vec<String> = if replacement.is_some() {
+            Vec::new()
+        } else {
+            match output {
+                ToolOutput::Bash(bash) if bash.truncated && !bash.output_file.is_empty() => vec![bash.output_file.clone()],
+                ToolOutput::TaskOutput(distill_tool_types::TaskOutputOutput::Result(result))
+                    if result.truncated && !result.output_file.is_empty() => vec![result.output_file.clone()],
+                ToolOutput::TaskOutput(distill_tool_types::TaskOutputOutput::MultiResult(multi)) =>
+                    multi.results.iter().filter(|result| result.truncated && !result.output_file.is_empty())
+                        .map(|result| result.output_file.clone()).collect(),
+                ToolOutput::WebFetch(distill_tools::types::output::WebFetchOutput::Content(fetch)) =>
+                    fetch.source_artifact.as_ref().and_then(|artifact| artifact.path.to_str())
+                        .or_else(|| fetch.output_location.as_ref().map(|location| location.file_path.as_str()))
+                        .map(str::to_owned).into_iter().collect(),
+                _ => Vec::new(),
+            }
+        };
+        if replacement.is_none() && matches!(output, ToolOutput::MCP(_)) {
+            if let Some((_, note)) = text.rsplit_once("\n\n[MCP output truncated: ") {
+                if let Some((_, rest)) = note.split_once(" Full output written to: ") {
+                    if let Some(end) = [".json.", ".txt."].iter()
+                        .filter_map(|extension| rest.find(extension).map(|offset| offset + extension.len() - 1)).min()
+                    {
+                        paths.push(rest[..end].to_owned());
+                    }
+                }
+                if paths.is_empty() { failures.push("MCP full-output pointer unavailable".to_owned()); }
+            }
+        }
+        let missing_pointer = replacement.is_none() && match output {
+            ToolOutput::Bash(bash) => bash.truncated && bash.output_file.is_empty(),
+            ToolOutput::TaskOutput(distill_tool_types::TaskOutputOutput::Result(result)) =>
+                result.truncated && result.output_file.is_empty(),
+            ToolOutput::TaskOutput(distill_tool_types::TaskOutputOutput::MultiResult(multi)) =>
+                multi.results.iter().any(|result| result.truncated && result.output_file.is_empty()),
+            ToolOutput::WebFetch(distill_tools::types::output::WebFetchOutput::Content(fetch)) =>
+                fetch.bytes > fetch.content.len() && paths.is_empty(),
+            _ => false,
+        };
+        if missing_pointer { failures.push("full output pointer unavailable".to_owned()); }
+        tokio::task::spawn_blocking(move || {
+            let manifest = crate::jev_store::session_manifest(&session_id);
+            let entry = |path| crate::jev_store::SessionOutput {
+                session_id: session_id.clone(), tool: tool.to_owned(), call_id: call_id.to_owned(),
+                is_error, status: metadata.clone(), path,
+            };
+            let register = |original: &str| -> Result<(), String> {
+                if original.len() > crate::jev_store::MAX_ORIGINAL_BYTES {
+                    return Err("output exceeds capture byte limit".to_owned());
+                }
+                let path = crate::jev_store::store_payload(original).ok_or("cannot store original")?;
+                crate::jev_store::register_indexed_output(&manifest, &crate::jev_store::index_output(entry(path), original))
+                    .map_err(|_| "cannot append session chunk index".to_owned())
+            };
+            if let Err(error) = register(&text) { failures.push(error); }
+            let session_root = std::fs::canonicalize(session_root);
+            for path in paths {
+                let resolved = std::fs::canonicalize(path);
+                let allowed = resolved.as_ref().ok().zip(session_root.as_ref().ok())
+                    .is_some_and(|(path, root)| path.starts_with(root) && path.is_file());
+                if !allowed {
+                    failures.push("full output missing or outside current session".to_owned()); continue;
+                }
+                let read = || -> std::io::Result<String> {
+                    use std::io::Read;
+                    let file = std::fs::File::open(resolved.expect("validated path"))?;
+                    let mut bytes = Vec::new();
+                    file.take(crate::jev_store::MAX_ORIGINAL_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+                    if bytes.len() > crate::jev_store::MAX_ORIGINAL_BYTES {
+                        return Err(std::io::Error::other("full output exceeds capture byte limit"));
+                    }
+                    String::from_utf8(bytes).map_err(std::io::Error::other)
+                };
+                match read() {
+                    Ok(original) => if let Err(error) = register(&original) { failures.push(error); },
+                    Err(_) => failures.push("cannot read full output (UTF-8 and capture byte limit required)".to_owned()),
+                }
+            }
+            if !failures.is_empty() {
+                let mut unavailable = crate::jev_store::index_output(entry(std::path::PathBuf::new()), "");
+                unavailable.unavailable = true;
+                if crate::jev_store::register_indexed_output(&manifest, &unavailable).is_err() {
+                    failures.push("cannot record incomplete capture in index".to_owned());
+                }
+            }
+            failures
+        }).await.unwrap_or_else(|_| vec!["session output capture task failed".to_owned()])
+    }
+
     pub(super) async fn jev_post_process_tool_result(
         &self,
         tool: &str,
@@ -4433,6 +4540,186 @@ fn failing_tests(body: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_output_capture_search_preserves_prior_history_and_skips_recovery() {
+        use distill_sampling_types::ConversationItem;
+        tokio::task::LocalSet::new().run_until(async {
+            let home = tempfile::tempdir().expect("home");
+            let _home = distill_test_support::EnvGuard::set("DISTILL_HOME", home.path());
+            let actor = super::super::support::plain_actor().await;
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("stable cached system prefix"),
+                ConversationItem::user("stable prior question"),
+                ConversationItem::assistant("stable prior answer"),
+                ConversationItem::tool_result("previous", "stable prior tool bytes"),
+            ]);
+            let before = serde_json::to_vec(&actor.chat_state_handle.get_conversation().await).expect("history");
+            let token = format!("cache_probe_{}", home.path().file_name().expect("unique home").to_string_lossy());
+            let output = report_bash("test-report", &format!("needle original failure {token}\n"));
+            let replacement = format!("needle hook replacement {token}\n");
+            let session = actor.session_id_string();
+            let manifest = crate::jev_store::session_manifest(&session);
+            let before_entries = crate::jev_store::session_outputs(&manifest, &session).expect("prior index").len();
+            let failures = actor.capture_session_output("run_terminal_command", "test-report", &serde_json::json!({}),
+                "capture-call", &output, Some(&replacement)).await;
+            assert!(failures.is_empty(), "{failures:?}");
+            let session = actor.session_id_string();
+            let manifest = crate::jev_store::session_manifest(&session);
+            let entries = crate::jev_store::session_outputs(&manifest, &session).expect("index");
+            assert_eq!(entries.len() - before_entries, 1, "only hook-approved replacement appended");
+            let (answer, _) = crate::stored_output_ask::search_session(&manifest, &crate::jev_store::store_dir(),
+                &session, &token, true).await.expect("search");
+            assert!(!answer.contains("needle original failure"), "{answer}");
+            assert!(answer.contains("needle hook replacement"), "{answer}");
+            assert_eq!(before, serde_json::to_vec(&actor.chat_state_handle.get_conversation().await).expect("history"),
+                "capture/search cannot rewrite prior cacheable messages");
+            let index_before = std::fs::read(&manifest).expect("index bytes");
+            let failures = actor.capture_session_output("ask_stored_output", "", &serde_json::json!({}),
+                "recovery-call", &output, None).await;
+            assert!(failures.is_empty());
+            assert_eq!(index_before, std::fs::read(&manifest).expect("index after recovery"), "recovery cannot index itself");
+            let recovered = actor.jev_post_process_tool_result("ask_stored_output", "", &serde_json::json!({}),
+                "recovery-call", None, &output, answer.clone()).await;
+            assert_eq!(recovered, answer, "recovery response never reduced again");
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_output_capture_hook_redaction_excludes_raw_metadata_and_artifact() {
+        tokio::task::LocalSet::new().run_until(async {
+            let home = tempfile::tempdir().expect("home");
+            let _home = distill_test_support::EnvGuard::set("DISTILL_HOME", home.path());
+            let actor = super::super::support::plain_actor().await;
+            let confidential = "confidential_capture_canary";
+            let call = format!("redacted-call-{}", home.path().file_name().expect("unique home").to_string_lossy());
+            let root = crate::session::persistence::session_dir(&actor.session_info);
+            std::fs::create_dir_all(&root).expect("session directory");
+            let artifact = root.join(format!("{confidential}.txt"));
+            std::fs::write(&artifact, format!("{confidential} hidden full artifact")).expect("artifact");
+            let mut output = report_bash(confidential, &format!("{confidential} raw result"));
+            if let ToolOutput::Bash(bash) = &mut output {
+                bash.truncated = true;
+                bash.signal = Some(confidential.to_owned());
+                bash.output_file = artifact.display().to_string();
+            }
+            let failures = actor.capture_session_output("run_terminal_command", confidential, &serde_json::json!({}),
+                &call, &output, Some("approved redacted result")).await;
+            assert!(failures.is_empty(), "{failures:?}");
+            let session = actor.session_id_string();
+            let manifest = crate::jev_store::session_manifest(&session);
+            let entries = crate::jev_store::session_outputs(&manifest, &session).expect("index");
+            let captured: Vec<_> = entries.iter().filter(|entry| entry.source.call_id == call).collect();
+            assert_eq!(captured.len(), 1, "raw result and artifact cannot re-enter retrieval");
+            assert!(captured[0].source.status.is_none(), "raw metadata bypasses hook redaction");
+            assert_eq!(std::fs::read_to_string(&captured[0].source.path).expect("approved payload"), "approved redacted result");
+            assert!(!std::fs::read_to_string(&manifest).expect("manifest bytes").contains(confidential));
+            let (answer, hits) = crate::stored_output_ask::search_session(&manifest, &crate::jev_store::store_dir(),
+                &session, confidential, true).await.expect("search");
+            assert!(hits.is_empty(), "redacted content cannot be discovered");
+            assert!(!answer.contains(confidential), "{answer}");
+            if let Ok(files) = std::fs::read_dir(crate::jev_store::store_dir()) {
+                for file in files {
+                    let path = file.expect("store entry").path();
+                    if path.is_file() {
+                        assert!(!std::fs::read_to_string(path).expect("payload").contains(confidential),
+                            "raw content cannot remain accessible to model or Jev");
+                    }
+                }
+            }
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_output_capture_rejects_oversized_inline_before_storing() {
+        tokio::task::LocalSet::new().run_until(async {
+            let home = tempfile::tempdir().expect("home");
+            let _home = distill_test_support::EnvGuard::set("DISTILL_HOME", home.path());
+            let actor = super::super::support::plain_actor().await;
+            let oversized = "x".repeat(crate::jev_store::MAX_ORIGINAL_BYTES + 1);
+            let output = ToolOutput::Text(distill_tools::types::output::TextOutput {
+                text: oversized.clone(), consumed_completion_task_id: None,
+            });
+            let stored = crate::jev_store::store_dir().join(format!("{}.txt",
+                distill_workspace::jev::reduce::content_hash(&output.to_prompt_format())));
+            let failures = actor.capture_session_output("use_tool", "", &serde_json::json!({}),
+                "oversized-call", &output, None).await;
+            assert!(failures.iter().any(|failure| failure.contains("capture byte limit")), "{failures:?}");
+            assert!(!stored.exists(), "byte limit must apply before writing inline payload");
+            let failures = actor.capture_session_output("use_tool", "", &serde_json::json!({}),
+                "oversized-replacement", &text_output(), Some(&oversized)).await;
+            assert!(failures.iter().any(|failure| failure.contains("capture byte limit")), "{failures:?}");
+            let session = actor.session_id_string();
+            let entries = crate::jev_store::session_outputs(&crate::jev_store::session_manifest(&session), &session).expect("index");
+            for call in ["oversized-call", "oversized-replacement"] {
+                assert!(entries.iter().any(|entry| entry.source.call_id == call && entry.unavailable && entry.source.path.as_os_str().is_empty()),
+                    "oversized captures must report incomplete retrieval");
+            }
+            if let Ok(files) = std::fs::read_dir(crate::jev_store::store_dir()) {
+                for file in files {
+                    assert!(file.expect("store entry").metadata().expect("payload metadata").len() <= crate::jev_store::MAX_ORIGINAL_BYTES as u64);
+                }
+            }
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_output_capture_recovers_truncated_mcp_text_and_json() {
+        use distill_tools::types::output::MCPOutput;
+        tokio::task::LocalSet::new().run_until(async {
+            let home = tempfile::tempdir().expect("home");
+            let _home = distill_test_support::EnvGuard::set("DISTILL_HOME", home.path());
+            let actor = super::super::support::plain_actor().await;
+            let mcp = crate::session::persistence::session_dir(&actor.session_info).join("mcp");
+            std::fs::create_dir_all(&mcp).expect("MCP directory");
+            for (extension, full, head, marker) in [
+                ("txt", "visible preview\nhidden_text_capture_marker\n", "visible preview\n", "hidden_text_capture_marker"),
+                ("json", "{\"preview\":1,\"hidden\":\"hidden_json_capture_marker\"}", "{\"preview\":1,", "hidden_json_capture_marker"),
+            ] {
+                let call = format!("mcp-{extension}");
+                let path = mcp.join(format!("{call}.{extension}"));
+                std::fs::write(&path, full).expect("full artifact");
+                let inline = format!("{head}\n\n[MCP output truncated: showing first {} bytes of {} bytes. Full output written to: {}.]",
+                    head.len(), full.len(), path.display());
+                assert!(!inline.contains(marker), "marker must live beyond truncated preview");
+                let output = ToolOutput::MCP(MCPOutput::okay_output("lookup".to_owned(), "test".to_owned(), inline));
+                let failures = actor.capture_session_output("use_tool", "", &serde_json::json!({"tool_name": "test__lookup"}),
+                    &call, &output, None).await;
+                assert!(failures.is_empty(), "{extension}: {failures:?}");
+                let session = actor.session_id_string();
+                let (answer, hits) = crate::stored_output_ask::search_session(&crate::jev_store::session_manifest(&session),
+                    &crate::jev_store::store_dir(), &session, marker, true).await.expect("search");
+                assert!(!hits.is_empty(), "hidden {extension} content must remain discoverable");
+                assert!(answer.contains(marker), "{answer}");
+            }
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_output_capture_records_full_output_failure() {
+        tokio::task::LocalSet::new().run_until(async {
+            let home = tempfile::tempdir().expect("home");
+            let _home = distill_test_support::EnvGuard::set("DISTILL_HOME", home.path());
+            let actor = super::super::support::plain_actor().await;
+            let mut output = report_bash("test-report", "needle preview\n");
+            if let ToolOutput::Bash(bash) = &mut output {
+                bash.truncated = true;
+                bash.output_file = home.path().join("outside-session.log").display().to_string();
+                std::fs::write(&bash.output_file, "needle should not escape").expect("outside");
+            }
+            let failures = actor.capture_session_output("run_terminal_command", "test-report", &serde_json::json!({}),
+                "capture-failed", &output, None).await;
+            assert!(!failures.is_empty(), "missing/full output must not silently disappear");
+            let session = actor.session_id_string();
+            let entries = crate::jev_store::session_outputs(&crate::jev_store::session_manifest(&session), &session).expect("index");
+            assert!(entries.iter().any(|entry| entry.unavailable));
+        }).await;
+    }
+
     use super::*;
 
     fn text_output() -> ToolOutput {

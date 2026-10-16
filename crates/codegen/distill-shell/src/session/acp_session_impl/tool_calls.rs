@@ -2923,6 +2923,14 @@ impl SessionActor {
             self.send_update(acp::SessionUpdate::Plan(acp_plan), None)
                 .await;
         }
+        // Archive only hook-approved content before rendering and insertion-time reduction.
+        let capture_command = tool_parsed_args.get("command")
+            .or_else(|| tool_parsed_args.get("cmd")).or_else(|| tool_parsed_args.get("script"))
+            .and_then(serde_json::Value::as_str).unwrap_or_default();
+        let capture_failures = self.capture_session_output(
+            effective_tool_name, capture_command, tool_parsed_args, &call_id.to_string(),
+            &result.output, model_output_override.as_deref(),
+        ).await;
         let output_replaced = model_output_override.is_some();
         // The tool's own text, or the hook's replacement, that the harness
         // notices follow.
@@ -2996,7 +3004,7 @@ impl SessionActor {
             None => prompt_text,
             // A hook chose this text: only a large one is narrowed, by the
             // utility alone.
-            Some((body, notices)) if effective_tool_name == "jev_decide" => format!("{body}{notices}"),
+            Some((body, notices)) if matches!(effective_tool_name, "jev_decide" | "ask_stored_output") => format!("{body}{notices}"),
             Some((body, notices)) if output_replaced => {
                 let body = self
                     .select_hook_output(
@@ -3033,6 +3041,9 @@ impl SessionActor {
                     .await;
                 format!("{body}{notices}")
             }
+        };
+        let prompt_text = if capture_failures.is_empty() { prompt_text } else {
+            format!("{prompt_text}\n[Session output search capture incomplete: {}]", capture_failures.join("; "))
         };
         let tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)

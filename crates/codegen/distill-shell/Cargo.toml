@@ -293,3 +293,7 @@ tar = { workspace = true }
 [[bin]]
 name = "chat-history-downgrade"
 path = "src/bin/chat-history-downgrade.rs"
+
+[[example]]
+name = "context_retrieval_adapter"
+required-features = ["test-support"]

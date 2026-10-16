@@ -6,7 +6,7 @@ This experiment compares three ways to prepare context for `openai/gpt-6-astra`:
 - The same evidence, narrowed by `openai/gpt-6-luna` as a retrieval worker.
 - The same evidence, narrowed by `qwen/qwen3.7-flash` as a retrieval utility.
 
-The experiment is opt-in and changes no production model routing. It tests an additional extractive step, not free-form summaries or a full coding-agent session.
+The benchmark runner remains opt-in. This PR also enables the utility extraction step in production session-output search after successful Jev selection. It uses the existing utility lane, with `openrouter/free`, then `nvidia/nemotron-3.5-lightning:floor`, then `inclusionai/ling-3.0-flash:floor` unless the user configured another utility model. It preserves original evidence when extraction fails, is invalid or selects nothing. This is literal line selection, not free-form summaries or a full coding-agent session. The retained measurements below predate this production integration and measured Qwen, not Ling.
 
 ## Model choices
 
@@ -95,7 +95,7 @@ Two earlier attempts remain separate and are not mixed into the paired results:
 
 Public [model constraints](../scripts/benchmarks/context-retrieval/tiers-model-constraints-2026-10-16.json) retain the model reasoning metadata and prices used to investigate those failures. The two failed reports preserve their original bytes. Known charges across the completed run and both attempts total $0.829579632, plus the two unknown rejected-request charges. This is not an exact all-attempt bill.
 
-The utility preserved more evidence than the worker in this pilot and merits further testing. Production should stay unchanged while missing-evidence recovery, larger workloads and full agent behavior remain untested. This experiment measures extractive selection, not the factual reliability of generated summaries or the configured subscription worker transport.
+The utility preserved more evidence than the worker in this pilot. Production now uses the existing utility lane after Jev, with original-evidence fallback for invalid, empty or failed selections. Valid but incomplete selections can still lose evidence; missing-evidence recovery, larger workloads and full agent behavior remain untested. This experiment measures extractive selection, not the factual reliability of generated summaries or the configured subscription worker transport.
 
 ### Verification
 

@@ -2053,13 +2053,12 @@ mod tests {
         .await;
     }
 
-    /// The shipped default is the owner's chain, in order: the free tier first,
-    /// then the paid variants, then the older cheap model.
+    /// Try the free router before the paid lowest-price routes.
     #[test]
     fn the_shipped_cheap_spec_is_the_owner_chain_in_order() {
         assert_eq!(
             default_model_spec(),
-            "inclusionai/ling-3.0-flash-vl:free,inclusionai/ling-3.0-flash-vl,qwen/qwen3.7-flash"
+            "openrouter/free,nvidia/nemotron-3.5-lightning:floor,inclusionai/ling-3.0-flash:floor"
         );
     }
 

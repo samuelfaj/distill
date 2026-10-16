@@ -11,8 +11,13 @@ actual run measurements belong in a separately identified results section.
 stored original under the explicit-path policy. Without a path, it searches
 only outputs registered to the current session through a bounded lexical IDF
 index, deduplicates candidates, and optionally asks Jev to select relevance.
-Evidence stays literal, with source and line provenance; Jev selects evidence
-rather than rewriting it. Distill continues to use OpenRouter for Jev transport.
+After successful Jev selection, the session's utility model narrows the selected
+evidence to literal source lines. The utility cannot add evidence or search other
+sources. Unavailable, invalid, empty or failed extraction retains the original
+Jev evidence. Source paths and original line numbers remain available for recovery.
+The default utility chain is `openrouter/free`, then
+`nvidia/nemotron-3.5-lightning:floor`, then `inclusionai/ling-3.0-flash:floor`; an explicit utility-model configuration still takes priority.
+Distill continues to use OpenRouter for Jev transport.
 
 Jev is the only production decision model, regardless of request size. The
 production client rejects d1-ultra and other non-Jev model IDs. Disable controls,

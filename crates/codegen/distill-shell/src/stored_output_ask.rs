@@ -179,6 +179,7 @@ fn render_picked(units: &[(usize, &str)], picked: &BTreeSet<usize>) -> String {
 }
 
 const SEARCH_RESULTS: usize = 8;
+const JEV_SEARCH_SELECTION: &str = "Jev explicit include/exclude; lexical order preserved";
 const SEARCH_CHUNK_BYTES: usize = crate::jev_store::SEARCH_CHUNK_BYTES;
 const SEARCH_CANDIDATES: usize = 24;
 
@@ -362,7 +363,7 @@ async fn rank_search_hits(question: &str, hits: &mut Vec<SearchHit>) -> (&'stati
     }
     hits.truncate(candidate_count);
     apply_search_selection(hits, &choices);
-    ("Jev explicit include/exclude; lexical order preserved", true, Some(serde_json::json!({"input_tokens": answer.usage.input_tokens, "output_tokens": answer.usage.output_tokens,
+    (JEV_SEARCH_SELECTION, true, Some(serde_json::json!({"input_tokens": answer.usage.input_tokens, "output_tokens": answer.usage.output_tokens,
             "request_id": answer.request_id, "model": answer.model})))
 }
 
@@ -377,6 +378,13 @@ fn apply_search_selection(hits: &mut Vec<SearchHit>, choices: &[Option<&str>]) -
 }
 
 fn render_search(hits: Vec<SearchHit>, unavailable: usize, selection: &str) -> (String, Vec<SearchHit>) {
+    render_search_lines(hits, unavailable, selection, None)
+}
+
+fn render_search_lines(
+    hits: Vec<SearchHit>, unavailable: usize, selection: &str, picked: Option<&BTreeSet<usize>>,
+) -> (String, Vec<SearchHit>) {
+    let mut offset = 0;
     let mut answer = format!("Session output search: {} selected chunks (at most {SEARCH_RESULTS}); {unavailable} sources or lines unavailable, secret-bearing, or oversized. Lines over {SEARCH_CHUNK_BYTES} bytes and sources over 16 MiB unsupported. Selection: {selection}. Only registered session outputs searched.\n", hits.len());
     let mut returned = Vec::new();
     let budget_note = "[answer byte limit reached; narrow the question]\n";
@@ -394,8 +402,14 @@ fn render_search(hits: Vec<SearchHit>, unavailable: usize, selection: &str) -> (
         }
         if shown < aliases.len() { alias_text.push_str(&format!("[{} additional duplicate provenances omitted]\n", aliases.len() - shown)); }
         let header = format!("{header}{alias_text}");
-        let excerpt: String = hit.text.lines().enumerate()
-            .map(|(index, line)| format!("{}→{line}\n", hit.start + index)).collect();
+        let units: Vec<_> = hit.text.lines().enumerate()
+            .map(|(index, line)| (hit.start + index, line)).collect();
+        let local: BTreeSet<_> = (0..units.len())
+            .filter(|index| picked.is_none_or(|picked| picked.contains(&(offset + index))))
+            .collect();
+        offset += units.len();
+        if local.is_empty() { continue; }
+        let excerpt = render_picked(&units, &local);
         if answer.len() + header.len() + excerpt.len() + budget_note.len() > ANSWER_BYTES {
             answer.push_str(budget_note); break;
         }
@@ -409,13 +423,13 @@ fn render_search(hits: Vec<SearchHit>, unavailable: usize, selection: &str) -> (
 pub(crate) async fn search_session(
     manifest: &Path, store: &Path, session_id: &str, question: &str, lexical_only: bool,
 ) -> Result<(String, Vec<SearchHit>), distill_tool_runtime::ToolError> {
-    let (rendered, hits, _, _, _) = search_session_details(manifest, store, session_id, question, lexical_only).await?;
+    let (rendered, hits, _, _, _, _) = search_session_details(manifest, store, session_id, question, lexical_only).await?;
     Ok((rendered, hits))
 }
 
 async fn search_session_details(
     manifest: &Path, store: &Path, session_id: &str, question: &str, lexical_only: bool,
-) -> Result<(String, Vec<SearchHit>, &'static str, bool, Option<serde_json::Value>), distill_tool_runtime::ToolError> {
+) -> Result<(String, Vec<SearchHit>, &'static str, bool, Option<serde_json::Value>, usize), distill_tool_runtime::ToolError> {
     let terms = search_terms(question).map_err(distill_tool_runtime::ToolError::invalid_arguments)?;
     let (manifest, store, session_id) = (manifest.to_owned(), store.to_owned(), session_id.to_owned());
     let (mut hits, unavailable) = tokio::task::spawn_blocking(move || {
@@ -426,7 +440,7 @@ async fn search_session_details(
     let (selection, network_used, usage) = if lexical_only { hits.truncate(SEARCH_RESULTS); ("lexical only", false, None) }
         else { rank_search_hits(question, &mut hits).await };
     let (rendered, hits) = render_search(hits, unavailable, selection);
-    Ok((rendered, hits, selection, network_used, usage))
+    Ok((rendered, hits, selection, network_used, usage, unavailable))
 }
 
 fn unavailable_answer(display: &str, text: &str, terms: &[String]) -> String {
@@ -524,11 +538,75 @@ impl distill_tools::types::resources::StoredOutputAsker for ShellStoredOutputAsk
 
 impl ShellStoredOutputAsker {
     async fn search_in_scope(&self, question: &str) -> Result<String, distill_tool_runtime::ToolError> {
-        let (answer, _) = search_session(
+        let (answer, hits, selection, _, _, unavailable) = search_session_details(
             &crate::jev_store::session_manifest(&self.session_id), &crate::jev_store::store_dir(),
             &self.session_id, question, false,
         ).await?;
-        Ok(answer)
+        Ok(self.refine_search(question, answer, hits, selection, unavailable).await)
+    }
+
+    async fn refine_search(
+        &self, question: &str, original: String, hits: Vec<SearchHit>, selection: &str, unavailable: usize,
+    ) -> String {
+        // Lexical fallbacks and Jev abstentions never invoke another model.
+        if selection != JEV_SEARCH_SELECTION || hits.is_empty() { return original; }
+        let units: Vec<_> = hits.iter().flat_map(|hit| hit.text.lines()).enumerate()
+            .map(|(index, line)| (index + 1, line)).collect();
+        let bytes_in = hits.iter().map(|hit| hit.text.len()).sum();
+        let record = |decision: &str, chunks, bytes_out| crate::jev_cheap::record_utility_outcome(
+            SOURCE_KIND, decision, chunks, bytes_in, bytes_out,
+        );
+        if std::iter::once(question).chain(units.iter().map(|(_, line)| *line))
+            .any(|part| distill_workspace::jev::crushers::utility_secret_presence(part).is_some()) {
+            record("keep:secret", 0, original.len());
+            return original;
+        }
+        let Some(lane) = self.lane().await else {
+            record("keep:lane-unavailable", 0, original.len());
+            return original;
+        };
+        let ask = format!("The payload is Jev-selected session output evidence. Pick the units that answer this question: {question}");
+        let cap = lane.max_payload_bytes()
+            .min(lane.max_input_bytes().saturating_sub(ask.len().saturating_add(512)));
+        let texts: Vec<_> = units.iter().map(|(_, line)| (*line).to_owned()).collect();
+        let chunks = match crate::utility_select::plan_chunks(&texts, cap, MAX_CHUNKS) {
+            Ok(chunks) => chunks,
+            Err(reason) => { record(reason, 0, original.len()); return original; }
+        };
+        let answers = futures::future::join_all(chunks.iter().map(|chunk| {
+            let refs: Vec<_> = units[chunk.clone()].iter().map(|(_, line)| *line).collect();
+            let payload = distill_workspace::jev::tasks::render_units(&refs, chunk.start + 1);
+            let valid = chunk.start + 1..=chunk.end;
+            let (lane, ask, units) = (&lane, &ask, &units);
+            async move {
+                let outcome = lane.run_task_with_acceptance(
+                    JevLever::ECheapCompress, distill_workspace::jev::tasks::SELECT_UNITS_TASK,
+                    &payload, ask, SOURCE_KIND, false,
+                    |answer| {
+                        let ids = distill_workspace::jev::tasks::parse_unit_ids(answer, valid.clone()).ok()?;
+                        if ids.is_empty() { return None; }
+                        Some(render_picked(units, &ids.into_iter().map(|id| id - 1).collect()))
+                    },
+                ).await;
+                match outcome {
+                    Some(outcome) => distill_workspace::jev::tasks::parse_unit_ids(&outcome.text, valid)
+                        .map(ChunkAnswer::Ids).unwrap_or(ChunkAnswer::Failed),
+                    None => ChunkAnswer::Failed,
+                }
+            }
+        })).await;
+        let mut picked = BTreeSet::new();
+        for answer in answers {
+            match answer {
+                ChunkAnswer::Ids(ids) if !ids.is_empty() => picked.extend(ids.into_iter().map(|id| id - 1)),
+                _ => { record("keep:selection-failed", chunks.len(), original.len()); return original; }
+            }
+        }
+        if picked.is_empty() { return original; }
+        let (answer, _) = render_search_lines(hits, unavailable,
+            "Jev explicit include/exclude; utility-picked literal lines; lexical order preserved", Some(&picked));
+        record("answered", chunks.len(), answer.len());
+        answer
     }
 
     async fn ask_in_scope(
@@ -789,7 +867,7 @@ async fn benchmark_response_inner(request: serde_json::Value) -> anyhow::Result<
         }
         (rendered, excerpts)
     } else {
-        let (rendered, hits, selected, used_network, usage) = search_session_details(&crate::jev_store::manifest_path(root.path(), &session),
+        let (rendered, hits, selected, used_network, usage, _) = search_session_details(&crate::jev_store::manifest_path(root.path(), &session),
             &store, &session, &question, !(live || selector)).await.map_err(|error| anyhow::anyhow!("{error}"))?;
         selection = selected;
         network_used = used_network;
@@ -1294,6 +1372,96 @@ mod tests {
         crate::jev::clear_test_local_config();
         crate::jev::clear_test_worker_model();
         crate::jev::clear_test_decision_answers();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_search_utility_preserves_literal_gaps_and_duplicate_provenance() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ]).await.expect("utility stub");
+        server.enqueue_response("/v1/chat/completions", utility_answer("U1, U3, U5"));
+        let asker = asker_with_utility(server.url(), "search-session");
+        let root = tempfile::tempdir().expect("store");
+        let text = "needle São Paulo — `quoted`\nnoise\n  needle detail\n";
+        let first = search_source(root.path(), "a-first", &format!("{}{}", "padding\n".repeat(12), text));
+        let duplicate = search_source(root.path(), "z-duplicate", text);
+        let other = search_source(root.path(), "b-other", "needle other\n  second source detail\n");
+        let (hits, _) = search_outputs(vec![first, duplicate, other], root.path(), &["needle".to_owned()]);
+        assert_eq!(hits.len(), 2);
+        let (original, hits) = render_search(hits, 3, JEV_SEARCH_SELECTION);
+        let answer = asker.refine_search("needle", original, hits, JEV_SEARCH_SELECTION, 3).await;
+        clear_utility();
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 1);
+        assert!(answer.contains("13→needle São Paulo — `quoted`\n…\n15→  needle detail\n"), "{answer}");
+        assert!(!answer.contains("→noise"), "{answer}");
+        assert!(answer.contains("2→  second source detail\n"), "{answer}");
+        assert!(answer.contains("call=b-other"), "{answer}");
+        assert!(!answer.contains("→needle other"), "{answer}");
+        assert!(answer.contains("call=a-first"), "{answer}");
+        assert!(answer.contains("call=z-duplicate"), "{answer}");
+        assert!(answer.contains(":1-3 [tool=grep, call=z-duplicate"), "{answer}");
+        assert!(answer.contains("exit: 2"), "{answer}");
+        assert!(answer.contains("3 sources or lines unavailable"), "{answer}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_search_utility_keeps_evidence_on_empty_malformed_failure_and_unavailable() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ]).await.expect("utility stub");
+        let root = tempfile::tempdir().expect("store");
+        for response in ["NONE", "", "U0", "U99", "U1, invented", "U2-U1"] {
+            server.enqueue_response("/v1/chat/completions", utility_answer(response));
+            let asker = asker_with_utility(server.url(), "search-session");
+            let source = search_source(root.path(), "evidence", "needle decisive\ncontext\n");
+            let (hits, _) = search_outputs(vec![source], root.path(), &["needle".to_owned()]);
+            let (original, hits) = render_search(hits, 0, JEV_SEARCH_SELECTION);
+            let answer = asker.refine_search("needle", original.clone(), hits, JEV_SEARCH_SELECTION, 0).await;
+            clear_utility();
+            assert_eq!(answer, original, "response {response:?} must not discard evidence");
+        }
+        assert!(server.request_count_for("/v1/chat/completions") >= 6);
+        for unavailable in [false, true] {
+            let asker = asker_with_utility("http://127.0.0.1:9/v1".to_owned(), "search-session");
+            if unavailable {
+                asker.models_manager.set_current_model_id(agent_client_protocol::ModelId::new("aux-model"));
+            }
+            let source = search_source(root.path(), "evidence", "needle decisive\n");
+            let (hits, _) = search_outputs(vec![source], root.path(), &["needle".to_owned()]);
+            let (original, hits) = render_search(hits, 0, JEV_SEARCH_SELECTION);
+            assert_eq!(asker.refine_search("needle", original.clone(), hits, JEV_SEARCH_SELECTION, 0).await, original);
+            clear_utility();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn session_search_utility_never_runs_for_lexical_fallback_abstention_secret_or_kill_switch() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+        let _no_key = distill_test_support::env::EnvGuard::unset("OPENROUTER_API_KEY");
+        let server = MockInferenceServer::start_with_models(vec![
+            MockModelEntry::new("aux-model").with_api_backend("chat_completions"),
+        ]).await.expect("utility stub");
+        let root = tempfile::tempdir().expect("store");
+        for mode in ["lexical fallback: invalid Jev selection", "lexical: Jev disabled or shadow", "abstention", "secret", "disabled"] {
+            let asker = asker_with_utility(server.url(), "search-session");
+            let source = search_source(root.path(), "evidence", "needle decisive\n");
+            let (mut hits, _) = search_outputs(vec![source], root.path(), &["needle".to_owned()]);
+            if mode == "abstention" { hits.clear(); }
+            if mode == "disabled" { crate::jev::set_test_flags(distill_workspace::jev::JevFlags::default()); }
+            let selection = if mode.starts_with("lexical") { mode } else { JEV_SEARCH_SELECTION };
+            let question = if mode == "secret" { "OPENAI_API_KEY=sk-proj-FAKEKEYabcdefghijklmnopqrstuvwxyz0123456789" } else { "needle" };
+            let (original, hits) = render_search(hits, 0, selection);
+            assert_eq!(asker.refine_search(question, original.clone(), hits, selection, 0).await, original);
+            clear_utility();
+        }
+        assert_eq!(server.request_count_for("/v1/chat/completions"), 0);
     }
 
     const STORED: &str = "build started\nwarning: unused import `Foo`\n\nerror[E0308]: mismatched types\n  --> src/client.rs:868\nbuild failed\n";

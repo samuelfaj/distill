@@ -32,9 +32,9 @@ pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// comes first because it costs nothing, and the paid variants follow it in the
 /// order they are worth paying for.
 pub const DEFAULT_MODELS: &[&str] = &[
-    "inclusionai/ling-3.0-flash-vl:free",
-    "inclusionai/ling-3.0-flash-vl",
-    "qwen/qwen3.7-flash",
+    "openrouter/free",
+    "nvidia/nemotron-3.5-lightning:floor",
+    "inclusionai/ling-3.0-flash:floor",
 ];
 /// Default deadline for one cheap call (generation included).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);

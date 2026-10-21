@@ -1324,6 +1324,8 @@ pub struct JevLadderConfig {
     /// B2 (auto): per-model-call effort selection (the `/effort auto` mode).
     #[serde(default, alias = "b2_micro_effort")]
     pub b2_micro_effort: Option<bool>,
+    /// B2 (tier): UltraSave/UltraFast per-round model choice among main, worker and utility.
+    pub b2_execution_tier: Option<bool>,
     /// B3: pick an existing agent definition for the task.
     pub b3_subagent_type: Option<bool>,
     /// B6: hint that delegating is worth it (never spawns).

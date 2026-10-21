@@ -89,6 +89,8 @@ pub struct JevLadderOverlay {
     pub b2_model_tier: Option<bool>,
     /// B2 (auto): the per-model-call effort the user opts into with `/effort auto`.
     pub b2_micro_effort: Option<bool>,
+    /// B2 (tier): UltraSave/UltraFast pick among the user's main, worker and utility models per round.
+    pub b2_execution_tier: Option<bool>,
     /// B2 (local): retired whole-round routing to the utility model.
     pub b2_local_model: Option<bool>,
     /// B3: pick an existing agent definition for the task.
@@ -152,6 +154,7 @@ impl JevFlags {
             b1_intent_routing: true,
             b2_model_tier: true,
             b2_micro_effort: true,
+            b2_execution_tier: true,
             // Nothing routes a whole main round to the utility any more: a
             // round on another model replays the history uncached.
             b2_local_model: false,
@@ -238,6 +241,8 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.b2_model_tier, None, self.b2_model_tier);
         self.b2_micro_effort =
             self.enabled && resolve_switch(ladder.b2_micro_effort, None, self.b2_micro_effort);
+        self.b2_execution_tier =
+            self.enabled && resolve_switch(ladder.b2_execution_tier, None, self.b2_execution_tier);
         self.b2_local_model =
             self.enabled && resolve_switch(ladder.b2_local_model, None, self.b2_local_model);
         self.b3_subagent_type =
@@ -328,6 +333,8 @@ pub struct JevFlags {
     pub b2_model_tier: bool,
     /// B2 (auto): pick the effort for every model call (only runs in auto mode).
     pub b2_micro_effort: bool,
+    /// B2 (tier): per-round choice among the user's main, worker and utility models in Ultra modes.
+    pub b2_execution_tier: bool,
     /// B2 (local): retired whole-round routing to the utility model; nothing
     /// reads it, and it defaults off.
     pub b2_local_model: bool,
@@ -378,6 +385,7 @@ impl JevFlags {
             b1_intent_routing: false,
             b2_model_tier: false,
             b2_micro_effort: false,
+            b2_execution_tier: false,
             b2_local_model: false,
             b3_subagent_type: false,
             b6_delegation_hint: false,
@@ -483,6 +491,7 @@ impl JevFlags {
             JevLever::B1IntentRouting => self.b1_intent_routing,
             JevLever::B2ModelTier => self.b2_model_tier,
             JevLever::B2MicroEffort => self.b2_micro_effort,
+            JevLever::B2ExecutionTier => self.b2_execution_tier,
             JevLever::B2LocalModel => self.b2_local_model,
             JevLever::B3SubagentType => self.b3_subagent_type,
             JevLever::B6DelegationHint => self.b6_delegation_hint,
@@ -529,6 +538,7 @@ pub enum JevLever {
     B1IntentRouting,
     B2ModelTier,
     B2MicroEffort,
+    B2ExecutionTier,
     B2LocalModel,
     B3SubagentType,
     B6DelegationHint,
@@ -567,6 +577,7 @@ impl JevLever {
             Self::B1IntentRouting => "b1_intent_routing",
             Self::B2ModelTier => "b2_model_tier",
             Self::B2MicroEffort => "b2_micro_effort",
+            Self::B2ExecutionTier => "b2_execution_tier",
             Self::B2LocalModel => "b2_local_model",
             Self::B3SubagentType => "b3_subagent_type",
             Self::B6DelegationHint => "b6_delegation_hint",

@@ -75,6 +75,18 @@ pub(crate) struct JevTurnLedger {
     /// so the rest of the child stays on its own model. Session-scoped:
     /// draining the turn keeps it.
     pub(crate) cheap_agent_off: bool,
+    /// B2 tier: a routed tier round failed, so the rest of the turn stays on
+    /// the session model. Cleared when the turn drains.
+    pub(crate) tier_route_off: bool,
+    /// This round runs on a non-main tier model chosen by Jev.
+    pub(crate) tier_route_active: bool,
+    /// A tier model ran a round, so live history may hold its reasoning.
+    /// Session-scoped: survives turn drain, cleared only when a compaction
+    /// rewrites history.
+    pub(crate) tier_route_touched: bool,
+    /// Catalog slug of the non-main tier model the turn route runs on, so a
+    /// kept route resumes that exact entry rather than a wire-id lookalike.
+    pub(crate) tier_route_slug: Option<String>,
     /// Model and effort the last main request was sent with. Session-scoped:
     /// a compaction or recap at the start of the next turn replays that
     /// request's prefix and must send the same effort to read its cache.
@@ -211,6 +223,8 @@ impl JevTurnLedger {
     /// gone and the next round may choose again.
     pub(crate) fn note_compaction(&mut self) {
         self.turn_route = None;
+        self.tier_route_slug = None;
+        self.tier_route_touched = false;
     }
 
     /// When this turn's first call was noted (the window its decisions belong to).
@@ -353,6 +367,9 @@ impl JevTurnLedger {
         self.turn_intent = None;
         self.last_execution = None;
         self.turn_route = None;
+        self.tier_route_off = false;
+        self.tier_route_active = false;
+        self.tier_route_slug = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())
@@ -523,6 +540,21 @@ mod tests {
     }
 
     /// A routed round hands its model id to the request exactly once.
+    /// Reasoning a tier model minted stays in live history after the turn
+    /// drains, so the flag must outlive the turn and clear only when a
+    /// compaction rewrites that history.
+    #[test]
+    fn foreign_reasoning_flag_survives_the_turn_and_clears_on_compaction() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.tier_route_touched = true;
+        ledger.tier_route_slug = Some("worker".to_owned());
+        let _ = ledger.take_rows();
+        assert!(ledger.tier_route_touched, "next turn's history still holds it");
+        assert_eq!(ledger.tier_route_slug, None, "the kept route is per turn");
+        ledger.note_compaction();
+        assert!(!ledger.tier_route_touched);
+    }
+
     #[test]
     fn the_pending_route_is_consumed_once() {
         let mut ledger = JevTurnLedger::default();

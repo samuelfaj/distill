@@ -493,5 +493,113 @@ class ActivationRunTest(unittest.TestCase):
                     binary_hash=compare_parallel._sha256_file(Path(sys.executable)),
                 )
             self.assertFalse((root / 'runs' / f'candidate-{case["id"]}-1/distill-home/codex-auth.json').exists())
+    def test_enable_jev_stages_owner_only_key_sets_env_and_removes_it_even_on_failure(self):
+        case = COHORT['cases'][0]
+        seen = {}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / 'profile'
+            profile.mkdir()
+            (profile / 'codex-auth.json').write_text('{}')
+            (profile / 'openrouter-auth.json').write_text('{"key": "sk-or-test"}')
+
+            def acp(command, *, cwd, environment, **kwargs):
+                staged = cwd.parent / 'distill-home/openrouter-auth.json'
+                seen.update(key=environment.get('OPENROUTER_API_KEY'), mode=staged.stat().st_mode & 0o777,
+                            body=staged.read_text())
+                raise OSError('launch failed')
+
+            with mock.patch.object(compare_parallel, 'run_acp', side_effect=acp), self.assertRaises(OSError):
+                compare_parallel.run_one(
+                    Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30,
+                    frozen_inputs=compare_parallel.case_hashes(case),
+                    binary_hash=compare_parallel._sha256_file(Path(sys.executable)),
+                    transport='acp', enable_jev=True, utility_model='chatgpt/gpt-6-terra')
+            home = root / 'runs' / f'candidate-{case["id"]}-1/distill-home'
+            self.assertEqual(seen, {'key': 'sk-or-test', 'mode': 0o600, 'body': '{"key": "sk-or-test"}'})
+            self.assertFalse((home / 'openrouter-auth.json').exists())
+            self.assertFalse((home / 'codex-auth.json').exists())
+            config = (home / 'config.toml').read_text()
+            self.assertIn('api_key_env = "OPENROUTER_API_KEY"', config)
+            self.assertIn('[jev.local]\nmodel = "chatgpt/gpt-6-terra"', config)
+            self.assertIn('session_summary = "chatgpt/gpt-6-terra"', config)
+            settings = json.loads((root / 'runs' / f'candidate-{case["id"]}-1/settings.json').read_text())
+            self.assertEqual((settings['jev_enabled'], settings['utility_model']), (True, 'chatgpt/gpt-6-terra'))
+
+    def test_default_config_keeps_jev_off_and_luna_utility(self):
+        config = compare_parallel.distill_config()
+        self.assertIn('api_key_env = "DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY"', config)
+        self.assertIn('[jev.local]\nmodel = "chatgpt/gpt-6-luna"', config)
+        self.assertIn('session_summary = "chatgpt/gpt-6-luna"', config)
+
+    def test_enable_jev_without_key_never_starts_a_model(self):
+        case = COHORT['cases'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / 'profile'
+            profile.mkdir()
+            (profile / 'codex-auth.json').write_text('{}')
+            (profile / 'openrouter-auth.json').write_text('{}')
+            with mock.patch.object(compare_parallel, 'run_acp') as acp, self.assertRaises(ValueError):
+                compare_parallel.run_one(
+                    Path(sys.executable), 'candidate', case, 1, root / 'runs', profile, 30,
+                    frozen_inputs=compare_parallel.case_hashes(case),
+                    binary_hash=compare_parallel._sha256_file(Path(sys.executable)),
+                    transport='acp', enable_jev=True)
+            acp.assert_not_called()
+            self.assertFalse((root / 'runs' / f'candidate-{case["id"]}-1/distill-home/openrouter-auth.json').exists())
+
+    def test_jev_usd_is_separate_from_credits_and_unpriced_jev_is_incomplete(self):
+        case = COHORT['cases'][0]
+        for ticks, complete in ((25_000_000, True), (None, False)):
+            with self.subTest(ticks=ticks), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                peer = fake_peer(root)
+                profile = root / 'profile'
+                profile.mkdir()
+                (profile / 'codex-auth.json').write_text('{}')
+                (profile / 'openrouter-auth.json').write_text('{"key": "k"}')
+                accounting = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 2,
+                              'call_usage': [{'role': 'main', 'cost_usd_ticks': None},
+                                             {'role': 'jev', 'cost_usd_ticks': ticks}],
+                              'accounting_evidence': {'complete': True},
+                              **{f: 1 for f in compare_parallel.TOKEN_FIELDS}}
+                with mock.patch.object(compare_parallel, 'distill_accounting', return_value=accounting), \
+                        mock.patch.object(compare_parallel, 'run_grader', return_value={
+                            'exit_code': 0, 'timed_out': False, 'wall_time_s': .01}):
+                    result = compare_parallel.run_one(peer, 'candidate', case, 1, root / 'runs', profile, 3,
+                        frozen_inputs=compare_parallel.case_hashes(case),
+                        binary_hash=compare_parallel._sha256_file(peer), transport='acp', enable_jev=True)
+                self.assertEqual(result['credits'], 1.0, 'Jev is not folded into credits')
+                self.assertEqual(result['jev_usd'], 0.0025 if complete else None)
+                self.assertEqual(result['accounting_complete'], complete)
+
+    def test_compare_versions_dry_run_allows_same_mode_and_different_binaries(self):
+        for mode in ('ultrafast', 'ultrasave'):
+            out = io.StringIO()
+            with self.subTest(mode=mode), contextlib.redirect_stdout(out), \
+                    mock.patch.object(compare_parallel, 'run_one') as run_one:
+                code = compare_parallel.main([
+                    '--baseline-binary', '/old/distill', '--candidate-binary', '/new/distill',
+                    '--baseline-mode', mode, '--candidate-mode', mode, '--transport', 'acp',
+                    '--max-concurrent', '8', '--order-seed', '1', '--verdict', mode, '--compare-versions',
+                    '--enable-jev', '--utility-model', 'chatgpt/gpt-6-terra',
+                    '--work-root', '/unused', '--output', '/unused.json'])
+            self.assertEqual(code, 0)
+            self.assertIn('"utility_model": "chatgpt/gpt-6-terra"', out.getvalue())
+            self.assertIn('"enable_jev": true', out.getvalue())
+            run_one.assert_not_called()
+
+    def test_strict_mode_rejects_same_mode_pair_and_compare_versions_needs_a_paired_verdict(self):
+        base = ['--baseline-binary', '/a', '--candidate-binary', '/b', '--transport', 'acp',
+                '--max-concurrent', '8', '--order-seed', '1', '--work-root', '/u', '--output', '/u.json']
+        for extra in (['--baseline-mode', 'ultrasave', '--candidate-mode', 'ultrasave', '--verdict', 'ultrasave'],
+                      ['--baseline-mode', 'normal', '--candidate-mode', 'ultrasave', '--compare-versions']):
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as error:
+                compare_parallel.main(base + extra)
+            self.assertEqual(error.exception.code, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

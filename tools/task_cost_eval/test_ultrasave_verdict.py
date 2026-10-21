@@ -1,14 +1,15 @@
 import copy
 import unittest
 
-from .test_ultrafast_verdict import result as paired_result
+from .test_ultrafast_verdict import FOUR, result as paired_result
 from .ultrasave_verdict import TOKEN_FIELDS, verdict
 
 
-def result():
-    data = paired_result()
+def result(cases=('parallel', 'sequential')):
+    data = paired_result(cases)
     for row in data['runs']:
         candidate = row['variant'] == 'candidate'
+        row['credits'] = 4 if candidate else 10
         mode = 'ultrasave' if candidate else 'normal'
         row['settings']['execution_mode'] = mode
         row['acp']['activation_receipt']['result'] = {'mode': mode}
@@ -48,16 +49,55 @@ class UltraSaveVerdictTest(unittest.TestCase):
         self.assertEqual(failed['gate_token_ratio'], 1)
         self.assertAlmostEqual(failed['raw_token_ratio'], 95 / 135)
         self.assertEqual(report['candidate']['total_tokens'], 190)
-        self.assertEqual(report['candidate']['credits'], 2)
-        self.assertEqual(report['candidate']['raw_elapsed_s'], 120)
+        self.assertEqual(report['candidate']['credits'], 8)
+        self.assertEqual(report['candidate']['raw_elapsed_s'], 110)
 
-    def test_smaller_reduction_misses_the_predeclared_target(self):
+    def test_money_gate_is_credit_ratio_not_tokens(self):
         data = result()
+        self.assertAlmostEqual(verdict(data)['median_paired_credit_ratio'], .4)
         for row in data['runs']:
             if row['variant'] == 'candidate':
-                row['call_usage'][0]['input_tokens'] += 25
-                row['input_tokens'] += 25
+                row['credits'] = 4.4
+        self.assertEqual(verdict(data)['verdict'], 'PASS')
+        for row in data['runs']:
+            if row['variant'] == 'candidate':
+                row['credits'] = 5.5  # ratio .55 > .45
+        report = verdict(data)
+        self.assertEqual(report['verdict'], 'FAIL')
+        self.assertLess(report['median_paired_token_ratio'], .8, 'tokens alone would have passed the old gate')
+        self.assertTrue(any('credits' in reason for reason in report['reasons']))
+
+    def test_failed_candidate_pair_cannot_earn_credit_savings(self):
+        data = result()
+        data['runs'][1]['passed'] = False
+        self.assertEqual(verdict(data)['pairs'][0]['gate_credit_ratio'], 1)
+
+    def test_one_regression_tolerated_two_fail(self):
+        data = result(FOUR)
+        data['runs'][1]['passed'] = False
+        report = verdict(data)
+        self.assertEqual((report['quality_regressions'], report['verdict']), (1, 'PASS'), report['reasons'])
+        data['runs'][3]['passed'] = False
+        report = verdict(data)
+        self.assertEqual((report['quality_regressions'], report['verdict']), (2, 'FAIL'))
+
+    def test_compare_versions_uses_looser_money_target_and_allows_same_mode_other_binary(self):
+        data = result()
+        data['compare_versions'] = True
+        for row in data['runs']:
+            row['settings']['execution_mode'] = 'ultrasave'
+            row['acp']['activation_receipt']['result'] = {'mode': 'ultrasave'}
+            row['settings']['binary_sha256'] = row['variant']
+            row['credits'] = 8 if row['variant'] == 'candidate' else 10
+        report = verdict(data)
+        self.assertEqual(report['verdict'], 'PASS', report['reasons'])
+        self.assertEqual(report['target']['maximum_median_paired_credit_ratio'], .85)
+        for row in data['runs']:
+            if row['variant'] == 'candidate':
+                row['credits'] = 9
         self.assertEqual(verdict(data)['verdict'], 'FAIL')
+        data['compare_versions'] = False
+        self.assertEqual(verdict(data)['verdict'], 'INCOMPLETE')
 
     def test_missing_or_unreconciled_usage_is_incomplete_not_zero(self):
         for failure in ('missing', 'unreconciled', 'subset', 'audit'):

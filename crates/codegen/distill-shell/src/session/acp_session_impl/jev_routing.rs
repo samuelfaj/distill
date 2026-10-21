@@ -88,12 +88,12 @@ fn resume_guidance(text: &str) -> Option<&str> {
 impl SessionActor {
     /// A child policy may opt out of Jev's model-changing lanes without
     /// disabling an explicit `auto` effort choice on a pinned model.
-    fn child_model_routing_locked(&self) -> bool {
+    pub(super) fn child_model_routing_locked(&self) -> bool {
         self.startup_hints.is_subagent
             && (self.startup_hints.explicit_model_override || self.model_routing_locked.get())
     }
 
-    fn child_jev_routing_locked(&self) -> bool {
+    pub(super) fn child_jev_routing_locked(&self) -> bool {
         self.startup_hints.is_subagent
             && !self
                 .jev_effort_auto
@@ -268,7 +268,7 @@ impl SessionActor {
     /// per-message effort marker, or nothing to keep (see
     /// [`super::jev_ledger::JevTurnLedger::kept_turn_route`]). A redo floor
     /// still applies on top; the next round returns to the kept route.
-    pub(super) fn jev_keep_turn_effort(&self, cfg: &mut SamplingConfig) -> bool {
+    pub(super) async fn jev_keep_turn_effort(&self, cfg: &mut SamplingConfig) -> bool {
         let reuse_small_prompt = matches!(
             self.execution_mode.load(),
             distill_tool_types::ExecutionMode::Ultrafast | distill_tool_types::ExecutionMode::Ultrasave
@@ -291,6 +291,14 @@ impl SessionActor {
         tracing::debug!(target: "jev.decision", model = route.model,
             effort = route.effort.map(|effort| effort.as_ref().to_owned()),
             "turn keeps its effort: a switch would miss the cached prefix");
+        let slug = self.jev_ledger.borrow().tier_route_slug.clone();
+        if reuse_small_prompt && let Some(slug) = slug {
+            // The kept round ran on another of the user's models: resume that
+            // catalog entry with its own endpoint and credentials.
+            return self
+                .jev_resume_tier_route(cfg, &slug, route.effort)
+                .await;
+        }
         cfg.model = route.model;
         cfg.reasoning_effort = route.effort;
         true
@@ -354,7 +362,7 @@ impl SessionActor {
             );
         } else if self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrasave {
             state["execution_policy"] = serde_json::json!(
-                "Minimize total input and output tokens to a correct verified result, including auxiliary calls and rework. Prefer low effort for clear mechanical work; retain higher effort for ambiguity, diagnosis, sensitive decisions and complex review."
+                "Minimize money cost first, then total input and output tokens, to a correct verified result, including auxiliary calls and rework. Prefer low effort for clear mechanical work; retain higher effort for ambiguity, diagnosis, sensitive decisions and complex review."
             );
         }
         state["previous_dispatch"] = serde_json::json!(self.jev_ledger.borrow().last_execution);
@@ -512,7 +520,7 @@ impl SessionActor {
     }
 
     /// The name the user sees for the model that will run this call.
-    fn model_display_name(&self, model: &str) -> String {
+    pub(super) fn model_display_name(&self, model: &str) -> String {
         let models = self.models_manager.models();
         models
             .values()
@@ -522,7 +530,7 @@ impl SessionActor {
     }
 
     /// A conservative window guard includes schemas and the last observed prompt.
-    async fn jev_prompt_token_estimate(&self, conversation: &[ConversationItem]) -> u64 {
+    pub(super) async fn jev_prompt_token_estimate(&self, conversation: &[ConversationItem]) -> u64 {
         let bridge = self.agent.borrow().tool_bridge().clone();
         let tools = bridge.tool_definitions_builtins_only().await;
         let estimate = distill_chat_state::estimate_conversation_tokens(conversation)
@@ -533,7 +541,7 @@ impl SessionActor {
     /// What this one model call is about: the request it serves and how far the
     /// turn has already got. Bounded by construction (no file contents, no tool
     /// output bodies).
-    async fn micro_effort_state(
+    pub(super) async fn micro_effort_state(
         &self,
         cfg: &SamplingConfig,
         model_name: &str,
@@ -706,7 +714,10 @@ impl SessionActor {
             MODEL_SKILL_DESCRIPTOR_LIMIT, select_model_skills, select_ranked_skills,
         };
         let active = self.jev_active_skill_names().await;
-        let limit = if self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrasave {
+        let limit = if matches!(
+            self.execution_mode.load(),
+            distill_tool_types::ExecutionMode::Ultrasave | distill_tool_types::ExecutionMode::Ultrafast
+        ) {
             4
         } else {
             MODEL_SKILL_DESCRIPTOR_LIMIT
@@ -803,10 +814,6 @@ impl SessionActor {
         &self,
         request: Option<&str>,
     ) -> Option<ModelSkillProjection> {
-        if self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrafast {
-            self.log_skill_projection_skipped("ultrafast_full_catalog");
-            return None;
-        }
         if !crate::jev::lever_active(JevLever::P6SkillSuggestion) {
             self.log_skill_projection_skipped("lever_off");
             return None;
@@ -1544,20 +1551,20 @@ mod tests {
                 let mut cfg = SamplingConfig { model: "main".into(), reasoning_effort: Some(ReasoningEffort::Low), ..Default::default() };
                 actor.jev_anchor_turn_effort("main", &cfg);
                 cfg.reasoning_effort = Some(ReasoningEffort::High);
-                assert!(actor.jev_keep_turn_effort(&mut cfg));
+                assert!(actor.jev_keep_turn_effort(&mut cfg).await);
                 assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::Low));
                 assert_eq!(cfg.model, "main");
                 actor.jev_effort_auto.store(false, std::sync::atomic::Ordering::Relaxed);
                 cfg.reasoning_effort = Some(ReasoningEffort::High);
-                assert!(!actor.jev_keep_turn_effort(&mut cfg));
+                assert!(!actor.jev_keep_turn_effort(&mut cfg).await);
                 assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::High));
                 actor.jev_effort_auto.store(true, std::sync::atomic::Ordering::Relaxed);
                 actor.jev_ledger.borrow_mut().facts.note_tool_result("failed", &failed());
                 actor.jev_ledger.borrow_mut().facts.note_tool_result("parallel-success", &succeeded());
-                assert!(!actor.jev_keep_turn_effort(&mut cfg));
+                assert!(!actor.jev_keep_turn_effort(&mut cfg).await);
                 assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::High));
                 actor.jev_anchor_turn_effort("main", &cfg);
-                assert!(actor.jev_keep_turn_effort(&mut cfg), "a failure is reconsidered only once");
+                assert!(actor.jev_keep_turn_effort(&mut cfg).await, "a failure is reconsidered only once");
             }
         }).await;
     }
@@ -2027,6 +2034,77 @@ mod tests {
     }
 }
 
+/// A catalog model resolved to run this round, with the numbers that admitted it.
+pub(super) struct RoutedModel {
+    pub(super) config: SamplingConfig,
+    pub(super) estimate: u64,
+    pub(super) ceiling: u64,
+}
+
+impl SessionActor {
+    /// Resolves `slug` to the sampler config a whole round can run on instead of
+    /// `cfg`'s model: the slug resolves to an endpoint, the model is not known to
+    /// lack tool calling, the conversation plus the output reserve fits its
+    /// window, and no secret sits in the history. `Err` names the first reason
+    /// the model cannot take the round. The result carries `cfg`'s session-local
+    /// auth and attribution fields.
+    pub(super) fn resolve_routed_model(
+        &self,
+        slug: &str,
+        cfg: &SamplingConfig,
+        creds: &distill_chat_state::Credentials,
+        conversation: &[ConversationItem],
+        estimate: u64,
+    ) -> Result<RoutedModel, String> {
+        let Some(mut routed) = self.aux_sampler_config_with(slug, creds) else {
+            return Err(format!("`{slug}` did not resolve to an endpoint"));
+        };
+        let facts = crate::jev_model_facts::model_facts(&[(&routed.model, &routed.base_url)]);
+        if let Some(parameters) = facts
+            .first()
+            .and_then(|facts| facts["openrouter"]["supported_parameters"].as_array())
+            && !parameters.iter().any(|parameter| parameter == "tools")
+        {
+            return Err(format!("`{slug}` does not list tool calling"));
+        }
+        // `[jev.local]` may cap the window (a speed policy) and set the reserve.
+        let local = crate::jev::local_config_cached();
+        let ceiling = local
+            .max_context_tokens
+            .map_or(routed.context_window, |cap| routed.context_window.min(cap));
+        let reserve = local
+            .context_reserve_tokens
+            .unwrap_or(crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE)
+            .max(u64::from(routed.max_completion_tokens.unwrap_or_default()));
+        let secret = |text: &str| {
+            distill_workspace::jev::crushers::utility_secret_presence(text).is_some()
+        };
+        if conversation.iter().any(|item| {
+            secret(&item.text_content())
+                || matches!(item, ConversationItem::Assistant(assistant)
+                    if assistant.tool_calls.iter().any(|call| secret(&call.arguments)))
+        }) {
+            return Err("the conversation carries a secret".to_owned());
+        }
+        if estimate.saturating_add(reserve) > ceiling {
+            return Err(format!(
+                "~{estimate} tokens + {reserve} reserve > {ceiling} for `{slug}`"
+            ));
+        }
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut routed,
+            cfg,
+            self.client_identifier.clone(),
+            cfg.max_retries,
+        );
+        Ok(RoutedModel {
+            config: routed,
+            estimate,
+            ceiling,
+        })
+    }
+}
+
 impl SessionActor {
     /// E6: runs this round of a fresh `explore` child on the utility model when
     /// that model is a catalog entry, is not the child's own model, is not known
@@ -2057,51 +2135,13 @@ impl SessionActor {
         else {
             return stop("no utility catalog entry other than this child's model");
         };
-        let Some(mut utility) = resolve(&model) else {
-            return stop(&format!("`{model}` did not resolve to an endpoint"));
-        };
-        let facts = crate::jev_model_facts::model_facts(&[(&utility.model, &utility.base_url)]);
-        if let Some(parameters) = facts
-            .first()
-            .and_then(|facts| facts["openrouter"]["supported_parameters"].as_array())
-            && !parameters.iter().any(|parameter| parameter == "tools")
-        {
-            return stop(&format!("`{model}` does not list tool calling"));
-        }
-        // `[jev.local]` may cap the window (a speed policy) and set the reserve.
-        let local = crate::jev::local_config_cached();
-        let ceiling = local
-            .max_context_tokens
-            .map_or(utility.context_window, |cap| utility.context_window.min(cap));
-        let reserve = local
-            .context_reserve_tokens
-            .unwrap_or(crate::agent::config::DEFAULT_LOCAL_CONTEXT_RESERVE)
-            .max(u64::from(utility.max_completion_tokens.unwrap_or_default()));
         let conversation = self.chat_state_handle.get_conversation().await;
-        // A secret the child read stays in its history, so the utility never
-        // sees this child again.
-        let secret = |text: &str| {
-            distill_workspace::jev::crushers::utility_secret_presence(text).is_some()
-        };
-        if conversation.iter().any(|item| {
-            secret(&item.text_content())
-                || matches!(item, ConversationItem::Assistant(assistant)
-                    if assistant.tool_calls.iter().any(|call| secret(&call.arguments)))
-        }) {
-            return stop("the conversation carries a secret");
-        }
         let estimate = self.jev_prompt_token_estimate(&conversation).await;
-        if estimate.saturating_add(reserve) > ceiling {
-            return stop(&format!(
-                "~{estimate} tokens + {reserve} reserve > {ceiling} for `{model}`"
-            ));
-        }
-        crate::agent::config::stamp_session_local_sampler_fields(
-            &mut utility,
-            cfg,
-            self.client_identifier.clone(),
-            cfg.max_retries,
-        );
+        let routed = match self.resolve_routed_model(&model, cfg, &creds, &conversation, estimate) {
+            Ok(routed) => routed,
+            Err(reason) => return stop(&reason),
+        };
+        let (utility, estimate, ceiling) = (routed.config, routed.estimate, routed.ceiling);
         crate::jev::record_item(
             JevLever::ECheapAgent,
             "utility",
@@ -2127,7 +2167,12 @@ impl SessionActor {
         error: &distill_sampler::SamplingErrorInfo,
     ) -> SamplingConfig {
         self.signals_handle().clear_active_dispatch();
-        self.jev_ledger.borrow_mut().cheap_agent_off = true;
+        {
+            let mut ledger = self.jev_ledger.borrow_mut();
+            ledger.cheap_agent_off = true;
+            ledger.tier_route_off = true;
+            ledger.tier_route_active = false;
+        }
         let session = self.reconstruct_full_config().await;
         request.model = Some(session.model.clone());
         request.reasoning_effort = session.reasoning_effort;

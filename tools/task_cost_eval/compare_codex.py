@@ -83,20 +83,21 @@ class CollectorHandler(BaseHTTPRequestHandler):
 
 
 def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_model='chatgpt/gpt-6-luna',
-                   worker_effort='auto', utility_effort='auto', enable_jev=False):
+                   worker_effort='auto', utility_effort='auto', enable_jev=False,
+                   utility_model='chatgpt/gpt-6-luna'):
     return f'''[cli]
 use_leader = false
 [models]
 default = {json.dumps(main_model)}
 worker = {json.dumps(worker_model)}
 worker_effort = {json.dumps(worker_effort)}
-session_summary = "chatgpt/gpt-6-luna"
+session_summary = {json.dumps(utility_model)}
 [jev]
 enabled = true
 effort_auto = true
 api_key_env = {json.dumps("OPENROUTER_API_KEY" if enable_jev else "DISTILL_BENCH_NO_EXTERNAL_MODEL_KEY")}
 [jev.local]
-model = "chatgpt/gpt-6-luna"
+model = {json.dumps(utility_model)}
 effort = {json.dumps(utility_effort)}
 [features]
 telemetry = false
@@ -433,6 +434,14 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
         incoming = usage['prompt_tokens']
         outgoing = usage['completion_tokens']
         cached = usage.get('cached_prompt_tokens', 0)
+        if attribution['role'] == 'jev':
+            # Jev is billed in native USD ticks, not subscription credits; see compare_parallel jev_usd.
+            rows.append({**identity,
+                         'input_tokens': incoming, 'cached_input_tokens': cached, 'output_tokens': outgoing,
+                         'reasoning_tokens': usage.get('reasoning_tokens', 0),
+                         'complete': attribution.get('usage_complete', False), 'credits': 0.0,
+                         'cost_usd_ticks': attribution.get('cost_usd_ticks')})
+            continue
         rows.append({**identity,
                      'input_tokens': incoming, 'cached_input_tokens': cached, 'output_tokens': outgoing,
                      'reasoning_tokens': usage.get('reasoning_tokens', 0),
@@ -443,7 +452,7 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
     totals_match = all(sum(row.get(key, 0) for row in rows) == ledger[value]
                        for key, value in total_fields.items())
     subscription_only = all(row.get('endpoint') == 'https://chatgpt.com/backend-api/codex/responses'
-                            for row in rows)
+                            for row in rows if row['role'] != 'jev')
     zeroed = {row['attempt'] for row in rows if row.get('imputed_zero_usage')}
     corroborated = zero_usage_attempts & {row['attempt'] for row in rows}
     explained_incomplete = (bool(corroborated) and zeroed == corroborated

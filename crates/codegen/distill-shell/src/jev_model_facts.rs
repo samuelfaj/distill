@@ -344,6 +344,25 @@ fn catalog_id(model: &str, base_url: &str) -> Option<String> {
 }
 
 impl Snapshot {
+    /// OpenRouter list `pricing` and `canonical_slug` of the candidate's catalog id.
+    fn list_pricing(&self, model: &str, base_url: &str, time: u64) -> Value {
+        let Some(id) = catalog_id(model, base_url) else {
+            return Value::Null;
+        };
+        let record = self
+            .entries
+            .get("models")
+            .filter(|e| e.usable("models", time))
+            .and_then(|e| e.data.as_array())
+            .and_then(|items| items.iter().find(|item| item["id"] == id));
+        match record {
+            Some(record) if !record["pricing"].is_null() => {
+                json!({"pricing": record["pricing"], "canonical_slug": record["canonical_slug"]})
+            }
+            _ => Value::Null,
+        }
+    }
+
     fn facts(&self, model: &str, base_url: &str, time: u64) -> Value {
         let Some(id) = catalog_id(model, base_url) else {
             return Value::Null;
@@ -440,6 +459,36 @@ pub(crate) fn model_facts(candidates: &[(&str, &str)]) -> Vec<Value> {
         candidates
             .iter()
             .map(|(model, url)| snapshot.facts(model, url, time))
+            .collect()
+    }
+}
+
+/// OpenRouter list price of each candidate's catalog id, even for direct
+/// providers. For ranking relative cost only: the user's endpoint terms may
+/// differ. Reads the same snapshot as [`model_facts`]; `Null` when unknown.
+pub(crate) fn catalog_list_pricing(candidates: &[(&str, &str)]) -> Vec<Value> {
+    #[cfg(test)]
+    {
+        return candidates.iter().map(|_| Value::Null).collect();
+    }
+    #[cfg(not(test))]
+    {
+        static CACHE: std::sync::OnceLock<Arc<Cache>> = std::sync::OnceLock::new();
+        let cache = CACHE.get_or_init(|| {
+            Arc::new(Cache::new(
+                crate::util::distill_home::distill_home().join("jev/model-facts-v1.json"),
+            ))
+        });
+        let endpoint_ids = candidates
+            .iter()
+            .filter(|(_, url)| crate::openrouter_auth::is_openrouter_url(url))
+            .filter_map(|(model, url)| catalog_id(model, url))
+            .collect();
+        let snapshot = cache.snapshot(endpoint_ids);
+        let time = now();
+        candidates
+            .iter()
+            .map(|(model, url)| snapshot.list_pricing(model, url, time))
             .collect()
     }
 }

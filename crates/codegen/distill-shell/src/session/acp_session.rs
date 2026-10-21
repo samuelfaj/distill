@@ -188,6 +188,8 @@ pub(crate) mod prompt_cache;
 mod jev_memory;
 #[path = "acp_session_impl/jev_routing.rs"]
 mod jev_routing;
+#[path = "acp_session_impl/jev_tier_route.rs"]
+mod jev_tier_route;
 #[path = "acp_session_impl/jev_tool_result.rs"]
 mod jev_tool_result;
 #[path = "acp_session_impl/native_tool_output.rs"]

@@ -4,13 +4,37 @@ from __future__ import annotations
 import math
 import statistics
 
+# Predeclared targets. Quality: tolerate one regression and one missed task per cohort.
+MAX_COMPLETION_RATIO = 0.60
+MAX_COMPLETION_RATIO_COMPARE_VERSIONS = 0.85
+MAX_QUALITY_REGRESSIONS = 1
+MAX_MISSED_ACCEPTANCES = 1
 
-def validated_pairs(results, *, candidate_mode, baseline_modes):
+
+def quality_reasons(report, label):
+    """Shared UltraFast/UltraSave quality rule over paired results."""
+    reasons = []
+    if report['quality_regressions'] > MAX_QUALITY_REGRESSIONS:
+        reasons.append(f'more than {MAX_QUALITY_REGRESSIONS} baseline-passing pair failed in {label}')
+    runs = report['candidate']['runs']
+    if report['candidate']['accepted'] < runs - MAX_MISSED_ACCEPTANCES:
+        reasons.append(f'{label} accepted {report["candidate"]["accepted"]} of {runs}; '
+                       f'at least {runs - MAX_MISSED_ACCEPTANCES} required')
+    return reasons
+
+
+def validated_pairs(results, *, candidate_mode, baseline_modes, compare_versions=False):
     """Check the shared frozen-input, ACP and accounting evidence for paired modes."""
     reasons, pairs = [], {}
     expected = {(case, rep) for case in results['cases']
                 for rep in range(1, results['repetitions'] + 1)}
     profiles = []
+    # Head-to-head release comparison differs by binary on purpose; everything else must match.
+    profile_keys = ['model', 'effort', 'configured_models', 'configured_utility',
+                    'configured_main_effort_auto', 'jev_enabled', 'utility_model', 'max_concurrent',
+                    'capacity_env', 'max_depth', 'depth_env', 'timeout_s', 'order_seed', 'tools', 'permissions']
+    if not compare_versions:
+        profile_keys.insert(0, 'binary_sha256')
     for row in results['runs']:
         variant = row['variant']
         key = (row['case'], row['repetition'])
@@ -20,10 +44,7 @@ def validated_pairs(results, *, candidate_mode, baseline_modes):
             continue
         pairs.setdefault(key, {})[variant] = row
         settings = row['settings']
-        profiles.append({key: settings.get(key) for key in (
-            'binary_sha256', 'model', 'effort', 'configured_models', 'configured_utility',
-            'configured_main_effort_auto', 'max_concurrent', 'capacity_env', 'max_depth',
-            'depth_env', 'timeout_s', 'order_seed', 'tools', 'permissions')})
+        profiles.append({key: settings.get(key) for key in profile_keys})
         mode = settings.get('execution_mode')
         expected_mode = (candidate_mode,) if variant == 'candidate' else baseline_modes
         acp = row.get('acp') or {}
@@ -51,10 +72,15 @@ def validated_pairs(results, *, candidate_mode, baseline_modes):
 
 
 def verdict(results):
-    reasons, pairs = validated_pairs(results, candidate_mode='ultrafast', baseline_modes=('normal', 'ultracode'))
-    report = {'verdict': 'INCOMPLETE', 'reasons': reasons,
-              'target': {'maximum_median_paired_completion_ratio': 0.70,
-                         'maximum_quality_regressions': 0},
+    compare_versions = bool(results.get('compare_versions'))
+    baseline_modes = ('normal', 'ultracode') + (('ultrafast',) if compare_versions else ())
+    reasons, pairs = validated_pairs(results, candidate_mode='ultrafast', baseline_modes=baseline_modes,
+                                     compare_versions=compare_versions)
+    target = MAX_COMPLETION_RATIO_COMPARE_VERSIONS if compare_versions else MAX_COMPLETION_RATIO
+    report = {'verdict': 'INCOMPLETE', 'reasons': reasons, 'compare_versions': compare_versions,
+              'target': {'maximum_median_paired_completion_ratio': target,
+                         'maximum_quality_regressions': MAX_QUALITY_REGRESSIONS,
+                         'minimum_candidate_accepted': 'runs - %d' % MAX_MISSED_ACCEPTANCES},
               'scope': 'bounded observed sample; no statistical equivalence or general superiority claim',
               'pairs': [], 'baseline': None, 'candidate': None}
     if reasons:
@@ -106,9 +132,8 @@ def verdict(results):
     if not report['baseline']['accepted']:
         report['reasons'].append('baseline accepted no task; no quality comparison basis')
         return report
-    if ratio > 0.70:
-        report['reasons'].append('median paired completion time did not improve by at least 30%')
-    if report['quality_regressions']:
-        report['reasons'].append('one or more baseline-passing pairs failed in UltraFast')
+    if ratio > target:
+        report['reasons'].append(f'median paired completion time did not improve by at least {round((1 - target) * 100)}%')
+    report['reasons'].extend(quality_reasons(report, 'UltraFast'))
     report['verdict'] = 'FAIL' if report['reasons'] else 'PASS'
     return report

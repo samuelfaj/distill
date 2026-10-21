@@ -36,7 +36,11 @@ pub(crate) fn execution_mode_tool_definitions(
         return defs;
     }
     defs.into_iter()
-        .filter(|def| EXECUTION_MODE_TOOLS.contains(&def.function.name.as_str()))
+        .filter(|def| {
+            let name = def.function.name.as_str();
+            EXECUTION_MODE_TOOLS.contains(&name)
+                || name == "spawn_subagent"
+        })
         .collect()
 }
 
@@ -1296,6 +1300,7 @@ impl SessionActor {
             let _ = route.write(&mut sampler_config);
         }
         crate::jev::begin_model_round();
+        self.jev_ledger.borrow_mut().tier_route_active = false;
         let (session_id, turn_id, round_id) = crate::jev::telemetry_context();
         tracing::info!(target: "jev.decision", event_kind = "llm_round_start",
             session_id, turn_id, round_id, requested_model = sampler_config.model,
@@ -1307,8 +1312,11 @@ impl SessionActor {
             // Where the effort is part of the cached prefix, a later round of the
             // turn keeps the turn's model and effort: a switch re-reads the whole
             // prompt uncached. Otherwise this round chooses below.
-            if !self.jev_keep_turn_effort(&mut sampler_config) {
+            if !self.jev_keep_turn_effort(&mut sampler_config).await {
                 let session_model = sampler_config.model.clone();
+                // UltraSave/UltraFast: one Jev decision may move the round to the
+                // worker or utility model; the effort pass then runs on that model.
+                self.jev_route_execution_tier(&mut sampler_config).await;
                 // The main model runs this call; auto effort picks from its own menu and
                 // an explicit effort stays fixed.
                 self.jev_choose_effort(&mut sampler_config).await;
@@ -1329,7 +1337,10 @@ impl SessionActor {
         // Account Auto has model authority; Jev still chooses effort on an explicit model.
         let store = crate::accounts::AccountStore::default();
         let models = self.models_manager.models();
+        // A tier-routed round runs on another of the user's models by Jev's choice;
+        // account Auto must not claim it or persist its config as the session's.
         let auto_allowed = (!self.startup_hints.is_subagent || !self.model_routing_locked.get())
+            && !self.jev_ledger.borrow().tier_route_active
             && !sampler_config
                 .extra_headers
                 .contains_key("x-distill-account-unavailable");
@@ -2099,11 +2110,12 @@ impl SessionActor {
         if let Some(effort) = self.jev_ledger.borrow_mut().take_pending_request_effort() {
             request.reasoning_effort = effort;
         }
+        let tier_routed = self.jev_ledger.borrow().tier_route_active;
         if let Some((routed_model, is_local_route)) =
             self.jev_ledger.borrow_mut().take_pending_route()
         {
             request.model = Some(routed_model);
-            *routed_local = is_local_route;
+            *routed_local = is_local_route || tier_routed;
             if is_local_route {
                 // Keep Reasoning on the request: a rejected local round
                 // resubmits this same history, and thinking-mode models 400
@@ -2351,6 +2363,13 @@ impl SessionActor {
         // that model in the request: the chat state built it with the session's.
         let mut routed_local = false;
         self.apply_pending_sampler_config(&mut request, &mut routed_local);
+        // A round on another of the user's models cannot read this model's reasoning.
+        if {
+            let ledger = self.jev_ledger.borrow();
+            ledger.tier_route_active || ledger.tier_route_touched
+        } {
+            make_account_history_portable(&mut request.items);
+        }
         self.bound_request_output_to_route(
             &mut request,
             caller_output_tokens,
@@ -2397,7 +2416,7 @@ impl SessionActor {
                     .await
                 {
                     Ok(outcome) => Ok(outcome),
-                    Err(info) if local_route_falls_back(&info, self.startup_hints.cheap_agent) => {
+                    Err(info) if local_route_falls_back(&info, self.startup_hints.cheap_agent || self.jev_ledger.borrow().tier_route_active) => {
                         route_config = Some(self.undo_local_route(&mut request, &info).await);
                         self.bound_request_output_to_route(
                             &mut request,
@@ -2496,7 +2515,7 @@ impl SessionActor {
                     // model's reasoning payload). The routing is an optimization,
                     // so the round goes back to the session model and the rest
                     // of the turn stays there.
-                    let cheap_agent = self.startup_hints.cheap_agent;
+                    let cheap_agent = self.startup_hints.cheap_agent || self.jev_ledger.borrow().tier_route_active;
                     if routed_local && local_route_falls_back(&info, cheap_agent) {
                         route_config = Some(self.undo_local_route(&mut request, &info).await);
                         routed_local = false;
@@ -2542,6 +2561,12 @@ impl SessionActor {
                     if !park.is_parked() {
                         route_config = Some(self.prepare_sampler_for_turn().await);
                         self.apply_pending_sampler_config(&mut request, &mut routed_local);
+                        if {
+                            let ledger = self.jev_ledger.borrow();
+                            ledger.tier_route_active || ledger.tier_route_touched
+                        } {
+                            make_account_history_portable(&mut request.items);
+                        }
                         self.bound_request_output_to_route(
                             &mut request,
                             caller_output_tokens,

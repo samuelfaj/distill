@@ -1,17 +1,29 @@
-"""Paired UltraSave token/quality gate over complete provider usage, including failures."""
+"""Paired UltraSave money/quality gate over complete provider usage, including failures; tokens are reported."""
 from __future__ import annotations
 
 import statistics
 
-from .ultrafast_verdict import validated_pairs
+from .ultrafast_verdict import (MAX_MISSED_ACCEPTANCES, MAX_QUALITY_REGRESSIONS, quality_reasons,
+                                validated_pairs)
+
+# Predeclared money gate: median paired credit ratio, candidate / baseline.
+MAX_CREDIT_RATIO = 0.45
+MAX_CREDIT_RATIO_COMPARE_VERSIONS = 0.85
 
 TOKEN_FIELDS = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_tokens')
 
 
 def verdict(results):
-    reasons, pairs = validated_pairs(results, candidate_mode='ultrasave', baseline_modes=('normal',))
-    report = {'verdict': 'INCOMPLETE', 'reasons': reasons,
-              'target': {'maximum_median_paired_token_ratio': 0.80, 'maximum_quality_regressions': 0},
+    compare_versions = bool(results.get('compare_versions'))
+    reasons, pairs = validated_pairs(results, candidate_mode='ultrasave',
+                                     baseline_modes=('normal', 'ultrasave') if compare_versions else ('normal',),
+                                     compare_versions=compare_versions)
+    target = MAX_CREDIT_RATIO_COMPARE_VERSIONS if compare_versions else MAX_CREDIT_RATIO
+    report = {'verdict': 'INCOMPLETE', 'reasons': reasons, 'compare_versions': compare_versions,
+              'target': {'maximum_median_paired_credit_ratio': target,
+                         'maximum_quality_regressions': MAX_QUALITY_REGRESSIONS,
+                         'minimum_candidate_accepted': 'runs - %d' % MAX_MISSED_ACCEPTANCES},
+              'credit_basis': results.get('credit_basis'),
               'token_basis': 'sum of provider input_tokens + output_tokens over all physical calls; '
                              'cached input and reasoning are included, not added again',
               'scope': 'bounded observed sample; no statistical equivalence or general superiority claim',
@@ -49,11 +61,17 @@ def verdict(results):
         baseline, candidate = pair['baseline'], pair['candidate']
         base_usage, cand_usage = summarize([baseline]), summarize([candidate])
         raw_ratio = cand_usage['total_tokens'] / base_usage['total_tokens']
+        if baseline['credits'] <= 0:
+            reasons.append(f'{key}: nonpositive baseline credits')
+            return report
+        raw_credit_ratio = candidate['credits'] / baseline['credits']
         both_passed = baseline['passed'] and candidate['passed']
         report['pairs'].append({'case': key[0], 'repetition': key[1],
             'baseline': base_usage, 'candidate': cand_usage,
             'baseline_passed': baseline['passed'], 'candidate_passed': candidate['passed'],
             'raw_token_ratio': raw_ratio, 'token_savings_eligible': both_passed,
+            'raw_credit_ratio': raw_credit_ratio,
+            'gate_credit_ratio': raw_credit_ratio if both_passed else max(1.0, raw_credit_ratio),
             # A failed attempt keeps its real usage but cannot earn savings credit.
             'gate_token_ratio': raw_ratio if both_passed else max(1.0, raw_ratio),
             'quality_regression': baseline['passed'] and not candidate['passed']})
@@ -62,14 +80,17 @@ def verdict(results):
     ratio = statistics.median(pair['gate_token_ratio'] for pair in report['pairs'])
     report['median_paired_token_ratio'] = ratio
     report['median_paired_token_saved_fraction'] = 1 - ratio
+    credit_ratio = statistics.median(pair['gate_credit_ratio'] for pair in report['pairs'])
+    report['median_paired_credit_ratio'] = credit_ratio
+    report['median_paired_credit_saved_fraction'] = 1 - credit_ratio
+    report['median_raw_paired_credit_ratio'] = statistics.median(pair['raw_credit_ratio'] for pair in report['pairs'])
     report['median_raw_paired_token_ratio'] = statistics.median(pair['raw_token_ratio'] for pair in report['pairs'])
     report['quality_regressions'] = sum(pair['quality_regression'] for pair in report['pairs'])
     if not report['baseline']['accepted']:
         reasons.append('baseline accepted no task; no quality comparison basis')
         return report
-    if ratio > 0.80:
-        reasons.append('median paired total tokens did not improve by at least 20%')
-    if report['quality_regressions']:
-        reasons.append('one or more baseline-passing pairs failed in UltraSave')
+    if credit_ratio > target:
+        reasons.append(f'median paired credits did not improve by at least {round((1 - target) * 100)}%')
+    reasons.extend(quality_reasons(report, 'UltraSave'))
     report['verdict'] = 'FAIL' if reasons else 'PASS'
     return report

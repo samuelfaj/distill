@@ -74,20 +74,20 @@ fn execution_modes_prune_tool_definitions_to_direct_work() {
         let kept = names(&super::execution_mode_tool_definitions(mode, defs.clone()));
         for name in &kept {
             assert!(
-                super::EXECUTION_MODE_TOOLS.contains(&name.as_str()),
+                super::EXECUTION_MODE_TOOLS.contains(&name.as_str()) || name == "spawn_subagent",
                 "{mode:?} kept {name}"
             );
         }
         for required in ["read_file", "write", "search_replace", "run_terminal_command"] {
             assert!(kept.iter().any(|name| name == required), "{mode:?}: {kept:?}");
         }
-        for dropped in [
-            "todo_write",
-            "spawn_subagent",
-            "workflow",
-            "scheduler_create",
-            "send_feedback",
-        ] {
+        // Both modes delegate: UltraFast to fan independent work out in parallel,
+        // UltraSave to the cheaper worker model.
+        assert!(
+            kept.iter().any(|name| name == "spawn_subagent"),
+            "{mode:?}: {kept:?}"
+        );
+        for dropped in ["todo_write", "workflow", "scheduler_create", "send_feedback"] {
             assert!(
                 !kept.iter().any(|name| name == dropped),
                 "{mode:?} kept {dropped}"

@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parent
 MODEL = 'chatgpt/gpt-6.1-sol'
 VARIANTS = ('baseline', 'candidate')
 TOKEN_FIELDS = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_tokens')
+UTILITY_MODEL = 'chatgpt/gpt-6-luna'
+CREDIT_BASIS = ('credits: published subscription credit rates over LLM calls only; Jev (role "jev") calls are '
+                'billed in native USD ticks and reported separately as jev_usd, never converted into credits')
 CAPACITY_ENV = ('GROK_MAX_CONCURRENT_SUBAGENTS', 'GROK_SUBAGENT_SAMPLING_LIMIT',
                 'GROK_WORKFLOW_MAX_CONCURRENT_AGENTS')
 
@@ -85,7 +88,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             frozen_inputs, binary_hash,
             ultracode=False, max_depth=None, model=MODEL, effort=None, transport='cli',
             worker_model='chatgpt/gpt-6-luna', worker_effort='auto', utility_effort='auto', order_seed=None,
-            execution_mode=None, max_concurrent=None):
+            execution_mode=None, max_concurrent=None, enable_jev=False, utility_model=UTILITY_MODEL):
     if execution_mode is not None and (execution_mode not in EXECUTION_MODES or ultracode):
         raise ValueError('Use one execution_mode or the legacy ultracode flag')
     mode = execution_mode or ('ultracode' if ultracode else 'normal')
@@ -107,7 +110,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     home.mkdir()
     auth = home / 'codex-auth.json'
     config_text = distill_config(main_model=model, worker_model=worker_model, worker_effort=worker_effort,
-                                 utility_effort=utility_effort)
+                                 utility_effort=utility_effort, enable_jev=enable_jev, utility_model=utility_model)
     (home / 'config.toml').write_text(config_text)
     configured = tomllib.loads(config_text)
     session = str(uuid.uuid4()) if transport == 'cli' else None
@@ -117,7 +120,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                        DISTILL_HOME=str(home), GROK_HOME=str(home))
     sanitize = (transport == 'acp' or order_seed is not None or execution_mode is not None or max_concurrent is not None
                 or (worker_effort, utility_effort) != ('auto', 'auto')
-                or worker_model != 'chatgpt/gpt-6-luna')
+                or worker_model != 'chatgpt/gpt-6-luna' or utility_model != UTILITY_MODEL)
     removed = []
     if sanitize:
         removed = sorted(k for k in environment if k == 'GROK_AGENT' or (max_concurrent is not None and k in CAPACITY_ENV) or (
@@ -153,6 +156,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                 'configured_models': configured['models'],
                 'configured_utility': configured['jev']['local'],
                 'configured_main_effort_auto': configured['jev']['effort_auto'],
+                'jev_enabled': bool(enable_jev), 'utility_model': utility_model,
                 'order_seed': order_seed, 'timeout_s': timeout,
                 'environment_policy': 'remove inherited model/effort/depth overrides' if sanitize else 'historical inheritance',
                 'accounting_audit': 'strict study evidence' if sanitize else 'historical ledger reconciliation',
@@ -167,9 +171,18 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     tree = None
     acp = None
     timed_out = False
+    jev_target = home / 'openrouter-auth.json'
     try:
         shutil.copyfile(profile / 'codex-auth.json', auth)
         auth.chmod(0o600)
+        if enable_jev:
+            jev_source = profile / 'openrouter-auth.json'
+            key = json.loads(jev_source.read_text()).get('key')
+            if not isinstance(key, str) or not key:
+                raise ValueError('OpenRouter auth file has no key')
+            jev_target.touch(mode=0o600)
+            jev_target.write_text(jev_source.read_text())
+            environment['OPENROUTER_API_KEY'] = key
         if transport == 'acp':
             acp = run_acp(command, cwd=worktree, environment=environment, prompt=prompt,
                           model=model, effort=effort, ultracode=ultracode, execution_mode=execution_mode,
@@ -204,12 +217,16 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
         finally:
             wall = time.monotonic() - started
             auth.unlink(missing_ok=True)
+            jev_target.unlink(missing_ok=True)
     clean = acp is None or acp['cleanup_complete']
     grade = (run_grader(ROOT / case['grader']['script_ref'], worktree, output) if clean else
              {'exit_code': None, 'timed_out': False, 'wall_time_s': 0, 'skipped': 'unverified inference cleanup'})
     accounting = (distill_accounting(home, session, strict=True) if clean and session and sanitize else
                   distill_accounting(home, session) if clean and session else
                   {'accounting_complete': False, 'reason': 'no session or unverified inference cleanup'})
+    jev_ticks = [call.get('cost_usd_ticks') for call in accounting.get('call_usage', []) if call.get('role') == 'jev']
+    jev_priced = all(type(ticks) is int and ticks >= 0 for ticks in jev_ticks)
+    jev_usd = sum(jev_ticks) / 1e10 if jev_priced else None
     evidence = accounting.get('accounting_evidence', {
         'complete': False, 'reasons': [accounting.get('reason') or 'strict accounting evidence audit not performed'],
         'artifacts': {}})
@@ -231,7 +248,9 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                       and exit_code == 0 and transport_ok and activation_confirmed,
             'wall_time_s': round(wall, 6), 'credits': accounting.get('credit_estimate'),
             **{f: accounting.get(f) for f in TOKEN_FIELDS}, 'model_calls': accounting.get('calls'),
-            'accounting_complete': bool(accounting['accounting_complete'] and (not sanitize or evidence['complete'])),
+            'accounting_complete': bool(accounting['accounting_complete'] and (not sanitize or evidence['complete'])
+                                        and (not enable_jev or jev_priced)),
+            'jev_usd': jev_usd, 'jev_calls': len(jev_ticks),
             'accounting_evidence': evidence,
             'call_usage': accounting.get('call_usage', []),
             'exit_code': exit_code, 'timed_out': timed_out, 'session': session, 'grader': grade,
@@ -255,6 +274,7 @@ def aggregate(runs):
         out[name] = {'runs': len(rows), 'accepted': accepted, 'accounting_complete': complete,
                      'credits': credits, 'credits_per_accepted': credits / accepted if credits is not None and accepted else None,
                      'wall_time_s': sum(r['wall_time_s'] for r in rows),
+                     'jev_usd': sum(r['jev_usd'] for r in rows) if all(r.get('jev_usd') is not None for r in rows) else None,
                      **{f: sum(r[f] for r in rows) if all(r.get(f) is not None for r in rows) else None
                         for f in ('model_calls', *TOKEN_FIELDS)}}
     return out
@@ -271,9 +291,18 @@ def main(argv=None):
     parser.add_argument('--worker-model', default='chatgpt/gpt-6-luna',
                         help='[models].worker for both variants')
     parser.add_argument('--utility-effort', default='auto', help='[jev.local].effort for both variants')
+    parser.add_argument('--utility-model', default=UTILITY_MODEL,
+                        help='[jev.local].model and [models].session_summary for both variants')
+    parser.add_argument('--enable-jev', action='store_true',
+                        help='stage <distill-profile>/openrouter-auth.json into each run home and enable Jev; '
+                             'Jev calls are reported as jev_usd, not credits')
+    parser.add_argument('--compare-versions', action='store_true',
+                        help='head-to-head release comparison: baseline and candidate may use the same execution '
+                             'mode with different binaries; requires an ultrafast/ultrasave verdict')
     parser.add_argument('--max-concurrent', type=int, help='common task, sampling, and workflow capacity')
     parser.add_argument('--verdict', choices=('parallel', 'ultrafast', 'ultrasave'), default='parallel',
-                        help='paired same-binary ACP gates: ultrafast >=30%% time savings; ultrasave >=20%% token savings')
+                        help='paired ACP gates vs Normal: ultrafast median completion ratio <=0.60; ultrasave median credit '
+                             'ratio <=0.45 (both <=0.85 with --compare-versions); at most 1 quality regression')
     for variant in VARIANTS:
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument(f'--{variant}-ultracode', action='store_true',
@@ -303,6 +332,10 @@ def main(argv=None):
         parser.error('--max-concurrent must be at least 1')
     paired_mode = args.verdict in ('ultrafast', 'ultrasave')
     baseline_modes = ('normal', 'ultracode') if args.verdict == 'ultrafast' else ('normal',)
+    if args.compare_versions:
+        if not paired_mode:
+            parser.error('--compare-versions requires --verdict ultrafast or ultrasave')
+        baseline_modes += (args.verdict,)
     if paired_mode and (
             args.transport != 'acp' or args.candidate_mode != args.verdict or
             args.baseline_mode not in baseline_modes or args.max_concurrent is None or
@@ -327,6 +360,7 @@ def main(argv=None):
                           'model': args.model, 'effort': args.effort, 'transport': args.transport,
                           'worker_model': args.worker_model, 'worker_effort': args.worker_effort,
                           'utility_effort': args.utility_effort,
+                          'utility_model': args.utility_model, 'enable_jev': args.enable_jev,
                           'order_seed': args.order_seed} for variant in VARIANTS}
     binaries = {'baseline': args.baseline_binary, 'candidate': args.candidate_binary}
     planned = plan_runs(cohort, args.repetitions, args.order_seed)
@@ -341,12 +375,14 @@ def main(argv=None):
             parser.error(f'binary not found: {binary}')
     binaries = {variant: binary.expanduser().resolve() for variant, binary in binaries.items()}
     frozen = comparison_hashes(cohort, binaries, args.cohort)
-    if paired_mode and len(set(frozen['binaries'].values())) != 1:
+    if paired_mode and not args.compare_versions and len(set(frozen['binaries'].values())) != 1:
         parser.error(f'{args.verdict} verdict requires the same binary SHA-256 for both variants')
     if frozen['support_files'][str(args.cohort.resolve())] != hashlib.sha256(cohort_bytes).hexdigest():
         raise RuntimeError('Frozen cohort changed before execution')
     profile = args.distill_profile.expanduser()
     subscription_account(profile / 'codex-auth.json')
+    if args.enable_jev and not (profile / 'openrouter-auth.json').is_file():
+        parser.error(f'--enable-jev needs {profile / "openrouter-auth.json"}')
     work_root = args.work_root.resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     runs = []
@@ -367,7 +403,9 @@ def main(argv=None):
                'variant_settings': settings, 'cases': [c['id'] for c in cohort['cases']],
                'frozen_input_hashes': frozen['inputs'], 'frozen_support_hashes': frozen['support_files'],
                'transport': args.transport, 'order_seed': args.order_seed, 'repetitions': args.repetitions,
-               'verdict_policy': args.verdict,
+               'verdict_policy': args.verdict, 'compare_versions': args.compare_versions,
+               'jev_enabled': args.enable_jev, 'utility_model': args.utility_model,
+               'credit_basis': CREDIT_BASIS,
                'runs': runs, 'aggregates': aggregate(runs),
                'binaries': {v: {'path': str(b), 'sha256': frozen['binaries'][v]}
                             for v, b in binaries.items()}}

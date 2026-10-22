@@ -273,11 +273,6 @@ impl SessionActor {
             self.execution_mode.load(),
             distill_tool_types::ExecutionMode::Ultrafast | distill_tool_types::ExecutionMode::Ultrasave
         );
-        // Ultra modes ask the tier question every round: the step decides which
-        // model writes code and which only reads or reports.
-        if reuse_small_prompt && self.tier_routing_allowed() {
-            return false;
-        }
         if !self
             .jev_effort_auto
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -1575,31 +1570,6 @@ mod tests {
                 assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::High));
                 actor.jev_anchor_turn_effort("main", &cfg);
                 assert!(actor.jev_keep_turn_effort(&mut cfg).await, "a failure is reconsidered only once");
-            }
-        }).await;
-        crate::jev::clear_test_flags();
-    }
-
-    /// With tier routing allowed, a kept route would pin every later round to the
-    /// first round's model, so the round that writes code could run on a cheap
-    /// model chosen while only reading. Each round must ask again.
-    #[tokio::test(flavor = "current_thread")]
-    #[serial_test::serial]
-    async fn ultra_modes_with_tier_routing_never_keep_the_turn_route() {
-        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
-        tokio::task::LocalSet::new().run_until(async {
-            for mode in [distill_tool_types::ExecutionMode::Ultrafast, distill_tool_types::ExecutionMode::Ultrasave] {
-                let actor = super::super::support::plain_actor().await;
-                actor.execution_mode.store(mode);
-                actor.jev_effort_auto.store(true, std::sync::atomic::Ordering::Relaxed);
-                let mut cfg = SamplingConfig { model: "main".into(), reasoning_effort: Some(ReasoningEffort::Low), ..Default::default() };
-                actor.jev_anchor_turn_effort("main", &cfg);
-                cfg.reasoning_effort = Some(ReasoningEffort::High);
-                assert!(actor.tier_routing_allowed());
-                assert!(!actor.jev_keep_turn_effort(&mut cfg).await, "{mode:?}");
-                assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::High));
-                actor.jev_ledger.borrow_mut().tier_route_off = true;
-                assert!(actor.jev_keep_turn_effort(&mut cfg).await, "after a tier fallback the turn keeps its route");
             }
         }).await;
         crate::jev::clear_test_flags();

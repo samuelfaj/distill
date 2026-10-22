@@ -80,9 +80,9 @@ fn tier_policy(mode: distill_tool_types::ExecutionMode) -> &'static str {
 
 fn tier_instructions(mode: distill_tool_types::ExecutionMode) -> &'static str {
     if mode == distill_tool_types::ExecutionMode::Ultrasave {
-        "Pick the cheapest of the user's chosen models that will still complete this step correctly. Default to the cheapest candidate for reading, searching, editing from a clear plan, running checks and fixing a known failure; choose a more capable one only when this step needs it (an unexplained failure after a retry, a design decision, a subtle correctness judgment). A small quality loss is acceptable, a critical one is not. Count retries and rework. When `prefix_cached` is true, switching re-reads the prompt uncached; switch only when the saving clearly outweighs that."
+        "Pick the cheapest of the user's chosen models that will still complete this step correctly. Use the main model for the round that writes or substantially rewrites the implementation from the task's requirements, for a design decision, and for diagnosing a failure that is not explained. Use the cheapest candidate for reading and searching, running checks, applying a small fix whose cause is already known, and writing the final report. A small quality loss is acceptable, a critical one is not. Count retries and rework. When `prefix_cached` is true, switching re-reads the prompt uncached; switch only when the saving clearly outweighs that."
     } else {
-        "Pick the fastest of the user's chosen models (lower latency, higher throughput; smaller models are usually faster) that will still complete this step correctly. Default to the fastest candidate for reading, searching, editing from a clear plan, running checks and fixing a known failure; choose a more capable one only when this step needs it (an unexplained failure after a retry, a design decision, a subtle correctness judgment). A small quality loss is acceptable, a critical one is not. Count retries and rework as time. When `prefix_cached` is true, switching re-reads the prompt uncached, which costs time; switch only when the time saved clearly outweighs that."
+        "Pick the fastest of the user's chosen models (lower latency, higher throughput; smaller models are usually faster) that will still complete this step correctly. Use the main model for the round that writes or substantially rewrites the implementation from the task's requirements, for a design decision, and for diagnosing a failure that is not explained. Use the fastest candidate for reading and searching, running checks, applying a small fix whose cause is already known, and writing the final report. A small quality loss is acceptable, a critical one is not. Count retries and rework as time. When `prefix_cached` is true, switching re-reads the prompt uncached, which costs time; switch only when the time saved clearly outweighs that."
     }
 }
 
@@ -113,7 +113,7 @@ fn tier_questions(
 
 impl SessionActor {
     /// Whether this round may choose among the user's three models.
-    fn tier_routing_allowed(&self) -> bool {
+    pub(super) fn tier_routing_allowed(&self) -> bool {
         matches!(
             self.execution_mode.load(),
             distill_tool_types::ExecutionMode::Ultrafast
@@ -295,6 +295,7 @@ impl SessionActor {
         };
         let main_name = self.model_display_name(&cfg.model);
         let mut state = self.micro_effort_state(cfg, &main_name, estimate).await;
+        state["step"] = state["micro_action"]["step"].clone();
         state["execution_policy"] = serde_json::json!(tier_policy(mode));
         state["failed_tool_calls_this_turn"] =
             serde_json::json!(self.jev_ledger.borrow().facts.failed_tool_count());

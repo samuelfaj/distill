@@ -363,12 +363,19 @@ pub fn micro_effort_questions_for(
         question_id.to_owned(),
         Question::choice(
             format!(
-                "Model `{model_name}` is about to make one more model call — the single step described \
-                 in `micro_action`. Judge that step only, not the whole task. Which reasoning effort \
-                 should THIS one call use? Pick the cheapest effort that still handles the step; do not \
-                 pick a stronger setting than the step needs. Minimize total task cost including retries \
-                 and recovery, not only this call. Benchmarks are capability evidence, not measured gains \
-                 from increasing effort; honor this model's own offered menu."
+                "Model `{model_name}` is about to make one model call: the single step described in \
+                 `micro_action`. Judge that step only, not the whole task. Pick the most efficient \
+                 reasoning effort for THIS call: the lowest level that still gets this step right the \
+                 first time. Efficiency means correct first, then fast, then cheap, counted over the whole \
+                 task: an effort too low for the step causes a wrong edit, a retry or extra tool calls and \
+                 costs more than it saved; an effort too high wastes time and output tokens on a step that \
+                 does not need it. Re-decide on every call: difficulty changes from step to step, so move up \
+                 or down whenever another level fits this step better. Follow `execution_policy`. Use \
+                 `effort_switch_cost`: when the cache is keyed by effort, change only when the gain clearly \
+                 exceeds re-reading `cached_prompt_tokens` uncached; otherwise switching is free. \
+                 `provider_effort_note`, when present, says how this provider's levels behave. Benchmarks \
+                 are capability evidence, not measured gains from raising effort. Choose only from this \
+                 model's offered menu."
             ),
             criteria,
         )?,
@@ -1025,6 +1032,10 @@ mod tests {
         assert!(
             effort_text.contains("Judge that step only, not the whole task"),
             "the effort is chosen for the step, not the task"
+        );
+        assert!(
+            effort_text.contains("most efficient") && effort_text.contains("Re-decide on every call"),
+            "the effort is re-decided per call for efficiency, not pinned to the highest level"
         );
         let keys: Vec<&str> = criteria.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["high", "low"], "no keep option, only the menu");

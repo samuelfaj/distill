@@ -329,10 +329,7 @@ impl SessionActor {
             self.jev_ledger.borrow_mut().take_effort_floor();
             return;
         }
-        if self.jev_ledger.borrow().effort_floor().is_some()
-            || self.child_jev_routing_locked()
-            || !crate::jev::lever_active(JevLever::B2MicroEffort)
-        {
+        if self.jev_ledger.borrow().effort_floor().is_some() || self.child_jev_routing_locked() {
             return;
         }
         let model_name = self.model_display_name(&cfg.model);
@@ -340,7 +337,12 @@ impl SessionActor {
         if offered.len() < 2 {
             return;
         }
+        if !crate::jev::lever_active(JevLever::B2MicroEffort) {
+            self.apply_effort_fallback(cfg, "Jev effort lever is off");
+            return;
+        }
         let Ok(questions) = routing::micro_effort_questions(&model_name, &offered) else {
+            self.apply_effort_fallback(cfg, "effort question did not build");
             return;
         };
         let conversation = self.chat_state_handle.get_conversation().await;
@@ -357,14 +359,9 @@ impl SessionActor {
             state["candidate_facts"] = serde_json::Value::Array(facts);
         }
         state["reasoning_effort_policy"] = serde_json::json!("auto");
-        if self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrafast {
-            state["execution_policy"] = serde_json::json!(
-                "Minimize time to a correct verified result. Prefer low effort for clear mechanical work; preserve higher effort for ambiguity, diagnosis, sensitive decisions and complex review."
-            );
-        } else if self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrasave {
-            state["execution_policy"] = serde_json::json!(
-                "Minimize money cost first, then total input and output tokens, to a correct verified result, including auxiliary calls and rework. Prefer low effort for clear mechanical work; retain higher effort for ambiguity, diagnosis, sensitive decisions and complex review."
-            );
+        state["execution_policy"] = serde_json::json!(effort_execution_policy(self.execution_mode.load()));
+        if let Some(note) = provider_effort_note(&cfg.model) {
+            state["provider_effort_note"] = serde_json::json!(note);
         }
         state["previous_dispatch"] = serde_json::json!(self.jev_ledger.borrow().last_execution);
         state["effort_switch_cost"] = effort_switch_cost_json(
@@ -373,6 +370,7 @@ impl SessionActor {
         );
         let Some(answers) = crate::jev::ask_item(JevLever::B2MicroEffort, state, questions).await
         else {
+            self.apply_effort_fallback(cfg, "Jev gave no effort answer");
             return;
         };
         self.apply_auto_route_effort(cfg, &answers, &offered, routing::MICRO_EFFORT_QUESTION);
@@ -409,6 +407,7 @@ impl SessionActor {
                 confidence,
                 Some(answers),
             );
+            self.apply_effort_fallback(cfg, "no usable effort answer");
             return;
         };
         let Some(level) = self
@@ -417,6 +416,7 @@ impl SessionActor {
             .into_iter()
             .find(|level| level.id == picked)
         else {
+            self.apply_effort_fallback(cfg, "picked effort is not on the menu");
             return;
         };
         cfg.reasoning_effort = Some(level.value);
@@ -434,9 +434,39 @@ impl SessionActor {
             confidence,
             Some(answers),
         );
+        distill_telemetry::unified_log::info(
+            "jev effort applied",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({"model": cfg.model, "effort": picked, "confidence": confidence})),
+        );
         self.jev_ledger
             .borrow_mut()
             .set_pending_effort_label(level.id);
+    }
+
+    /// Sets this call's effort from the mode baseline when Jev gives no usable
+    /// answer. Never keeps the session's pinned effort, which may be max.
+    fn apply_effort_fallback(&self, cfg: &mut SamplingConfig, reason: &str) {
+        let menu = self.model_effort_menu(&cfg.model).unwrap_or_default();
+        let Some(level) = mode_fallback_effort(self.execution_mode.load(), &menu) else {
+            return;
+        };
+        cfg.reasoning_effort = Some(level.value);
+        crate::jev::record_item(
+            JevLever::B2MicroEffort,
+            &format!("fallback:{}", level.id),
+            reason,
+            None,
+            None,
+        );
+        self.jev_ledger
+            .borrow_mut()
+            .set_pending_effort_label(level.id.clone());
+        distill_telemetry::unified_log::info(
+            "jev effort fallback",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({"reason": reason, "model": cfg.model, "effort": level.id})),
+        );
     }
 
     /// The cheap worker for a lane.
@@ -1402,7 +1432,7 @@ fn micro_action_state_json(
 /// the effort as a per-message marker keep one cache across efforts; every
 /// other request carries the effort at request level (Responses, Chat
 /// Completions and Grok, or Messages' top-level `output_config`).
-fn effort_keys_cached_prefix(backend: &distill_sampling_types::ApiBackend, model: &str) -> bool {
+pub(super) fn effort_keys_cached_prefix(backend: &distill_sampling_types::ApiBackend, model: &str) -> bool {
     !(*backend == distill_sampling_types::ApiBackend::Messages
         && distill_sampling_types::supports_per_message_effort(model))
 }
@@ -1424,6 +1454,79 @@ fn effort_switch_cost_json(keyed_by_effort: bool, prompt_tokens: Option<u64>) ->
 /// The effort behind a wire id the model offers.
 fn effort_from_id(id: &str) -> Option<ReasoningEffort> {
     id.parse::<ReasoningEffort>().ok()
+}
+
+/// How the auto-effort question should weigh cost, time and quality for `mode`.
+fn effort_execution_policy(mode: distill_tool_types::ExecutionMode) -> &'static str {
+    use distill_tool_types::ExecutionMode;
+    match mode {
+        ExecutionMode::Normal => {
+            "Balanced: best quality per unit of time and money. Typical levels: low for reading, searching, running known commands and relaying results; medium for writing code from clear requirements; high for diagnosis, design and subtle correctness; xhigh or max only for exceptionally hard reasoning or after a lower level failed on this same step."
+        }
+        ExecutionMode::Ultrasave => {
+            "UltraSave: minimize money first, then tokens, for a correct verified result, counting retries and rework. Lean one level lower than balanced: the lowest offered level for mechanical steps, low or medium for code changes; above medium only for an unexplained failure, a design decision or subtle correctness. Never max unless a lower level already failed on this step."
+        }
+        ExecutionMode::Ultrafast => {
+            "UltraFast: minimize wall-clock time to a correct verified result. Higher effort adds thinking tokens and latency before every action, and a retry costs a whole extra call. Use low for reading, searching, edits from a clear plan and running checks; medium for nontrivial code; high only when a wrong answer would force a slow redo. Avoid xhigh and max."
+        }
+        ExecutionMode::Ultracode => {
+            "UltraCode: maximize correctness of large, parallel work; time and money are secondary. Lean one level higher than balanced for planning, design, integration, diagnosis and review: high by default there, xhigh or max for hard design or after a failure. Keep low for purely mechanical steps such as reading files, relaying results and running known commands."
+        }
+    }
+}
+
+/// How this provider's effort levels behave, for a model id. Checked in order:
+/// the first match wins, so `gpt` comes last.
+fn provider_effort_note(model_id: &str) -> Option<&'static str> {
+    let id = model_id.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|needle| id.contains(needle));
+    if has(&["claude", "opus", "sonnet", "haiku", "fable", "mythos"]) {
+        Some(
+            "Anthropic: effort covers thinking, text and tool calls; lower effort makes fewer, terser tool calls. Anthropic recommends low for simple fast steps and subagents, medium for most agentic coding on smaller models, high or xhigh for hard coding; max is rarely worth its cost.",
+        )
+    } else if has(&["deepseek"]) {
+        Some(
+            "DeepSeek: thinking is on by default at high; low and medium map to high and xhigh maps to high, while max is a separate deeper level. Prefer the lowest offered level unless the step is hard.",
+        )
+    } else if has(&["grok"]) {
+        Some(
+            "xAI: reasoning cannot be turned off. low suits latency-sensitive agentic steps and simple tool calls; high (the default) is for very challenging problems; xhigh only when answer quality matters more than response time.",
+        )
+    } else if has(&["glm"]) {
+        Some(
+            "Zhipu GLM: the provider default is max; low is enough for routine steps, max only for hard reasoning.",
+        )
+    } else if has(&["gemini"]) {
+        Some(
+            "Google: a lower thinking level (low or medium) cuts cost and latency without truncating output; high for hard multi-step reasoning.",
+        )
+    } else if has(&["gpt", "codex", "o3", "o4"]) {
+        Some(
+            "OpenAI: reasoning tokens bill as output and add latency. OpenAI recommends low for tool use, planning and search, medium as the default for most work, high for hard agentic coding, and xhigh only when evals show a clear gain.",
+        )
+    } else {
+        None
+    }
+}
+
+/// The menu level a failed or missing Jev answer falls back to: the mode's
+/// baseline rank, or the nearest offered level, ties to the cheaper one. Never
+/// the session's pinned effort, since a failed Jev call must not run at max.
+fn mode_fallback_effort(
+    mode: distill_tool_types::ExecutionMode,
+    menu: &[EffortLevel],
+) -> Option<&EffortLevel> {
+    use distill_tool_types::ExecutionMode;
+    let target = match mode {
+        ExecutionMode::Ultrasave | ExecutionMode::Ultrafast => ReasoningEffort::Low,
+        ExecutionMode::Normal => ReasoningEffort::Medium,
+        ExecutionMode::Ultracode => ReasoningEffort::High,
+    };
+    let target = effort_rank(target) as i16;
+    menu.iter().min_by_key(|level| {
+        let rank = effort_rank(level.value) as i16;
+        ((rank - target).abs(), rank)
+    })
 }
 
 #[cfg(test)]
@@ -1803,6 +1906,116 @@ mod tests {
             selected.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>(),
             vec!["late-skill"]
         );
+    }
+
+    fn menu(values: &[ReasoningEffort]) -> Vec<EffortLevel> {
+        values
+            .iter()
+            .map(|value| EffortLevel {
+                id: value.as_ref().to_owned(),
+                value: *value,
+                description: String::new(),
+            })
+            .collect()
+    }
+
+    /// A failed Jev call must never run at the session's pinned max; each mode
+    /// falls back to its own baseline on the model's menu.
+    #[test]
+    fn mode_fallback_effort_uses_the_mode_baseline_not_the_pin() {
+        use distill_tool_types::ExecutionMode::*;
+        let full = menu(&[
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+        ]);
+        let pick = |mode, menu: &[EffortLevel]| {
+            mode_fallback_effort(mode, menu).map(|level| level.id.clone())
+        };
+        assert_eq!(pick(Ultrasave, &full).as_deref(), Some("low"));
+        assert_eq!(pick(Ultrafast, &full).as_deref(), Some("low"));
+        assert_eq!(pick(Normal, &full).as_deref(), Some("medium"));
+        assert_eq!(pick(Ultracode, &full).as_deref(), Some("high"));
+
+        // DeepSeek-like menu: nothing near low, so the nearest level wins.
+        let high_max = menu(&[ReasoningEffort::High, ReasoningEffort::Max]);
+        assert_eq!(pick(Normal, &high_max).as_deref(), Some("high"));
+        assert_eq!(pick(Ultrasave, &high_max).as_deref(), Some("high"));
+
+        // Equal distance from medium: the cheaper level wins.
+        let low_high = menu(&[ReasoningEffort::Low, ReasoningEffort::High]);
+        assert_eq!(pick(Normal, &low_high).as_deref(), Some("low"));
+        assert!(mode_fallback_effort(Normal, &[]).is_none());
+    }
+
+    /// Each provider's levels behave differently, so the note must name the
+    /// provider and must not fall into a shared substring match.
+    #[test]
+    fn provider_effort_note_names_the_provider_of_the_model() {
+        let note = |id| provider_effort_note(id).unwrap_or_default();
+        assert!(note("claude-opus-5-5").starts_with("Anthropic"));
+        assert!(note("deepseek-v4.1-flash").starts_with("DeepSeek"));
+        assert!(note("gpt-6.1-sol").starts_with("OpenAI"));
+        assert!(note("grok-4.7").starts_with("xAI"));
+        assert_eq!(provider_effort_note("unknown-model"), None);
+    }
+
+    #[test]
+    fn effort_execution_policy_differs_per_mode() {
+        use distill_tool_types::ExecutionMode::*;
+        let policies = [Normal, Ultrasave, Ultrafast, Ultracode].map(effort_execution_policy);
+        for (index, policy) in policies.iter().enumerate() {
+            assert!(
+                policies[..index].iter().all(|earlier| earlier != policy),
+                "each mode asks for its own trade-off"
+            );
+        }
+        assert!(effort_execution_policy(Ultrasave).contains("lower"));
+        assert!(effort_execution_policy(Ultracode).contains("higher"));
+    }
+
+    /// With auto effort and no Jev answer, the call runs at the mode baseline,
+    /// not the session's pinned max.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_missing_jev_answer_falls_back_to_the_mode_baseline_not_the_pin() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (_home, _guard) = main_home();
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("main").with_api_backend("responses"),
+                ])
+                .await
+                .expect("start inference stub");
+                let (actor, mut main) = main_actor(&server).await;
+                replace_model(
+                    &actor,
+                    &server,
+                    "main",
+                    distill_sampling_types::ApiBackend::Responses,
+                    64_000,
+                    &["low", "medium", "high", "max"],
+                );
+                actor
+                    .jev_effort_auto
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                main.reasoning_effort = Some(ReasoningEffort::Max);
+                crate::jev::set_test_decision_answers([None]);
+                crate::jev::with_session_scope_and_recorder(
+                    "effort-fallback-test",
+                    Some(actor.chat_state_handle.clone()),
+                    async {
+                        actor.jev_choose_effort(&mut main).await;
+                    },
+                )
+                .await;
+                assert_eq!(main.reasoning_effort, Some(ReasoningEffort::Medium));
+                crate::jev::clear_test_decision_answers();
+            })
+            .await;
     }
 
     /// The rank must follow the ladder, or B2 could "downgrade" upward.

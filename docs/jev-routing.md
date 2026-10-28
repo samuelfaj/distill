@@ -108,11 +108,17 @@ for every call from that model's own menu:
 
 Explicit subagent model and effort policies remain pinned.
 
-Jev chooses effort from each model's supported menu, with a confidence floor of
-0.40. An uncertain answer keeps that model's configured default. A redo can
-raise effort when the previous attempt lacked reasoning; the next independent
-step can return to auto. A fixed effort, selected in a picker or with
-`/effort <level>`, takes precedence over automatic effort selection.
+Jev re-picks effort on every main model call from that model's supported menu.
+It takes the cheapest level that holds at least half the probability mass, with
+no confidence floor. The pick follows an execution-mode policy: UltraSave leans
+lower, Normal is balanced, UltraFast is fastest, and UltraCode leans higher. A
+short provider note describes how that provider's levels behave. When Jev gives
+no usable answer, the call uses a mode baseline on the model's menu: UltraSave
+and UltraFast use low, Normal uses medium, and UltraCode uses high, moving to
+the nearest offered level. It never falls back to the session's pinned effort.
+A redo can raise effort when the previous attempt lacked reasoning. A fixed
+effort, selected in a picker or with `/effort <level>`, takes precedence over
+automatic effort selection.
 
 ```toml
 [models]

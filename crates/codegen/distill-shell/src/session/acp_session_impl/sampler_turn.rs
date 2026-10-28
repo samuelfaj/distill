@@ -3,6 +3,7 @@
 //! It also covers sampling-failure recovery and per-response usage recording.
 
 use super::*;
+use super::jev_routing::effort_keys_cached_prefix;
 use crate::agent::account_routing::{
     account_history_needs_portability, make_account_history_portable,
 };
@@ -1319,7 +1320,12 @@ impl SessionActor {
             // Where the effort is part of the cached prefix, a later round of the
             // turn keeps the turn's model and effort: a switch re-reads the whole
             // prompt uncached. Otherwise this round chooses below.
-            if !self.jev_keep_turn_effort(&mut sampler_config).await {
+            if self.jev_keep_turn_effort(&mut sampler_config).await {
+                // Effort outside the cached prefix is free to change: re-decide on the kept model.
+                if !effort_keys_cached_prefix(&sampler_config.api_backend, &sampler_config.model) {
+                    self.jev_choose_effort(&mut sampler_config).await;
+                }
+            } else {
                 let session_model = sampler_config.model.clone();
                 // UltraSave/UltraFast: one Jev decision may move the round to the
                 // worker or utility model; the effort pass then runs on that model.

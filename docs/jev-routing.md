@@ -115,7 +115,7 @@ lower, Normal is balanced, UltraFast is fastest, and UltraCode leans higher. A
 short provider note describes how that provider's levels behave. When Jev gives
 no usable answer, the call uses a mode baseline on the model's menu: UltraSave
 and UltraFast use low, Normal uses medium, and UltraCode uses high, moving to
-the nearest offered level. It never falls back to the session's pinned effort.
+the nearest offered level. It never raises a lower pinned effort, and it lowers a higher one such as max.
 A redo can raise effort when the previous attempt lacked reasoning. A fixed
 effort, selected in a picker or with `/effort <level>`, takes precedence over
 automatic effort selection.

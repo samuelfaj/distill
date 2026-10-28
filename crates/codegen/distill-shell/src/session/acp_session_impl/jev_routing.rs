@@ -445,12 +445,20 @@ impl SessionActor {
     }
 
     /// Sets this call's effort from the mode baseline when Jev gives no usable
-    /// answer. Never keeps the session's pinned effort, which may be max.
+    /// answer. Lowers a pinned effort above the baseline (it may be max) and
+    /// never raises one below it.
     fn apply_effort_fallback(&self, cfg: &mut SamplingConfig, reason: &str) {
         let menu = self.model_effort_menu(&cfg.model).unwrap_or_default();
         let Some(level) = mode_fallback_effort(self.execution_mode.load(), &menu) else {
             return;
         };
+        // Only ever lowers: a session already below the baseline stays there.
+        if cfg
+            .reasoning_effort
+            .is_some_and(|current| effort_rank(current) <= effort_rank(level.value))
+        {
+            return;
+        }
         cfg.reasoning_effort = Some(level.value);
         crate::jev::record_item(
             JevLever::B2MicroEffort,
@@ -2013,6 +2021,18 @@ mod tests {
                 )
                 .await;
                 assert_eq!(main.reasoning_effort, Some(ReasoningEffort::Medium));
+                // A failed decision must not make a cheap session pay more.
+                main.reasoning_effort = Some(ReasoningEffort::Low);
+                crate::jev::set_test_decision_answers([None]);
+                crate::jev::with_session_scope_and_recorder(
+                    "effort-fallback-test",
+                    Some(actor.chat_state_handle.clone()),
+                    async {
+                        actor.jev_choose_effort(&mut main).await;
+                    },
+                )
+                .await;
+                assert_eq!(main.reasoning_effort, Some(ReasoningEffort::Low));
                 crate::jev::clear_test_decision_answers();
             })
             .await;

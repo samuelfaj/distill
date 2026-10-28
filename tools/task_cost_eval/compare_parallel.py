@@ -13,6 +13,7 @@ import subprocess
 import time
 import tomllib
 import uuid
+from collections import Counter
 from pathlib import Path
 
 from .acp_driver import EXECUTION_MODES, OwnedTree, run_acp
@@ -271,6 +272,9 @@ def aggregate(runs):
             groups.setdefault(f'{run["variant"]}/{kind}', []).append(run)
     out = {}
     for name, rows in groups.items():
+        main_efforts = [[(call.get('effort') or 'unknown').removeprefix('effort:')
+                         for call in (run.get('call_usage') or []) if call.get('role') == 'main'] for run in rows]
+        mix = Counter(label for labels in main_efforts for label in labels)
         accepted = sum(1 for r in rows if r['passed'])
         complete = all(r['accounting_complete'] for r in rows)
         credits = sum(r['credits'] for r in rows) if complete else None
@@ -279,7 +283,9 @@ def aggregate(runs):
                      'wall_time_s': sum(r['wall_time_s'] for r in rows),
                      'jev_usd': sum(r['jev_usd'] for r in rows) if all(r.get('jev_usd') is not None for r in rows) else None,
                      **{f: sum(r[f] for r in rows) if all(r.get(f) is not None for r in rows) else None
-                        for f in ('model_calls', *TOKEN_FIELDS)}}
+                        for f in ('model_calls', *TOKEN_FIELDS)},
+                     'main_effort_mix': dict(sorted(mix.items())),
+                     'main_effort_switches': sum(a != b for labels in main_efforts for a, b in zip(labels, labels[1:]))}
     return out
 
 

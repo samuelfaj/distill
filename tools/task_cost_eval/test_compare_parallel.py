@@ -601,5 +601,19 @@ class ActivationRunTest(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
 
 
+class AggregateEffortTest(unittest.TestCase):
+    def test_main_effort_mix_strips_prefix_and_switches_ignore_jev_and_old_runs(self):
+        first = run('candidate', 'a', 'divisible', 1.0)
+        first['call_usage'] = [{'role': 'main', 'effort': 'effort:low'}, {'role': 'main', 'effort': 'effort:medium'},
+                               {'role': 'main', 'effort': 'effort:medium'}, {'role': 'jev', 'effort': 'effort:high'},
+                               {'role': 'main', 'effort': 'effort:low'}]
+        second = run('candidate', 'b', 'sequential', 1.0)
+        second['call_usage'] = [{'role': 'main', 'effort': 'absent'}, {'role': 'main', 'effort': None}]
+        legacy = run('candidate', 'c', 'sequential', 1.0)
+        out = compare_parallel.aggregate([first, second, legacy])['candidate/all']
+        self.assertEqual(out['main_effort_mix'], {'absent': 1, 'low': 2, 'medium': 2, 'unknown': 1})
+        self.assertEqual(out['main_effort_switches'], 3)
+
+
 if __name__ == '__main__':
     unittest.main()

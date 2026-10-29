@@ -1434,6 +1434,17 @@ impl SessionActor {
                 .map(|effort| effort.as_ref().to_string()),
             Some(sampler_config.context_window),
         );
+        if !self.startup_hints.is_subagent {
+            self.send_xai_notification_transient(XaiSessionUpdate::EffortApplied {
+                model_id: sampler_config.model.clone(),
+                reasoning_effort: sampler_config
+                    .reasoning_effort
+                    .map(|effort| effort.as_ref().to_string()),
+                auto: self
+                    .jev_effort_auto
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            });
+        }
         // Carry over the session's per-chunk idle timeout via `SamplerConfig.idle_timeout_secs`
         sampler_config.idle_timeout_secs = Some(self.inference_idle_timeout.as_secs());
         self.emit_usage_update().await;

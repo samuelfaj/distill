@@ -1000,6 +1000,19 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_window: Option<u64>,
     },
+    /// The model and effort one model call runs on, after every Jev routing pass.
+    /// Sent before each main-session call so clients can show the effort really in use;
+    /// `auto` is true when Jev picks the effort per call instead of the user pinning it.
+    EffortApplied {
+        /// Model the call runs on (catalog key).
+        model_id: String,
+        /// Effort sent with this call. `None` when the model takes no effort.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
+        /// Jev chooses the effort per call.
+        #[serde(default)]
+        auto: bool,
+    },
     /// Streaming chunk of a tool call's arguments. Behaves like `acp::SessionUpdate::AgentMessageChunk` / `AgentThoughtChunk`. It flows through the replay buffer and merges with adjacent chunks for the same `tool_call_id`.
     /// It is debounced at the session's buffering interval. Only persisted as a full `acp::SessionUpdate::ToolCall`.
     ToolCallDeltaChunk {
@@ -2709,6 +2722,22 @@ mod tests {
             json.get("reasoning_effort").is_none(),
             "reasoning_effort: None must be skipped on the wire so old pagers \
              and third-party ACP clients see a smaller, no-extra-keys payload"
+        );
+    }
+
+    /// Clients read these exact keys to show the per-call effort next to the model.
+    #[test]
+    fn effort_applied_serializes_snake_case() {
+        let json = serde_json::to_value(SessionUpdate::EffortApplied {
+            model_id: "claude-opus-5-5".into(),
+            reasoning_effort: Some("low".into()),
+            auto: true,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"sessionUpdate": "effort_applied",
+                "model_id": "claude-opus-5-5", "reasoning_effort": "low", "auto": true})
         );
     }
 

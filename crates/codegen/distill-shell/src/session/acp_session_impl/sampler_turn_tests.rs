@@ -1802,7 +1802,8 @@ fn account_routing_real_turn_fallback_preserves_selected_pair_for_worker() {
     use std::sync::Arc;
     tokio::task::LocalSet::new().run_until(async {
         let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("gpt-6.1-sol").with_api_backend("responses")]).await.unwrap();
-        let fixture = NamedAccounts::new(&server.url());
+        let mut fixture = NamedAccounts::new(&server.url());
+        fixture.add_expired_claude();
         let mut routing = fixture.store.load_routing().unwrap();
         routing.options.iter_mut().find(|option| option.id == "two").unwrap().main_model = "gpt-6.1-sol".into();
         fixture.store.save_routing(&routing).unwrap();

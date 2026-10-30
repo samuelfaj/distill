@@ -152,6 +152,43 @@ impl NamedAccounts {
             })
             .unwrap();
     }
+    pub(crate) fn add_expired_claude(&mut self) {
+        self.store
+            .add("expired", Provider::Claude, "Expired Claude")
+            .unwrap();
+        let path = self.store.credential_path("expired").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&crate::claude_auth::ClaudeAuthStore {
+                access_token: "expired-access".into(),
+                refresh_token: String::new(),
+                expires_at: Utc::now() - Duration::hours(1),
+                scopes: Vec::new(),
+                account_uuid: Some("expired-account".into()),
+                email: None,
+                organization_uuid: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        self.quota("expired", None);
+        let mut claude = self.models["gpt-6.1-sol"].clone();
+        claude.info.model = "claude-opus-5-5".into();
+        claude.info.base_url = "https://api.anthropic.com".into();
+        self.models.insert("claude/claude-opus-5-5".into(), claude);
+        let mut routing = self.store.load_routing().unwrap();
+        routing.options.insert(
+            0,
+            AutoOption {
+                id: "expired".into(),
+                account_id: "expired".into(),
+                main_model: "claude/claude-opus-5-5".into(),
+                worker_model: None,
+            },
+        );
+        self.store.save_routing(&routing).unwrap();
+    }
     pub(crate) fn base(&self) -> SamplerConfig {
         SamplerConfig {
             model: "gpt-6.1-sol".into(),
@@ -357,44 +394,8 @@ fn account_routing_startup_skips_auto_account_that_cannot_authenticate() {
             tokio::task::LocalSet::new().block_on(&runtime, async {
                 let mut fixture = NamedAccounts::new(crate::codex_auth::CODEX_INFERENCE_BASE_URL);
                 fixture.quota("one", Some(0.0));
-                fixture
-                    .store
-                    .add("expired", Provider::Claude, "Expired Claude")
-                    .unwrap();
-                let path = fixture.store.credential_path("expired").unwrap();
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(
-                    &path,
-                    serde_json::to_vec(&crate::claude_auth::ClaudeAuthStore {
-                        access_token: "expired-access".into(),
-                        refresh_token: String::new(),
-                        expires_at: Utc::now() - Duration::hours(1),
-                        scopes: Vec::new(),
-                        account_uuid: Some("expired-account".into()),
-                        email: None,
-                        organization_uuid: None,
-                    })
-                    .unwrap(),
-                )
-                .unwrap();
-                fixture.quota("expired", None);
-                let mut claude = fixture.models["gpt-6.1-sol"].clone();
-                claude.info.model = "claude-opus-5-5".into();
-                claude.info.base_url = "https://api.anthropic.com".into();
-                fixture
-                    .models
-                    .insert("claude/claude-opus-5-5".into(), claude);
-                let mut routing = fixture.store.load_routing().unwrap();
-                routing.options.insert(
-                    1,
-                    AutoOption {
-                        id: "expired".into(),
-                        account_id: "expired".into(),
-                        main_model: "claude/claude-opus-5-5".into(),
-                        worker_model: None,
-                    },
-                );
-                fixture.store.save_routing(&routing).unwrap();
+                fixture.add_expired_claude();
+                let routing = fixture.store.load_routing().unwrap();
                 assert!(fixture.store.status("expired", None).unwrap().connected);
                 let routes =
                     routes_for_turn(&fixture.store, &fixture.models, &fixture.base(), true)
@@ -415,6 +416,25 @@ fn account_routing_startup_skips_auto_account_that_cannot_authenticate() {
                     .unwrap();
                 assert_eq!(route.account_id, "two");
                 assert_eq!(route.worker_model, "gpt-6.1-sol");
+                let mut prepared =
+                    config_for_routes(&fixture.store, &fixture.models, &selected, &routes)
+                        .await
+                        .expect(
+                            "turn preparation must also skip the account that cannot authenticate",
+                        );
+                reresolve_or_block(&fixture.store, &fixture.models, &mut prepared, true).await;
+                assert_eq!(
+                    AccountRoute::read(&prepared.extra_headers)
+                        .unwrap()
+                        .unwrap()
+                        .account_id,
+                    "two"
+                );
+                assert!(
+                    !prepared
+                        .extra_headers
+                        .contains_key("x-distill-account-unavailable")
+                );
                 assert_eq!(
                     selected
                         .bearer_resolver

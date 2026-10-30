@@ -273,8 +273,19 @@ pub(crate) async fn select_startup_config(
         current.extra_headers.insert(PIN_HEADER.into(), "1".into());
     }
     let routes = routes_for_turn(&store, models, &current, !pinned).await?;
-    if let Some(route) = routes.first() {
-        return config_for_route(&store, models, &current, route).await;
+    let mut last_error = None;
+    for route in &routes {
+        match config_for_route(&store, models, &current, route).await {
+            Ok(config) => return Ok(config),
+            // Auto can advance to its next option; explicit selections fail closed.
+            Err(error) if route.option_id.is_some() && !route.pinned => {
+                last_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(error) = last_error {
+        return Err(error);
     }
     ensure!(
         !store.load_routing()?.enabled || pinned,

@@ -273,8 +273,8 @@ pub(crate) async fn select_startup_config(
         current.extra_headers.insert(PIN_HEADER.into(), "1".into());
     }
     let routes = routes_for_turn(&store, models, &current, !pinned).await?;
-    if let Some(route) = routes.first() {
-        return config_for_route(&store, models, &current, route).await;
+    if !routes.is_empty() {
+        return config_for_routes(&store, models, &current, &routes).await;
     }
     ensure!(
         !store.load_routing()?.enabled || pinned,
@@ -442,6 +442,25 @@ fn route_for_option(option: &AutoOption, worker: bool) -> AccountRoute {
         operation_id: None,
         failed_options: Vec::new(),
     }
+}
+
+/// Select usable credentials in ranked order, advancing only through Auto options.
+pub(crate) async fn config_for_routes(
+    store: &AccountStore,
+    models: &IndexMap<String, ModelEntry>,
+    previous: &SamplerConfig,
+    routes: &[AccountRoute],
+) -> Result<SamplerConfig> {
+    let mut last_error = anyhow!("All account routing options are exhausted or unavailable");
+    for route in routes {
+        match config_for_route(store, models, previous, route).await {
+            Ok(config) => return Ok(config),
+            // Auto can advance to its next option; explicit selections fail closed.
+            Err(error) if route.option_id.is_some() && !route.pinned => last_error = error,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error)
 }
 
 /// Build all model parameters afresh; never carry a previous provider's secrets or headers.
@@ -705,8 +724,7 @@ pub(crate) async fn reresolve_or_block(
             .extra_headers
             .retain(|name, _| !is_identity_anchor(name));
         if let Ok(routes) = routes_for_turn(store, models, &fresh, true).await
-            && let Some(route) = routes.first()
-            && let Ok(next) = config_for_route(store, models, &fresh, route).await
+            && let Ok(next) = config_for_routes(store, models, &fresh, &routes).await
         {
             *config = next;
             return;

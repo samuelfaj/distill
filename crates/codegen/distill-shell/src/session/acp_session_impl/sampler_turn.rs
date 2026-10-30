@@ -1376,11 +1376,11 @@ impl SessionActor {
             .await
             {
                 Ok(routes) if !routes.is_empty() => {
-                    match crate::agent::account_routing::config_for_route(
+                    match crate::agent::account_routing::config_for_routes(
                         &store,
                         &models,
                         &sampler_config,
-                        &routes[0],
+                        &routes,
                     )
                     .await
                     {
@@ -2701,11 +2701,11 @@ impl SessionActor {
             if !attempted.insert((route.account_id.clone(), route.model().to_owned())) {
                 continue;
             }
-            let config = account_routing::config_for_route(&store, &models, &initial, &route)
-                .await
-                .map_err(|_| {
-                    acp::Error::internal_error().data("Selected account authentication failed")
-                })?;
+            let Ok(config) =
+                account_routing::config_for_route(&store, &models, &initial, &route).await
+            else {
+                continue;
+            };
             let previous = self.chat_state_handle.get_sampling_config().await;
             self.persist_account_config(&config).await.map_err(|_| {
                 acp::Error::internal_error().data("Could not persist selected account route")

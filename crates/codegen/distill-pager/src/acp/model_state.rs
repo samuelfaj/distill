@@ -466,9 +466,9 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                 for model in state.available_models {
                     models.insert(model.model_id.clone(), model);
                 }
-                let current_model = models
-                    .contains_key(&state.current_model_id)
-                    .then_some(state.current_model_id);
+                // The session's model can precede its catalog entry or outlive it.
+                let current_model =
+                    Some(state.current_model_id).filter(|id| !id.0.trim().is_empty());
                 let reasoning_effort = current_model
                     .as_ref()
                     .and_then(|id| models.get(id))
@@ -561,6 +561,55 @@ mod tests {
     fn sample_session_model_state() -> acp::SessionModelState {
         let id = acp::ModelId::new(Arc::from("m"));
         acp::SessionModelState::new(id.clone(), vec![acp::ModelInfo::new(id, "M".to_string())])
+    }
+
+    #[test]
+    fn session_model_survives_missing_catalog_entry() {
+        let id = acp::ModelId::new("chatgpt/session-model");
+        for available in [Vec::new(), sample_session_model_state().available_models] {
+            let state = ModelState::from(Some(acp::SessionModelState::new(id.clone(), available)));
+            assert_eq!(state.current.as_ref(), Some(&id));
+            assert_eq!(
+                state.current_model_name().as_deref(),
+                Some("chatgpt/session-model")
+            );
+            assert_eq!(state.current_model_id_str(), Some("chatgpt/session-model"));
+            assert_eq!(state.reasoning_effort, None);
+            assert_eq!(state.get_context_window(), None);
+            let tiers = crate::views::prompt_widget::PromptModelTiers::from_model_state(&state)
+                .expect("the session footer must retain the model before its catalog arrives");
+            assert_eq!(tiers.main, state.effort_label("chatgpt/session-model"));
+        }
+    }
+
+    #[test]
+    fn session_model_gets_display_name_when_catalog_arrives() {
+        let wire = sample_session_model_state();
+        let mut state = ModelState::from(Some(acp::SessionModelState::new(
+            wire.current_model_id.clone(),
+            Vec::new(),
+        )));
+        assert_eq!(state.current_model_name().as_deref(), Some("m"));
+        state.update_catalog(
+            wire.available_models
+                .into_iter()
+                .map(|info| (info.model_id.clone(), info))
+                .collect(),
+        );
+        assert_eq!(state.current.as_ref(), Some(&wire.current_model_id));
+        assert_eq!(state.current_model_name().as_deref(), Some("M"));
+    }
+
+    #[test]
+    fn blank_session_model_stays_unset() {
+        for id in ["", " "] {
+            let state = ModelState::from(Some(acp::SessionModelState::new(
+                acp::ModelId::new(id),
+                sample_session_model_state().available_models,
+            )));
+            assert!(state.current.is_none());
+            assert!(state.current_model_name().is_none());
+        }
     }
 
     /// The footer must name the pair Auto actually runs, not the configured

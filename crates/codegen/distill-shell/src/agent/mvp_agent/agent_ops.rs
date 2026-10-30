@@ -3372,6 +3372,8 @@ impl MvpAgent {
                 .and_then(|sid| self.resident_handle(sid).map(|h| h.model_id.clone())),
             &self.models_manager.current_model_id(),
         );
+        let model_id = resolve_catalog_key(&self.models_manager.models(), &model_id)
+            .unwrap_or(model_id);
         let mut available_models: Vec<acp::ModelInfo> = self
             .models_manager
             .available()

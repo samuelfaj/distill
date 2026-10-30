@@ -2856,6 +2856,31 @@ fn spawn_test_parent_chat_state(model_slug: &str) -> distill_chat_state::ChatSta
 mod rest;
 mod wake;
 #[tokio::test]
+async fn worker_runtime_polls_stack_heavy_scoped_tasks() {
+    // Exercise the production pool and task-local wrapper without model calls.
+    // Keep this frame out of the caller so the allocation occurs on a worker.
+    #[inline(never)]
+    fn stack_heavy_poll() -> usize {
+        let mut frame = [0_u8; 3 * 1024 * 1024];
+        std::hint::black_box(&mut frame);
+        frame[0] = 42;
+        std::hint::black_box(frame[0] as usize)
+    }
+    let result = super::worker_runtime()
+        .expect("worker runtime")
+        .spawn(crate::jev::with_session_scope_and_recorder(
+            "stack-regression",
+            None,
+            async {
+                tokio::task::yield_now().await;
+                stack_heavy_poll()
+            },
+        ))
+        .await
+        .expect("worker must survive polling a scoped task");
+    assert_eq!(result, 42);
+}
+#[tokio::test]
 async fn panicked_announced_foreground_child_emits_one_typed_finish() {
     let (gateway, _gateway_rx) = test_gateway_with_receiver();
     let (parent_cmd_tx, mut parent_cmd_rx) = mpsc::unbounded_channel();

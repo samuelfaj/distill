@@ -30,6 +30,14 @@ use tokio::sync::mpsc;
 const MIN_WORKER_THREADS: usize = 2;
 /// Four suffice for 32 children (each runs on its own OS thread); `GROK_SUBAGENT_WORKER_THREADS` overrides.
 const MAX_WORKER_THREADS: usize = 4;
+// Scoped child setup futures are polled here before the child's session thread
+// exists. Match the session thread's stack budget: Tokio's 2 MiB default can
+// overflow in this pipeline, especially with unoptimized debug frames.
+const WORKER_THREAD_STACK_SIZE: usize = if cfg!(debug_assertions) {
+    64 * 1024 * 1024
+} else {
+    8 * 1024 * 1024
+};
 /// Pool for the per-child pipeline: a dedicated multi-thread runtime so concurrent subagents run in parallel.
 /// It sits off the user-facing session's `LocalSet`.
 pub(crate) fn worker_runtime() -> Result<&'static tokio::runtime::Handle, std::io::Error> {
@@ -61,6 +69,7 @@ fn build_worker_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder
         .worker_threads(workers)
+        .thread_stack_size(WORKER_THREAD_STACK_SIZE)
         .thread_name("subagent-worker");
     distill_tty_utils::runtime::apply_blocking_pool(builder.enable_all()).build()
 }

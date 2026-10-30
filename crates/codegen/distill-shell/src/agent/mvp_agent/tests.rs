@@ -1323,6 +1323,36 @@ async fn set_session_model_does_not_cross_contaminate() {
     );
 }
 #[tokio::test]
+async fn model_state_resolves_session_routing_id_to_catalog_key() {
+    use crate::agent::config::{EndpointsConfig, ModelEntry};
+    use distill_sampling_types::{REASONING_EFFORT_META_KEY, ReasoningEffort};
+    let agent = build_minimal_agent_for_tests();
+    let mut entry = ModelEntry::fallback("routing-model", &EndpointsConfig::default());
+    entry.info.supports_reasoning_effort = true;
+    agent.models_manager.insert_test_entry("provider/routing-model", entry);
+    for (session, model, expected) in [
+        ("alias-session", "routing-model", "provider/routing-model"),
+        ("catalog-session", "provider/routing-model", "provider/routing-model"),
+        ("missing-session-model", "unlisted-model", "unlisted-model"),
+    ] {
+        let sid = acp::SessionId::new(session);
+        let mut handle = make_test_handle(model, false, None);
+        handle.reasoning_effort = Some(ReasoningEffort::Xhigh);
+        agent.insert_resident(&sid, handle);
+        let state = agent.model_state(Some(&sid));
+        assert_eq!(state.current_model_id.0.as_ref(), expected);
+        assert_eq!(agent.resident_handle(&sid).unwrap().model_id.0.as_ref(), model,
+            "display normalization must not change session routing");
+        if expected == "provider/routing-model" {
+            let info = state.available_models.iter()
+                .find(|info| info.model_id == state.current_model_id)
+                .expect("the current model must match a catalog entry");
+            assert_eq!(info.meta.as_ref().unwrap()[REASONING_EFFORT_META_KEY], "xhigh");
+        }
+    }
+}
+
+#[tokio::test]
 async fn model_state_prefers_session_reasoning_effort_over_global() {
     use crate::agent::config::{EndpointsConfig, ModelEntry};
     use distill_sampling_types::{REASONING_EFFORT_META_KEY, ReasoningEffort};
@@ -1711,7 +1741,8 @@ async fn session_config_options_resolves_routing_slug_to_catalog_model() {
     let sid = acp::SessionId::new("sess-slug");
     agent.insert_resident(&sid, make_test_handle("routing-slug", false, None));
     let state = agent.model_state(Some(&sid));
-    assert_eq!(state.current_model_id.0.as_ref(), "routing-slug");
+    assert_eq!(state.current_model_id.0.as_ref(), "catalog-key-model");
+    assert!(state.available_models.iter().any(|info| info.model_id == state.current_model_id));
     let opts = agent.session_config_options(Some(&sid), &state);
     let modes: Vec<_> = opts.iter().filter(|o| o.category == "mode").collect();
     assert!(

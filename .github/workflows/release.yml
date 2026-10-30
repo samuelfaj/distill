@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             platform: macos-aarch64
             binary: distill
             asset_ext: ''

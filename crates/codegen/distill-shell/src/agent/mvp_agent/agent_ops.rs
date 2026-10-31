@@ -3403,11 +3403,18 @@ impl MvpAgent {
         let auto_route = session_id
             .and_then(|sid| self.resident_handle(sid))
             .and_then(|handle| crate::agent::account_routing::session_auto_route(&handle.info));
-        acp::SessionModelState::new(model_id, available_models).meta(auto_route.map(|route| {
+        let mut meta = auto_route.map(|route| {
             let mut meta = acp::Meta::new();
             meta.insert("autoRoute".into(), auto_route_meta(&route));
             meta
-        }))
+        });
+        if let Some(handle) = session_id.and_then(|sid| self.resident_handle(sid)) {
+            crate::extensions::session_worker_model::insert_worker_meta(
+                meta.get_or_insert_with(acp::Meta::new),
+                &handle.worker_override,
+            );
+        }
+        acp::SessionModelState::new(model_id, available_models).meta(meta)
     }
     pub(crate) async fn session_model_state(
         &self,

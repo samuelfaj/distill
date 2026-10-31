@@ -462,6 +462,27 @@ impl From<Option<acp::SessionModelState>> for ModelState {
         state
             .map(|state| {
                 let auto_route = Self::parse_auto_route(state.meta.as_ref());
+                let worker = state
+                    .meta
+                    .as_ref()
+                    .filter(|_| auto_route.is_none())
+                    .and_then(|meta| meta.get("workerModelId"));
+                let (worker_model, worker_effort) = match worker {
+                    Some(serde_json::Value::Null) => (None, None),
+                    Some(serde_json::Value::String(id)) => (
+                        (!id.is_empty()).then(|| acp::ModelId::new(id.clone())),
+                        state
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.get("workerEffort"))
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|value| parse_effort_setting(value).ok().flatten()),
+                    ),
+                    _ => (
+                        Self::configured_worker_model(),
+                        Self::configured_worker_effort(),
+                    ),
+                };
                 let mut models = IndexMap::new();
                 for model in state.available_models {
                     models.insert(model.model_id.clone(), model);
@@ -476,8 +497,8 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                 Self {
                     available: models,
                     current: current_model,
-                    worker_model: Self::configured_worker_model(),
-                    worker_effort: Self::configured_worker_effort(),
+                    worker_model,
+                    worker_effort,
                     reasoning_effort,
                     // A session starts in auto effort: the harness ships with
                     // `[jev] effort_auto` on (unset ⇒ on) and the shell seeds
@@ -561,6 +582,62 @@ mod tests {
     fn sample_session_model_state() -> acp::SessionModelState {
         let id = acp::ModelId::new(Arc::from("m"));
         acp::SessionModelState::new(id.clone(), vec![acp::ModelInfo::new(id, "M".to_string())])
+    }
+
+    #[test]
+    fn session_worker_metadata_overrides_instance_default() {
+        ModelState::set_instance_worker(
+            Some(acp::ModelId::new("default-worker")),
+            Some(ReasoningEffort::Medium),
+        );
+        let mut wire = sample_session_model_state();
+        let legacy = ModelState::from(Some(wire.clone()));
+        assert_eq!(
+            legacy.worker_model,
+            Some(acp::ModelId::new("default-worker"))
+        );
+        assert_eq!(legacy.worker_effort, Some(ReasoningEffort::Medium));
+        wire.meta = serde_json::json!({"workerModelId": "session-worker", "workerEffort": "high"}).as_object().cloned();
+        let state = ModelState::from(Some(wire.clone()));
+        assert_eq!(
+            state.worker_model,
+            Some(acp::ModelId::new("session-worker"))
+        );
+        assert_eq!(state.worker_effort, Some(ReasoningEffort::High));
+        wire.meta = serde_json::json!({"workerModelId": null, "workerEffort": "auto"})
+            .as_object()
+            .cloned();
+        let state = ModelState::from(Some(wire));
+        assert_eq!(state.worker_model, None);
+        assert_eq!(state.worker_effort, None);
+    }
+
+    #[test]
+    fn auto_route_wire_worker_does_not_replace_manual_worker() {
+        ModelState::set_instance_worker(
+            Some(acp::ModelId::new("default-worker")),
+            Some(ReasoningEffort::Medium),
+        );
+        let mut wire = sample_session_model_state();
+        wire.meta = serde_json::json!({
+            "workerModelId": "routed-worker", "workerEffort": "high",
+            "autoRoute": {"mainModelId": "routed-main", "workerModelId": "routed-worker"}
+        })
+        .as_object()
+        .cloned();
+        let state = ModelState::from(Some(wire));
+        assert_eq!(
+            state.worker_model,
+            Some(acp::ModelId::new("default-worker"))
+        );
+        assert_eq!(state.worker_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(
+            state.auto_route,
+            Some((
+                acp::ModelId::new("routed-main"),
+                acp::ModelId::new("routed-worker")
+            ))
+        );
     }
 
     #[test]

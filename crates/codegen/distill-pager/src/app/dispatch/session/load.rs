@@ -13,9 +13,7 @@ use crate::acp::tracker::AcpUpdateTracker;
 use crate::app::actions::{Action, Effect};
 use crate::app::agent::{AgentCommand, AgentId, AgentSession, AgentState};
 use crate::app::agent_view::AgentView;
-#[cfg(feature = "local-workspace")]
-use crate::app::app_view::ActiveView;
-use crate::app::app_view::AppView;
+use crate::app::app_view::{ActiveView, AppView};
 use crate::app::cancel_latency::TurnEnd;
 use crate::app::dispatch::ctx::{
     SwitchCause, get_active_agent, get_active_agent_mut, switch_to_agent, with_active_agent,
@@ -1235,8 +1233,10 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             agent.scrollback.remove_entry(placeholder_id);
         }
         if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+            agent.session.models = Some(m).into();
+            if matches!(app.active_view, ActiveView::Agent(id) if id == agent_id) {
+                app.models = agent.session.models.clone();
+            }
         }
         if agent.apply_session_modes(modes) {
             app.default_yolo = false;

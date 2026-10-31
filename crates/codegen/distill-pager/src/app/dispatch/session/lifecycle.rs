@@ -1401,8 +1401,10 @@ pub(in crate::app::dispatch) fn handle_session_created(
         }
         agent.bind_session_id(session_id);
         if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+            agent.session.models = Some(m).into();
+            if matches!(app.active_view, ActiveView::Agent(id) if id == agent_id) {
+                app.models = agent.session.models.clone();
+            }
         }
         if agent.apply_session_modes(modes) {
             app.default_yolo = false;
@@ -1538,8 +1540,10 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         agent.is_worktree = true;
         crate::git_info::populate_from_cwd_async(session_cwd.clone());
         if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+            agent.session.models = Some(m).into();
+            if matches!(app.active_view, ActiveView::Agent(id) if id == agent_id) {
+                app.models = agent.session.models.clone();
+            }
         }
         if agent.apply_session_modes(modes) {
             app.default_yolo = false;

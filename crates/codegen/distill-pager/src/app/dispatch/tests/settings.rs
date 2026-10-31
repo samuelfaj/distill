@@ -699,58 +699,175 @@ fn tier_editor_execution_mode_requires_a_session_and_keeps_the_draft() {
     assert_eq!(app.models.execution_mode, distill_tool_types::ExecutionMode::Normal);
 }
 
-/// A failed worker-effort write restores the previous effort mirror.
 #[test]
-fn worker_effort_rollback_restores_the_previous_effort() {
+fn worker_changes_are_session_scoped() {
+    let mut app = test_app_with_agent();
+    let a = AgentId(0);
+    let b = AgentId(1);
+    let session = make_test_agent_session(&app, b, "session-b");
+    app.agents
+        .insert(b, AgentView::new(session, ScrollbackState::new()));
+    let worker_a = acp::ModelId::new("grok/worker");
+    let worker_b = acp::ModelId::new("codex/worker");
+    for (id, main, main_name, worker, worker_name) in [
+        (a, "grok/main", "Grok Main", &worker_a, "Grok Worker"),
+        (b, "codex/main", "Codex Main", &worker_b, "Codex Worker"),
+    ] {
+        let models = &mut app.agents.get_mut(&id).unwrap().session.models;
+        let main = acp::ModelId::new(main);
+        models
+            .available
+            .insert(main.clone(), acp::ModelInfo::new(main.clone(), main_name));
+        models.available.insert(
+            worker.clone(),
+            acp::ModelInfo::new(worker.clone(), worker_name),
+        );
+        models.available.insert(
+            worker_b.clone(),
+            acp::ModelInfo::new(worker_b.clone(), "Codex Worker"),
+        );
+        models.current = Some(main);
+        models.worker_model = Some(worker.clone());
+        models.effort_auto = true;
+        models.worker_effort = None;
+        models.auto_route = None;
+    }
+    crate::acp::ModelState::set_instance_worker(Some(worker_b.clone()), None);
+    for (id, main, worker, main_label, worker_label) in [
+        (
+            b,
+            "codex/main",
+            "codex/worker",
+            "Codex Main (auto)",
+            "Codex Worker (auto)",
+        ),
+        (
+            a,
+            "grok/main",
+            "grok/worker",
+            "Grok Main (auto)",
+            "Grok Worker (auto)",
+        ),
+    ] {
+        switch_to_agent(&mut app, id, SwitchCause::Picker);
+        let models = &expect_agent(&app, id).session.models;
+        let tiers =
+            crate::views::prompt_widget::PromptModelTiers::from_model_state(models).unwrap();
+        assert_eq!(tiers.main, main_label);
+        assert_eq!(tiers.worker.as_deref(), Some(worker_label));
+        let editor = crate::views::tier_editor::TierEditorState::from_models(models);
+        assert_eq!(editor.main.as_deref(), Some(main));
+        assert_eq!(editor.worker.as_deref(), Some(worker));
+        assert_eq!(app.models.current.as_ref(), models.current.as_ref());
+        assert_eq!(
+            app.models.worker_model.as_ref(),
+            models.worker_model.as_ref()
+        );
+    }
+    let effects = dispatch(Action::SetWorkerModel(worker_b.clone(), None), &mut app);
+    let workers: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::SetSessionWorker { session_id, .. } => Some(session_id.0.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(workers, vec!["test-session"]);
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::PersistSetting {
+            key: "worker_model",
+            ..
+        }
+    )));
+    dispatch(Action::ClearWorkerModel, &mut app);
+    assert_eq!(expect_agent(&app, a).session.models.worker_model, None);
+    assert_eq!(
+        expect_agent(&app, b).session.models.worker_model,
+        Some(worker_b)
+    );
+}
+
+#[test]
+fn clear_worker_with_disabled_default_still_targets_active_session() {
+    let mut app = test_app_with_agent();
+    crate::acp::ModelState::set_instance_worker(None, None);
+    app.agents
+        .get_mut(&AgentId(0))
+        .unwrap()
+        .session
+        .models
+        .worker_model = Some(acp::ModelId::new("session-worker"));
+    let effects = dispatch(Action::ClearWorkerModel, &mut app);
+    assert_eq!(effects.iter().filter(|effect| matches!(effect, Effect::SetSessionWorker { session_id, model_id, .. } if session_id.0.as_ref() == "test-session" && model_id.is_empty())).count(), 1);
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::PersistSetting {
+            key: "worker_model",
+            ..
+        }
+    )));
+    assert!(
+        expect_agent(&app, AgentId(0))
+            .session
+            .models
+            .worker_model
+            .is_none()
+    );
+}
+
+#[test]
+fn worker_effort_rollback_preserves_session_override() {
     let mut app = test_app_with_agent();
     let worker = acp::ModelId::new("worker");
     let high = Some(distill_shell::sampling::types::ReasoningEffort::High);
     crate::acp::ModelState::set_instance_worker(Some(worker.clone()), high);
     app.models.worker_effort = high;
+    app.agents
+        .get_mut(&AgentId(0))
+        .unwrap()
+        .session
+        .models
+        .worker_effort = high;
     apply_setting_rollback(
         &mut app,
         "worker_effort",
         &crate::settings::SettingValue::String("auto".to_owned()),
     );
-    assert_eq!(app.models.worker_effort, None);
-    assert_eq!(expect_agent(&app, AgentId(0)).session.models.worker_effort, None);
-    assert_eq!(crate::acp::ModelState::configured_worker_model(), Some(worker));
+    assert_eq!(app.models.worker_effort, high);
+    assert_eq!(
+        expect_agent(&app, AgentId(0)).session.models.worker_effort,
+        high
+    );
+    assert_eq!(
+        crate::acp::ModelState::configured_worker_model(),
+        Some(worker)
+    );
     assert_eq!(crate::acp::ModelState::configured_worker_effort(), None);
 }
 
-/// A failed worker write restores the previous worker mirror and leaves the
-/// main model alone.
 #[test]
-fn worker_model_rollback_restores_only_the_worker_mirror() {
+fn worker_model_rollback_preserves_session_override() {
     let mut app = test_app_with_agent();
     let agent_id = AgentId(0);
     let main = acp::ModelId::new("main-model");
-    app.agents
-        .get_mut(&agent_id)
-        .unwrap()
-        .session
-        .models
-        .set_current(main.clone(), None);
-    app.models.worker_model = Some(acp::ModelId::new("new-worker"));
+    let worker = acp::ModelId::new("new-worker");
+    let models = &mut app.agents.get_mut(&agent_id).unwrap().session.models;
+    models.set_current(main.clone(), None);
+    models.worker_model = Some(worker.clone());
+    app.models.worker_model = Some(worker.clone());
     apply_setting_rollback(
         &mut app,
         "worker_model",
         &crate::settings::SettingValue::String("old-worker".to_owned()),
     );
-    assert_eq!(
-        app.models.worker_model,
-        Some(acp::ModelId::new("old-worker"))
-    );
+    assert_eq!(app.models.worker_model, Some(worker.clone()));
     let agent = expect_agent(&app, agent_id);
-    assert_eq!(
-        agent.session.models.worker_model,
-        Some(acp::ModelId::new("old-worker"))
-    );
+    assert_eq!(agent.session.models.worker_model, Some(worker));
     assert_eq!(agent.session.models.current, Some(main));
     assert_eq!(
         crate::acp::ModelState::configured_worker_model(),
-        Some(acp::ModelId::new("old-worker")),
-        "the instance worker rolls back with the mirror"
+        Some(acp::ModelId::new("old-worker"))
     );
 }
 

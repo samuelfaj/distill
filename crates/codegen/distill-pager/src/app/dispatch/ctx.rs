@@ -273,6 +273,7 @@ pub(crate) fn switch_to_agent(app: &mut AppView, target: AgentId, cause: SwitchC
         _ => None,
     };
     app.active_view = ActiveView::Agent(target);
+    app.models = app.agents[&target].session.models.clone();
     // Re-anchor the global permission-mode mirror to the now-active agent
     // The cycle's `sync_active_auto_flag` (derived from the global) then can't copy a different agent's stale Auto/Always-Approve onto this one
     // Per-session yolo/auto are the source of truth; the global is a write-only mirror

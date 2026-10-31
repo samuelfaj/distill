@@ -1814,10 +1814,9 @@ pub(in crate::app::dispatch) fn clear_default_model(app: &mut AppView) -> Vec<Ef
     }]
 }
 
-/// Set this instance's optional worker model and its effort (`None` is auto)
-/// without changing the session's main model, and save them as the default
-/// for instances started later. The model and the effort persist as two
-/// settings, so each rolls back on its own.
+/// Set the active session's worker and effort (`None` is auto), and save the
+/// default for new sessions. Other sessions keep their worker choices.
+/// The model and effort defaults persist and roll back independently.
 pub(in crate::app::dispatch) fn set_worker_model(
     app: &mut AppView,
     new_id: acp::ModelId,
@@ -1836,7 +1835,9 @@ pub(in crate::app::dispatch) fn set_worker_model(
     let prev_effort = crate::acp::ModelState::configured_worker_effort();
     let model_changed = prev_id.as_ref() != Some(&new_id);
     let effort_changed = prev_effort != effort;
-    if !model_changed && !effort_changed {
+    let session_changed = matches!(app.active_view, ActiveView::Agent(_))
+        && (models.worker_model.as_ref() != Some(&new_id) || models.worker_effort != effort);
+    if !model_changed && !effort_changed && !session_changed {
         app.show_toast("Worker model is already selected.");
         return vec![];
     }
@@ -1844,7 +1845,9 @@ pub(in crate::app::dispatch) fn set_worker_model(
     crate::acp::ModelState::set_instance_worker(Some(new_id.clone()), effort);
     app.models.worker_model = Some(new_id.clone());
     app.models.worker_effort = effort;
-    for agent in app.agents.values_mut() {
+    if let ActiveView::Agent(id) = app.active_view
+        && let Some(agent) = app.agents.get_mut(&id)
+    {
         agent.session.models.worker_model = Some(new_id.clone());
         agent.session.models.worker_effort = effort;
     }
@@ -1861,16 +1864,20 @@ pub(in crate::app::dispatch) fn set_worker_model(
         "\u{2713} Worker model: {new_display} ({})",
         crate::acp::model_state::effort_setting_label(effort)
     ));
-    let mut effects: Vec<Effect> = app
-        .agents
-        .values()
-        .filter_map(|agent| agent.session.session_id.clone())
-        .map(|session_id| Effect::SetSessionWorker {
+    let mut effects = Vec::new();
+    if session_changed
+        && let ActiveView::Agent(id) = app.active_view
+        && let Some(session_id) = app
+            .agents
+            .get(&id)
+            .and_then(|agent| agent.session.session_id.clone())
+    {
+        effects.push(Effect::SetSessionWorker {
             session_id,
             model_id: new_id.0.to_string(),
             effort,
-        })
-        .collect();
+        });
+    }
     if model_changed {
         if let Some(state) = app.onboarding.as_mut() {
             state.set_worker_model_pending();
@@ -1923,19 +1930,37 @@ pub(in crate::app::dispatch) fn set_openrouter_variant(
         rollback_value: crate::settings::SettingValue::Enum(prev),
     }]
 }
-/// Remove this instance's worker model: the main model then does all the work.
-/// Persists `[models].worker = ""`; does NOT mutate the active session's main model.
+/// Clear the active session's worker and the default for new sessions.
+/// Leaves other sessions and the active session's main model unchanged.
 pub(in crate::app::dispatch) fn clear_worker_model(app: &mut AppView) -> Vec<Effect> {
     let prev_id_str = crate::acp::ModelState::configured_worker_model()
         .map_or_else(String::new, |id| id.0.to_string());
+    let session_has_worker = match app.active_view {
+        ActiveView::Agent(id) => app
+            .agents
+            .get(&id)
+            .is_some_and(|agent| agent.session.models.worker_model.is_some()),
+        _ => false,
+    };
+    if prev_id_str.is_empty() && !session_has_worker {
+        return vec![];
+    }
     crate::acp::ModelState::set_instance_worker(
         None,
         crate::acp::ModelState::configured_worker_effort(),
     );
     app.models.worker_model = None;
-    for agent in app.agents.values_mut() {
-        agent.session.models.worker_model = None;
-    }
+    let session_id = if let ActiveView::Agent(id) = app.active_view {
+        app.agents.get_mut(&id).and_then(|agent| {
+            let changed = agent.session.models.worker_model.is_some();
+            agent.session.models.worker_model = None;
+            agent.session.models.worker_effort = None;
+            changed.then(|| agent.session.session_id.clone()).flatten()
+        })
+    } else {
+        None
+    };
+    app.models.worker_effort = None;
     tracing::info!(
         target: "settings",
         key = "worker_model",
@@ -1945,21 +1970,21 @@ pub(in crate::app::dispatch) fn clear_worker_model(app: &mut AppView) -> Vec<Eff
     );
     refresh_open_settings_modals(app);
     app.show_toast("\u{2713} Worker model: cleared");
-    let mut effects: Vec<Effect> = app
-        .agents
-        .values()
-        .filter_map(|agent| agent.session.session_id.clone())
+    let mut effects: Vec<Effect> = session_id
+        .into_iter()
         .map(|session_id| Effect::SetSessionWorker {
             session_id,
             model_id: String::new(),
             effort: None,
         })
         .collect();
-    effects.push(Effect::PersistSetting {
-        key: "worker_model",
-        value: crate::settings::SettingValue::String(String::new()),
-        rollback_value: crate::settings::SettingValue::String(prev_id_str),
-    });
+    if !prev_id_str.is_empty() {
+        effects.push(Effect::PersistSetting {
+            key: "worker_model",
+            value: crate::settings::SettingValue::String(String::new()),
+            rollback_value: crate::settings::SettingValue::String(prev_id_str),
+        });
+    }
     effects
 }
 
@@ -2234,15 +2259,30 @@ pub(in crate::app::dispatch) fn set_tier_editor(
             ),
         });
     }
-    let current_worker = crate::acp::ModelState::configured_worker_model();
+    let session_worker = match app.active_view {
+        ActiveView::Agent(id) => app.agents.get(&id).map(|agent| &agent.session.models),
+        _ => None,
+    };
+    let default_worker = crate::acp::ModelState::configured_worker_model();
+    let default_effort = crate::acp::ModelState::configured_worker_effort();
     effects.extend(match worker_pick {
         Some((id, effort))
-            if current_worker.as_ref() != Some(&id)
-                || crate::acp::ModelState::configured_worker_effort() != effort =>
+            if default_worker.as_ref() != Some(&id)
+                || default_effort != effort
+                || session_worker.is_some_and(|models| {
+                    models.worker_model.as_ref() != Some(&id) || models.worker_effort != effort
+                }) =>
         {
-            super::super::router::dispatch(crate::app::actions::Action::SetWorkerModel(id, effort), app)
+            super::super::router::dispatch(
+                crate::app::actions::Action::SetWorkerModel(id, effort),
+                app,
+            )
         }
-        None if current_worker.is_some() => clear_worker_model(app),
+        None if default_worker.is_some()
+            || session_worker.is_some_and(|models| models.worker_model.is_some()) =>
+        {
+            clear_worker_model(app)
+        }
         _ => vec![],
     });
     effects.extend(set_cheap_model(app, utility, None));

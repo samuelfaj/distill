@@ -5425,6 +5425,19 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::FetchFooterChatGptUsage { session_id, model_id, generation } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let usage = match tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    fetch_footer_chatgpt_usage(&session_id, &tx),
+                ).await {
+                    Ok(result) => result.map(Box::new),
+                    Err(_) => Err("ChatGPT usage request timed out".to_string()),
+                };
+                TaskResult::FooterChatGptUsageResult { session_id, model_id, generation, usage }
+            });
+        }
         Effect::FetchChatGptUsage { agent_id, nonce } => {
             tasks.spawn(async move {
                 let usage = match tokio::time::timeout(
@@ -5608,6 +5621,22 @@ async fn fetch_session_info(
         return Err(msg);
     }
     envelope.result.ok_or_else(|| "session info response missing result".to_string())
+}
+async fn fetch_footer_chatgpt_usage(
+    session_id: &acp::SessionId,
+    tx: &AcpAgentTx,
+) -> Result<distill_shell::codex_auth::CodexUsageSnapshot, String> {
+    let request = acp::ExtRequest::new(
+        "x.ai/session/chatgptUsage",
+        serde_json::value::to_raw_value(&serde_json::json!({"sessionId": session_id.0.to_string()}))
+            .expect("serialize session/chatgptUsage params")
+            .into(),
+    );
+    let response = acp_send(request, tx).await.map_err(unsupported_or_sanitized)?;
+    let mut usage: distill_shell::codex_auth::CodexUsageSnapshot = serde_json::from_str(response.0.get())
+        .map_err(|_| "invalid ChatGPT usage response".to_string())?;
+    usage.fetched_at = chrono::Utc::now();
+    Ok(usage)
 }
 /// Fetch [`PromptUsage`] via `x.ai/session/usage` (bare response, no envelope).
 async fn fetch_session_usage(

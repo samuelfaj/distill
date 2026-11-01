@@ -671,6 +671,9 @@ pub struct AppView {
     pub auto_topup: Option<crate::views::credit_bar::AutoTopupInfo>,
     /// Periodic billing poll requested (credits >= 99%).
     pub billing_poll_wanted: bool,
+    pub chatgpt_usage: Option<Box<distill_shell::codex_auth::CodexUsageSnapshot>>,
+    pub chatgpt_usage_target: Option<(acp::SessionId, acp::ModelId)>,
+    pub chatgpt_usage_generation: u64,
     /// Leader-mode session roster (FleetView dashboard).
     /// Populated from `x.ai/sessions/list` polls and `x.ai/sessions/changed` broadcasts.
     /// Empty in non-leader mode, which gates roster rendering.
@@ -1621,6 +1624,9 @@ impl AppView {
             credit_balance: None,
             auto_topup: None,
             billing_poll_wanted: false,
+            chatgpt_usage: None,
+            chatgpt_usage_target: None,
+            chatgpt_usage_generation: 0,
             leader_roster: Vec::new(),
             dashboard_local_sessions: Vec::new(),
             dashboard_sessions_loading: false,
@@ -4870,6 +4876,7 @@ impl AppView {
                                     .is_some(),
                                 chat_mode: self.chat_mode,
                                 credit_balance: self.credit_balance.as_ref(),
+                                models: Some(&self.models),
                                 auto_topup: self.auto_topup.as_ref(),
                                 usage_visible: self.usage_visible,
                                 is_api_key_auth: self.is_api_key_auth,
@@ -5121,6 +5128,9 @@ impl AppView {
                                 } else {
                                     0
                                 };
+                                let chatgpt_usage = super::event_loop::footer_usage_for_agent(
+                                    agent, &self.chatgpt_usage_target, self.chatgpt_usage.as_deref(),
+                                );
                                 let result = agent.draw(
                                     view_area,
                                     f.buffer_mut(),
@@ -5144,6 +5154,7 @@ impl AppView {
                                     overlay_active,
                                     link_spans,
                                     AppRenderParams {
+                                        chatgpt_usage,
                                         voice_available,
                                         voice_listening,
                                         voice_interim: voice_interim.as_deref(),
@@ -5285,6 +5296,9 @@ impl AppView {
                                                 dashboard,
                                                 |inner, buf| {
                                                     if let Some(agent) = agents.get_mut(&agent_id) {
+                                                        let chatgpt_usage = super::event_loop::footer_usage_for_agent(
+                                                            agent, &self.chatgpt_usage_target, self.chatgpt_usage.as_deref(),
+                                                        );
                                                         agent
                                                     .draw(
                                                         inner,
@@ -5298,6 +5312,7 @@ impl AppView {
                                                         false,
                                                         link_spans,
                                                         AppRenderParams {
+                                                            chatgpt_usage,
                                                             workspace_dashboard_enabled: self
                                                                 .workspace_dashboard_enabled,
                                                             ..Default::default()

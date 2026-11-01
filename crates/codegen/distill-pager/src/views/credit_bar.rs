@@ -137,6 +137,81 @@ pub fn format_usage_summary(balance: &CreditBalance, autotopup: Option<&AutoTopu
     lines.join("\n")
 }
 
+/// Provider of the effective main model, if its catalog metadata identifies one.
+pub fn main_provider(models: &crate::acp::ModelState) -> Option<distill_shell::accounts::Provider> {
+    let id = models
+        .auto_route
+        .as_ref()
+        .map(|route| &route.0)
+        .or(models.current.as_ref())?;
+    models
+        .available
+        .get(id)?
+        .meta
+        .as_ref()?
+        .get(distill_shell::agent::config::ACCOUNT_PROVIDER_META_KEY)?
+        .as_str()?
+        .parse()
+        .ok()
+}
+
+/// Select the warning for the effective main model's provider.
+pub fn provider_usage_warning(
+    models: Option<&crate::acp::ModelState>,
+    balance: Option<&CreditBalance>,
+    autotopup: Option<&AutoTopupInfo>,
+    usage_visible: bool,
+    gateway_chat: bool,
+    chatgpt_usage: Option<&distill_shell::codex_auth::CodexUsageSnapshot>,
+) -> Option<(String, bool)> {
+    let models = models?;
+    match main_provider(models)? {
+        distill_shell::accounts::Provider::Grok => {
+            usage_warning_for_session(balance?, autotopup, usage_visible, gateway_chat)
+        }
+        distill_shell::accounts::Provider::Chatgpt
+            if !gateway_chat && models.auto_route.is_none() =>
+        {
+            chatgpt_weekly_warning(chatgpt_usage?, chrono::Utc::now())
+        }
+        _ => None,
+    }
+}
+
+fn chatgpt_weekly_warning(
+    usage: &distill_shell::codex_auth::CodexUsageSnapshot,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<(String, bool)> {
+    let age = now.signed_duration_since(usage.fetched_at);
+    if age < chrono::Duration::zero() || age > chrono::Duration::minutes(5) {
+        return None;
+    }
+    let limits = usage.rate_limit.as_ref()?;
+    let window = [
+        limits.primary_window.as_ref(),
+        limits.secondary_window.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|window| window.limit_window_seconds == 604800)?;
+    let used = window.used_percent;
+    if !used.is_finite()
+        || !(0.0..=100.0).contains(&used)
+        || (window.reset_at > 0 && window.reset_at <= now.timestamp())
+        || (window.reset_at <= 0 && window.reset_after_seconds <= age.num_seconds())
+        || used <= 90.0
+    {
+        return None;
+    }
+    Some((
+        format!(
+            "ChatGPT weekly limit left: {}%",
+            100 - used.floor() as i64
+        ),
+        used > 95.0,
+    ))
+}
+
 /// Low-balance ($10) and pay-as-you-go critical ($5) warning thresholds, in cents.
 const LOW_BALANCE_CENTS: i64 = 1000;
 const PAY_AS_YOU_GO_CRITICAL_CENTS: i64 = 500;
@@ -253,8 +328,192 @@ pub fn credit_bar_line_for_session(
 }
 
 #[cfg(test)]
+pub(crate) mod weekly_test_fixtures {
+    use super::*;
+    pub fn snapshot() -> distill_shell::codex_auth::CodexUsageSnapshot {
+        let mut snapshot: distill_shell::codex_auth::CodexUsageSnapshot = serde_json::from_value(serde_json::json!({"rate_limit": {"primary_window": {"used_percent": 96.5, "limit_window_seconds": 604800, "reset_after_seconds": 3600, "reset_at": 0}}})).unwrap();
+        snapshot.fetched_at = chrono::Utc::now();
+        snapshot
+    }
+    pub fn models() -> crate::acp::ModelState {
+        use agent_client_protocol::{ModelId, ModelInfo};
+        let mut models = crate::acp::ModelState::default();
+        for (id, provider) in [("gpt", "chatgpt"), ("grok", "grok"), ("other", "claude")] {
+            let id = ModelId::new(id);
+            models.available.insert(
+                id.clone(),
+                ModelInfo::new(id.clone(), id.0.to_string()).meta(
+                    serde_json::json!({"accountProvider": provider})
+                        .as_object()
+                        .cloned(),
+                ),
+            );
+        }
+        models.current = Some(ModelId::new("gpt"));
+        models
+    }
+    pub fn balance() -> CreditBalance {
+        CreditBalance {
+            usage_pct: 92.0,
+            effective_usage_pct: 92.0,
+            period_end_display: None,
+            pay_as_you_go: false,
+            on_demand_cap_cents: None,
+            on_demand_used_cents: None,
+            prepaid_balance_cents: None,
+            period_type: Some("WEEKLY".into()),
+            is_unified_billing_user: None,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chatgpt_weekly_validation_and_provider_selection() {
+        use agent_client_protocol::ModelId;
+        use weekly_test_fixtures::{balance, models, snapshot};
+        let now = chrono::Utc::now();
+        let mut usage = snapshot();
+        usage.fetched_at = now;
+        let warning =
+            |u: &distill_shell::codex_auth::CodexUsageSnapshot| chatgpt_weekly_warning(u, now);
+        assert_eq!(
+            warning(&usage),
+            Some(("ChatGPT weekly limit left: 4%".into(), true))
+        );
+        for (pct, expected) in [
+            (90.0, None),
+            (90.1, Some(("ChatGPT weekly limit left: 10%".into(), false))),
+            (95.0, Some(("ChatGPT weekly limit left: 5%".into(), false))),
+            (95.1, Some(("ChatGPT weekly limit left: 5%".into(), true))),
+            (f64::NAN, None),
+            (f64::INFINITY, None),
+            (-1.0, None),
+            (101.0, None),
+        ] {
+            usage
+                .rate_limit
+                .as_mut()
+                .unwrap()
+                .primary_window
+                .as_mut()
+                .unwrap()
+                .used_percent = pct;
+            assert_eq!(warning(&usage), expected);
+        }
+        usage = snapshot();
+        usage.fetched_at = now;
+        let window = usage.rate_limit.as_mut().unwrap().primary_window.take();
+        usage.rate_limit.as_mut().unwrap().secondary_window = window;
+        assert!(warning(&usage).is_some());
+        usage
+            .rate_limit
+            .as_mut()
+            .unwrap()
+            .secondary_window
+            .as_mut()
+            .unwrap()
+            .limit_window_seconds = 18000;
+        assert!(warning(&usage).is_none());
+        usage = snapshot();
+        usage.fetched_at = now - chrono::Duration::minutes(5);
+        assert!(warning(&usage).is_some());
+        usage.fetched_at = now - chrono::Duration::minutes(5) - chrono::Duration::milliseconds(1);
+        assert!(warning(&usage).is_none());
+        usage.fetched_at = now + chrono::Duration::milliseconds(1);
+        assert!(warning(&usage).is_none());
+        usage.fetched_at = now;
+        let w = usage
+            .rate_limit
+            .as_mut()
+            .unwrap()
+            .primary_window
+            .as_mut()
+            .unwrap();
+        w.reset_at = now.timestamp();
+        assert!(warning(&usage).is_none());
+        let w = usage
+            .rate_limit
+            .as_mut()
+            .unwrap()
+            .primary_window
+            .as_mut()
+            .unwrap();
+        w.reset_at = 0;
+        w.reset_after_seconds = 0;
+        assert!(warning(&usage).is_none());
+        usage.fetched_at = now - chrono::Duration::seconds(60);
+        usage.rate_limit.as_mut().unwrap().primary_window.as_mut().unwrap().reset_after_seconds = 60;
+        assert!(warning(&usage).is_none());
+        usage = snapshot();
+        let mut models = models();
+        let balance = balance();
+        let select = |m: &crate::acp::ModelState, chat, visible, u| {
+            provider_usage_warning(Some(m), Some(&balance), None, visible, chat, u)
+        };
+        assert!(select(&models, false, false, Some(&usage)).is_some());
+        assert!(select(&models, true, true, Some(&usage)).is_none());
+        assert!(select(&models, false, true, None).is_none());
+        models.worker_model = Some(ModelId::new("grok"));
+        assert!(
+            select(&models, false, true, Some(&usage))
+                .unwrap()
+                .0
+                .starts_with("ChatGPT")
+        );
+        models.auto_route = Some((ModelId::new("gpt"), ModelId::new("grok")));
+        assert!(select(&models, false, true, Some(&usage)).is_none());
+        models.auto_route = Some((ModelId::new("grok"), ModelId::new("gpt")));
+        assert!(
+            select(&models, false, true, Some(&usage))
+                .unwrap()
+                .0
+                .starts_with("Weekly")
+        );
+        models.auto_route = None;
+        for id in ["other", "missing"] {
+            models.current = Some(ModelId::new(id));
+            assert!(select(&models, false, true, Some(&usage)).is_none());
+        }
+    }
+
+    #[test]
+    fn main_provider_uses_metadata_and_auto_main_not_worker() {
+        use agent_client_protocol::{ModelId, ModelInfo};
+        use distill_shell::accounts::Provider;
+        let mut models = crate::acp::ModelState::default();
+        let main = ModelId::new("main");
+        let worker = ModelId::new("worker");
+        let info = |id: &ModelId, provider: &str| {
+            ModelInfo::new(id.clone(), id.0.to_string()).meta(
+                serde_json::json!({"accountProvider": provider})
+                    .as_object()
+                    .cloned(),
+            )
+        };
+        models
+            .available
+            .insert(main.clone(), info(&main, "chatgpt"));
+        models
+            .available
+            .insert(worker.clone(), info(&worker, "grok"));
+        models.current = Some(main.clone());
+        models.worker_model = Some(worker.clone());
+        assert_eq!(main_provider(&models), Some(Provider::Chatgpt));
+        models.auto_route = Some((worker.clone(), main.clone()));
+        assert_eq!(main_provider(&models), Some(Provider::Grok));
+        models
+            .available
+            .insert(worker.clone(), info(&worker, "unknown"));
+        assert_eq!(main_provider(&models), None);
+        models
+            .available
+            .insert(worker.clone(), ModelInfo::new(worker, "worker"));
+        assert_eq!(main_provider(&models), None);
+    }
 
     fn bal(pct: f64) -> CreditBalance {
         CreditBalance {

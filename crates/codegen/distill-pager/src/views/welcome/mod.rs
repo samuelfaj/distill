@@ -739,6 +739,7 @@ pub struct WelcomeRenderParams<'a> {
     pub cwd: &'a std::path::Path,
     /// App-level credit balance for showing the usage warning on the welcome screen.
     pub credit_balance: Option<&'a crate::views::credit_bar::CreditBalance>,
+    pub models: Option<&'a crate::acp::ModelState>,
     /// Auto top-up rule paired with `credit_balance` for the welcome warning.
     pub auto_topup: Option<&'a crate::views::credit_bar::AutoTopupInfo>,
     /// Whether the consumer billing UI applies (false for team / API-key, which get no credit warning).
@@ -2300,9 +2301,15 @@ fn render_welcome_done(
                 .render(tip_inset, buf);
         }
 
-        let warning = p.credit_balance.and_then(|bal| {
-            crate::views::credit_bar::usage_warning(bal, p.auto_topup, p.usage_visible)
-        });
+        let warning = crate::views::credit_bar::provider_usage_warning(
+            p.models,
+            p.credit_balance,
+            p.auto_topup,
+            p.usage_visible,
+            p.chat_mode,
+            // ponytail: Welcome has no session account; add account selection before showing quota.
+            None,
+        );
         let (usage_warning_text, usage_warning_critical) = match warning {
             Some((text, critical)) => (Some(text), critical),
             None => (None, false),
@@ -2986,6 +2993,7 @@ mod tests {
             chat_mode: false,
             cwd: std::path::Path::new("/repo"),
             credit_balance: None,
+            models: None,
             auto_topup: None,
             usage_visible: true,
             changelog_bullets: &[],
@@ -3009,6 +3017,31 @@ mod tests {
         let mut picker = PickerState::default();
         render_welcome(area, &mut buf, params, &mut prompt, &mut picker);
         buffer_text(&buf)
+    }
+
+    #[test]
+    fn weekly_warning_tracks_welcome_model() {
+        use crate::views::credit_bar::weekly_test_fixtures::{balance, models};
+        let auth = AuthState::Done;
+        let trust = TrustState::Done;
+        let balance = balance();
+        let chatgpt = models();
+        let mut grok = models();
+        grok.current = Some(agent_client_protocol::ModelId::new("grok"));
+        let mut other = models();
+        other.current = Some(agent_client_protocol::ModelId::new("other"));
+        let mut params = render_params(&auth, &trust, None);
+        params.credit_balance = Some(&balance);
+        params.models = Some(&chatgpt);
+        let text = render_done_text(&params);
+        assert!(!text.contains("limit left"), "{text}");
+        params.models = Some(&grok);
+        let text = render_done_text(&params);
+        assert!(text.contains("Weekly limit left: 8%"), "{text}");
+        assert!(!text.contains("ChatGPT weekly"), "{text}");
+        params.models = Some(&other);
+        let text = render_done_text(&params);
+        assert!(!text.contains("limit left"), "{text}");
     }
 
     #[test]

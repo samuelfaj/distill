@@ -32,6 +32,61 @@ pub(crate) fn should_create_home_on_authenticated_startup(app: &AppView) -> bool
         && app.session_startup_allowed()
         && !app.is_access_blocked()
 }
+pub(super) fn footer_chatgpt_model(app: &AppView) -> Option<(acp::SessionId, acp::ModelId)> {
+    if app.screen_mode.is_minimal() {
+        return None;
+    }
+    let id = match app.active_view {
+        ActiveView::Agent(id) => id,
+        ActiveView::AgentDashboard => app.dashboard.as_ref()?.attached_agent?,
+        ActiveView::Welcome => return None,
+    };
+    footer_agent_target(app.agents.get(&id)?)
+}
+
+fn footer_agent_target(agent: &super::agent_view::AgentView) -> Option<(acp::SessionId, acp::ModelId)> {
+    let models = &agent.session.models;
+    // ponytail: Turns can rotate accounts; hide quota until idle and refetch instead of tracking route revisions.
+    if !agent.session.state.is_idle() || agent.session.model_switch_pending
+        || agent.chat_kind || agent.app_chat_mode || models.auto_route.is_some()
+        || crate::views::credit_bar::main_provider(models) != Some(distill_shell::accounts::Provider::Chatgpt)
+    {
+        return None;
+    }
+    Some((agent.session.session_id.clone()?, models.current.clone()?))
+}
+
+pub(super) fn footer_usage_for_agent<'a>(
+    agent: &super::agent_view::AgentView,
+    target: &Option<(acp::SessionId, acp::ModelId)>,
+    usage: Option<&'a distill_shell::codex_auth::CodexUsageSnapshot>,
+) -> Option<&'a distill_shell::codex_auth::CodexUsageSnapshot> {
+    let agent_target = footer_agent_target(agent)?;
+    (target.as_ref() == Some(&agent_target)).then_some(usage).flatten()
+}
+fn sync_footer_target(app: &mut AppView, poll_at: &mut Option<Instant>) {
+    let selected = footer_chatgpt_model(app);
+    if selected != app.chatgpt_usage_target {
+        app.chatgpt_usage_target = selected;
+        app.chatgpt_usage = None;
+        app.chatgpt_usage_generation = app.chatgpt_usage_generation.wrapping_add(1);
+        *poll_at = app.chatgpt_usage_target.as_ref().map(|_| Instant::now());
+    }
+    if app.chatgpt_usage_target.is_none() {
+        *poll_at = None;
+    }
+}
+
+pub(super) fn invalidate_ineligible_footer(app: &mut AppView) {
+    if app.chatgpt_usage_target.is_some()
+        && footer_chatgpt_model(app).as_ref() != app.chatgpt_usage_target.as_ref()
+    {
+        app.chatgpt_usage_target = None;
+        app.chatgpt_usage = None;
+        app.chatgpt_usage_generation = app.chatgpt_usage_generation.wrapping_add(1);
+    }
+}
+
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(16);
 /// A resize queues a forced status-line re-run, and the script is told the width the debounced draw recorded.
 const _: () = assert!(
@@ -1656,6 +1711,7 @@ pub(crate) async fn run(
     let mut cursor_color_on_wire = crate::theme::cursor_color_escape();
     const BILLING_POLL_INTERVAL: Duration = Duration::from_secs(30);
     let mut billing_poll_at: Option<Instant> = None;
+    let mut footer_poll_at: Option<Instant> = None;
     let mut status_line_refresh_interval: Option<Duration> =
         if super::status_line::draws_a_row(&app.current_ui.status_line) {
             app.status_line_refresh_interval()
@@ -2055,6 +2111,13 @@ pub(crate) async fn run(
                 None => std::future::pending().await,
             }
         };
+        sync_footer_target(&mut app, &mut footer_poll_at);
+        let footer_poll = async {
+            match footer_poll_at {
+                Some(at) => sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
         let billing_poll = async {
             match billing_poll_at {
                 Some(at) => sleep_until(at).await,
@@ -2204,6 +2267,7 @@ pub(crate) async fn run(
             }, if input_rx.is_empty() => {
                 let Some(msg) = msg else { break };
                 let mut state_changed = acp_handler::handle(msg, &mut app);
+                invalidate_ineligible_footer(&mut app);
                 if !app.pending_effects.is_empty() {
                     let effs = std::mem::take(&mut app.pending_effects);
                     if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
@@ -2219,6 +2283,7 @@ pub(crate) async fn run(
                     let Ok(msg) = acp_rx.try_recv() else { break };
                     drained += 1;
                     state_changed |= acp_handler::handle(msg, &mut app);
+                    invalidate_ineligible_footer(&mut app);
                     if !app.pending_effects.is_empty() {
                         let effs = std::mem::take(&mut app.pending_effects);
                         if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
@@ -2454,6 +2519,17 @@ pub(crate) async fn run(
                 }
                 // Keep ticking as long as there are running animations or pending actions waiting to expire
                 schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            _ = footer_poll => {
+                footer_poll_at = Some(Instant::now() + Duration::from_secs(60));
+                if let Some((session_id, model_id)) = app.chatgpt_usage_target.clone() {
+                    app.chatgpt_usage_generation = app.chatgpt_usage_generation.wrapping_add(1);
+                    let generation = app.chatgpt_usage_generation;
+                    if process_effects(vec![Effect::FetchFooterChatGptUsage { session_id, model_id, generation }], &mut tasks, &mut app, &progress_tx) {
+                        break;
+                    }
+                }
             }
 
             _ = billing_poll => {
@@ -4000,6 +4076,59 @@ fn process_effects(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn footer_chatgpt_turn_rearms_immediate_poll() {
+        let mut app = crate::app::app_view::tests::test_app_with_agent();
+        let id = app.active_view.agent_id().unwrap();
+        app.agents.get_mut(&id).unwrap().session.models = crate::views::credit_bar::weekly_test_fixtures::models();
+        let mut poll = None;
+        sync_footer_target(&mut app, &mut poll);
+        assert!(poll.is_some_and(|at| at <= Instant::now()));
+        app.chatgpt_usage = Some(Box::new(crate::views::credit_bar::weekly_test_fixtures::snapshot()));
+        app.agents.get_mut(&id).unwrap().session.state = crate::app::agent::AgentState::TurnRunning;
+        invalidate_ineligible_footer(&mut app);
+        app.agents.get_mut(&id).unwrap().session.state = crate::app::agent::AgentState::Idle;
+        poll = Some(Instant::now() + Duration::from_secs(60));
+        sync_footer_target(&mut app, &mut poll);
+        assert!(poll.is_some_and(|at| at <= Instant::now()));
+        assert!(app.chatgpt_usage.is_none());
+        assert_eq!(app.chatgpt_usage_target, footer_chatgpt_model(&app));
+    }
+
+    #[test]
+    fn footer_chatgpt_selection_uses_active_session() {
+        let mut app = crate::app::app_view::tests::test_app_with_agent();
+        let id = acp::ModelId::new("gpt");
+        let info = acp::ModelInfo::new(id.clone(), "gpt").meta(
+            serde_json::json!({"accountProvider": "chatgpt"}).as_object().cloned(),
+        );
+        app.models.available.insert(id.clone(), info.clone());
+        app.models.current = Some(id.clone());
+        assert_eq!(footer_chatgpt_model(&app), None);
+        let agent_id = app.active_view.agent_id().unwrap();
+        let agent = app.agents.get_mut(&agent_id).unwrap();
+        agent.session.models.available.insert(id.clone(), info);
+        agent.session.models.current = Some(id.clone());
+        assert_eq!(footer_chatgpt_model(&app), Some((acp::SessionId::new("test-session"), id.clone())));
+        app.agents.get_mut(&agent_id).unwrap().session.session_id = None;
+        assert_eq!(footer_chatgpt_model(&app), None);
+        app.agents.get_mut(&agent_id).unwrap().session.session_id = Some("test-session".into());
+        app.agents.get_mut(&agent_id).unwrap().session.models.auto_route = Some((id.clone(), id.clone()));
+        assert_eq!(footer_chatgpt_model(&app), None);
+        let agent = app.agents.get_mut(&agent_id).unwrap();
+        agent.session.models.auto_route = None;
+        agent.chat_kind = true;
+        assert_eq!(footer_chatgpt_model(&app), None);
+        app.agents.get_mut(&agent_id).unwrap().chat_kind = false;
+        app.screen_mode = super::super::ScreenMode::Minimal;
+        assert_eq!(footer_chatgpt_model(&app), None);
+        app.screen_mode = super::super::ScreenMode::Inline;
+        app.active_view = ActiveView::Welcome;
+        assert_eq!(footer_chatgpt_model(&app), None);
+        app.chat_mode = true;
+        assert_eq!(footer_chatgpt_model(&app), None);
+    }
+
     fn nth<T>(xs: &[T], i: usize) -> &T {
         let Some(x) = xs.get(i) else {
             panic!("expected index {i}, len {}", xs.len());

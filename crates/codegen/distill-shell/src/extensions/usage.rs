@@ -29,6 +29,7 @@ pub struct SessionUsageResponse {
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/session/usage" => handle_session_usage(agent, args).await,
+        "x.ai/session/chatgptUsage" => handle_chatgpt_usage(agent, args).await,
         _ => Err(acp::Error::method_not_found()),
     }
 }
@@ -55,6 +56,52 @@ async fn handle_session_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
     let mut usage = PromptUsage::from(&ledger);
     add_cache_savings(&mut usage, &ledger);
     to_raw_response(&SessionUsageResponse { usage })
+}
+
+fn chatgpt_credential_path(
+    store: &crate::accounts::AccountStore,
+    base_url: &str,
+    headers: &indexmap::IndexMap<String, String>,
+) -> anyhow::Result<std::path::PathBuf> {
+    use crate::accounts::Provider;
+    use crate::agent::account_routing::{AccountRoute, provider_for_url};
+    anyhow::ensure!(
+        provider_for_url(base_url) == Some(Provider::Chatgpt),
+        "session is not ChatGPT"
+    );
+    let route = AccountRoute::read(headers)?
+        .ok_or_else(|| anyhow::anyhow!("session has no account route"))?;
+    anyhow::ensure!(
+        store.get(&route.account_id)?.provider == Provider::Chatgpt,
+        "account is not ChatGPT"
+    );
+    store.credential_path(&route.account_id)
+}
+
+async fn handle_chatgpt_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let req: SessionUsageRequest = parse_params(args)?;
+    let session_id = acp::SessionId::new(req.session_id.as_str());
+    let handle = agent
+        .session_handle_waiting_for_load(&session_id)
+        .await
+        .ok_or_else(|| acp::Error::resource_not_found(Some("session not found".to_string())))?;
+    let config = handle
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .ok_or_else(|| {
+            acp::Error::internal_error().data("failed to read session sampling config")
+        })?;
+    let path = chatgpt_credential_path(
+        &crate::accounts::AccountStore::default(),
+        &config.base_url,
+        &config.extra_headers,
+    )
+    .map_err(|_| acp::Error::internal_error().data("ChatGPT session account unavailable"))?;
+    let usage = crate::codex_auth::fetch_usage_at(&path)
+        .await
+        .map_err(|_| acp::Error::internal_error().data("ChatGPT usage request failed"))?;
+    to_raw_response(&usage)
 }
 
 /// Fills the estimated net cache savings: what each call's cache reads would have cost as uncached
@@ -135,6 +182,57 @@ mod tests {
     use super::*;
     use distill_chat_state::UsageLedger;
     use distill_sampling_types::TokenUsage;
+
+    #[test]
+    fn chatgpt_credential_path_requires_matching_explicit_route() {
+        use crate::accounts::{AccountStore, Provider};
+        use crate::agent::account_routing::{AccountRoute, ROUTE_HEADER};
+        let dir = tempfile::tempdir().unwrap();
+        let store = AccountStore::new(dir.path().to_owned());
+        store.add("named", Provider::Chatgpt, "Named").unwrap();
+        store.add("wrong", Provider::Claude, "Wrong").unwrap();
+        let route = |id: &str| AccountRoute {
+            account_id: id.into(),
+            option_id: None,
+            main_model: "gpt".into(),
+            worker_model: "gpt".into(),
+            worker: false,
+            pinned: true,
+            operation_id: None,
+            failed_options: vec![],
+        };
+        let mut headers = indexmap::IndexMap::new();
+        let url = crate::codex_auth::CODEX_INFERENCE_BASE_URL;
+        assert!(chatgpt_credential_path(&store, url, &headers).is_err());
+        for id in ["legacy-chatgpt", "named"] {
+            headers.insert(
+                ROUTE_HEADER.into(),
+                serde_json::to_string(&route(id)).unwrap(),
+            );
+            assert_eq!(
+                chatgpt_credential_path(&store, url, &headers).unwrap(),
+                store.credential_path(id).unwrap()
+            );
+        }
+        assert_ne!(
+            store.credential_path("legacy-chatgpt").unwrap(),
+            store.credential_path("named").unwrap()
+        );
+        for id in ["wrong", "missing"] {
+            headers.insert(
+                ROUTE_HEADER.into(),
+                serde_json::to_string(&route(id)).unwrap(),
+            );
+            assert!(chatgpt_credential_path(&store, url, &headers).is_err());
+        }
+        headers.insert(ROUTE_HEADER.into(), "invalid".into());
+        assert!(chatgpt_credential_path(&store, url, &headers).is_err());
+        headers.insert(
+            ROUTE_HEADER.into(),
+            serde_json::to_string(&route("named")).unwrap(),
+        );
+        assert!(chatgpt_credential_path(&store, "https://example.com", &headers).is_err());
+    }
 
     fn usage(prompt: u32, completion: u32) -> TokenUsage {
         TokenUsage {

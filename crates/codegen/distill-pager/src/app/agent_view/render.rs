@@ -39,6 +39,7 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct AppRenderParams<'a> {
     /// Voice feature available (shows the mic affordances).
+    pub chatgpt_usage: Option<&'a distill_shell::codex_auth::CodexUsageSnapshot>,
     pub voice_available: bool,
     /// Mic open and streaming on the active surface; drives the recording row and the prompt voice overlay.
     pub voice_listening: bool,
@@ -588,6 +589,7 @@ impl AgentView {
         Option<crate::terminal::overlay::PostFlush>,
     ) {
         let AppRenderParams {
+            chatgpt_usage,
             voice_available,
             voice_listening,
             voice_interim,
@@ -738,7 +740,8 @@ impl AgentView {
             } else {
                 None
             },
-            ultracode_phase: (self.session.models.execution_mode == distill_tool_types::ExecutionMode::Ultracode)
+            ultracode_phase: (self.session.models.execution_mode
+                == distill_tool_types::ExecutionMode::Ultracode)
                 .then(crate::views::prompt_widget::ultracode_phase_now),
             side_phase: self
                 .side_parent
@@ -1137,8 +1140,11 @@ impl AgentView {
             self.scrollback.turn_count(),
         );
         let goal_retry_secs = self.goal_retry_secs();
-        let goal_retry_height =
-            u16::from(goal_retry_secs.is_some() && prompt_height > 0 && area.height > agent::SHORT_TERMINAL_ROWS);
+        let goal_retry_height = u16::from(
+            goal_retry_secs.is_some()
+                && prompt_height > 0
+                && area.height > agent::SHORT_TERMINAL_ROWS,
+        );
         let mut layout_params = AgentViewLayoutParams {
             area,
             layout_cfg: *layout_cfg,
@@ -2451,14 +2457,14 @@ impl AgentView {
             flags.push(jev);
         }
         let multiline = self.multiline_mode;
-        let warning = self.credit_balance.as_ref().and_then(|bal| {
-            crate::views::credit_bar::usage_warning_for_session(
-                bal,
-                self.auto_topup.as_ref(),
-                self.billing_surface_visible,
-                self.chat_kind,
-            )
-        });
+        let warning = crate::views::credit_bar::provider_usage_warning(
+            Some(&self.session.models),
+            self.credit_balance.as_ref(),
+            self.auto_topup.as_ref(),
+            self.billing_surface_visible,
+            self.chat_kind,
+            chatgpt_usage,
+        );
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
@@ -5238,6 +5244,53 @@ mod side_mode_render_tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn weekly_warning_tracks_session_model() {
+        use crate::views::credit_bar::weekly_test_fixtures::{balance, models, snapshot};
+        let mut agent = make_agent();
+        agent.session.models = models();
+        agent.credit_balance = Some(balance());
+        agent.billing_surface_visible = true;
+        let usage = snapshot();
+        let render = |agent: &mut AgentView| {
+            let area = Rect::new(0, 0, 100, 40);
+            let mut buf = Buffer::empty(area);
+            agent.draw(
+                area,
+                &mut buf,
+                &ActionRegistry::defaults(),
+                &mut ScratchBuffer::new(),
+                None,
+                false,
+                crate::app::agent_view::BannerSlotParams::none(),
+                &BundleState::default(),
+                false,
+                &mut Vec::new(),
+                AppRenderParams {
+                    chatgpt_usage: Some(&usage),
+                    ..Default::default()
+                },
+            );
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let text = render(&mut agent);
+        assert!(text.contains("ChatGPT weekly limit left: 4%"), "{text}");
+        assert!(!text.contains("Weekly limit left: 8%"), "{text}");
+        agent.session.models.current = Some(agent_client_protocol::ModelId::new("grok"));
+        let text = render(&mut agent);
+        assert!(text.contains("Weekly limit left: 8%"), "{text}");
+        assert!(!text.contains("ChatGPT weekly"), "{text}");
+        agent.session.models.current = Some(agent_client_protocol::ModelId::new("other"));
+        assert!(!render(&mut agent).contains("limit left"));
     }
 
     #[test]

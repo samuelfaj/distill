@@ -193,11 +193,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         _ => (false, false),
     };
     let effects = dispatch_action(action, app);
-    if explicit_pick {
+    let effects = if explicit_pick {
         leave_auto_routing(app, effects, worker_pick)
     } else {
         effects
-    }
+    };
+    crate::app::event_loop::invalidate_ineligible_footer(app);
+    effects
 }
 
 fn dispatch_action(action: Action, app: &mut AppView) -> Vec<Effect> {

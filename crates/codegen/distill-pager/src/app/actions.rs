@@ -2340,6 +2340,12 @@ pub enum Effect {
         /// Usage-modal fetch generation (`0` means a background refresh that settles no modal).
         nonce: u64,
     },
+    /// Silently refresh subscription usage for the active footer.
+    FetchFooterChatGptUsage {
+        session_id: acp::SessionId,
+        model_id: acp::ModelId,
+        generation: u64,
+    },
     /// Fetch ChatGPT account usage through the isolated Codex auth store.
     /// `agent_id` is used by minimal mode to route the rendered result into
     /// the originating scrollback; dashboard modal fetches use `None`.
@@ -3378,6 +3384,13 @@ pub enum TaskResult {
         error: String,
         /// Usage-modal fetch generation (`0` means a background refresh).
         nonce: u64,
+    },
+    /// Session-routed ChatGPT footer usage.
+    FooterChatGptUsageResult {
+        session_id: acp::SessionId,
+        model_id: acp::ModelId,
+        generation: u64,
+        usage: Result<Box<distill_shell::codex_auth::CodexUsageSnapshot>, String>,
     },
     /// ChatGPT account usage fetched from the isolated Codex provider.
     ChatGptUsageResult {

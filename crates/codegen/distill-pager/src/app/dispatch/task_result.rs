@@ -687,6 +687,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::FooterChatGptUsageResult { session_id, model_id, generation, usage } => {
+            let target = (session_id, model_id);
+            if app.chatgpt_usage_generation == generation
+                && app.chatgpt_usage_target.as_ref() == Some(&target)
+                && super::super::event_loop::footer_chatgpt_model(app).as_ref() == Some(&target)
+            {
+                app.chatgpt_usage = usage.ok();
+            }
+            vec![]
+        }
         TaskResult::ChatGptUsageResult {
             usage,
             agent_id,

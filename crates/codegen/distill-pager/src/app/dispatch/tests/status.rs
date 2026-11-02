@@ -1727,11 +1727,17 @@ fn show_usage_with_redirect_url_fetches_session_and_independent_providers() {
     assert_eq!(agent_scrollback_len(&app), before + 1);
     assert!(effects.iter().any(|effect| matches!(
         effect,
-        Effect::FetchChatGptUsage { agent_id: Some(AgentId(0)), .. }
+        Effect::FetchChatGptUsage {
+            agent_id: Some(AgentId(0)),
+            ..
+        }
     )));
     assert!(effects.iter().any(|effect| matches!(
         effect,
-        Effect::FetchOpenRouterUsage { agent_id: Some(AgentId(0)), .. }
+        Effect::FetchOpenRouterUsage {
+            agent_id: Some(AgentId(0)),
+            ..
+        }
     )));
     assert!(last_system_text(&app, AgentId(0)).contains("https://billing.example.com/me"));
 }
@@ -2198,4 +2204,152 @@ fn minimal_usage_reports_external_grok_unavailable_without_billing_fetch() {
     );
     assert!(last_system_text(&app, AgentId(0)).contains("Grok"));
     assert!(last_system_text(&app, AgentId(0)).contains("external auth provider"));
+}
+
+#[test]
+fn footer_chatgpt_usage_result_is_silent_and_rejects_stale_targets() {
+    let mut app = test_app_with_agent();
+    let model_id = agent_client_protocol::ModelId::new("gpt");
+    let session_id = app.agents[&AgentId(0)].session.session_id.clone().unwrap();
+    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+    agent.session.models.available.insert(
+        model_id.clone(),
+        agent_client_protocol::ModelInfo::new(model_id.clone(), "gpt").meta(
+            serde_json::json!({"accountProvider": "chatgpt"})
+                .as_object()
+                .cloned(),
+        ),
+    );
+    agent.session.models.current = Some(model_id.clone());
+    app.chatgpt_usage_target = Some((session_id.clone(), model_id.clone()));
+    app.chatgpt_usage_generation = 2;
+    let before = agent_scrollback_len(&app);
+    let usage =
+        || Box::new(serde_json::from_value(serde_json::json!({"plan_type": "pro"})).unwrap());
+    let result = |session_id, model_id, generation, usage| {
+        Action::TaskComplete(TaskResult::FooterChatGptUsageResult {
+            session_id,
+            model_id,
+            generation,
+            usage,
+        })
+    };
+    assert!(
+        dispatch(
+            result(session_id.clone(), model_id.clone(), 1, Ok(usage())),
+            &mut app
+        )
+        .is_empty()
+    );
+    assert!(app.chatgpt_usage.is_none());
+    assert!(
+        dispatch(
+            result(session_id.clone(), model_id.clone(), 2, Ok(usage())),
+            &mut app
+        )
+        .is_empty()
+    );
+    assert!(app.chatgpt_usage.is_some());
+    assert!(
+        super::super::super::event_loop::footer_usage_for_agent(
+            &app.agents[&AgentId(0)],
+            &app.chatgpt_usage_target,
+            app.chatgpt_usage.as_deref()
+        )
+        .is_some()
+    );
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = Some("other".into());
+    assert!(
+        super::super::super::event_loop::footer_usage_for_agent(
+            &app.agents[&AgentId(0)],
+            &app.chatgpt_usage_target,
+            app.chatgpt_usage.as_deref()
+        )
+        .is_none()
+    );
+    assert!(
+        dispatch(
+            result(session_id.clone(), model_id.clone(), 2, Err("stale".into())),
+            &mut app
+        )
+        .is_empty()
+    );
+    assert!(app.chatgpt_usage.is_none());
+    let other = agent_client_protocol::SessionId::new("other");
+    app.chatgpt_usage_target = Some((other.clone(), model_id.clone()));
+    app.chatgpt_usage_generation = 3;
+    app.chatgpt_usage = None;
+    assert!(dispatch(result(other.clone(), model_id.clone(), 3, Ok(usage())), &mut app).is_empty());
+    let stale_usage = Box::new(serde_json::from_value(serde_json::json!({"plan_type": "stale"})).unwrap());
+    assert!(dispatch(result(session_id.clone(), model_id.clone(), 2, Ok(stale_usage)), &mut app).is_empty());
+    assert_eq!(app.chatgpt_usage.as_ref().unwrap().plan_type.as_deref(), Some("pro"));
+    app.chatgpt_usage_target = Some((session_id.clone(), model_id.clone()));
+    app.chatgpt_usage_generation = 2;
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = Some(session_id.clone());
+    assert!(
+        dispatch(
+            result(session_id, model_id, 2, Err("failed".into())),
+            &mut app
+        )
+        .is_empty()
+    );
+    assert!(app.chatgpt_usage.is_none());
+    assert_eq!(agent_scrollback_len(&app), before);
+}
+
+#[test]
+fn footer_chatgpt_turn_hides_old_account_and_rejects_delayed_result() {
+    use crate::app::event_loop::{footer_chatgpt_model, footer_usage_for_agent};
+    use crate::views::credit_bar::{provider_usage_warning, weekly_test_fixtures};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.models = weekly_test_fixtures::models();
+    let target = footer_chatgpt_model(&app).unwrap();
+    let usage = Box::new(weekly_test_fixtures::snapshot());
+    app.chatgpt_usage = Some(usage.clone());
+    app.chatgpt_usage_target = Some(target.clone());
+    app.chatgpt_usage_generation = 7;
+    let warning = |app: &AppView| {
+        let agent = &app.agents[&id];
+        provider_usage_warning(Some(&agent.session.models), None, None, true, false,
+            footer_usage_for_agent(agent, &app.chatgpt_usage_target, app.chatgpt_usage.as_deref()))
+    };
+    assert!(warning(&app).unwrap().0.contains("ChatGPT"));
+    let effects = dispatch(Action::SendPrompt("turn".into()), &mut app);
+    let prompt_id = effects.iter().find_map(|effect| match effect {
+        Effect::SendPrompt { prompt_id, .. } => Some(prompt_id.clone()),
+        _ => None,
+    }).expect("prompt starts turn");
+    assert!(app.agents[&id].session.state.is_turn_running());
+    assert!(warning(&app).is_none());
+    assert!(app.chatgpt_usage.is_none());
+    assert!(app.chatgpt_usage_target.is_none());
+    assert!(app.chatgpt_usage_generation > 7);
+    let delayed = || Action::TaskComplete(TaskResult::FooterChatGptUsageResult {
+        session_id: target.0.clone(), model_id: target.1.clone(), generation: 7, usage: Ok(usage.clone()),
+    });
+    assert!(dispatch(delayed(), &mut app).is_empty());
+    assert!(app.chatgpt_usage.is_none());
+    dispatch(Action::TaskComplete(TaskResult::PromptResponse {
+        agent_id: id, result: Ok(agent_client_protocol::PromptResponse::new(agent_client_protocol::StopReason::EndTurn)),
+        http_status: None, prompt_id: Some(prompt_id),
+    }), &mut app);
+    assert!(app.agents[&id].session.state.is_idle());
+    assert_eq!(footer_chatgpt_model(&app), Some(target.clone()));
+    assert!(app.chatgpt_usage_target.is_none());
+    assert!(warning(&app).is_none());
+    assert!(dispatch(delayed(), &mut app).is_empty());
+    assert!(app.chatgpt_usage.is_none());
+    app.chatgpt_usage_target = Some(target.clone());
+    assert!(dispatch(delayed(), &mut app).is_empty());
+    assert!(app.chatgpt_usage.is_none());
+    assert!(warning(&app).is_none());
+    app.chatgpt_usage = Some(usage);
+    app.agents.get_mut(&id).unwrap().session.model_switch_pending = true;
+    assert!(warning(&app).is_none());
+    crate::app::event_loop::invalidate_ineligible_footer(&mut app);
+    assert!(app.chatgpt_usage.is_none());
+    assert!(app.chatgpt_usage_target.is_none());
+    app.agents.get_mut(&id).unwrap().session.model_switch_pending = false;
+    assert_eq!(footer_chatgpt_model(&app), Some(target));
 }

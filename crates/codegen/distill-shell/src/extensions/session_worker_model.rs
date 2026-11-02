@@ -151,6 +151,12 @@ pub(crate) fn effective_worker(state: &SessionWorkerState) -> EffectiveWorker {
     }
 }
 
+pub(crate) fn insert_worker_meta(meta: &mut acp::Meta, state: &SessionWorkerState) {
+    let worker = effective_worker(state);
+    meta.insert(MODEL_META_KEY.into(), worker.model_id.into());
+    meta.insert(EFFORT_META_KEY.into(), worker.effort.into());
+}
+
 /// The worker the session's main prompt names in `<environment>` for `<orchestration>`: the
 /// worker its delegated children run on, kept only for a primary prompt with subagents enabled,
 /// a catalog model, and not the catalog entry of the session's own main model.
@@ -244,4 +250,31 @@ fn validated_worker(
         model_id: Some(model_id.to_owned()),
         effort,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::handle::new_session_worker_state;
+
+    #[test]
+    fn worker_metadata_tracks_session_and_preserves_other_metadata() {
+        let state = new_session_worker_state();
+        let mut meta = acp::Meta::new();
+        meta.insert("autoRoute".into(), serde_json::json!({"model": "main"}));
+        for (model_id, effort, expected_effort) in [
+            (Some("worker-a"), None, "auto"),
+            (Some("worker-b"), Some("high".parse().unwrap()), "high"),
+            (None, None, "auto"),
+        ] {
+            *state.write() = Some(SessionWorker {
+                model_id: model_id.map(str::to_owned),
+                effort,
+            });
+            insert_worker_meta(&mut meta, &state);
+            assert_eq!(meta[MODEL_META_KEY], serde_json::json!(model_id));
+            assert_eq!(meta[EFFORT_META_KEY], serde_json::json!(expected_effort));
+            assert_eq!(meta["autoRoute"], serde_json::json!({"model": "main"}));
+        }
+    }
 }

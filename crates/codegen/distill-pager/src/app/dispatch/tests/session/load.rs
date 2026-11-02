@@ -33,6 +33,45 @@ fn cancel_turn_picker_grabs_focus_from_scrollback() {
     );
 }
 #[test]
+fn background_session_loaded_preserves_active_model_mirror() {
+    let mut app = test_app_with_agent();
+    let background = AgentId(1);
+    let session = make_test_agent_session(&app, background, "background");
+    app.agents
+        .insert(background, AgentView::new(session, ScrollbackState::new()));
+    app.models.current = Some(acp::ModelId::new("active-main"));
+    app.models.worker_model = Some(acp::ModelId::new("active-worker"));
+    let mut wire = acp::SessionModelState::new(acp::ModelId::new("background-main"), vec![]);
+    wire.meta = serde_json::json!({"workerModelId": "background-worker", "workerEffort": "auto"})
+        .as_object()
+        .cloned();
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionLoaded {
+            agent_id: background,
+            session_id: acp::SessionId::new("background"),
+            models: Some(wire),
+            modes: None,
+            code_restored: true,
+            restore_summary: None,
+            restore_degree: None,
+            running_prompt_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(app.models.current, Some(acp::ModelId::new("active-main")));
+    assert_eq!(
+        app.models.worker_model,
+        Some(acp::ModelId::new("active-worker"))
+    );
+    let models = &expect_agent(&app, background).session.models;
+    assert_eq!(models.current, Some(acp::ModelId::new("background-main")));
+    assert_eq!(
+        models.worker_model,
+        Some(acp::ModelId::new("background-worker"))
+    );
+}
+
+#[test]
 fn session_loaded_with_restore_shows_summary_in_scrollback() {
     let mut app = test_app();
     dispatch(
@@ -770,6 +809,8 @@ fn session_restored_does_not_consume_flag_and_defers_to_load() {
     {
         let a = app.agents.get_mut(&id).unwrap();
         a.session.session_id = None;
+        a.session.models.current = Some(acp::ModelId::new("session-main"));
+        a.session.models.worker_model = Some(acp::ModelId::new("session-worker"));
         a.pending_extensions_fetch = true;
         a.extensions_modal = Some(ExtensionsModalState::new(ExtensionsTab::Hooks));
     }
@@ -782,6 +823,8 @@ fn session_restored_does_not_consume_flag_and_defers_to_load() {
     );
     assert_eq!(count_extension_fetches(&effects), 0);
     assert!(expect_agent(&app, id).pending_extensions_fetch);
+    assert_eq!(expect_agent(&app, id).session.models.current, Some(acp::ModelId::new("session-main")));
+    assert_eq!(expect_agent(&app, id).session.models.worker_model, Some(acp::ModelId::new("session-worker")));
     assert!(
         effects
             .iter()

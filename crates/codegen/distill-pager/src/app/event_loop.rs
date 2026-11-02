@@ -297,8 +297,25 @@ fn plan_reconnect_load(
     let yolo = agent.session.is_yolo();
     let auto = super::dispatch::effective_auto(yolo, agent.session.is_auto());
     let mut meta = serde_json::json!({ "yoloMode": yolo, "autoMode": auto });
-    if let Some(obj) = meta.as_object_mut() {
-        effects::stamp_instance_worker_meta(obj);
+    if agent.session.models.auto_route.is_none()
+        && let Some(obj) = meta.as_object_mut()
+    {
+        let models = &agent.session.models;
+        obj.insert(
+            "workerModelId".into(),
+            serde_json::json!(
+                models
+                    .worker_model
+                    .as_ref()
+                    .map_or_else(String::new, |id| id.0.to_string())
+            ),
+        );
+        obj.insert(
+            "workerEffort".into(),
+            serde_json::json!(crate::acp::model_state::effort_setting_label(
+                models.worker_effort
+            )),
+        );
     }
     if let Some(ref cursor) = agent.last_seen_event_id
         && let Some(obj) = meta.as_object_mut()
@@ -4757,17 +4774,58 @@ mod tests {
         assert_eq!(j(&plan.meta, "yoloMode"), &serde_json::json!(true));
         assert_eq!(j(&plan.meta, "cursor"), &serde_json::json!("sess-1-42"));
     }
-    /// A reconnect reload keeps this instance's worker instead of the saved `[models].worker`.
     #[test]
-    fn plan_reconnect_load_meta_carries_the_instance_worker() {
+    fn plan_reconnect_load_meta_carries_each_session_worker() {
+        use distill_shell::sampling::types::ReasoningEffort;
         crate::acp::ModelState::set_instance_worker(
-            Some(acp::ModelId::new("instance-worker")),
+            Some(acp::ModelId::new("default-worker")),
             None,
         );
-        let agent = crate::test_util::make_agent_view(Some("sess-1"), "/work");
+        let mut a = crate::test_util::make_agent_view(Some("sess-a"), "/work");
+        let mut b = crate::test_util::make_agent_view(Some("sess-b"), "/work");
+        a.session.models.worker_model = Some(acp::ModelId::new("grok/worker"));
+        a.session.models.worker_effort = Some(ReasoningEffort::High);
+        b.session.models.worker_model = Some(acp::ModelId::new("codex/worker"));
+        b.session.models.worker_effort = Some(ReasoningEffort::Medium);
+        let a_plan = plan_reconnect_load(&a, std::path::Path::new("/pager/cwd")).unwrap();
+        let b_plan = plan_reconnect_load(&b, std::path::Path::new("/pager/cwd")).unwrap();
+        assert_eq!(
+            j(&a_plan.meta, "workerModelId"),
+            &serde_json::json!("grok/worker")
+        );
+        assert_eq!(j(&a_plan.meta, "workerEffort"), &serde_json::json!("high"));
+        assert_eq!(
+            j(&b_plan.meta, "workerModelId"),
+            &serde_json::json!("codex/worker")
+        );
+        assert_eq!(
+            j(&b_plan.meta, "workerEffort"),
+            &serde_json::json!("medium")
+        );
+        b.session.models.worker_model = None;
+        b.session.models.worker_effort = None;
+        let disabled = plan_reconnect_load(&b, std::path::Path::new("/pager/cwd")).unwrap();
+        assert_eq!(j(&disabled.meta, "workerModelId"), &serde_json::json!(""));
+        assert_eq!(
+            j(&disabled.meta, "workerEffort"),
+            &serde_json::json!("auto")
+        );
+        assert_eq!(
+            crate::acp::ModelState::configured_worker_model(),
+            Some(acp::ModelId::new("default-worker"))
+        );
+    }
+    #[test]
+    fn plan_reconnect_load_auto_route_omits_worker_override() {
+        let mut agent = crate::test_util::make_agent_view(Some("sess-auto"), "/work");
+        agent.session.models.auto_route = Some((
+            acp::ModelId::new("routed-main"),
+            acp::ModelId::new("routed-worker"),
+        ));
+        agent.session.models.worker_model = Some(acp::ModelId::new("manual-worker"));
         let plan = plan_reconnect_load(&agent, std::path::Path::new("/pager/cwd")).unwrap();
-        assert_eq!(j(&plan.meta, "workerModelId"), &serde_json::json!("instance-worker"));
-        assert_eq!(j(&plan.meta, "workerEffort"), &serde_json::json!("auto"));
+        assert!(plan.meta.get("workerModelId").is_none());
+        assert!(plan.meta.get("workerEffort").is_none());
     }
     #[test]
     fn plan_reconnect_load_meta_carries_auto_mode_from_session() {

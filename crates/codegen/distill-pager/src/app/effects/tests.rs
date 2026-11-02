@@ -2951,8 +2951,7 @@ fn upload_trace_request_without_intent_keeps_legacy_wire_shape() {
             r#"{"sessionId":"sess-1"}"#
         );
 }
-/// `session/new` and `session/load` carry this instance's worker, so the shell
-/// never starts the session on a `[models].worker` another instance saved.
+/// New sessions inherit this instance's worker; existing sessions keep their own.
 #[tokio::test]
 async fn session_create_and_load_meta_carry_the_instance_worker() {
     use distill_acp_lib::AcpAgentMessage;
@@ -2964,6 +2963,17 @@ async fn session_create_and_load_meta_carry_the_instance_worker() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut tasks = JoinSet::new();
+    let worktree = |agent_id, load_session_id| Effect::CreateWorktreeSession {
+        agent_id: AgentId(agent_id),
+        load_session_id,
+        label: None,
+        git_ref: None,
+        model_id: None,
+        permission_mode_override: None,
+        preferred_session_id: None,
+        minted_session_id: None,
+        chat_kind: false,
+    };
     for effect in [
         Effect::CreateSession {
             agent_id: AgentId(0),
@@ -2979,28 +2989,50 @@ async fn session_create_and_load_meta_carry_the_instance_worker() {
             session_cwd: Some(cwd.path().to_path_buf()),
             chat_kind: false,
         },
+        worktree(2, None),
+        worktree(3, Some("resumed-session".into())),
     ] {
         execute(effect, &mut tasks, &tx, cwd.path(), &SessionFlags::default(), &progress_tx);
     }
-    let (mut created, mut loaded) = (false, false);
-    while !(created && loaded) {
+    let (mut created, mut loaded, mut worktree_created, mut worktree_resumed) = (false, false, false, false);
+    while !(created && loaded && worktree_created && worktree_resumed) {
         let request = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
             .await
             .expect("session request in time")
             .expect("session request");
-        let meta = match request {
+        match request {
             AcpAgentMessage::NewSession(args) => {
-                created = true;
-                args.request.meta
+                let meta = args.request.meta.expect("session meta");
+                assert_eq!(meta.get("workerModelId"), Some(&serde_json::json!("instance-worker")));
+                assert_eq!(meta.get("workerEffort"), Some(&serde_json::json!("medium")));
+                if args.request.cwd == cwd.path() { created = true; } else { worktree_created = true; }
             }
             AcpAgentMessage::LoadSession(args) => {
                 loaded = true;
-                args.request.meta
+                assert_eq!(args.request.session_id.0.as_ref(), "loaded-session");
+                if let Some(meta) = args.request.meta {
+                    assert!(!meta.contains_key("workerModelId"));
+                    assert!(!meta.contains_key("workerEffort"));
+                }
             }
-            other => panic!("expected session/new or session/load, got {other:?}"),
+            AcpAgentMessage::ExtMethod(args) => {
+                let params: serde_json::Value = serde_json::from_str(args.request.params.get()).unwrap();
+                match args.request.method.as_ref() {
+                    crate::app::worktree_session::CREATE_METHOD => {
+                        let response = serde_json::json!({"worktreePath": cwd.path().join("worktree")});
+                        let raw = serde_json::value::RawValue::from_string(response.to_string()).unwrap();
+                        args.response_tx.send(Ok(acp::ExtResponse::new(std::sync::Arc::from(raw)))).unwrap();
+                    }
+                    crate::app::worktree_session::RESUME_METHOD => {
+                        worktree_resumed = true;
+                        assert_eq!(params.get("sessionId"), Some(&serde_json::json!("resumed-session")));
+                        assert!(params.get("workerModelId").is_none());
+                        assert!(params.get("workerEffort").is_none());
+                    }
+                    other => panic!("unexpected worktree method {other}"),
+                }
+            }
+            other => panic!("unexpected session request {other:?}"),
         }
-        .expect("session meta");
-        assert_eq!(meta.get("workerModelId"), Some(&serde_json::json!("instance-worker")));
-        assert_eq!(meta.get("workerEffort"), Some(&serde_json::json!("medium")));
     }
 }

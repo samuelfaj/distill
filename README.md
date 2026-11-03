@@ -6,7 +6,7 @@
 Distill is a lightweight coding agent harness and TUI, built to **get far more done
 with far fewer tokens.**
 
-It works with Grok and Codex subscriptions, and with any model that speaks the
+It works with Grok, Claude and Codex subscriptions, and with any model that speaks the
 OpenAI-compatible protocol.
 
 **Steps:**

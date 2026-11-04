@@ -1171,7 +1171,19 @@ pub(super) fn dispatch_dashboard_overlay_cycle(app: &mut AppView, delta: i32) ->
     if app.agents.len() <= 1 {
         return vec![];
     }
-    let order = if app.workspace_dashboard_enabled {
+    let order = if app
+        .dashboard
+        .as_ref()
+        .is_some_and(|dashboard| dashboard.board_view)
+    {
+        dashboard_focusables(app)
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::views::dashboard::Focusable::Row(DashboardRowId::TopLevel(id)) => Some(id),
+                _ => None,
+            })
+            .collect()
+    } else if app.workspace_dashboard_enabled {
         let filter = app
             .dashboard
             .as_ref()
@@ -2059,14 +2071,7 @@ pub(super) fn dashboard_focusables(app: &AppView) -> Vec<crate::views::dashboard
             d.grouping,
         )
     };
-    crate::views::dashboard::render::focusables(
-        &rows,
-        grouping,
-        &d.filter,
-        &d.collapsed_sections,
-        d.idle_show_all,
-        d.search_mode,
-    )
+    d.focusables_for_rows(&rows, grouping)
 }
 
 /// Chooses the next visible row after removal, falling back to the previous row.
@@ -2580,6 +2585,14 @@ fn close_dashboard_agents(
 }
 
 pub(super) fn dispatch_dashboard_toggle_grouping(app: &mut AppView) -> Vec<Effect> {
+    if app
+        .dashboard
+        .as_ref()
+        .is_some_and(|dashboard| dashboard.board_view)
+    {
+        app.show_toast("Board view groups agents by state");
+        return vec![];
+    }
     if app.workspace_dashboard_enabled {
         let Some(grouping) = app.workspace_membership.effective_grouping() else {
             return vec![];
@@ -2637,6 +2650,34 @@ pub(super) fn dispatch_dashboard_select(app: &mut AppView, next: bool) {
             crate::views::dashboard::Focusable::IdleOverflow => d.selected_idle_overflow,
         })
         .unwrap_or(0);
+    let cur = if d.board_view {
+        d.selected
+            .as_ref()
+            .and_then(|selected| d.board_slots.iter().find(|(id, _)| id == selected))
+            .and_then(|(_, (_, grid_row))| {
+                let positions = focusables.iter().enumerate().filter_map(|(index, item)| {
+                    let crate::views::dashboard::Focusable::Row(id) = item else {
+                        return None;
+                    };
+                    d.board_slots
+                        .iter()
+                        .any(|(candidate, (_, row))| candidate == id && row == grid_row)
+                        .then_some(index)
+                });
+                if next {
+                    positions.max()
+                } else {
+                    positions.min()
+                }
+            })
+            .unwrap_or(cur)
+    } else {
+        cur
+    };
+    if d.board_view && next && cur + 1 == focusables.len() {
+        d.clear_manual_scroll();
+        return;
+    }
     // Up on the first focusable focuses the `+ New Agent` button
     // The button acts as a sentinel above index 0, exactly like the agent's tabs in the agents modal
     if !next && cur == 0 {

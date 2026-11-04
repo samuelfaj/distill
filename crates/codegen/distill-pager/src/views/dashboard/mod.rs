@@ -11,7 +11,8 @@
 //! - [`row_title`]: title, subtitle, and chip painting for wide and narrow rows.
 //! - [`layout`]: pure rect computation.
 //! - [`render`]: `Widget`-style rendering routine.
-//! - [`chrome`]: the header row and the primary actions row above the list.
+//! //! - [`chrome`]: the header row and the primary actions row above the list.
+//! - [`board`]: optional card-board presentation of the same rows.
 //! - [`actions_focus`]: the keyboard cursor on the actions row and its `←`/`→` walk.
 //! - [`peek`]: peek panel state and rendering.
 //! - [`usage_modal`]: input routing for the dashboard-hosted `/usage` modal.
@@ -23,6 +24,7 @@
 
 mod actions_focus;
 pub(crate) mod animation;
+mod board;
 mod chrome;
 pub mod layout;
 pub mod peek;
@@ -69,6 +71,16 @@ pub fn overlay_cycle_order(
         &state.filter,
         home,
     );
+    if state.board_view {
+        return state
+            .focusables_for_rows(&rows, state.grouping)
+            .into_iter()
+            .filter_map(|item| match item {
+                Focusable::Row(DashboardRowId::TopLevel(id)) => Some(id),
+                _ => None,
+            })
+            .collect();
+    }
     rows.iter()
         .filter_map(|r| match &r.id {
             DashboardRowId::TopLevel(id) if !r.is_more_placeholder => Some(*id),

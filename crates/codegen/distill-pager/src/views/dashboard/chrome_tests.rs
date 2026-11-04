@@ -394,7 +394,7 @@ fn actions_row_keeps_worktree_and_drops_open_previous_with_divider() {
     let text = buf_to_text(&buf);
     assert!(text.contains("Worktree"), "got: {text:?}");
     assert!(
-        !text.contains("Open Previous") && !text.contains('│'),
+        !text.contains("Open Previous") && text.contains("Board"),
         "Open Previous and its divider must both go, got: {text:?}",
     );
     let worktree = state
@@ -447,11 +447,15 @@ fn actions_row_right_items_follow_strict_priority_at_every_width() {
                 open.is_none() || worktree.is_some(),
                 "{ctx}: Open Previous must not outlive the worktree toggle",
             );
+            let board = state.board_view_button_hit.rect;
+            if width >= 44 {
+                assert!(board.is_some(), "{ctx}: Board remains reachable");
+            }
             let text = buf_to_text(&buf);
             assert_eq!(
                 text.contains('│'),
-                open.is_some(),
-                "{ctx}: the divider appears exactly when both right-hand items do",
+                open.is_some() || board.is_some(),
+                "{ctx}: the divider appears when any right-hand neighbour of New Agent does",
             );
         }
     }
@@ -472,9 +476,11 @@ fn actions_row_right_items_follow_strict_priority_at_every_width() {
     assert_eq!(armed_at(45), (false, false));
     assert_eq!(armed_at(46), (false, false));
     assert_eq!(armed_at(47), (false, false));
-    assert_eq!(armed_at(48), (true, false));
+    assert_eq!(armed_at(48), (false, false));
+    assert_eq!(armed_at(56), (true, false));
     assert_eq!(armed_at(71), (true, false));
-    assert_eq!(armed_at(72), (true, true));
+    assert_eq!(armed_at(79), (true, false));
+    assert_eq!(armed_at(80), (true, true));
 }
 
 /// The header pairs the location label (cwd and git info) on the left with right-aligned, labelled state-count chips.

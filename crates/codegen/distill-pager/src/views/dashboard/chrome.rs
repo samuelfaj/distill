@@ -1,5 +1,5 @@
 //! Dashboard chrome above the row list: the header row (location label, `[Choose …]` hint, state chips, promo CTA)
-//! and the primary actions row (`+ New Agent`, `Open Previous /resume`, `Worktree Ctrl+w`).
+//! and the primary actions row (`+ New Agent`, `Board view`, `Open Previous /resume`, `Worktree Ctrl+w`).
 //! Both paint into rects from [`crate::views::dashboard::layout::DashboardLayout`] and register their click targets on [`DashboardState`].
 
 use ratatui::buffer::Buffer;
@@ -234,7 +234,7 @@ fn underline_location_on_hover(spans: Vec<Span<'static>>) -> Vec<Span<'static>> 
         .collect()
 }
 
-/// Paint the primary actions row into `area` and write the three action hit rects.
+/// Paint the primary actions row into `area` and write the four action hit rects.
 pub(super) fn render_actions_row(
     buf: &mut Buffer,
     area: Rect,
@@ -272,24 +272,53 @@ pub(super) fn render_actions_row(
     // Right-hand items are laid out before `+ New Agent` so a focus fallback (below) can still colour that button in the same frame
     // Each right-hand item keeps a 2-cell gap from the `+ New Agent` button so the two sides never touch
     let mut right_edge = area.x + area.width;
-    let left_limit = area.x + new_agent_w + 2;
-    let fits = |right_edge: u16, w: u16| right_edge.checked_sub(w).is_some_and(|x| x >= left_limit);
-    let place_right =
-        |right_edge: &mut u16, line: &Line<'static>, buf: &mut Buffer| -> Option<Rect> {
-            let w = line.width() as u16;
-            if !fits(*right_edge, w) {
-                return None;
-            }
-            let x = *right_edge - w;
-            buf.set_line(x, area.y, line, w);
-            *right_edge = x;
-            Some(Rect {
-                x,
-                y: area.y,
-                width: w,
-                height: 1,
-            })
-        };
+    let orig_left_limit = area.x + new_agent_w + 2;
+    let compact_board_label = if state.board_view { "Rows" } else { "Board" };
+    let full_board_label = if state.board_view {
+        "Row view"
+    } else {
+        "Board view"
+    };
+    let board_fg = button_fg(
+        state.board_view_button_focused(),
+        state.board_view_button_hit.hovered,
+        theme.gray,
+    );
+    let board_line = |label: &'static str| hint_line(Span::styled(label, bg.fg(board_fg)), None);
+    let compact_board = board_line(compact_board_label);
+    let full_board = board_line(full_board_label);
+    let board_divider = Line::from(Span::styled(" │ ", key_style));
+    let compact_board_w = (compact_board.width() + board_divider.width()) as u16;
+    let full_board_w = (full_board.width() + board_divider.width()) as u16;
+    let board_reserved = orig_left_limit
+        .checked_add(compact_board_w)
+        .is_some_and(|need| need <= area.x + area.width);
+    let item_limit = if board_reserved {
+        orig_left_limit + compact_board_w
+    } else {
+        orig_left_limit
+    };
+    let fits =
+        |right_edge: u16, w: u16, limit: u16| right_edge.checked_sub(w).is_some_and(|x| x >= limit);
+    let place_right = |right_edge: &mut u16,
+                       line: &Line<'static>,
+                       buf: &mut Buffer,
+                       limit: u16|
+     -> Option<Rect> {
+        let w = line.width() as u16;
+        if !fits(*right_edge, w, limit) {
+            return None;
+        }
+        let x = *right_edge - w;
+        buf.set_line(x, area.y, line, w);
+        *right_edge = x;
+        Some(Rect {
+            x,
+            y: area.y,
+            width: w,
+            height: 1,
+        })
+    };
 
     let worktree_label = if worktree_armed {
         "Disable Worktree"
@@ -311,11 +340,11 @@ pub(super) fn render_actions_row(
             crate::actions::ActionId::DashboardToggleWorktree,
         ),
     );
-    let worktree_rect = place_right(&mut right_edge, &worktree_hint, buf);
+    let worktree_rect = place_right(&mut right_edge, &worktree_hint, buf, item_limit);
     state.worktree_toggle_hit.set(worktree_rect);
 
-    // Strict right-to-left priority: once the worktree toggle is out, nothing to its left is tried either, so a narrower
-    // `Open Previous` can never take the place of the (wider, armed) toggle
+    // Strict right-to-left priority after the reserved Board control: once the worktree toggle is out,
+    // `Open Previous` is not tried either, so a narrower picker can never take the place of the (wider, armed) toggle
     if workspace_dashboard_enabled && worktree_rect.is_some() {
         // The session picker has no dashboard chord (`Ctrl+R` is rename here), so the hint names the slash command that opens it
         let open_previous = hint_line(
@@ -331,11 +360,31 @@ pub(super) fn render_actions_row(
         );
         let divider = Line::from(Span::styled(" │ ", key_style));
         let needed = (open_previous.width() + divider.width()) as u16;
-        let open_rect = fits(right_edge, needed).then(|| {
-            place_right(&mut right_edge, &divider, buf);
-            place_right(&mut right_edge, &open_previous, buf)
+        let open_rect = fits(right_edge, needed, item_limit).then(|| {
+            place_right(&mut right_edge, &divider, buf, item_limit);
+            place_right(&mut right_edge, &open_previous, buf, item_limit)
         });
         state.open_session_button_hit.set(open_rect.flatten());
+    }
+    // Compact Board/Rows is reserved before Worktree / Open Previous so the toggle stays reachable at
+    // 44/60/64 cols. Full `Board view` is used when the leftover span fits; otherwise `Board` / `Rows`.
+    if board_reserved {
+        let use_full = fits(right_edge, full_board_w, orig_left_limit);
+        let board = if use_full {
+            &full_board
+        } else {
+            &compact_board
+        };
+        let needed = if use_full {
+            full_board_w
+        } else {
+            compact_board_w
+        };
+        let board_rect = fits(right_edge, needed, orig_left_limit).then(|| {
+            place_right(&mut right_edge, &board_divider, buf, orig_left_limit);
+            place_right(&mut right_edge, board, buf, orig_left_limit)
+        });
+        state.board_view_button_hit.set(board_rect.flatten());
     }
     fall_back_from_unpainted_item(state);
 

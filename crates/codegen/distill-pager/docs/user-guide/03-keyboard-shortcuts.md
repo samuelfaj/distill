@@ -374,7 +374,9 @@ Bindings while the [Agent Dashboard](23-dashboard.md) is focused (`Ctrl+\` or `/
 
 | Key | Action |
 |-----|--------|
-| `↑` / `↓`, `j` / `k` | Navigate agent rows (selecting a row opens peek) |
+| `↑` / `↓`, `j` / `k` | Navigate agent rows (selecting a row opens peek) or board cards spatially |
+| `←` / `→` | Walk the actions row, or neighbouring board cards |
+| `Space` | Expand or collapse the selected board card |
 | `Enter` | Open the selected agent, or send a typed peek reply / dispatch prompt |
 | `Ctrl+S` | Reply or dispatch **and** attach to that agent |
 | `Ctrl+/` | Toggle search / filter mode |

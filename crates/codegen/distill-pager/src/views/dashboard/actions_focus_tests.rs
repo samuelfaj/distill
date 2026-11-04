@@ -80,6 +80,11 @@ fn arrows_walk_actions_row_in_visual_order_without_wrapping() {
         press(&mut state, Right),
         crate::app::app_view::InputOutcome::Changed
     ));
+    assert_eq!(state.actions_focus, Some(ActionsFocus::BoardView));
+    assert!(matches!(
+        press(&mut state, Right),
+        crate::app::app_view::InputOutcome::Changed
+    ));
     assert_eq!(state.actions_focus, Some(ActionsFocus::OpenPrevious));
     assert!(matches!(
         press(&mut state, Right),
@@ -105,6 +110,11 @@ fn arrows_walk_actions_row_in_visual_order_without_wrapping() {
         press(&mut state, Left),
         crate::app::app_view::InputOutcome::Changed
     ));
+    assert_eq!(state.actions_focus, Some(ActionsFocus::BoardView));
+    assert!(matches!(
+        press(&mut state, Left),
+        crate::app::app_view::InputOutcome::Changed
+    ));
     assert_eq!(state.actions_focus, Some(ActionsFocus::NewAgent));
 }
 
@@ -116,7 +126,7 @@ fn arrows_skip_actions_items_that_were_not_painted() {
     let mut v1 = painted_actions_state(120, false);
     assert!(v1.open_session_button_hit.rect.is_none());
     press(&mut v1, Right);
-    assert_eq!(v1.actions_focus, Some(ActionsFocus::Worktree));
+    assert_eq!(v1.actions_focus, Some(ActionsFocus::BoardView));
 
     let mut narrow = painted_actions_state(20, true);
     assert!(narrow.worktree_toggle_hit.rect.is_none());
@@ -137,7 +147,7 @@ fn arrows_walk_actions_row_from_empty_input_but_not_over_a_draft() {
         press(&mut state, Right),
         crate::app::app_view::InputOutcome::Changed
     ));
-    assert_eq!(state.actions_focus, Some(ActionsFocus::OpenPrevious));
+    assert_eq!(state.actions_focus, Some(ActionsFocus::BoardView));
     press(&mut state, Left);
     assert_eq!(state.actions_focus, Some(ActionsFocus::NewAgent));
 

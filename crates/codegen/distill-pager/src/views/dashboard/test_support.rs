@@ -6,7 +6,7 @@ use super::row::DashboardRow;
 use super::state::{DashboardRowId, RowState};
 
 /// Visible text in left-to-right order, including wide-cell glyphs.
-pub(super) fn buf_to_text(buf: &Buffer) -> String {
+pub(crate) fn buf_to_text(buf: &Buffer) -> String {
     let mut content = String::new();
     for y in 0..buf.area.height {
         for x in 0..buf.area.width {
@@ -20,7 +20,7 @@ pub(super) fn buf_to_text(buf: &Buffer) -> String {
 }
 
 /// A top-level dashboard row with defaults, for chrome and render tests.
-pub(super) fn header_test_row(id: u32, state: RowState, label: &str) -> DashboardRow {
+pub(crate) fn header_test_row(id: u32, state: RowState, label: &str) -> DashboardRow {
     use crate::app::agent::AgentId;
     DashboardRow {
         id: DashboardRowId::TopLevel(AgentId(id as usize)),

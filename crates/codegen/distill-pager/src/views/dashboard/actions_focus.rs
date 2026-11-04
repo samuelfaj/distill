@@ -1,4 +1,4 @@
-//! The keyboard cursor on the dashboard's actions row (`+ New Agent`, `Open Previous /resume`, `Worktree Ctrl+w`):
+//! The keyboard cursor on the dashboard's actions row (`+ New Agent`, `Board view`, `Open Previous /resume`, `Worktree Ctrl+w`):
 //! which item can hold it, their visual order, and how `←`/`→` walk that order over the items the last frame painted.
 //! Owns the one item-to-hit-area mapping that navigation and the renderer's focus fallback both use.
 
@@ -13,6 +13,8 @@ pub enum ActionsFocus {
     NewAgent,
     /// `Open Previous /resume` (v2 workspace dashboard only): Enter opens the session picker.
     OpenPrevious,
+    /// `Board view` / `Rows` toggle: Enter switches presentation without changing row data.
+    BoardView,
     /// `Worktree Ctrl+w`: Enter toggles worktree mode.
     Worktree,
 }
@@ -25,8 +27,9 @@ pub(crate) enum Step {
 
 impl ActionsFocus {
     /// Left-to-right order on the row, which is also the order the walk follows.
-    pub(crate) const VISUAL_ORDER: [ActionsFocus; 3] = [
+    pub(crate) const VISUAL_ORDER: [ActionsFocus; 4] = [
         ActionsFocus::NewAgent,
+        ActionsFocus::BoardView,
         ActionsFocus::OpenPrevious,
         ActionsFocus::Worktree,
     ];
@@ -35,6 +38,7 @@ impl ActionsFocus {
     pub(crate) fn hit(self, state: &DashboardState) -> &HitArea {
         match self {
             ActionsFocus::NewAgent => &state.new_agent_button_hit,
+            ActionsFocus::BoardView => &state.board_view_button_hit,
             ActionsFocus::OpenPrevious => &state.open_session_button_hit,
             ActionsFocus::Worktree => &state.worktree_toggle_hit,
         }

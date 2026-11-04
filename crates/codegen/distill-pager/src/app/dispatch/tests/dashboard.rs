@@ -8368,3 +8368,64 @@ fn stop_readiness_predicate_matches_the_built_plan() {
     assert!(!DashboardStopPlan::would_stop_anything(agent));
     agree(agent);
 }
+
+#[test]
+fn board_vertical_boundary_visits_section_instead_of_sideways_card() {
+    use crate::views::dashboard::{DashboardRowId, RowState, SectionKey};
+    let mut app = three_agent_app();
+    app.workspace_dashboard_enabled = false;
+    for id in [AgentId(0), AgentId(1), AgentId(2)] {
+        mark_agent_nonempty(&mut app, id);
+    }
+    app.agents.get_mut(&AgentId(0)).unwrap().session.state = AgentState::TurnRunning;
+    app.agents.get_mut(&AgentId(1)).unwrap().session.state = AgentState::TurnRunning;
+    ensure_dashboard_state(&mut app);
+    app.active_view = ActiveView::AgentDashboard;
+    let dashboard = app.dashboard.as_mut().unwrap();
+    dashboard.board_view = true;
+    dashboard.grouping = crate::views::dashboard::Grouping::Directory;
+    dashboard.board_slots = vec![
+        (DashboardRowId::TopLevel(AgentId(0)), (0, 1)),
+        (DashboardRowId::TopLevel(AgentId(1)), (1, 1)),
+    ];
+    dashboard.focus_row(DashboardRowId::TopLevel(AgentId(0)));
+    dispatch(Action::DashboardSelectNext, &mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().selected_section,
+        Some(SectionKey::State(RowState::Idle))
+    );
+    app.dashboard
+        .as_mut()
+        .unwrap()
+        .focus_row(DashboardRowId::TopLevel(AgentId(1)));
+    dispatch(Action::DashboardSelectPrev, &mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().selected_section,
+        Some(SectionKey::State(RowState::Working))
+    );
+}
+
+#[test]
+fn board_overlay_order_and_grouping_follow_state_buckets() {
+    use crate::views::dashboard::{DashboardRowId, Grouping};
+    let mut app = three_agent_app();
+    app.workspace_dashboard_enabled = false;
+    for id in [AgentId(0), AgentId(1), AgentId(2)] {
+        mark_agent_nonempty(&mut app, id);
+    }
+    app.agents.get_mut(&AgentId(1)).unwrap().session.state = AgentState::TurnRunning;
+    ensure_dashboard_state(&mut app);
+    let dashboard = app.dashboard.as_mut().unwrap();
+    dashboard.board_view = true;
+    dashboard.grouping = Grouping::Directory;
+    dashboard
+        .pinned
+        .insert(DashboardRowId::TopLevel(AgentId(0)));
+    let order = crate::views::dashboard::overlay_cycle_order(dashboard, &app.agents);
+    assert_eq!(order.first(), Some(&AgentId(1)));
+    dispatch(Action::DashboardToggleGrouping, &mut app);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().grouping,
+        Grouping::Directory
+    );
+}

@@ -165,7 +165,7 @@ pub(crate) fn render_dashboard(
     let fixed = super::layout::chrome_overhead(area);
     let reply_text_w = layout.dispatch.width.saturating_sub(6);
 
-    if !state.search_mode {
+    if !state.search_mode && !state.board_view {
         match state.selected.clone() {
             Some(sel) => match super::peek::compute_peek_fields(&sel, agents) {
                 Some(fields) => {
@@ -277,6 +277,8 @@ pub(crate) fn render_dashboard(
         } else {
             render_empty_state(buf, layout.list, &theme, dashboard_sessions_loading);
         }
+    } else if state.board_view {
+        super::board::render_board(buf, layout.list, &theme, &rows, grouping, state, agents);
     } else if area.width < MIN_DASHBOARD_WIDTH {
         render_narrow_rows_with_grouping(buf, layout.list, &theme, &rows, grouping, state);
     } else {
@@ -882,7 +884,7 @@ fn render_location_picker(
 /// One line in the dashboard's vertical stack: either a state-group header or a content row. The
 /// per-row dot and state colour alone don't show at a glance how many sessions are awaiting input,
 /// working, idle, or done. Subagent rows inherit their parent's group and never trigger a header.
-enum DashboardLine<'a> {
+pub(crate) enum DashboardLine<'a> {
     /// Cross-cutting "Pinned" section header (with count), emitted above the pinned block when grouping is ON.
     PinnedHeader {
         count: usize,
@@ -906,7 +908,7 @@ enum DashboardLine<'a> {
 /// Walk `rows` and intersperse `DashboardLine::Header` entries at every top-level state transition.
 /// `filter == Filter::State(_)`: the filtered view already contains only a single state, so the
 /// header is redundant chrome.
-fn build_dashboard_lines<'a>(
+pub(crate) fn build_dashboard_lines<'a>(
     rows: &'a [DashboardRow],
     grouping: Grouping,
     filter: &Filter,
@@ -1376,7 +1378,7 @@ fn render_spacer_halos(
 
 /// Wide-mode group header reads.
 #[allow(clippy::too_many_arguments)]
-fn render_group_header(
+pub(crate) fn render_group_header(
     buf: &mut Buffer,
     rect: Rect,
     theme: &Theme,
@@ -1478,7 +1480,7 @@ fn render_divider(buf: &mut Buffer, rect: Rect, theme: &Theme) {
 
 /// The Idle group's "N more" overflow toggle row: a single dim line painted at the bottom of a
 /// capped Idle group.
-fn render_idle_overflow(
+pub(crate) fn render_idle_overflow(
     buf: &mut Buffer,
     rect: Rect,
     theme: &Theme,

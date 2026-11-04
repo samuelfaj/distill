@@ -518,6 +518,14 @@ pub struct DashboardState {
     pub new_agent_button_hit: crate::app::agent_view::HitArea,
     /// Hit area for the actions row's `Open Previous` button (v2 workspace dashboard only).
     pub open_session_button_hit: crate::app::agent_view::HitArea,
+    /// Hit area for the actions row's `Board` / `Rows` presentation toggle.
+    pub board_view_button_hit: crate::app::agent_view::HitArea,
+    /// When true, the list paints as a card board instead of rows. In-memory only.
+    pub board_view: bool,
+    /// Expanded board cards. Harmless in row mode.
+    pub expanded_board: std::collections::HashSet<DashboardRowId>,
+    /// Last frame's board grid slots `(id, (col, row))` for spatial nav.
+    pub board_slots: Vec<(DashboardRowId, (u16, u16))>,
     /// Hit area for the actions row's `Worktree Ctrl+w` hint; a click toggles worktree mode like the chord does.
     pub worktree_toggle_hit: crate::app::agent_view::HitArea,
     /// Items-area rect of the open slash-completion dropdown (set by `render_slash_dropdown`).
@@ -1236,6 +1244,10 @@ impl DashboardState {
             popup_outer_rect: None,
             new_agent_button_hit: crate::app::agent_view::HitArea::default(),
             open_session_button_hit: crate::app::agent_view::HitArea::default(),
+            board_view_button_hit: crate::app::agent_view::HitArea::default(),
+            board_view: false,
+            expanded_board: std::collections::HashSet::new(),
+            board_slots: Vec::new(),
             worktree_toggle_hit: crate::app::agent_view::HitArea::default(),
             slash_dropdown_items_area: None,
             slash_dropdown_hit: Default::default(),
@@ -1327,6 +1339,7 @@ impl DashboardState {
         self.upgrade_cta_hit.set(None);
         self.new_agent_button_hit.set(None);
         self.open_session_button_hit.set(None);
+        self.board_view_button_hit.set(None);
         self.worktree_toggle_hit.set(None);
     }
 
@@ -1338,6 +1351,34 @@ impl DashboardState {
     /// True when the actions row's `Open Previous` button holds the cursor.
     pub fn open_session_button_focused(&self) -> bool {
         self.actions_focus == Some(ActionsFocus::OpenPrevious)
+    }
+
+    pub fn board_view_button_focused(&self) -> bool {
+        self.actions_focus == Some(ActionsFocus::BoardView)
+    }
+
+    pub fn board_card_expanded(&self, id: &DashboardRowId) -> bool {
+        self.expanded_board.contains(id)
+    }
+
+    pub fn toggle_board_view(&mut self) {
+        if !self.board_view
+            && (!self.peek_reply.text().trim().is_empty() || !self.peek_reply.images.is_empty())
+        {
+            self.set_error_toast("Send or clear the reply draft before changing views");
+            return;
+        }
+        self.board_view = !self.board_view;
+        if self.board_view {
+            self.set_peek(None);
+        }
+        self.clear_manual_scroll();
+    }
+
+    pub fn toggle_board_card(&mut self, id: &DashboardRowId) {
+        if !self.expanded_board.remove(id) {
+            self.expanded_board.insert(id.clone());
+        }
     }
 
     /// True when the actions row's `Worktree` toggle holds the cursor.
@@ -1376,6 +1417,7 @@ impl DashboardState {
     pub(crate) fn focused_action_click(&self) -> Option<Action> {
         Some(match self.actions_focus? {
             ActionsFocus::NewAgent => Action::DashboardCreateNewAgentWithDetail,
+            ActionsFocus::BoardView => return None,
             ActionsFocus::OpenPrevious => Action::ShowSessionPicker,
             ActionsFocus::Worktree => Action::DashboardToggleWorktree,
         })
@@ -1387,6 +1429,8 @@ impl DashboardState {
         Some(match self.actions_focus? {
             ActionsFocus::NewAgent if self.focused_new_agent_sends_draft() => "send",
             ActionsFocus::NewAgent => "create",
+            ActionsFocus::BoardView if self.board_view => "row view",
+            ActionsFocus::BoardView => "board view",
             ActionsFocus::OpenPrevious => "open previous",
             ActionsFocus::Worktree if self.worktree_armed() => "disable worktree",
             ActionsFocus::Worktree => "enable worktree",
@@ -1593,6 +1637,7 @@ impl DashboardState {
         {
             self.selected = Some(rebound);
         }
+        self.expanded_board = self.expanded_board.iter().filter_map(&rebind).collect();
         self.hovered_row = self.hovered_row.as_ref().and_then(&rebind);
         self.hovered_delete = self.hovered_delete.as_ref().and_then(&rebind);
         self.last_click = self
@@ -2932,6 +2977,10 @@ impl DashboardState {
             }
             // An empty Enter acts on the focused actions-row item, whichever pane has focus, so a click on `Worktree` or
             // `Open Previous` never leaves Enter dead while the footer promises an action
+            if self.board_view_button_focused() {
+                self.toggle_board_view();
+                return InputOutcome::Changed;
+            }
             return self
                 .focused_action_click()
                 .map_or(InputOutcome::Unchanged, InputOutcome::Action);
@@ -2991,6 +3040,10 @@ impl DashboardState {
         // Only `+ New Agent` sends a typed draft
         if self.focused_new_agent_sends_draft() {
             return self.dispatch_send_action(false);
+        }
+        if self.board_view_button_focused() {
+            self.toggle_board_view();
+            return InputOutcome::Changed;
         }
         if let Some(action) = self.focused_action_click() {
             return InputOutcome::Action(action);
@@ -3179,6 +3232,41 @@ impl DashboardState {
                     return InputOutcome::Changed;
                 }
                 _ => {}
+            }
+        }
+
+        if self.board_view && list_keys_active && key.modifiers.is_empty() {
+            if matches!(key.code, KeyCode::Char(' '))
+                && let Some(id) = self.selected.clone()
+            {
+                self.toggle_board_card(&id);
+                return InputOutcome::Changed;
+            }
+            if let Some(step) = step {
+                let neighbour = match step {
+                    Step::Left => super::board::board_neighbour_horizontal(self, -1),
+                    Step::Right => super::board::board_neighbour_horizontal(self, 1),
+                };
+                if let Some(id) = neighbour {
+                    self.focus_row(id);
+                    self.clear_manual_scroll();
+                    return InputOutcome::Changed;
+                }
+                return InputOutcome::Unchanged;
+            }
+            let vdir = match key.code {
+                KeyCode::Up => Some(-1),
+                KeyCode::Down => Some(1),
+                KeyCode::Char('k') if vim_nav => Some(-1),
+                KeyCode::Char('j') if vim_nav => Some(1),
+                _ => None,
+            };
+            if let Some(dir) = vdir
+                && let Some(id) = super::board::board_neighbour_vertical(self, dir)
+            {
+                self.focus_row(id);
+                self.clear_manual_scroll();
+                return InputOutcome::Changed;
             }
         }
 
@@ -3433,6 +3521,9 @@ impl DashboardState {
                 .update_hover(mouse.column, mouse.row);
             changed |= self
                 .open_session_button_hit
+                .update_hover(mouse.column, mouse.row);
+            changed |= self
+                .board_view_button_hit
                 .update_hover(mouse.column, mouse.row);
             changed |= self
                 .worktree_toggle_hit
@@ -3713,6 +3804,14 @@ impl DashboardState {
                 return InputOutcome::Action(Action::ShowSessionPicker);
             }
 
+            if self.board_view_button_hit.contains(mouse.column, mouse.row) {
+                self.focus_action(ActionsFocus::BoardView);
+                self.set_list_focused(true);
+                self.manual_scroll_active = false;
+                self.toggle_board_view();
+                return InputOutcome::Changed;
+            }
+
             if self.worktree_toggle_hit.contains(mouse.column, mouse.row) {
                 self.focus_action(ActionsFocus::Worktree);
                 return InputOutcome::Action(Action::DashboardToggleWorktree);
@@ -3783,6 +3882,11 @@ impl DashboardState {
                 // button was focused hands the cursor over to the row)
                 self.focus_row(id.clone());
                 self.last_click = Some((id.clone(), Instant::now()));
+                if self.board_view {
+                    self.toggle_board_card(&id);
+                    self.set_list_focused(true);
+                    return InputOutcome::Changed;
+                }
                 return InputOutcome::Action(Action::DashboardAttach(id));
             }
 
@@ -4086,6 +4190,31 @@ impl DashboardState {
         }
     }
 
+    pub(crate) fn focusables_for_rows(
+        &self,
+        rows: &[DashboardRow],
+        grouping: Grouping,
+    ) -> Vec<Focusable> {
+        if self.board_view {
+            super::board::board_focusables(
+                rows,
+                &self.filter,
+                &self.collapsed_sections,
+                self.idle_show_all,
+                self.search_mode,
+            )
+        } else {
+            super::render::focusables(
+                rows,
+                grouping,
+                &self.filter,
+                &self.collapsed_sections,
+                self.idle_show_all,
+                self.search_mode,
+            )
+        }
+    }
+
     /// Clamp the cursor to a still-visible row when the previous selection has disappeared.
     /// A deliberately-cleared selection (`None`) is PRESERVED: `None` is a valid steady state.
     /// The contract: no row selected means dispatch creates a new session; a selected row means dispatch replies to that agent.
@@ -4093,14 +4222,18 @@ impl DashboardState {
         // Section-cursor validation: a selected section header can go stale without any grouping toggle: a
         // `s:state` filter suppresses all state headers, and row churn (the last Working agent going idle)
         // removes the header outright.
-        let focusables = super::render::focusables(
-            rows,
-            self.grouping,
-            &self.filter,
-            &self.collapsed_sections,
-            self.idle_show_all,
-            self.search_mode,
-        );
+        if self.board_view
+            && let Some(row) = rows
+                .iter()
+                .find(|row| self.selected.as_ref() == Some(&row.id))
+        {
+            self.collapsed_sections
+                .remove(&SectionKey::State(row.state));
+            if row.state == RowState::Idle {
+                self.idle_show_all = true;
+            }
+        }
+        let focusables = self.focusables_for_rows(rows, self.grouping);
         if let Some(key) = self.selected_section {
             let alive = focusables
                 .iter()

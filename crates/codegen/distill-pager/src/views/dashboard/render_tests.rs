@@ -458,11 +458,12 @@ fn open_previous_actions_button_is_v2_only_and_follows_new_agent() {
         v2_state.handle_input(&right, &crate::actions::ActionRegistry::defaults()),
         crate::app::app_view::InputOutcome::Changed
     ));
-    assert!(v2_state.open_session_button_focused());
+    assert!(v2_state.board_view_button_focused());
     assert!(matches!(
         v2_state.handle_input(&enter, &crate::actions::ActionRegistry::defaults()),
-        crate::app::app_view::InputOutcome::Action(crate::app::actions::Action::ShowSessionPicker)
+        crate::app::app_view::InputOutcome::Changed
     ));
+    assert!(v2_state.board_view);
     let left = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Left,
         crossterm::event::KeyModifiers::NONE,
@@ -3624,6 +3625,7 @@ fn render_footer_names_enter_action_for_each_actions_item() {
     for list_focused in [true, false] {
         for (focus, armed, label) in [
             (ActionsFocus::NewAgent, false, ":create"),
+            (ActionsFocus::BoardView, false, ":board view"),
             (ActionsFocus::OpenPrevious, false, ":open previous"),
             (ActionsFocus::Worktree, false, ":enable worktree"),
             (ActionsFocus::Worktree, true, ":disable worktree"),

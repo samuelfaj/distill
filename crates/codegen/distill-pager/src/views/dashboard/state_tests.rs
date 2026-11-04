@@ -7013,6 +7013,7 @@ fn workspace_identity_rebinds_selection_between_unloaded_and_loaded_rows() {
         session_id: "saved".into(),
     };
     let mut dashboard = DashboardState::new();
+    dashboard.expanded_board.insert(workspace_row.clone());
     dashboard.focus_row(workspace_row);
 
     let id = AgentId(7);
@@ -7023,6 +7024,7 @@ fn workspace_identity_rebinds_selection_between_unloaded_and_loaded_rows() {
     dashboard.rebind_workspace_identities(&unloaded, &loaded, &mut agents);
     let loaded_row = DashboardRowId::TopLevel(id);
     assert_eq!(dashboard.selected, Some(loaded_row.clone()));
+    assert!(dashboard.expanded_board.contains(&loaded_row));
 
     let old = loaded;
     agents.clear();
@@ -7034,6 +7036,9 @@ fn workspace_identity_rebinds_selection_between_unloaded_and_loaded_rows() {
             session_id: "saved".into(),
         })
     );
+    assert!(dashboard.expanded_board.contains(&DashboardRowId::Workspace {
+        session_id: "saved".into(),
+    }));
 }
 
 #[test]

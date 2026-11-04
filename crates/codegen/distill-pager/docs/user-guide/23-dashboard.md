@@ -30,7 +30,7 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ```
   main ~/xai [Choose Ctrl+l]                    ◆ 2 awaiting │ ⋮ 1 working │ ◇ 1 idle
 
-  + New Agent                                Open Previous /resume │ Worktree Ctrl+w
+  + New Agent                         Board view │ Open Previous /resume │ Worktree Ctrl+w
 
 ▌● reviewer · audit token flow    Awaiting your input            2m
  ● implementer · fix login bug    Running: cargo test           12m
@@ -50,9 +50,17 @@ and colour as the rows, plus a label). Click the location
 same from the dispatch box.
 
 The **actions row** below it holds `+ New Agent` (the default cursor target
-when no row is selected) and, on the right, `Open Previous` (the session
+when no row is selected) and, on the right, **Board view** (optional card layout;
+label flips to `Row view` to return, or `Board` / `Rows` on narrow terminals), `Open Previous` (the session
 picker; workspace dashboard only) and the **worktree toggle**. `→` / `←`
-move the cursor along the row in that order, stopping at either end. Like
+move the cursor along the row in that order, stopping at either end. Board
+view uses the same rows, search, filters, and attach/stop/delete actions.
+Cards sit in Needs input, then Working, then settled buckets (Idle is never
+labelled completed). `Space` or a click expands a card; `Enter` still
+attaches. Narrow terminals fall back to one column. Expanded cards wrap their
+activity, latest message, and pending question text. Board always groups by state;
+your row-view grouping stays unchanged. The view choice lasts for this process.
+Like
 every arrow on the dashboard, they navigate while the list has focus (`Tab`)
 or while the dispatch box is empty, and edit the draft once you've typed
 something; in search mode the empty box is still the query, so they edit. In

@@ -19,6 +19,8 @@ mod campaign_nudges_default_until_dismissed_by_model_pick;
 mod campaign_remote_settings_nudge_and_dismiss;
 #[path = "pty_e2e/critical_announcement_session_banner_pty.rs"]
 mod critical_announcement_session_banner_pty;
+#[path = "pty_e2e/dashboard_board_actual_user_interaction.rs"]
+mod dashboard_board_actual_user_interaction;
 #[path = "pty_e2e/dashboard_overlay_tab_esc_backout_and_ctrl_backslash.rs"]
 mod dashboard_overlay_tab_esc_backout_and_ctrl_backslash;
 #[path = "pty_e2e/extensions_modal_copy_hints_pty.rs"]

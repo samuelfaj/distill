@@ -412,7 +412,7 @@ pub(super) fn test_agent(app: &AppView, id: AgentId) -> &AgentView {
 /// Give a test agent a generated title so the dashboard renders it.
 /// The dashboard hides sessions with no real turn (`views::dashboard::row::is_empty_top_level`).
 /// Nav and render tests that rely on their placeholder agents being visible call this to opt in.
-fn mark_agent_nonempty(app: &mut AppView, id: AgentId) {
+pub(super) fn mark_agent_nonempty(app: &mut AppView, id: AgentId) {
     if let Some(a) = app.agents.get_mut(&id) {
         a.generated_session_title = Some(format!("Session {}", id.0));
     }

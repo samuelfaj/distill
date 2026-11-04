@@ -748,6 +748,10 @@ pub(crate) struct BlockViewerResume {
 pub struct AgentView {
     pub session: AgentSession,
     pub(crate) session_binding_epoch: u32,
+    /// Session id that must still match when compact-for-retire finishes.
+    pub(crate) retire_after_compact: Option<String>,
+    /// Session id waiting for workspace membership removal to commit before close.
+    pub(crate) retire_after_workspace: Option<String>,
     pub scrollback: ScrollbackState,
     pub prompt: PromptWidget,
     /// Sticky: once the user types in the prompt, hide the tip for the session.
@@ -2012,7 +2016,8 @@ fn resolve_action(action_id: Option<ActionId>) -> Option<InputOutcome> {
         | ActionId::DashboardOverlayStop
         | ActionId::DashboardToggleAutoApprove
         | ActionId::DashboardOpenLocationPicker
-        | ActionId::DashboardToggleWorktree => return None,
+        | ActionId::DashboardToggleWorktree
+        | ActionId::RetireSession => return None,
     };
     Some(InputOutcome::Action(action))
 }

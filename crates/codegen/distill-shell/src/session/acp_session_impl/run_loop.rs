@@ -1292,9 +1292,37 @@ pub(super) async fn run_session(
                             }
                         }
                         SessionCommand::CompactSession { user_context, respond_to } => {
+                            let busy = session.active_work.load(std::sync::atomic::Ordering::Acquire)
+                                > 0
+                                || crate::session::pending_interaction::has_parked_plan_approval(
+                                    &session.pending_interactions,
+                                );
+                            let reservation = if busy {
+                                None
+                            } else {
+                                session.state.lock().await.claim_idle_finalization()
+                            };
+                            let Some(mut lease) = reservation else {
+                                let _ = respond_to.send(Err(SessionActor::compaction_busy_error()));
+                                continue;
+                            };
                             let s = session.clone();
+                            let completion_tx = completion_tx.clone();
                             tokio::task::spawn_local(async move {
-                                let compact_session = s.run_compact(user_context).await;
+                                let mut compact_session = s.run_compact(user_context).await;
+                                {
+                                    let mut state = s.state.lock().await;
+                                    if !state.pending_inputs.is_empty() {
+                                        compact_session = Err(SessionActor::compaction_busy_error());
+                                    }
+                                    let _ = state.finish_finalization(&mut lease);
+                                }
+                                SessionActor::maybe_start_running_task(
+                                    s.clone(),
+                                    completion_tx.clone(),
+                                )
+                                .await;
+                                SessionActor::maybe_drain_notifications(s, completion_tx).await;
                                 let _ = respond_to.send(compact_session);
                             });
                         }

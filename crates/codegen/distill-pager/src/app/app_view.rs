@@ -2756,6 +2756,9 @@ impl AppView {
                         Some(crate::actions::ActionId::DashboardOverlayNext) => {
                             return InputOutcome::Action(Action::DashboardOverlayNext);
                         }
+                        Some(crate::actions::ActionId::RetireSession) => {
+                            return InputOutcome::Action(Action::RetireSession);
+                        }
                         Some(crate::actions::ActionId::DashboardOverlayStop) => {
                             let confirmation_label = if self.workspace_dashboard_enabled {
                                 let Some(readiness) = self

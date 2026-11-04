@@ -36,6 +36,8 @@ Compress conversation history to reclaim context-window space. Pass a note to te
 
 Grok also auto-compacts once the context window hits 85% (tune it with `[session] auto_compact_threshold_percent`).
 
+**Retire** (`Ctrl+Alt+X`) runs that same compact, waits until the compacted resume checkpoint is on disk, then closes or archives the agent. Full history and the worktree stay. It refuses while the session is busy, replaying, or has queued, background, scheduled, or pending questions/permissions. `Ctrl+X` is unchanged.
+
 ### `/context`
 
 Show how the context window is being used: a category breakdown (system prompt, messages, reasoning and overhead, free space) plus informational rows for tool definitions, the skills listing, and MCP server announcements with their estimated token cost.

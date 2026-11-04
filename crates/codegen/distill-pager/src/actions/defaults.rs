@@ -955,6 +955,36 @@ pub(super) fn default_actions(
             long_help: None,
         },
         ActionDef {
+            id: ActionId::RetireSession,
+            label: "retire",
+            description: "Retire session (compact and close, keep history)",
+            default_key: key!('x', CONTROL | ALT),
+            alt_keys: vec![],
+            category: Category::Session,
+            context: When::AgentScreen,
+            hint_priority: Some(6),
+            hint_key_display: Some("Ctrl+Alt+X"),
+            requires_confirmation: false,
+            long_help: Some(
+                "Compacts the session, waits until the compacted resume checkpoint is on disk, then closes or archives the agent without deleting history or the worktree.\nRefuses while the session is busy, replaying, or has queued, background, scheduled, or pending work.\nCtrl+X is unchanged.",
+            ),
+        },
+        ActionDef {
+            id: ActionId::RetireSession,
+            label: "retire",
+            description: "Retire session (compact and close, keep history)",
+            default_key: key!('x', CONTROL | ALT),
+            alt_keys: vec![],
+            category: Category::Dashboard,
+            context: When::DashboardFocused,
+            hint_priority: None,
+            hint_key_display: Some("Ctrl+Alt+X"),
+            requires_confirmation: false,
+            long_help: Some(
+                "Compacts the selected idle session, waits for a durable resume checkpoint, then closes or archives it without deleting history.\nBusy, queued, replaying, or pending work is refused instead of cancelled.\nCtrl+X still stops or deletes.",
+            ),
+        },
+        ActionDef {
             id: ActionId::DashboardStop,
             label: "delete",
             description: "Stop / Delete agent",
@@ -1128,6 +1158,21 @@ pub(super) fn default_actions(
         // Session overlay (attaching to an agent from the dashboard) bindings
         // They use `When::DashboardOverlay`: the agent-side overlay intercept (`app_view`) looks them up in that context
         // The cheatsheet uses it to dim them on the dashboard list (where they don't apply) while keeping them lit inside the overlay
+        ActionDef {
+            id: ActionId::RetireSession,
+            label: "retire",
+            description: "Retire session (compact and close, keep history)",
+            default_key: key!('x', CONTROL | ALT),
+            alt_keys: vec![],
+            category: Category::Dashboard,
+            context: When::DashboardOverlay,
+            hint_priority: None,
+            hint_key_display: Some("Ctrl+Alt+X"),
+            requires_confirmation: false,
+            long_help: Some(
+                "Compacts the attached session, waits for a durable resume checkpoint, then archives or closes it without deleting history.\nBusy or queued work is refused. Ctrl+X still stops the agent.",
+            ),
+        },
         ActionDef {
             id: ActionId::DashboardOverlayExit,
             label: "close overlay",

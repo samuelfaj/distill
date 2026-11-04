@@ -1628,6 +1628,7 @@ fn dispatch_action(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::DashboardOverlayPrev => dispatch_dashboard_overlay_cycle(app, -1),
         Action::DashboardOverlayNext => dispatch_dashboard_overlay_cycle(app, 1),
         Action::DashboardOverlayStop => dispatch_dashboard_overlay_stop(app),
+        Action::RetireSession => super::session::modal::dispatch_retire_session(app),
         Action::DashboardToggleAutoApprove => dispatch_dashboard_toggle_auto_approve(app),
         Action::DashboardToggleWorktree => dispatch_dashboard_toggle_worktree(app),
         Action::DashboardOpenShortcutsHelp => {

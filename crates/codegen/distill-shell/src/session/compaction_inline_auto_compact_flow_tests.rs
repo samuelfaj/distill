@@ -25,6 +25,16 @@ impl AsyncTerminalRunner for DummyTerminal {
         Err(TerminalError::Other("dummy terminal".into()))
     }
 }
+async fn settle_test_persistence(actor: &SessionActor) {
+    let (respond_to, ack) = tokio::sync::oneshot::channel();
+    actor
+        .notifications
+        .persistence_tx
+        .send(PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    ack.await.unwrap().unwrap();
+}
+
 async fn create_test_actor(
     total_tokens: u64,
     context_window: u64,
@@ -32,6 +42,28 @@ async fn create_test_actor(
     gateway_tx: mpsc::UnboundedSender<distill_acp_lib::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
 ) -> SessionActor {
+    let persistence_tx = {
+        let (inner_tx, mut inner_rx) = mpsc::unbounded_channel();
+        tokio::task::spawn_local(async move {
+            while let Some(msg) = inner_rx.recv().await {
+                match msg {
+                    PersistenceMsg::CompactionCheckpointAndAck {
+                        marker, respond_to, ..
+                    } => {
+                        let _ = persistence_tx.send(PersistenceMsg::Update(marker));
+                        let _ = respond_to.send(Ok(()));
+                    }
+                    PersistenceMsg::FlushAndAck { respond_to } => {
+                        let _ = respond_to.send(Ok(()));
+                    }
+                    other => {
+                        let _ = persistence_tx.send(other);
+                    }
+                }
+            }
+        });
+        inner_tx
+    };
     let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
@@ -615,6 +647,7 @@ async fn surface_compact_auth_failure_emits_reauthable_retry_state() {
             let out = actor.surface_compact_auth_failure(err).await;
             assert_eq!(out.code, acp::Error::auth_required().code);
             let mut saw_retry_auth = false;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(SessionUpdate::Xai(notif)) = msg
                     && let XaiSessionUpdate::RetryState(
@@ -713,6 +746,7 @@ async fn suppression_emits_composed_notification() {
                 .suppress_auto_compaction(SuppressReason::Other, &detail, 1_000, 200_000)
                 .await;
             let mut text = None;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) =
                     msg
@@ -963,6 +997,7 @@ async fn e2e_auto_compact_401_suppresses_auth_and_surfaces_reauth() {
             assert_eq!(surfaced.code, acp::Error::auth_required().code);
             let mut saw_retry_auth = false;
             let mut saw_auto_failed = false;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(SessionUpdate::Xai(notif)) = msg {
                     match &notif.update {
@@ -1077,6 +1112,7 @@ async fn e2e_auto_compact_413_steps_ladder_then_sticky_size_suppress() {
                 "ladder exhaustion on 413 must suppress as sticky size, not per-turn other"
             );
             let mut saw_size_notification = false;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(SessionUpdate::Xai(notif)) = msg
                     && let XaiSessionUpdate::AutoCompactFailed { error } = &notif.update
@@ -1140,6 +1176,7 @@ async fn e2e_model_switch_compact_401_surfaces_reauth() {
                 "auth compact failure must use SUPPRESS_AUTH"
             );
             let mut saw_retry_auth = false;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(SessionUpdate::Xai(notif)) = msg
                     && let XaiSessionUpdate::RetryState(
@@ -1350,6 +1387,7 @@ async fn transient_auto_compact_failure_notifies_with_real_error() {
                 "a transient failure must not suppress auto-compaction"
             );
             let mut error_text = None;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) =
                     msg
@@ -1548,6 +1586,7 @@ async fn forked_release_still_over_threshold_suppresses_auto() {
                 "an over-threshold released history must set sticky suppression"
             );
             let mut saw_failure = false;
+            settle_test_persistence(&actor).await;
             while let Ok(msg) = persistence_rx.try_recv() {
                 if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) =
                     msg
@@ -1930,6 +1969,25 @@ async fn get_transcript_path_returns_some_when_file_exists() {
             assert!(actor.transcript_hint().is_none());
             let _ = std::fs::remove_file(&updates_path);
             let _ = std::fs::remove_dir_all(&session_dir);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn manual_compact_reservation_excludes_turn_promotion() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 200_000, 85, gateway_tx, persistence_tx).await;
+            let mut state = actor.state.lock().await;
+            let mut lease = state
+                .claim_idle_finalization()
+                .expect("idle compact reservation");
+            assert!(crate::session::acp_session::state_is_busy(&state));
+            assert!(state.claim_idle_finalization().is_none());
+            assert!(state.finish_finalization(&mut lease));
+            assert!(!crate::session::acp_session::state_is_busy(&state));
         })
         .await;
 }

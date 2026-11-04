@@ -142,7 +142,8 @@ fn spawn_persistence_drain(
     tokio::task::spawn_local(async move {
         while let Some(message) = persistence_rx.recv().await {
             match message {
-                PersistenceMsg::FlushAndAck { respond_to } => {
+                PersistenceMsg::FlushAndAck { respond_to }
+                | PersistenceMsg::CompactionCheckpointAndAck { respond_to, .. } => {
                     let _ = respond_to.send(Ok(()));
                 }
                 PersistenceMsg::Update(crate::session::storage::SessionUpdate::Acp(

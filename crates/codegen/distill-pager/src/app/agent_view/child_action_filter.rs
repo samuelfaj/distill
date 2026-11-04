@@ -105,6 +105,7 @@ impl ViewSurface {
                     | ActionId::SendToBackground
                     | ActionId::EditPromptExternal
                     | ActionId::CycleMode
+                    | ActionId::RetireSession
             )
     }
 }

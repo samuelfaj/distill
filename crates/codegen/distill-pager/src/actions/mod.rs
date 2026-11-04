@@ -143,6 +143,8 @@ pub enum ActionId {
     DashboardToggleAutoApprove,
     DashboardOpenLocationPicker,
     DashboardToggleWorktree,
+    /// Compact, persist the resume checkpoint, then close/archive the session without deleting history.
+    RetireSession,
 }
 /// When an action is available / visible.
 /// Used for **exact** matching in `registry.lookup()`.
@@ -1025,6 +1027,40 @@ mod tests {
         assert_eq!(
             registry.lookup(&ctrl_x, When::AgentScreen),
             Some(ActionId::ShortcutsHelp)
+        );
+    }
+
+    #[test]
+    fn retire_session_uses_ctrl_alt_x_and_leaves_ctrl_x() {
+        let registry = ActionRegistry::defaults();
+        let def = registry
+            .find(ActionId::RetireSession)
+            .expect("RetireSession must be registered");
+        assert_eq!(def.label, "retire");
+        let ctrl_alt_x = KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(
+            registry.lookup(&ctrl_alt_x, When::AgentScreen),
+            Some(ActionId::RetireSession)
+        );
+        assert_eq!(
+            registry.lookup(&ctrl_alt_x, When::DashboardFocused),
+            Some(ActionId::RetireSession)
+        );
+        assert_eq!(
+            registry.lookup(&ctrl_alt_x, When::DashboardOverlay),
+            Some(ActionId::RetireSession)
+        );
+        assert_eq!(
+            registry.lookup(&ctrl_x, When::AgentScreen),
+            Some(ActionId::ShortcutsHelp)
+        );
+        assert_eq!(
+            registry.lookup(&ctrl_x, When::DashboardFocused),
+            Some(ActionId::DashboardStop)
         );
     }
 }

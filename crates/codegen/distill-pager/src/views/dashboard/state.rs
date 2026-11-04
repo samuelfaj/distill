@@ -4173,6 +4173,7 @@ fn dashboard_action_for_id(
         ActionId::DashboardTogglePin => Some(InputOutcome::Action(Action::DashboardTogglePin)),
         ActionId::DashboardBeginRename => Some(InputOutcome::Action(Action::DashboardBeginRename)),
         ActionId::DashboardStop => Some(InputOutcome::Action(Action::DashboardStop)),
+        ActionId::RetireSession => Some(InputOutcome::Action(Action::RetireSession)),
         ActionId::DashboardCycleMode => Some(InputOutcome::Action(Action::DashboardCycleMode)),
         ActionId::DashboardToggleAutoApprove => {
             Some(InputOutcome::Action(Action::DashboardToggleAutoApprove))

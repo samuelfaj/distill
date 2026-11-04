@@ -139,6 +139,15 @@ impl FinalizationGate {
 }
 
 impl State {
+    /// Idle compact holds this gate so prompt promotion and notification drain wait through persist ack.
+    pub(super) fn claim_idle_finalization(&mut self) -> Option<FinalizationLease> {
+        if super::state_is_busy(self) {
+            return None;
+        }
+        self.finalization_gate
+            .claim(FinalizationBinding::NoTask(None))
+    }
+
     fn front_prompt_id(&self) -> Option<&str> {
         self.pending_inputs
             .front()

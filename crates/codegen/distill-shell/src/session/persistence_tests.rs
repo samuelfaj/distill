@@ -3199,3 +3199,157 @@ async fn stamp_session_identity_falls_back_to_snapshot_when_disk_has_none() {
     assert_eq!(on_disk.agent_id.as_deref(), Some("ag1.c0ffee"));
     assert_eq!(on_disk.attempt_id, Some(stamped.attempt_id));
 }
+
+fn retire_checkpoint_message(
+    info: &Info,
+) -> (
+    PersistenceMsg,
+    tokio::sync::oneshot::Receiver<io::Result<()>>,
+) {
+    use crate::extensions::notification::{
+        CompactionCheckpointFile, CompactionCheckpointInfo, SessionNotification,
+        SessionUpdate as XaiSessionUpdate,
+    };
+    let checkpoint = CompactionCheckpointFile {
+        checkpoint_id: "retire-checkpoint".into(),
+        prompt_index_at_compaction: 0,
+        compacted_history: vec![crate::sampling::ConversationItem::user(
+            "saved compact summary",
+        )],
+        schema_version: 1,
+        created_at: "2026-11-03T00:00:00Z".into(),
+        original_user_info: None,
+        reread_file_paths: vec![],
+    };
+    let marker = SessionUpdate::Xai(Box::new(SessionNotification {
+        session_id: info.id.clone(),
+        update: XaiSessionUpdate::CompactionCheckpoint(Box::new(CompactionCheckpointInfo {
+            checkpoint_id: checkpoint.checkpoint_id.clone(),
+            prompt_index_at_compaction: 0,
+            checkpoint_file: "compaction_checkpoints/retire-checkpoint.json".into(),
+            auto_continue: None,
+            schema_version: 1,
+            created_at: checkpoint.created_at.clone(),
+        })),
+        meta: None,
+    }));
+    let (respond_to, ack) = tokio::sync::oneshot::channel();
+    (
+        PersistenceMsg::CompactionCheckpointAndAck {
+            checkpoint,
+            marker,
+            respond_to,
+        },
+        ack,
+    )
+}
+
+#[tokio::test]
+async fn retire_checkpoint_ack_preserves_original_updates_and_replays_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("retire-durable"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().into(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let actor = test_actor(info.clone(), storage);
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::Update(neutral_update(
+            &info,
+            "original full response",
+        )))
+        .unwrap();
+    let (message, ack) = retire_checkpoint_message(&info);
+    actor.handle.tx.send(message).unwrap();
+    ack.await.unwrap().unwrap();
+    let updates = dir.path().join("updates.jsonl");
+    assert!(
+        std::fs::read_to_string(&updates)
+            .unwrap()
+            .contains("original full response")
+    );
+    let replay =
+        crate::session::helpers::replay::replay_to_prompt(&updates, dir.path(), 0).unwrap();
+    assert!(
+        serde_json::to_string(&replay.conversation)
+            .unwrap()
+            .contains("saved compact summary")
+    );
+    assert_eq!(replay.last_compaction_prompt_index, Some(0));
+    actor.stop().await;
+}
+
+#[tokio::test]
+async fn retire_checkpoint_failure_cannot_be_consumed_by_another_flush() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("retire-fail"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().into(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    std::fs::write(dir.path().join("compaction_checkpoints"), "not a directory").unwrap();
+    let actor = test_actor(info.clone(), storage);
+    let (message, ack) = retire_checkpoint_message(&info);
+    actor.handle.tx.send(message).unwrap();
+    let (respond_to, other_ack) = tokio::sync::oneshot::channel();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    other_ack.await.unwrap().unwrap();
+    assert!(ack.await.unwrap().is_err());
+    assert!(
+        crate::session::helpers::replay::find_latest_compaction_checkpoint(
+            &dir.path().join("updates.jsonl")
+        )
+        .unwrap()
+        .is_none()
+    );
+    actor.stop().await;
+}
+
+#[tokio::test]
+async fn retire_checkpoint_marker_failure_does_not_ack_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("retire-marker-fail"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().into(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let updates = dir.path().join("updates.jsonl");
+    if updates.is_file() {
+        std::fs::remove_file(&updates).unwrap();
+    }
+    std::fs::create_dir(&updates).unwrap();
+    let actor = test_actor(info.clone(), storage);
+    let (message, ack) = retire_checkpoint_message(&info);
+    actor.handle.tx.send(message).unwrap();
+    assert!(ack.await.unwrap().is_err());
+    assert!(
+        dir.path()
+            .join("compaction_checkpoints/retire-checkpoint.json")
+            .is_file()
+    );
+    actor.stop().await;
+}

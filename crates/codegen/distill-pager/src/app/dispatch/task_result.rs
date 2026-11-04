@@ -873,13 +873,32 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             apply_workspace_transition(app, transition)
         }
         TaskResult::WorkspaceWriteCompleted { store, completion } => {
+            let removed = match &completion {
+                crate::app::actions::WorkspaceWriteCompletion::Remove {
+                    keys,
+                    snapshot: Ok(_),
+                    failures,
+                } => keys
+                    .iter()
+                    .filter(|key| !failures.iter().any(|failure| failure.key == **key))
+                    .map(|key| key.session_id.clone())
+                    .collect(),
+                _ => std::collections::HashSet::new(),
+            };
             let context = WorkspaceCompletionContext::capture(app);
             let transition =
                 app.workspace_membership
                     .on_write_completed(store, completion, &context.live_ids);
-            finish_workspace_result(app, context, transition)
+            let mut effects = finish_workspace_result(app, context, transition);
+            effects.extend(super::session::modal::complete_retire_after_workspace(
+                app, &removed,
+            ));
+            effects
         }
         TaskResult::WorkspaceWriteTaskFailed { db_path, error } => {
+            for agent in app.agents.values_mut() {
+                agent.retire_after_workspace = None;
+            }
             let transition = app.workspace_membership.on_write_task_lost(db_path, error);
             apply_workspace_transition(app, transition)
         }
@@ -1076,7 +1095,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             super::accounts::activation_finished(app, agent_id, &model_id, &result);
             handle_switch_model_complete(app, agent_id, model_id, effort, result, prev_model_id)
-        },
+        }
         TaskResult::ExecutionModeSet { session_id, result } => {
             if let Some(agent) = find_agent_by_session_id(&mut app.agents, &session_id.0) {
                 match result {

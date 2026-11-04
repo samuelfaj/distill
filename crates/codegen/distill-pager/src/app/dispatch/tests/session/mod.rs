@@ -9,6 +9,7 @@ mod lifecycle;
 mod load;
 mod modal;
 mod optimistic_home;
+mod retire;
 mod take_deferred;
 
 fn content_hit(id: &str) -> distill_shell::extensions::session_search::SearchSessionHit {

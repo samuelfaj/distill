@@ -5,7 +5,7 @@
 //!
 //! - Fire-and-forget writes (streamed chunks, mid-turn tool records, feedback / btw_history appends) are buffered.
 //!   Anything since the last barrier may be lost, bounded to the actively-running turn's tail.
-//! - Anything a caller awaits (`FlushAndAck`, `AppendUpdateDurablyAndAck`, `AppendCwdSwitchAndAck`) is on stable media when the ack fires.
+//! - Anything a caller awaits (`FlushAndAck`, `AppendUpdateDurablyAndAck`, `AppendCwdSwitchAndAck`, `CompactionCheckpointAndAck`) is on stable media when the ack fires.
 //!   A barrier syncs only the files dirtied since the last one.
 //!   A failed buffered write (chat append, streamed update, …) latches until the next barrier.
 //!   That barrier then returns the error instead of acking a sync of stale or missing bytes.
@@ -321,8 +321,13 @@ pub enum PersistenceMsg {
         commit: Option<String>,
         branch: Option<String>,
     },
-    /// Persist a compaction checkpoint file to `compaction_checkpoints/{id}.json`.
-    CompactionCheckpoint(crate::extensions::notification::CompactionCheckpointFile),
+    /// Persist a compaction checkpoint file and its `updates.jsonl` marker, then ack this operation.
+    /// Unrelated `FlushAndAck` callers cannot consume this result.
+    CompactionCheckpointAndAck {
+        checkpoint: crate::extensions::notification::CompactionCheckpointFile,
+        marker: SessionUpdate,
+        respond_to: tokio::sync::oneshot::Sender<io::Result<()>>,
+    },
     /// Persist a compaction request and response artifact to `compaction_requests/{request_id}.json` for offline prompt iteration.
     /// The file holds the exact ConversationItem list sent to the compaction model plus the summary it returned (or the final error).
     /// It rides on the post-turn session archive to cloud storage automatically; no separate upload path is needed.
@@ -1622,6 +1627,22 @@ impl SessionPersistence {
         }
     }
 
+    /// Atomic checkpoint write already fsyncs the file and parent. Marker uses the durable append rail.
+    /// Checkpoint failure does not write the marker and does not latch into `pending_write_error`.
+    async fn persist_compaction_checkpoint_and_marker(
+        &mut self,
+        checkpoint: crate::extensions::notification::CompactionCheckpointFile,
+        marker: SessionUpdate,
+    ) -> io::Result<()> {
+        self.flush_and_sync().await?;
+        self.storage
+            .write_compaction_checkpoint(&self.info, &checkpoint)
+            .await?;
+        self.handle_durable_append(marker)
+            .await
+            .map_err(crate::session::storage::AppendUpdateError::into_io_error)
+    }
+
     fn observe_io<T>(&mut self, result: &io::Result<T>) {
         match result {
             Ok(_) => self.clear_disk_full(),
@@ -2434,14 +2455,18 @@ impl SessionPersistence {
                         tracing::warn!(?e, "failed to persist git HEAD");
                     }
                 }
-                PersistenceMsg::CompactionCheckpoint(checkpoint) => {
-                    if let Err(e) = self
-                        .storage
-                        .write_compaction_checkpoint(&self.info, &checkpoint)
-                        .await
-                    {
-                        tracing::warn!(?e, "failed to write compaction checkpoint file");
+                PersistenceMsg::CompactionCheckpointAndAck {
+                    checkpoint,
+                    marker,
+                    respond_to,
+                } => {
+                    let result = self
+                        .persist_compaction_checkpoint_and_marker(checkpoint, marker)
+                        .await;
+                    if let Err(e) = &result {
+                        tracing::warn!(?e, "failed to persist compaction checkpoint and marker");
                     }
+                    let _ = respond_to.send(result);
                 }
                 PersistenceMsg::CompactionRequest(request) => {
                     if let Err(e) = self

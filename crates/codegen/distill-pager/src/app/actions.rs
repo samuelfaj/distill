@@ -925,6 +925,8 @@ pub enum Action {
     DashboardOverlayPrev,
     /// Cycle the dashboard's session-overlay to the next top-level agent in the row list (`›` click or Ctrl+\]).
     DashboardOverlayNext,
+    /// Compact, persist the resume checkpoint, then close or archive without deleting history.
+    RetireSession,
     /// Confirmed stop from inside the dashboard's session-overlay: close the attached session and return to the dashboard.
     /// State machine documented at `dispatch_dashboard_overlay_stop`.
     DashboardOverlayStop,
@@ -2886,7 +2888,13 @@ pub enum TaskResult {
     /// Execution-mode update finished; the agent-reported mode is authoritative.
     ExecutionModeSet {
         session_id: acp::SessionId,
-        result: Result<(distill_tool_types::ExecutionMode, distill_tool_types::ExecutionModeChoice), String>,
+        result: Result<
+            (
+                distill_tool_types::ExecutionMode,
+                distill_tool_types::ExecutionModeChoice,
+            ),
+            String,
+        >,
     },
     /// Auto effort request finished; a rejection rolls the optimistic flag back.
     EffortAutoSet {

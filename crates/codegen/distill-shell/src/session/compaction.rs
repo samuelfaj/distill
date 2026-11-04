@@ -1172,6 +1172,50 @@ impl SessionActor {
         self.emit_status_snapshot_detached();
         Ok(())
     }
+
+    /// Manual compact success waits until the checkpoint file and marker have been fsynced.
+    pub(crate) async fn ack_compaction_persisted(
+        &self,
+        checkpoint: crate::extensions::notification::CompactionCheckpointFile,
+        marker: crate::session::storage::SessionUpdate,
+    ) -> Result<(), acp::Error> {
+        let (respond_to, ack) = tokio::sync::oneshot::channel();
+        if self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::CompactionCheckpointAndAck {
+                checkpoint,
+                marker,
+                respond_to,
+            })
+            .is_err()
+        {
+            return Err(Self::compaction_persist_error(
+                "compaction persistence channel closed",
+            ));
+        }
+        match ack.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(Self::compaction_persist_error(&error.to_string())),
+            Err(_) => Err(Self::compaction_persist_error(
+                "compaction persistence flush dropped",
+            )),
+        }
+    }
+
+    fn compaction_persist_error(detail: &str) -> acp::Error {
+        acp::Error::internal_error().data(
+            crate::session::helpers::session_compact::compact_error_data(
+                crate::session::helpers::session_compact::CompactErrorKind::Failed,
+                detail,
+            ),
+        )
+    }
+
+    pub(super) fn compaction_busy_error() -> acp::Error {
+        Self::compaction_persist_error("session is busy")
+    }
+
     async fn emit_compact_cancelled(&self, auto_trigger: bool) -> Result<(), acp::Error> {
         if auto_trigger {
             use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
@@ -2634,14 +2678,18 @@ impl SessionActor {
         let segments_queued = u32::from(
             self.persist_compaction_segment(&segment_messages, &generate_session_compact),
         );
-        self.chat_state_handle
-            .record_compaction_at(prompt_index_at_compaction);
         self.persist_compaction_checkpoint(
             &compacted_history,
             prompt_index_at_compaction,
             auto_continue,
             original_user_info,
-        );
+        )
+        .await?;
+        if cancel.is_cancelled() {
+            return self.emit_compact_cancelled(auto_trigger).await;
+        }
+        self.chat_state_handle
+            .record_compaction_at(prompt_index_at_compaction);
         let prefix_len = if self
             .compaction
             .prefix_released
@@ -3353,15 +3401,16 @@ impl SessionActor {
     /// Persist a compaction checkpoint.
     /// Writes the compacted history to a separate file and records a `CompactionCheckpoint` marker in `updates.jsonl`.
     /// `auto_continue` should be `Some` when this compaction was triggered by auto-compact and an auto-continue prompt will follow.
-    fn persist_compaction_checkpoint(
+    async fn persist_compaction_checkpoint(
         &self,
         compacted_history: &[ConversationItem],
         prompt_index_at_compaction: usize,
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
         original_user_info: Option<String>,
-    ) {
+    ) -> Result<(), acp::Error> {
         use crate::extensions::notification::{
-            CompactionCheckpointFile, CompactionCheckpointInfo, SessionUpdate as XaiSessionUpdate,
+            CompactionCheckpointFile, CompactionCheckpointInfo,
+            SessionNotification as XaiSessionNotification, SessionUpdate as XaiSessionUpdate,
         };
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let checkpoint_file = format!("compaction_checkpoints/{checkpoint_id}.json");
@@ -3375,14 +3424,6 @@ impl SessionActor {
             original_user_info,
             reread_file_paths: vec![],
         };
-        if self
-            .notifications
-            .persistence_tx
-            .send(PersistenceMsg::CompactionCheckpoint(file_data))
-            .is_err()
-        {
-            tracing::warn!("Failed to send compaction checkpoint file to persistence channel");
-        }
         let info = CompactionCheckpointInfo {
             checkpoint_id,
             prompt_index_at_compaction,
@@ -3391,11 +3432,18 @@ impl SessionActor {
             schema_version: 1,
             created_at,
         };
-        self.persist_xai_update_only(XaiSessionUpdate::CompactionCheckpoint(Box::new(info)));
+        let marker =
+            crate::session::storage::SessionUpdate::Xai(Box::new(XaiSessionNotification {
+                session_id: self.session_info.id.clone(),
+                update: XaiSessionUpdate::CompactionCheckpoint(Box::new(info)),
+                meta: Some(self.build_notification_meta()),
+            }));
+        self.ack_compaction_persisted(file_data, marker).await?;
         tracing::info!(
             prompt_index_at_compaction,
             "Persisted compaction checkpoint"
         );
+        Ok(())
     }
 }
 #[cfg(test)]

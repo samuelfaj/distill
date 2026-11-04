@@ -400,6 +400,7 @@ impl SessionActor {
             CancelFinalization::Rewind
         } else {
             let Some(lease) = self.state.lock().await.claim_cancel_finalization() else {
+                self.compaction.cancel.request_cancel();
                 return CancelOutcome::noop();
             };
             CancelFinalization::Keep(lease)

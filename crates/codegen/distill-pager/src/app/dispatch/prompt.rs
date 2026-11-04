@@ -1887,6 +1887,8 @@ pub(super) fn handle_compact_complete(
     agent_id: AgentId,
     result: Result<(), crate::app::effects::CompactError>,
 ) -> Vec<Effect> {
+    let mut retiring;
+    let mut retire_cancelled = false;
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         // Defensive: only process if we're still in a compact command state.
         let was_cancelling = matches!(
@@ -1910,6 +1912,11 @@ pub(super) fn handle_compact_complete(
 
         let elapsed = agent.turn_elapsed();
         agent.session.finish_command();
+        retiring = agent.retire_after_compact.take();
+        if was_cancelling {
+            agent.retire_after_workspace = None;
+            retire_cancelled = retiring.take().is_some();
+        }
 
         match &result {
             Ok(()) => {
@@ -1939,15 +1946,46 @@ pub(super) fn handle_compact_complete(
         agent.mark_turn_finished(TurnEnd::Completed);
         agent.activity_started_at = None;
         agent.last_activity = None;
-
-        if app.reconnect_pending {
-            return vec![];
-        }
-        let drain = maybe_drain_queue(agent);
-        note_peek_page_flip(app, agent_id, drain.page_flip_entry);
-        return drain.effects;
+    } else {
+        return vec![];
     }
-    vec![]
+
+    if retire_cancelled {
+        app.show_toast("Retire cancelled");
+    }
+
+    if let Some(expected_session_id) = retiring {
+        if result.is_ok() {
+            let mut effects = super::session::modal::finish_retire_after_compact(
+                app,
+                agent_id,
+                expected_session_id,
+            );
+            if !app.agents.contains_key(&agent_id) {
+                return effects;
+            }
+            if app.reconnect_pending {
+                return effects;
+            }
+            if let Some(agent) = app.agents.get_mut(&agent_id) {
+                let drain = maybe_drain_queue(agent);
+                note_peek_page_flip(app, agent_id, drain.page_flip_entry);
+                effects.extend(drain.effects);
+            }
+            return effects;
+        }
+        app.show_toast("Retire cancelled: compaction did not persist");
+    }
+
+    if app.reconnect_pending {
+        return vec![];
+    }
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+    let drain = maybe_drain_queue(agent);
+    note_peek_page_flip(app, agent_id, drain.page_flip_entry);
+    drain.effects
 }
 
 pub(super) fn handle_suggestion_debounce_expired(

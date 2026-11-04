@@ -713,8 +713,14 @@ pub(crate) async fn build_actor() -> (
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     tokio::spawn(async move {
         while let Some(message) = persistence_rx.recv().await {
-            if let PersistenceMsg::FlushAndAck { respond_to } = message {
-                let _ = respond_to.send(Ok(()));
+            match message {
+                PersistenceMsg::FlushAndAck { respond_to } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                PersistenceMsg::CompactionCheckpointAndAck { respond_to, .. } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                _ => {}
             }
         }
     });
@@ -1010,8 +1016,14 @@ pub(crate) fn drain_gateway(
 pub(crate) fn drain_persistence(mut rx: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>) {
     tokio::task::spawn_local(async move {
         while let Some(msg) = rx.recv().await {
-            if let PersistenceMsg::FlushAndAck { respond_to } = msg {
-                let _ = respond_to.send(Ok(()));
+            match msg {
+                PersistenceMsg::FlushAndAck { respond_to } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                PersistenceMsg::CompactionCheckpointAndAck { respond_to, .. } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                _ => {}
             }
         }
     });
@@ -1173,8 +1185,14 @@ pub(crate) async fn actor_with_persistence_drain_and_sampler(
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     tokio::task::spawn_local(async move {
         while let Some(msg) = persistence_rx.recv().await {
-            if let PersistenceMsg::FlushAndAck { respond_to } = msg {
-                let _ = respond_to.send(Ok(()));
+            match msg {
+                PersistenceMsg::FlushAndAck { respond_to } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                PersistenceMsg::CompactionCheckpointAndAck { respond_to, .. } => {
+                    let _ = respond_to.send(Ok(()));
+                }
+                _ => {}
             }
         }
     });

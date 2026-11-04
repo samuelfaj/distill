@@ -3,7 +3,7 @@
 
 The Agent Dashboard lists every top-level session in this pager process —
 local sessions and forks — grouped by state. From one screen you can peek,
-reply, attach, pin, rename, stop, or dispatch a new agent. Subagents are not
+reply, attach, pin, rename, stop, retire, or dispatch a new agent. Subagents are not
 listed; they run under their parent, which already shows when work is in
 flight.
 
@@ -40,7 +40,7 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ╭─────────────────────────────────────────────────────────────────╮
 │ ❯ Dispatch a new agent                                          │
 ╰─ dispatch ──────────────────────────────────────────────────────╯
- ↑/↓ select (peek) · Enter open · Ctrl+R rename · Ctrl+T pin · Ctrl+X stop · ? help · Esc new
+ ↑/↓ select (peek) · Enter open · Ctrl+R rename · Ctrl+T pin · Ctrl+X stop · Ctrl+Alt+X retire · ? help · Esc new
 ```
 
 The **header** shows where a new agent will run — the git branch and the
@@ -166,6 +166,14 @@ See [Keyboard Shortcuts](03-keyboard-shortcuts.md#agent-dashboard).
 ---
 
 ## Completing or closing a session
+
+**Retire** (`Ctrl+Alt+X`) compacts an idle session and closes it only after its
+resume checkpoint and transcript marker are saved durably. Original conversation
+history and worktrees stay on disk. Use **Open Previous** or `/resume` to reopen
+the same session with compacted working context. Busy sessions, queued work,
+background or scheduled tasks, pending questions, and unsent drafts must be
+settled first. Cancellation or a save failure keeps the agent open. Retire also
+works for the last loaded session; ordinary `Ctrl+X` behavior is unchanged.
 
 There is **no** “mark completed” command. Row state is derived from the agent:
 

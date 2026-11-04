@@ -2532,6 +2532,14 @@ fn archive_dashboard_row(
     close_dashboard_agents(app, &loaded_ids, neighbor)
 }
 
+pub(super) fn close_retired_dashboard_agent(app: &mut AppView, agent_id: AgentId) -> Vec<Effect> {
+    let row = crate::views::dashboard::DashboardRowId::TopLevel(agent_id);
+    let neighbor = dashboard_neighbor_row(app, &row).filter(|candidate| {
+        !matches!(candidate, crate::views::dashboard::DashboardRowId::TopLevel(id) if *id == agent_id)
+    });
+    close_dashboard_agents(app, &[agent_id], neighbor)
+}
+
 fn close_dashboard_agents(
     app: &mut AppView,
     loaded_ids: &[AgentId],

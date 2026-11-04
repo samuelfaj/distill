@@ -263,6 +263,7 @@ Actions that affect the agent session, available from the agent screen.
 | `Ctrl+S` (alt: `Alt+S`) | Prompt focused | Stash / pop the draft, `git stash`-style. With text or images in the composer: stash it and start fresh. On an empty composer: restore the newest stash (images and `!` shell mode included). A chord-stashed draft also **restores automatically after you send your next prompt** (a double-Esc-cleared draft stays stashed, since that gesture is a discard). One draft at a time: a new stash replaces the old one, whose text stays reachable in the `↑` history; the stashed draft's text ranks first there. |
 | `!` | Prompt focused | Enter shell mode (type `!` on an empty prompt) |
 | `Ctrl+.` (alt: `Ctrl+X`) | Agent screen | Open the keyboard shortcuts help |
+| `Ctrl+Alt+X` | Agent screen / dashboard | Retire: compact, persist the resume checkpoint, then close or archive (history and worktree stay) |
 | `F2` (alt: `Ctrl+,` / `Cmd+,`) | Agent screen | Open the settings modal |
 
 **Note:** While a **subagent fullscreen view** is open, the composer is hidden. Root-only chords (`Ctrl+P`, `Ctrl+M`, `Ctrl+R`, `Ctrl+O`, `Ctrl+B`, settings, extensions, Shift+Tab) do nothing. `Ctrl+C` cancels the **child's** turn. `q` / `Esc` closes the view. `Ctrl+Q` still quits (`Ctrl+D` on VS Code family). See [Viewing Subagents in the TUI](16-subagents.md#fullscreen-framed-view-the-child-transcript).
@@ -384,6 +385,7 @@ Bindings while the [Agent Dashboard](23-dashboard.md) is focused (`Ctrl+\` or `/
 | `Ctrl+T` | Pin / unpin |
 | `Ctrl+G` | Toggle grouping (state ↔ working directory) |
 | `Ctrl+X` | Cancel a running turn, or press twice within 2s to permanently delete |
+| `Ctrl+Alt+X` | Retire: compact, persist the resume checkpoint, then close or archive without deleting history |
 | `Ctrl+O` | Toggle always-approve on the selected agent |
 | `Tab` | Toggle focus between the list and the dispatch / peek input |
 | `Esc` | Step back (cancel search → close peek → clear filter → unfocus → unselect → exit) |

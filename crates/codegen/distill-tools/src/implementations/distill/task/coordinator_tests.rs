@@ -36,6 +36,7 @@ impl ChildControl for TestControl {
             context_window_tokens: 1_000,
             context_usage_pct: 10,
             tools_used: vec!["read_file".to_owned()],
+            recent_activity: Vec::new(),
             error_count: 0,
         })
     }

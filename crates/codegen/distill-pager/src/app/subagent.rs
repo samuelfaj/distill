@@ -79,6 +79,8 @@ pub struct SubagentAttemptInfo {
     /// 0-100.
     pub context_usage_pct: Option<u8>,
     pub tools_used: Vec<Arc<str>>,
+    /// Latest tool call titles from the child, oldest first.
+    pub recent_activity: Vec<Arc<str>>,
     pub error_count: Option<u32>,
     /// Live activity label ("Thinking", "Running: cargo build") for the tasks pane and dashboard; cleared on `SubagentFinished`.
     pub activity_label: Option<String>,
@@ -545,6 +547,7 @@ pub(crate) mod test_support {
                 context_window_tokens: None,
                 context_usage_pct: None,
                 tools_used: Vec::new(),
+                recent_activity: Vec::new(),
                 error_count: None,
                 activity_label: None,
                 is_background: false,

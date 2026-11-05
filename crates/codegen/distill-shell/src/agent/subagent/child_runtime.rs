@@ -54,6 +54,7 @@ impl ChildControl for ShellChildRuntime {
                         })
                         .unwrap_or(snapshot.context_window_usage),
                     tools_used: snapshot.tools_used,
+                    recent_activity: snapshot.recent_activity,
                     error_count: snapshot.error_count,
                 })
                 .unwrap_or_default()

@@ -520,6 +520,8 @@ pub struct RunningSubagentSummary {
     pub description: String,
     /// Wall-clock elapsed time since the subagent was spawned, in milliseconds.
     pub elapsed_ms: u64,
+    /// Latest tool call title reported by the subagent, if any.
+    pub last_activity: Option<String>,
 }
 /// Summary of a running background task for compaction context.
 #[derive(Clone)]

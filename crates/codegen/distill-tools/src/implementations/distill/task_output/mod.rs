@@ -664,6 +664,7 @@ pub(crate) fn format_subagent_snapshot(
             context_window_tokens,
             context_usage_pct,
             tools_used,
+            recent_activity,
             error_count,
         } => {
             let started = format_epoch_ms_as_rfc3339(snap.started_at_epoch_ms);
@@ -674,6 +675,12 @@ pub(crate) fn format_subagent_snapshot(
             };
             let tokens_k = tokens_used / 1000;
             let capacity_k = context_window_tokens / 1000;
+            let activity_str = if recent_activity.is_empty() {
+                String::new()
+            } else {
+                let lines: Vec<String> = recent_activity.iter().map(|a| format!("- {a}")).collect();
+                format!("\nRecent activity:\n{}", lines.join("\n"))
+            };
             // Measure body only — wait-hint is harness advisory, not task output.
             let body = format!(
                 "Subagent is still running.\n\
@@ -683,7 +690,7 @@ pub(crate) fn format_subagent_snapshot(
                  Progress: turn {turn_count}, {tool_call_count} tool calls, \
                  {tokens_k}K/{capacity_k}K tokens ({context_usage_pct}% context)\n\
                  Tools used: {tools_str}\n\
-                 Errors: {error_count}",
+                 Errors: {error_count}{activity_str}",
                 snap.subagent_type,
                 snap.description,
                 snap.duration_ms as f64 / 1000.0,
@@ -2167,6 +2174,7 @@ mod tests {
                     "read_file".to_string(),
                     "grep".to_string(),
                 ],
+                recent_activity: vec!["Edit `foo.rs`".to_string(), "Run `cargo test`".to_string()],
                 error_count: 0,
             },
             started_at_epoch_ms: 1_700_000_000_000,
@@ -2177,6 +2185,12 @@ mod tests {
             TaskOutputOutput::Result(r) => {
                 assert_eq!(r.task_id, "sub-abc");
                 assert_eq!(r.status, "running");
+                assert!(
+                    r.output
+                        .contains("Recent activity:\n- Edit `foo.rs`\n- Run `cargo test`"),
+                    "should list recent activity oldest first: {}",
+                    r.output
+                );
                 assert!(r.exit_code.is_none());
                 assert!(r.ended.is_none());
                 // Progress line
@@ -2232,6 +2246,7 @@ mod tests {
                 context_window_tokens: 128_000,
                 context_usage_pct: 2,
                 tools_used: vec!["bash".to_string()],
+                recent_activity: Vec::new(),
                 error_count: 0,
             },
             started_at_epoch_ms: 1_700_000_000_000,
@@ -2290,6 +2305,7 @@ mod tests {
                 context_window_tokens: 128_000,
                 context_usage_pct: 0,
                 tools_used: vec![],
+                recent_activity: Vec::new(),
                 error_count: 0,
             },
             started_at_epoch_ms: 1_700_000_000_000,
@@ -2496,6 +2512,7 @@ mod tests {
                         context_window_tokens: 128_000,
                         context_usage_pct: 8,
                         tools_used: vec!["grep".to_string()],
+                        recent_activity: Vec::new(),
                         error_count: 0,
                     },
                     started_at_epoch_ms: 1_700_000_000_000,
@@ -2638,6 +2655,7 @@ mod tests {
                         context_window_tokens: 128_000,
                         context_usage_pct: 8,
                         tools_used: vec!["grep".to_string()],
+                        recent_activity: Vec::new(),
                         error_count: 0,
                     },
                     started_at_epoch_ms: 1_700_000_000_000,

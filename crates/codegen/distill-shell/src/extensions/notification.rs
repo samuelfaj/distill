@@ -867,6 +867,9 @@ pub enum SessionUpdate {
         context_usage_pct: u8,
         /// Distinct tool names called so far.
         tools_used: Vec<String>,
+        /// Latest tool call titles, oldest first, capped. Live UI hint, not persisted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        recent_activity: Vec<String>,
         /// Number of errors encountered so far.
         error_count: u32,
         /// Model selected for the currently dispatched round after all Jev
@@ -1744,6 +1747,7 @@ mod tests {
             context_window_tokens: 256_000,
             context_usage_pct: 35,
             tools_used: vec!["bash".into(), "grep".into()],
+            recent_activity: vec![],
             error_count: 1,
             active_model: None,
             active_reasoning_effort: None,
@@ -1793,6 +1797,7 @@ mod tests {
             context_window_tokens: 256_000,
             context_usage_pct: 1,
             tools_used: vec![],
+            recent_activity: vec![],
             error_count: 0,
             active_model: None,
             active_reasoning_effort: None,
@@ -1837,6 +1842,7 @@ mod tests {
             context_window_tokens: 256_000,
             context_usage_pct: 0,
             tools_used: vec![],
+            recent_activity: vec![],
             error_count: 0,
             active_model: None,
             active_reasoning_effort: None,

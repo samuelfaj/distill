@@ -2243,6 +2243,7 @@ mod tests {
                 context_window_tokens: 0,
                 context_usage_pct: 0,
                 tools_used: vec![],
+                recent_activity: Vec::new(),
                 error_count: 0,
             },
         )
@@ -2376,6 +2377,7 @@ mod tests {
                     context_window_tokens: 0,
                     context_usage_pct: 0,
                     tools_used: vec![],
+                    recent_activity: Vec::new(),
                     error_count: 0,
                 },
                 started_at_epoch_ms: 0,

@@ -63,6 +63,7 @@ fn running_inspection(id: &str, parent: &str) -> SubagentInspection {
                 context_window_tokens: 0,
                 context_usage_pct: 0,
                 tools_used: Vec::new(),
+                recent_activity: Vec::new(),
                 error_count: 0,
             },
             started_at_epoch_ms: 0,

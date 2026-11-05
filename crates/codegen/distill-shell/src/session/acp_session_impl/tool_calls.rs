@@ -2570,6 +2570,7 @@ impl SessionActor {
                 vec![],
             ),
         };
+        self.signals_handle().record_tool_activity(&title);
         if let Some(access) = self
             .agent
             .borrow()

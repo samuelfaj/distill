@@ -668,6 +668,8 @@ pub enum SubagentSnapshotStatus {
         context_usage_pct: u8,
         /// Distinct tool names called so far (e.g. `["bash", "read_file"]`).
         tools_used: Vec<String>,
+        /// Latest tool call titles, oldest first, capped. Live UI hint.
+        recent_activity: Vec<String>,
         /// Number of errors encountered so far.
         error_count: u32,
     },
@@ -1500,6 +1502,7 @@ mod tests {
             context_window_tokens: 0,
             context_usage_pct: 0,
             tools_used: vec![],
+            recent_activity: Vec::new(),
             error_count: 0,
         };
         assert!(!status.is_terminal());

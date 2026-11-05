@@ -765,8 +765,9 @@ fn subagent_activity(info: &SubagentInfo, state: RowState) -> Option<String> {
         }
         let last_tool = info
             .attempt
-            .tools_used
+            .recent_activity
             .last()
+            .or(info.attempt.tools_used.last())
             .map(|s| s.as_ref())
             .unwrap_or("");
         if last_tool.is_empty() {
@@ -1216,6 +1217,7 @@ mod tests {
                 context_window_tokens: None,
                 context_usage_pct: None,
                 tools_used: Vec::new(),
+                recent_activity: Vec::new(),
                 error_count: None,
                 activity_label: None,
                 is_background: false,
@@ -1290,6 +1292,16 @@ mod tests {
         assert_eq!(
             subagent_activity(&info, RowState::Working).as_deref(),
             Some("Running: bash")
+        );
+    }
+    #[test]
+    fn subagent_activity_prefers_recent_activity_over_tools_used() {
+        let mut info = make_subagent("a", false, None);
+        info.attempt.tools_used = vec![Arc::from("bash")];
+        info.attempt.recent_activity = vec![Arc::from("Edit `foo.rs`")];
+        assert_eq!(
+            subagent_activity(&info, RowState::Working).as_deref(),
+            Some("Running: Edit `foo.rs`")
         );
     }
     /// Subagent rows never reach `NeedsInput` in v1.

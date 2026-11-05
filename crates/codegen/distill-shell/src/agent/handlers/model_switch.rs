@@ -216,8 +216,9 @@ pub(crate) async fn apply(
         && (wants_auto_effort || explicit_effort.is_some() || auto_off_requested);
     let mut model_sampling = match auto_config {
         Some(config) => config,
-        None if keep_route => match crate::agent::account_routing::load_session_config(
+        None if keep_route => match crate::agent::account_routing::restore_session_config(
             &handle.info,
+            &agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone()),
             &agent.models_manager.models(),
         )
         .await

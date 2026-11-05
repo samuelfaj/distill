@@ -1120,7 +1120,7 @@ impl MvpAgent {
         load_session_sampling = if requested == Some("auto") {
             crate::agent::account_routing::explicit_auto_config(&load_session_sampling, &self.models_manager.models()).await
         } else if requested.is_none() {
-            match crate::agent::account_routing::load_session_config(&session_info, &self.models_manager.models()).await {
+            match crate::agent::account_routing::restore_session_config(&session_info, &load_session_sampling, &self.models_manager.models()).await {
                 Ok(Some(restored)) => Ok(restored), Ok(None) => crate::agent::account_routing::select_startup_config(&load_session_sampling, &self.models_manager.models(), false).await,
                 Err(error) => Err(error),
             }

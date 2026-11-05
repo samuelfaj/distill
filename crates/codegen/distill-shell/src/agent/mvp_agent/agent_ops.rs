@@ -4620,7 +4620,7 @@ impl MvpAgent {
         sampling_config = if requested.as_deref() == Some("auto") {
             crate::agent::account_routing::explicit_auto_config(&sampling_config, &self.models_manager.models()).await
         } else if pinned_model.is_none() && requested.is_none() {
-            match crate::agent::account_routing::load_session_config(&session_info, &self.models_manager.models()).await {
+            match crate::agent::account_routing::restore_session_config(&session_info, &sampling_config, &self.models_manager.models()).await {
                 Ok(Some(restored)) => Ok(restored), Ok(None) => crate::agent::account_routing::select_startup_config(&sampling_config, &self.models_manager.models(), false).await,
                 Err(error) => Err(error),
             }

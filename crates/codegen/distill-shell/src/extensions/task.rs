@@ -172,6 +172,7 @@ impl From<SubagentInspection> for SubagentLiveSnapshotDto {
             context_window_tokens,
             context_usage_pct,
             tools_used,
+            recent_activity: _,
             error_count,
         } = snapshot.status
         else {
@@ -311,6 +312,7 @@ impl SubagentSnapshotDto {
                 context_window_tokens,
                 context_usage_pct,
                 tools_used,
+                recent_activity: _,
                 error_count,
             } => {
                 dto.status = "running".into();
@@ -585,6 +587,7 @@ mod tests {
                     context_window_tokens: 1000,
                     context_usage_pct: 50,
                     tools_used: vec!["read_file".into()],
+                    recent_activity: Vec::new(),
                     error_count: 0,
                 },
             },
@@ -626,6 +629,7 @@ mod tests {
                 context_window_tokens: 256_000,
                 context_usage_pct: 35,
                 tools_used: vec!["bash".into(), "grep".into()],
+                recent_activity: Vec::new(),
                 error_count: 1,
             },
         };
@@ -774,6 +778,7 @@ mod tests {
                 context_window_tokens: 256_000,
                 context_usage_pct: 15,
                 tools_used: vec!["bash".into()],
+                recent_activity: Vec::new(),
                 error_count: 0,
             },
         };
@@ -885,6 +890,7 @@ mod tests {
                 context_window_tokens: 256_000,
                 context_usage_pct: 8,
                 tools_used: vec![],
+                recent_activity: Vec::new(),
                 error_count: 0,
             },
         };

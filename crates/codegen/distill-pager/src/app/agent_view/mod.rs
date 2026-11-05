@@ -2342,6 +2342,7 @@ pub(crate) mod test_fixtures {
                 context_window_tokens: None,
                 context_usage_pct: None,
                 tools_used: Vec::new(),
+                recent_activity: Vec::new(),
                 error_count: None,
                 activity_label: None,
                 is_background: false,

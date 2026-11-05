@@ -2216,6 +2216,7 @@ mod resolve_turn_activity_tests {
                     context_window_tokens: None,
                     context_usage_pct: None,
                     tools_used: vec![],
+                    recent_activity: vec![],
                     error_count: None,
                     activity_label: None,
                     is_background: true,

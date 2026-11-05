@@ -201,6 +201,9 @@ pub struct SessionSignalsDelta {
     pub prs_created_this_turn: Vec<PrCreatedSignal>,
 }
 
+const MAX_RECENT_ACTIVITY: usize = 5;
+const MAX_RECENT_ACTIVITY_CHARS: usize = 120;
+
 /// Session signals that inform feedback request heuristics.
 /// These signals are tracked locally in the agent and periodically synced to the backend for analytics / telemetry persistence.
 /// Field names are aligned with the backend analytics schema for session signals.
@@ -246,6 +249,9 @@ pub struct SessionSignals {
     /// Distinct tools that have been used in this session
     #[serde(default)]
     pub tools_used: Vec<String>,
+    /// Latest tool call titles, oldest first, capped. Live UI hint, not persisted.
+    #[serde(skip)]
+    pub recent_activity: Vec<String>,
 
     // === Model Usage ===
     /// Distinct models that have been used in this session
@@ -436,6 +442,8 @@ pub enum SignalEvent {
 
     // === Tool Events ===
     RecordToolCall(String),
+    /// Record a tool call title for the live recent-activity list
+    RecordToolActivity(String),
     RecordToolSuccess(String),
     /// Record a tool failure (tool returned error) with the tool name
     RecordToolFailure(String),
@@ -635,6 +643,10 @@ impl SessionSignalsHandle {
 
     pub fn record_tool_call(&self, tool_name: impl Into<String>) {
         let _ = self.tx.send(SignalEvent::RecordToolCall(tool_name.into()));
+    }
+
+    pub fn record_tool_activity(&self, title: impl Into<String>) {
+        let _ = self.tx.send(SignalEvent::RecordToolActivity(title.into()));
     }
 
     pub(crate) fn record_tool_success(&self, tool_name: impl Into<String>) {
@@ -1187,6 +1199,19 @@ impl SessionSignalsActor {
                     self.tools_this_turn.push(tool_name.clone());
                     if self.tools_set.insert(tool_name.clone()) {
                         self.signals.tools_used.push(tool_name);
+                    }
+                }
+                SignalEvent::RecordToolActivity(title) => {
+                    let line = title.lines().next().unwrap_or("").trim();
+                    if !line.is_empty() {
+                        let line: String = line.chars().take(MAX_RECENT_ACTIVITY_CHARS).collect();
+                        self.signals.recent_activity.push(line);
+                        let excess = self
+                            .signals
+                            .recent_activity
+                            .len()
+                            .saturating_sub(MAX_RECENT_ACTIVITY);
+                        self.signals.recent_activity.drain(..excess);
                     }
                 }
                 SignalEvent::RecordToolSuccess(tool_name) => {

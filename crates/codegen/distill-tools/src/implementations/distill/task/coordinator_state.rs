@@ -32,6 +32,7 @@ pub struct SubagentProgress {
     pub context_window_tokens: u64,
     pub context_usage_pct: u8,
     pub tools_used: Vec<String>,
+    pub recent_activity: Vec<String>,
     pub error_count: u32,
 }
 
@@ -862,6 +863,7 @@ pub(super) fn running_inspection(
                 context_window_tokens: progress.context_window_tokens,
                 context_usage_pct: progress.context_usage_pct,
                 tools_used: progress.tools_used,
+                recent_activity: progress.recent_activity,
                 error_count: progress.error_count,
             },
             started_at_epoch_ms: seed.started_at_epoch_ms,

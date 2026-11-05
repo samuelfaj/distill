@@ -1598,6 +1598,7 @@ async fn live_reconcile_skips_live_coordinator_child() {
                                 context_window_tokens: 0,
                                 context_usage_pct: 0,
                                 tools_used: Vec::new(),
+                                recent_activity: Vec::new(),
                                 error_count: 0,
                             },
                         ),

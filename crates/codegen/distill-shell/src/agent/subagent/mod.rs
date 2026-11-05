@@ -2648,14 +2648,25 @@ async fn cancel_pending_shell_child(
     result
 }
 const PROGRESS_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-/// Change signature for the progress-publisher dedupe:
-/// `(turn_count, tool_call_count, context_usage_pct, error_count, tokens_used,
-/// context_window_tokens, active_model, active_reasoning_effort)`.
+/// Change signature for the progress-publisher dedupe.
 /// `tokens_used` is part of the signature so rising child token spend always
 /// publishes a tick. The active route is part of it too: a round can switch
 /// model/effort/window without changing counters, and that change must reach
-/// the parent's list and detail views immediately.
-type ProgressSignature = (u32, u32, u8, u32, u64, u64, Option<String>, Option<String>);
+/// the parent's list and detail views immediately. The latest activity title
+/// is included so a new tool call publishes a tick.
+/// `(turn_count, tool_call_count, context_usage_pct, error_count, tokens_used,
+/// context_window_tokens, active_model, active_reasoning_effort, last_activity)`.
+type ProgressSignature = (
+    u32,
+    u32,
+    u8,
+    u32,
+    u64,
+    u64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 fn progress_tick_should_emit(
     prev: &ProgressSignature,
     cur: &ProgressSignature,
@@ -2693,7 +2704,7 @@ pub(crate) fn spawn_progress_publisher(
     tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let mut interval = tokio::time::interval(PROGRESS_PUBLISH_INTERVAL);
         interval.tick().await;
-        let mut last_signature: ProgressSignature = (0, 0, 0, 0, 0, 0, None, None);
+        let mut last_signature: ProgressSignature = (0, 0, 0, 0, 0, 0, None, None, None);
         let mut last_emit_at = tokio::time::Instant::now();
         let heartbeat_max = tokio::time::Duration::from_secs(8);
         loop {
@@ -2724,6 +2735,7 @@ pub(crate) fn spawn_progress_publisher(
                     .unwrap_or(signals.context_window_tokens),
                 signals.active_model_id.clone(),
                 signals.active_reasoning_effort.clone(),
+                signals.recent_activity.last().cloned(),
             );
             let heartbeat_due = last_emit_at.elapsed() >= heartbeat_max;
             if !progress_tick_should_emit(&last_signature, &sig, heartbeat_due) {
@@ -2754,6 +2766,7 @@ pub(crate) fn spawn_progress_publisher(
                     })
                     .unwrap_or(signals.context_window_usage),
                 tools_used: signals.tools_used,
+                recent_activity: signals.recent_activity,
                 error_count: signals.error_count,
                 active_model: signals.active_model_id,
                 active_reasoning_effort: signals.active_reasoning_effort,
@@ -2782,23 +2795,23 @@ mod progress_publisher_tests {
     use super::{ProgressSignature, progress_tick_should_emit};
     #[test]
     fn token_only_change_emits() {
-        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
-        let cur: ProgressSignature = (3, 7, 12, 0, 45_000, 128_000, None, None);
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None, None);
+        let cur: ProgressSignature = (3, 7, 12, 0, 45_000, 128_000, None, None, None);
         assert!(progress_tick_should_emit(&base, &cur, false));
     }
     #[test]
     fn unchanged_without_heartbeat_skips() {
-        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None, None);
         assert!(!progress_tick_should_emit(&base, &base, false));
     }
     #[test]
     fn heartbeat_forces_emit_when_unchanged() {
-        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
+        let base: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None, None);
         assert!(progress_tick_should_emit(&base, &base, true));
     }
     #[test]
     fn dispatch_only_change_emits() {
-        let previous: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None);
+        let previous: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None, None);
         let current = (
             3,
             7,
@@ -2808,6 +2821,23 @@ mod progress_publisher_tests {
             128_000,
             Some("worker-model".to_owned()),
             Some("low".to_owned()),
+            None,
+        );
+        assert!(progress_tick_should_emit(&previous, &current, false));
+    }
+    #[test]
+    fn new_activity_title_emits() {
+        let previous: ProgressSignature = (3, 7, 12, 0, 30_000, 128_000, None, None, None);
+        let current: ProgressSignature = (
+            3,
+            7,
+            12,
+            0,
+            30_000,
+            128_000,
+            None,
+            None,
+            Some("Edit `foo.rs`".to_owned()),
         );
         assert!(progress_tick_should_emit(&previous, &current, false));
     }

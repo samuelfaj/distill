@@ -460,6 +460,7 @@ fn make_test_subagent(child_sid: &str, sa_id: &str) -> crate::app::subagent::Sub
             context_window_tokens: None,
             context_usage_pct: None,
             tools_used: Vec::new(),
+            recent_activity: Vec::new(),
             error_count: None,
             activity_label: None,
             is_background: false,

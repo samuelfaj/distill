@@ -33,6 +33,23 @@ async fn test_session_signals_basic() {
 }
 
 #[tokio::test]
+async fn test_recent_activity_keeps_last_five_first_lines() {
+    let (handle, actor) = SessionSignalsActor::new();
+    let actor_handle = tokio::spawn(actor.run());
+
+    // Multi-line title keeps only its first line; blank title must not occupy a slot.
+    for title in ["t1", "t2\nsecond line", "t3", "t4", "   ", "t5", "t6"] {
+        handle.record_tool_activity(title);
+    }
+
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot.recent_activity, vec!["t2", "t3", "t4", "t5", "t6"]);
+
+    handle.shutdown();
+    actor_handle.await.unwrap();
+}
+
+#[tokio::test]
 async fn test_pr_metrics_counters_and_turn_delta() {
     let (handle, actor) = SessionSignalsActor::new();
     let actor_handle = tokio::spawn(actor.run());

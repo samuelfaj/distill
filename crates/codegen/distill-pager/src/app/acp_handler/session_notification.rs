@@ -576,6 +576,7 @@ pub(super) fn handle_session_notification_with_origin(
                 context_window_tokens: None,
                 context_usage_pct: None,
                 tools_used: Vec::new(),
+                recent_activity: Vec::new(),
                 error_count: None,
                 activity_label: None,
                 is_background,
@@ -743,6 +744,7 @@ pub(super) fn handle_session_notification_with_origin(
             context_window_tokens,
             context_usage_pct,
             tools_used,
+            recent_activity,
             error_count,
             active_model,
             active_reasoning_effort,
@@ -755,6 +757,7 @@ pub(super) fn handle_session_notification_with_origin(
                 info.attempt.context_window_tokens = Some(context_window_tokens);
                 info.attempt.context_usage_pct = Some(context_usage_pct);
                 info.attempt.tools_used = tools_used.into_iter().map(Arc::from).collect();
+                info.attempt.recent_activity = recent_activity.into_iter().map(Arc::from).collect();
                 info.attempt.error_count = Some(error_count);
                 info.attempt.active_model = active_model.as_deref().map(Arc::from);
                 info.attempt.active_reasoning_effort =

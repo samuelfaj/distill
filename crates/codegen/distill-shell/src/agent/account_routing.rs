@@ -431,6 +431,25 @@ pub(crate) async fn load_session_config(
     Ok(Some(config))
 }
 
+/// The saved route for a resumed session. An unpinned Auto route that no longer
+/// restores is chosen again from the Auto options, as each turn already does;
+/// an explicit account still fails closed.
+pub(crate) async fn restore_session_config(
+    info: &crate::session::info::Info,
+    current: &SamplerConfig,
+    models: &IndexMap<String, ModelEntry>,
+) -> Result<Option<SamplerConfig>> {
+    match load_session_config(info, models).await {
+        Err(error) if session_auto_route(info).is_some() => {
+            tracing::warn!(%error, "Saved Auto route is unavailable; selecting Auto again");
+            select_startup_config(current, models, false)
+                .await
+                .map(Some)
+        }
+        result => result,
+    }
+}
+
 fn route_for_option(option: &AutoOption, worker: bool) -> AccountRoute {
     AccountRoute {
         account_id: option.account_id.clone(),

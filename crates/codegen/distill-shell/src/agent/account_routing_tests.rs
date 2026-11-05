@@ -679,3 +679,78 @@ fn account_routing_reresolves_auto_route_after_identity_change() {
         },
     );
 }
+
+#[test]
+#[serial_test::serial]
+fn account_routing_resume_reselects_auto_when_saved_account_is_gone() {
+    isolated(
+        "agent::account_routing::tests::account_routing_resume_reselects_auto_when_saved_account_is_gone",
+        || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            tokio::task::LocalSet::new().block_on(&runtime, async {
+                let fixture = NamedAccounts::new(crate::codex_auth::CODEX_INFERENCE_BASE_URL);
+                let cwd = tempfile::tempdir().unwrap();
+                let info = crate::session::info::Info {
+                    id: agent_client_protocol::SessionId::new("resume-auto-route"),
+                    cwd: cwd.path().to_string_lossy().into_owned(),
+                };
+                let auto = explicit_auto_config(&fixture.base(), &fixture.models)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    AccountRoute::read(&auto.extra_headers)
+                        .unwrap()
+                        .unwrap()
+                        .account_id,
+                    "one"
+                );
+                save_session_config(&info, &auto).unwrap();
+                // A guest/remote Distill home loses the saved account's sign-in.
+                std::fs::remove_file(fixture.store.credential_path("one").unwrap()).unwrap();
+                assert!(load_session_config(&info, &fixture.models).await.is_err());
+
+                let resumed = restore_session_config(&info, &fixture.base(), &fixture.models)
+                    .await
+                    .expect(
+                        "a resumed Auto session must pick another Auto account, not fail the load",
+                    )
+                    .unwrap();
+                let route = AccountRoute::read(&resumed.extra_headers).unwrap().unwrap();
+                assert_eq!(route.account_id, "two");
+                assert!(!route.pinned);
+                assert_eq!(
+                    resumed.bearer_resolver.unwrap().current_bearer().as_deref(),
+                    Some("two-token")
+                );
+
+                // An explicitly chosen account keeps failing closed.
+                let pinned = select_startup_config(
+                    &SamplerConfig {
+                        model: "gpt-6-luna".into(),
+                        ..fixture.base()
+                    },
+                    &fixture.models,
+                    true,
+                )
+                .await
+                .unwrap();
+                save_session_config(&info, &pinned).unwrap();
+                let pinned_account = AccountRoute::read(&pinned.extra_headers)
+                    .unwrap()
+                    .unwrap()
+                    .account_id;
+                std::fs::remove_file(fixture.store.credential_path(&pinned_account).unwrap())
+                    .unwrap();
+                assert!(
+                    restore_session_config(&info, &fixture.base(), &fixture.models)
+                        .await
+                        .is_err(),
+                    "an explicit account never silently moves to another account"
+                );
+            });
+        },
+    );
+}

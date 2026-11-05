@@ -361,12 +361,14 @@ async fn test_compacted_history_with_running_subagents() {
             subagent_type: "Explore".into(),
             description: "Find all API endpoints".into(),
             elapsed_ms: 45_000,
+            last_activity: None,
         },
         RunningSubagentSummary {
             subagent_id: "sub-002".into(),
             subagent_type: "general-purpose".into(),
             description: "Refactor auth module".into(),
             elapsed_ms: 12_000,
+            last_activity: None,
         },
     ];
     let state_context = CompactionStateContext::build(
@@ -544,12 +546,14 @@ fn fallback_preserves_subagents() {
                 subagent_type: "Explore".into(),
                 description: "searching".into(),
                 elapsed_ms: 5_000,
+                last_activity: None,
             },
             RunningSubagentSummary {
                 subagent_id: "sub-def".into(),
                 subagent_type: "Plan".into(),
                 description: "planning".into(),
                 elapsed_ms: 10_000,
+                last_activity: None,
             },
         ],
         connected_mcp_servers: vec![],

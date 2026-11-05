@@ -955,6 +955,7 @@ async fn build_stores_running_subagents() {
         subagent_type: "Explore".into(),
         description: "searching".into(),
         elapsed_ms: 10_000,
+        last_activity: None,
     }];
     let ctx = CompactionStateContext::build(
         &conversation,

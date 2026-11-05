@@ -2160,21 +2160,30 @@ impl SessionActor {
                     {
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         use distill_tools::implementations::distill::task::types::{
-                            SubagentEvent, SubagentListActiveRequest,
+                            SubagentEvent, SubagentListRunningRequest, SubagentSnapshotStatus,
                         };
                         let _ =
-                            event_tx.send(SubagentEvent::ListActive(SubagentListActiveRequest {
+                            event_tx.send(SubagentEvent::ListRunning(SubagentListRunningRequest {
                                 parent_session_id: self.session_id_string(),
                                 respond_to: tx,
                             }));
                         rx.await
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|s| crate::session::helpers::compaction_context::RunningSubagentSummary {
-                            subagent_id: s.subagent_id,
-                            subagent_type: s.subagent_type,
-                            description: s.description,
-                            elapsed_ms: s.elapsed_ms,
+                        .map(|i| {
+                            let last_activity = match &i.snapshot.status {
+                                SubagentSnapshotStatus::Running { recent_activity, .. } => {
+                                    recent_activity.last().cloned()
+                                }
+                                _ => None,
+                            };
+                            crate::session::helpers::compaction_context::RunningSubagentSummary {
+                                subagent_id: i.snapshot.subagent_id,
+                                subagent_type: i.snapshot.subagent_type,
+                                description: i.snapshot.description,
+                                elapsed_ms: i.snapshot.duration_ms,
+                                last_activity,
+                            }
                         })
                         .collect()
                     } else {

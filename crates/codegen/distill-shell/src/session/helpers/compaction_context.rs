@@ -193,6 +193,7 @@ fn to_system_reminder_inner(
             subagent_type: Some(&s.subagent_type),
             description: Some(&s.description),
             elapsed_secs: s.elapsed_ms / 1000,
+            last_activity: s.last_activity.as_deref(),
         })
         .collect();
     let scheduled_loops: Vec<_> = ctx
@@ -285,6 +286,7 @@ mod tests {
                 subagent_type: "explore".into(),
                 description: "find files".into(),
                 elapsed_ms: 5000,
+                last_activity: None,
             }],
             recent_messages: vec![],
             last_user_query: None,

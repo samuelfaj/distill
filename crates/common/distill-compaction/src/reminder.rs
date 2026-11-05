@@ -87,6 +87,7 @@ pub struct RunningSubagent<'a> {
     pub subagent_id: &'a str,
     pub subagent_type: Option<&'a str>,
     pub description: Option<&'a str>,
+    pub last_activity: Option<&'a str>,
     pub elapsed_secs: u64,
 }
 
@@ -253,10 +254,20 @@ fn format_subagent_line(s: &RunningSubagent<'_>) -> String {
             .unwrap_or(s.subagent_type.unwrap_or("subagent")),
     );
     let kind = s.subagent_type.unwrap_or("subagent");
-    format!(
-        "- \"{}\": `{}` (running for {}s, {})",
-        s.subagent_id, command, s.elapsed_secs, kind
-    )
+    match s.last_activity {
+        Some(last) => format!(
+            "- \"{}\": `{}` (running for {}s, {}, last: {})",
+            s.subagent_id,
+            command,
+            s.elapsed_secs,
+            kind,
+            collapsed_ws(last)
+        ),
+        None => format!(
+            "- \"{}\": `{}` (running for {}s, {})",
+            s.subagent_id, command, s.elapsed_secs, kind
+        ),
+    }
 }
 
 /// `## Scheduled Loops` is no longer a standalone section; loops render under
@@ -443,6 +454,7 @@ mod tests {
             subagent_type: None,
             description: Some("x"),
             elapsed_secs: 1,
+            last_activity: None,
         }];
         let state = ActiveAgentReminderState {
             running_subagents: &agents,
@@ -473,12 +485,14 @@ mod tests {
                 subagent_type: None,
                 description: Some("deploy staging"),
                 elapsed_secs: 42,
+                last_activity: None,
             },
             RunningSubagent {
                 subagent_id: "sa-2",
                 subagent_type: None,
                 description: None,
                 elapsed_secs: 5,
+                last_activity: None,
             },
         ];
         let state = ActiveAgentReminderState {
@@ -502,6 +516,7 @@ mod tests {
             subagent_type: Some("explore"),
             description: Some("find files"),
             elapsed_secs: 5,
+            last_activity: None,
         }];
         let state = ActiveAgentReminderState {
             running_subagents: &agents,
@@ -512,12 +527,34 @@ mod tests {
     }
 
     #[test]
+    fn renders_last_activity_when_known() {
+        let agents = [RunningSubagent {
+            subagent_id: "sub-1",
+            subagent_type: Some("explore"),
+            description: Some("find files"),
+            elapsed_secs: 5,
+            last_activity: Some("Edit `foo.rs`"),
+        }];
+        let state = ActiveAgentReminderState {
+            running_subagents: &agents,
+            ..Default::default()
+        };
+        let out = format_active_agent_reminder(&state, Some(&tools_renamed())).expect("reminder");
+        assert!(
+            out.contains(
+                "- \"sub-1\": `find files` (running for 5s, explore, last: Edit `foo.rs`)"
+            )
+        );
+    }
+
+    #[test]
     fn uses_renamed_tool_names_verbatim() {
         let agents = [RunningSubagent {
             subagent_id: "sa-1",
             subagent_type: None,
             description: Some("x"),
             elapsed_secs: 1,
+            last_activity: None,
         }];
         let state = ActiveAgentReminderState {
             running_subagents: &agents,
@@ -635,6 +672,7 @@ mod tests {
             subagent_type: None,
             description: Some("deploy staging"),
             elapsed_secs: 1,
+            last_activity: None,
         }];
         let state = ActiveAgentReminderState {
             running_commands: &cmds,

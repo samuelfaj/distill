@@ -106,9 +106,9 @@ methodology, cost bounds, reproduction commands, and source JSON.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/samuelfaj/distill/main/install.sh | sh  
-export PATH="$HOME/.local/share/distill/bin:$PATH"                                  
-distill --version
 ```
+
+The installer adds `~/.local/share/distill/bin` to your PATH by writing to your shell's rc file (`~/.zshrc`, `~/.bashrc` or `~/.bash_profile`, `~/.config/fish/config.fish`, or `~/.profile`), so open a new terminal afterwards. Set `DISTILL_NO_MODIFY_PATH=1` to skip this and add the directory yourself. In the new terminal, run `distill --version` to check.
 
 ### Windows
 

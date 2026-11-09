@@ -61,5 +61,28 @@ ln -s "../downloads/distill-$version-$os-$arch" "$install_dir/bin/distill.tmp.$$
 mv -f "$install_dir/bin/distill.tmp.$$" "$install_dir/bin/distill"
 printf '%s\n' "$repo" > "$install_dir/.distill-release"
 printf '\nDistill %s installed. Restart any open Distill sessions.\n' "$version"
-printf 'Add this directory to your shell PATH:\n  export PATH="%s/bin:$PATH"\n' "$install_dir"
+bin_dir="$install_dir/bin"
+case ":$PATH:" in
+  *":$bin_dir:"*) on_path=1 ;;
+  *) on_path=0 ;;
+esac
+if [ "$on_path" = 0 ] && [ -z "${DISTILL_NO_MODIFY_PATH:-}" ]; then
+  case "${SHELL:-}" in
+    */zsh) rc="${ZDOTDIR:-$HOME}/.zshrc"; line="export PATH=\"$bin_dir:\$PATH\"" ;;
+    */bash) if [ "$os" = macos ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi; line="export PATH=\"$bin_dir:\$PATH\"" ;;
+    */fish) rc="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"; line="fish_add_path \"$bin_dir\"" ;;
+    *) rc="$HOME/.profile"; line="export PATH=\"$bin_dir:\$PATH\"" ;;
+  esac
+  if [ -f "$rc" ] && grep -qF "$line" "$rc"; then
+    printf 'PATH entry already in %s.\n' "$rc"
+  elif mkdir -p "$(dirname "$rc")" && printf '\n# Added by the Distill installer\n%s\n' "$line" >> "$rc"; then
+    printf 'Added %s to PATH in %s. Open a new terminal to use distill.\n' "$bin_dir" "$rc"
+  else
+    on_path=0; echo "Could not update $rc." >&2
+  fi
+  [ -f "$rc" ] && grep -qF "$line" "$rc" && on_path=1
+fi
+if [ "$on_path" = 0 ]; then
+  printf 'Add this directory to your shell PATH:\n  export PATH="%s:$PATH"\n' "$bin_dir"
+fi
 printf 'For future upgrades, run: distill update\n'

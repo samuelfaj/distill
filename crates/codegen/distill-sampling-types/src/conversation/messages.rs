@@ -176,6 +176,7 @@ pub fn supports_per_message_effort(model: &str) -> bool {
             "claude-opus-5",
             "claude-sonnet-5-5",
             "claude-haiku-5-5",
+            "claude-fable-5-2",
             "claude-fable-5-1",
             "claude-mythos-5-1",
         ],
@@ -188,6 +189,7 @@ pub fn supports_system_messages(model: &str) -> bool {
     is_model(
         model,
         &[
+            "claude-fable-5-2",
             "claude-fable-5-1",
             "claude-mythos-5-1",
             "claude-fable-5",

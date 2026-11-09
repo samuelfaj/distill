@@ -39,6 +39,7 @@ const DEFAULT_EFFORT: ReasoningEffort = ReasoningEffort::High;
 /// Used only when the Models API is unreachable or returns nothing. The effort
 /// levels are what the API reported for these models.
 const FALLBACK_MODELS: &[(&str, &str, &[ReasoningEffort])] = &[
+    ("claude-fable-5-2", "Claude Fable 5.2", &ALL_EFFORTS),
     ("claude-opus-5-5", "Claude Opus 5.5", &ALL_EFFORTS),
     ("claude-sonnet-5-5", "Claude Sonnet 5.5", &ALL_EFFORTS),
     ("claude-haiku-5-5", "Claude Haiku 5.5", &ALL_EFFORTS),

@@ -818,6 +818,7 @@ fn supports_per_message_effort_matches_exact_ids_and_dated_snapshots() {
     assert!(supports_per_message_effort("claude-opus-5-5"));
     assert!(supports_per_message_effort("claude-opus-5-5-20260101"));
     assert!(supports_per_message_effort("claude-haiku-5-5"));
+    assert!(supports_per_message_effort("claude-fable-5-2"));
     assert!(!supports_per_message_effort("claude-opus-5-1"));
     assert!(!supports_per_message_effort("claude-sonnet-5"));
     assert!(!supports_per_message_effort("claude-opus-5-5-2026"));
@@ -1054,6 +1055,7 @@ fn supports_system_messages_matches_the_documented_models() {
         "claude-haiku-5-5",
         "claude-fable-5",
         "claude-fable-5-1",
+        "claude-fable-5-2",
         "claude-mythos-5",
         "claude-mythos-5-1",
     ] {

@@ -9,6 +9,16 @@ pub const MAX_JOURNAL_ENTRIES: usize = crate::MAX_HOST_CALLS as usize;
 
 pub(crate) const HOST_ERROR_KEY: &str = "__distill_workflow_host_error";
 
+/// Kinds of the entries a finished ticket leaves behind (`spawn_agent()` and `spawn_sh()`). Every other entry is the
+/// result of one script call, in script order; these record a completion, in the order completions arrived, and sit
+/// between the call entries wherever the script happened to be waiting. See [`Journal::is_ticket_entry`].
+pub(crate) const TICKET_AGENT_KIND: &str = "ticket_agent";
+pub(crate) const TICKET_SH_KIND: &str = "ticket_sh";
+
+fn is_ticket_kind(kind: &str) -> bool {
+    kind == TICKET_AGENT_KIND || kind == TICKET_SH_KIND
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JournalEntry {
     pub seq: u64,
@@ -162,7 +172,7 @@ impl Journal {
         u64::try_from(
             self.entries
                 .iter()
-                .filter(|entry| entry.kind == "spawn_agent")
+                .filter(|entry| entry.kind == "spawn_agent" || entry.kind == TICKET_AGENT_KIND)
                 .count(),
         )
         .unwrap_or(u64::MAX)
@@ -170,6 +180,26 @@ impl Journal {
 
     pub fn covers(&self, seq: u64) -> bool {
         usize::try_from(seq).is_ok_and(|seq| seq < self.entries.len())
+    }
+
+    pub fn entry(&self, seq: u64) -> Option<&JournalEntry> {
+        usize::try_from(seq)
+            .ok()
+            .and_then(|seq| self.entries.get(seq))
+    }
+
+    /// Whether the entry at `seq` records a finished ticket rather than a script call. Replay steps over these: a
+    /// script call is matched against the next call entry, and a ticket finds its own entry by ticket id.
+    pub fn is_ticket_entry(&self, seq: u64) -> bool {
+        self.entry(seq)
+            .is_some_and(|entry| is_ticket_kind(&entry.kind))
+    }
+
+    /// The recorded ticket completions, oldest first.
+    pub fn ticket_entries(&self) -> impl Iterator<Item = &JournalEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| is_ticket_kind(&entry.kind))
     }
 
     pub fn replay(

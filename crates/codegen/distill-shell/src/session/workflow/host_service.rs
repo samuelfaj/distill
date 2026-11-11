@@ -9,7 +9,11 @@ use distill_tools::implementations::distill::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
     SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
 };
-use distill_workflow::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
+use distill_workflow::{
+    AgentOpts, AgentResult, BudgetState, DEFAULT_SH_TIMEOUT_MS, HostError, MAX_SH_OUTPUT_BYTES,
+    ShOpts, ShResult, TicketHandle, WaitTimeout, WorkflowHostRequest,
+};
+use distill_workspace::permission::{AccessKind, Decision, PermissionHandle, PermissionRequest};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -56,6 +60,10 @@ const WORKFLOW_MAX_PHASE_BYTES: usize = 256;
 const WORKFLOW_MAX_LOG_BYTES: usize = 4 * 1024;
 const WORKFLOW_CHILD_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const WORKFLOW_MAX_SCRATCH_NAME_BYTES: usize = 255;
+const WORKFLOW_MAX_COMMAND_BYTES: usize = 64 * 1024;
+const WORKFLOW_MAX_COMMAND_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
+/// How long a finished command's pipes may stay open (a background grandchild holds them) before its tree is killed.
+const WORKFLOW_COMMAND_PIPE_DRAIN: Duration = Duration::from_secs(2);
 const SCRATCH_ARTIFACT_ROOT: &str = "scratch";
 
 pub(crate) type TelemetryHook = Arc<dyn Fn(&str, &serde_json::Value, bool) + Send + Sync>;
@@ -82,6 +90,8 @@ pub(crate) struct WorkflowHostParams {
     pub subagent_event_tx:
         mpsc::UnboundedSender<distill_tools::implementations::distill::task::types::SubagentEvent>,
     pub parent_session_id: String,
+    /// The session's permission manager: `sh()` commands are decided by it, like an agent's terminal commands.
+    pub permissions: PermissionHandle,
     pub allow_fork_context: bool,
     pub effort: Option<distill_sampling_types::ReasoningEffort>,
     pub templates: std::collections::HashMap<String, String>,
@@ -143,6 +153,9 @@ fn reply_cancelled(req: WorkflowHostRequest) {
         R::SpawnAgent { reply, .. } => {
             let _ = reply.send(Err(HostError::Cancelled));
         }
+        R::RunCommand { reply, .. } => {
+            let _ = reply.send(Err(HostError::Cancelled));
+        }
         R::BudgetQuery { reply } => {
             let _ = reply.send(Err(HostError::Cancelled));
         }
@@ -152,7 +165,100 @@ fn reply_cancelled(req: WorkflowHostRequest) {
         | R::GitDiffSince { reply, .. } => {
             let _ = reply.send(Err(HostError::Cancelled));
         }
-        R::Phase { .. } | R::Log { .. } | R::Telemetry { .. } => {}
+        // Dropping the timeout is "never fires"; the tickets it waited on are answered as cancelled themselves.
+        R::AwaitTickets { .. } | R::Phase { .. } | R::Log { .. } | R::Telemetry { .. } => {}
+    }
+}
+
+/// The last [`MAX_SH_OUTPUT_BYTES`] of one of a command's output streams, and how much it wrote in all.
+#[derive(Default)]
+struct OutputTail {
+    bytes: Vec<u8>,
+    total: u64,
+}
+
+impl OutputTail {
+    fn push(&mut self, chunk: &[u8]) {
+        self.total = self.total.saturating_add(chunk.len() as u64);
+        self.bytes.extend_from_slice(chunk);
+        // Trim in batches so a chatty command does not shift the buffer on every read.
+        if self.bytes.len() > MAX_SH_OUTPUT_BYTES.saturating_mul(2) {
+            self.trim();
+        }
+    }
+
+    fn trim(&mut self) {
+        let excess = self.bytes.len().saturating_sub(MAX_SH_OUTPUT_BYTES);
+        self.bytes.drain(..excess);
+    }
+
+    /// The text for the script and whether it was cut. A cut is also stated on the first line, because the text
+    /// often goes straight into an agent prompt where the flag would not follow it.
+    fn into_text(mut self, stream: &str) -> (String, bool) {
+        self.trim();
+        let text = String::from_utf8_lossy(&self.bytes);
+        if self.total > self.bytes.len() as u64 {
+            (
+                format!(
+                    "[{stream} truncated: showing the last {} of {} bytes]\n{text}",
+                    self.bytes.len(),
+                    self.total
+                ),
+                true,
+            )
+        } else {
+            (text.into_owned(), false)
+        }
+    }
+}
+
+type SharedTail = Arc<parking_lot::Mutex<OutputTail>>;
+
+/// Reads a child's pipe until it closes. The tail is shared rather than returned so that what was read is kept even
+/// when the reader has to be abandoned.
+fn capture_tail(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
+) -> (SharedTail, tokio::task::JoinHandle<()>) {
+    let tail = SharedTail::default();
+    let sink = tail.clone();
+    let reader = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt as _;
+        let Some(mut pipe) = pipe else {
+            return;
+        };
+        let mut chunk = vec![0u8; 16 * 1024];
+        loop {
+            match pipe.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => sink.lock().push(chunk.get(..read).unwrap_or_default()),
+            }
+        }
+    });
+    (tail, reader)
+}
+
+fn shell_command(command: &str) -> tokio::process::Command {
+    #[cfg(unix)]
+    {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    }
+    #[cfg(not(unix))]
+    {
+        let invocation = distill_config::shell::shell_command_argv(command);
+        let mut cmd = tokio::process::Command::new(&invocation.program);
+        cmd.args(&invocation.args).envs(invocation.env);
+        cmd
+    }
+}
+
+/// The result of a ticket the script cancelled before or while its command ran.
+fn cancelled_command(duration_ms: u64) -> ShResult {
+    ShResult {
+        cancelled: true,
+        duration_ms,
+        ..Default::default()
     }
 }
 
@@ -257,12 +363,46 @@ impl HostService {
                 };
                 let _ = reply.send(result);
             }
-            WorkflowHostRequest::SpawnAgent { opts, reply } => {
+            WorkflowHostRequest::SpawnAgent {
+                opts,
+                ticket,
+                reply,
+            } => {
                 let svc = self.clone();
                 tokio::spawn(async move {
-                    let result = svc.spawn_agent(opts).await;
+                    let result = svc.spawn_agent(opts, ticket).await;
                     let _ = reply.send(result);
                 });
+            }
+            WorkflowHostRequest::RunCommand {
+                command,
+                opts,
+                ticket,
+                reply,
+            } => {
+                let svc = self.clone();
+                tokio::spawn(async move {
+                    let result = svc.run_command(command, opts, ticket).await;
+                    let _ = reply.send(result);
+                });
+            }
+            WorkflowHostRequest::AwaitTickets { timeout, .. } => {
+                // The engine holds the ticket replies itself; the host only keeps the clock for the timeout.
+                if let Some(WaitTimeout { ms, mut fire }) = timeout {
+                    let cancel = self.params.cancel.clone();
+                    tokio::spawn(async move {
+                        let elapsed = tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(ms)) => true,
+                            // The wait ended first.
+                            _ = fire.closed() => false,
+                            // Dropping the timer is "never fires": the cancelled tickets end the wait themselves.
+                            _ = cancel.cancelled() => false,
+                        };
+                        if elapsed {
+                            let _ = fire.send(());
+                        }
+                    });
+                }
             }
             WorkflowHostRequest::Phase { title, replayed } => {
                 if title.len() > WORKFLOW_MAX_PHASE_BYTES {
@@ -431,7 +571,11 @@ impl HostService {
         }
     }
 
-    async fn spawn_agent(&self, mut opts: AgentOpts) -> Result<AgentResult, HostError> {
+    async fn spawn_agent(
+        &self,
+        mut opts: AgentOpts,
+        ticket: Option<TicketHandle>,
+    ) -> Result<AgentResult, HostError> {
         if self.params.cancel.is_cancelled() {
             return Err(HostError::Cancelled);
         }
@@ -513,8 +657,27 @@ impl HostService {
             Some(schema) => contract_prompt(&opts.prompt, schema),
         };
 
+        // The child's own token. For a ticket it is the one `cancel(ticket)` cancels, so the script can stop this
+        // agent alone; `agent()` and `parallel()` get a token nothing else holds.
+        let cancel_token = ticket.map(|ticket| ticket.cancel).unwrap_or_default();
+
         // Acquire before the roster row so a waiting agent is not shown as running
-        let _agent_slot = self.acquire_agent_slot().await?;
+        let _agent_slot = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Ok(AgentResult {
+                    agent_id: id,
+                    success: false,
+                    output: serde_json::Value::String(
+                        "cancelled by the workflow script before it started".into(),
+                    ),
+                    cancelled: true,
+                    tokens_used: 0,
+                    duration_ms: 0,
+                });
+            }
+            slot = self.acquire_agent_slot() => slot?,
+        };
 
         let description = self.params.tracker.lock().agent_started(
             &self.params.run_id,
@@ -533,7 +696,6 @@ impl HostService {
             agent_id: id.clone(),
             finished: false,
         };
-        let cancel_token = CancellationToken::new();
 
         let spawn_once =
             |child_id: String, prompt: String, resume_from: Option<String>, fork_context: bool| {
@@ -690,7 +852,14 @@ impl HostService {
         };
 
         row.finish(
-            if result.success { "done" } else { "failed" },
+            if result.success {
+                "done"
+            } else if result.cancelled && cancel_token.is_cancelled() {
+                // The script's own `cancel(ticket)`, not a failure of the agent.
+                "cancelled"
+            } else {
+                "failed"
+            },
             total_tokens,
             total_duration,
         );
@@ -704,6 +873,269 @@ impl HostService {
             tokens_used: total_tokens,
             duration_ms: total_duration,
         })
+    }
+
+    /// `sh()` / `spawn_sh()`: one shell command in the workflow's working directory, with no model involved.
+    async fn run_command(
+        &self,
+        command: String,
+        opts: ShOpts,
+        ticket: Option<TicketHandle>,
+    ) -> Result<ShResult, HostError> {
+        if self.params.cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        if command.len() > WORKFLOW_MAX_COMMAND_BYTES {
+            return Err(HostError::Failed(format!(
+                "sh command exceeds {WORKFLOW_MAX_COMMAND_BYTES} bytes"
+            )));
+        }
+        if opts
+            .label
+            .as_ref()
+            .is_some_and(|label| label.len() > WORKFLOW_MAX_PHASE_BYTES)
+        {
+            return Err(HostError::Failed(
+                "sh label must be at most 256 bytes".into(),
+            ));
+        }
+        let cwd = self.command_cwd(opts.cwd.as_deref())?;
+        self.authorize_command(&command, &cwd).await?;
+
+        let script_cancel = ticket.map(|ticket| ticket.cancel).unwrap_or_default();
+        // Commands share the run's concurrency slots with agents, so a wide fan-out cannot fork without bound.
+        let _slot = tokio::select! {
+            biased;
+            _ = script_cancel.cancelled() => return Ok(cancelled_command(0)),
+            slot = self.acquire_agent_slot() => slot?,
+        };
+
+        let row_id = format!("sh-{}", uuid::Uuid::now_v7());
+        let label = opts.label.clone().unwrap_or_else(|| {
+            let first_line = command.lines().next().unwrap_or_default();
+            format!("$ {}", distill_tools::util::truncate_str(first_line, 60))
+        });
+        self.params.tracker.lock().agent_started(
+            &self.params.run_id,
+            crate::session::workflow::tracker::WorkflowAgentRow {
+                agent_id: row_id.clone(),
+                label,
+                phase: None,
+                model: Some("sh".to_string()),
+                state: "running".to_string(),
+                tokens_used: 0,
+                duration_ms: 0,
+            },
+        );
+        self.tick();
+
+        let timeout_ms = opts
+            .timeout_ms
+            .unwrap_or(DEFAULT_SH_TIMEOUT_MS)
+            .min(WORKFLOW_MAX_COMMAND_TIMEOUT_MS);
+        let started = std::time::Instant::now();
+        let result = self
+            .execute_command(&command, &cwd, timeout_ms, &script_cancel)
+            .await;
+        let (state, duration_ms) = match &result {
+            Ok(result) if result.cancelled => ("cancelled", result.duration_ms),
+            Ok(result) if result.ok => ("done", result.duration_ms),
+            Ok(result) => ("failed", result.duration_ms),
+            Err(HostError::Cancelled) => ("cancelled", started.elapsed().as_millis() as u64),
+            Err(_) => ("failed", started.elapsed().as_millis() as u64),
+        };
+        self.params.tracker.lock().agent_finished(
+            &self.params.run_id,
+            &row_id,
+            state,
+            0,
+            duration_ms,
+        );
+        self.tick();
+        result
+    }
+
+    /// The directory a command runs in: the workflow's own, or a directory below it named by `cwd`.
+    fn command_cwd(&self, cwd: Option<&str>) -> Result<PathBuf, HostError> {
+        let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) else {
+            return Ok(self.params.cwd.clone());
+        };
+        let inside = Path::new(cwd).components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+        if !inside {
+            return Err(HostError::Failed(format!(
+                "sh cwd must be a relative path inside the workflow's working directory, got: {cwd}"
+            )));
+        }
+        let dir = self.params.cwd.join(cwd);
+        if !dir.is_dir() {
+            return Err(HostError::Failed(format!(
+                "sh cwd is not a directory: {cwd}"
+            )));
+        }
+        Ok(dir)
+    }
+
+    /// Decides a workflow command the way the session decides an agent's terminal command, minus the human.
+    ///
+    /// A workflow runs unattended, so `sh()` is refused unless the session is in always-approve mode: anywhere else
+    /// each command needs an approval nobody is there to give. In always-approve mode the command still goes to the
+    /// permission manager, which enforces the configured deny rules before it approves (and shows its own prompt
+    /// for a rule that says "ask"). Nothing here approves a command by itself.
+    async fn authorize_command(&self, command: &str, cwd: &Path) -> Result<(), HostError> {
+        let permissions = &self.params.permissions;
+        if !permissions.is_yolo_mode() {
+            return Err(HostError::Unsupported(
+                "sh() runs a shell command with nobody there to approve it, so it needs the session in \
+                 always-approve permission mode; this session asks before running commands. Switch the \
+                 permission mode and resume, or have an agent run the command instead."
+                    .into(),
+            ));
+        }
+        let tool_call_update = agent_client_protocol::ToolCallUpdate::new(
+            agent_client_protocol::ToolCallId::new(format!("workflow-sh-{}", uuid::Uuid::now_v7())),
+            agent_client_protocol::ToolCallUpdateFields::new()
+                .title(format!("Workflow command: {command}"))
+                .kind(agent_client_protocol::ToolKind::Execute)
+                .raw_input(serde_json::json!({ "command": command, "cwd": cwd })),
+        );
+        let request = PermissionRequest {
+            path_context: Some(distill_workspace::permission::types::RequestPathContext {
+                real_cwd: cwd.to_path_buf(),
+                display_cwd: None,
+            }),
+            session_id: Some(self.params.parent_session_id.clone()),
+            ..PermissionRequest::new(AccessKind::Bash(command.to_string()), tool_call_update)
+        };
+        let resolution = tokio::select! {
+            biased;
+            _ = self.params.cancel.cancelled() => return Err(HostError::Cancelled),
+            resolution = permissions.request(request) => resolution,
+        };
+        match resolution.decision {
+            Decision::Allow => Ok(()),
+            Decision::PolicyDeny(reason) | Decision::Reject(reason) => Err(HostError::Unsupported(
+                format!("sh() command was denied by the session's permission rules: {reason}"),
+            )),
+            Decision::Ask | Decision::FollowupMessage(_) | Decision::Cancelled => {
+                Err(HostError::Unsupported(
+                    "sh() command was not approved by the session's permission rules".into(),
+                ))
+            }
+        }
+    }
+
+    async fn execute_command(
+        &self,
+        command: &str,
+        cwd: &Path,
+        timeout_ms: u64,
+        script_cancel: &CancellationToken,
+    ) -> Result<ShResult, HostError> {
+        let mut cmd = shell_command(command);
+        cmd.current_dir(cwd)
+            .stdin(distill_tty_utils::null_stdio())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .envs(distill_tty_utils::pager_env())
+            .kill_on_drop(true);
+        // Own session and process group: no terminal to read from, and the whole tree can be killed at once.
+        distill_tty_utils::detach_command(&mut cmd);
+        distill_sandbox::child_net::restrict_child_network(&mut cmd);
+
+        let started = std::time::Instant::now();
+        // Enrolled on the next line; `ProcessScope::spawn` would `setpgid` first and defeat the `setsid` above.
+        #[allow(clippy::disallowed_methods)]
+        let mut child = cmd.spawn().map_err(|error| {
+            HostError::Failed(format!("sh could not start the command: {error}"))
+        })?;
+        let group = distill_tty_utils::global_process_scope()
+            .enroll(&child)
+            .inspect_err(|error| {
+                tracing::warn!(run_id = %self.params.run_id, %error, "workflow command has no process group; only its shell can be killed");
+            })
+            .ok();
+        let (stdout, stdout_reader) = capture_tail(child.stdout.take());
+        let (stderr, stderr_reader) = capture_tail(child.stderr.take());
+
+        enum End {
+            Exited(std::io::Result<std::process::ExitStatus>),
+            TimedOut,
+            RunCancelled,
+            ScriptCancelled,
+        }
+        let end = tokio::select! {
+            biased;
+            _ = self.params.cancel.cancelled() => End::RunCancelled,
+            _ = script_cancel.cancelled() => End::ScriptCancelled,
+            status = child.wait() => End::Exited(status),
+            _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => End::TimedOut,
+        };
+        if !matches!(end, End::Exited(_)) {
+            if let Some(group) = &group {
+                let _ = group.kill();
+            }
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+        let duration_ms = started.elapsed().as_millis() as u64;
+
+        // The pipes close when the last process holding them exits. A grandchild left in the background would keep
+        // them open for as long as it lives, so after a grace period the rest of the tree goes too.
+        let abandon = [stdout_reader.abort_handle(), stderr_reader.abort_handle()];
+        let mut readers = Box::pin(async {
+            let _ = stdout_reader.await;
+            let _ = stderr_reader.await;
+        });
+        if tokio::time::timeout(WORKFLOW_COMMAND_PIPE_DRAIN, &mut readers)
+            .await
+            .is_err()
+        {
+            if let Some(group) = &group {
+                let _ = group.kill();
+            }
+            let _ = tokio::time::timeout(WORKFLOW_COMMAND_PIPE_DRAIN, &mut readers).await;
+        }
+        drop(readers);
+        // A process that left the group can still hold a pipe; what was read so far is in the shared tails.
+        for reader in abandon {
+            reader.abort();
+        }
+        drop(group);
+
+        let (stdout, stdout_truncated) = std::mem::take(&mut *stdout.lock()).into_text("stdout");
+        let (stderr, stderr_truncated) = std::mem::take(&mut *stderr.lock()).into_text("stderr");
+        let captured = ShResult {
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
+            duration_ms,
+            ..Default::default()
+        };
+        match end {
+            End::RunCancelled => Err(HostError::Cancelled),
+            End::ScriptCancelled => Ok(ShResult {
+                cancelled: true,
+                ..captured
+            }),
+            End::TimedOut => Ok(ShResult {
+                timed_out: true,
+                ..captured
+            }),
+            End::Exited(Ok(status)) => Ok(ShResult {
+                ok: status.success(),
+                code: status.code().map(i64::from),
+                ..captured
+            }),
+            End::Exited(Err(error)) => Err(HostError::Failed(format!(
+                "sh lost track of the command: {error}"
+            ))),
+        }
     }
 
     fn tick(&self) {
@@ -1007,6 +1439,7 @@ mod tests {
                 notify,
                 subagent_event_tx,
                 parent_session_id: "parent".into(),
+                permissions: PermissionHandle::allow_all(),
                 allow_fork_context: false,
                 effort: None,
                 templates: Default::default(),
@@ -1169,6 +1602,7 @@ mod tests {
                         prompt: prompt.to_owned(),
                         ..Default::default()
                     },
+                    ticket: None,
                     reply: reply_tx,
                 })
                 .unwrap();
@@ -1237,5 +1671,483 @@ mod tests {
         drop(host_tx);
         cancel.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    /// A running host service for one test, with a real working directory for commands.
+    struct TestHost {
+        host_tx: mpsc::UnboundedSender<WorkflowHostRequest>,
+        handle: tokio::task::JoinHandle<()>,
+        cancel: CancellationToken,
+        tracker: Arc<parking_lot::Mutex<WorkflowTracker>>,
+        subagent_rx: mpsc::UnboundedReceiver<SubagentEvent>,
+        dir: tempfile::TempDir,
+        _persist_rx: mpsc::UnboundedReceiver<PersistenceMsg>,
+    }
+
+    impl TestHost {
+        fn start(permissions: PermissionHandle, max_concurrent_agents: usize) -> Self {
+            let run_id = "wf_commands".to_string();
+            let mut tracker = WorkflowTracker::default();
+            tracker.start_run(
+                run_id.clone(),
+                "demo".into(),
+                "objective".into(),
+                vec![],
+                Some(1000),
+                None,
+            );
+            let tracker = Arc::new(parking_lot::Mutex::new(tracker));
+            let (subagent_tx, subagent_rx) = mpsc::unbounded_channel();
+            let (mut params, persist_rx) = test_host_params(
+                &run_id,
+                max_concurrent_agents,
+                "wf-scratch-commands",
+                tracker.clone(),
+                subagent_tx,
+            );
+            let dir = tempfile::tempdir().expect("temp working directory");
+            params.cwd = dir.path().to_path_buf();
+            params.permissions = permissions;
+            let cancel = params.cancel.clone();
+            let (host_tx, host_rx) = mpsc::unbounded_channel();
+            let (handle, _drained) = spawn_workflow_host_service(params, host_rx);
+            Self {
+                host_tx,
+                handle,
+                cancel,
+                tracker,
+                subagent_rx,
+                dir,
+                _persist_rx: persist_rx,
+            }
+        }
+
+        fn send_sh(
+            &self,
+            command: &str,
+            opts: ShOpts,
+            ticket: Option<TicketHandle>,
+        ) -> oneshot::Receiver<Result<ShResult, HostError>> {
+            let (reply, result) = oneshot::channel();
+            self.host_tx
+                .send(WorkflowHostRequest::RunCommand {
+                    command: command.to_owned(),
+                    opts,
+                    ticket,
+                    reply,
+                })
+                .expect("host service running");
+            result
+        }
+
+        async fn sh(&self, command: &str, opts: ShOpts) -> Result<ShResult, HostError> {
+            tokio::time::timeout(Duration::from_secs(30), self.send_sh(command, opts, None))
+                .await
+                .expect("the command replies")
+                .expect("the host keeps the reply")
+        }
+
+        async fn stop(self) {
+            drop(self.host_tx);
+            self.cancel.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(2), self.handle).await;
+        }
+    }
+
+    /// A permission manager that is in `yolo` (always-approve) mode or not and answers every request with `decide`,
+    /// recording what it was asked.
+    fn permission_manager(
+        yolo: bool,
+        decide: impl Fn() -> Decision + Send + 'static,
+    ) -> (PermissionHandle, Arc<parking_lot::Mutex<Vec<AccessKind>>>) {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        use distill_workspace::permission::{PermissionCommand, PermissionResolution};
+
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let asked = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let asked_in_manager = asked.clone();
+        tokio::spawn(async move {
+            while let Some(command) = cmd_rx.recv().await {
+                if let PermissionCommand::Request {
+                    request,
+                    respond_to,
+                } = command
+                {
+                    asked_in_manager.lock().push(request.access);
+                    let _ = respond_to.send(PermissionResolution {
+                        decision: decide(),
+                        event: None,
+                    });
+                }
+            }
+        });
+        let handle = PermissionHandle::Actor {
+            cmd_tx,
+            yolo_state: Arc::new(AtomicBool::new(yolo)),
+            auto_state: Arc::new(AtomicBool::new(false)),
+            side_query_wired: Arc::new(AtomicBool::new(false)),
+            yolo_pin: None,
+            deny_read_globs: Arc::new(vec![]),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            user_prompt_notify: Arc::new(parking_lot::Mutex::new(None)),
+        };
+        (handle, asked)
+    }
+
+    fn ticket(id: &str) -> TicketHandle {
+        TicketHandle {
+            id: id.to_owned(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    /// `sh()` replaces an agent whose only job was to run one command, so the script has to get back everything that
+    /// agent would have reported: where it ran, the exit code, and both streams. A failing command is an answer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sh_runs_in_the_working_directory_and_returns_code_and_both_streams() {
+        let host = TestHost::start(PermissionHandle::allow_all(), 2);
+        std::fs::create_dir(host.dir.path().join("tools")).unwrap();
+
+        let result = host
+            .sh(
+                "pwd; printf 'to stderr' >&2; exit 3",
+                ShOpts {
+                    cwd: Some("tools".into()),
+                    label: Some("check".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("a failing command is a result, not a host error");
+        assert!(!result.ok);
+        assert_eq!(result.code, Some(3));
+        assert!(
+            result.stdout.trim_end().ends_with("/tools"),
+            "ran in {:?}",
+            result.stdout
+        );
+        assert_eq!(result.stderr, "to stderr");
+        assert!(!result.timed_out && !result.cancelled && !result.stdout_truncated);
+
+        let rows = host.tracker.lock().get("wf_commands").unwrap().agents;
+        let row = rows.first().expect("the command shows in the run's roster");
+        assert_eq!(
+            (row.label.as_str(), row.model.as_deref(), row.state.as_str()),
+            ("check", Some("sh"), "failed")
+        );
+
+        let outside = host
+            .sh(
+                "true",
+                ShOpts {
+                    cwd: Some("../elsewhere".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(
+            matches!(outside, Err(HostError::Failed(ref message)) if message.contains("inside")),
+            "cwd is relative to the workflow's directory and may not leave it: {outside:?}"
+        );
+        host.stop().await;
+    }
+
+    /// The safety property of `sh()`: a workflow is unattended, so a session that would ask before running a command
+    /// must refuse it rather than run it unapproved. The refusal has to be the catchable kind, and the command must
+    /// not have started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sh_is_refused_outside_always_approve_mode_and_does_not_run() {
+        let (permissions, asked) = permission_manager(false, || Decision::Allow);
+        let host = TestHost::start(permissions, 2);
+
+        let result = host.sh("touch ran.marker", ShOpts::default()).await;
+        assert!(
+            matches!(result, Err(HostError::Unsupported(ref message)) if message.contains("always-approve")),
+            "expected a refusal naming the mode, got {result:?}"
+        );
+        assert!(
+            !host.dir.path().join("ran.marker").exists(),
+            "a refused command must not run"
+        );
+        assert!(
+            asked.lock().is_empty(),
+            "outside always-approve the manager is not even asked: asking would raise a prompt nobody answers"
+        );
+        host.stop().await;
+    }
+
+    /// Always-approve is not "no rules": deny rules still bind an agent's terminal there, so they must bind `sh()`
+    /// too. The command goes to the permission manager verbatim and only runs on its allow.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sh_in_always_approve_still_obeys_the_permission_manager() {
+        let (permissions, asked) = permission_manager(true, || {
+            Decision::PolicyDeny("Bash(touch:*) is denied".into())
+        });
+        let host = TestHost::start(permissions, 2);
+
+        let result = host.sh("touch denied.marker", ShOpts::default()).await;
+        assert!(
+            matches!(result, Err(HostError::Unsupported(ref message)) if message.contains("Bash(touch:*) is denied")),
+            "expected the rule's reason, got {result:?}"
+        );
+        assert!(!host.dir.path().join("denied.marker").exists());
+        assert!(
+            matches!(asked.lock().as_slice(), [AccessKind::Bash(command)] if command == "touch denied.marker"),
+            "the manager decides on the exact command: {:?}",
+            asked.lock()
+        );
+        host.stop().await;
+
+        let (permissions, asked) = permission_manager(true, || Decision::Allow);
+        let host = TestHost::start(permissions, 2);
+        let result = host.sh("touch allowed.marker", ShOpts::default()).await;
+        assert!(result.is_ok_and(|result| result.ok));
+        assert!(host.dir.path().join("allowed.marker").exists());
+        assert_eq!(asked.lock().len(), 1);
+        host.stop().await;
+    }
+
+    #[cfg(unix)]
+    fn process_is_gone(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the pid exists.
+        unsafe { libc::kill(pid, 0) != 0 }
+    }
+
+    #[cfg(unix)]
+    async fn wait_until_gone(pid: i32) -> bool {
+        for _ in 0..100 {
+            if process_is_gone(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    /// A hung command must not hang the workflow, and killing only the shell would leave what it started running
+    /// (`bun`, a dev server) for the rest of the session. The timeout is a result the script can read.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sh_timeout_kills_the_whole_command_tree() {
+        let host = TestHost::start(PermissionHandle::allow_all(), 2);
+        let result = host
+            .sh(
+                "sleep 60 & echo $!; wait",
+                ShOpts {
+                    timeout_ms: Some(300),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("a timeout is a result");
+        assert!(result.timed_out && !result.ok);
+        assert_eq!(result.code, None);
+        assert!(
+            result.duration_ms < 20_000,
+            "took {} ms",
+            result.duration_ms
+        );
+        let grandchild: i32 = result.stdout.trim().parse().expect("the sleep's pid");
+        assert!(
+            wait_until_gone(grandchild).await,
+            "the background child outlived the timeout"
+        );
+        host.stop().await;
+    }
+
+    /// Command output is unbounded and the result is journaled and usually pasted into a prompt, so only the end
+    /// is kept (where a build or a test run says what failed) and the cut is announced.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sh_keeps_the_tail_of_long_output_and_says_it_was_cut() {
+        let host = TestHost::start(PermissionHandle::allow_all(), 2);
+        let result = host
+            .sh(
+                "head -c 300000 /dev/zero | tr '\\0' 'x'; echo; echo LAST LINE",
+                ShOpts::default(),
+            )
+            .await
+            .expect("result");
+        assert!(result.ok);
+        assert!(result.stdout_truncated && !result.stderr_truncated);
+        assert!(
+            result.stdout.ends_with("LAST LINE\n"),
+            "the end of the output is what is kept"
+        );
+        assert!(
+            result
+                .stdout
+                .starts_with("[stdout truncated: showing the last 65536 of 300011 bytes]\n"),
+            "{:?}",
+            result.stdout.lines().next()
+        );
+        assert!(result.stdout.len() < MAX_SH_OUTPUT_BYTES + 128);
+        host.stop().await;
+    }
+
+    /// Pausing or stopping a run must not leave its commands running, and the script must see the run-level
+    /// cancellation (which leaves the call unjournaled, so a resume runs it again), not a made-up result.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_the_run_kills_a_running_command() {
+        let host = TestHost::start(PermissionHandle::allow_all(), 2);
+        let pid_file = host.dir.path().join("pid");
+        let pending = host.send_sh("echo $$ > pid; sleep 60", ShOpts::default(), None);
+        let pid = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = text.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        host.cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(10), pending)
+            .await
+            .expect("the cancelled command replies")
+            .expect("reply kept");
+        assert!(matches!(result, Err(HostError::Cancelled)), "{result:?}");
+        assert!(wait_until_gone(pid).await, "the command outlived the run");
+        host.stop().await;
+    }
+
+    /// `cancel(ticket)` stops one command and nothing else: the run goes on, and the ticket still resolves (marked
+    /// cancelled) so the script's wait returns.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_a_ticket_kills_only_its_command() {
+        let host = TestHost::start(PermissionHandle::allow_all(), 2);
+        let pid_file = host.dir.path().join("pid");
+        let cancelled = ticket("t1");
+        let pending = host.send_sh(
+            "echo $$ > pid; sleep 60",
+            ShOpts::default(),
+            Some(cancelled.clone()),
+        );
+        let pid = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = text.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        cancelled.cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(10), pending)
+            .await
+            .expect("the cancelled ticket replies")
+            .expect("reply kept")
+            .expect("a cancelled ticket is a result, not an error");
+        assert!(result.cancelled && !result.ok && !result.timed_out);
+        assert!(wait_until_gone(pid).await);
+
+        let other = host.sh("echo still running", ShOpts::default()).await;
+        assert_eq!(
+            other.ok().map(|result| result.stdout).as_deref(),
+            Some("still running\n"),
+            "the run itself was not cancelled"
+        );
+        let states: Vec<String> = host
+            .tracker
+            .lock()
+            .get("wf_commands")
+            .unwrap()
+            .agents
+            .iter()
+            .map(|row| row.state.clone())
+            .collect();
+        assert_eq!(states, ["cancelled", "done"]);
+        host.stop().await;
+    }
+
+    /// The engine has no clock: `wait_any(tickets, timeout_ms)` times out only when the host says so. It must say
+    /// so after the delay, not before, or a quorum gives up on agents that were about to answer.
+    #[tokio::test(start_paused = true)]
+    async fn wait_timeout_fires_after_its_delay() {
+        let host = TestHost::start(PermissionHandle::allow_all(), 2);
+        let (fire, mut fired) = oneshot::channel();
+        host.host_tx
+            .send(WorkflowHostRequest::AwaitTickets {
+                tickets: vec!["t1".into()],
+                all: false,
+                timeout: Some(WaitTimeout { ms: 5_000, fire }),
+            })
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(4_900), &mut fired)
+                .await
+                .is_err(),
+            "the timeout fired early"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(200), &mut fired).await,
+            Ok(Ok(())),
+            "the timeout did not fire at its deadline"
+        );
+        host.stop().await;
+    }
+
+    /// An agent waiting for a concurrency slot has not started. Cancelling its ticket must resolve it at once,
+    /// without it ever reaching the coordinator, or a quorum's stragglers would still run later and be paid for.
+    #[tokio::test]
+    async fn cancelled_ticket_waiting_for_a_slot_never_starts_its_agent() {
+        let mut host = TestHost::start(PermissionHandle::allow_all(), 1);
+        let spawn = |prompt: &str, ticket: Option<TicketHandle>| {
+            let (reply, result) = oneshot::channel();
+            host.host_tx
+                .send(WorkflowHostRequest::SpawnAgent {
+                    opts: AgentOpts {
+                        prompt: prompt.to_owned(),
+                        ..Default::default()
+                    },
+                    ticket,
+                    reply,
+                })
+                .unwrap();
+            result
+        };
+
+        let running = spawn("holds the only slot", None);
+        let holder = tokio::time::timeout(Duration::from_secs(5), host.subagent_rx.recv())
+            .await
+            .expect("the first agent reaches the coordinator")
+            .expect("subagent channel open");
+        let queued_ticket = ticket("t1");
+        let queued = spawn("queued", Some(queued_ticket.clone()));
+        queued_ticket.cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(5), queued)
+            .await
+            .expect("the cancelled ticket resolves while the slot is still taken")
+            .expect("reply kept")
+            .expect("a cancelled ticket is a result");
+        assert!(result.cancelled && !result.success);
+        assert!(
+            host.subagent_rx.try_recv().is_err(),
+            "the cancelled agent must not have been started"
+        );
+
+        let SubagentEvent::Spawn(holder) = holder else {
+            panic!("expected a spawn event");
+        };
+        holder
+            .respond_with(|request| {
+                distill_tools::implementations::distill::task::types::SubagentResult {
+                    success: true,
+                    output: Arc::from("done"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                }
+            })
+            .expect("agent result delivered");
+        assert!(running.await.expect("reply").expect("result").success);
+        host.stop().await;
     }
 }

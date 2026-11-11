@@ -579,6 +579,140 @@ fn test_tool_result_with_images_to_chat_completions() {
     );
 }
 
+fn image_part(tag: &str) -> ContentPart {
+    ContentPart::Image {
+        url: format!("data:image/png;base64,{tag}").into(),
+    }
+}
+
+fn image_tool_call(id: &str) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        name: "read_file".to_string(),
+        arguments: "{}".into(),
+    }
+}
+
+/// The text and image blocks of a `user` message, as (kind, value) pairs.
+fn user_blocks(msg: &ChatRequestMessage) -> Vec<(&'static str, String)> {
+    assert_eq!(msg.role, Role::User);
+    let MessageContent::Blocks(blocks) = &msg.content else {
+        panic!("expected Blocks content, got {:?}", msg.content);
+    };
+    blocks
+        .iter()
+        .map(|b| match b {
+            ChatContentBlock::Text { text, .. } => ("text", text.clone()),
+            ChatContentBlock::ImageUrl { image_url } => ("image", image_url.url.clone()),
+        })
+        .collect()
+}
+
+// OpenAI-compatible gateways drop an `image_url` block on a `tool` message without an error: the model received only
+// "Read image file: <path>" and described a picture it never saw. The image has to reach it on a `user` message.
+#[test]
+fn conversation_to_chat_messages_moves_tool_result_images_to_a_user_message() {
+    let items = vec![
+        ConversationItem::user("what is in photo.png?"),
+        ConversationItem::assistant_tool_calls(vec![image_tool_call("call_1")]),
+        ConversationItem::tool_result_with_images(
+            "call_1",
+            "Read image file: photo.png",
+            vec![image_part("AAA")],
+        ),
+        ConversationItem::assistant("a green square"),
+    ];
+
+    let msgs = conversation_to_chat_messages(items);
+
+    let [_, _, tool, images, answer] = msgs.as_slice() else {
+        panic!("expected user, assistant, tool, user(images), assistant: {msgs:?}");
+    };
+    assert_eq!(tool.role, Role::Tool);
+    assert_eq!(tool.tool_call_id.as_deref(), Some("call_1"));
+    assert_matches!(&tool.content, MessageContent::Text(t) if t == "Read image file: photo.png");
+    assert_eq!(
+        user_blocks(images),
+        vec![
+            (
+                "text",
+                "Image returned by the tool call above (Read image file: photo.png):".to_string()
+            ),
+            ("image", "data:image/png;base64,AAA".to_string()),
+        ]
+    );
+    assert_eq!(answer.role, Role::Assistant);
+}
+
+// Every `tool` message answering one assistant turn must directly follow it: a `user` message between two of them is a
+// 400 on strict providers. The images of the whole run go out together, after the last tool result.
+#[test]
+fn conversation_to_chat_messages_keeps_parallel_tool_results_contiguous() {
+    let items = vec![
+        ConversationItem::assistant_tool_calls(vec![
+            image_tool_call("call_1"),
+            image_tool_call("call_2"),
+            image_tool_call("call_3"),
+        ]),
+        ConversationItem::tool_result_with_images(
+            "call_1",
+            "Read image file: a.png",
+            vec![image_part("AAA")],
+        ),
+        ConversationItem::tool_result("call_2", "plain text result"),
+        ConversationItem::tool_result_with_images(
+            "call_3",
+            "Read image file: c.png",
+            vec![image_part("CC1"), image_part("CC2")],
+        ),
+    ];
+
+    let msgs = conversation_to_chat_messages(items);
+
+    let [assistant, t1, t2, t3, images] = msgs.as_slice() else {
+        panic!("expected assistant, three tool messages, user(images): {msgs:?}");
+    };
+    assert_eq!(assistant.role, Role::Assistant);
+    for (tool, id) in [(t1, "call_1"), (t2, "call_2"), (t3, "call_3")] {
+        assert_eq!(tool.role, Role::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some(id));
+        assert_matches!(&tool.content, MessageContent::Text(_));
+    }
+    // A trailing run (the request ends on tool results) still flushes, and each image keeps the label of its own call.
+    assert_eq!(
+        user_blocks(images),
+        vec![
+            (
+                "text",
+                "Image returned by the tool call above (Read image file: a.png):".to_string()
+            ),
+            ("image", "data:image/png;base64,AAA".to_string()),
+            (
+                "text",
+                "Image returned by the tool call above (Read image file: c.png):".to_string()
+            ),
+            ("image", "data:image/png;base64,CC1".to_string()),
+            ("image", "data:image/png;base64,CC2".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn conversation_to_chat_messages_adds_no_user_message_for_text_only_tool_results() {
+    let items = vec![
+        ConversationItem::assistant_tool_calls(vec![image_tool_call("call_1")]),
+        ConversationItem::tool_result("call_1", "plain text result"),
+        ConversationItem::assistant("done"),
+    ];
+
+    let msgs = conversation_to_chat_messages(items);
+
+    assert_eq!(
+        msgs.iter().map(|m| m.role).collect::<Vec<_>>(),
+        vec![Role::Assistant, Role::Tool, Role::Assistant]
+    );
+}
+
 #[test]
 fn conversation_to_chat_messages_drops_reasoning_when_user_intervenes() {
     // Reasoning only folds onto the *immediately* following assistant

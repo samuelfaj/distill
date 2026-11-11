@@ -67,6 +67,7 @@ impl From<ChatRequestMessage> for ConversationItem {
 /// Convert a single non-`Reasoning` [`ConversationItem`].
 /// The wire format carries `reasoning_content` on the *following* assistant message, which a single item cannot see.
 /// Use [`conversation_to_chat_messages`] instead when reasoning must survive.
+/// A tool result converted alone keeps its images on the `tool` message; the canonical conversion moves them to a `user` message.
 pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestMessage {
     match item {
         ConversationItem::System(s) => ChatRequestMessage::system(s.content.as_ref()),
@@ -183,18 +184,66 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
     }
 }
 
+/// Emits the images held back from a run of tool results as one `user` message, right after that run.
+fn flush_tool_result_images(
+    out: &mut Vec<ChatRequestMessage>,
+    pending: &mut Vec<ChatContentBlock>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    out.push(ChatRequestMessage {
+        role: Role::User,
+        content: MessageContent::Blocks(std::mem::take(pending)),
+        name: None,
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        model_id: None,
+        reasoning_content: None,
+    });
+}
+
 /// The canonical conversion: each run of `Reasoning` siblings folds into the `reasoning_content` of the following `Assistant`.
 /// A `BackendToolCall` in between does not break the fold, any other item clears it, and reasoning with no following assistant is dropped.
+///
+/// Images returned by a tool call do not ride on the `tool` message. Chat Completions defines `tool` content as text, and
+/// OpenAI-compatible gateways drop an `image_url` block there without an error: the model gets only "Read image file: <path>"
+/// and answers as if it had seen the file. The `tool` message keeps the text, and the images follow in a `user` message placed
+/// after the whole run of tool results, so parallel tool results stay contiguous.
 pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRequestMessage> {
     let mut out: Vec<ChatRequestMessage> = Vec::with_capacity(items.len());
     let mut pending_reasoning: Vec<String> = Vec::new();
+    let mut pending_tool_images: Vec<ChatContentBlock> = Vec::new();
 
     for item in items {
         // Mid-conversation tool changes are an Anthropic feature: here the tools travel in `tools`.
         if item.is_tool_addition() {
             continue;
         }
+        // The run of tool results ends at the first item that is not one.
+        if !matches!(item, ConversationItem::ToolResult(_)) {
+            flush_tool_result_images(&mut out, &mut pending_tool_images);
+        }
         match item {
+            ConversationItem::ToolResult(mut t) if !t.images.is_empty() => {
+                pending_reasoning.clear();
+                pending_tool_images.push(ChatContentBlock::Text {
+                    text: format!("Image returned by the tool call above ({}):", t.content),
+                    cache_control: None,
+                });
+                for img in std::mem::take(&mut t.images) {
+                    if let ContentPart::Image { url } = img {
+                        pending_tool_images.push(ChatContentBlock::ImageUrl {
+                            image_url: ImageUrl {
+                                url: url.as_ref().to_owned(),
+                            },
+                        });
+                    }
+                }
+                out.push(conversation_item_to_chat_message(
+                    ConversationItem::ToolResult(t),
+                ));
+            }
             ConversationItem::Reasoning(r) => {
                 let text = reasoning_item_text(&r);
                 if !text.is_empty() {
@@ -219,6 +268,7 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
             }
         }
     }
+    flush_tool_result_images(&mut out, &mut pending_tool_images);
 
     out
 }

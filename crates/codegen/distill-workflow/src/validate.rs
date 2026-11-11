@@ -1,4 +1,5 @@
-use crate::host::{AgentResult, BudgetState, WorkflowHostRequest};
+// Modified for Distill by Samuel Fajreldines, 2026.
+use crate::host::{AgentResult, BudgetState, ShResult, WorkflowHostRequest};
 use crate::{Journal, WorkflowOutcome, WorkflowRunParams, extract_meta, run_workflow};
 
 #[derive(Debug, Clone)]
@@ -111,6 +112,18 @@ fn validate_script_with_agent_budget_and_cancel(
                         duration_ms: 1,
                     }));
                 }
+                // Tickets answer at once as well, so a wait never needs its timeout: dropping it is "never fires".
+                R::AwaitTickets { .. } => {}
+                R::RunCommand { reply, .. } => {
+                    // An empty JSON object: harmless as text, and a script that parses the output still gets a map.
+                    let _ = reply.send(Ok(ShResult {
+                        ok: true,
+                        code: Some(0),
+                        stdout: "{}".into(),
+                        duration_ms: 1,
+                        ..Default::default()
+                    }));
+                }
                 R::BudgetQuery { reply } => {
                     let _ = reply.send(Ok(BudgetState {
                         total: None,
@@ -143,6 +156,7 @@ fn validate_script_with_agent_budget_and_cancel(
         host_tx,
         cancel,
         max_ops: 10_000_000,
+        clock: None,
     });
     drop(host);
 
@@ -191,6 +205,41 @@ mod tests {
         .unwrap();
         assert_eq!(report.name, "t");
         assert!(report.outcome_ok);
+    }
+
+    /// The smoke check is what tells an author a script is runnable. It has to follow a ticket-driven script to its
+    /// end (stub tickets resolve at once, so no wait can hang) and still charge spawned agents against the budget.
+    #[test]
+    fn ticket_and_shell_functions_pass_the_smoke_check() {
+        let script = r#"
+            let meta = #{ name: "tickets", description: "d" };
+            let tickets = [spawn_agent(#{ prompt: "a", label: "a" }), spawn_sh("bun x.ts", #{ timeout_ms: 1000 })];
+            let first = wait_any(tickets, 30000);
+            cancel(tickets[1]);
+            let rest = wait_all(tickets);
+            let built = sh("bun build.ts");
+            complete(#{ first: first.ticket, rest: rest.len(), ok: built.ok, parsed: json_decode(built.stdout) });
+        "#;
+        let report = validate_script(script, None).unwrap();
+        assert!(
+            report.outcome_summary.starts_with("completed:"),
+            "{}",
+            report.outcome_summary
+        );
+
+        let script = r#"
+            let meta = #{ name: "over-budget", description: "d" };
+            let tickets = [];
+            for i in 0..3 { tickets.push(spawn_agent(#{ prompt: "job" + i })); }
+            wait_all(tickets);
+        "#;
+        let error = validate_script_with_agent_budget(script, None, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("agent budget exceeded: requested 3, maximum 2"),
+            "got: {error}"
+        );
     }
 
     #[test]
@@ -296,6 +345,11 @@ mod tests {
         hinted(
             "let meta = #{ name: \"t\", description: \"d\" };\nlet s = \"abc\";\ncomplete(s[0].severity);",
             &["type 'char'", "indexing a string"],
+        );
+        // `spawn` is the name an author reaches for first; it is reserved, so the error has to name the real function.
+        hinted(
+            "let meta = #{ name: \"t\", description: \"d\" };\nlet t = spawn(#{ prompt: \"p\" });",
+            &["reserved keyword", "spawn_agent(opts)"],
         );
     }
 }

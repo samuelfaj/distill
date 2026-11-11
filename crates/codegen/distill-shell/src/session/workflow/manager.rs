@@ -88,6 +88,7 @@ pub(crate) struct WorkflowManager {
         mpsc::UnboundedSender<distill_tools::implementations::distill::task::types::SubagentEvent>,
     telemetry: TelemetryHook,
     session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
+    permissions: distill_workspace::permission::PermissionHandle,
     templates: HashMap<String, String>,
     active: HashMap<String, ActiveRun>,
     retiring: Vec<(String, oneshot::Receiver<()>)>,
@@ -109,6 +110,7 @@ impl WorkflowManager {
         >,
         telemetry: TelemetryHook,
         session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
+        permissions: distill_workspace::permission::PermissionHandle,
         templates: HashMap<String, String>,
         max_concurrent_agents: usize,
     ) -> Self {
@@ -123,6 +125,7 @@ impl WorkflowManager {
             subagent_event_tx,
             telemetry,
             session_cmd_tx,
+            permissions,
             templates,
             active: HashMap::new(),
             retiring: Vec::new(),
@@ -305,6 +308,7 @@ impl WorkflowManager {
                 notify: self.notify.clone(),
                 subagent_event_tx: self.subagent_event_tx.clone(),
                 parent_session_id: self.session_id.clone(),
+                permissions: self.permissions.clone(),
                 allow_fork_context,
                 effort: spec.effort,
                 templates: self.templates.clone(),
@@ -326,6 +330,7 @@ impl WorkflowManager {
                 host_tx,
                 cancel: exec_cancel,
                 max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+                clock: None,
             })
         });
 
@@ -533,6 +538,7 @@ impl WorkflowManager {
             mpsc::unbounded_channel().0,
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
+            distill_workspace::permission::PermissionHandle::allow_all(),
             std::collections::HashMap::new(),
             super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         )));
@@ -954,6 +960,7 @@ mod tests {
             subagent_tx,
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
+            distill_workspace::permission::PermissionHandle::allow_all(),
             HashMap::new(),
             crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         );
@@ -1262,6 +1269,127 @@ mod tests {
             1,
             "resume reconciles agents_used from the journal (0 journaled) then re-reserves once; \
              without the reconcile the leaked slot double-charges to 2"
+        );
+    }
+
+    /// Tickets end to end through the real host service, the journal on disk and a resume: two agents run at once
+    /// without the script blocking on either, the second one finishes first and is handed back first, a shell
+    /// command runs with no agent, and the run is paused while the first agent is still out. The resumed run must
+    /// start only that agent again: the finished one and the command come from the journal, and both are paid once.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ticket_pipeline_resumes_without_rerunning_finished_agents_or_commands() {
+        use distill_tools::implementations::distill::task::types::SubagentResult;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let runs_log = dir.path().join("command-runs.log");
+        let script = format!(
+            "let meta = #{{ name: \"t\", description: \"d\" }};\n\
+             let a = spawn_agent(#{{ prompt: \"work a\" }});\n\
+             let b = spawn_agent(#{{ prompt: \"work b\" }});\n\
+             let first = wait_any([a, b]);\n\
+             let built = sh(\"echo ran >> '{}'; echo built\");\n\
+             let rest = wait_all([a, b]);\n\
+             complete(first.ticket + \"|\" + built.stdout + \"|\" + rest[0].output + \"|\" + rest[1].output);",
+            runs_log.display()
+        );
+        let finish =
+            |req: distill_tools::implementations::distill::task::types::SubagentSpawnRequest,
+             output: &str| {
+                let id = req.id.clone();
+                let _ = req.result_tx.send(SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from(output),
+                    subagent_id: id.clone(),
+                    child_session_id: id,
+                    ..Default::default()
+                });
+            };
+
+        let (run_id, outcome_rx) = manager
+            .launch(resolve_inline(script.clone()).unwrap(), spec())
+            .unwrap();
+        let first = recv_spawn(&mut subagent_rx).await;
+        let second = recv_spawn(&mut subagent_rx).await;
+        let (agent_a, agent_b) = if first.prompt.contains("work a") {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        assert!(
+            agent_a.prompt.contains("work a") && agent_b.prompt.contains("work b"),
+            "both agents are in flight before the script waits on either"
+        );
+        finish(agent_b, "B");
+
+        // The script takes b, runs the command, and blocks in wait_all on a: three journal entries by then.
+        let journal_path = dir
+            .path()
+            .join("workflows")
+            .join(&run_id)
+            .join("journal.jsonl");
+        let mut journaled = String::new();
+        for _ in 0..500 {
+            journaled = std::fs::read_to_string(&journal_path).unwrap_or_default();
+            if journaled.lines().count() >= 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let kinds: Vec<String> = journaled
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(kinds, ["ticket_agent", "wait_any", "sh"]);
+
+        assert!(manager.pause(&run_id));
+        assert!(matches!(
+            outcome_rx.await.unwrap(),
+            WorkflowOutcome::Cancelled
+        ));
+        drop(agent_a);
+
+        let (_resumed_id, outcome_rx) = manager
+            .launch(
+                resolve_inline(script).unwrap(),
+                LaunchSpec {
+                    resume_run_id: Some(run_id.clone()),
+                    ..spec()
+                },
+            )
+            .unwrap();
+        let respawned = recv_spawn(&mut subagent_rx).await;
+        assert!(
+            respawned.prompt.contains("work a"),
+            "only the agent that was cancelled runs again, got: {}",
+            respawned.prompt
+        );
+        finish(respawned, "A");
+        match outcome_rx.await.unwrap() {
+            WorkflowOutcome::Completed { result } => {
+                assert_eq!(result, serde_json::json!("t2|built\n|A|B"));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert!(
+            subagent_rx.try_recv().is_err(),
+            "the finished agent must not be started a second time"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&runs_log).unwrap().lines().count(),
+            1,
+            "the command's side effect must happen once across pause and resume"
+        );
+        assert_eq!(
+            manager.tracker.lock().get(&run_id).unwrap().agents_used,
+            2,
+            "one agent from the journal plus the one that ran again"
         );
     }
 

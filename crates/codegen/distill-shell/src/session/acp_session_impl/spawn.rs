@@ -1697,6 +1697,7 @@ pub(crate) async fn spawn_session_actor(
                 }
             }),
             cmd_tx.clone(),
+            permissions.clone(),
             std::collections::HashMap::new(),
             workflow_max_concurrent_agents,
         ),

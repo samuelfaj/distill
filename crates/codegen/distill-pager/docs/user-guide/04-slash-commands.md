@@ -333,7 +333,28 @@ Kick off a background research workflow. It plans a bounded set of questions, ga
 
 The command returns right away — follow progress in `/workflow runs`, and the final report appears in the conversation on its own.
 
-Workflows use an absolute cumulative `agent_budget` cap on logical child-agent calls: every `agent()` call and every item in a `parallel()` panel spends one slot, while schema-correction retries don't. The default is 128, explicit values run 1–1,024, and a panel that would cross the remaining budget is rejected before any of its children launch. Model-launched workflows set `agent_budget` on the `workflow` tool; named slash launches accept `--agent-budget N` or an `agent_budget` field in their JSON args. Named launches can also set child reasoning effort with `--effort LEVEL` or JSON `effort`, without changing the current session's `/effort`; a child script's own `effort` option takes precedence. Separately, a host-configured cap (32 by default) bounds how many children run at a time per run; larger panels queue and still act as a barrier. `budget()` reports the cap as `total`, admitted calls as `spent`, `reserved` (always zero), and `remaining`.
+Workflows use an absolute cumulative `agent_budget` cap on logical child-agent calls: every `agent()` call, every `spawn_agent()` ticket, and every item in a `parallel()` panel spends one slot, while schema-correction retries and `sh()` / `spawn_sh()` shell commands don't. The default is 128, explicit values run 1–1,024, and a panel that would cross the remaining budget is rejected before any of its children launch. Model-launched workflows set `agent_budget` on the `workflow` tool; named slash launches accept `--agent-budget N` or an `agent_budget` field in their JSON args. Named launches can also set child reasoning effort with `--effort LEVEL` or JSON `effort`, without changing the current session's `/effort`; a child script's own `effort` option takes precedence. Separately, a host-configured cap (32 by default) bounds how many children run at a time per run, shell commands included; larger panels queue and still act as a barrier. `budget()` reports the cap as `total`, admitted calls as `spent`, `reserved` (always zero), and `remaining`.
+
+A `parallel()` panel is a barrier: nothing after it runs until its slowest item finishes. When the work is several independent multi-stage pipelines (one per room, file, or shard), a script can drive them with tickets instead, so each pipeline moves on as soon as its own stage is done:
+
+| Function | What it does |
+|---|---|
+| `spawn_agent(opts)` | Starts an agent (same option map as a `parallel()` item) and returns a ticket, a string such as `"t3"`, right away. |
+| `spawn_sh(command, opts)` | The same for a shell command. |
+| `wait_any(tickets)` / `wait_any(tickets, timeout_ms)` | Blocks until one of the tickets finishes and returns `#{ ticket, result, elapsed_ms }`. On timeout it returns `#{ timeout: true, elapsed_ms }`. Each ticket is returned once; when none in the list is left, the result is `()`. Tickets that had already finished come back first, lowest ticket first, with `elapsed_ms: 0`. |
+| `wait_all(tickets)` | Blocks until all of them finish and returns the results in ticket order, with `()` for a call that failed. |
+| `cancel(ticket)` | Stops one ticket; it then resolves with a result marked `cancelled: true`. |
+| `sh(command, opts)` | Runs a shell command without spending an agent and returns `#{ ok, code, stdout, stderr, timed_out, duration_ms }`. Options: `timeout_ms` (default 600000), `label`, and `cwd` (relative to the working directory). A non-zero exit is `ok: false`, not an error. Each output stream keeps its last 64 KiB and says so when it was cut. |
+| `json_decode(text)` | Parses any JSON value, the counterpart of `json_encode`. |
+
+`elapsed_ms` is the script's only clock: add it up across waits to hold a quorum to a deadline. A ticket's `result` is what `agent()` or `sh()` would have returned; when the call itself failed it is `()` and the reason is in `error`. Tickets still running when the script ends are awaited, so call `cancel()` on any you want stopped. `sh()` and `spawn_sh()` only run in [always-approve](22-permissions-and-safety.md) mode, where `deny` rules and shell `ask` rules still apply; in any other mode `sh()` throws an error the script can catch, and a `spawn_sh()` ticket resolves with `result: ()` and the reason in `error`. On resume, finished tickets and commands come from the journal and are not run again, and `wait_any` returns the same tickets in the same order.
+
+A build without these functions rejects them only when they are called, so a saved workflow can probe and fall back to `parallel()`:
+
+```rhai
+let has_tickets = false;
+try { wait_all([]); has_tickets = true; } catch (e) {}
+```
 
 ### `/workflow`
 

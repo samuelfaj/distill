@@ -1,15 +1,28 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 
 use rhai::{Dynamic, EvalAltResult, Position};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::host::{AgentOpts, HostError, WorkflowHostRequest};
-use crate::journal::{HOST_ERROR_KEY, Journal, JournalError, request_hash};
+use crate::host::{
+    AgentOpts, AgentResult, HostError, ShOpts, ShResult, TicketHandle, WaitTimeout,
+    WorkflowHostRequest,
+};
+use crate::journal::{
+    HOST_ERROR_KEY, Journal, JournalError, TICKET_AGENT_KIND, TICKET_SH_KIND, request_hash,
+};
 use crate::run::{PauseKind, WorkflowOutcome};
 use crate::{MAX_HOST_CALLS, MAX_PARALLEL};
+
+/// Milliseconds on a clock that only moves forward. `wait_any()` reads it to tell the script how long it was blocked.
+pub type WorkflowClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 pub struct WorkflowRunParams {
     pub script: String,
@@ -18,6 +31,9 @@ pub struct WorkflowRunParams {
     pub host_tx: mpsc::UnboundedSender<WorkflowHostRequest>,
     pub cancel: CancellationToken,
     pub max_ops: u64,
+    /// `None` is the wall clock. A simulated host passes its virtual clock, so the durations a script sees agree
+    /// with the timeouts that host fires.
+    pub clock: Option<WorkflowClock>,
 }
 
 impl WorkflowRunParams {
@@ -36,12 +52,32 @@ enum ControlToken {
 struct Ctx {
     host_tx: mpsc::UnboundedSender<WorkflowHostRequest>,
     journal: Journal,
+    /// Journal position of the next script call. Ticket completions share the journal, so this is a cursor, not
+    /// a call count: it steps over them (see [`Ctx::skip_ticket_entries`]).
     seq: u64,
+    /// Every `spawn_agent()` / `spawn_sh()` of this run, in call order; ticket `t<n>` is `tickets[n - 1]`.
+    tickets: Vec<Ticket>,
+    /// Ticket id to the journal position of its completion, for the tickets that finished in an earlier run.
+    recorded_tickets: HashMap<String, u64>,
+    clock: WorkflowClock,
 }
 
 impl Ctx {
+    /// Whether the next script call will be answered from the journal.
     fn replaying(&self) -> bool {
-        self.journal.covers(self.seq)
+        let mut seq = self.seq;
+        while self.journal.is_ticket_entry(seq) {
+            seq = seq.saturating_add(1);
+        }
+        self.journal.covers(seq)
+    }
+
+    /// Moves the cursor past ticket completions to the next call entry (or the journal's end). Call entries are
+    /// matched in script order; a completion is found by its ticket id, wherever it sits.
+    fn skip_ticket_entries(&mut self) {
+        while self.journal.is_ticket_entry(self.seq) {
+            self.seq = self.seq.saturating_add(1);
+        }
     }
 
     fn next_seq(&mut self) -> ScriptResult<u64> {
@@ -49,6 +85,7 @@ impl Ctx {
     }
 
     fn reserve_seqs(&mut self, count: usize) -> ScriptResult<std::ops::Range<u64>> {
+        self.skip_ticket_entries();
         let count = u64::try_from(count).map_err(|_| {
             terminated(ControlToken::Fatal(
                 "workflow host-call count overflowed".into(),
@@ -80,6 +117,41 @@ impl Ctx {
             .record(seq, kind, hash, value)
             .map_err(journal_fatal)
     }
+
+    /// Journals the completion of `tickets[index]` at the journal's end, the moment the script thread sees it. A
+    /// ticket that cannot be journaled is lost for this run, exactly as if the host had cancelled it.
+    fn record_ticket(&mut self, index: usize, value: serde_json::Value) -> ScriptResult<()> {
+        let order = self.journal.len() as u64;
+        let Some(ticket) = self.tickets.get_mut(index) else {
+            return Ok(());
+        };
+        if order >= MAX_HOST_CALLS {
+            ticket.state = TicketState::Lost;
+            return Err(terminated(ControlToken::Fatal(format!(
+                "workflow exceeded the maximum of {MAX_HOST_CALLS} result-bearing host calls"
+            ))));
+        }
+        if let Err(error) = self.journal.record(
+            order,
+            ticket.kind.journal_kind(),
+            ticket.hash.clone(),
+            value.clone(),
+        ) {
+            ticket.state = TicketState::Lost;
+            return Err(journal_fatal(error));
+        }
+        ticket.state = TicketState::Done { value };
+        if self.seq == order {
+            self.seq = order.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn has_live_ticket(&self) -> bool {
+        self.tickets
+            .iter()
+            .any(|ticket| matches!(ticket.state, TicketState::Live { .. }))
+    }
 }
 
 type ScriptResult<T> = Result<T, Box<EvalAltResult>>;
@@ -109,12 +181,23 @@ pub fn run_workflow(params: WorkflowRunParams) -> WorkflowOutcome {
         host_tx,
         cancel,
         max_ops,
+        clock,
     } = params;
 
+    let recorded_tickets = match recorded_tickets(&journal) {
+        Ok(recorded) => recorded,
+        Err(error) => return WorkflowOutcome::Failed { error },
+    };
     let ctx = Rc::new(RefCell::new(Ctx {
         host_tx,
         journal,
         seq: 0,
+        tickets: Vec::new(),
+        recorded_tickets,
+        clock: clock.unwrap_or_else(|| {
+            let started = std::time::Instant::now();
+            Arc::new(move || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+        }),
     }));
 
     let mut engine = rhai::Engine::new();
@@ -180,12 +263,30 @@ pub fn run_workflow(params: WorkflowRunParams) -> WorkflowOutcome {
     };
     scope.push_dynamic("args", args_dyn);
 
-    match engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast) {
+    let outcome = match engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast) {
         Ok(value) => WorkflowOutcome::Completed {
             result: dynamic_to_value(value),
         },
         Err(err) => outcome_from_error(*err),
+    };
+    drain_tickets(&ctx, &outcome);
+    outcome
+}
+
+fn recorded_tickets(journal: &Journal) -> Result<HashMap<String, u64>, String> {
+    let mut recorded = HashMap::new();
+    for entry in journal.ticket_entries() {
+        let Some(id) = entry.result.get("ticket").and_then(|id| id.as_str()) else {
+            return Err(format!(
+                "workflow journal entry {} records a ticket without an id",
+                entry.seq
+            ));
+        };
+        if recorded.insert(id.to_string(), entry.seq).is_some() {
+            return Err(format!("workflow journal records ticket {id} twice"));
+        }
     }
+    Ok(recorded)
 }
 
 fn outcome_from_error(err: EvalAltResult) -> WorkflowOutcome {
@@ -447,7 +548,8 @@ fn spawn_agent_call(ctx: &Rc<RefCell<Ctx>>, opts: AgentOpts) -> ScriptResult<Dyn
         .map_err(|e| runtime_error(format!("invalid agent options: {e}")))?;
     let hash = request_hash("spawn_agent", &payload);
     let is_live = {
-        let ctx = ctx.borrow();
+        let mut ctx = ctx.borrow_mut();
+        ctx.skip_ticket_entries();
         match replay_spawn_agent(&ctx.journal, ctx.seq, &payload, &hash) {
             Ok(Some(_)) => false,
             Ok(None) => true,
@@ -461,7 +563,11 @@ fn spawn_agent_call(ctx: &Rc<RefCell<Ctx>>, opts: AgentOpts) -> ScriptResult<Dyn
         ctx,
         "spawn_agent",
         payload,
-        |reply| WorkflowHostRequest::SpawnAgent { opts, reply },
+        |reply| WorkflowHostRequest::SpawnAgent {
+            opts,
+            ticket: None,
+            reply,
+        },
         |result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
     ) {
         Ok(value) => value,
@@ -486,6 +592,628 @@ fn agent_opts_from_map(prompt: Option<&str>, map: rhai::Map) -> ScriptResult<Age
         return Err(runtime_error("agent prompt must not be empty"));
     }
     Ok(opts)
+}
+
+// Tickets: `spawn_agent()` and `spawn_sh()` start a host call and return at once; the script collects the result
+// later with `wait_any()` / `wait_all()`, so independent pipelines advance without waiting for each other.
+//
+// Replay stays deterministic because of what is journaled and when:
+// - a ticket's id is its spawn position (`t1`, `t2`, ...), so a resumed script hands out the same ids;
+// - a completion is journaled as its own entry the moment the script thread sees it, in arrival order, whether or not
+//   the script ever waits on it. On resume the spawn finds that entry by ticket id and does not call the host;
+// - every `wait_any()` journals which ticket it returned, or that it timed out, and how long it was blocked, so the
+//   script takes the same branches again even though tickets that were still running then are finished by now.
+// A reply that ends the run (cancelled, over budget) is not journaled and its agent-call reservation is released,
+// like a `parallel()` panel: the resumed run starts that one again and pays for it once.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TicketKind {
+    Agent,
+    Sh,
+}
+
+impl TicketKind {
+    fn journal_kind(self) -> &'static str {
+        match self {
+            Self::Agent => TICKET_AGENT_KIND,
+            Self::Sh => TICKET_SH_KIND,
+        }
+    }
+}
+
+enum TicketReply {
+    Agent(oneshot::Receiver<Result<AgentResult, HostError>>),
+    Sh(oneshot::Receiver<Result<ShResult, HostError>>),
+}
+
+impl TicketReply {
+    /// `Ready(None)` when the host dropped the reply.
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<serde_json::Value, HostError>>> {
+        fn settle<T: serde::Serialize>(
+            reply: Result<Result<T, HostError>, oneshot::error::RecvError>,
+        ) -> Option<Result<serde_json::Value, HostError>> {
+            reply.ok().map(|result| {
+                result.map(|value| serde_json::to_value(value).unwrap_or(serde_json::Value::Null))
+            })
+        }
+        match self {
+            Self::Agent(rx) => Pin::new(rx).poll(cx).map(settle),
+            Self::Sh(rx) => Pin::new(rx).poll(cx).map(settle),
+        }
+    }
+}
+
+enum TicketState {
+    Live {
+        reply: TicketReply,
+        cancel: CancellationToken,
+    },
+    /// Finished and journaled. `value` is the journaled `{ ticket, result }`, plus `error` when the host call
+    /// itself failed.
+    Done { value: serde_json::Value },
+    /// Ended with the run (cancelled, over budget, reply dropped) or could not be journaled. Nothing was recorded,
+    /// so a resumed run starts it again.
+    Lost,
+}
+
+struct Ticket {
+    id: String,
+    kind: TicketKind,
+    hash: String,
+    state: TicketState,
+    /// Already handed to the script by `wait_any()` or `wait_all()`; `wait_any()` returns a ticket once.
+    claimed: bool,
+}
+
+fn spawn_ticket(
+    ctx: &Rc<RefCell<Ctx>>,
+    kind: TicketKind,
+    hash: String,
+    request: impl FnOnce(TicketHandle) -> (WorkflowHostRequest, TicketReply),
+) -> ScriptResult<Dynamic> {
+    let (id, recorded) = {
+        let ctx = ctx.borrow();
+        if ctx.tickets.len() as u64 >= MAX_HOST_CALLS {
+            return Err(terminated(ControlToken::Fatal(format!(
+                "workflow exceeded the maximum of {MAX_HOST_CALLS} tickets"
+            ))));
+        }
+        let id = format!("t{}", ctx.tickets.len() + 1);
+        let entry = ctx
+            .recorded_tickets
+            .get(&id)
+            .and_then(|seq| ctx.journal.entry(*seq));
+        let recorded = match entry {
+            Some(entry) if entry.kind == kind.journal_kind() && entry.req_hash == hash => {
+                Some(entry.result.clone())
+            }
+            Some(entry) => {
+                return Err(journal_fatal(JournalError::Divergence {
+                    seq: entry.seq,
+                    kind: kind.journal_kind().to_string(),
+                }));
+            }
+            None => None,
+        };
+        (id, recorded)
+    };
+    let state = match recorded {
+        Some(value) => TicketState::Done { value },
+        None => {
+            if kind == TicketKind::Agent {
+                reserve_agent_calls(ctx, 1)?;
+            }
+            let cancel = CancellationToken::new();
+            let (request, reply) = request(TicketHandle {
+                id: id.clone(),
+                cancel: cancel.clone(),
+            });
+            if ctx.borrow().host_tx.send(request).is_err() {
+                return Err(terminated(ControlToken::Fatal(
+                    "workflow host channel closed".into(),
+                )));
+            }
+            TicketState::Live { reply, cancel }
+        }
+    };
+    ctx.borrow_mut().tickets.push(Ticket {
+        id: id.clone(),
+        kind,
+        hash,
+        state,
+        claimed: false,
+    });
+    Ok(id.into())
+}
+
+fn spawn_agent_ticket(ctx: &Rc<RefCell<Ctx>>, opts: AgentOpts) -> ScriptResult<Dynamic> {
+    let payload = serde_json::to_value(&opts)
+        .map_err(|e| runtime_error(format!("invalid agent options: {e}")))?;
+    let hash = request_hash("spawn_agent", &payload);
+    spawn_ticket(ctx, TicketKind::Agent, hash, |ticket| {
+        let (reply, rx) = oneshot::channel();
+        (
+            WorkflowHostRequest::SpawnAgent {
+                opts,
+                ticket: Some(ticket),
+                reply,
+            },
+            TicketReply::Agent(rx),
+        )
+    })
+}
+
+fn sh_opts_from_map(map: rhai::Map) -> ScriptResult<ShOpts> {
+    let opts: ShOpts = serde_json::from_value(map_to_value(map)?)
+        .map_err(|e| runtime_error(format!("invalid sh options: {e}")))?;
+    if opts.timeout_ms == Some(0) {
+        return Err(runtime_error("sh timeout_ms must be greater than zero"));
+    }
+    Ok(opts)
+}
+
+fn sh_payload(command: &str, opts: &ShOpts) -> ScriptResult<serde_json::Value> {
+    if command.trim().is_empty() {
+        return Err(runtime_error("sh command must not be empty"));
+    }
+    Ok(serde_json::json!({ "command": command, "opts": opts }))
+}
+
+fn sh_call(ctx: &Rc<RefCell<Ctx>>, command: &str, opts: ShOpts) -> ScriptResult<Dynamic> {
+    let payload = sh_payload(command, &opts)?;
+    let command = command.to_string();
+    let value = host_call(
+        ctx,
+        "sh",
+        payload,
+        |reply| WorkflowHostRequest::RunCommand {
+            command,
+            opts,
+            ticket: None,
+            reply,
+        },
+        |result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+    )?;
+    value_to_dynamic(&value)
+}
+
+fn spawn_sh_ticket(ctx: &Rc<RefCell<Ctx>>, command: &str, opts: ShOpts) -> ScriptResult<Dynamic> {
+    let payload = sh_payload(command, &opts)?;
+    let hash = request_hash("sh", &payload);
+    let command = command.to_string();
+    spawn_ticket(ctx, TicketKind::Sh, hash, |ticket| {
+        let (reply, rx) = oneshot::channel();
+        (
+            WorkflowHostRequest::RunCommand {
+                command,
+                opts,
+                ticket: Some(ticket),
+                reply,
+            },
+            TicketReply::Sh(rx),
+        )
+    })
+}
+
+/// Polls every running ticket once and journals the ones that replied. A reply that ends the run is returned as the
+/// error only after the rest of the pass is journaled, so a ticket that finished in the same instant is kept.
+fn sweep_tickets(ctx: &Rc<RefCell<Ctx>>, cx: &mut Context<'_>) -> ScriptResult<()> {
+    let mut released = 0usize;
+    let mut terminal: Option<Box<EvalAltResult>> = None;
+    {
+        let mut guard = ctx.borrow_mut();
+        let ctx = &mut *guard;
+        for index in 0..ctx.tickets.len() {
+            let Some(ticket) = ctx.tickets.get_mut(index) else {
+                break;
+            };
+            let TicketState::Live { reply, .. } = &mut ticket.state else {
+                continue;
+            };
+            let Poll::Ready(reply) = reply.poll(cx) else {
+                continue;
+            };
+            let value = match reply {
+                Some(Ok(result)) => serde_json::json!({ "ticket": ticket.id, "result": result }),
+                Some(Err(error @ (HostError::BudgetExceeded | HostError::Cancelled))) => {
+                    ticket.state = TicketState::Lost;
+                    if ticket.kind == TicketKind::Agent {
+                        released += 1;
+                    }
+                    terminal.get_or_insert_with(|| {
+                        host_terminal_error(if matches!(error, HostError::Cancelled) {
+                            TERMINAL_CANCELLED
+                        } else {
+                            TERMINAL_BUDGET
+                        })
+                    });
+                    continue;
+                }
+                None => {
+                    ticket.state = TicketState::Lost;
+                    terminal.get_or_insert_with(|| host_terminal_error(TERMINAL_DROPPED_REPLY));
+                    continue;
+                }
+                Some(Err(HostError::Unsupported(message) | HostError::Failed(message))) => {
+                    serde_json::json!({ "ticket": ticket.id, "result": null, "error": message })
+                }
+                Some(Err(error @ HostError::AgentCallQuotaExceeded { .. })) => {
+                    serde_json::json!({ "ticket": ticket.id, "result": null, "error": error.to_string() })
+                }
+            };
+            if let Err(error) = ctx.record_ticket(index, value) {
+                terminal = Some(error);
+            }
+        }
+    }
+    release_agent_calls(ctx, released);
+    match terminal {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Journals the tickets that have already replied, without blocking.
+fn settle_tickets(ctx: &Rc<RefCell<Ctx>>) -> ScriptResult<()> {
+    if !ctx.borrow().has_live_ticket() {
+        return Ok(());
+    }
+    sweep_tickets(ctx, &mut Context::from_waker(Waker::noop()))
+}
+
+struct ThreadWaker(std::thread::Thread);
+
+impl Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+enum WaitEnd {
+    Ready,
+    TimedOut,
+}
+
+/// Parks the script thread until `ready` holds or the host fires `timer`, journaling every ticket that replies in the
+/// meantime, including ones this wait did not ask for. The engine has no clock of its own: the host owns the timeout.
+fn block_on_tickets(
+    ctx: &Rc<RefCell<Ctx>>,
+    mut timer: Option<oneshot::Receiver<()>>,
+    ready: impl Fn(&Ctx) -> bool,
+) -> ScriptResult<WaitEnd> {
+    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    loop {
+        sweep_tickets(ctx, &mut cx)?;
+        if ready(&ctx.borrow()) {
+            return Ok(WaitEnd::Ready);
+        }
+        if let Some(fired) = timer.as_mut() {
+            match Pin::new(fired).poll(&mut cx) {
+                Poll::Ready(Ok(())) => return Ok(WaitEnd::TimedOut),
+                // The host dropped the timer: this wait has no timeout.
+                Poll::Ready(Err(_)) => timer = None,
+                Poll::Pending => {}
+            }
+        }
+        if !ctx.borrow().has_live_ticket() {
+            return Err(terminated(ControlToken::Fatal(
+                "workflow wait has no running ticket left to wait for".into(),
+            )));
+        }
+        std::thread::park();
+    }
+}
+
+fn ticket_index(ctx: &Ctx, what: &str, id: &str) -> ScriptResult<usize> {
+    id.strip_prefix('t')
+        .and_then(|number| number.parse::<usize>().ok())
+        .and_then(|number| number.checked_sub(1))
+        .filter(|index| {
+            ctx.tickets
+                .get(*index)
+                .is_some_and(|ticket| ticket.id == id)
+        })
+        .ok_or_else(|| runtime_error(format!("{what}(): unknown ticket {id:?}")))
+}
+
+fn ticket_indices(
+    ctx: &Rc<RefCell<Ctx>>,
+    what: &str,
+    items: rhai::Array,
+) -> ScriptResult<Vec<usize>> {
+    let ctx = ctx.borrow();
+    let mut indices = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item.into_immutable_string().map_err(|_| {
+            runtime_error(format!(
+                "{what}() takes an array of the tickets returned by spawn_agent() and spawn_sh()"
+            ))
+        })?;
+        indices.push(ticket_index(&ctx, what, &id)?);
+    }
+    Ok(indices)
+}
+
+fn ticket_ids(ctx: &Ctx, indices: &[usize], keep: impl Fn(&Ticket) -> bool) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for ticket in indices.iter().filter_map(|index| ctx.tickets.get(*index)) {
+        if keep(ticket) && !ids.contains(&ticket.id) {
+            ids.push(ticket.id.clone());
+        }
+    }
+    ids
+}
+
+/// The finished ticket among `candidates` that was spawned first. Which of several finished tickets a wait returns
+/// must not depend on the instant each reply happened to be seen, so the choice is by ticket, not by arrival.
+fn lowest_done(ctx: &Ctx, candidates: &[usize]) -> Option<usize> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|index| {
+            matches!(
+                ctx.tickets.get(*index).map(|t| &t.state),
+                Some(TicketState::Done { .. })
+            )
+        })
+        .min()
+}
+
+/// Marks the finished `tickets[index]` as handed to the script and returns its `{ ticket, result }`.
+fn claim_ticket(ctx: &Rc<RefCell<Ctx>>, index: usize) -> ScriptResult<serde_json::Value> {
+    let mut ctx = ctx.borrow_mut();
+    match ctx.tickets.get_mut(index) {
+        Some(ticket) => match &ticket.state {
+            TicketState::Done { value } => {
+                ticket.claimed = true;
+                Ok(value.clone())
+            }
+            _ => Err(terminated(ControlToken::Fatal(format!(
+                "workflow ticket {} has no result",
+                ticket.id
+            )))),
+        },
+        None => Err(terminated(ControlToken::Fatal(
+            "workflow ticket is out of range".into(),
+        ))),
+    }
+}
+
+fn wait_any(
+    ctx: &Rc<RefCell<Ctx>>,
+    items: rhai::Array,
+    timeout_ms: Option<i64>,
+) -> ScriptResult<Dynamic> {
+    let timeout_ms = timeout_ms
+        .map(|ms| {
+            u64::try_from(ms)
+                .map_err(|_| runtime_error("wait_any() timeout_ms must not be negative"))
+        })
+        .transpose()?;
+    let given = ticket_indices(ctx, "wait_any", items)?;
+    let mut candidates: Vec<usize> = Vec::new();
+    let hash = {
+        let ctx = ctx.borrow();
+        for index in &given {
+            let unclaimed = ctx.tickets.get(*index).is_some_and(|t| !t.claimed);
+            if unclaimed && !candidates.contains(index) {
+                candidates.push(*index);
+            }
+        }
+        let ids: Vec<&str> = given
+            .iter()
+            .filter_map(|index| ctx.tickets.get(*index).map(|t| t.id.as_str()))
+            .collect();
+        request_hash(
+            "wait_any",
+            &serde_json::json!({ "tickets": ids, "timeout_ms": timeout_ms }),
+        )
+    };
+    // Nothing left to hand out. This depends only on what the script already did, so it needs no journal entry.
+    if candidates.is_empty() {
+        return Ok(Dynamic::UNIT);
+    }
+
+    if ctx.borrow().replaying() {
+        let seq = ctx.borrow_mut().next_seq()?;
+        let recorded = ctx
+            .borrow()
+            .journal
+            .replay(seq, "wait_any", &hash)
+            .map_err(journal_fatal)?
+            .unwrap_or(serde_json::Value::Null);
+        let elapsed_ms = recorded
+            .get("elapsed_ms")
+            .cloned()
+            .unwrap_or_else(|| 0.into());
+        if recorded.get("timeout").and_then(|t| t.as_bool()) == Some(true) {
+            return value_to_dynamic(
+                &serde_json::json!({ "timeout": true, "elapsed_ms": elapsed_ms }),
+            );
+        }
+        let winner = recorded
+            .get("ticket")
+            .and_then(|id| id.as_str())
+            .and_then(|id| {
+                let ctx = ctx.borrow();
+                candidates.iter().copied().find(|index| {
+                    ctx.tickets.get(*index).is_some_and(|ticket| {
+                        ticket.id == id && matches!(ticket.state, TicketState::Done { .. })
+                    })
+                })
+            });
+        return match winner {
+            Some(winner) => waited_ticket(ctx, winner, elapsed_ms),
+            None => Err(journal_fatal(JournalError::Divergence {
+                seq,
+                kind: "wait_any".to_string(),
+            })),
+        };
+    }
+
+    settle_tickets(ctx)?;
+    let mut winner = lowest_done(&ctx.borrow(), &candidates);
+    // Time is only counted while the script is parked: a ticket that had already finished costs the wait nothing.
+    let mut elapsed_ms = 0u64;
+    if winner.is_none() && timeout_ms != Some(0) {
+        let waiting = ticket_ids(&ctx.borrow(), &candidates, |ticket| {
+            matches!(ticket.state, TicketState::Live { .. })
+        });
+        let (timeout, timer) = match timeout_ms {
+            Some(ms) => {
+                let (fire, fired) = oneshot::channel();
+                (Some(WaitTimeout { ms, fire }), Some(fired))
+            }
+            None => (None, None),
+        };
+        // A send that fails drops the timer with it; the tickets then report the missing host themselves.
+        let _ = ctx
+            .borrow()
+            .host_tx
+            .send(WorkflowHostRequest::AwaitTickets {
+                tickets: waiting,
+                all: false,
+                timeout,
+            });
+        let clock = ctx.borrow().clock.clone();
+        let blocked_at = clock();
+        let end = block_on_tickets(ctx, timer, |ctx| lowest_done(ctx, &candidates).is_some())?;
+        elapsed_ms = clock().saturating_sub(blocked_at);
+        if matches!(end, WaitEnd::Ready) {
+            winner = lowest_done(&ctx.borrow(), &candidates);
+        }
+    }
+
+    let seq = ctx.borrow_mut().next_seq()?;
+    match winner {
+        Some(winner) => {
+            let id = ctx
+                .borrow()
+                .tickets
+                .get(winner)
+                .map(|ticket| ticket.id.clone());
+            ctx.borrow_mut().record(
+                seq,
+                "wait_any",
+                hash,
+                serde_json::json!({ "ticket": id, "elapsed_ms": elapsed_ms }),
+            )?;
+            waited_ticket(ctx, winner, elapsed_ms.into())
+        }
+        None => {
+            let timed_out = serde_json::json!({ "timeout": true, "elapsed_ms": elapsed_ms });
+            ctx.borrow_mut()
+                .record(seq, "wait_any", hash, timed_out.clone())?;
+            value_to_dynamic(&timed_out)
+        }
+    }
+}
+
+/// What `wait_any()` returns for a ticket: `#{ ticket, result, elapsed_ms }`, plus `error` when its host call failed.
+fn waited_ticket(
+    ctx: &Rc<RefCell<Ctx>>,
+    index: usize,
+    elapsed_ms: serde_json::Value,
+) -> ScriptResult<Dynamic> {
+    let mut waited = claim_ticket(ctx, index)?;
+    if let Some(fields) = waited.as_object_mut() {
+        fields.insert("elapsed_ms".to_string(), elapsed_ms);
+    }
+    value_to_dynamic(&waited)
+}
+
+/// Results in the order the tickets were given. Blocking until all of them reply involves no choice the journal
+/// would have to remember, so `wait_all()` records nothing beyond the completions themselves.
+fn wait_all(ctx: &Rc<RefCell<Ctx>>, items: rhai::Array) -> ScriptResult<rhai::Array> {
+    let given = ticket_indices(ctx, "wait_all", items)?;
+    // `wait_all([])` is how a script asks whether this engine has tickets at all, so it must touch nothing.
+    if given.is_empty() {
+        return Ok(rhai::Array::new());
+    }
+    settle_tickets(ctx)?;
+    let waiting = ticket_ids(&ctx.borrow(), &given, |ticket| {
+        matches!(ticket.state, TicketState::Live { .. })
+    });
+    if !waiting.is_empty() {
+        let _ = ctx
+            .borrow()
+            .host_tx
+            .send(WorkflowHostRequest::AwaitTickets {
+                tickets: waiting,
+                all: true,
+                timeout: None,
+            });
+        block_on_tickets(ctx, None, |ctx| {
+            given.iter().all(|index| {
+                !matches!(
+                    ctx.tickets.get(*index).map(|t| &t.state),
+                    Some(TicketState::Live { .. })
+                )
+            })
+        })?;
+    }
+    let mut results = rhai::Array::with_capacity(given.len());
+    for index in given {
+        let claimed = claim_ticket(ctx, index)?;
+        results.push(value_to_dynamic(
+            claimed.get("result").unwrap_or(&serde_json::Value::Null),
+        )?);
+    }
+    Ok(results)
+}
+
+fn cancel_ticket(ctx: &Rc<RefCell<Ctx>>, id: &str) -> ScriptResult<()> {
+    let ctx = ctx.borrow();
+    let index = ticket_index(&ctx, "cancel", id)?;
+    if let Some(TicketState::Live { cancel, .. }) = ctx.tickets.get(index).map(|t| &t.state) {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+/// Runs once the script has ended, whatever the outcome: waits for the tickets still running and journals their
+/// results, like `drain_parallel_replies` does for a panel. A ticket the script never waited on has still been
+/// paid for and may have changed the workspace; journaling it means a resumed run (after `await_user`, a raised
+/// budget, a pause) gets its result back instead of running it again. A script that wants to stop a ticket rather
+/// than wait for it calls `cancel(ticket)` before it ends.
+fn drain_tickets(ctx: &Rc<RefCell<Ctx>>, outcome: &WorkflowOutcome) {
+    let waiting: Vec<String> = ctx
+        .borrow()
+        .tickets
+        .iter()
+        .filter(|ticket| matches!(ticket.state, TicketState::Live { .. }))
+        .map(|ticket| ticket.id.clone())
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    // A run that died on a host error is resumed by pruning that error from the journal's end so the call is
+    // retried. The completions appended below would bury it, so prune first, on the condition resume uses.
+    if let WorkflowOutcome::Failed { error } = outcome
+        && let Err(prune_error) = ctx.borrow_mut().journal.prune_trailing_host_error(error)
+    {
+        tracing::warn!(%prune_error, "workflow journal: could not prune the failing host call before draining tickets");
+    }
+    let _ = ctx
+        .borrow()
+        .host_tx
+        .send(WorkflowHostRequest::AwaitTickets {
+            tickets: waiting,
+            all: true,
+            timeout: None,
+        });
+    while ctx.borrow().has_live_ticket() {
+        // An error here is a ticket that ended with the run or could not be journaled; each one leaves the
+        // running set, so the loop ends.
+        if let Err(error) = block_on_tickets(ctx, None, |ctx| !ctx.has_live_ticket()) {
+            tracing::debug!(%error, "workflow ticket dropped while draining");
+        }
+    }
 }
 
 fn register_host_fns(engine: &mut rhai::Engine, ctx: &Rc<RefCell<Ctx>>) {
@@ -536,7 +1264,8 @@ fn register_host_fns(engine: &mut rhai::Engine, ctx: &Rc<RefCell<Ctx>>) {
                 })
                 .collect::<ScriptResult<Vec<_>>>()?;
             let live_count = {
-                let ctx = c.borrow();
+                let mut ctx = c.borrow_mut();
+                ctx.skip_ticket_entries();
                 let mut seq = ctx.seq;
                 let mut live = 0usize;
                 for (_, payload, hash) in &requests {
@@ -567,6 +1296,7 @@ fn register_host_fns(engine: &mut rhai::Engine, ctx: &Rc<RefCell<Ctx>>) {
                             .host_tx
                             .send(WorkflowHostRequest::SpawnAgent {
                                 opts,
+                                ticket: None,
                                 reply: reply_tx,
                             })
                             .is_err()
@@ -686,6 +1416,59 @@ fn register_host_fns(engine: &mut rhai::Engine, ctx: &Rc<RefCell<Ctx>>) {
             Ok(results)
         },
     );
+
+    // Every ticket function is a plain registered function, never syntax (`spawn` itself is a Rhai reserved word):
+    // a script that uses them still parses on an engine without them and fails at the call, where it can be caught.
+    let c = ctx.clone();
+    engine.register_fn(
+        "spawn_agent",
+        move |opts: rhai::Map| -> ScriptResult<Dynamic> {
+            spawn_agent_ticket(&c, agent_opts_from_map(None, opts)?)
+        },
+    );
+    let c = ctx.clone();
+    engine.register_fn("sh", move |command: &str| -> ScriptResult<Dynamic> {
+        sh_call(&c, command, ShOpts::default())
+    });
+    let c = ctx.clone();
+    engine.register_fn(
+        "sh",
+        move |command: &str, opts: rhai::Map| -> ScriptResult<Dynamic> {
+            sh_call(&c, command, sh_opts_from_map(opts)?)
+        },
+    );
+    let c = ctx.clone();
+    engine.register_fn("spawn_sh", move |command: &str| -> ScriptResult<Dynamic> {
+        spawn_sh_ticket(&c, command, ShOpts::default())
+    });
+    let c = ctx.clone();
+    engine.register_fn(
+        "spawn_sh",
+        move |command: &str, opts: rhai::Map| -> ScriptResult<Dynamic> {
+            spawn_sh_ticket(&c, command, sh_opts_from_map(opts)?)
+        },
+    );
+    let c = ctx.clone();
+    engine.register_fn(
+        "wait_any",
+        move |tickets: rhai::Array| -> ScriptResult<Dynamic> { wait_any(&c, tickets, None) },
+    );
+    let c = ctx.clone();
+    engine.register_fn(
+        "wait_any",
+        move |tickets: rhai::Array, timeout_ms: i64| -> ScriptResult<Dynamic> {
+            wait_any(&c, tickets, Some(timeout_ms))
+        },
+    );
+    let c = ctx.clone();
+    engine.register_fn(
+        "wait_all",
+        move |tickets: rhai::Array| -> ScriptResult<rhai::Array> { wait_all(&c, tickets) },
+    );
+    let c = ctx.clone();
+    engine.register_fn("cancel", move |ticket: &str| -> ScriptResult<()> {
+        cancel_ticket(&c, ticket)
+    });
 
     let c = ctx.clone();
     engine.register_fn("phase", move |title: &str| {
@@ -865,6 +1648,12 @@ fn register_host_fns(engine: &mut rhai::Engine, ctx: &Rc<RefCell<Ctx>>) {
         serde_json::to_string(&dynamic_to_value(value))
             .map_err(|error| runtime_error(format!("json encoding failed: {error}")))
     });
+    // Rhai's own `parse_json` only accepts an object at the top level; command output is as often an array.
+    engine.register_fn("json_decode", |text: &str| -> ScriptResult<Dynamic> {
+        let value = serde_json::from_str::<serde_json::Value>(text)
+            .map_err(|error| runtime_error(format!("json decoding failed: {error}")))?;
+        value_to_dynamic(&value)
+    });
 }
 
 #[cfg(test)]
@@ -938,6 +1727,7 @@ mod tests {
             host_tx,
             cancel: CancellationToken::new(),
             max_ops: WorkflowRunParams::DEFAULT_MAX_OPS,
+            clock: None,
         }
     }
 
@@ -1567,7 +2357,7 @@ mod tests {
     fn parallel_preserves_order_and_nulls_failures() {
         let (tx, rx) = mpsc::unbounded_channel();
         let host = spawn_mock_host(rx, |req| {
-            if let WorkflowHostRequest::SpawnAgent { opts, reply } = req {
+            if let WorkflowHostRequest::SpawnAgent { opts, reply, .. } = req {
                 if opts.prompt.contains("fail") {
                     let _ = reply.send(Err(HostError::Failed("boom".into())));
                 } else {
@@ -1933,6 +2723,36 @@ mod tests {
         );
     }
 
+    /// Command output and agent text arrive as strings. Rhai's `parse_json` rejects anything but an object, so
+    /// `json_decode` has to take every JSON value, and a script must be able to catch text that is not JSON.
+    #[test]
+    fn json_decode_reads_any_json_value_and_fails_catchably() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let outcome = run_workflow(params(
+            r#"
+            let meta = #{ name: "t", description: "d" };
+            let list = json_decode("[1, {\"room\": \"sala\", \"ok\": true, \"none\": null}, 2.5]");
+            let bad = "";
+            try { json_decode("not json"); } catch (e) { bad = "caught"; }
+            complete(#{
+                first: list[0], room: list[1].room, none: list[1].none == (), text: json_decode("\"x\""),
+                bad: bad, round_trip: json_decode(json_encode(#{ a: [1, 2] })).a[1],
+            });
+            "#,
+            Journal::new(None),
+            tx,
+        ));
+        match outcome {
+            WorkflowOutcome::Completed { result } => assert_eq!(
+                result,
+                serde_json::json!({
+                    "first": 1, "room": "sala", "none": true, "text": "x", "bad": "caught", "round_trip": 2
+                })
+            ),
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
     #[test]
     fn json_encode_quotes_untrusted_strings() {
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -1952,3 +2772,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine_ticket_tests.rs"]
+mod ticket_tests;

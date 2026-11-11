@@ -1,3 +1,4 @@
+// Modified for Distill by Samuel Fajreldines, 2026.
 #![deny(clippy::indexing_slicing)]
 
 pub mod engine;
@@ -25,7 +26,8 @@ pub(crate) fn with_rhai_hint(msg: String) -> String {
     } else if msg.contains("reserved keyword") {
         "Rhai reserves identifiers it doesn't use — `shared`, `sync`, `async`, `await`, \
          `spawn`, `go`, `thread`, `new`, `match`, `case`, `default`, `void`, `null`, \
-         `nil`, `exit`, `static`, `var` — rename the variable (`shared` → `has_shared`)."
+         `nil`, `exit`, `static`, `var` — rename the variable (`shared` → `has_shared`). \
+         To start an agent without waiting for it, the function is `spawn_agent(opts)`."
     } else if msg.contains("getter is not registered for type 'char'") {
         "indexing a string yields a `char`, so field access on it fails — you likely \
          indexed a string you expected to be an array (e.g. unparsed JSON in an agent \
@@ -36,8 +38,11 @@ pub(crate) fn with_rhai_hint(msg: String) -> String {
     format!("{msg}\nhint: {hint}")
 }
 
-pub use engine::{WorkflowRunParams, run_workflow};
-pub use host::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
+pub use engine::{WorkflowClock, WorkflowRunParams, run_workflow};
+pub use host::{
+    AgentOpts, AgentResult, BudgetState, DEFAULT_SH_TIMEOUT_MS, HostError, MAX_SH_OUTPUT_BYTES,
+    ShOpts, ShResult, TicketHandle, WaitTimeout, WorkflowHostRequest,
+};
 pub use journal::{Journal, JournalEntry, JournalError};
 pub use meta::{MetaError, PhaseMeta, WorkflowMeta, extract_meta};
 pub use run::{PauseKind, WorkflowOutcome};

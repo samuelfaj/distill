@@ -1,5 +1,12 @@
+// Modified for Distill by Samuel Fajreldines, 2026.
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+/// `sh()` gives a command this long before the host kills it, unless the script passes `timeout_ms`.
+pub const DEFAULT_SH_TIMEOUT_MS: u64 = 600_000;
+/// Bytes of stdout and of stderr a command result keeps; the host keeps the tail and flags the cut.
+pub const MAX_SH_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentOpts {
@@ -39,6 +46,60 @@ pub struct AgentResult {
     pub duration_ms: u64,
 }
 
+/// Options of `sh(command, opts)` and `spawn_sh(command, opts)`. Unknown keys are rejected, so a typo cannot silently
+/// run a command without its timeout or outside its directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShOpts {
+    /// Milliseconds before the command is killed; [`DEFAULT_SH_TIMEOUT_MS`] when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Name shown in the run's progress display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Directory to run in, relative to the workflow's working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// What `sh()` returns. A command that exits non-zero, times out or is cancelled is still a result (`ok: false`),
+/// never a script error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShResult {
+    pub ok: bool,
+    /// Exit code; absent when the command was killed (timeout, cancel, signal).
+    pub code: Option<i64>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub stdout_truncated: bool,
+    #[serde(default)]
+    pub stderr_truncated: bool,
+    /// The script called `cancel(ticket)` on it.
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
+/// Marks a host call the script holds a ticket for (`spawn_agent()`, `spawn_sh()`) instead of blocking on it.
+#[derive(Debug, Clone)]
+pub struct TicketHandle {
+    /// The ticket the script got, e.g. `"t3"`; [`WorkflowHostRequest::AwaitTickets`] names the same ids.
+    pub id: String,
+    /// Cancelled when the script calls `cancel(ticket)`: the host stops this one call and still replies, with a
+    /// result marked `cancelled`.
+    pub cancel: CancellationToken,
+}
+
+/// The timeout of a `wait_any(tickets, timeout_ms)`. The host owns the clock: it sends on `fire` once `ms` have passed,
+/// and dropping `fire` means the wait never times out.
+#[derive(Debug)]
+pub struct WaitTimeout {
+    pub ms: u64,
+    pub fire: oneshot::Sender<()>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BudgetState {
     pub total: Option<u64>,
@@ -73,7 +134,25 @@ pub enum WorkflowHostRequest {
     },
     SpawnAgent {
         opts: AgentOpts,
+        /// `None` for `agent()` and `parallel()`, which block until the reply.
+        ticket: Option<TicketHandle>,
         reply: oneshot::Sender<Result<AgentResult, HostError>>,
+    },
+    /// `sh()` / `spawn_sh()`: run a shell command without a model.
+    RunCommand {
+        command: String,
+        opts: ShOpts,
+        /// `None` for `sh()`, which blocks until the reply.
+        ticket: Option<TicketHandle>,
+        reply: oneshot::Sender<Result<ShResult, HostError>>,
+    },
+    /// The script is now blocked until these tickets reply: one of them (`all: false`, `wait_any`) or every one
+    /// (`all: true`, `wait_all` and the drain at script end). Sent once per blocking wait, and only for tickets
+    /// that have not replied yet. A host needs it for the timeout alone; a simulated host uses it to advance its clock.
+    AwaitTickets {
+        tickets: Vec<String>,
+        all: bool,
+        timeout: Option<WaitTimeout>,
     },
     Phase {
         title: String,
@@ -117,6 +196,8 @@ impl WorkflowHostRequest {
             Self::ReserveAgentCalls { .. } => "reserve_agent_calls",
             Self::ReleaseAgentCalls { .. } => "release_agent_calls",
             Self::SpawnAgent { .. } => "spawn_agent",
+            Self::RunCommand { .. } => "sh",
+            Self::AwaitTickets { .. } => "await_tickets",
             Self::Phase { .. } => "phase",
             Self::Log { .. } => "log",
             Self::Telemetry { .. } => "telemetry",

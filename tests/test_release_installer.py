@@ -85,6 +85,7 @@ pathlib.Path(args[args.index('-o') + 1]).write_bytes(content)
                            HOME=str(home), SHELL=shell, DISTILL_INSTALL_DIR=str(install),
                            DISTILL_VERSION='2.0.0', **extra)
                 env.pop('ZDOTDIR', None)
+                env.pop('XDG_CONFIG_HOME', None)
                 return subprocess.run(['sh', str(script)], env=env, capture_output=True, text=True)
 
             # A fresh terminal only sees the install if the rc file persists the PATH entry.

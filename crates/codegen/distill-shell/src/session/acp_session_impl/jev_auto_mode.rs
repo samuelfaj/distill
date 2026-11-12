@@ -211,7 +211,7 @@ fn mode_criterion_v2(mode: ExecutionMode) -> Criterion {
             not_for: "Requests that need investigation or design judgment, quick questions where only waiting time matters, or changes whose errors are costly.",
             examples: [
                 "rename a function across the repository",
-                "apply the same import fix to twenty files",
+                "fix a small bug whose expected result the request states",
                 "bump a dependency version and rebuild",
             ],
         },
@@ -221,16 +221,16 @@ fn mode_criterion_v2(mode: ExecutionMode) -> Criterion {
             examples: [
                 "what does this error message mean",
                 "take a screenshot of the browser and show it",
-                "fix the typo in the README title",
+                "fix the one failing test in this file",
             ],
         },
         ExecutionMode::Normal => Criterion {
-            is_for: "Ordinary multi-step software work: read the relevant code, change a few places, and run the checks that cover them.",
-            not_for: "Single quick answers, purely mechanical batches, or changes where a hidden invariant or public contract makes an error expensive.",
+            is_for: "Ordinary multi-step software work: read the relevant code, change several places, and run the checks that cover them.",
+            not_for: "Quick answers, small fixes with a stated result, mechanical batches, or changes where a hidden invariant or public contract makes an error expensive.",
             examples: [
                 "add a command-line flag with a test",
-                "fix a failing unit test",
                 "implement a small endpoint from a description",
+                "split a module's logic into two files",
             ],
         },
         ExecutionMode::Ultracode => Criterion {

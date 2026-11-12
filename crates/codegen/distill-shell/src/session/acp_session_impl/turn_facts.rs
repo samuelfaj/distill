@@ -100,6 +100,7 @@ pub(crate) struct TurnFacts {
     failed_tool_count: u64,
     checks: Vec<TestEvidence>,
     failure_histories: std::collections::HashMap<String, FailureHistory>,
+    delivery_command_ran: bool,
 }
 
 impl TurnFacts {
@@ -123,6 +124,11 @@ impl TurnFacts {
             || matches!(output, ToolOutput::Bash(bash) if bash.timed_out || bash.signal.is_some());
         self.failed_tool_count = self.failed_tool_count.saturating_add(u64::from(failed));
         self.events.push((call_id.to_owned(), failed));
+        if let ToolOutput::Bash(bash) = output
+            && is_delivery_command(&bash.command)
+        {
+            self.delivery_command_ran = true;
+        }
         match output {
             ToolOutput::Bash(bash) if looks_like_check_command(&bash.command) => {
                 let exit = (!bash.timed_out && bash.signal.is_none()).then_some(bash.exit_code);
@@ -260,6 +266,12 @@ impl TurnFacts {
         self.failed_tool_count
     }
 
+    /// Whether the shell ran a delivery command (see [`is_delivery_command`])
+    /// this request, whatever its exit code.
+    pub(crate) fn delivery_command_ran(&self) -> bool {
+        self.delivery_command_ran
+    }
+
     /// The build, test and lint outcomes this request recorded.
     pub(crate) fn recorded_checks(&self) -> &[TestEvidence] {
         &self.checks
@@ -323,6 +335,38 @@ pub(crate) fn looks_like_check_command(command: &str) -> bool {
             .unwrap_or_default()
             .iter()
             .any(|next| is_check_script(next) || CHECK_TOOLS.contains(next))
+    })
+}
+
+/// Whether a shell command delivers work: `git commit`, `git push`,
+/// `gh pr create` or `gh pr merge`, in any stage of the command.
+fn is_delivery_command(command: &str) -> bool {
+    shell_stages(command).iter().any(|(_, stage)| {
+        // Leading `NAME=value` assignments are not the program.
+        let mut words = stage
+            .split_whitespace()
+            .skip_while(|word| word.contains('=') && !word.starts_with('-'));
+        let program = words.next().map(|word| word.rsplit('/').next().unwrap_or(word));
+        match program {
+            Some("git") => {
+                while let Some(word) = words.next() {
+                    match word {
+                        // Global options that take a value.
+                        "-C" | "-c" => {
+                            words.next();
+                        }
+                        option if option.starts_with('-') => {}
+                        subcommand => return matches!(subcommand, "commit" | "push"),
+                    }
+                }
+                false
+            }
+            Some("gh") => {
+                let mut rest = words.filter(|word| !word.starts_with('-'));
+                rest.next() == Some("pr") && matches!(rest.next(), Some("create" | "merge"))
+            }
+            _ => false,
+        }
     })
 }
 
@@ -1193,5 +1237,35 @@ mod tests {
             first,
             "same status line, new content"
         );
+    }
+
+    /// The final check tells Jev whether work was delivered; a commit or push
+    /// made through the shell must count, and reading history must not.
+    #[test]
+    fn delivery_commands_are_commits_pushes_and_pull_requests() {
+        for command in [
+            "git commit -m 'fix parser'",
+            "git add -A && git commit -qm wip",
+            "git -C api push origin HEAD",
+            "GIT_EDITOR=true git -c core.hooksPath=/dev/null commit --amend",
+            "gh pr create --fill",
+            "gh pr merge 12 --squash",
+        ] {
+            assert!(is_delivery_command(command), "{command}");
+        }
+        for command in [
+            "git status",
+            "git log --grep push",
+            "git diff HEAD~1",
+            "gh pr view 12",
+            "echo git commit",
+        ] {
+            assert!(!is_delivery_command(command), "{command}");
+        }
+        let mut facts = TurnFacts::default();
+        facts.note_tool_result("", &bash_run("git status", 0, false, ""));
+        assert!(!facts.delivery_command_ran());
+        facts.note_tool_result("", &bash_run("git push", 1, false, "rejected"));
+        assert!(facts.delivery_command_ran(), "a failed push still ran");
     }
 }

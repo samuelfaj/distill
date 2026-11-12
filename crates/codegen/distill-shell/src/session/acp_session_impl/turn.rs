@@ -10,7 +10,10 @@ use distill_tools::types::tool::ToolKind;
 use tracing::Instrument;
 static TURNS_ACTIVE: distill_telemetry::activity::ActivityGauge =
     distill_telemetry::activity::ActivityGauge::work(distill_telemetry::activity::TURNS_ACTIVE_KEY);
-const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done.";
+const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer.";
+/// The whole reply that confirms the final check found nothing outstanding;
+/// [`JEV_FINAL_CHECK_REMINDER`] offers it.
+const FINAL_CHECK_NOTHING_OUTSTANDING: &str = "NOTHING_OUTSTANDING";
 
 fn bounded_utf8(text: &str, max_bytes: usize, tail: bool) -> String {
     if text.len() <= max_bytes {
@@ -48,6 +51,41 @@ fn final_check_reminder(
     });
     let c3_incomplete = c3.is_some_and(|check| !check.deferred && !check.complete);
     (c1_incomplete || c3_incomplete).then_some(JEV_FINAL_CHECK_REMINDER)
+}
+
+/// Whether the reply to the final-check reminder is only the confirmation
+/// token. Anything more, or any tool call, is a real reply and is kept.
+fn is_final_check_confirmation(text: &str, has_tool_calls: bool) -> bool {
+    !has_tool_calls && text.trim() == FINAL_CHECK_NOTHING_OUTSTANDING
+}
+
+/// What the harness itself saw, for the final check: each recorded check
+/// with whether it ran on the current working tree (`null` when a marker is
+/// missing), the failed tool calls and whether work was delivered.
+fn final_check_evidence(
+    facts: &super::turn_facts::TurnFacts,
+    current_tree: Option<&str>,
+) -> serde_json::Value {
+    let checks: Vec<_> = facts
+        .recorded_checks()
+        .iter()
+        .map(|check| {
+            let ran_after_last_change = match (check.worktree.as_deref(), current_tree) {
+                (Some(then), Some(now)) => Some(then == now),
+                _ => None,
+            };
+            serde_json::json!({
+                "command": bounded_utf8(&check.command, 200, false),
+                "outcome": check.outcome,
+                "ran_after_last_change": ran_after_last_change,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "recorded_checks": checks,
+        "failed_tool_calls": facts.failed_tool_count(),
+        "delivery_command_ran": facts.delivery_command_ran(),
+    })
 }
 
 /// Synthetic tool for schema-constrained final answers on backends without native
@@ -2779,6 +2817,9 @@ impl SessionActor {
         let mut report_budget_sent = false;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
+        // Set when the final-check reminder was just sent: the next reply may
+        // be the bare confirmation token.
+        let mut final_check_reply_pending = false;
         let mut length_salvage_streak = LengthSalvageStreak::default();
         let mut auth_retry_schedule = AuthRetrySchedule::new();
         let mut rate_limit_waits = self.rate_limit_wait_budget(
@@ -3661,8 +3702,20 @@ impl SessionActor {
             let record_response_span = distill_telemetry::region::Region::from_span(
                 tracing::info_span!("turn.record_response", item_count = response_item_count),
             );
-            self.record_response_items(response.items, usage_reported)
-                .await;
+            // A bare confirmation after the final-check reminder is dropped,
+            // so the earlier final message stays the turn's last word.
+            let final_check_confirmed = std::mem::take(&mut final_check_reply_pending)
+                && final_answer_text.is_none()
+                && is_final_check_confirmation(&response.assistant_text(), !tool_calls.is_empty());
+            if final_check_confirmed {
+                tracing::info!(
+                    prompt_id = %req_id,
+                    "final check: nothing outstanding; keeping the earlier final message"
+                );
+            } else {
+                self.record_response_items(response.items, usage_reported)
+                    .await;
+            }
             record_response_span.close();
             if let Some(text) = fallback_text {
                 tracing::warn!(
@@ -3842,6 +3895,7 @@ impl SessionActor {
                 {
                     *self.jev_final_check_prompt.borrow_mut() = Some(prompt_id.clone());
                     self.push_system_reminder(JEV_FINAL_CHECK_REMINDER);
+                    final_check_reply_pending = true;
                     salvage.step_boundary();
                     continue;
                 }
@@ -4215,13 +4269,22 @@ impl SessionActor {
         let edits_made = turn_tools_called.iter().any(|tool| {
             matches!(tool.as_str(), "search_replace" | "write" | "hashline_edit" | "apply_patch")
         });
-        let state = serde_json::json!({
+        let current_tree =
+            super::turn_facts::worktree_marker(self.tool_context.cwd.as_path()).await;
+        let mut state = serde_json::json!({
             "user_request": user_request,
             "final_message": final_message,
             "todos": todos,
             "edits_made": edits_made,
             "last_execution": self.jev_ledger.borrow().last_execution.clone(),
         });
+        // Additive: the harness's own evidence next to the model's account.
+        if let (Some(state), serde_json::Value::Object(evidence)) = (
+            state.as_object_mut(),
+            final_check_evidence(&self.jev_ledger.borrow().facts, current_tree.as_deref()),
+        ) {
+            state.extend(evidence);
+        }
         let items = vec!["user request".to_owned()];
         let (Ok(c1_questions), Ok(c3_questions)) = (
             verify::premature_stop_questions(&items),
@@ -4278,7 +4341,10 @@ impl SessionActor {
 }
 #[cfg(test)]
 mod jev_final_check_tests {
-    use super::{JEV_FINAL_CHECK_REMINDER, bounded_utf8, final_check_reminder};
+    use super::{
+        FINAL_CHECK_NOTHING_OUTSTANDING, JEV_FINAL_CHECK_REMINDER, bounded_utf8,
+        final_check_evidence, final_check_reminder, is_final_check_confirmation,
+    };
     use distill_workspace::jev::catalog::verify::{CompletionCheck, PrematureStop};
 
     fn c1(continue_working: bool) -> PrematureStop {
@@ -4319,6 +4385,293 @@ mod jev_final_check_tests {
     fn request_and_final_message_bounds_preserve_utf8() {
         assert_eq!(bounded_utf8("éé", 2, false), "é");
         assert_eq!(bounded_utf8("aé", 2, true), "é");
+    }
+
+    /// The model can only use the token the reminder names.
+    #[test]
+    fn the_reminder_offers_the_confirmation_token() {
+        assert!(JEV_FINAL_CHECK_REMINDER.contains(FINAL_CHECK_NOTHING_OUTSTANDING));
+    }
+
+    /// Only the bare token is dropped; a token with an explanation or a tool
+    /// call is real work or a real answer and must reach the user.
+    #[test]
+    fn only_a_bare_token_without_tool_calls_confirms() {
+        assert!(is_final_check_confirmation("NOTHING_OUTSTANDING", false));
+        assert!(is_final_check_confirmation("  NOTHING_OUTSTANDING\n", false));
+        assert!(!is_final_check_confirmation("NOTHING_OUTSTANDING", true));
+        assert!(!is_final_check_confirmation(
+            "NOTHING_OUTSTANDING. I also fixed the lint.",
+            false
+        ));
+        assert!(!is_final_check_confirmation("nothing_outstanding", false));
+        assert!(!is_final_check_confirmation("", false));
+    }
+
+    /// Jev must see the harness's own record: a check that failed, one whose
+    /// outcome is unknown, whether each ran on the current tree, failed calls
+    /// and a delivery command, none of which depends on edit-tool names.
+    #[test]
+    fn the_final_check_state_carries_the_harness_evidence() {
+        use super::super::turn_facts::{CheckContext, TurnFacts};
+        use distill_tools::types::output::{BashOutput, ToolOutput};
+        let bash = |command: &str, exit_code: i32, output: &str| {
+            ToolOutput::Bash(BashOutput {
+                output: Vec::new(),
+                output_for_prompt: output.to_owned(),
+                exit_code,
+                command: command.to_owned(),
+                truncated: false,
+                signal: None,
+                timed_out: false,
+                description: None,
+                current_dir: "/repo".to_owned(),
+                output_file: String::new(),
+                total_bytes: 0,
+                output_delta: None,
+                was_bare_echo: false,
+            })
+        };
+        let at = |tree: &str| CheckContext {
+            cwd: "/repo".to_owned(),
+            worktree: Some(tree.to_owned()),
+        };
+        let mut facts = TurnFacts::default();
+        facts.note_tool_result_at(
+            "1",
+            &bash("cargo test 2>&1 | tail -3", 0, "test result: FAILED. 1 failed"),
+            &at("tree-1"),
+        );
+        facts.note_tool_result_at(
+            "2",
+            &bash("cargo build 2>&1 | grep -E '^error'", 1, ""),
+            &at("tree-2"),
+        );
+        facts.note_tool_result_at("3", &bash("git commit -m fix", 0, ""), &at("tree-2"));
+        let evidence = final_check_evidence(&facts, Some("tree-2"));
+        let checks = evidence["recorded_checks"].as_array().unwrap();
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0]["command"], "cargo test 2>&1 | tail -3");
+        assert_eq!(checks[0]["outcome"], "failed");
+        assert_eq!(checks[0]["ran_after_last_change"], false, "the tree moved since");
+        assert_eq!(checks[1]["outcome"], "unknown");
+        assert_eq!(checks[1]["ran_after_last_change"], true);
+        assert_eq!(evidence["failed_tool_calls"], 1, "the grep exited 1");
+        assert_eq!(evidence["delivery_command_ran"], true);
+        let unknown_tree = final_check_evidence(&facts, None);
+        assert!(unknown_tree["recorded_checks"][0]["ran_after_last_change"].is_null());
+    }
+}
+
+/// The final-check reminder against a real turn loop and a scripted model:
+/// what the model answers to the reminder decides what the turn's last word is.
+#[cfg(test)]
+mod final_check_confirmation_turn_tests {
+    use super::super::support::*;
+    use super::*;
+    use distill_test_support::sse::{
+        responses_api_reasoning_then_tool_call_events, responses_api_script_exact,
+    };
+    use distill_test_support::{MockInferenceServer, ScriptedResponse};
+    use std::sync::Arc;
+
+    const FIRST_FINAL: &str = "Updated the todo list.";
+    const TODO_ARGS: &str = r#"{"todos":[{"id":"t1","content":"poll","status":"completed"}]}"#;
+
+    fn tool_call(call_id: &str) -> ScriptedResponse {
+        ScriptedResponse::sse(responses_api_reasoning_then_tool_call_events(
+            "update", call_id, "todo_write", TODO_ARGS, "test",
+        ))
+    }
+
+    fn text(text: &str) -> ScriptedResponse {
+        ScriptedResponse::sse(responses_api_script_exact(text, "test"))
+    }
+
+    /// Jev answers that make both C1 and C3 report the request unfinished.
+    /// Other decisions in the turn get answers with none of their ids and
+    /// defer, so the queue holds enough copies for all of them.
+    fn final_check_finds_work_missing() {
+        use distill_workspace::jev::types::{Answer, JevAnswerSet, Usage};
+        let answers: std::collections::BTreeMap<_, _> = [
+            ("0:rank_user request", 0.1),
+            ("0:requested_work_remains", 0.9),
+            ("1:rank_user request", 0.1),
+            ("1:anything_left_out", 0.9),
+        ]
+        .into_iter()
+        .map(|(id, noul)| (id.to_owned(), Answer::Noul { noul }))
+        .collect();
+        let set = JevAnswerSet {
+            model: "test".to_owned(),
+            answers,
+            usage: Usage::default(),
+            request_id: None,
+            latency_ms: 0,
+        };
+        crate::jev::set_test_decision_answers(std::iter::repeat_n(Some(set), 32));
+    }
+
+    async fn actor_for(server: &MockInferenceServer) -> Arc<SessionActor> {
+        let sampler_config = distill_sampler::SamplerConfig {
+            api_key: Some("test-key".to_string()),
+            base_url: server.url(),
+            model: "test".to_string(),
+            api_backend: distill_sampler::ApiBackend::Responses,
+            context_window: 256_000,
+            max_retries: Some(0),
+            idle_timeout_secs: Some(30),
+            ..Default::default()
+        };
+        let (sampler_event_tx, mut sampler_event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<distill_sampler::SamplingEvent>();
+        let sampler_handle = distill_sampler::SamplerActor::spawn(
+            sampler_config,
+            distill_sampler::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            sampler_event_tx,
+        );
+        let (gateway_tx, gateway_rx) =
+            tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
+        drain_gateway(gateway_rx);
+        let (persistence_tx, persistence_rx) =
+            tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+        drain_persistence(persistence_rx);
+        let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+        actor.sampler_handle = sampler_handle;
+        *actor.agent.borrow_mut() = test_distill_agent_with_todo().await;
+        let mut cfg = actor
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .expect("test actor has sampling config");
+        cfg.base_url = server.url();
+        cfg.api_backend = distill_sampling_types::ApiBackend::Responses;
+        cfg.model = "test".to_string();
+        actor.chat_state_handle.update_sampling_config(cfg);
+        let mut creds = actor.chat_state_handle.get_credentials().await;
+        creds.api_key = Some("test-key".to_string());
+        actor.chat_state_handle.update_credentials(creds);
+        actor
+            .workspace_ops
+            .bind_local_session(
+                &actor.session_id_string(),
+                actor.tool_context.cwd.as_path().to_path_buf(),
+                actor.tool_context.hunk_tracker_handle.clone(),
+                actor.agent.borrow().tool_bridge().toolset(),
+                None,
+            )
+            .expect("bind_local_session");
+        let actor = Arc::new(actor);
+        let drainer = actor.clone();
+        tokio::task::spawn_local(async move {
+            while let Some(event) = sampler_event_rx.recv().await {
+                drainer.handle_sampling_event(event).await;
+            }
+        });
+        actor
+    }
+
+    /// Runs one prompt whose model first calls a tool, then ends with
+    /// [`FIRST_FINAL`], then answers the reminder with `after_reminder`.
+    /// Returns the turn's last word and the conversation.
+    fn run_turn(after_reminder: Vec<ScriptedResponse>) -> (Option<String>, Vec<ConversationItem>) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            // A debug-build turn future outgrows the usual 16 MiB test stack.
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime");
+                tokio::task::LocalSet::new().block_on(&runtime, async move {
+                    let server = MockInferenceServer::start().await.expect("mock server");
+                    server.enqueue_response("/v1/responses", tool_call("call-1"));
+                    server.enqueue_response("/v1/responses", text(FIRST_FINAL));
+                    for response in after_reminder {
+                        server.enqueue_response("/v1/responses", response);
+                    }
+                    let actor = actor_for(&server).await;
+                    final_check_finds_work_missing();
+                    let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
+                        "mark the todo done".to_string(),
+                    ))];
+                    let outcome = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        actor.handle_prompt(
+                            "final-check-confirmation",
+                            prompt,
+                            PromptMode::Agent,
+                            None,
+                            None,
+                            None,
+                            None,
+                            true,
+                            false,
+                            None,
+                            None,
+                            None,
+                        ),
+                    )
+                    .await
+                    .expect("turn must finish within timeout");
+                    crate::jev::clear_test_decision_answers();
+                    assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
+                    let report = actor.chat_state_handle.get_trailing_assistant_report().await;
+                    let conversation = actor.chat_state_handle.get_conversation().await;
+                    sender.send((report, conversation)).expect("send result");
+                });
+            })
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread");
+        receiver.recv().expect("turn result")
+    }
+
+    fn reminder_sent(conversation: &[ConversationItem]) -> bool {
+        conversation.iter().any(|item| {
+            matches!(item, ConversationItem::User(_))
+                && item.text_content().contains(FINAL_CHECK_NOTHING_OUTSTANDING)
+        })
+    }
+
+    /// Nothing outstanding: the first final message is what the user and any
+    /// parent read, and the token never enters the history.
+    #[test]
+    fn a_bare_token_keeps_the_first_final_message() {
+        let (report, conversation) = run_turn(vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)]);
+        assert!(reminder_sent(&conversation), "the final check must have fired");
+        assert_eq!(report.as_deref(), Some(FIRST_FINAL));
+        assert!(!conversation.iter().any(|item| {
+            matches!(item, ConversationItem::Assistant(_))
+                && item.text_content().contains(FINAL_CHECK_NOTHING_OUTSTANDING)
+        }));
+    }
+
+    /// A token with more text is an answer, kept as the new last word.
+    #[test]
+    fn a_token_with_text_is_kept_as_a_new_message() {
+        let reply = "NOTHING_OUTSTANDING. The lint warning is gone too.";
+        let (report, conversation) = run_turn(vec![text(reply)]);
+        assert!(reminder_sent(&conversation));
+        assert_eq!(report.as_deref(), Some(reply));
+    }
+
+    /// A reply with tool calls continues the turn as before the token existed.
+    #[test]
+    fn a_reply_with_tool_calls_continues_the_turn() {
+        let last = "Re-ran the update; done.";
+        let (report, conversation) = run_turn(vec![tool_call("call-2"), text(last)]);
+        assert!(reminder_sent(&conversation));
+        assert_eq!(report.as_deref(), Some(last));
+        let results = conversation
+            .iter()
+            .filter(|item| matches!(item, ConversationItem::ToolResult(_)))
+            .count();
+        assert_eq!(results, 2, "the second tool call ran");
     }
 }
 

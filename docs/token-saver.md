@@ -798,7 +798,8 @@ These levers stay off by default, each for a stated reason:
 
 `b2_model_tier`, `b6_delegation_hint`, `c1_premature_stop` and
 `c3_completion_check` are on by default. B6, C1 and C3 are quality checks, not
-savings.
+savings. C1 and C3 share one request at the end of a main turn that used tools,
+and add at most one reminder per prompt.
 Retired lever keys (`e_cheap_task`, `e_lane_choice`, `e_breaker`, …) are
 ignored with a warning.
 

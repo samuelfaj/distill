@@ -1058,7 +1058,15 @@ pub fn record_item(
     answers: Option<&distill_workspace::jev::types::JevAnswerSet>,
 ) {
     log_item(lever, decision, reason, confidence, answers);
-    let label = event_id(decision);
+    let opaque = options_from_user_content(lever);
+    // A6's label is the chosen test, apart from its one fixed fallback.
+    let label = if lever == distill_workspace::jev::flags::JevLever::A6TestToRun
+        && decision != "default_suite"
+    {
+        opaque_id(decision)
+    } else {
+        event_id(decision)
+    };
     count_jev_outcome(lever, &label);
     // `reason` stays out of the event: it carries paths and model names.
     let (question_hash, memo) = answers
@@ -1075,7 +1083,7 @@ pub fn record_item(
             answers
                 .answers
                 .iter()
-                .map(|(id, answer)| (event_id(id), answer_summary(answer)))
+                .map(|(id, answer)| (event_id(id), answer_summary(answer, opaque)))
                 .collect()
         }),
         label,
@@ -1313,6 +1321,76 @@ mod decision_event_tests {
         assert_eq!(answer["probabilities"].as_object().unwrap().len(), 5);
         assert_eq!(answer["omitted"], 5);
         assert!(decided["label"].as_str().unwrap().starts_with("h:"));
+    }
+
+    /// A skill name is a short identifier, so the rule that hashes paths lets
+    /// it through; the skill lever's option ids are hashed whatever they look
+    /// like, and its fixed label stays readable.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn skill_names_never_reach_an_event() {
+        const SKILL: &str = "private-skill-7f3a";
+        clear_test_decision_answers();
+        let dir = tempfile::tempdir().unwrap();
+        let options = BTreeMap::from([
+            (SKILL.to_owned(), serde_json::Value::Null),
+            ("other-skill".to_owned(), serde_json::Value::Null),
+        ]);
+        let questions = BTreeMap::from([(
+            "skill".to_owned(),
+            Question::choice("Which skill fits?", options).expect("valid choice"),
+        )]);
+        set_test_decision_answers([Some(answer_set(
+            vec![(
+                "skill",
+                Answer::Choice {
+                    choice: SKILL.to_owned(),
+                    probabilities: BTreeMap::from([
+                        (SKILL.to_owned(), 0.75),
+                        ("other-skill".to_owned(), 0.25),
+                    ]),
+                    confidence: None,
+                },
+            )],
+            9,
+        ))]);
+        let events = session_events(dir.path(), "skill-name-event-session", async {
+            let answers = ask_item(
+                JevLever::P6SkillSuggestion,
+                serde_json::json!({}),
+                questions,
+            )
+            .await
+            .expect("scripted answer");
+            record_item(
+                JevLever::P6SkillSuggestion,
+                "suggest",
+                "",
+                None,
+                Some(&answers),
+            );
+        })
+        .await;
+        clear_test_decision_answers();
+
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
+        assert!(
+            !text.contains(SKILL) && !text.contains("other-skill"),
+            "skill name leaked into events: {text}"
+        );
+        let [decided] = events.as_slice() else {
+            panic!("one decision event: {events:?}");
+        };
+        assert_eq!(decided["label"], "suggest");
+        let answer = &decided["answers"]["skill"];
+        assert!(answer["choice"].as_str().unwrap().starts_with("h:"));
+        assert!(
+            answer["probabilities"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|id| id.starts_with("h:"))
+        );
     }
 
     /// A failed ask is one `jev_no_answer` event per lever that asked, with
@@ -2044,6 +2122,21 @@ fn event_id(raw: &str) -> String {
     }
 }
 
+/// Levers whose option ids name things in the user's setup or files (skills,
+/// tests, read targets). A short name passes [`event_id`] as an identifier, so
+/// these ids are always hashed.
+const fn options_from_user_content(lever: distill_workspace::jev::flags::JevLever) -> bool {
+    use distill_workspace::jev::flags::JevLever;
+    matches!(
+        lever,
+        JevLever::P6SkillSuggestion | JevLever::A6TestToRun | JevLever::P2ReadShortlist
+    )
+}
+
+fn opaque_id(raw: &str) -> String {
+    format!("h:{}", short_hash(raw.as_bytes()))
+}
+
 /// Above this many options a distribution keeps only its most likely entries.
 const EVENT_FULL_DISTRIBUTION: usize = 8;
 const EVENT_KEPT_PROBABILITIES: usize = 5;
@@ -2051,13 +2144,12 @@ const EVENT_KEPT_PROBABILITIES: usize = 5;
 /// The distribution an event carries and how many entries it left out.
 fn event_distribution(
     probabilities: &std::collections::BTreeMap<String, f64>,
+    opaque: bool,
 ) -> (std::collections::BTreeMap<String, f64>, usize) {
+    let id = |raw: &str| if opaque { opaque_id(raw) } else { event_id(raw) };
     if probabilities.len() <= EVENT_FULL_DISTRIBUTION {
         return (
-            probabilities
-                .iter()
-                .map(|(id, p)| (event_id(id), *p))
-                .collect(),
+            probabilities.iter().map(|(raw, p)| (id(raw), *p)).collect(),
             0,
         );
     }
@@ -2066,7 +2158,7 @@ fn event_distribution(
     let kept = ranked
         .into_iter()
         .take(EVENT_KEPT_PROBABILITIES)
-        .map(|(id, p)| (event_id(id), *p))
+        .map(|(raw, p)| (id(raw), *p))
         .collect();
     (
         kept,
@@ -2074,8 +2166,11 @@ fn event_distribution(
     )
 }
 
+/// `opaque` hashes a choice's option ids whatever they look like; a score's
+/// keys are its levels and stay readable.
 fn answer_summary(
     answer: &distill_workspace::jev::types::Answer,
+    opaque: bool,
 ) -> distill_session_events::JevAnswerSummary {
     use distill_session_events::JevAnswerSummary;
     use distill_workspace::jev::types::Answer;
@@ -2086,9 +2181,13 @@ fn answer_summary(
             probabilities,
             confidence,
         } => {
-            let (probabilities, omitted) = event_distribution(probabilities);
+            let (probabilities, omitted) = event_distribution(probabilities, opaque);
             JevAnswerSummary::Choice {
-                choice: event_id(choice),
+                choice: if opaque {
+                    opaque_id(choice)
+                } else {
+                    event_id(choice)
+                },
                 probabilities,
                 confidence: *confidence,
                 omitted,
@@ -2100,7 +2199,7 @@ fn answer_summary(
             confidence,
             ..
         } => {
-            let (probabilities, omitted) = event_distribution(probabilities);
+            let (probabilities, omitted) = event_distribution(probabilities, false);
             JevAnswerSummary::Score {
                 score: *score,
                 probabilities,

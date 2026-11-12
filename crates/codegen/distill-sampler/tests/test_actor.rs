@@ -1514,6 +1514,197 @@ async fn responses_doom_loop_does_not_resample_after_output_when_retry_only_befo
 }
 
 // ---------------------------------------------------------------------------
+// Account route: a stream that drops after output
+// ---------------------------------------------------------------------------
+
+fn account_routed_config(base_url: String) -> SamplerConfig {
+    let mut cfg = responses_config(base_url, None);
+    cfg.extra_headers
+        .insert("x-distill-account-route".into(), "{}".into());
+    cfg
+}
+
+/// Serves `/v1/responses`: the first `broken_attempts` calls stream two text deltas and then end as `first_ending` says.
+/// Later calls stream the whole answer.
+fn responses_app_breaking_after_output(
+    counter: Arc<AtomicU32>,
+    broken_attempts: u32,
+    first_ending: fn() -> Vec<Result<Event, std::io::Error>>,
+) -> Router {
+    Router::new().route(
+        "/v1/responses",
+        post(move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                let mut events: Vec<Result<Event, std::io::Error>> = sse_events_to_axum(
+                    sse::responses_api_script_exact("the whole answer", "test-model"),
+                )
+                .into_iter()
+                .map(Ok)
+                .collect();
+                let broken = attempt < broken_attempts;
+                if broken {
+                    // `response.created` and the first two text deltas, then the ending under test
+                    events.truncate(3);
+                    events.extend(first_ending());
+                }
+                // The deltas must reach the client before the ending does, or the attempt fails with no output observed
+                Sse::new(stream::iter(events.into_iter().enumerate()).then(
+                    move |(i, event)| async move {
+                        if broken && i == 3 {
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                        }
+                        event
+                    },
+                ))
+            }
+        }),
+    )
+}
+
+/// The connection dies mid-body: the client sees a body error, not a server-reported one.
+fn dropped_connection() -> Vec<Result<Event, std::io::Error>> {
+    vec![Err(std::io::Error::other("connection dropped"))]
+}
+
+/// The provider itself reports the failure, which is the verdict the session's account fallback reads.
+fn server_reported_failure() -> Vec<Result<Event, std::io::Error>> {
+    vec![
+        Ok(Event::default().data(
+            json!({
+                "type": "response.failed",
+                "sequence_number": 3,
+                "response": {
+                    "id": "resp_test", "object": "response", "created_at": 1234567890,
+                    "model": "test-model", "status": "failed", "output": [],
+                    "error": { "code": "server_error", "message": "upstream failed" }
+                }
+            })
+            .to_string(),
+        )),
+        Ok(Event::default().data("[DONE]")),
+    ]
+}
+
+/// A subscription stream that drops mid-answer used to end the whole agent turn: the account route forbade any retry
+/// once output had started. A dropped connection carries no provider verdict, so it is retried on the same route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_route_retries_a_stream_dropped_after_output() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let server = MockServer::spawn(responses_app_breaking_after_output(
+        Arc::clone(&counter),
+        1,
+        dropped_connection,
+    ))
+    .await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        account_routed_config(server.base_url()),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    handle.submit(RequestId::from("req-account-drop"), user_request("hi"));
+    let events = drain_until_terminal(&mut event_rx, Duration::from_secs(30)).await;
+    server.shutdown();
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, SamplingEvent::Retrying { .. })),
+        "the dropped stream is retried: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(SamplingEvent::Completed { .. })),
+        "the retry completes the request: {:?}",
+        events.last()
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 2, "one retry");
+}
+
+/// The caller's own opt-in still wins: it cannot retract the text it already received, on any route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_route_drop_after_output_is_not_retried_for_a_caller_that_cannot_retract() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let server = MockServer::spawn(responses_app_breaking_after_output(
+        Arc::clone(&counter),
+        1,
+        dropped_connection,
+    ))
+    .await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        account_routed_config(server.base_url()),
+        RetryPolicy {
+            retry_only_before_output: true,
+            ..RetryPolicy::default()
+        },
+        event_tx,
+    );
+
+    handle.submit(
+        RequestId::from("req-account-no-retract"),
+        user_request("hi"),
+    );
+    let events = drain_until_terminal(&mut event_rx, Duration::from_secs(30)).await;
+    server.shutdown();
+
+    assert!(
+        matches!(events.last(), Some(SamplingEvent::Failed { .. })),
+        "the failure is surfaced: {:?}",
+        events.last()
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "no replay over delivered output"
+    );
+}
+
+/// A failure the provider reports after output still goes to the session untouched: quota and refused-tier verdicts
+/// are what its account fallback switches accounts on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_route_server_failure_after_output_still_reaches_the_session() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let server = MockServer::spawn(responses_app_breaking_after_output(
+        Arc::clone(&counter),
+        1,
+        server_reported_failure,
+    ))
+    .await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        account_routed_config(server.base_url()),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    handle.submit(
+        RequestId::from("req-account-server-failure"),
+        user_request("hi"),
+    );
+    let events = drain_until_terminal(&mut event_rx, Duration::from_secs(30)).await;
+    server.shutdown();
+
+    match events.last() {
+        Some(SamplingEvent::Failed { error, .. }) => {
+            assert_eq!(
+                error.kind,
+                SamplingErrorKind::Api,
+                "a server verdict: {error:?}"
+            );
+        }
+        other => panic!("expected Failed(Api), got {other:?}"),
+    }
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "left to the account fallback"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers for draining the event channel
 // ---------------------------------------------------------------------------
 

@@ -89,6 +89,9 @@ pub(crate) async fn run_request_task(
 ) -> RequestId {
     let mut completion = CompletionState::new(completion);
     let mut retry_policy = retry_policy;
+    // A caller that opted in cannot retract delivered output, so nothing is replayed over it
+    let caller_retries_only_before_output = retry_policy.retry_only_before_output;
+    // An account route leaves post-output failures to the session, whose account fallback needs the provider's verdict
     if config.extra_headers.contains_key("x-distill-account-route") {
         retry_policy.retry_only_before_output = true;
     }
@@ -309,10 +312,18 @@ pub(crate) async fn run_request_task(
                     handle_cancellation(&event_tx, &request_id, &mut completion);
                     return request_id;
                 }
+                // A dropped connection carries no provider verdict for the account fallback to act on.
+                // Failing it after output ended the whole turn on a route whose streams drop mid-answer
+                let failed_max_retries =
+                    if is_dropped_stream(&error) && !caller_retries_only_before_output {
+                        max_retries
+                    } else {
+                        effective_max_retries
+                    };
                 if !apply_retry_decision(
                     &error,
                     &mut retry_count,
-                    effective_max_retries,
+                    failed_max_retries,
                     &retry_policy,
                     &event_tx,
                     &request_id,
@@ -797,6 +808,11 @@ fn retag(event: SamplingEvent, _request_id: &RequestId) -> SamplingEvent {
 }
 
 /// Reconstruct a [`SamplingError`] from a [`SamplingErrorInfo`] when there is no captured raw error in the cell.
+/// The response body broke off before the provider finished it: a transport failure, not a server-reported error.
+fn is_dropped_stream(error: &SamplingError) -> bool {
+    matches!(error, SamplingError::EventStreamError(_))
+}
+
 /// The L2 transform fires synthesised Failed events for idle timeouts, `ResponseFailed`, and server error events.
 fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
     match info.kind {

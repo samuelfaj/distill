@@ -194,8 +194,8 @@ impl TurnParkState {
 
 /// Recovery decision returned by `SessionActor::handle_sampling_failure` for the sampler-based turn loop.
 pub(crate) enum SamplerFailureRecovery {
-    /// Compaction ran.
-    /// The turn loop should rebuild the request from the compacted conversation and resubmit.
+    /// Compaction ran, or a refused serving path was dropped for the session.
+    /// The turn loop should rebuild the request from the conversation and resubmit.
     CompactAndResubmit,
     /// Resubmit through the auth-retry schedule: recovery succeeded, or the parked
     /// credential-less case. `credential` is the rejected request's wire provenance;

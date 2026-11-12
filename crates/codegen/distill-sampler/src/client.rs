@@ -453,7 +453,7 @@ fn apply_openrouter_variant(model: &mut String, base_url: &str, variant: Option<
     model.push_str(variant);
 }
 
-fn is_openrouter_base_url(base_url: &str) -> bool {
+pub(crate) fn is_openrouter_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).is_ok_and(|url| {
         url.scheme() == "https"
             && url
@@ -3448,6 +3448,35 @@ mod tests {
             bodies("https://openrouter.ai/api/v1", Some(ProviderTier::Fast));
         assert!(responses.get("service_tier").is_none(), "{responses}");
         assert!(messages.get("speed").is_none(), "{messages}");
+
+        // `sends_provider_tier` names exactly the bodies above that carry a field, so a caller
+        // that drops a refused tier never drops one the endpoint did not see.
+        for base_url in [direct, "https://openrouter.ai/api/v1"] {
+            for tier in [None, Some(ProviderTier::Fast), Some(ProviderTier::Economy)] {
+                let (responses, messages) = bodies(base_url, tier);
+                for (backend, carried) in [
+                    (
+                        ApiBackend::Responses,
+                        responses.get("service_tier").is_some(),
+                    ),
+                    (ApiBackend::Messages, messages.get("speed").is_some()),
+                    (ApiBackend::ChatCompletions, false),
+                ] {
+                    let config = SamplerConfig {
+                        base_url: base_url.to_owned(),
+                        provider_tier: tier,
+                        api_backend: backend,
+                        ..minimal_config()
+                    };
+                    assert_eq!(
+                        config.sends_provider_tier(),
+                        carried,
+                        "{base_url} {tier:?} {:?}",
+                        config.api_backend
+                    );
+                }
+            }
+        }
     }
 
     /// The shipped path from a model's configured shape to the wire body: the

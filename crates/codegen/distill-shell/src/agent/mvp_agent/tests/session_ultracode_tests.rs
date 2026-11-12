@@ -510,6 +510,31 @@ mod pinned_mode_model {
         }
     }
 
+    /// With no `provider_tier` key a pinned UltraFast session asks for the fast path and a
+    /// pinned UltraSave one for the economy path; `"off"` sends none.
+    #[test]
+    fn the_serving_path_defaults_per_mode_and_off_sends_none() {
+        let tier = |config: &str, mode| {
+            pinned_mode_settings(Some(&toml::from_str(config).unwrap()), mode).provider_tier
+        };
+        assert_eq!(tier("", ExecutionMode::Ultrafast), Some(ProviderTier::Fast));
+        assert_eq!(
+            tier("", ExecutionMode::Ultrasave),
+            Some(ProviderTier::Economy)
+        );
+        assert_eq!(
+            pinned_mode_settings(None, ExecutionMode::Ultrafast).provider_tier,
+            Some(ProviderTier::Fast)
+        );
+        let off = "[modes.ultrasave]\nprovider_tier = \"off\"\n\
+                   [modes.ultrafast]\nprovider_tier = \"Off\"\n";
+        assert_eq!(tier(off, ExecutionMode::Ultrafast), None);
+        assert_eq!(tier(off, ExecutionMode::Ultrasave), None);
+        for mode in [ExecutionMode::Normal, ExecutionMode::Ultracode] {
+            assert_eq!(tier("", mode), None);
+        }
+    }
+
     /// The owner's profile: account Auto routing on. A pinned UltraSave session runs its main
     /// requests on the mode's model as a session-only pick, and the shared Auto profile on disk
     /// stays on; leaving the mode hands the session back to Auto.
@@ -705,8 +730,8 @@ mod pinned_mode_model {
         );
     }
 
-    /// With none of the keys set, pinning any mode changes neither the model, the request
-    /// config nor the serving path: today's behaviour.
+    /// With `provider_tier = "off"` and no worker or model key, pinning any mode changes neither
+    /// the model, the request config nor the serving path.
     #[test]
     #[serial_test::serial]
     fn without_mode_keys_every_model_choice_and_request_is_unchanged() {
@@ -724,7 +749,9 @@ mod pinned_mode_model {
                         .get_sampling_config()
                         .await
                         .unwrap();
-                    let config = "[jev.local]\nmodel = \"utility-model\"\n";
+                    let config = "[jev.local]\nmodel = \"utility-model\"\n\
+                                  [modes.ultrasave]\nprovider_tier = \"off\"\n\
+                                  [modes.ultrafast]\nprovider_tier = \"off\"\n";
                     for mode in [
                         "ultrasave",
                         "ultrafast",
@@ -777,6 +804,14 @@ mod pinned_mode_model {
                     set_mode(&agent, &sid, "ultrafast", economy).await;
                     assert_eq!(pinned_provider_tier(&info), Some(ProviderTier::Fast));
                     set_mode(&agent, &sid, "normal", fast).await;
+                    assert_eq!(pinned_provider_tier(&info), None);
+                    set_mode(&agent, &sid, "ultrasave", "").await;
+                    assert_eq!(
+                        pinned_provider_tier(&info),
+                        Some(ProviderTier::Economy),
+                        "the default path of a pinned UltraSave session"
+                    );
+                    set_mode(&agent, &sid, "normal", "").await;
                     assert_eq!(pinned_provider_tier(&info), None);
                     agent.remove_session(&sid);
                 });

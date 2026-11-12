@@ -29,17 +29,16 @@ turn without waiting and capped at medium, the after-edit review waits at most
 turns this off; it has not been benchmarked. See
 [Decision policy by mode](jev-routing.md#decision-policy-by-mode).
 
-## Model and provider path (opt-in)
+## Model and provider path
 
 These keys apply only to a session pinned to UltraFast (`/ultrafast on`,
 `--ultrafast`, `/mode ultrafast`). Under Auto they never apply, whatever mode
-Auto picks. With none of them set, UltraFast sends the same requests to the same
-model as before.
+Auto picks.
 
 ```toml
 [modes.ultrafast]
 model = "<model id>"      # optional; unset keeps the session's model
-provider_tier = "fast"    # optional; unset sends no serving-path field
+provider_tier = "fast"    # the default; "off" sends no serving-path field
 ```
 
 - `model`: when the session is pinned, this model becomes the session's model
@@ -47,21 +46,26 @@ provider_tier = "fast"    # optional; unset sends no serving-path field
   not changed). Leaving UltraFast restores the previous model, unless you picked
   another model with `/model` in the meantime. The default is the session's own
   model: UltraFast is meant as the same model served faster, not a smaller one.
-- `provider_tier = "fast"`: decided once when the session is pinned and kept
-  until the session leaves the mode, because changing it mid-session
-  invalidates the provider's prompt cache. It asks for the endpoint's fast
-  serving path on the session's model only (a round routed to another model
-  goes without it):
+- `provider_tier`: `"fast"` by default; `"off"` turns it off. It is decided once
+  when the session is pinned and kept until the session leaves the mode,
+  because changing it mid-session invalidates the provider's prompt cache. It
+  asks for the endpoint's fast serving path on the session's model only (a
+  round routed to another model goes without it):
   - Responses API endpoints: `service_tier: "priority"`.
   - Anthropic Messages endpoints: `speed: "fast"`.
   - OpenRouter: the model variant defaults to `nitro` when `[models]
     main_variant` is unset; an explicit `main_variant` wins. No other field is
     sent to OpenRouter.
 
-Whether an endpoint accepts these fields depends on the endpoint, the model and
-your plan. A fast path usually costs more per token. If requests start failing
-after you set `provider_tier`, remove the key. No speed or cost claim is made for
-these keys until a provider probe and a paired benchmark have been run.
+No provider has been probed for these fields, and this default has not been
+benchmarked. Whether an endpoint accepts them depends on the endpoint, the
+model and your plan, and a fast path usually costs more per token. When an
+endpoint refuses a request that carried the field with HTTP 400, 404 or 422,
+the session drops the field for the rest of the session, resends that request
+once without it, records a `provider_tier_rejected` policy row and sends the
+client one `x.ai/session/provider_tier/rejected` notice. No speed or cost claim
+is made for these keys until a provider probe and a paired benchmark have been
+run.
 
 ## Reproducible paired evaluation
 

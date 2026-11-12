@@ -1071,7 +1071,8 @@ pub(crate) struct PinnedModeSettings {
 /// default, not benchmarked), the literal `session` keeps the session's own model (the off
 /// switch), and any other value is a model id. The utility model never leads. UltraFast keeps
 /// the session model unless `[modes.ultrafast] model` names one. No model is ranked
-/// automatically.
+/// automatically. The serving path defaults to `fast` for UltraFast and `economy` for
+/// UltraSave; `provider_tier = "off"` sends none.
 pub(crate) fn pinned_mode_settings(
     root: Option<&toml::Value>,
     mode: distill_tool_types::ExecutionMode,
@@ -1094,10 +1095,17 @@ pub(crate) fn pinned_mode_settings(
             Some(_) => model,
         };
     }
-    let provider_tier = mode_key("provider_tier").and_then(|value| {
+    // Unset is the mode's own path (not benchmarked); a request an endpoint refuses for it is
+    // resent once without it and the session drops it (see `provider_tier_rejected`).
+    let default_tier = match mode {
+        ExecutionMode::Ultrafast => distill_sampler::ProviderTier::Fast,
+        _ => distill_sampler::ProviderTier::Economy,
+    };
+    let provider_tier = mode_key("provider_tier").map_or(Some(default_tier), |value| {
         match value.to_ascii_lowercase().as_str() {
             "fast" => Some(distill_sampler::ProviderTier::Fast),
             "economy" => Some(distill_sampler::ProviderTier::Economy),
+            "off" => None,
             _ => {
                 tracing::warn!(mode = section, %value, "unknown provider_tier; sending none");
                 None

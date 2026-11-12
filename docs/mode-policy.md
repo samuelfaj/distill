@@ -120,8 +120,10 @@ rules recorded today: `review_verdict:reviewed` or
 `compaction:cold_return` or `compaction:max_prompt` when a mode's row or
 `[modes.<mode>]` key decided a compaction that the `[compaction]` keys alone
 would not have; `cold_return_skipped` when the row suppressed a question or a
-compaction those keys would have made; and `read_not_narrowed` (at most once
-per round) when the row kept a file read whole.
+compaction those keys would have made; `read_not_narrowed` (at most once per
+round) when the row kept a file read whole; and `provider_tier_rejected` when
+an endpoint refused a pinned session's serving-path field and the session
+dropped it.
 
 ## Context policy
 

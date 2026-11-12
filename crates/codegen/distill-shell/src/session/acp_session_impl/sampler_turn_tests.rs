@@ -1777,6 +1777,280 @@ fn a_utility_child_falls_back_on_any_failure_other_routes_only_on_rejection() {
     assert!(!super::local_route_falls_back(&revoked, false));
 }
 
+/// The pinned serving path has not been probed against any provider, so only a refusal of a
+/// request that carried it may drop it: 400, 404 or 422, not authentication, permission, rate
+/// limits, an oversized or incompatible history, and never a request that did not carry it.
+#[test]
+fn only_a_client_refusal_of_a_request_carrying_the_tier_drops_it() {
+    use distill_sampler::{ProviderTier, SamplerConfig, SamplingErrorInfo, SamplingErrorKind};
+    use distill_sampling_types::ApiBackend;
+    let error =
+        |kind: SamplingErrorKind, status_code: Option<u16>, message: &str| SamplingErrorInfo {
+            kind,
+            status_code,
+            message: message.to_owned(),
+            is_retryable: false,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+            model_metadata: None,
+            empty_response_context: None,
+            doom_loop_triggers: None,
+            doom_loop_aborted_at_chunk: None,
+            credential: distill_sampling_types::SentCredential::Unknown,
+        };
+    let config = |tier, backend| SamplerConfig {
+        base_url: "https://api.example.test/v1".to_owned(),
+        provider_tier: tier,
+        api_backend: backend,
+        ..Default::default()
+    };
+    let fast = config(Some(ProviderTier::Fast), ApiBackend::Responses);
+    for status in [400, 404, 422] {
+        let refused = error(
+            SamplingErrorKind::Api,
+            Some(status),
+            "unsupported service_tier",
+        );
+        assert!(super::provider_tier_rejected(&refused, &fast), "{status}");
+        assert!(super::provider_tier_rejected(
+            &refused,
+            &config(Some(ProviderTier::Fast), ApiBackend::Messages)
+        ));
+        for not_sent in [
+            config(None, ApiBackend::Responses),
+            config(Some(ProviderTier::Economy), ApiBackend::Messages),
+            config(Some(ProviderTier::Fast), ApiBackend::ChatCompletions),
+            SamplerConfig {
+                base_url: "https://openrouter.ai/api/v1".to_owned(),
+                ..fast.clone()
+            },
+        ] {
+            assert!(
+                !super::provider_tier_rejected(&refused, &not_sent),
+                "{} {:?} {:?}",
+                not_sent.base_url,
+                not_sent.provider_tier,
+                not_sent.api_backend
+            );
+        }
+    }
+    for other in [
+        error(SamplingErrorKind::Auth, Some(401), "unauthorized"),
+        error(SamplingErrorKind::Api, Some(403), "forbidden"),
+        error(SamplingErrorKind::RateLimited, Some(429), "slow down"),
+        error(SamplingErrorKind::Api, Some(500), "server error"),
+        error(
+            SamplingErrorKind::Api,
+            Some(400),
+            "maximum context length is 1000 tokens",
+        ),
+        error(
+            SamplingErrorKind::Api,
+            Some(400),
+            "invalid encrypted_content",
+        ),
+        error(SamplingErrorKind::Http, None, "connection reset"),
+    ] {
+        assert!(
+            !super::provider_tier_rejected(&other, &fast),
+            "{:?} {:?}",
+            other.status_code,
+            other.message
+        );
+    }
+}
+
+/// A pinned UltraFast session whose endpoint refuses `service_tier` keeps working: the refused
+/// request is resent once without the field, the tier is gone for the rest of the session, a
+/// policy row records it and the client hears it once.
+#[test]
+fn a_refused_provider_tier_is_dropped_and_the_request_resent_without_it() {
+    use super::super::support::{create_test_actor, drain_persistence, transient_state};
+    use super::super::{SamplerTurnOutcome, TurnParkState};
+    use distill_sampler::{ProviderTier, RetryPolicy, SamplerActor, SamplerConfig};
+    use distill_sampling_types::{ApiBackend, ConversationItem};
+    use distill_test_support::sse::responses_api_script_exact;
+    use distill_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+    use distill_tool_types::ExecutionMode;
+    use std::sync::Arc;
+    use tokio::task::LocalSet;
+
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            LocalSet::new().block_on(&runtime, async {
+                let account_home = tempfile::tempdir().expect("test account home");
+                let _accounts = crate::accounts::test_home::TestHomeGuard::new(account_home.path());
+                crate::jev::set_test_decision_answers([]);
+                crate::jev::set_test_local_config(Default::default());
+
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("test").with_api_backend("responses"),
+                ])
+                .await
+                .expect("mock server");
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::json(
+                        400,
+                        serde_json::json!({"error": {
+                            "type": "invalid_request_error",
+                            "message": "Unsupported value: 'service_tier'",
+                        }}),
+                    ),
+                );
+                server.enqueue_response(
+                    "/v1/responses",
+                    ScriptedResponse::sse(responses_api_script_exact("done", "test")),
+                );
+
+                let sampling_cfg = SamplerConfig {
+                    api_key: Some("test-key".to_owned()),
+                    base_url: server.url(),
+                    model: "test".to_owned(),
+                    api_backend: ApiBackend::Responses,
+                    context_window: 262_144,
+                    max_retries: Some(0),
+                    idle_timeout_secs: Some(30),
+                    ..Default::default()
+                };
+                let (sampler_event_tx, sampler_event_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<distill_sampler::SamplingEvent>();
+                let sampler_handle = SamplerActor::spawn(
+                    sampling_cfg,
+                    RetryPolicy {
+                        max_retries: 0,
+                        ..Default::default()
+                    },
+                    sampler_event_tx,
+                );
+                let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+                drain_persistence(persistence_rx);
+                let mut actor = create_test_actor(0, 262_144, 85, gateway_tx, persistence_tx).await;
+                actor.sampler_handle = sampler_handle;
+                actor.max_retries = 0;
+                let mut config = actor
+                    .chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .expect("config");
+                config.base_url = server.url();
+                config.api_backend = ApiBackend::Responses;
+                config.model = "test".to_owned();
+                actor.chat_state_handle.update_sampling_config(config);
+                actor.chat_state_handle.replace_conversation(vec![
+                    ConversationItem::system("system"),
+                    ConversationItem::user("fix the parser"),
+                ]);
+                actor.execution_mode.store(ExecutionMode::Ultrafast);
+                crate::extensions::session_ultracode::pin_provider_tier_for_tests(
+                    &actor.session_info,
+                    ProviderTier::Fast,
+                );
+                let actor = Arc::new(actor);
+                {
+                    let drainer = actor.clone();
+                    let mut sampler_event_rx = sampler_event_rx;
+                    tokio::task::spawn_local(async move {
+                        while let Some(event) = sampler_event_rx.recv().await {
+                            drainer.handle_sampling_event(event).await;
+                        }
+                    });
+                }
+
+                let session = actor.session_id_string();
+                crate::jev::with_session_scope(&session, async {
+                    let mut budget = actor.rate_limit_wait_budget(None);
+                    let request = || async {
+                        actor
+                            .chat_state_handle
+                            .build_request(
+                                Vec::new(),
+                                None,
+                                false,
+                                None,
+                                actor.session_id_string(),
+                                "tier".to_owned(),
+                            )
+                            .await
+                            .expect("request")
+                    };
+                    let first = actor
+                        .run_turn_via_sampler(
+                            request().await,
+                            &mut budget,
+                            transient_state(0, true),
+                            false,
+                            TurnParkState::Fresh,
+                        )
+                        .await;
+                    assert!(
+                        matches!(first, Ok(SamplerTurnOutcome::CompactAndResubmit)),
+                        "the refusal resubmits; {}",
+                        server.request_log_summary()
+                    );
+                    assert_eq!(
+                        crate::extensions::session_ultracode::pinned_provider_tier(
+                            &actor.session_info
+                        ),
+                        None,
+                        "dropped for the rest of the session"
+                    );
+                    let second = actor
+                        .run_turn_via_sampler(
+                            request().await,
+                            &mut budget,
+                            transient_state(0, true),
+                            false,
+                            TurnParkState::Fresh,
+                        )
+                        .await;
+                    assert!(
+                        matches!(second, Ok(SamplerTurnOutcome::Response(..))),
+                        "{}",
+                        server.request_log_summary()
+                    );
+                    let bodies: Vec<_> = server
+                        .request_bodies()
+                        .into_iter()
+                        .filter(|body| body.get("model").is_some())
+                        .collect();
+                    assert_eq!(bodies.len(), 2, "{}", server.request_log_summary());
+                    assert_eq!(bodies[0]["service_tier"], "priority");
+                    assert!(bodies[1].get("service_tier").is_none(), "{}", bodies[1]);
+                    assert_eq!(bodies[0]["input"], bodies[1]["input"], "the same request");
+                })
+                .await;
+                assert_eq!(
+                    crate::session::acp_session::mode_policy::take_policy_rows(&session)
+                        .get("ultrafast:provider_tier_rejected"),
+                    Some(&1)
+                );
+                let mut notices = 0;
+                while let Ok(message) = gateway_rx.try_recv() {
+                    if let distill_acp_lib::AcpClientMessage::ExtNotification(args) = message
+                        && args.request.method.as_ref()
+                            == crate::extensions::session_ultracode::PROVIDER_TIER_REJECTED_METHOD
+                    {
+                        notices += 1;
+                    }
+                }
+                assert_eq!(notices, 1, "the client hears it once");
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_local_config();
+            });
+        })
+        .expect("spawn large-stack test thread")
+        .join()
+        .expect("test thread");
+}
+
 #[test]
 #[serial_test::serial]
 fn account_routing_real_turn_fallback_preserves_selected_pair_for_worker() {

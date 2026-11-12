@@ -248,11 +248,58 @@ fn save_pinned_state(
     crate::session::storage::write_bytes_atomic(&dir.join(PINNED_MODE_FILE), &bytes)
 }
 
-/// The serving path of a session pinned to a mode with `[modes.<mode>] provider_tier`.
+/// The serving path of a session pinned to a mode (`[modes.<mode>] provider_tier`), unless an
+/// endpoint refused it earlier in this session.
 pub(crate) fn pinned_provider_tier(
     info: &crate::session::info::Info,
 ) -> Option<distill_sampler::ProviderTier> {
+    if tier_rejected_sessions().lock().contains(info.id.0.as_ref()) {
+        return None;
+    }
     load_pinned_state(info)?.provider_tier
+}
+
+/// Client notice, sent once per session: the endpoint refused the pinned serving path, so the
+/// session's requests go without it.
+pub const PROVIDER_TIER_REJECTED_METHOD: &str = "x.ai/session/provider_tier/rejected";
+
+/// Sessions whose endpoint refused the serving path. Kept in memory as well as on disk, so a
+/// state file that cannot be rewritten never sends the refused field again.
+fn tier_rejected_sessions() -> &'static parking_lot::Mutex<std::collections::HashSet<String>> {
+    static REJECTED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    &REJECTED
+}
+
+/// Drops the pinned serving path for the rest of the session after an endpoint refused a request
+/// that carried it. `false` when it was already dropped, so the caller resends at most once.
+pub(crate) fn drop_rejected_provider_tier(info: &crate::session::info::Info) -> bool {
+    if !tier_rejected_sessions()
+        .lock()
+        .insert(info.id.0.to_string())
+    {
+        return false;
+    }
+    if let Some(mut state) = load_pinned_state(info)
+        && state.provider_tier.take().is_some()
+        && let Err(error) = save_pinned_state(info, &state)
+    {
+        tracing::warn!(session_id = %info.id.0, %error, "pinned mode state not saved");
+    }
+    true
+}
+
+/// Pins `tier` as the serving path of `info`'s session, as entering a mode with it does.
+#[cfg(test)]
+pub(crate) fn pin_provider_tier_for_tests(
+    info: &crate::session::info::Info,
+    tier: distill_sampler::ProviderTier,
+) {
+    let state = PinnedModeState {
+        provider_tier: Some(tier),
+        ..PinnedModeState::default()
+    };
+    save_pinned_state(info, &state).expect("pinned mode state saved");
 }
 
 /// Client notice: an explicit mode change in a session whose prompt is large; the next request

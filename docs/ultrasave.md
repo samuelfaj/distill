@@ -42,7 +42,7 @@ background work, and the round that answers the final-check reminder, keep the
 last level without asking. `[modes] v2 = []` turns this off; it has not been
 benchmarked. See [Decision policy by mode](jev-routing.md#decision-policy-by-mode).
 
-## Model and provider path (opt-in)
+## Model and provider path
 
 These settings apply only to a session pinned to UltraSave (`/ultrasave on`,
 `--ultrasave`, `/mode ultrasave`). Under Auto they never apply, whatever mode
@@ -51,7 +51,7 @@ Auto picks.
 ```toml
 [modes.ultrasave]
 model = "worker"            # the default; "session" keeps the session's model, or a model id
-provider_tier = "economy"   # optional; unset sends no serving-path field
+provider_tier = "economy"   # the default; "off" sends no serving-path field
 ```
 
 - `model`: when the session is pinned, this model becomes the session's model
@@ -65,20 +65,24 @@ provider_tier = "economy"   # optional; unset sends no serving-path field
   other auxiliary requests run on the session's model, as before.
 - With no worker configured, or `model = "session"`, UltraSave has no cheaper
   model and keeps the session's model; the session log records this once.
-- `provider_tier = "economy"`: decided once when the session is pinned and kept
-  until the session leaves the mode, because changing it mid-session
-  invalidates the provider's prompt cache. It applies to the session's model
-  only (a round routed to another model goes without it):
+- `provider_tier`: `"economy"` by default; `"off"` turns it off. It is decided
+  once when the session is pinned and kept until the session leaves the mode,
+  because changing it mid-session invalidates the provider's prompt cache. It
+  applies to the session's model only (a round routed to another model goes
+  without it):
   - Responses API endpoints: `service_tier: "flex"`.
   - Anthropic Messages endpoints: nothing is sent.
   - OpenRouter: the model variant stays `floor` when `[models] main_variant`
     is unset, which is already the default.
 
-Whether an endpoint accepts `service_tier` depends on the endpoint, the model
-and your plan; a flex tier may also answer more slowly. If requests start
-failing after you set `provider_tier`, remove the key. No cost or speed claim is
-made for these settings until a provider probe and a paired benchmark have been
-run.
+No provider has been probed for `service_tier`, and this default has not been
+benchmarked. Whether an endpoint accepts it depends on the endpoint, the model
+and your plan; a flex tier may also answer more slowly. When an endpoint
+refuses a request that carried the field with HTTP 400, 404 or 422, the session
+drops the field for the rest of the session, resends that request once without
+it, records a `provider_tier_rejected` policy row and sends the client one
+`x.ai/session/provider_tier/rejected` notice. No cost or speed claim is made for
+these settings until a provider probe and a paired benchmark have been run.
 
 ## Predeclared paired evaluation
 

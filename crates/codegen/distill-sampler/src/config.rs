@@ -145,6 +145,21 @@ pub struct SamplerConfig {
     pub header_injector: Option<SharedHeaderInjector>,
 }
 
+impl SamplerConfig {
+    /// Whether a request built from this config carries a serving-path field: Responses
+    /// `service_tier` for either tier, Messages `speed` for `Fast`. OpenRouter takes the model
+    /// variant instead, and Chat Completions gets no such field.
+    pub fn sends_provider_tier(&self) -> bool {
+        if crate::client::is_openrouter_base_url(&self.base_url) {
+            return false;
+        }
+        matches!(
+            (self.provider_tier, &self.api_backend),
+            (Some(_), ApiBackend::Responses) | (Some(ProviderTier::Fast), ApiBackend::Messages)
+        )
+    }
+}
+
 impl Default for SamplerConfig {
     /// Empty defaults so callers can use `..Default::default()` and new fields don't ripple through every literal site.
     fn default() -> Self {

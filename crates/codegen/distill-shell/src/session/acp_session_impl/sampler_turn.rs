@@ -220,6 +220,25 @@ pub(super) fn is_client_rejection(error: &distill_sampler::SamplingErrorInfo) ->
         .is_some_and(|status| (400..500).contains(&status) && status != 408 && status != 429)
 }
 
+/// Whether a main request may have failed on its pinned serving-path field (Responses
+/// `service_tier`, Messages `speed`), which no provider has been probed for: it carried the
+/// field and the endpoint refused it with 400, 404 or 422. Authentication, permission and rate
+/// limits, an oversized history and an incompatible history say nothing about the field.
+pub(super) fn provider_tier_rejected(
+    error: &distill_sampler::SamplingErrorInfo,
+    sent: &SamplingConfig,
+) -> bool {
+    use distill_sampler::SamplingErrorKind;
+    sent.sends_provider_tier()
+        && !matches!(
+            error.kind,
+            SamplingErrorKind::Auth | SamplingErrorKind::RateLimited
+        )
+        && matches!(error.status_code, Some(400 | 404 | 422))
+        && !distill_sampling_types::is_context_length_error(&error.message)
+        && !error.message.contains("encrypted_content")
+}
+
 /// Whether a routed round's failed request goes back to the session model. A
 /// client rejection always does; on an E6 utility child any failure does
 /// (timeout, transport, rate limit, server error), because the route is only an
@@ -1824,6 +1843,17 @@ impl SessionActor {
             }
         }
 
+        // The pinned serving path is unprobed: when the endpoint refused a request that carried
+        // it, drop it for the rest of the session and resend once without it. The resent request
+        // carries no tier, so this cannot fire twice.
+        if let Some(sent) = route_config
+            && provider_tier_rejected(&error, sent)
+            && crate::extensions::session_ultracode::drop_rejected_provider_tier(&self.session_info)
+        {
+            self.note_provider_tier_rejected(error.status_code);
+            return Ok(SamplerFailureRecovery::CompactAndResubmit);
+        }
+
         // Telemetry and notification for terminal failures
         // The drainer already recorded `record_error_typed` from the `SamplingEvent::Failed` event
         // Here we send the `RetryState::Failed` notification, which the drainer intentionally skips because it would fire mid-retry
@@ -2824,6 +2854,16 @@ impl SessionActor {
                         .map_err(|_| acp::Error::internal_error())?;
                     self.turn_phases.record_sampling_retries(1);
                 }
+                // Same refused serving path as in `handle_sampling_failure_for_route`.
+                Err(info)
+                    if provider_tier_rejected(&info, &config)
+                        && crate::extensions::session_ultracode::drop_rejected_provider_tier(
+                            &self.session_info,
+                        ) =>
+                {
+                    self.note_provider_tier_rejected(info.status_code);
+                    return Ok(SamplerTurnOutcome::CompactAndResubmit);
+                }
                 Err(info) => {
                     return Err(acp::Error::internal_error().data(
                         crate::sampling::error::terminal_error_data(
@@ -3265,6 +3305,31 @@ impl SessionActor {
             },
         ))
         .await;
+    }
+
+    /// Records and announces, once per session, that the endpoint refused the pinned serving
+    /// path and the session goes on without it.
+    fn note_provider_tier_rejected(&self, status_code: Option<u16>) {
+        let mode = self.execution_mode.load();
+        tracing::warn!(
+            session_id = %self.session_info.id.0,
+            ?status_code,
+            "endpoint refused the pinned serving path; resending without it for this session"
+        );
+        crate::jev::record_policy(mode, "provider_tier_rejected");
+        let payload = serde_json::json!({
+            "sessionId": self.session_info.id.0.as_ref(),
+            "mode": mode,
+            "statusCode": status_code,
+        });
+        if let Ok(params) = serde_json::value::to_raw_value(&payload) {
+            self.notifications
+                .gateway
+                .forward_fire_and_forget(acp::ExtNotification::new(
+                    crate::extensions::session_ultracode::PROVIDER_TIER_REJECTED_METHOD,
+                    params.into(),
+                ));
+        }
     }
 
     fn log_rate_limit_budget_spent(

@@ -59,7 +59,9 @@ provider_tier = "fast"    # the default; "off" sends no serving-path field
   asks for the endpoint's fast serving path on the session's model only (a
   round routed to another model goes without it):
   - Responses API endpoints: `service_tier: "priority"`.
-  - Anthropic Messages endpoints: `speed: "fast"`.
+  - Anthropic Messages endpoints: `speed: "fast"`, except on a Claude
+    subscription, which refuses fast mode without usage credits; nothing is
+    sent there.
   - OpenRouter: the model variant defaults to `nitro` when `[models]
     main_variant` is unset; an explicit `main_variant` wins. No other field is
     sent to OpenRouter.

@@ -226,16 +226,24 @@ pub(super) fn is_client_rejection(error: &distill_sampler::SamplingErrorInfo) ->
 /// `service_tier`, Messages `speed`), which no provider has been probed for: it carried the
 /// field and the endpoint refused it with 400, 404 or 422. Authentication, permission and rate
 /// limits, an oversized history and an incompatible history say nothing about the field.
+/// An error that names the serving path is a refusal of it whatever its status: one provider
+/// answers a fast-mode request it will not serve with a rate-limit error that no retry clears.
 pub(super) fn provider_tier_rejected(
     error: &distill_sampler::SamplingErrorInfo,
     sent: &SamplingConfig,
 ) -> bool {
     use distill_sampler::SamplingErrorKind;
-    sent.sends_provider_tier()
-        && !matches!(
-            error.kind,
-            SamplingErrorKind::Auth | SamplingErrorKind::RateLimited
-        )
+    if !sent.sends_provider_tier() || error.kind == SamplingErrorKind::Auth {
+        return false;
+    }
+    let message = error.message.to_ascii_lowercase();
+    if ["fast mode", "service_tier", "service tier"]
+        .iter()
+        .any(|name| message.contains(name))
+    {
+        return true;
+    }
+    error.kind != SamplingErrorKind::RateLimited
         && matches!(error.status_code, Some(400 | 404 | 422))
         && !distill_sampling_types::is_context_length_error(&error.message)
         && !error.message.contains("encrypted_content")

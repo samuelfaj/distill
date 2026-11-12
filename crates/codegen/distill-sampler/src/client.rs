@@ -88,6 +88,14 @@ pub(crate) fn effective_provider_tier(
     })
 }
 
+/// Whether an `anthropic-beta` header value carries the flag that accepts a
+/// Claude subscription (OAuth) bearer.
+pub(crate) fn names_claude_oauth_beta(value: &str) -> bool {
+    value
+        .split(',')
+        .any(|flag| flag.trim() == CLAUDE_OAUTH_BETA)
+}
+
 fn is_codex_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
@@ -2363,8 +2371,12 @@ impl SamplingClient {
             prepend_claude_code_identity(&mut request.inner.system);
         }
 
+        // A Claude subscription refuses fast mode without usage credits, and it
+        // answers with a rate-limit error that no retry clears, so a
+        // subscription request never asks for it.
         if request.inner.speed.is_none()
             && self.provider_tier() == Some(crate::config::ProviderTier::Fast)
+            && !self.uses_claude_subscription_bearer()
         {
             request.inner.speed = Some("fast".to_owned());
         }
@@ -2384,11 +2396,7 @@ impl SamplingClient {
         self.default_headers
             .get("anthropic-beta")
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(',')
-                    .any(|flag| flag.trim() == CLAUDE_OAUTH_BETA)
-            })
+            .is_some_and(names_claude_oauth_beta)
     }
 
     /// Create a message using the Anthropic Messages API (non-streaming).
@@ -3377,6 +3385,36 @@ mod tests {
             context_window: 8192,
             ..Default::default()
         }
+    }
+
+    /// A Claude subscription answers a fast-mode request with a rate-limit error unless the
+    /// account has usage credits, and no retry clears it: the whole turn fails. A request that
+    /// carries the subscription's beta flag therefore never asks for fast mode, and
+    /// `sends_provider_tier` agrees, so nothing treats the field as sent.
+    #[test]
+    fn a_claude_subscription_request_never_asks_for_fast_mode() {
+        use crate::config::ProviderTier;
+        let config = |beta: &str| SamplerConfig {
+            provider_tier: Some(ProviderTier::Fast),
+            api_backend: ApiBackend::Messages,
+            extra_headers: [("anthropic-beta".to_owned(), beta.to_owned())]
+                .into_iter()
+                .collect(),
+            ..minimal_config()
+        };
+        let speed = |config: SamplerConfig| {
+            let client = SamplingClient::new(config).expect("client constructs without I/O");
+            let mut messages = MessagesRequestWrapper::new(messages::MessagesRequest::default());
+            client
+                .apply_message_defaults(&mut messages)
+                .expect("defaults apply");
+            serde_json::to_value(&messages.inner).unwrap().get("speed").cloned()
+        };
+        let subscription = format!("some-flag, {CLAUDE_OAUTH_BETA}");
+        assert_eq!(speed(config(&subscription)), None);
+        assert!(!config(&subscription).sends_provider_tier());
+        assert_eq!(speed(config("some-flag")), Some("fast".into()));
+        assert!(config("some-flag").sends_provider_tier());
     }
 
     /// The routing variant must reach only OpenRouter slugs that carry none, so a user-pinned `:free` is never rewritten.

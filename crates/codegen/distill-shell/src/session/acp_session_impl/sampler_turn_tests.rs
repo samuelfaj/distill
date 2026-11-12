@@ -1835,6 +1835,22 @@ fn only_a_client_refusal_of_a_request_carrying_the_tier_drops_it() {
             );
         }
     }
+    // A refusal that names the serving path is one whatever its status: left as a rate limit
+    // it would be retried until the turn fails.
+    for named in [
+        error(
+            SamplingErrorKind::RateLimited,
+            Some(429),
+            "rate_limit_error: Usage credits are required for fast mode.",
+        ),
+        error(SamplingErrorKind::Api, Some(403), "service_tier priority is not enabled"),
+    ] {
+        assert!(super::provider_tier_rejected(&named, &fast), "{:?}", named.message);
+    }
+    assert!(!super::provider_tier_rejected(
+        &error(SamplingErrorKind::Auth, Some(401), "no access to fast mode"),
+        &fast
+    ));
     for other in [
         error(SamplingErrorKind::Auth, Some(401), "unauthorized"),
         error(SamplingErrorKind::Api, Some(403), "forbidden"),

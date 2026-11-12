@@ -717,6 +717,7 @@ async fn ask_once(
     let Some(client) = client_cached().filter(|client| client.credential_present()) else {
         return Err((JevNoAnswerKind::NoCredential, 0));
     };
+    crate::jev_shadow::capture(lever, &client.config().model, &state, &questions);
     let session_id = active_session_id();
     let memo_key = decision_memo_key(client, lever, &state, &questions);
     let observed_client = observed_client(client, lever.as_str());

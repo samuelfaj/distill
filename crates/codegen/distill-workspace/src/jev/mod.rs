@@ -22,6 +22,7 @@ pub mod policy;
 pub mod provider;
 pub mod questions;
 pub mod reduce;
+pub mod replay;
 pub mod retention;
 pub mod tasks;
 pub mod types;

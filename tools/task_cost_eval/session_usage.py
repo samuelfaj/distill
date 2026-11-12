@@ -2,7 +2,7 @@
 
     python3 -B -m tools.task_cost_eval.session_usage [--sessions-root DIR] [--days N]
         [--exclude-days 2026-01-01:2026-01-03,2026-01-09] [--prices FILE] [--price FAMILY.FIELD=VALUE]
-        [--report NAME ...] [--check-totals] [--simulate compaction ...]
+        [--report NAME ...] [--expect KEY=VALUE,...] [--check-totals] [--simulate compaction ...]
 
 Reads <root>/<project>/<session>/usage.json (and the optional events.jsonl,
 execution_mode.json and subagents/*/meta.json next to it). Never writes, never
@@ -22,7 +22,9 @@ is taken to include cache reads and writes. A cache-missing call (cached tokens
 under half of the previous prompt on the same thread) is also priced on its own.
 
 Reports (--report, repeatable): totals, cache-breaks, rounds, turn-start,
-compaction. Two asked-for reports are not derivable from these files and are
+compaction, decisions (Jev decision events joined with outcome labels; the
+rules are in decision_quality.py, and --expect prints reference rates beside
+the measured ones). Two asked-for reports are not derivable from these files and are
 omitted: `resume` (nothing records that a session was reloaded from disk) and
 `mode-switch` (execution_mode.json keeps only the last choice and mode; no
 per-call mode is stored). The mode-switch cause in cache-breaks is used only
@@ -45,6 +47,8 @@ import statistics
 from collections import Counter, defaultdict, namedtuple
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+from . import decision_quality
 
 DEFAULT_ROOT = Path('~/.distill/sessions')
 MAIN_ROLES = ('main', 'main_retry')
@@ -177,7 +181,7 @@ def load_session(directory, prices, cutoff=None):
             parents[meta['child_session_id']] = meta.get('parent_session_id') or usage.get('sessionId')
     primary = ledger.get('primaryModelId')
     return {'sid': usage.get('sessionId') or directory.name, 'updated': updated, 'calls': calls,
-            'gaps': gaps, 'events': events, 'children': parents,
+            'gaps': gaps, 'events': events, 'children': parents, 'directory': directory,
             'counters': ledger.get('cacheBreaks') if isinstance(ledger.get('cacheBreaks'), dict) else None,
             'utility_outcomes': ledger.get('utilityOutcomes') or {}, 'primary': primary,
             'primary_input': ((ledger.get('modelUsage') or {}).get(primary) or {}).get('inputTokens'),
@@ -482,9 +486,15 @@ def simulate_compaction(threads, prices, *, soft, hard, post, regrowth):
             'cost_ratio': sim['cost_eq'] / base['cost_eq'] if base['cost_eq'] else None}
 
 
+def report_decisions(threads, excluded=(), expect=None):
+    sessions = [{'events_path': thread['session']['directory'] / 'events.jsonl', 'kind': thread['kind'],
+                 'utility_outcomes': thread['session']['utility_outcomes']} for thread in threads.values()]
+    return decision_quality.decisions_report(sessions, expect, excluded)
+
+
 # ---------------------------------------------------------------- command line
 
-REPORTS = ('totals', 'cache-breaks', 'rounds', 'turn-start', 'compaction')
+REPORTS = ('totals', 'cache-breaks', 'rounds', 'turn-start', 'compaction', 'decisions')
 
 
 def prices_from(args):
@@ -509,6 +519,9 @@ def main(argv=None):
     parser.add_argument('--prices', help='JSON file: {family: {match: [...], input, cache_read, ...}}')
     parser.add_argument('--price', action='append', help='override one price, FAMILY.FIELD=VALUE')
     parser.add_argument('--report', action='append', choices=REPORTS)
+    parser.add_argument('--expect', action='append',
+                        help='decisions report: reference rates KEY=VALUE,... (fraction or N%%) printed beside the '
+                             'measured ones; differences over 3 points are flagged')
     parser.add_argument('--check-totals', action='store_true',
                         help='exit 1 unless deduped primary-model prompt tokens are within 10%% of usage.json')
     parser.add_argument('--simulate', choices=('compaction',))
@@ -519,7 +532,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     prices = prices_from(args)
     sessions, parents = load(args.sessions_root, prices, days=args.days)
-    threads, counts = dedupe(sessions, parents, parse_day_ranges(args.exclude_days))
+    excluded = parse_day_ranges(args.exclude_days)
+    threads, counts = dedupe(sessions, parents, excluded)
     output = {'sessions_root': 'default' if args.sessions_root == DEFAULT_ROOT else 'argument'}
     reports = args.report or ([] if args.check_totals or args.simulate else ['totals'])
     for name in reports:
@@ -527,7 +541,9 @@ def main(argv=None):
                         'cache-breaks': lambda: report_cache_breaks(threads, prices),
                         'rounds': lambda: report_rounds(threads),
                         'turn-start': lambda: report_turn_start(threads),
-                        'compaction': lambda: report_compaction(threads, sessions, prices)}[name]()
+                        'compaction': lambda: report_compaction(threads, sessions, prices),
+                        'decisions': lambda: report_decisions(threads, excluded,
+                                                              decision_quality.parse_expect(args.expect))}[name]()
     if args.simulate:
         output['simulate-compaction'] = simulate_compaction(threads, prices, soft=args.soft_threshold,
                                                             hard=args.hard_cap, post=args.post_size,

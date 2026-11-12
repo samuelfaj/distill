@@ -458,3 +458,11 @@ for implementation pointers. Utility outcomes per source kind are always in the
 session's `usage.json` (`utilityOutcomes`, and `source_kind`/`final_decision` on
 utility attempt rows), with no content; [Where the token savings come
 from](token-saver.md#the-decision-layer-on-top) says how to read them.
+
+Every recorded decision is also one `jev_decision` line in the session's
+`events.jsonl`: lever, a hash of the question, the served model, each answer
+as numbers and option ids, the composed label, confidence, whether it came
+from the memo, latency and round; an ask that got no answer is one
+`jev_no_answer` line with its cause (`error`, `timeout`, `no_credential`,
+`lever_off`). No state, question text or reason is written, and an id that is
+not a short identifier (a test path, for example) is replaced by its hash.

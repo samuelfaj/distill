@@ -2144,6 +2144,10 @@ pub(crate) async fn spawn_session_actor(
         trace_config_template: std::cell::RefCell::new(None),
     });
     drop(actor_build_span);
+    crate::jev::register_session_events(
+        session.session_info.id.0.as_ref(),
+        &session.events.writer(),
+    );
     async {
         if owns_permission_manager {
             session.wire_permission_prompt_notification();

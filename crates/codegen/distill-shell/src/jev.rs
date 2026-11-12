@@ -541,11 +541,27 @@ async fn ask_items_with_flags<const N: usize>(
     let mut questions = BTreeMap::new();
     let mut first = None;
     let mut ids: [Vec<String>; N] = std::array::from_fn(|_| Vec::new());
+    // Each pack's own lever and question hash, so its decision event matches
+    // the hash a solo ask of the same pack would carry.
+    let mut traced: [Option<(distill_workspace::jev::flags::JevLever, String)>; N] =
+        std::array::from_fn(|_| None);
     for (index, (lever, pack)) in items.into_iter().enumerate() {
+        let Some(pack) = pack.filter(|pack| !pack.is_empty()) else {
+            continue;
+        };
         if !flags.lever_asks(lever) {
+            emit_no_answer(
+                lever,
+                distill_session_events::JevNoAnswerKind::LeverOff,
+                Some(question_hash(&pack)),
+                0,
+            );
             continue;
         }
-        for (id, question) in pack.into_iter().flatten() {
+        if let Some(slot) = traced.get_mut(index) {
+            *slot = Some((lever, question_hash(&pack)));
+        }
+        for (id, question) in pack {
             if flags.lever_active(lever) {
                 first.get_or_insert(lever);
             }
@@ -555,8 +571,14 @@ async fn ask_items_with_flags<const N: usize>(
     }
     let mut result = std::array::from_fn(|_| None);
     let Some(lever) = first else { return result };
-    let Some(mut answers) = ask_item(lever, state, questions).await else {
-        return result;
+    let (mut answers, memo) = match ask_once(lever, state, questions).await {
+        Ok(answered) => answered,
+        Err((kind, latency_ms)) => {
+            for (lever, hash) in traced.into_iter().flatten() {
+                emit_no_answer(lever, kind, Some(hash), latency_ms);
+            }
+            return result;
+        }
     };
     for (index, ids) in ids.into_iter().enumerate() {
         if ids.is_empty() {
@@ -573,6 +595,9 @@ async fn ask_items_with_flags<const N: usize>(
                     .map(|answer| (id, answer))
             })
             .collect();
+        if let Some((lever, hash)) = traced.get_mut(index).and_then(Option::take) {
+            note_answer_trace(lever, &pack, hash, memo);
+        }
         result[index] = Some(pack);
         answers.usage = Usage::default();
         answers.latency_ms = 0;
@@ -597,6 +622,35 @@ pub async fn ask_item(
     if questions.is_empty() {
         return None;
     }
+    let hash = question_hash(&questions);
+    match ask_once(lever, state, questions).await {
+        Ok((answers, memo)) => {
+            note_answer_trace(lever, &answers, hash, memo);
+            Some(answers)
+        }
+        Err((kind, latency_ms)) => {
+            emit_no_answer(lever, kind, Some(hash), latency_ms);
+            None
+        }
+    }
+}
+
+/// One gated attempt for [`ask_item`] and [`ask_items`]: the answers and
+/// whether they came from the memo, or why there are none and how long the
+/// attempt took.
+async fn ask_once(
+    lever: distill_workspace::jev::flags::JevLever,
+    state: serde_json::Value,
+    questions: std::collections::BTreeMap<
+        distill_workspace::jev::types::QuestionId,
+        distill_workspace::jev::types::Question,
+    >,
+) -> Result<
+    (distill_workspace::jev::types::JevAnswerSet, bool),
+    (distill_session_events::JevNoAnswerKind, u64),
+> {
+    use distill_session_events::JevNoAnswerKind;
+    // A scripted `None` stands for a failed request.
     #[cfg(test)]
     if let Some(answer) = TEST_DECISION_ANSWERS.with(|queue| {
         queue.borrow_mut().as_mut().map(|answers| {
@@ -605,21 +659,23 @@ pub async fn ask_item(
             answers.pop_front().unwrap_or(None)
         })
     }) {
-        return answer;
+        return answer
+            .map(|answer| (answer, false))
+            .ok_or((JevNoAnswerKind::Error, 0));
     }
     let flags = flags_cached();
     if !flags.lever_active(lever) {
-        return None;
+        return Err((JevNoAnswerKind::LeverOff, 0));
     }
-    let client = client_cached()?;
-    if !client.credential_present() {
-        return None;
-    }
+    let Some(client) = client_cached().filter(|client| client.credential_present()) else {
+        return Err((JevNoAnswerKind::NoCredential, 0));
+    };
     let session_id = active_session_id();
     let memo_key = decision_memo_key(client, lever, &state, &questions);
     let observed_client = observed_client(client, lever.as_str());
     let request_client = observed_client.as_ref().unwrap_or(client);
     let budget = item_budget(request_client);
+    let started = std::time::Instant::now();
     let in_flight = JevInFlight::begin();
     let outcome = match memo_key {
         Some(key) => {
@@ -632,8 +688,13 @@ pub async fn ask_item(
         None => tokio::time::timeout(budget, request_client.ask(&state, &questions)).await,
     };
     drop(in_flight);
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match outcome {
-        Ok(Ok(answers)) => Some(answers),
+        // A memo hit comes back with its latency zeroed; a request never takes 0 ms.
+        Ok(Ok(answers)) => {
+            let memo = memo_key.is_some() && answers.latency_ms == 0;
+            Ok((answers, memo))
+        }
         Ok(Err(error)) => {
             tracing::debug!(
                 lever = lever.as_str(),
@@ -641,9 +702,10 @@ pub async fn ask_item(
                 "jev item call failed; keeping the current path"
             );
             // A silent failure is undiagnosable: the record says the item ran
-            // and what the endpoint said, without ever logging bodies.
-            record_item(lever, "error", &format!("{error}"), None, None);
-            None
+            // and what the endpoint said, without ever logging bodies. The
+            // session event is the caller's no-answer event, not a decision.
+            log_item(lever, "error", &format!("{error}"), None, None);
+            Err((JevNoAnswerKind::Error, latency_ms))
         }
         Err(_) => {
             tracing::debug!(
@@ -651,14 +713,14 @@ pub async fn ask_item(
                 budget_ms = budget.as_millis() as u64,
                 "jev item call timed out; keeping the current path"
             );
-            record_item(
+            log_item(
                 lever,
                 "timeout",
                 &format!("budget {} ms", budget.as_millis()),
                 None,
                 None,
             );
-            None
+            Err((JevNoAnswerKind::Timeout, latency_ms))
         }
     }
 }
@@ -708,8 +770,44 @@ pub(crate) fn test_decision_answers_remaining() -> usize {
 }
 
 /// Records one catalogue decision so it lands in `~/.grok/logs/jev.jsonl`
-/// through the shared decision sink and log target.
+/// through the shared decision sink and log target, and as a content-free
+/// `jev_decision` event in the session's `events.jsonl`.
 pub fn record_item(
+    lever: distill_workspace::jev::flags::JevLever,
+    decision: &str,
+    reason: &str,
+    confidence: Option<f64>,
+    answers: Option<&distill_workspace::jev::types::JevAnswerSet>,
+) {
+    log_item(lever, decision, reason, confidence, answers);
+    // `reason` stays out of the event: it carries paths and model names.
+    let (question_hash, memo) = answers
+        .and_then(|answers| answer_trace(lever, answers))
+        .map_or((None, None), |(hash, memo)| (Some(hash), Some(memo)));
+    emit_jev_event(|seq, round| distill_session_events::Event::JevDecision {
+        seq,
+        lever: lever.as_str(),
+        question_hash,
+        model_id: answers
+            .map(|answers| answers.model.clone())
+            .filter(|model| !model.is_empty()),
+        answers: answers.map_or_else(Default::default, |answers| {
+            answers
+                .answers
+                .iter()
+                .map(|(id, answer)| (event_id(id), answer_summary(answer)))
+                .collect()
+        }),
+        label: event_id(decision),
+        confidence,
+        memo,
+        latency_ms: answers.map_or(0, |answers| answers.latency_ms),
+        round,
+    });
+}
+
+/// The decision log and turn-status row half of [`record_item`].
+fn log_item(
     lever: distill_workspace::jev::flags::JevLever,
     decision: &str,
     reason: &str,
@@ -734,6 +832,352 @@ pub fn record_item(
         escalated: false,
     };
     ActivitySink.record(&record);
+}
+
+#[cfg(test)]
+mod decision_event_tests {
+    use super::*;
+    use distill_workspace::jev::flags::JevLever;
+    use distill_workspace::jev::types::{Answer, JevAnswerSet, Question};
+    use std::collections::BTreeMap;
+
+    /// Runs `body` as a turn of a session whose `events.jsonl` is in `dir`
+    /// and returns the events it wrote.
+    async fn session_events<F: Future<Output = ()>>(
+        dir: &std::path::Path,
+        session_id: &str,
+        body: F,
+    ) -> Vec<serde_json::Value> {
+        let writer = distill_session_events::EventWriter::open(dir);
+        register_session_events(session_id, &writer);
+        with_session_scope(session_id, body).await;
+        drop(writer);
+        std::fs::read_to_string(dir.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("event line is JSON"))
+            .collect()
+    }
+
+    fn answer_set(answers: Vec<(&str, Answer)>, latency_ms: u64) -> JevAnswerSet {
+        JevAnswerSet {
+            model: "jev-test".to_owned(),
+            answers: answers
+                .into_iter()
+                .map(|(id, answer)| (id.to_owned(), answer))
+                .collect(),
+            usage: Default::default(),
+            latency_ms,
+            request_id: Some("request".to_owned()),
+        }
+    }
+
+    fn mode_questions() -> BTreeMap<String, Question> {
+        BTreeMap::from([
+            (
+                "mode".to_owned(),
+                Question::choice(
+                    "Which mode fits?",
+                    BTreeMap::from([
+                        ("normal".to_owned(), serde_json::Value::Null),
+                        ("ultrafast".to_owned(), serde_json::Value::Null),
+                    ]),
+                )
+                .expect("valid choice"),
+            ),
+            ("risk".to_owned(), Question::noul("Is it risky?")),
+        ])
+    }
+
+    /// Each `record_item` is one event: the answer the call site acted on,
+    /// with the question it answered, so a threshold can be judged later.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn every_recorded_decision_is_one_event_with_its_answers() {
+        clear_test_decision_answers();
+        let dir = tempfile::tempdir().unwrap();
+        let questions = mode_questions();
+        let expected_hash = question_hash(&questions);
+        set_test_decision_answers([Some(answer_set(
+            vec![
+                (
+                    "mode",
+                    Answer::Choice {
+                        choice: "normal".to_owned(),
+                        probabilities: BTreeMap::from([
+                            ("normal".to_owned(), 0.75),
+                            ("ultrafast".to_owned(), 0.25),
+                        ]),
+                        confidence: Some(0.5),
+                    },
+                ),
+                ("risk", Answer::Noul { noul: 0.125 }),
+            ],
+            120,
+        ))]);
+        let events = session_events(dir.path(), "decision-event-session", async {
+            begin_model_round();
+            let answers = ask_item(JevLever::B8ExecutionMode, serde_json::json!({}), questions)
+                .await
+                .expect("scripted answer");
+            record_item(
+                JevLever::B8ExecutionMode,
+                "normal",
+                "request start",
+                Some(0.5),
+                Some(&answers),
+            );
+            record_item(JevLever::B8ExecutionMode, "defer", "no answer", None, None);
+        })
+        .await;
+        clear_test_decision_answers();
+
+        let [decided, deferred] = events.as_slice() else {
+            panic!("one event per record_item: {events:?}");
+        };
+        let lever = JevLever::B8ExecutionMode.as_str();
+        assert_eq!(decided["type"], "jev_decision");
+        assert_eq!(decided["seq"], 0);
+        assert_eq!(decided["lever"], lever);
+        assert_eq!(decided["question_hash"], expected_hash.as_str());
+        assert_eq!(expected_hash.len(), 12);
+        assert_eq!(decided["model_id"], "jev-test");
+        assert_eq!(decided["answers"]["mode"]["choice"], "normal");
+        assert_eq!(
+            decided["answers"]["mode"]["probabilities"]["ultrafast"],
+            0.25
+        );
+        assert_eq!(decided["answers"]["mode"]["confidence"], 0.5);
+        assert_eq!(decided["answers"]["risk"]["noul"], 0.125);
+        assert_eq!(decided["label"], "normal");
+        assert_eq!(decided["confidence"], 0.5);
+        assert_eq!(decided["memo"], false);
+        assert_eq!(decided["latency_ms"], 120);
+        assert_eq!(decided["round"], 1);
+
+        // A decision taken without an answer is still one event.
+        assert_eq!(deferred["seq"], 1);
+        assert_eq!(deferred["label"], "defer");
+        assert!(deferred.get("answers").is_none());
+        assert!(deferred.get("question_hash").is_none());
+        assert!(
+            deferred.get("memo").is_none(),
+            "provenance unknown, not `false`"
+        );
+    }
+
+    /// State, question text and reason carry user content (paths, model
+    /// names); none of it may reach the event file, and path-like ids are
+    /// hashed.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn no_state_question_text_or_reason_reaches_an_event() {
+        const SENTINEL: &str = "SENTINEL7f3a";
+        clear_test_decision_answers();
+        let dir = tempfile::tempdir().unwrap();
+        let path_option = format!("tests/{SENTINEL}.rs::case");
+        let mut options: BTreeMap<String, serde_json::Value> = (0..9)
+            .map(|index| (format!("option{index}"), serde_json::json!(SENTINEL)))
+            .collect();
+        options.insert(path_option.clone(), serde_json::json!(SENTINEL));
+        let questions = BTreeMap::from([(
+            "test_to_run".to_owned(),
+            Question::choice(format!("Which test? {SENTINEL}"), options.clone())
+                .expect("valid choice"),
+        )]);
+        let probabilities: BTreeMap<String, f64> = options
+            .keys()
+            .enumerate()
+            .map(|(rank, id)| (id.clone(), 1.0 / (rank as f64 + 2.0)))
+            .collect();
+        set_test_decision_answers([Some(answer_set(
+            vec![(
+                "test_to_run",
+                Answer::Choice {
+                    choice: path_option.clone(),
+                    probabilities,
+                    confidence: None,
+                },
+            )],
+            7,
+        ))]);
+        let events = session_events(dir.path(), "sentinel-event-session", async {
+            let answers = ask_item(
+                JevLever::A6TestToRun,
+                serde_json::json!({ "evidence": SENTINEL }),
+                questions,
+            )
+            .await
+            .expect("scripted answer");
+            record_item(
+                JevLever::A6TestToRun,
+                &path_option,
+                &format!("{SENTINEL} at /home/{SENTINEL}"),
+                None,
+                Some(&answers),
+            );
+        })
+        .await;
+        clear_test_decision_answers();
+
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
+        assert!(
+            !text.contains(SENTINEL),
+            "content leaked into events: {text}"
+        );
+        let [decided] = events.as_slice() else {
+            panic!("one decision event: {events:?}");
+        };
+        let answer = &decided["answers"]["test_to_run"];
+        assert!(answer["choice"].as_str().unwrap().starts_with("h:"));
+        assert_eq!(answer["probabilities"].as_object().unwrap().len(), 5);
+        assert_eq!(answer["omitted"], 5);
+        assert!(decided["label"].as_str().unwrap().starts_with("h:"));
+    }
+
+    /// A failed ask is one `jev_no_answer` event per lever that asked, with
+    /// no decision event of its own.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_failed_ask_is_one_no_answer_event_per_lever() {
+        clear_test_decision_answers();
+        let dir = tempfile::tempdir().unwrap();
+        let mut flags = JevFlags::harness_default();
+        flags.c6_injection_screen = true;
+        flags.c5_error_priority = false;
+        let pack = || {
+            Some(BTreeMap::from([(
+                "same_id".to_owned(),
+                Question::noul("Is this actionable?"),
+            )]))
+        };
+        let events = session_events(dir.path(), "no-answer-event-session", async {
+            set_test_decision_answers([None]);
+            assert!(
+                ask_item(
+                    JevLever::B8ExecutionMode,
+                    serde_json::json!({}),
+                    mode_questions()
+                )
+                .await
+                .is_none()
+            );
+            set_test_decision_answers([None]);
+            let [c4, c5, c6] = ask_items_with_flags(
+                serde_json::json!({}),
+                [
+                    (JevLever::C4DiffRisk, pack()),
+                    (JevLever::C5ErrorPriority, pack()),
+                    (JevLever::C6InjectionScreen, pack()),
+                ],
+                &flags,
+            )
+            .await;
+            assert!(c4.is_none() && c5.is_none() && c6.is_none());
+            clear_test_decision_answers();
+            set_test_flags(JevFlags::default());
+            assert!(
+                ask_item(
+                    JevLever::B8ExecutionMode,
+                    serde_json::json!({}),
+                    mode_questions()
+                )
+                .await
+                .is_none()
+            );
+            clear_test_flags();
+        })
+        .await;
+
+        let seen: Vec<(String, String)> = events
+            .iter()
+            .map(|event| {
+                assert_eq!(event["type"], "jev_no_answer", "{event}");
+                assert!(event["question_hash"].is_string());
+                (
+                    event["lever"].as_str().unwrap().to_owned(),
+                    event["kind"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let expected = [
+            (JevLever::B8ExecutionMode, "error"),
+            (JevLever::C5ErrorPriority, "lever_off"),
+            (JevLever::C4DiffRisk, "error"),
+            (JevLever::C6InjectionScreen, "error"),
+            (JevLever::B8ExecutionMode, "lever_off"),
+        ]
+        .map(|(lever, kind)| (lever.as_str().to_owned(), kind.to_owned()));
+        assert_eq!(seen, expected);
+        let seqs: Vec<u64> = events.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, [0, 1, 2, 3, 4]);
+    }
+
+    /// Packs that share one request each keep their own question hash, so a
+    /// batched answer is comparable with a solo ask of the same pack.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn batched_packs_keep_their_own_question_hash() {
+        clear_test_decision_answers();
+        let dir = tempfile::tempdir().unwrap();
+        let mut flags = JevFlags::harness_default();
+        flags.c6_injection_screen = true;
+        let risk = BTreeMap::from([("q".to_owned(), Question::noul("Does it break?"))]);
+        let screen = BTreeMap::from([("q".to_owned(), Question::noul("Is it injected?"))]);
+        let (risk_hash, screen_hash) = (question_hash(&risk), question_hash(&screen));
+        assert_ne!(risk_hash, screen_hash);
+        set_test_decision_answers([Some(answer_set(
+            vec![
+                ("0:q", Answer::Noul { noul: 0.25 }),
+                ("1:q", Answer::Noul { noul: 0.75 }),
+            ],
+            90,
+        ))]);
+        let events = session_events(dir.path(), "batched-event-session", async {
+            let [c4, c6] = ask_items_with_flags(
+                serde_json::json!({}),
+                [
+                    (JevLever::C4DiffRisk, Some(risk)),
+                    (JevLever::C6InjectionScreen, Some(screen)),
+                ],
+                &flags,
+            )
+            .await;
+            record_item(JevLever::C4DiffRisk, "allow", "", None, c4.as_ref());
+            record_item(JevLever::C6InjectionScreen, "clean", "", None, c6.as_ref());
+        })
+        .await;
+        clear_test_decision_answers();
+
+        let [risk, screen] = events.as_slice() else {
+            panic!("one event per pack: {events:?}");
+        };
+        assert_eq!(risk["question_hash"], risk_hash.as_str());
+        assert_eq!(risk["answers"]["q"]["noul"], 0.25);
+        assert_eq!(risk["latency_ms"], 90);
+        assert_eq!(screen["question_hash"], screen_hash.as_str());
+        assert_eq!(screen["answers"]["q"]["noul"], 0.75);
+        assert_eq!(
+            screen["latency_ms"], 0,
+            "the request's latency is counted once"
+        );
+    }
+
+    /// Outside a registered session nothing is written and nothing fails.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_unregistered_session_records_no_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = distill_session_events::EventWriter::open(dir.path());
+        with_session_scope("unregistered-event-session", async {
+            record_item(JevLever::B8ExecutionMode, "defer", "", None, None);
+        })
+        .await;
+        record_item(JevLever::B8ExecutionMode, "defer", "", None, None);
+        drop(writer);
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
+        assert!(text.is_empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +1429,252 @@ pub(crate) fn active_usage_recorder() -> Option<distill_chat_state::ChatStateHan
         .try_with(|recorder| recorder.borrow().clone())
         .ok()
         .flatten()
+}
+
+/// Answers per session whose provenance a later [`record_item`] can still find.
+const ANSWER_TRACE_CAPACITY: usize = 32;
+
+/// What [`ask_item`] knew about an answer set that [`record_item`] is not given.
+struct AnswerTrace {
+    lever: &'static str,
+    fingerprint: u64,
+    question_hash: String,
+    memo: bool,
+}
+
+/// One session's Jev decision events: its `events.jsonl` writer, held weakly
+/// so a closed session's file is not kept open, the next sequence number and
+/// the provenance of recent answers.
+struct SessionJevEvents {
+    writer: distill_session_events::WeakEventWriter,
+    next_seq: u64,
+    answers: std::collections::VecDeque<AnswerTrace>,
+}
+
+/// Keyed by the session id of the task-local scope. A session that never
+/// registered (tests, detached helpers) records no event.
+fn session_jev_events()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, SessionJevEvents>> {
+    static EVENTS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, SessionJevEvents>>> =
+        OnceLock::new();
+    EVENTS.get_or_init(Default::default)
+}
+
+/// Makes `writer` the target of the Jev decision events of turns scoped to
+/// `session_id`. A reloaded session keeps its sequence numbers.
+pub(crate) fn register_session_events(
+    session_id: &str,
+    writer: &distill_session_events::EventWriter,
+) {
+    let Ok(mut sessions) = session_jev_events().lock() else {
+        return;
+    };
+    sessions.retain(|_, session| session.writer.upgrade().is_some());
+    sessions
+        .entry(session_id.to_owned())
+        .and_modify(|session| session.writer = writer.downgrade())
+        .or_insert_with(|| SessionJevEvents {
+            writer: writer.downgrade(),
+            next_seq: 0,
+            answers: std::collections::VecDeque::new(),
+        });
+}
+
+/// Writes one Jev event for the active session; a no-op outside a registered one.
+fn emit_jev_event(build: impl FnOnce(u64, Option<u64>) -> distill_session_events::Event) {
+    let session_id = active_session_id();
+    let Some((writer, seq)) = session_jev_events().lock().ok().and_then(|mut sessions| {
+        let session = sessions.get_mut(&session_id)?;
+        let writer = session.writer.upgrade()?;
+        let seq = session.next_seq;
+        session.next_seq = seq.saturating_add(1);
+        Some((writer, seq))
+    }) else {
+        return;
+    };
+    let round = ACTIVE_ROUND_ID.try_with(std::cell::Cell::get).ok();
+    writer.emit(build(seq, round));
+}
+
+fn emit_no_answer(
+    lever: distill_workspace::jev::flags::JevLever,
+    kind: distill_session_events::JevNoAnswerKind,
+    question_hash: Option<String>,
+    latency_ms: u64,
+) {
+    emit_jev_event(|seq, round| distill_session_events::Event::JevNoAnswer {
+        seq,
+        lever: lever.as_str(),
+        kind,
+        question_hash,
+        latency_ms,
+        round,
+    });
+}
+
+/// Identifies an answer set across the clones call sites pass around.
+fn answers_fingerprint(answers: &distill_workspace::jev::types::JevAnswerSet) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    answers.model.hash(&mut hasher);
+    serde_json::to_vec(&answers.answers)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn note_answer_trace(
+    lever: distill_workspace::jev::flags::JevLever,
+    answers: &distill_workspace::jev::types::JevAnswerSet,
+    question_hash: String,
+    memo: bool,
+) {
+    let session_id = active_session_id();
+    let Ok(mut sessions) = session_jev_events().lock() else {
+        return;
+    };
+    let Some(session) = sessions.get_mut(&session_id) else {
+        return;
+    };
+    if session.answers.len() >= ANSWER_TRACE_CAPACITY {
+        session.answers.pop_front();
+    }
+    session.answers.push_back(AnswerTrace {
+        lever: lever.as_str(),
+        fingerprint: answers_fingerprint(answers),
+        question_hash,
+        memo,
+    });
+}
+
+/// The question hash and memo flag of the newest matching ask, if any.
+fn answer_trace(
+    lever: distill_workspace::jev::flags::JevLever,
+    answers: &distill_workspace::jev::types::JevAnswerSet,
+) -> Option<(String, bool)> {
+    let session_id = active_session_id();
+    let fingerprint = answers_fingerprint(answers);
+    let sessions = session_jev_events().lock().ok()?;
+    sessions
+        .get(&session_id)?
+        .answers
+        .iter()
+        .rev()
+        .find(|trace| trace.lever == lever.as_str() && trace.fingerprint == fingerprint)
+        .map(|trace| (trace.question_hash.clone(), trace.memo))
+}
+
+fn short_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// 12 hex over the question ids and instruction texts: the same question
+/// keeps its hash whatever the state or the candidate options.
+fn question_hash(
+    questions: &std::collections::BTreeMap<
+        distill_workspace::jev::types::QuestionId,
+        distill_workspace::jev::types::Question,
+    >,
+) -> String {
+    use distill_workspace::jev::types::Question;
+    let mut bytes = Vec::new();
+    for (id, question) in questions {
+        let (Question::Noul { instructions, .. }
+        | Question::Choice { instructions, .. }
+        | Question::Score { instructions, .. }) = question;
+        bytes.extend_from_slice(id.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(instructions.to_string().as_bytes());
+        bytes.push(0);
+    }
+    short_hash(&bytes)
+}
+
+/// A label, question id or option id as an event carries it. Some ids are
+/// built from the user's files (test names, paths), so anything beyond a
+/// short identifier is replaced by its hash.
+fn event_id(raw: &str) -> String {
+    if raw.len() <= 64
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.'))
+    {
+        raw.to_owned()
+    } else {
+        format!("h:{}", short_hash(raw.as_bytes()))
+    }
+}
+
+/// Above this many options a distribution keeps only its most likely entries.
+const EVENT_FULL_DISTRIBUTION: usize = 8;
+const EVENT_KEPT_PROBABILITIES: usize = 5;
+
+/// The distribution an event carries and how many entries it left out.
+fn event_distribution(
+    probabilities: &std::collections::BTreeMap<String, f64>,
+) -> (std::collections::BTreeMap<String, f64>, usize) {
+    if probabilities.len() <= EVENT_FULL_DISTRIBUTION {
+        return (
+            probabilities
+                .iter()
+                .map(|(id, p)| (event_id(id), *p))
+                .collect(),
+            0,
+        );
+    }
+    let mut ranked: Vec<_> = probabilities.iter().collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(a.1));
+    let kept = ranked
+        .into_iter()
+        .take(EVENT_KEPT_PROBABILITIES)
+        .map(|(id, p)| (event_id(id), *p))
+        .collect();
+    (
+        kept,
+        probabilities.len().saturating_sub(EVENT_KEPT_PROBABILITIES),
+    )
+}
+
+fn answer_summary(
+    answer: &distill_workspace::jev::types::Answer,
+) -> distill_session_events::JevAnswerSummary {
+    use distill_session_events::JevAnswerSummary;
+    use distill_workspace::jev::types::Answer;
+    match answer {
+        Answer::Noul { noul } => JevAnswerSummary::Noul { noul: *noul },
+        Answer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } => {
+            let (probabilities, omitted) = event_distribution(probabilities);
+            JevAnswerSummary::Choice {
+                choice: event_id(choice),
+                probabilities,
+                confidence: *confidence,
+                omitted,
+            }
+        }
+        Answer::Score {
+            score,
+            probabilities,
+            confidence,
+            ..
+        } => {
+            let (probabilities, omitted) = event_distribution(probabilities);
+            JevAnswerSummary::Score {
+                score: *score,
+                probabilities,
+                confidence: *confidence,
+                omitted,
+            }
+        }
+    }
 }
 
 pub(crate) fn record_workspace_attempt(

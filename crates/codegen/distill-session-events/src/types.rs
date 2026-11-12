@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const EVENT_SCHEMA_VERSION: &str = "1.0";
@@ -310,6 +312,83 @@ pub enum Event {
         server_name: String,
         enabled: bool,
     },
+    /// One recorded Jev decision. Content-free by contract: ids, numbers and
+    /// the composed label only, never the state, question text or reason.
+    JevDecision {
+        /// Per session and process; shared with `JevNoAnswer`.
+        seq: u64,
+        lever: &'static str,
+        /// 12 hex over the question ids and instruction texts; absent when
+        /// the answers did not come through `ask_item`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        question_hash: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        answers: BTreeMap<String, JevAnswerSummary>,
+        label: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        /// Absent when the provenance of the answers is unknown.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memo: Option<bool>,
+        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// One Jev ask that returned no answer.
+    JevNoAnswer {
+        seq: u64,
+        lever: &'static str,
+        kind: JevNoAnswerKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        question_hash: Option<String>,
+        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+}
+
+/// One Jev answer as the model returned it, without any text: the picked
+/// option id and numbers. A distribution over more than eight options keeps
+/// its five most likely entries and counts the rest in `omitted`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JevAnswerSummary {
+    Choice {
+        choice: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        probabilities: BTreeMap<String, f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        #[serde(skip_serializing_if = "is_zero")]
+        omitted: usize,
+    },
+    Score {
+        score: f64,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        probabilities: BTreeMap<String, f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        #[serde(skip_serializing_if = "is_zero")]
+        omitted: usize,
+    },
+    Noul {
+        noul: f64,
+    },
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JevNoAnswerKind {
+    Error,
+    Timeout,
+    NoCredential,
+    LeverOff,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -721,6 +800,73 @@ mod tests {
             "skeptic_idx must be omitted when None, got {obj}"
         );
         assert_eq!(obj.get("role"), Some(&serde_json::json!("planner")));
+    }
+
+    /// The analyzer reads these field names; a rename breaks it silently.
+    #[test]
+    fn jev_events_serialize_their_wire_shape() {
+        let decision = serde_json::to_value(Event::JevDecision {
+            seq: 3,
+            lever: "b8_execution_mode",
+            question_hash: Some("0123456789ab".into()),
+            model_id: Some("jev-model".into()),
+            answers: BTreeMap::from([
+                (
+                    "mode".to_owned(),
+                    JevAnswerSummary::Choice {
+                        choice: "normal".into(),
+                        probabilities: BTreeMap::from([("normal".to_owned(), 0.75)]),
+                        confidence: Some(0.5),
+                        omitted: 0,
+                    },
+                ),
+                ("risk".to_owned(), JevAnswerSummary::Noul { noul: 0.25 }),
+            ]),
+            label: "normal".into(),
+            confidence: None,
+            memo: Some(false),
+            latency_ms: 40,
+            round: Some(2),
+        })
+        .unwrap();
+        assert_eq!(
+            decision,
+            serde_json::json!({
+                "type": "jev_decision",
+                "seq": 3,
+                "lever": "b8_execution_mode",
+                "question_hash": "0123456789ab",
+                "model_id": "jev-model",
+                "answers": {
+                    "mode": {"type": "choice", "choice": "normal", "probabilities": {"normal": 0.75}, "confidence": 0.5},
+                    "risk": {"type": "noul", "noul": 0.25}
+                },
+                "label": "normal",
+                "memo": false,
+                "latency_ms": 40,
+                "round": 2
+            })
+        );
+
+        let missing = serde_json::to_value(Event::JevNoAnswer {
+            seq: 4,
+            lever: "c4_diff_risk",
+            kind: JevNoAnswerKind::NoCredential,
+            question_hash: None,
+            latency_ms: 0,
+            round: None,
+        })
+        .unwrap();
+        assert_eq!(
+            missing,
+            serde_json::json!({
+                "type": "jev_no_answer",
+                "seq": 4,
+                "lever": "c4_diff_risk",
+                "kind": "no_credential",
+                "latency_ms": 0
+            })
+        );
     }
 
     #[test]

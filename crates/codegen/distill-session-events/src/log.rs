@@ -50,6 +50,14 @@ impl EventWriter {
         }
     }
 
+    /// A handle that does not keep the file open: it writes only while some
+    /// [`EventWriter`] of the same file is alive.
+    pub fn downgrade(&self) -> WeakEventWriter {
+        WeakEventWriter {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     pub fn noop() -> Self {
         Self {
             inner: Arc::new(EventWriterInner {
@@ -78,6 +86,18 @@ impl EventWriter {
         {
             tracing::warn!(error = %e, "{EVENTS_FILE} write failed");
         }
+    }
+}
+
+/// See [`EventWriter::downgrade`].
+#[derive(Clone)]
+pub struct WeakEventWriter {
+    inner: std::sync::Weak<EventWriterInner>,
+}
+
+impl WeakEventWriter {
+    pub fn upgrade(&self) -> Option<EventWriter> {
+        self.inner.upgrade().map(|inner| EventWriter { inner })
     }
 }
 
@@ -182,5 +202,20 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();
         assert_eq!(lines.len(), 2, "both writes should go to the same file");
+    }
+
+    /// A weak handle must not keep a closed session's file open.
+    #[test]
+    fn weak_writer_writes_only_while_the_session_holds_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = EventWriter::open(dir.path());
+        let weak = writer.downgrade();
+
+        weak.upgrade().expect("live writer").emit(Event::FirstToken);
+        drop(writer);
+        assert!(weak.upgrade().is_none());
+
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap();
+        assert_eq!(text.lines().count(), 1);
     }
 }

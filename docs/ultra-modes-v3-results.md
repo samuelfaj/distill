@@ -6,6 +6,16 @@ predeclared gates. The sample is bounded: one repetition of each of 20 cases.
 It is an observation, not a statistical claim, and the earlier rounds below show
 that the outcome depends strongly on routing details and can vary between runs.
 
+> **Status of these numbers.** The campaigns below ran on a 2.0.50 build (commit
+> `69d45049`) with one repetition per case. Releases from v2.0.55 on changed
+> the behaviour they measure: how a tier-routed round relates to the session
+> model, the text of the UltraFast directive, and how Auto adapts per action.
+> No later build has been measured on this cohort yet. The gates used here
+> compare a median of paired ratios, which scores two identical arms as
+> different; `tools/task_cost_eval/gates.py` now decides on the ratio of totals
+> with three repetitions and an A/A arm. Read this page as a record of that
+> build, not as a claim about the current one.
+
 Machine-readable results (scrubbed by the runner; no API keys or bearer tokens):
 
 - [save-vs-normal](../tools/task_cost_eval/results/ultra-v3-20261022-save-vs-normal.json)

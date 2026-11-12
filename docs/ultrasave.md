@@ -13,6 +13,15 @@ The mode directive favors direct execution, narrow searches and reads, reuse of
 unchanged evidence, and concise reports. Required checks and error evidence
 remain part of completion.
 
+By default UltraSave is on its `v2` policy row, and its directive states only
+what the harness enforces on that row (automatic effort chosen per round, at
+high or lower) or what the model must do itself: reuse evidence already in
+context, batch independent reads and edits, keep reports to paths and check
+results, and test every stated requirement before finishing. It no longer
+suggests delegating to a subagent. `[modes] v2 = []` restores the previous
+directive described above. No campaign has measured the new directive yet;
+see [Mode policy table](mode-policy.md#directives).
+
 UltraSave advertises only direct-work tools: file inspection and editing,
 search, shell and background-task output, and MCP lookup. Planning, todo,
 delegation, workflow, feedback and scheduling schemas are not sent, so their

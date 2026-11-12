@@ -44,6 +44,68 @@ list, which keeps every mode on `today`. Unknown names are ignored with a
 warning. Listing `ultracode` also turns on the UltraCode turn review, as
 `[modes.ultracode] contract = "v2"` already does.
 
+## What makes the modes distinct
+
+The modes are meant to differ in what the harness does, and the difference is
+tested. `ModePolicy::differing_fields` names the harness-enforced fields in
+which two rows differ; `effort.lean` and `prefix.directive` are left out
+because they are text sent to Jev or the model, not enforcement. A unit test
+requires every pair of `v2` rows to differ in at least five fields, and in at
+least five runtime fields, which also apply under Auto. The `v2` rows differ
+in:
+
+| Pair | Fields | Differing fields |
+|---|---|---|
+| Normal, UltraFast | 15 (12 runtime) | `effort.cadence`, `effort.ceiling`, `effort.lowering_pass`, `effort.when_silent`, `tier_routing`, `jev.await_turn_start`, `jev.diff_risk_deadline_ms`, `utility_selection`, `context.cold_return`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
+| Normal, UltraCode | 8 (8 runtime) | `effort.quantile`, `effort.floor_after_failure`, `effort.lowering_pass`, `effort.when_silent`, `context.cold_return`, `context.narrow_reads`, `turn_end`, `subagent_depth` |
+| Normal, UltraSave | 15 (12 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `effort.lowering_pass`, `effort.when_silent`, `tier_routing`, `context.mode_keys`, `context.cold_return`, `context.max_prompt_tokens`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
+| UltraFast, UltraCode | 18 (15 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `effort.floor_after_failure`, `effort.when_silent`, `tier_routing`, `jev.await_turn_start`, `jev.diff_risk_deadline_ms`, `utility_selection`, `context.cold_return`, `context.narrow_reads`, `turn_end`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
+| UltraFast, UltraSave | 11 (11 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `tier_routing`, `jev.await_turn_start`, `jev.diff_risk_deadline_ms`, `utility_selection`, `context.mode_keys`, `context.cold_return`, `context.max_prompt_tokens`, `escalation` |
+| UltraCode, UltraSave | 17 (14 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `effort.floor_after_failure`, `effort.when_silent`, `tier_routing`, `context.mode_keys`, `context.cold_return`, `context.max_prompt_tokens`, `context.narrow_reads`, `turn_end`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
+
+A field that differs in the table is a field the row declares; whether the
+lever reading it is wired is a separate question (see Rows above).
+
+### Directives
+
+A mode on its `v2` row states a short directive: its objective in one
+sentence, then only what that row enforces or what the model must do itself
+because the harness cannot, such as testing the stated requirements before
+finishing. None of them gives delegation advice, and none repeats a sentence
+of another. UltraCode's says that the harness reviews the turn's code changes
+independently at the end and appends the verification status to the final
+message; a subagent, whose turns are not reviewed, gets it without that
+sentence. These directives are the default, because every mode is on its
+`v2` row unless `[modes] v2` says otherwise; `v2 = []` brings back the
+previous directives byte for byte, including the UltraCode variant without
+delegation sentences for a session that cannot spawn.
+
+### Mechanical signature, campaign gates and merge rule
+
+A benchmark run of a pinned mode is checked for the mode's signature from its
+own records (`mode_signature.py`): UltraSave rounds stay at or below high
+unless the run escalated and no one-hour cache write happens; UltraFast turns
+carry `ultrafast:jev_wait_skipped` and no utility selection runs on a tool
+result; UltraCode's reviewed turns carry a `review_verdict` row and the
+effort-lowering pass is never asked. Each check reads `PASS`, `FAIL` or
+`NO DATA` with its counts.
+
+In a matrix campaign (`modes_verdict.py`), each mode's own metric must beat
+Normal by more than twice the A/A deviation: credits for UltraSave, charged
+time for UltraFast, accepted runs on substantial cases for UltraCode. Each
+mode's declared loss stays under its ceiling: UltraSave time at most 1.5x
+Normal; UltraFast credits at most 1.15x Normal, or 2.5x on a fast provider
+path; UltraCode credits at most 3.0x and time at most 2.5x on substantial
+cases. The merge rule reports, and never applies, `MERGE: <mode> is
+dominated by <mode>` when one lean mode beats the other on credits and on
+time beyond the A/A deviation, and `MERGE: <mode> duplicates <mode>` when two
+modes stay within the A/A deviation on credits, time and accepted runs; a
+merged mode's claim reads `no claim yet`. The details are in
+[task-cost evaluation](task-cost-evaluation.md#matrix-campaigns).
+
+No campaign has run with these gates, the signature or the new directives
+yet; nothing here is a measured result.
+
 ## Policy rows
 
 Each time a policy rule acts, the harness records a policy row: a count under

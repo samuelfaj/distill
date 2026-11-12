@@ -13,6 +13,15 @@ are not sent, so they cannot spend a model round. It retains the requested model
 reasoning-effort choices, permissions, task requirements, and verification
 obligations. More agents alone do not establish a speed or quality improvement.
 
+By default UltraFast is on its `v2` policy row, and its directive states only
+what the harness enforces on that row (automatic effort set once per turn, at
+medium or lower) or what the model must do itself: batch independent tool
+calls, run focused checks and the full check once at the end, change the
+approach after a failure, and confirm each stated requirement before
+finishing. It gives no delegation advice. `[modes] v2 = []` restores the
+previous directive. No campaign has measured the new directive yet; see
+[Mode policy table](mode-policy.md#directives).
+
 ## Model and provider path (opt-in)
 
 These keys apply only to a session pinned to UltraFast (`/ultrafast on`,

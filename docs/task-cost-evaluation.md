@@ -391,16 +391,55 @@ single.json tiered.json` prints both profiles):
   bootstrap. A saving counts only when it also clears twice the A/A
   deviation.
 - UltraSave (tiered profile only): credits per accepted run at most 0.45x
-  Normal and 0.75x UltraFast. The single profile makes no UltraSave money
-  claim.
-- UltraFast: charged time at most 0.90x Normal and credits at most 1.15x.
-- Both: accepted at least Normal minus 1 in 60 runs and silent failures at
-  most 1 in 60. A silent failure is a failed grader on a run with no
+  Normal and 0.75x UltraFast, and the declared loss: charged time at most
+  1.5x Normal. The single profile makes no UltraSave money claim.
+- UltraFast: charged time at most 0.90x Normal, and the declared loss:
+  credits at most 1.15x Normal, or 2.5x when the result declares
+  `ultrafast_provider_tier: "fast"` (the runner does not write that key; a
+  campaign on the fast provider path adds it).
+- UltraCode (needs the case split below): the gain in accepted runs over
+  Normal on substantial cases must exceed twice the A/A deviation of accepted
+  runs (the Normal and A/A accepted counts apart, over the runs of one arm,
+  reported as `aa_margins.accepted`), and the declared losses: credits at most
+  3.0x and charged time at most 2.5x Normal on substantial cases. Without the
+  split these gates are unknown and the claim is `no claim yet`.
+- All three: accepted at least Normal minus 1 in 60 runs and silent failures
+  at most 1 in 60. A silent failure is a failed grader on a run with no
   escalation row and no failed-check fact, read from the optional run fields
   `escalations` and `failed_check_facts`. A failing run without those fields
   is counted as unknown, and an unknown blocks the claim.
 - A mode that misses its gate shows `no claim yet`; the separation of
   UltraSave and UltraFast is reported, not gated.
+- Merge rule (`merge`, each line also in `reasons`; reported, never applied):
+  `MERGE: <mode> is dominated by <mode>` when one lean mode's credits and
+  charged time are both lower than the other's by more than the A/A
+  deviation; `MERGE: <mode> duplicates <mode>` when two of Normal, UltraSave,
+  UltraCode and UltraFast stay within the A/A deviation on credits, charged
+  time and accepted runs. The duplicate named is the later mode in that order,
+  so Normal is never merged away. A merged mode's claim becomes
+  `no claim yet`.
+- Mechanical signature (`mode_signature`, from `mode_signature.py`; reported,
+  never gated): for each pinned UltraSave, UltraFast and UltraCode arm, checks
+  over each run's row, each `PASS`, `FAIL` or `NO DATA` with the counts it
+  read, and per arm the runs in each state. An arm's check fails when one run
+  fails it and passes when at least one run passes and none fails.
+
+  | Mode | Check | Reads | Passes when |
+  |---|---|---|---|
+  | UltraSave | `effort_ceiling` | `call_usage` applied effort of root main calls, `escalations` | no main call above high, or the run escalated |
+  | UltraSave | `no_1h_cache_writes` | `cache_creation_1h_prompt_tokens` on call rows | the sum is zero |
+  | UltraFast | `jev_not_awaited` | `turn_outcomes[].policy`, `decision_events` | every turn of a run that asked Jev has an `ultrafast:jev_wait_skipped` row |
+  | UltraFast | `no_utility_selection` | `call_usage`, `policy_counts` | no utility call with task `select_units`, and an `ultrafast:utility_selection_skipped` row |
+  | UltraCode | `review_on_edit_turns` | `turn_outcomes[].verification`, `verification_reason`, `policy` | every reviewed turn (`reviewed`, or `unverified` with `review_unverified`) has an `ultracode:review_verdict:*` row |
+  | UltraCode | `no_lowering_pass` | `decision_events` | the effort-lowering pass (`b2_model_tier`) was never asked |
+
+  What is not checked: the call rows carry no turn, so an escalation anywhere
+  in a run excuses every round above UltraSave's ceiling, and the turn record
+  does not say which turn asked Jev, so every turn of a run that asked counts.
+  No run row records awaited Jev time before the first main call, so that is
+  not checked. The call rows the runner builds today carry no
+  `cache_creation_1h_prompt_tokens`, so `no_1h_cache_writes` reads `NO DATA`
+  until they do.
 - Auto (`auto_verdict.matrix_verdict`): accepted at least the best pinned arm
   minus 1 in 60. It reports regret, Auto's total over the best single pinned
   mode's total on credits and on charged time (among pinned arms that meet
@@ -414,6 +453,10 @@ single.json tiered.json` prints both profiles):
   per code-edit turn on controls (`review_overhead_s`), and at least half of
   the extra passes refuted before the fix (`refutation_before_fix`). A
   missing optional field gives `INCONCLUSIVE`.
+
+No campaign has been judged with the merge rule, the declared-loss gates or
+the mechanical signature yet; they are covered by tests on synthetic run rows
+only.
 
 ### Decision quality
 

@@ -9,6 +9,18 @@ verified independently. Delegation is optional. There is no agent quota, require
 that a larger tree will be faster or cheaper. The parent must inspect child
 changes and evidence before accepting the result.
 
+By default UltraCode is on its `v2` policy row, and its directive states only
+what the harness enforces on that row or what the model must do itself: the
+invariants and root cause before an edit, real checks of the changed behavior
+after it, automatic effort that is never lowered for a routine round and is
+at least high after a failed check or tool, and the turn-end review below,
+which appends the verification status to the final message. It carries no
+delegation rules (a subagent's copy also leaves out the review, which runs in
+root sessions only). `[modes] v2 = []` restores the previous directive and
+its delegation rules described above and in [Hierarchy and
+limits](#hierarchy-and-limits). No campaign has measured the new directive
+yet; see [Mode policy table](mode-policy.md#directives).
+
 ## Activate the real mode
 
 In the interactive UI, use `/ultracode on`, `/ultracode off`, or `/ultracode`

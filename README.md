@@ -99,26 +99,30 @@ turns out harder. Subagents inherit Auto and adapt independently.
 
 ### One prompt, five modes
 
-The same prompt in each mode, with DeepSeek V4.1 Flash Ultrafast as the main
-model and GLM 5.3 Flash Ultrafast as the worker (both through OpenGateway):
+The same prompt in each mode, with Claude Opus 5.5 as the main model and
+DeepSeek V4.1 Flash Ultrafast as the worker:
 
 > Create a view of moon surface and the sky, photorealistic. in three.js
 
 | Mode | Result | Cost | Time | Tokens | Model calls |
 | --- | --- | ---: | ---: | ---: | --- |
-| **UltraSave** | <img src="docs/images/moon/ultrasave.webp" width="320" alt="UltraSave: grey terrain under a starfield"> | **$0.0019** (0.013x) | **2 min 5 s** (0.047x) | 0.39M | 21 GLM |
-| **UltraFast** | <img src="docs/images/moon/ultrafast.webp" width="320" alt="UltraFast: cratered terrain with low-sun shadows and Earth"> | $0.0873 (0.62x) | 31 min 9 s (0.71x) | 15.9M | 143 DeepSeek |
-| **UltraCode** | <img src="docs/images/moon/ultracode.webp" width="320" alt="UltraCode: boulder field with long shadows, Earth and a faint Milky Way"> | $0.2070 (1.46x) | 63 min 36 s (1.44x) | 41.8M | 200 DeepSeek |
-| **Auto** | <img src="docs/images/moon/auto.webp" width="320" alt="Auto: rock-strewn plain with Earth in the sky"> | $0.0620 (0.44x) | 22 min 43 s (0.52x) | 9.2M | 90 DeepSeek |
-| **Normal** | <img src="docs/images/moon/normal.webp" width="320" alt="Normal: craters and boulders under the Milky Way with Earth"> | $0.1417 (1.00x) | 44 min 4 s (1.00x) | 30.1M | 175 DeepSeek |
+| **UltraSave** | <img src="docs/images/moon/ultrasave.webp" width="320" alt="UltraSave: cratered plain with boulders, the Sun and a crescent Earth"> | **$0.058** (0.40x) | 16 min 18 s (3.57x) | 6.2M | 86 DeepSeek |
+| **UltraFast** | <img src="docs/images/moon/ultrafast.webp" width="320" alt="UltraFast: large boulders casting shadows under a starfield with Earth"> | $0.577 (4.00x) | 8 min 7 s (1.77x) | 0.5M | 18 Opus |
+| **UltraCode** | <img src="docs/images/moon/ultracode.webp" width="320" alt="UltraCode: rugged craters in low sunlight with the Sun and a crescent Earth"> | $1.011 (7.00x) | 15 min 29 s (3.39x) | 7.8M | 19 Opus, 73 DeepSeek |
+| **Auto** | <img src="docs/images/moon/auto.webp" width="320" alt="Auto: bright regolith plain with distant craters and Earth"> | $0.508 (3.52x) | 15 min 29 s (3.39x) | 6.0M | 8 Opus, 77 DeepSeek |
+| **Normal** | <img src="docs/images/moon/normal.webp" width="320" alt="Normal: rolling terrain with rocks and Earth above the horizon"> | $0.145 (1.00x) | **4 min 34 s** (1.00x) | 1.9M | 5 Opus, 32 DeepSeek |
 
 Ratios are against Normal. One run per mode, all five started at the same time
-on 2026-11-12 with distill 2.0.9 (39f1c6fe0bf8); each finished with exit code 0.
-Cost uses OpenGateway's billed prices that day (DeepSeek $0.09/M input,
-$0.36/M output, $0.0018/M cached; GLM $0.015/M, $0.05/M, $0.003/M) and leaves
-out the Jev routing calls, which have no published price. UltraCode ended with
-`Verification: UNVERIFIED`. Thumbnails are frames captured in headless Chrome
-at 1280×720.
+on 2026-11-12 with distill 2.0.9 (9bbf0aafec73), the commit of v2.0.72; each
+finished with exit code 0. A single run per mode carries run-to-run variation:
+here Normal handed the build to the worker once and accepted the first result,
+so it finished first, while UltraFast kept all 18 rounds on Opus. UltraSave led
+on the worker, and UltraCode ended with `Verification: REVIEWED`. Cost is an
+estimate: Opus at list API prices ($4/M input, $0.20/M cached, $5/M cache
+write, $20/M output; the runs used a Claude subscription) and DeepSeek at
+OpenGateway's billed prices ($0.09/M input, $0.36/M output, $0.0018/M cached),
+without the Jev routing calls, which have no published price. Thumbnails are
+frames captured in headless Chrome at 1280×720.
 
 Details:
 [UltraSave](docs/ultrasave.md), [UltraFast](docs/ultrafast.md) and

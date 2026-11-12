@@ -915,6 +915,11 @@ pub struct CompactionConfig {
     /// prompt cache expired while idle does. Read out-of-band at that moment
     /// (`session::acp_session_impl::cold_return`); declared so `serde_ignored` allows the key.
     pub cold_return: Option<String>,
+    /// The smallest history a cold return compacts or offers to compact; unset is 100K tokens.
+    pub cold_return_min_tokens: Option<u64>,
+    /// An absolute cap on the estimated prompt: above it, a human turn compacts before its first
+    /// request. Unset or `0` is off; the percent threshold applies either way.
+    pub max_prompt_tokens: Option<u64>,
 }
 /// `[cache]`: prompt-cache settings.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

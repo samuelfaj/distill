@@ -239,6 +239,24 @@ and no answer within two minutes keep the full history. A resumed session is
 asked only when it was reloaded warm and its idle time since the last request
 then passed the lifetime; a cold resume is never asked.
 
+Three keys widen this, all off by default: there is no pass-rate evidence yet
+that compacting more often keeps tasks passing, and each compaction replaces a
+long history with a short summary. Setting `cold_return` explicitly (left
+unset, only the case above is asked) also covers a session reloaded past the
+lifetime `cache_state.json` recorded, before it sends anything; a missing or
+unreadable file keeps today's behaviour. A headless session cannot be asked,
+so there only `"auto"` compacts. `[compaction] cold_return_min_tokens` moves
+the 100K floor, which assumes a cache read at 0.1x of input; at 0.05x (Opus
+and Sonnet) or 0.025x (Fable and Mythos) the same payback needs about twice or
+four times the history. `[compaction] max_prompt_tokens` is an absolute cap
+beside `auto_compact_threshold_percent`: a history above it compacts before the
+first request of a human turn, never mid-turn, and `0` is off. While the
+effective mode is UltraSave, `[modes.ultrasave] cold_return` and
+`[modes.ultrasave] max_prompt_tokens` replace those two values when set.
+Subagents never compact here. `usage.json` counts each compaction these keys
+decide under `compaction_timing` (`compact:cold-resume`,
+`compact:cold-headless`, `compact:max-prompt`).
+
 The main system prompt keeps its per-session values, the worker model id and
 the memory roots, in an `<environment>` block at its end, so sessions of one
 agent on other workspaces or workers share every byte before it; a resumed head

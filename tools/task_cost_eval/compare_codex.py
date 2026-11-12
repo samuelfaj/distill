@@ -15,7 +15,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .acp_driver import OwnedTree
+from .acp_driver import EXECUTION_MODES, OwnedTree
 from .evaluate import _sha256_file, _sha256_tree
 from .runner import _terminate_owned_group
 
@@ -28,6 +28,38 @@ CREDIT_RATES = {'gpt-6-astra': (250, 25, 1250), 'gpt-6.1-sol': (50, 2.5, 250),
 # plus delegation/lifecycle. Internal IDs precede model-facing renames, and
 # children inherit the restriction.
 LOCAL_TOOLS = 'run_terminal_cmd,task,get_task_output,kill_task,wait_tasks'
+# Result files written before --mode existed came from binaries that predate
+# Auto (2.0.46): a run without a mode flag ran Normal.
+LEGACY_MODE = 'normal'
+MODE_LABELS = {'normal': 'Normal', 'auto': 'Auto', 'ultrafast': 'UltraFast',
+               'ultracode': 'UltraCode', 'ultrasave': 'UltraSave'}
+
+
+def mode_flags(mode):
+    """Headless flags as compare_parallel's CLI transport passes them. Normal is
+    pinned with --mode normal because a new session without a flag starts in Auto."""
+    if mode is None:
+        return []
+    if mode not in EXECUTION_MODES:
+        raise ValueError(f'mode must be one of {", ".join(EXECUTION_MODES)}')
+    return ['--mode', mode] if mode in ('normal', 'auto') else [f'--{mode}']
+
+
+def evidence_mode(result):
+    """The mode a cell ran in: None for a native agent or a Distill run without a mode flag."""
+    if result.get('variant') in ('codex', 'claude-native', 'opus-native'):
+        return None
+    return result.get('execution_mode', LEGACY_MODE)
+
+
+def mode_activated(stderr, mode, session):
+    """Headless prints this line only after the server confirmed the requested mode."""
+    if mode is None:
+        return None
+    try:
+        return f'{MODE_LABELS[mode]} enabled for session {session}' in stderr.read_text()
+    except OSError:
+        return False
 
 
 def credits(model, incoming, cached, outgoing):
@@ -569,6 +601,9 @@ def run_cell(args):
     worker_model = getattr(args, 'worker_model', 'gpt-6-luna')
     codex_effort = getattr(args, 'codex_effort', 'high')
     enable_jev = getattr(args, 'enable_jev', False)
+    mode = getattr(args, 'mode', None)
+    if mode is not None and args.variant != 'distill':
+        raise ValueError('--mode applies only to the Distill variant')
     if provider == 'chatgpt':
         account = subscription_account(distill_auth)
         if not account or account != subscription_account(codex_auth):
@@ -648,6 +683,7 @@ def run_cell(args):
                        str(output / 'prompt.txt'), '--output-format', 'streaming-json',
                        '--model', f'chatgpt/{main_model}']
             command.extend(['--tools', LOCAL_TOOLS])
+            command.extend(mode_flags(mode))
         else:
             main_model = getattr(args, 'main_model', 'gpt-6.1-sol')
             codex_effort = getattr(args, 'codex_effort', 'high')
@@ -718,6 +754,7 @@ def run_cell(args):
         main_calls = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'main' and r.get('output_tokens', 0) > 0]
         model_verified = bool(main_calls) and all(r['model'] == expected and r['effort'] == codex_effort for r in main_calls)
         worker_verified = True
+    activated = mode_activated(output / 'stderr.txt', mode, session)
     inputs_unchanged = (frozen['fixture_sha256'] == _sha256_tree(ROOT / case['fixture_ref'])
                         and frozen['grader_sha256'] == _sha256_file(ROOT / case['grader']['script_ref']))
     native_payloads = list((executable.parent.parent / 'node_modules/@openai').glob(
@@ -726,7 +763,8 @@ def run_cell(args):
         raise ValueError('Cannot identify the native benchmark executable')
     summary = {'variant': args.variant, 'case': args.case, 'session': session,
                'provider': provider, 'version': version, 'main_model': main_model, 'worker_model': worker_model if args.variant == 'distill' else None,
-               'requested_effort': 'auto' if args.variant == 'distill' else codex_effort, 'jev_enabled': bool(enable_jev and args.variant == 'distill'),
+               'requested_effort': 'auto' if args.variant == 'distill' else codex_effort,
+               'execution_mode': mode, 'execution_mode_activation_confirmed': activated, 'jev_enabled': bool(enable_jev and args.variant == 'distill'),
                'same_subscription_account': provider == 'chatgpt', 'model_verified': model_verified, 'worker_verified': worker_verified,
                'executable_sha256': _sha256_file(executable),
                'native_payload_sha256': _sha256_file(native_payloads[0]),
@@ -740,13 +778,13 @@ def run_cell(args):
                'wall_time_s': round(elapsed, 6), 'exit_code': process.returncode,
                'timed_out': timed_out, 'cleanup_complete': cleanup_complete, 'grader_passed': grade.returncode == 0,
                'cost_basis': 'published_subscription_credit_rates', **accounting}
-    summary['passed'] = process.returncode == 0 and grade.returncode == 0 and inputs_unchanged and not timed_out and model_verified and worker_verified
+    summary['passed'] = process.returncode == 0 and grade.returncode == 0 and inputs_unchanged and not timed_out and model_verified and worker_verified and activated is not False
     (output / 'result.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps({k: v for k, v in summary.items() if k != 'call_usage'}), flush=True)
     return 0 if summary['passed'] and accounting['accounting_complete'] and accounting.get('reference_cost_usd') is not None else 1
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', choices=('distill', 'codex'), required=True)
     parser.add_argument('--case', required=True)
@@ -761,7 +799,12 @@ def main():
     parser.add_argument('--worker-model', default='gpt-6-luna')
     parser.add_argument('--enable-jev', action='store_true')
     parser.add_argument('--provider', choices=('chatgpt', 'openrouter'), default='chatgpt')
-    return run_cell(parser.parse_args())
+    parser.add_argument('--mode', choices=EXECUTION_MODES,
+                        help='distill only: pin this execution mode; omitted, no mode flag is passed')
+    args = parser.parse_args(argv)
+    if args.mode is not None and args.variant != 'distill':
+        parser.error('--mode applies only to --variant distill')
+    return run_cell(args)
 
 
 if __name__ == '__main__':

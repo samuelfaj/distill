@@ -12,8 +12,8 @@ import subprocess
 import time
 import uuid
 
-from .acp_driver import OwnedTree
-from .compare_codex import ROOT, LOCAL_TOOLS, distill_accounting, distill_config
+from .acp_driver import EXECUTION_MODES, OwnedTree
+from .compare_codex import ROOT, LOCAL_TOOLS, distill_accounting, distill_config, mode_activated, mode_flags
 from .evaluate import _sha256_file, _sha256_tree
 from .runner import _terminate_owned_group
 
@@ -22,6 +22,7 @@ OPUS = 'claude/claude-opus-5-5'
 HAIKU = 'claude/claude-haiku-5-5'
 DEEPSEEK = 'deepseek-v4.1-flash'
 FREE_WORKER = 'openrouter-free'
+NATIVE_VARIANTS = ('claude-native', 'opus-native')
 
 
 def config(main, *, ablation=False, worker=None, enable_jev=None):
@@ -183,6 +184,9 @@ def provider_usage(home, session):
 
 
 def run(args):
+    mode = getattr(args, 'mode', None)
+    if mode is not None and args.variant in NATIVE_VARIANTS:
+        raise ValueError('--mode applies only to Distill variants')
     case = next(r for r in json.loads((ROOT / 'cohort-v1.json').read_text())['cases'] if r['id'] == args.case)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -201,7 +205,7 @@ def run(args):
     prompt += '\nThe available Python interpreter is python3.'
     (out / 'prompt.txt').write_text(prompt)
     session = str(uuid.uuid4())
-    native = args.variant in ('claude-native', 'opus-native')
+    native = args.variant in NATIVE_VARIANTS
     ablation = args.variant == 'deepseek-same-agent-ablation'
     model = {'sonnet-distill': SONNET, 'claude-native': SONNET,
              'opus-distill': OPUS, 'opus-native': OPUS,
@@ -213,6 +217,7 @@ def run(args):
     version = subprocess.check_output([str(executable), '--version'], text=True).strip()
     result = {'variant': args.variant, 'case': args.case, 'session': session, 'model': model,
               'worker_model': worker if not native else None, 'requested_effort': 'max' if args.variant == 'opus-native' else ('medium' if native else 'auto'),
+              'execution_mode': mode, 'execution_mode_activation_confirmed': None,
               'jev_enabled': bool(args.enable_jev and not native), 'version': version, 'executable_sha256': _sha256_file(executable),
               'harness_sha256': _sha256_file(Path(__file__)),
               'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), **frozen,
@@ -258,6 +263,7 @@ def run(args):
                        '--tools', 'run_terminal_cmd' if ablation else LOCAL_TOOLS]
             if ablation:
                 command.extend(['--effort', 'low'])
+            command.extend(mode_flags(mode))
         (out / 'command.json').write_text(json.dumps(command, indent=2) + '\n')
         started = time.monotonic()
         with (out / 'stdout.txt').open('w') as stdout, (out / 'stderr.txt').open('w') as stderr:
@@ -275,7 +281,8 @@ def run(args):
                 result['cleanup_complete'] = tree.stop()
             if not result['cleanup_complete']:
                 raise RuntimeError('Inference process tree did not terminate')
-        result.update(wall_time_s=round(time.monotonic() - started, 6), exit_code=proc.returncode)
+        result.update(wall_time_s=round(time.monotonic() - started, 6), exit_code=proc.returncode,
+                      execution_mode_activation_confirmed=mode_activated(out / 'stderr.txt', mode, session))
         usage = native_usage(out / 'stdout.txt') if native else provider_usage(home, session)
         result.update(usage)
         expected = 'deepseek/deepseek-v4.1-flash' if model == DEEPSEEK else model.removeprefix('claude/')
@@ -313,13 +320,14 @@ def run(args):
     result['frozen_inputs_unchanged'] = frozen == {'fixture_sha256': _sha256_tree(ROOT / case['fixture_ref']), 'grader_sha256': _sha256_file(ROOT / case['grader']['script_ref'])}
     result['passed'] = (result['exit_code'] == 0 and not result['timed_out'] and result['grader_passed']
                         and result.get('model_verified', False) and result['frozen_inputs_unchanged']
-                        and not result.get('native_is_error', False))
+                        and not result.get('native_is_error', False)
+                        and result['execution_mode_activation_confirmed'] is not False)
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps({k:v for k,v in result.items() if k != 'call_usage'}), flush=True)
     return 0 if result['passed'] and result['accounting_complete'] and result.get('reference_cost_usd') is not None else 1
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', choices=('sonnet-distill', 'claude-native', 'deepseek-distill', 'deepseek-same-agent-ablation', 'opus-distill', 'opus-native', 'deepseek-free-distill'), required=True)
     parser.add_argument('--enable-jev', action='store_true')
@@ -330,7 +338,12 @@ def main():
     parser.add_argument('--distill-profile', type=Path, default=Path.home() / '.distill')
     parser.add_argument('--claude-auth', type=Path, default=Path.home() / '.distill/claude-auth.json')
     parser.add_argument('--timeout', type=float, default=300)
-    return run(parser.parse_args())
+    parser.add_argument('--mode', choices=EXECUTION_MODES,
+                        help='Distill variants only: pin this execution mode; omitted, no mode flag is passed')
+    args = parser.parse_args(argv)
+    if args.mode is not None and args.variant in NATIVE_VARIANTS:
+        parser.error('--mode applies only to Distill variants')
+    return run(args)
 
 
 if __name__ == '__main__':

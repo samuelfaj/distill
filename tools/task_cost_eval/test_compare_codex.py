@@ -497,5 +497,61 @@ class StrictDistillAccountingTest(unittest.TestCase):
             self.assertIsNone(call['owner']['spawn_request'])
 
 
+class ModeArmTest(unittest.TestCase):
+    def cell(self, root, mode):
+        import io
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from .compare_codex import run_cell
+        from .test_compare_additional import fake_distill
+        profile = root / 'profile'
+        profile.mkdir(exist_ok=True)
+        (profile / 'codex-auth.json').write_text('{}')
+        output = root / f'cell-{mode}'
+        args = SimpleNamespace(variant='distill', case='tax-bug-en', output=output, distill=fake_distill(root),
+                               codex=root / 'codex', distill_profile=profile, codex_auth=profile / 'codex-auth.json',
+                               timeout=30, main_model='gpt-6-astra', worker_model='gpt-6-luna', enable_jev=False, mode=mode)
+        with patch('tools.task_cost_eval.compare_codex.subscription_account', return_value='account'), \
+             patch('tools.task_cost_eval.compare_codex.Collector'), redirect_stdout(io.StringIO()):
+            run_cell(args)
+        return json.loads((output / 'command.json').read_text()), json.loads((output / 'result.json').read_text())
+
+    def test_mode_reaches_the_distill_command_and_the_run_evidence(self):
+        from .test_compare_additional import command_shape
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plain, plain_result = self.cell(root, None)
+            command, result = self.cell(root, 'ultracode')
+            self.assertEqual(command_shape(command), command_shape(plain) + ['--ultracode'])
+            self.assertEqual((result['execution_mode'], result['execution_mode_activation_confirmed']), ('ultracode', True))
+            self.assertEqual((plain_result['execution_mode'], plain_result['execution_mode_activation_confirmed']), (None, None))
+
+    def test_native_variant_rejects_mode(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from .compare_codex import main, run_cell
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'cell'
+            with self.assertRaisesRegex(ValueError, 'only to the Distill'):
+                run_cell(SimpleNamespace(variant='codex', mode='auto', output=output, codex_auth=output))
+            with patch('tools.task_cost_eval.compare_codex.shutil.which', return_value='/bin/false'), \
+                 patch('sys.stderr'), self.assertRaises(SystemExit):
+                main(['--variant', 'codex', '--case', 'tax-bug-en', '--output', str(output), '--mode', 'normal'])
+            self.assertFalse(output.exists())
+
+    def test_old_result_files_load_as_the_pre_auto_default(self):
+        # The committed cohorts ran a binary older than Auto, without a mode flag: Normal.
+        from .compare_codex import evidence_mode
+        results = Path(__file__).parent / 'results'
+        for family in ('astra', 'sol', 'opus', 'deepseek'):
+            runs = json.loads((results / f'requested-20261016-{family}.json').read_text())['runs']
+            for run in runs:
+                self.assertNotIn('execution_mode', run['result'])
+                self.assertEqual(evidence_mode(run['result']), 'normal' if run['arm'] == 'distill' else None)
+        self.assertIsNone(evidence_mode({'variant': 'distill', 'execution_mode': None}))
+        self.assertEqual(evidence_mode({'variant': 'opus-distill', 'execution_mode': 'auto'}), 'auto')
+
+
 if __name__ == '__main__':
     unittest.main()

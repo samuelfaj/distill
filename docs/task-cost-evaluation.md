@@ -414,3 +414,49 @@ single.json tiered.json` prints both profiles):
   per code-edit turn on controls (`review_overhead_s`), and at least half of
   the extra passes refuted before the fix (`refutation_before_fix`). A
   missing optional field gives `INCONCLUSIVE`.
+
+## Session usage analyzer
+
+`session_usage.py` reads real session folders and prints aggregates only:
+counts, token sums, cost-equivalents, roles and model families. It never
+prints a session ID, path, prompt or model ID, never writes, and never calls a
+model.
+
+```sh
+python3 -B -m tools.task_cost_eval.session_usage --days 14 --check-totals
+python3 -B -m tools.task_cost_eval.session_usage --report totals --report cache-breaks \
+  --exclude-days 2026-01-05:2026-01-10
+```
+
+- `--sessions-root` defaults to `~/.distill/sessions` and expects
+  `<project>/<session>/usage.json`, with the optional `events.jsonl`, which is
+  streamed, and `subagents/*/meta.json`.
+- A root session's `usage.json` copies its subagents' rows. Each `attempt_id`
+  is counted once, for the deepest session that holds it, and subagent threads
+  are reported apart from the root's own calls.
+- `--days N` keeps sessions updated in the last N days. `--exclude-days`
+  takes `START[:END]` ranges, comma separated or repeated, and drops rows by
+  the date their turn ended.
+- Cost-equivalents are in units of one uncached input token: cache read 0.05
+  (Opus/Sonnet class), 0.025 (Fable class) or 0.1 (default), cache write 1.25
+  (5 minutes) or 2 (1 hour), output 5. Change them with `--prices FILE` or
+  `--price FAMILY.FIELD=VALUE`. A main call whose cached tokens fall under
+  half of the previous prompt on the same thread is a cache miss and is also
+  priced on its own.
+- Reports (`--report`, repeatable): `totals` (by role, model family and
+  thread), `cache-breaks` (break rate and uncached tokens by cause: the
+  `cacheBreaks` counters in `usage.json` when present, otherwise heuristics
+  for model or effort change, the 5-minute to 1-hour lifetime switch, a gap
+  over 5 minutes before a turn, turn start and unknown), `rounds` (main calls
+  per turn, and poll-only rounds from the tool events), `turn-start` (serial
+  Jev time before the first main call of a turn) and `compaction`
+  (compaction-role calls, cached share, and pass-1 against applied when the
+  rows label it). `resume` and `mode-switch` cannot be derived from these files
+  and are not offered.
+- `--check-totals` compares each file's deduped prompt tokens on its primary
+  model with that file's `session.modelUsage`, and exits 1 when any session
+  is more than 10% off.
+- `--simulate compaction` replays the main-call prompt sizes of each thread
+  through a policy (`--soft-threshold` applied at turn boundaries,
+  `--hard-cap`, `--post-size`, `--regrowth`) and prints tokens and
+  cost-equivalents against the recorded baseline. It makes no API call.

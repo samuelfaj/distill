@@ -571,7 +571,30 @@ pub async fn ask_items<const N: usize>(
         Option<std::collections::BTreeMap<String, distill_workspace::jev::types::Question>>,
     ); N],
 ) -> [Option<distill_workspace::jev::types::JevAnswerSet>; N] {
-    ask_items_with_flags(state, items, &flags_cached()).await
+    ask_packs(state, items, None, &flags_cached()).await.0
+}
+
+/// [`ask_items`] plus, with `[jev] shadow_packs` on, one shadow pack that
+/// joins the same request on the same state. The shadow pack never makes a
+/// request alone and never owns its usage; its answers come back second, for
+/// the caller to record with a `shadow:` label and never act on. With the
+/// switch off, or `shadow` `None`, the request is the one [`ask_items`] sends.
+pub async fn ask_items_with_shadow<const N: usize>(
+    state: serde_json::Value,
+    items: [(
+        distill_workspace::jev::flags::JevLever,
+        Option<std::collections::BTreeMap<String, distill_workspace::jev::types::Question>>,
+    ); N],
+    shadow: Option<(
+        distill_workspace::jev::flags::JevLever,
+        std::collections::BTreeMap<String, distill_workspace::jev::types::Question>,
+    )>,
+) -> (
+    [Option<distill_workspace::jev::types::JevAnswerSet>; N],
+    Option<distill_workspace::jev::types::JevAnswerSet>,
+) {
+    let shadow = shadow.filter(|_| crate::jev_shadow::packs_on());
+    ask_packs(state, items, shadow, &flags_cached()).await
 }
 
 async fn ask_items_with_flags<const N: usize>(
@@ -582,6 +605,27 @@ async fn ask_items_with_flags<const N: usize>(
     ); N],
     flags: &JevFlags,
 ) -> [Option<distill_workspace::jev::types::JevAnswerSet>; N] {
+    ask_packs(state, items, None, flags).await.0
+}
+
+/// Shadow question ids are `shadow:<id>`, after every `<index>:` key.
+const SHADOW_KEY_PREFIX: &str = "shadow:";
+
+async fn ask_packs<const N: usize>(
+    state: serde_json::Value,
+    items: [(
+        distill_workspace::jev::flags::JevLever,
+        Option<std::collections::BTreeMap<String, distill_workspace::jev::types::Question>>,
+    ); N],
+    shadow: Option<(
+        distill_workspace::jev::flags::JevLever,
+        std::collections::BTreeMap<String, distill_workspace::jev::types::Question>,
+    )>,
+    flags: &JevFlags,
+) -> (
+    [Option<distill_workspace::jev::types::JevAnswerSet>; N],
+    Option<distill_workspace::jev::types::JevAnswerSet>,
+) {
     use distill_workspace::jev::types::Usage;
     use std::collections::BTreeMap;
 
@@ -617,16 +661,47 @@ async fn ask_items_with_flags<const N: usize>(
         }
     }
     let mut result = std::array::from_fn(|_| None);
-    let Some(lever) = first else { return result };
+    let Some(lever) = first else {
+        return (result, None);
+    };
+    // Rides only a request a live pack makes; its failure is that request's
+    // no-answer event, already emitted for the live packs.
+    let shadow = shadow
+        .filter(|(lever, pack)| !pack.is_empty() && flags.lever_asks(*lever))
+        .map(|(lever, pack)| {
+            let hash = question_hash(&pack);
+            let ids: Vec<String> = pack.keys().cloned().collect();
+            for (id, question) in pack {
+                questions.insert(format!("{SHADOW_KEY_PREFIX}{id}"), question);
+            }
+            (lever, hash, ids)
+        });
     let (mut answers, memo) = match ask_once(lever, state, questions).await {
         Ok(answered) => answered,
         Err((kind, latency_ms)) => {
             for (lever, hash) in traced.into_iter().flatten() {
                 emit_no_answer(lever, kind, Some(hash), latency_ms);
             }
-            return result;
+            return (result, None);
         }
     };
+    let shadow = shadow.map(|(lever, hash, ids)| {
+        let mut pack = answers.clone();
+        pack.answers = ids
+            .into_iter()
+            .filter_map(|id| {
+                let answer = answers
+                    .answers
+                    .get(&format!("{SHADOW_KEY_PREFIX}{id}"))
+                    .cloned();
+                answer.map(|answer| (id, answer))
+            })
+            .collect();
+        pack.usage = Usage::default();
+        pack.latency_ms = 0;
+        note_answer_trace(lever, &pack, hash, memo);
+        pack
+    });
     for (index, ids) in ids.into_iter().enumerate() {
         if ids.is_empty() {
             continue;
@@ -649,7 +724,154 @@ async fn ask_items_with_flags<const N: usize>(
         answers.usage = Usage::default();
         answers.latency_ms = 0;
     }
-    result
+    (result, shadow)
+}
+
+/// Drains the serialized state and questions of the requests answered from
+/// the test queue.
+#[cfg(test)]
+pub(crate) fn take_test_asked_bodies() -> Vec<String> {
+    TEST_ASKED_BODIES.with(|asked| std::mem::take(&mut *asked.borrow_mut()))
+}
+
+#[cfg(test)]
+mod shadow_pack_tests {
+    use super::*;
+    use distill_workspace::jev::flags::JevLever;
+    use distill_workspace::jev::types::{Answer, JevAnswerSet, Question};
+    use std::collections::BTreeMap;
+
+    fn pack(id: &str) -> BTreeMap<String, Question> {
+        [(id.to_owned(), Question::noul(format!("Is {id} so?")))]
+            .into_iter()
+            .collect()
+    }
+
+    fn answers(entries: &[(&str, f64)]) -> JevAnswerSet {
+        JevAnswerSet {
+            model: "test".to_owned(),
+            answers: entries
+                .iter()
+                .map(|(id, noul)| ((*id).to_owned(), Answer::Noul { noul: *noul }))
+                .collect(),
+            usage: Default::default(),
+            latency_ms: 7,
+            request_id: None,
+        }
+    }
+
+    fn reset() {
+        clear_test_decision_answers();
+        take_test_asked_bodies();
+        clear_test_flags();
+        crate::jev_shadow::set_test_switches(None, None);
+    }
+
+    /// With `shadow_packs` off a caller's shadow pack is dropped and the live
+    /// request is byte for byte the one `ask_items` sends.
+    #[tokio::test]
+    async fn with_shadow_packs_off_the_live_request_is_unchanged() {
+        reset();
+        set_test_flags(JevFlags::harness_default());
+        crate::jev_shadow::set_test_switches(Some(false), None);
+        let state = serde_json::json!({"request": "synthetic"});
+        let items = || {
+            [
+                (JevLever::C4DiffRisk, Some(pack("live"))),
+                (JevLever::C4DiffRisk, Some(pack("kind"))),
+            ]
+        };
+        let reply = answers(&[("0:live", 0.2), ("1:kind", 0.3)]);
+        set_test_decision_answers([Some(reply.clone()), Some(reply)]);
+        let plain = ask_items(state.clone(), items()).await;
+        let (offered, shadow) =
+            ask_items_with_shadow(state, items(), Some((JevLever::C4DiffRisk, pack("extra"))))
+                .await;
+        let bodies = take_test_asked_bodies();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(
+            bodies[0], bodies[1],
+            "same bytes as before shadow packs existed"
+        );
+        assert!(!bodies[1].contains("shadow:"));
+        assert!(shadow.is_none());
+        assert_eq!(plain, offered);
+        reset();
+    }
+
+    /// On, the shadow pack joins the same request and comes back apart: the
+    /// live packs see only their own answers and keep the usage.
+    #[tokio::test]
+    async fn a_shadow_pack_rides_the_live_request_and_comes_back_apart() {
+        reset();
+        set_test_flags(JevFlags::harness_default());
+        crate::jev_shadow::set_test_switches(Some(true), None);
+        set_test_decision_answers([Some(answers(&[("0:live", 0.2), ("shadow:extra", 0.9)]))]);
+        let ([live], shadow) = ask_items_with_shadow(
+            serde_json::json!({}),
+            [(JevLever::C4DiffRisk, Some(pack("live")))],
+            Some((JevLever::C4DiffRisk, pack("extra"))),
+        )
+        .await;
+        assert_eq!(
+            take_test_asked_questions(),
+            vec![vec!["0:live".to_owned(), "shadow:extra".to_owned()]],
+            "one request"
+        );
+        let live = live.expect("live answers");
+        assert_eq!(live.answers.len(), 1);
+        assert_eq!(live.noul("live"), Some(0.2));
+        assert_eq!(live.latency_ms, 7, "the live pack owns the request");
+        let shadow = shadow.expect("shadow answers");
+        assert_eq!(shadow.answers.len(), 1);
+        assert_eq!(shadow.noul("extra"), Some(0.9));
+        assert_eq!(shadow.latency_ms, 0);
+        reset();
+    }
+
+    /// A shadow pack never costs a request: with no active live pack nothing
+    /// is sent, even with the switch on.
+    #[tokio::test]
+    async fn a_shadow_pack_never_sends_a_request_alone() {
+        reset();
+        set_test_flags(JevFlags {
+            c4_diff_risk: false,
+            ..JevFlags::harness_default()
+        });
+        crate::jev_shadow::set_test_switches(Some(true), None);
+        set_test_decision_answers([None]);
+        let ([live], shadow) = ask_items_with_shadow(
+            serde_json::json!({}),
+            [(JevLever::C4DiffRisk, Some(pack("live")))],
+            Some((JevLever::B8ExecutionMode, pack("mode"))),
+        )
+        .await;
+        let ([none], alone) = ask_items_with_shadow(
+            serde_json::json!({}),
+            [(JevLever::P6SkillSuggestion, None)],
+            Some((JevLever::B8ExecutionMode, pack("mode"))),
+        )
+        .await;
+        assert!(live.is_none() && shadow.is_none() && none.is_none() && alone.is_none());
+        assert_eq!(test_decision_answers_remaining(), 1, "no request was sent");
+        reset();
+    }
+
+    /// A calibration entry records the hash the decision events carry.
+    #[test]
+    fn the_calibration_hash_is_the_event_hash() {
+        let items = ["user request".to_owned()];
+        for questions in [
+            pack("x"),
+            distill_workspace::jev::catalog::verify::premature_stop_questions(&items)
+                .expect("catalog"),
+        ] {
+            assert_eq!(
+                question_hash(&questions),
+                distill_workspace::jev::catalog::thresholds::question_hash(&questions)
+            );
+        }
+    }
 }
 
 /// Runs **one** catalogue decision.
@@ -703,6 +925,10 @@ async fn ask_once(
         queue.borrow_mut().as_mut().map(|answers| {
             TEST_ASKED_QUESTIONS
                 .with(|asked| asked.borrow_mut().push(questions.keys().cloned().collect()));
+            TEST_ASKED_BODIES.with(|asked| {
+                let body = serde_json::json!({"state": &state, "questions": &questions});
+                asked.borrow_mut().push(body.to_string());
+            });
             answers.pop_front().unwrap_or(None)
         })
     }) {
@@ -783,6 +1009,9 @@ thread_local! {
     > = const { std::cell::RefCell::new(None) };
     /// Question ids of each request that consumed one of those answers.
     static TEST_ASKED_QUESTIONS: std::cell::RefCell<Vec<Vec<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The serialized state and questions of each such request.
+    static TEST_ASKED_BODIES: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 

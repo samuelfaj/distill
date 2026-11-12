@@ -4222,7 +4222,10 @@ impl SessionActor {
                         } else {
                             label
                         },
-                        &format!("tool_call_id={call_id}; prose_only={prose_only}"),
+                        &format!(
+                            "tool_call_id={call_id}; prose_only={prose_only}; {}",
+                            verify::diff_review_calibration(&answers.model)
+                        ),
                         review.confidence,
                         Some(&answers),
                     );

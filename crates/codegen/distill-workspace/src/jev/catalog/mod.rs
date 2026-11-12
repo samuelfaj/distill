@@ -26,6 +26,7 @@ pub mod memory_capture;
 pub mod subagent_model;
 pub mod routing;
 pub mod selection;
+pub mod thresholds;
 pub mod verify;
 
 use crate::jev::types::{Answer, JevAnswerSet};

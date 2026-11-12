@@ -45,9 +45,9 @@ fn final_check_reminder(
     let c1_incomplete = c1.is_some_and(|check| {
         !check.deferred
             && check.continue_working
-            && check.confidence.is_some_and(|confidence| {
-                confidence >= distill_workspace::jev::catalog::verify::ITEM_DONE_FLOOR
-            })
+            && check
+                .confidence
+                .is_some_and(|confidence| confidence >= check.done_floor)
     });
     let c3_incomplete = c3.is_some_and(|check| !check.deferred && !check.complete);
     (c1_incomplete || c3_incomplete).then_some(JEV_FINAL_CHECK_REMINDER)
@@ -4268,6 +4268,7 @@ impl SessionActor {
     /// C1/C3 at the end of a main turn: whether Jev confidently finds requested
     /// work or proof missing. Advisory; any failure or doubt returns `false`.
     async fn jev_final_check(&self, req_id: &str, turn_tools_called: &[String]) -> bool {
+        use distill_workspace::jev::catalog::thresholds::{self, Threshold};
         use distill_workspace::jev::catalog::verify;
         use distill_workspace::jev::flags::JevLever;
         let Some(request_text) = self.jev_last_human_request().await else {
@@ -4334,7 +4335,10 @@ impl SessionActor {
             crate::jev::record_item(
                 JevLever::C1PrematureStop,
                 label,
-                "final-turn completeness advisory",
+                &format!(
+                    "final-turn completeness advisory; {}",
+                    thresholds::calibration_word(&answers.model, &[Threshold::C1ItemDone])
+                ),
                 result.confidence,
                 Some(&answers),
             );
@@ -4352,7 +4356,13 @@ impl SessionActor {
             crate::jev::record_item(
                 JevLever::C3CompletionCheck,
                 label,
-                "final-turn requirement/proof advisory",
+                &format!(
+                    "final-turn requirement/proof advisory; {}",
+                    thresholds::calibration_word(
+                        &answers.model,
+                        &[Threshold::C3ItemSatisfied, Threshold::C3Leftover]
+                    )
+                ),
                 None,
                 Some(&answers),
             );
@@ -4375,6 +4385,7 @@ mod jev_final_check_tests {
             continue_working,
             deferred: false,
             confidence: continue_working.then_some(0.9),
+            done_floor: distill_workspace::jev::catalog::verify::ITEM_DONE_FLOOR,
         }
     }
 

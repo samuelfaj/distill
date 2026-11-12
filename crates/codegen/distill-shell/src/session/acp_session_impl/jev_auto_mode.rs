@@ -13,8 +13,6 @@ use super::*;
 pub(super) const MODE_QUESTION: &str = "execution_mode";
 pub(super) const MODE_CHANGED_METHOD: &str = "x.ai/session/execution_mode/changed";
 
-/// A mid-request switch needs this much of Jev's probability on the new mode.
-const SWITCH_PROBABILITY: f64 = 0.6;
 /// Request start: below this probability on Jev's pick, the current mode
 /// stays. 0.0 applies every pick. It must be fitted from recorded decision
 /// outcomes before it is raised; a guessed value would move picks blindly.
@@ -112,7 +110,8 @@ fn mode_criterion(mode: ExecutionMode) -> &'static str {
     }
 }
 
-fn mode_question() -> Option<std::collections::BTreeMap<String, distill_workspace::jev::Question>> {
+pub(super) fn mode_question()
+-> Option<std::collections::BTreeMap<String, distill_workspace::jev::Question>> {
     let criteria = MODES
         .iter()
         .map(|mode| {
@@ -399,11 +398,15 @@ impl SessionActor {
         if !self.auto_mode_active() {
             return false;
         }
-        if mode == current || probability < SWITCH_PROBABILITY {
+        use distill_workspace::jev::catalog::thresholds::{self, Threshold};
+        let floor = thresholds::thresholds_for(&answers.model).mode_review_switch;
+        let calibration =
+            thresholds::calibration_word(&answers.model, &[Threshold::ModeReviewSwitch]);
+        if mode == current || probability < floor {
             crate::jev::record_item(
                 JevLever::B8ExecutionMode,
                 "keep",
-                mode_id(current),
+                &format!("{}; {calibration}", mode_id(current)),
                 confidence,
                 Some(&answers),
             );
@@ -422,7 +425,7 @@ impl SessionActor {
         crate::jev::record_item(
             JevLever::B8ExecutionMode,
             mode_id(mode),
-            &format!("switch from {}", mode_id(current)),
+            &format!("switch from {}; {calibration}", mode_id(current)),
             confidence,
             Some(&answers),
         );

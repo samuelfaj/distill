@@ -126,6 +126,8 @@ pub struct JevLadderOverlay {
     pub b8_stable_tools: Option<bool>,
     /// B8 mid-turn review: no return to a left mode without a new failure, and a short hold.
     pub b8_review_hygiene: Option<bool>,
+    /// F1: label a quick next human message as reporting the previous result wrong or incomplete.
+    pub f1_followup_label: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -200,6 +202,9 @@ impl JevFlags {
             b8_stable_tools: false,
             // Opt-in until an Auto A/B shows no regression from the review rules.
             b8_review_hygiene: false,
+            // Opt-in: it adds a question to the turn-start request and is only
+            // recorded, never acted on, until its labels are checked.
+            f1_followup_label: false,
         }
     }
 
@@ -301,6 +306,8 @@ impl JevFlags {
             && resolve_switch(ladder.b8_stable_tools, None, self.b8_stable_tools);
         self.b8_review_hygiene = self.b8_execution_mode
             && resolve_switch(ladder.b8_review_hygiene, None, self.b8_review_hygiene);
+        self.f1_followup_label =
+            self.enabled && resolve_switch(ladder.f1_followup_label, None, self.f1_followup_label);
         self
     }
 }
@@ -395,6 +402,10 @@ pub struct JevFlags {
     /// mode left this request without a new failure nor switches again
     /// within a short dwell.
     pub b8_review_hygiene: bool,
+    /// F1: a human message within ten minutes of the previous turn's end
+    /// also asks whether it reports that result as wrong or incomplete; the
+    /// label is recorded and never acted on.
+    pub f1_followup_label: bool,
 }
 
 impl JevFlags {
@@ -440,6 +451,7 @@ impl JevFlags {
             b8_execution_mode: false,
             b8_stable_tools: false,
             b8_review_hygiene: false,
+            f1_followup_label: false,
         }
     }
 
@@ -544,6 +556,7 @@ impl JevFlags {
             // Harness-internal: names the escalation ratchet's rows and asks
             // Jev nothing, so there is no flag to switch it on.
             JevLever::Escalation => false,
+            JevLever::F1FollowupLabel => self.f1_followup_label,
         }
     }
 
@@ -596,6 +609,7 @@ pub enum JevLever {
     D6HistoryEviction,
     /// The escalation ratchet's deterministic rows (`[modes] escalation`).
     Escalation,
+    F1FollowupLabel,
 }
 
 impl JevLever {
@@ -639,6 +653,7 @@ impl JevLever {
             Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
             Self::D6HistoryEviction => "d6_history_eviction",
             Self::Escalation => "escalation",
+            Self::F1FollowupLabel => "f1_followup_label",
         }
     }
 }
@@ -878,6 +893,24 @@ mod tests {
         });
         assert!(!auto_off.lever_active(JevLever::B8StableTools));
         assert!(!auto_off.lever_active(JevLever::B8ReviewHygiene));
+    }
+
+    /// The follow-up label adds a question to the turn-start request, so it
+    /// stays off until its key turns it on, and the master switch still wins.
+    #[test]
+    fn the_followup_label_is_opt_in_and_follows_the_master_switch() {
+        let overlaid =
+            |enabled, ladder| JevFlags::harness_default().overlaid(enabled, None, None, ladder);
+        assert!(
+            !overlaid(None, JevLadderOverlay::default()).lever_active(JevLever::F1FollowupLabel)
+        );
+        let on = JevLadderOverlay {
+            f1_followup_label: Some(true),
+            ..JevLadderOverlay::default()
+        };
+        assert!(overlaid(None, on).lever_active(JevLever::F1FollowupLabel));
+        assert!(!overlaid(Some(false), on).lever_active(JevLever::F1FollowupLabel));
+        assert_eq!(JevLever::F1FollowupLabel.as_str(), "f1_followup_label");
     }
 
     #[test]

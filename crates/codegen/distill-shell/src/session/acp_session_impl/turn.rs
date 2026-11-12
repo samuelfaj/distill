@@ -1515,6 +1515,7 @@ impl SessionActor {
             }
         };
         Box::pin(self.emit_final_check_followup()).await;
+        self.jev_ledger.borrow_mut().last_request_end = Some(std::time::Instant::now());
         if matches!(
             result,
             Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. })

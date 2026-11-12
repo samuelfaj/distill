@@ -140,6 +140,8 @@ pub(crate) struct JevTurnLedger {
     /// The pending reminder and what followed it, emitted once when its
     /// request ends.
     pub(crate) final_check_followup: Option<FinalCheckFollowup>,
+    /// When the last request ended, for F1's follow-up window. Session-scoped.
+    pub(crate) last_request_end: Option<Instant>,
 }
 
 /// What a request did after its final-check reminder.

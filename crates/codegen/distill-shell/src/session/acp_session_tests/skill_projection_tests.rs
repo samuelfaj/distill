@@ -863,3 +863,70 @@ async fn ranked_hints_and_skill_reads_are_name_hashed_facts() {
     })
     .await;
 }
+
+fn flags_with_f1(on: bool) -> distill_workspace::jev::JevFlags {
+    distill_workspace::jev::JevFlags {
+        f1_followup_label: on,
+        ..distill_workspace::jev::JevFlags::harness_default()
+    }
+}
+
+/// The question ids of the one turn-start request a pass over `request` sent.
+async fn turn_start_ids(actor: &SessionActor, request: &str, followup: f64) -> Vec<String> {
+    use distill_workspace::jev::Answer;
+    let mut answers = family_answers(0.02, 0.01);
+    answers.answers.insert(
+        "3:reports_previous_result_wrong".to_owned(),
+        Answer::Noul { noul: followup },
+    );
+    ask_about(actor, request);
+    crate::jev::set_test_decision_answers([Some(answers)]);
+    let _ = crate::jev::take_test_asked_questions();
+    actor
+        .jev_filter_tool_definitions(optional_family_defs(), false)
+        .await;
+    let mut asked = crate::jev::take_test_asked_questions();
+    assert_eq!(asked.len(), 1, "one turn-start request: {asked:?}");
+    asked.remove(0)
+}
+
+/// With `f1_followup_label` off (the default) a message right after a turn
+/// sends the same turn-start request as before the lever existed; with it
+/// on, that request also asks whether the message reports the previous
+/// result as wrong, and only the label is recorded. A message with no recent
+/// turn end is never asked.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn the_followup_question_rides_the_turn_start_request_only_when_opted_in() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("f1-followup", async {
+            crate::jev::set_test_flags(flags_with_f1(false));
+            let today = turn_start_ids(&actor, "fix the parser", 0.9).await;
+            actor.jev_ledger.borrow_mut().last_request_end = Some(std::time::Instant::now());
+            let off = turn_start_ids(&actor, "that is still broken", 0.9).await;
+            assert_eq!(off, today, "lever off: the request is unchanged");
+            assert!(!off.iter().any(|id| id.starts_with("3:")), "{off:?}");
+
+            crate::jev::set_test_flags(flags_with_f1(true));
+            let on = turn_start_ids(&actor, "the parser still fails", 0.9).await;
+            let expected: Vec<String> = today
+                .iter()
+                .cloned()
+                .chain(["3:reports_previous_result_wrong".to_owned()])
+                .collect();
+            assert_eq!(on, expected);
+
+            actor.jev_ledger.borrow_mut().last_request_end = None;
+            let cold = turn_start_ids(&actor, "now add a feature", 0.9).await;
+            assert_eq!(cold, today, "no recent turn end, no question");
+            let labels: Vec<String> = crate::jev::recorded_decisions_for_test("f1-followup")
+                .into_iter()
+                .filter(|(lever, _)| lever == "f1_followup_label")
+                .map(|(_, decision)| decision)
+                .collect();
+            assert_eq!(labels, ["reports_problem"]);
+        })
+        .await;
+    })
+    .await;
+}

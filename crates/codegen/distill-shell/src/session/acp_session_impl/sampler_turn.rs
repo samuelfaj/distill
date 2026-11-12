@@ -1339,7 +1339,7 @@ impl SessionActor {
                 // an explicit effort stays fixed.
                 self.jev_choose_effort(&mut sampler_config).await;
                 // B2 (money lever): a routine turn may run at a cheaper setting; the
-                // pass can only lower effort, and it is off until its gate passes.
+                // pass can only lower effort; `b2_model_tier` is on by default.
                 self.jev_apply_model_tier(&mut sampler_config).await;
                 self.jev_anchor_turn_effort(&session_model, &sampler_config);
             }

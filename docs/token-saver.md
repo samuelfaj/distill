@@ -527,7 +527,8 @@ Eight levers affect what reaches the model:
   `/name`, `$name` or a backticked name pins a skill (a manual-only skill only
   as `/name`); a bare word like "review" and a subagent's assignment go to the
   ranking.
-- `p2_read_shortlist` picks line and segment windows instead of whole files.
+- `p2_read_shortlist` picks line and segment windows instead of whole files. It
+  is off by default (see "Turning levers off").
 - `p3_compaction_recorte` decides which segments the compactor must see. It
   runs only on a compaction input that is cold anyway (fitted or lossy) and
   not when a two-pass summary is used: dropping a middle segment of the warm,
@@ -792,11 +793,12 @@ These levers stay off by default, each for a stated reason:
 | `e_cheap_agent` | Utility `explore` reports are not yet measured against the worker's; a missed file costs a main follow-up read |
 | `b2_local_model` | Retired: nothing routes a main round to the utility any more, so it switches nothing |
 | `e_prompt_blocks` | The skills part is already cut per request by `p6_skill_suggestion`; cutting AGENTS.md and user rules needs a whitelist of lines that must always travel, and no safe one exists yet, so it would need opt-in and a rule-adherence measurement first |
-| `b2_model_tier` | A money lever waiting for its own cost gate |
 | `c6_injection_screen` | Waiting for a measurement of what the screen itself costs |
+| `p2_read_shortlist` | It paid a Jev call per qualifying document read and narrowed none |
 
-`b6_delegation_hint`, `c1_premature_stop` and `c3_completion_check` are off as
-well; they are quality checks, not savings (B6 is still asked and logged).
+`b2_model_tier`, `b6_delegation_hint`, `c1_premature_stop` and
+`c3_completion_check` are on by default. B6, C1 and C3 are quality checks, not
+savings.
 Retired lever keys (`e_cheap_task`, `e_lane_choice`, `e_breaker`, …) are
 ignored with a warning.
 

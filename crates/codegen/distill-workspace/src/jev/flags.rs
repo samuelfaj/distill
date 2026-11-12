@@ -146,7 +146,9 @@ impl JevFlags {
             enabled: true,
             shadow: false,
             p1_tool_family: true,
-            p2_read_shortlist: true,
+            // Opt-in: it paid a Jev call per qualifying document read and
+            // narrowed none, so the call bought nothing.
+            p2_read_shortlist: false,
             p3_compaction_recorte: true,
             p6_skill_suggestion: true,
             a1_file_to_edit: true,
@@ -663,7 +665,6 @@ mod tests {
         assert!(!flags.shadow, "active, not shadow, by policy");
         for lever in [
             JevLever::P1ToolFamily,
-            JevLever::P2ReadShortlist,
             JevLever::P3CompactionRecorte,
             JevLever::P6SkillSuggestion,
             JevLever::A1FileToEdit,
@@ -710,6 +711,10 @@ mod tests {
         assert!(
             !flags.e_cheap_agent,
             "utility explore children are opt-in until their reports are measured"
+        );
+        assert!(
+            !flags.lever_active(JevLever::P2ReadShortlist),
+            "P2 paid a Jev call per document read and narrowed none, so it is opt-in"
         );
         for lever in [
             JevLever::B6DelegationHint,
@@ -780,15 +785,30 @@ mod tests {
             None,
             Some(true),
             JevLadderOverlay {
-                p2_read_shortlist: Some(false),
+                p6_skill_suggestion: Some(false),
                 ..JevLadderOverlay::default()
             },
         );
         assert!(flags.enabled);
         assert!(flags.shadow, "shadow can be turned on explicitly");
-        assert!(!flags.p2_read_shortlist);
+        assert!(!flags.p6_skill_suggestion);
         assert!(flags.p1_tool_family, "other levers keep the default");
-        assert!(!flags.lever_active(JevLever::P2ReadShortlist));
+        assert!(!flags.lever_active(JevLever::P6SkillSuggestion));
+    }
+
+    /// The P2 key stays so a user can opt back in.
+    #[test]
+    fn an_opt_in_lever_can_be_turned_on() {
+        let flags = JevFlags::harness_default().overlaid(
+            None,
+            None,
+            None,
+            JevLadderOverlay {
+                p2_read_shortlist: Some(true),
+                ..JevLadderOverlay::default()
+            },
+        );
+        assert!(flags.lever_active(JevLever::P2ReadShortlist));
     }
 
     #[test]

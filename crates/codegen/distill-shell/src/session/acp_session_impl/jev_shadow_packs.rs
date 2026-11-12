@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use distill_tool_types::ExecutionMode;
+use distill_workspace::jev::catalog::review_battery;
 use distill_workspace::jev::flags::JevLever;
 use distill_workspace::jev::{JevAnswerSet, Question};
 
@@ -59,12 +61,41 @@ impl SessionActor {
         }
         answers
     }
+
+    /// In UltraCode with shadow packs on, the review battery that rides the
+    /// C4 request: two more notes, recorded and never acted on.
+    pub(super) fn c4_shadow_pack(&self) -> Option<ShadowPack> {
+        (crate::jev_shadow::packs_on() && self.execution_mode.load() == ExecutionMode::Ultracode)
+            .then(|| (JevLever::C4DiffRisk, review_battery::battery_questions()))
+    }
+
+    /// Records the battery's answers and what the candidate floors would have
+    /// flagged on them and on the live review. Nothing reads it back.
+    pub(super) fn record_c4_shadow(
+        &self,
+        battery: Option<&JevAnswerSet>,
+        live: Option<&JevAnswerSet>,
+    ) {
+        let Some(battery) = battery else {
+            return;
+        };
+        crate::jev::record_item(
+            JevLever::C4DiffRisk,
+            &review_battery::shadow_label(live, battery),
+            &format!(
+                "UltraCode review battery in shadow; candidate floors {} / {}",
+                review_battery::CANDIDATE_FLAG_FLOOR,
+                review_battery::CANDIDATE_SECOND_OPINION_FLOOR
+            ),
+            None,
+            Some(battery),
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use distill_tool_types::ExecutionMode;
     use distill_workspace::jev::catalog::thresholds::{
         CALIBRATIONS, ThresholdPack, live_question_hash, question_hash, stale_calibrations,
     };
@@ -196,6 +227,61 @@ mod tests {
                 assert_eq!(
                     crate::jev::take_test_asked_questions(),
                     vec![vec!["gate".to_owned()]]
+                );
+                reset();
+            }))
+            .await;
+    }
+
+    /// The battery rides C4 only in UltraCode with shadow packs on, and its
+    /// record names what the candidate floors would flag.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_review_battery_rides_only_ultracode_and_is_recorded_in_shadow() {
+        tokio::task::LocalSet::new()
+            .run_until(crate::jev::with_session_scope("shadow-c4", async {
+                reset();
+                let actor = super::super::support::plain_actor().await;
+                actor.execution_mode.store(ExecutionMode::Ultracode);
+                crate::jev_shadow::set_test_switches(Some(false), None);
+                assert!(actor.c4_shadow_pack().is_none(), "off by default");
+                crate::jev_shadow::set_test_switches(Some(true), None);
+                let (lever, questions) = actor.c4_shadow_pack().expect("UltraCode carries it");
+                assert_eq!(lever, JevLever::C4DiffRisk);
+                assert_eq!(questions, review_battery::battery_questions());
+                for mode in [
+                    ExecutionMode::Normal,
+                    ExecutionMode::Ultrafast,
+                    ExecutionMode::Ultrasave,
+                ] {
+                    actor.execution_mode.store(mode);
+                    assert!(actor.c4_shadow_pack().is_none(), "{mode:?}");
+                }
+                actor.execution_mode.store_auto(ExecutionMode::Ultracode);
+                assert!(
+                    actor.c4_shadow_pack().is_some(),
+                    "Auto's effective UltraCode too"
+                );
+
+                let live = noul_answers(&[(
+                    distill_workspace::jev::catalog::verify::SECOND_OPINION_QUESTION,
+                    0.6,
+                )]);
+                let battery = noul_answers(&[
+                    (review_battery::EDGE_CASE_QUESTION, 0.6),
+                    (review_battery::INVARIANT_QUESTION, 0.1),
+                ]);
+                actor.record_c4_shadow(Some(&battery), Some(&live));
+                actor.record_c4_shadow(None, Some(&live));
+                let recorded: Vec<_> = crate::jev::recorded_decisions_for_test("shadow-c4")
+                    .into_iter()
+                    .filter(|(lever, _)| lever == "c4_diff_risk")
+                    .collect();
+                assert_eq!(
+                    recorded,
+                    vec![(
+                        "c4_diff_risk".to_owned(),
+                        "shadow:c4:edge_case.second_opinion".to_owned()
+                    )]
                 );
                 reset();
             }))

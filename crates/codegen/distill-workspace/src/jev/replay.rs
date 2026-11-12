@@ -32,8 +32,9 @@ pub struct ReplayCase {
     /// The questions as sent; absent when `pack` names a live catalog pack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questions: Option<BTreeMap<QuestionId, Question>>,
-    /// A live catalog pack: `diff_review` (state `intent` and `change`) or
-    /// `final_check` (C1 and C3 batched as the turn end sends them).
+    /// A live catalog pack: `diff_review` (state `intent` and `change`),
+    /// `final_check` (C1 and C3 batched as the turn end sends them) or
+    /// `c4_battery` (UltraCode's shadow review notes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pack: Option<String>,
     /// Lever of each `<index>:` prefix in a batched request.
@@ -97,6 +98,7 @@ pub fn questions_for(case: &mut ReplayCase) -> Result<BTreeMap<QuestionId, Quest
             }
             Ok(questions)
         }
+        Some("c4_battery") => Ok(super::catalog::review_battery::battery_questions()),
         other => Err(format!("{}: unknown pack {other:?}", case.id)),
     }
 }

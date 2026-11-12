@@ -4181,14 +4181,17 @@ impl SessionActor {
                 let execution = self.jev_ledger.borrow().last_execution.clone();
                 state["execution"] = serde_json::json!(execution);
                 let change_questions = verify::change_type_questions().ok();
-                let [review_answers, change_answers] = crate::jev::ask_items(
-                    state,
-                    [
-                        (JevLever::C4DiffRisk, Some(questions)),
-                        (JevLever::C4DiffRisk, change_questions),
-                    ],
-                )
-                .await;
+                let ([review_answers, change_answers], shadow_answers) =
+                    crate::jev::ask_items_with_shadow(
+                        state,
+                        [
+                            (JevLever::C4DiffRisk, Some(questions)),
+                            (JevLever::C4DiffRisk, change_questions),
+                        ],
+                        self.c4_shadow_pack(),
+                    )
+                    .await;
+                self.record_c4_shadow(shadow_answers.as_ref(), review_answers.as_ref());
                 if let Some(answers) = change_answers {
                     let change_type = verify::compose_change_type(&answers);
                     if let Some(hint) = change_type_hint(&change_type) {

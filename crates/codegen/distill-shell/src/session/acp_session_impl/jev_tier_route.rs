@@ -220,6 +220,16 @@ impl SessionActor {
             }
             return ultra && skip(self.tier_block_reason());
         }
+        if self.escalation_tier_floor() == Some(Tier::Main) {
+            crate::jev::record_item(
+                JevLever::Escalation,
+                "tier:floor_main",
+                "the tier floor leaves only the main model",
+                None,
+                None,
+            );
+            return false;
+        }
         // Account Auto has model authority; Jev must not choose the model there.
         // A pinned route (an explicit `--model`) leaves the model to the user; only
         // an unpinned Auto route, or Auto enabled globally, owns it.
@@ -278,7 +288,9 @@ impl SessionActor {
                 }
             }
         }
-        let entries = dedupe_tiers(resolved.iter().map(|(entry, _)| entry.clone()).collect());
+        let all_entries = dedupe_tiers(resolved.iter().map(|(entry, _)| entry.clone()).collect());
+        let entries =
+            super::escalation::at_or_above_floor(all_entries.clone(), self.escalation_tier_floor());
         if entries.len() < 2 {
             return skip("fewer than two distinct usable candidates");
         }
@@ -367,7 +379,7 @@ impl SessionActor {
             return skip("Jev gave no answer");
         };
         let confidence = answers.confidence(TIER_QUESTION);
-        let Some(tier) = compose_tier(&answers, &entries) else {
+        let Some(mut tier) = compose_tier(&answers, &entries) else {
             crate::jev::record_item(
                 JevLever::B2ExecutionTier,
                 "defer",
@@ -377,6 +389,9 @@ impl SessionActor {
             );
             return false;
         };
+        if let Some(kept) = self.escalation_refused_switch(tier, &all_entries) {
+            tier = kept;
+        }
         if tier == Tier::Main {
             crate::jev::record_item(
                 JevLever::B2ExecutionTier,
@@ -426,7 +441,7 @@ impl SessionActor {
         slug: &str,
         effort: Option<distill_sampling_types::ReasoningEffort>,
     ) -> bool {
-        if self.jev_ledger.borrow().tier_route_off {
+        if self.jev_ledger.borrow().tier_route_off || self.escalation_blocks_resume(slug) {
             return false;
         }
         let creds = self.chat_state_handle.get_credentials().await;

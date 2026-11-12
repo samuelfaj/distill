@@ -6,10 +6,12 @@
 //! root sessions, so its fire rate can be measured before it changes anything.
 //! Only the triggers named in `[modes] escalation` act. They act without Jev
 //! (every signal is a harness fact or an answer Jev already gave), move up
-//! only, and climb at most twice per turn. The state lives in the turn ledger and is dropped when the turn ends.
+//! only, and climb at most twice and change the model tier at most once per
+//! turn. The state lives in the turn ledger and is dropped when the turn ends.
 //!
 //! Ladders, by mode: UltraSave raises the executor's effort one level, then
-//! runs one read-only review on the session's model over the turn's patch.
+//! runs one read-only review on the session's model over the turn's patch and,
+//! while switching is cheap, puts the rest of the turn on the main model.
 //! UltraFast raises the effort one level, then runs the rest of the turn under
 //! Normal's effort policy. Under Auto each climb moves the effective mode one
 //! step up, and the mode does not come back down before the next request.
@@ -20,6 +22,8 @@ use distill_tools::types::output::ToolOutput;
 use distill_workspace::jev::catalog::verify::DiffReviewVerdict;
 use distill_workspace::jev::flags::JevLever;
 
+use super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS;
+use super::jev_tier_route::{Tier, TierEntry};
 use super::turn_facts::CheckOutcome;
 use super::*;
 use crate::session::goal_classifier::turn_snapshot::TurnSnapshot;
@@ -167,6 +171,34 @@ pub(crate) fn live_triggers() -> LiveTriggers {
     })
 }
 
+/// The candidates a tier floor leaves: every tier at or above it.
+pub(super) fn at_or_above_floor(entries: Vec<TierEntry>, floor: Option<Tier>) -> Vec<TierEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| floor.is_none_or(|floor| entry.tier >= floor))
+        .collect()
+}
+
+/// Whether a mid-turn round may not move from `previous` to `picked`: a
+/// downward switch (tiers are distinct models, so there is no lateral one)
+/// once the prompt it would re-read uncached reaches the free-switch limit.
+pub(super) fn refuses_midturn_switch(
+    previous: Option<Tier>,
+    picked: Tier,
+    prompt_tokens: Option<u64>,
+) -> bool {
+    previous.is_some_and(|previous| picked < previous)
+        && prompt_tokens.is_some_and(|tokens| tokens >= EFFORT_SWITCH_FREE_PROMPT_TOKENS)
+}
+
+const fn tier_above(tier: Tier) -> Option<Tier> {
+    match tier {
+        Tier::Utility => Some(Tier::Worker),
+        Tier::Worker => Some(Tier::Main),
+        Tier::Main => None,
+    }
+}
+
 const fn mode_id(mode: ExecutionMode) -> &'static str {
     match mode {
         ExecutionMode::Normal => "normal",
@@ -216,6 +248,9 @@ pub(crate) struct EscalationState {
     effort_level: Option<(String, ReasoningEffort)>,
     /// UltraFast's second climb: Normal's effort policy for the rest of the turn.
     normal_effort_policy: bool,
+    /// Tier routing offers no model below this.
+    tier_floor: Option<Tier>,
+    tier_escalated: bool,
     /// Under Auto, the mode a climb reached; the request does not go below it.
     auto_floor: Option<ExecutionMode>,
     review: ReviewStep,
@@ -225,9 +260,9 @@ pub(crate) struct EscalationState {
 }
 
 impl EscalationState {
-    /// Climbs this turn, for the turn outcome record.
+    /// Climbs and tier steps this turn, for the turn outcome record.
     pub(crate) fn escalations(&self) -> u32 {
-        u32::from(self.climbs)
+        u32::from(self.climbs) + u32::from(self.tier_escalated)
     }
 }
 
@@ -295,8 +330,30 @@ impl SessionActor {
         self.note_escalation(EscalationTrigger::C4Break);
     }
 
+    /// The tier the current round runs on.
+    fn escalation_round_tier(&self) -> Tier {
+        let (active, slug) = {
+            let ledger = self.jev_ledger.borrow();
+            (ledger.tier_route_active, ledger.tier_route_slug.clone())
+        };
+        if !active {
+            Tier::Main
+        } else if slug.is_some() && slug == self.tier_worker_slug() {
+            Tier::Worker
+        } else {
+            Tier::Utility
+        }
+    }
+
     /// One step of the mode's ladder for a live trigger.
     fn escalation_climb(&self, trigger: EscalationTrigger) {
+        if matches!(
+            trigger,
+            EscalationTrigger::C4Break | EscalationTrigger::CheckFailedTwice
+        ) && let Some(floor) = tier_above(self.escalation_round_tier())
+        {
+            self.escalation_raise_tier_floor(floor, trigger.id());
+        }
         let climbs = self.jev_ledger.borrow().escalation.climbs;
         if climbs >= MAX_CLIMBS {
             return;
@@ -329,12 +386,21 @@ impl SessionActor {
                 record("climb:effort", &reason);
             }
             (ExecutionMode::Ultrasave, _) => {
-                {
+                let small_prompt = {
                     let mut ledger = self.jev_ledger.borrow_mut();
                     ledger.escalation.climbs = MAX_CLIMBS;
                     ledger.escalation.review = ReviewStep::Requested;
-                }
+                    // No cheap signal tells a cold prefix apart; the prompt
+                    // size alone decides, and an unknown size (after a
+                    // compaction) has no cached prefix to lose.
+                    ledger
+                        .last_main_prompt_tokens()
+                        .is_none_or(|tokens| tokens < EFFORT_SWITCH_FREE_PROMPT_TOKENS)
+                };
                 record("climb:review", trigger.id());
+                if small_prompt {
+                    self.escalation_raise_tier_floor(Tier::Main, "main model takeover");
+                }
             }
             (ExecutionMode::Ultrafast, _) => {
                 {
@@ -347,6 +413,23 @@ impl SessionActor {
             // Normal and UltraCode give up no capacity: nothing to climb.
             _ => {}
         }
+    }
+
+    /// Raises the tier floor to `floor`: the turn's one tier step.
+    fn escalation_raise_tier_floor(&self, floor: Tier, why: &str) {
+        {
+            let mut ledger = self.jev_ledger.borrow_mut();
+            let state = &mut ledger.escalation;
+            if state.tier_escalated {
+                return;
+            }
+            state.tier_escalated = true;
+            state.tier_floor = Some(state.tier_floor.map_or(floor, |current| current.max(floor)));
+        }
+        record(
+            "tier:escalated",
+            &format!("floor {} after {why}", floor.id()),
+        );
     }
 
     /// One effort level above what the last round ran at, on its model.
@@ -404,6 +487,61 @@ impl SessionActor {
         } else {
             self.execution_mode.load()
         }
+    }
+
+    /// The lowest tier tier routing may offer this turn.
+    pub(super) fn escalation_tier_floor(&self) -> Option<Tier> {
+        self.jev_ledger.borrow().escalation.tier_floor
+    }
+
+    /// Whether a kept tier route on `slug` is below the tier floor.
+    pub(super) fn escalation_blocks_resume(&self, slug: &str) -> bool {
+        let Some(floor) = self.escalation_tier_floor() else {
+            return false;
+        };
+        let tier = if self.tier_worker_slug().as_deref() == Some(slug) {
+            Tier::Worker
+        } else {
+            Tier::Utility
+        };
+        tier < floor
+    }
+
+    /// The tier a mid-turn round keeps instead of `picked`, when a live
+    /// `[modes] escalation` refuses the switch (see
+    /// [`refuses_midturn_switch`]). `entries` are every candidate.
+    pub(super) fn escalation_refused_switch(
+        &self,
+        picked: Tier,
+        entries: &[TierEntry],
+    ) -> Option<Tier> {
+        if live_triggers().is_empty() {
+            return None;
+        }
+        let (previous_model, prompt_tokens) = {
+            let ledger = self.jev_ledger.borrow();
+            (
+                ledger
+                    .last_execution
+                    .as_ref()
+                    .map(|(model, _)| model.clone()),
+                ledger.last_main_prompt_tokens(),
+            )
+        };
+        let previous = previous_model.and_then(|model| {
+            entries
+                .iter()
+                .find(|entry| entry.model == model)
+                .map(|entry| entry.tier)
+        });
+        if !refuses_midturn_switch(previous, picked, prompt_tokens) {
+            return None;
+        }
+        record(
+            "tier:refused_midturn",
+            &format!("kept {} over {}", previous?.id(), picked.id()),
+        );
+        previous
     }
 
     /// Whether Auto's review must keep the mode instead of moving to `mode`:

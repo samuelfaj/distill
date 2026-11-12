@@ -366,7 +366,7 @@ fn stalled_rounds_fire_after_quiet_rounds_and_a_change_resets_them() {
 }
 
 /// With `[modes] escalation` empty (the default) the triggers are only
-/// recorded: no effort, mode or model changes, and Auto's review moves
+/// recorded: no effort, mode, model or tier changes, and Auto's review moves
 /// the mode down as freely as it does without the ratchet.
 #[test]
 fn with_no_live_trigger_only_the_shadow_rows_change() {
@@ -388,7 +388,7 @@ fn with_no_live_trigger_only_the_shadow_rows_change() {
             let ledger = actor.jev_ledger.borrow();
             let state = &ledger.escalation;
             assert_eq!((state.climbs, state.escalations()), (0, 0));
-            assert!(state.effort_level.is_none());
+            assert!(state.effort_level.is_none() && state.tier_floor.is_none());
             assert_eq!(state.review, ReviewStep::None);
         }
         assert_eq!(actor.escalation_effort_mode(), ExecutionMode::Ultrafast);
@@ -399,6 +399,21 @@ fn with_no_live_trigger_only_the_shadow_rows_change() {
         };
         actor.escalation_apply_effort_floor(&mut cfg);
         assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::Low));
+        let entries = [
+            TierEntry {
+                tier: Tier::Utility,
+                model: "utility-model".into(),
+            },
+            TierEntry {
+                tier: Tier::Worker,
+                model: "worker-model".into(),
+            },
+        ];
+        assert_eq!(
+            actor.escalation_refused_switch(Tier::Utility, &entries),
+            None,
+            "the mid-turn refusal is part of the opt-in"
+        );
 
         let auto = plain_actor().await;
         auto.execution_mode.store_auto(ExecutionMode::Normal);
@@ -413,16 +428,22 @@ fn with_no_live_trigger_only_the_shadow_rows_change() {
     });
 }
 
-/// A live trigger climbs, but a turn climbs at most twice, however many
-/// signals follow. The ratchet needs no Jev answer.
+/// A live trigger climbs, but a turn climbs at most twice and changes tier at
+/// most once, however many signals follow. The ratchet needs no Jev answer.
 #[test]
-fn a_live_ratchet_climbs_at_most_twice_without_jev() {
+fn a_live_ratchet_climbs_twice_and_steps_tier_once_without_jev() {
     run(async {
         let _overrides = Overrides::live(&EscalationTrigger::ALL);
         crate::jev::set_test_flags(distill_workspace::jev::JevFlags::default());
+        crate::jev::set_test_worker_model(Some("worker-slug".to_owned()));
         let actor = actor_in_mode(ExecutionMode::Ultrasave).await;
         effort_model(&actor);
         report_prompt_tokens(&actor, 4_000);
+        {
+            let mut ledger = actor.jev_ledger.borrow_mut();
+            ledger.tier_route_active = true;
+            ledger.tier_route_slug = Some("utility-slug".to_owned());
+        }
         let session = "escalation-live";
         crate::jev::with_session_scope(session, async {
             fail_twice_with_a_change(&actor);
@@ -431,6 +452,11 @@ fn a_live_ratchet_climbs_at_most_twice_without_jev() {
                 let ledger = actor.jev_ledger.borrow();
                 let state = &ledger.escalation;
                 assert_eq!(state.climbs, 1);
+                assert_eq!(
+                    state.tier_floor,
+                    Some(Tier::Worker),
+                    "one above the utility round"
+                );
                 assert_eq!(
                     state.effort_level.as_ref().map(|(level, _)| level.as_str()),
                     Some("medium")
@@ -457,13 +483,19 @@ fn a_live_ratchet_climbs_at_most_twice_without_jev() {
             let state = &ledger.escalation;
             assert_eq!(state.climbs, MAX_CLIMBS);
             assert_eq!(state.review, ReviewStep::Requested);
-            assert_eq!(state.escalations(), 2);
+            assert_eq!(
+                state.tier_floor,
+                Some(Tier::Worker),
+                "the small-prompt takeover would be a second tier step"
+            );
+            assert_eq!(state.escalations(), 3);
         })
         .await;
         assert_eq!(
             rows(session),
             vec![
                 "shadow:check_failed_twice",
+                "tier:escalated",
                 "climb:effort",
                 "shadow:identical_calls",
                 "climb:review",
@@ -471,11 +503,12 @@ fn a_live_ratchet_climbs_at_most_twice_without_jev() {
                 "shadow:routed_error",
             ]
         );
+        crate::jev::clear_test_worker_model();
     });
 }
 
 /// The ratchet's state is the turn's: the drain at turn end clears every
-/// climb, effort level and recorded trigger, so the next turn starts lean again.
+/// climb, floor and recorded trigger, so the next turn starts lean again.
 #[test]
 fn the_ratchet_state_ends_with_the_turn() {
     run(async {
@@ -484,12 +517,14 @@ fn the_ratchet_state_ends_with_the_turn() {
         effort_model(&actor);
         actor.note_escalation(CheckFailedTwice);
         actor.note_escalation(C4Break);
+        actor.jev_ledger.borrow_mut().escalation.tier_floor = Some(Tier::Main);
         assert!(actor.jev_ledger.borrow().escalation.escalations() > 0);
         let _ = actor.jev_ledger.borrow_mut().take_rows();
         let ledger = actor.jev_ledger.borrow();
         let state = &ledger.escalation;
         assert_eq!((state.recorded, state.climbs), (0, 0));
-        assert!(state.effort_level.is_none() && !state.normal_effort_policy);
+        assert!(state.effort_level.is_none() && state.tier_floor.is_none());
+        assert!(!state.normal_effort_policy && !state.tier_escalated);
     });
 }
 
@@ -516,6 +551,7 @@ fn ultrafast_second_climb_restores_normal_effort_policy() {
             ExecutionMode::Ultrafast,
             "the mode stays"
         );
+        assert!(!actor.jev_ledger.borrow().escalation.tier_escalated);
     });
 }
 
@@ -592,12 +628,16 @@ fn scripted_reviewer(
 }
 
 /// UltraSave's second climb runs one review over the turn's own patch and
-/// hands its gaps back once.
+/// hands its gaps back once; the main model takes over only while the prompt
+/// is small enough for the switch to be cheap.
 #[test]
-fn ultrasave_second_climb_reviews_once() {
+fn ultrasave_second_climb_reviews_once_and_takes_over_only_on_a_small_prompt() {
     const REFUTE: &str =
         r#"{"refuted":true,"evidence":"src/c.rs:1 off by one","confidence":"high"}"#;
-    {
+    for (prompt_tokens, takeover) in [
+        (EFFORT_SWITCH_FREE_PROMPT_TOKENS - 1, true),
+        (EFFORT_SWITCH_FREE_PROMPT_TOKENS, false),
+    ] {
         run(async {
             let _overrides = Overrides::live(&[CheckFailedTwice, C4Break]);
             let repo = repo();
@@ -607,8 +647,14 @@ fn ultrasave_second_climb_reviews_once() {
             let spawns = scripted_reviewer(&mut actor, REFUTE);
             actor.escalation_before_round().await;
             std::fs::write(repo.path().join("src/c.rs"), "fn c() { 2 }\n").unwrap();
+            report_prompt_tokens(&actor, prompt_tokens);
             actor.note_escalation(CheckFailedTwice);
             actor.note_escalation(C4Break);
+            assert_eq!(
+                actor.escalation_tier_floor() == Some(Tier::Main),
+                takeover,
+                "{prompt_tokens} prompt tokens"
+            );
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 actor.escalation_after_round().await;
                 actor.escalation_after_round().await;
@@ -628,4 +674,129 @@ fn ultrasave_second_climb_reviews_once() {
             assert!(reminders[0].contains("off by one"), "{}", reminders[0]);
         });
     }
+}
+
+/// A floor at the main model leaves nothing to choose: no question is asked.
+/// A lower floor only drops the tiers under it.
+#[test]
+fn the_tier_floor_drops_lower_candidates_and_asks_nothing_at_main() {
+    let entries = vec![
+        TierEntry {
+            tier: Tier::Utility,
+            model: "u".into(),
+        },
+        TierEntry {
+            tier: Tier::Worker,
+            model: "w".into(),
+        },
+        TierEntry {
+            tier: Tier::Main,
+            model: "m".into(),
+        },
+    ];
+    assert_eq!(at_or_above_floor(entries.clone(), None), entries);
+    assert_eq!(
+        at_or_above_floor(entries.clone(), Some(Tier::Worker)),
+        entries[1..].to_vec()
+    );
+    assert_eq!(
+        at_or_above_floor(entries.clone(), Some(Tier::Main)),
+        entries[2..].to_vec()
+    );
+    run(async {
+        let _overrides = Overrides::live(&[]);
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+            b2_execution_tier: true,
+            ..distill_workspace::jev::JevFlags::harness_default()
+        });
+        let actor = actor_in_mode(ExecutionMode::Ultrasave).await;
+        actor.jev_ledger.borrow_mut().escalation.tier_floor = Some(Tier::Main);
+        let mut cfg = SamplingConfig {
+            model: "main".into(),
+            ..Default::default()
+        };
+        crate::jev::set_test_decision_answers([None]);
+        crate::jev::with_session_scope("escalation-floor", async {
+            assert!(!actor.jev_route_execution_tier(&mut cfg).await);
+        })
+        .await;
+        assert_eq!(cfg.model, "main");
+        assert_eq!(
+            crate::jev::test_decision_answers_remaining(),
+            1,
+            "nothing was asked"
+        );
+        assert_eq!(rows("escalation-floor"), vec!["tier:floor_main"]);
+    });
+}
+
+/// From 16,384 prompt tokens a switch re-reads the prompt uncached: a
+/// mid-turn move to a lower tier is refused and the round keeps its model.
+/// Below that, or upward, the switch stands.
+#[test]
+fn a_midturn_downward_switch_is_refused_from_the_free_switch_limit() {
+    let large = Some(EFFORT_SWITCH_FREE_PROMPT_TOKENS);
+    let small = Some(EFFORT_SWITCH_FREE_PROMPT_TOKENS - 1);
+    assert!(refuses_midturn_switch(
+        Some(Tier::Worker),
+        Tier::Utility,
+        large
+    ));
+    assert!(refuses_midturn_switch(
+        Some(Tier::Main),
+        Tier::Worker,
+        large
+    ));
+    assert!(!refuses_midturn_switch(
+        Some(Tier::Worker),
+        Tier::Utility,
+        small
+    ));
+    assert!(
+        !refuses_midturn_switch(Some(Tier::Worker), Tier::Main, large),
+        "up is free"
+    );
+    assert!(!refuses_midturn_switch(
+        Some(Tier::Worker),
+        Tier::Worker,
+        large
+    ));
+    assert!(
+        !refuses_midturn_switch(None, Tier::Utility, large),
+        "the turn's first round"
+    );
+    run(async {
+        let _overrides = Overrides::live(&[C4Break]);
+        let actor = actor_in_mode(ExecutionMode::Ultrasave).await;
+        let entries = [
+            TierEntry {
+                tier: Tier::Utility,
+                model: "utility-model".into(),
+            },
+            TierEntry {
+                tier: Tier::Worker,
+                model: "worker-model".into(),
+            },
+            TierEntry {
+                tier: Tier::Main,
+                model: "main-model".into(),
+            },
+        ];
+        actor.jev_ledger.borrow_mut().last_execution = Some(("worker-model".to_owned(), None));
+        report_prompt_tokens(&actor, EFFORT_SWITCH_FREE_PROMPT_TOKENS);
+        crate::jev::with_session_scope("escalation-refusal", async {
+            assert_eq!(
+                actor.escalation_refused_switch(Tier::Utility, &entries),
+                Some(Tier::Worker)
+            );
+            assert_eq!(actor.escalation_refused_switch(Tier::Main, &entries), None);
+            report_prompt_tokens(&actor, EFFORT_SWITCH_FREE_PROMPT_TOKENS - 1);
+            assert_eq!(
+                actor.escalation_refused_switch(Tier::Utility, &entries),
+                None
+            );
+        })
+        .await;
+        assert_eq!(rows("escalation-refusal"), vec!["tier:refused_midturn"]);
+    });
 }

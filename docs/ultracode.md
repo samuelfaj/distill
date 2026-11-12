@@ -75,6 +75,56 @@ grandchildren. Inspect the saved session, lifecycle events and usage records
 to verify the actual execution tree. Mode activation and a depth setting alone
 are not evidence of completion, capability gains, or cost savings.
 
+## Turn-end review (contract v2, off by default)
+
+Contract v2 adds an independent review of each turn that changes code. It is
+off by default: without this key the mode behaves exactly as described above.
+To turn it on, set in the config:
+
+```toml
+[modes.ultracode]
+contract = "v2"
+```
+
+It applies to root sessions whose effective mode is UltraCode and that have no
+active `/goal` (a goal runs its own verification stage):
+
+- Before the turn's first tool call the harness snapshots the tracked files
+  through a temporary index and lists the untracked files, within one second.
+  Your index, refs and working tree are not modified.
+- After the final check it diffs that snapshot against the working tree,
+  including files created during the turn, so changes made before the turn are
+  not part of the patch. If the snapshot could not be taken, the diff is
+  against HEAD and is labelled as possibly including earlier changes. A turn
+  that changed only `.md`, `.mdx`, `.txt` or `.rst` files or files under
+  `docs/` is not reviewed.
+- One reviewer subagent (from the configured skeptic pool) judges the patch
+  against your request and the checks the harness recorded. It refutes only
+  for a demonstrable defect, an unmet explicit requirement, a failed, unknown
+  or stale check on changed code, or cheating; a missing test is a note unless
+  the request asked for tests.
+- A refutation appends its gaps once and the turn continues one effort level
+  higher. If the same gaps come back, one panel of three reviewers decides.
+  Each turn gets at most two rework rounds, one panel and 15 minutes of
+  review time.
+
+The turn's final message ends with a status line:
+
+- `Verification: REVIEWED`: the reviewer did not refute the patch, and the
+  latest recorded check, if any, passed on the current working tree.
+- `Verification: UNVERIFIED (reason)`: anything else. For example: still
+  refuted after the rework rounds or the panel, the review could not run or
+  returned no usable verdict, the latest check failed, has an unknown outcome
+  or ran before the last change, or the session is not in a git repository.
+  Open gaps are listed above the line, with an offer to continue as a `/goal`.
+
+The status line is shown to the client; it is not added to the conversation
+the model reads. REVIEWED means one independent review found no reason to
+refute the patch. It does not prove the change is correct. The value of
+contract v2 has not been benchmarked: there is no measured effect on accepted
+runs, credits or time yet, and it stays off by default until a paired
+comparison decides.
+
 ## Paired comparisons
 
 Use the existing `tools.task_cost_eval.compare_parallel` runner. It accepts the

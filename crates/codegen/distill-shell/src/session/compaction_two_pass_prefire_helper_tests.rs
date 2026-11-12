@@ -58,6 +58,29 @@ fn fingerprint_survives_a_tool_result_shortened_in_place() {
     assert_ne!(fingerprint_prefix(&full), fingerprint_prefix(&with("call-2", "x")));
 }
 
+/// A prompt refresh (the worker, the label, the memory section) rewrites a
+/// system item in place; the conversation NOTE1 summarized is the same, so a
+/// prepared pass 1 stays usable. A changed message still invalidates it.
+#[test]
+fn fingerprint_survives_a_rewritten_system_prompt() {
+    let with = |head: &str, ask: &str| {
+        vec![
+            ConversationItem::system(head),
+            ConversationItem::user(ask),
+            ConversationItem::assistant("done"),
+        ]
+    };
+    let before = with("worker: model-a", "fix the parser");
+    assert_eq!(
+        fingerprint_prefix(&before),
+        fingerprint_prefix(&with("worker: model-b", "fix the parser"))
+    );
+    assert_ne!(
+        fingerprint_prefix(&before),
+        fingerprint_prefix(&with("worker: model-a", "rename the module"))
+    );
+}
+
 #[test]
 fn prefire_lead_percent_defaults_to_10() {
     // SAFETY: single-threaded test mutation of our own env var.

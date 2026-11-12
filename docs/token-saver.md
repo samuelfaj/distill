@@ -637,6 +637,17 @@ compaction or a model switch lets it try again. A summary the session
 model rejects (degenerate, empty or failing after its retries) gets one try on
 the policy's compaction model or the worker before the failure stands.
 
+With two-pass compaction on, pass 1 starts in the background once the history
+passes the threshold less 10 points (not while a prepared pass 1 waits, after
+two failures in a row, or while auto-compaction is suppressed), and it sends the
+history exactly as the main request does plus its instruction, so it reads the
+main request's cache entry. On a cold history (a model switch, a resume, an
+idle gap) pass 1 and a single-pass compaction write no conversation cache
+entry, and a prompt refresh keeps a prepared pass 1, since the compaction that
+uses it checks the history it summarized. `usage.json` counts pass 1 under
+`compaction_pass1` (`sent`, `used`, `discard:<reason>`), so pass 1 requests per
+applied compaction can be read.
+
 After a compaction the reminder can carry `## Working Set Excerpts`: for up to
 three files this session edited, the lines of their latest read in the current
 turn that the utility says the next edit needs, verbatim, naming the stored

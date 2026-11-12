@@ -99,6 +99,43 @@ fn prompt_turn<'a>(
     ))
 }
 
+fn compact(actor: &Arc<SessionActor>) -> Boxed<'_, Result<(), acp::Error>> {
+    Box::pin(actor.run_compact_only(
+        AutoCompactTriggerInfo {
+            tokens_used: WINDOW * 4 / 5,
+            context_window: WINDOW,
+            percentage: 80,
+            reason_override: None,
+        },
+        false,
+    ))
+}
+
+/// A switch to the same model under another prompt label: the agent's prompt
+/// is re-rendered and the history's head rewritten, as on any switch that
+/// refreshes the prompt.
+fn switch_prompt<'a>(
+    actor: &'a Arc<SessionActor>,
+    server: &MockInferenceServer,
+    backend: ApiBackend,
+    model: &str,
+) -> Boxed<'a, Result<acp::ModelId, acp::Error>> {
+    Box::pin(
+        actor.handle_set_session_model(crate::session::SessionModelSwitch {
+            rebuild_definition: None,
+            sampling_config: sampler_config(server, backend, model),
+            canonical_model_id: None,
+            model_selection_intent: false,
+            use_concise: false,
+            is_family_switch: false,
+            apply_prompt_override: true,
+            skip_prompt_rewrite: false,
+            auto_compact_threshold_percent: PREFIRE_THRESHOLD,
+            system_prompt_label: "Aurora".to_owned(),
+        }),
+    )
+}
+
 /// One prompt turn, then the pass-1 it may have started.
 async fn turn(actor: &Arc<SessionActor>, text: &str) {
     let outcome =
@@ -339,4 +376,122 @@ fn a_messages_pass1_repeats_the_main_prefix_and_reads_the_previous_entry() {
 fn a_responses_pass1_repeats_the_main_prefix() {
     let (_, pass1, main) = prefire_on_a_warm_history(ApiBackend::Responses, "test");
     assert_repeats_main_prefix(&pass1, &main);
+}
+
+fn system_head(conversation: &[ConversationItem]) -> String {
+    conversation
+        .first()
+        .map(ConversationItem::text_content)
+        .unwrap_or_default()
+}
+
+/// A switch that refreshes the prompt used to drop a prepared pass-1, which
+/// the next turn then sent again in full. The compaction that follows the
+/// switch must apply the prepared note (pass 2 over the note and the tail),
+/// not summarize the whole history again.
+#[test]
+fn a_prepared_pass1_survives_a_switch_that_rewrites_the_prompt() {
+    let (compactions, history_items, pass1_outcomes) = on_turn_thread(|| {
+        block_on_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            server.set_response(summary());
+            let actor = actor_on(&server, ApiBackend::Responses, "test", PREFIRE_THRESHOLD).await;
+            turn(&actor, "now add a test").await;
+            assert!(
+                actor.compaction.prefire.has_cache(),
+                "the turn over the prefire line prepared a pass-1 note"
+            );
+            let head = system_head(&actor.chat_state_handle.get_conversation().await);
+            switch_prompt(&actor, &server, ApiBackend::Responses, "test")
+                .await
+                .expect("switch");
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert_ne!(
+                system_head(&conversation),
+                head,
+                "the switch rewrote the head"
+            );
+            assert!(
+                actor.compaction.prefire.has_cache(),
+                "a prompt refresh keeps the prepared note"
+            );
+            compact(&actor).await.expect("compaction");
+            let usage = actor
+                .chat_state_handle
+                .try_get_session_usage()
+                .await
+                .expect("usage");
+            let compactions: Vec<_> = bodies(&server).into_iter().filter(is_compaction).collect();
+            (
+                compactions,
+                conversation.len(),
+                usage
+                    .utility_outcomes
+                    .get(PASS1_OUTCOME_SOURCE)
+                    .map(|counts| counts.decisions.clone())
+                    .unwrap_or_default(),
+            )
+        })
+    });
+    assert_eq!(compactions.len(), 2, "pass 1, then one compaction request");
+    let applied = items(&compactions[1]).len();
+    assert!(
+        applied < history_items,
+        "the compaction read the note and the tail ({applied} items), not the {history_items}-item history"
+    );
+    assert_eq!(pass1_outcomes.get("sent"), Some(&1));
+    assert_eq!(pass1_outcomes.get("used"), Some(&1));
+    assert!(
+        !pass1_outcomes
+            .keys()
+            .any(|label| label.starts_with("discard")),
+        "{pass1_outcomes:?}"
+    );
+}
+
+/// The single-pass compaction request: on a cold history (right after the
+/// session switched to its model) or, with `warm`, after a turn sent it.
+fn single_pass_compaction(warm: bool) -> serde_json::Value {
+    on_turn_thread(move || {
+        block_on_local(async move {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            server.set_response(summary());
+            let actor = actor_on(
+                &server,
+                ApiBackend::Messages,
+                "claude-opus-5-5",
+                QUIET_THRESHOLD,
+            )
+            .await;
+            if warm {
+                turn(&actor, "now add a test").await;
+            }
+            compact(&actor).await.expect("compaction");
+            bodies(&server)
+                .into_iter()
+                .filter(is_compaction)
+                .next_back()
+                .expect("a compaction request")
+        })
+    })
+}
+
+/// A cold history is written again by the compaction anyway, and the
+/// compacted history that follows never repeats it: a conversation breakpoint
+/// would pay the cache-write premium for an entry nobody reads. The system
+/// prompt and tools, which the next main request repeats, keep theirs.
+#[test]
+fn a_cold_compaction_input_marks_only_the_system_prompt() {
+    let cold = single_pass_compaction(false);
+    assert!(
+        cold["system"].to_string().contains("cache_control"),
+        "{}",
+        cold["system"]
+    );
+    assert_eq!(breakpoints(&cold), Vec::<usize>::new());
+    let warm = single_pass_compaction(true);
+    assert!(
+        !breakpoints(&warm).is_empty(),
+        "a warm input reads the main entries through its conversation breakpoints"
+    );
 }

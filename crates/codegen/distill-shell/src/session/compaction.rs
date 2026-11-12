@@ -374,7 +374,9 @@ fn prefire_lead_percent() -> u64 {
 /// The cached NOTE₁ then no longer summarizes the current prefix and must be dropped.
 /// A tool result counts by its call id: its content is only ever shortened in
 /// place (hard clear, history eviction), and a NOTE₁ written from the fuller
-/// copy still summarizes it.
+/// copy still summarizes it. A system item counts by its kind: a prompt
+/// refresh (worker, label, memory section) rewrites its text in place, and the
+/// history NOTE₁ summarizes is the same.
 fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -391,11 +393,17 @@ fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
         tag.hash(&mut h);
         match it {
             ConversationItem::ToolResult(tr) => tr.tool_call_id.hash(&mut h),
+            ConversationItem::System(_) => {}
             _ => it.text_content().hash(&mut h),
         }
     }
     h.finish()
 }
+/// `usage.json` source for prefire pass-1 outcomes, so pass-1 requests per
+/// applied compaction can be read. Labels are fixed identifiers: `sent` per
+/// pass-1 request, `used` per compaction that applied its NOTE₁, and
+/// `discard:<reason>` per NOTE₁ that no compaction will use.
+const PASS1_OUTCOME_SOURCE: &str = "compaction_pass1";
 /// Outcome of a background prefire pass-1 run, recorded on the `session.prefire_pass1` span as `compaction_prefire_outcome`.
 /// [`PrefireOutcome::as_str`] values are stable telemetry keys (telemetry/dashboards key off them); don't rename the strings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, strum::AsRefStr, strum::IntoStaticStr)]
@@ -520,11 +528,16 @@ impl SessionActor {
         let agent = self.agent.borrow();
         agent.compaction_policy().two_pass_enabled
     }
+    /// Counts one prefire pass-1 outcome under [`PASS1_OUTCOME_SOURCE`].
+    pub(crate) fn record_pass1_outcome(&self, label: &str) {
+        self.chat_state_handle
+            .record_utility_outcome(PASS1_OUTCOME_SOURCE, label, 0, 0, 0);
+    }
     /// The prompt is already embedded, so this bypasses the single-pass sampler and calls `generate_session_compact` directly.
     /// Agent `RefCell` borrows are only taken for synchronous snapshots (never held across `.await`).
     /// A long-lived borrow would race with turn/compact/cancel and panic on double-borrow.
     /// With `fit_cold`, a history that cannot fit beside the tools and the summary is digested and fitted first: it would fail whole, so its cache is no loss.
-    /// `one_shot` marks a history no later request repeats (pass2): it writes no conversation cache entry, but keeps the system breakpoint that reads the main system prompt and tools.
+    /// `one_shot` marks a history no later request repeats (pass2, or a cold pass1): it writes no conversation cache entry, but keeps the system breakpoint that reads the main system prompt and tools.
     /// `cache_key` is the main key for pass1, which replays the main prefix, and a purpose key for pass2, whose prompt is its own.
     async fn two_pass_sample(
         &self,
@@ -754,8 +767,11 @@ impl SessionActor {
         let pass1_history = build_two_pass_pass1_history(&prefix_prepared, &prompt);
         let started = std::time::Instant::now();
         let cache_key = self.main_cache_key().await;
+        // A cold history reads nothing, and no later request repeats this one.
+        let cold = self.chat_state_handle.history_is_cold().await;
+        self.record_pass1_outcome("sent");
         let out = self
-            .two_pass_sample(pass1_history, true, false, cache_key)
+            .two_pass_sample(pass1_history, true, cold, cache_key)
             .await;
         let pass1_latency_ms = started.elapsed().as_millis() as u64;
         let attempted = |outcome: PrefireOutcome, note1_chars: Option<usize>| PrefirePass1Run {
@@ -770,11 +786,13 @@ impl SessionActor {
         // waits for one (or a model switch).
         let Some(out) = out else {
             self.compaction.prefire.record_failure();
+            self.record_pass1_outcome("discard:failed");
             return attempted(PrefireOutcome::SampleFailed, None);
         };
         let note1 = note_for_two_pass_pass2(&out.content);
         if note1.trim().is_empty() {
             self.compaction.prefire.record_failure();
+            self.record_pass1_outcome("discard:empty");
             return attempted(PrefireOutcome::EmptyNote1, None);
         }
         self.compaction.prefire.unblock();
@@ -833,6 +851,7 @@ impl SessionActor {
             .map(|c| c.model.to_string())
             .unwrap_or_default();
         let Some((prefix, tail)) = live.split_at_checked(cache.prefix_len) else {
+            self.record_pass1_outcome("discard:stale");
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(
                 target: "two_pass",
@@ -844,6 +863,11 @@ impl SessionActor {
             || cache.model_slug != model_slug
             || fingerprint_prefix(prefix) != cache.fingerprint
         {
+            self.record_pass1_outcome(if cache.model_slug != model_slug {
+                "discard:model"
+            } else {
+                "discard:stale"
+            });
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(
                 target: "two_pass",
@@ -860,10 +884,15 @@ impl SessionActor {
         // NOTE1 plus the tail is a prompt only this pass2 sends, so it keeps its own route off the main one.
         let cache_key =
             crate::sampling::purpose_cache_key(&self.session_info.id.to_string(), "compact-pass2");
-        let mut out = self
+        let Some(mut out) = self
             .two_pass_sample(pass2_history, false, true, cache_key)
-            .await?;
+            .await
+        else {
+            self.record_pass1_outcome("discard:pass2_failed");
+            return None;
+        };
         if is_degenerate_summary(&out.content) {
+            self.record_pass1_outcome("discard:degenerate");
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(
                 target: "two_pass",
@@ -875,6 +904,7 @@ impl SessionActor {
         if prefire_waited_ms > 0 {
             out.ttft_ms = Some(out.ttft_ms.unwrap_or(0).saturating_add(prefire_waited_ms));
         }
+        self.record_pass1_outcome("used");
         let span = tracing::Span::current();
         span.record("compaction_two_pass_used", true);
         span.record("compaction_prefire_hit", true);
@@ -1761,6 +1791,9 @@ impl SessionActor {
             .borrow()
             .compaction_policy()
             .wall_clock_budget_secs;
+        // A cold input reads nothing from the cache, and the compacted history that follows never
+        // repeats it, so its conversation entry would be written for no reader.
+        let input_cold = self.chat_state_handle.history_is_cold().await;
         let sampler = crate::session::helpers::full_replace_compaction::ShellCompactionSampler::new(
             use_short_prompt,
             user_context.clone(),
@@ -1776,6 +1809,7 @@ impl SessionActor {
             self.compaction.tool_choice,
             cancel.clone(),
             self.chat_state_handle.clone(),
+            input_cold,
         );
         let observer =
             crate::session::helpers::full_replace_compaction::ShellFullReplaceObserver::new(
@@ -1987,6 +2021,7 @@ impl SessionActor {
                     self.compaction.tool_choice,
                     cancel.clone(),
                     self.chat_state_handle.clone(),
+                    false,
                 );
             let fallback_fr_config = distill_compaction::FullReplaceConfig {
                 max_attempts: 2,

@@ -94,15 +94,17 @@ grandchildren. Inspect the saved session, lifecycle events and usage records
 to verify the actual execution tree. Mode activation and a depth setting alone
 are not evidence of completion, capability gains, or cost savings.
 
-## Turn-end review (contract v2, off by default)
+## Turn-end review (contract v2)
 
 Contract v2 adds an independent review of each turn that changes code. It is
-off by default: without this key the mode behaves exactly as described above.
-To turn it on, set in the config:
+on by default, because UltraCode uses its `v2` row when `[modes] v2` is unset
+(see [Mode policy](mode-policy.md)); this default has not been benchmarked. To
+turn it off, leave `ultracode` out of an explicit list and do not set
+`[modes.ultracode] contract = "v2"`, which turns it on whatever the list says:
 
 ```toml
-[modes.ultracode]
-contract = "v2"
+[modes]
+v2 = ["ultrasave", "ultrafast"]   # or v2 = [] for every mode
 ```
 
 It applies to root sessions whose effective mode is UltraCode and that have no
@@ -141,8 +143,7 @@ The status line is shown to the client; it is not added to the conversation
 the model reads. REVIEWED means one independent review found no reason to
 refute the patch. It does not prove the change is correct. The value of
 contract v2 has not been benchmarked: there is no measured effect on accepted
-runs, credits or time yet, and it stays off by default until a paired
-comparison decides.
+runs, credits or time yet.
 
 ## Paired comparisons
 

@@ -51,7 +51,7 @@ pub(crate) fn set_contract_v2_for_tests(on: Option<bool>) {
 }
 
 /// The contract in the effective config, read once per process (config does
-/// not change mid-run); a config that fails to load leaves it off.
+/// not change mid-run); a config that fails to load keeps the default, on.
 pub(crate) fn contract_v2_configured() -> bool {
     #[cfg(test)]
     if let Some(on) = CONTRACT_V2_FOR_TESTS.with(std::cell::Cell::get) {

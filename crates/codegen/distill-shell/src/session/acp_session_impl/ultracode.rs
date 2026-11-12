@@ -38,6 +38,11 @@ pub(super) fn v2_directive(mode: distill_tool_types::ExecutionMode, is_subagent:
 const NORMAL_DIRECTIVE: &str =
     "Normal execution mode is active. Follow the configured default execution policy.";
 
+/// Added when the system prompt carries `<orchestration>` but the mode's tool
+/// list has no spawn tool: the prompt is not rebuilt on a mode switch, so the
+/// directive has to withdraw the delegation default itself.
+pub(super) const NO_SUBAGENTS_SENTENCE: &str = "This mode has no subagents: do all of the work yourself and disregard the delegation guidance in <orchestration>.";
+
 /// The UltraCode sentences that only matter to a session that can delegate.
 pub(super) const ULTRACODE_DELEGATION_SENTENCES: [&str; 7] = [
     "Delegation is optional in this mode, overriding default delegation preferences, with no agent quota.",
@@ -128,10 +133,14 @@ impl SessionActor {
             }
             ExecutionMode::Ultrasave => ULTRASAVE_DIRECTIVE,
         };
-        super::reminders::wrap_in_reminder_tag(
-            &format!("{DIRECTIVE_LEAD} {directive}"),
-            self.reminder_wrapper_tag(),
-        )
+        let orchestration_without_spawn = !self.mode_offers_spawn()
+            && self.agent.borrow().prompt_context().worker_model.is_some();
+        let text = if orchestration_without_spawn {
+            format!("{DIRECTIVE_LEAD} {directive} {NO_SUBAGENTS_SENTENCE}")
+        } else {
+            format!("{DIRECTIVE_LEAD} {directive}")
+        };
+        super::reminders::wrap_in_reminder_tag(&text, self.reminder_wrapper_tag())
     }
 }
 

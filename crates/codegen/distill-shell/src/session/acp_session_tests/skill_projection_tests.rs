@@ -490,7 +490,7 @@ fn prelude_answers(parallel: f64) -> distill_workspace::jev::JevAnswerSet {
 }
 
 /// Gives the session a worker model (or none), as a primary session gets one.
-fn set_worker_model(actor: &SessionActor, worker: Option<&str>) {
+pub(super) fn set_worker_model(actor: &SessionActor, worker: Option<&str>) {
     let agent = {
         let base = actor.agent.borrow();
         let mut context = base.prompt_context().clone();
@@ -595,6 +595,87 @@ async fn jev_b6_suggestion_adds_the_hint_exactly_once_with_the_flag_on() {
                 ["<delegation_hint>This request has independent parts: split them into narrow subagent assignments and launch them together in one message.</delegation_hint>"]
             );
             assert_eq!(b6_decisions("b6-flag-on"), ["delegate"]);
+        })
+        .await;
+    })
+    .await;
+}
+
+/// Multi-step work without independent parts still goes to the cheaper
+/// worker: the hint says so in its own words, and one call gets no hint.
+#[tokio::test(flavor = "current_thread")]
+async fn jev_b6_hints_sequential_multi_step_work_but_not_a_single_call() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-sequential", async {
+            crate::jev::set_test_flags(flags_with_b6(true));
+            set_worker_model(&actor, Some("worker-model"));
+            ask_about(&actor, "build a three.js view of the moon surface");
+            crate::jev::set_test_decision_answers([Some(prelude_answers(0.2))]);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            actor.jev_flush_delegation_hint().await;
+            let hints = delegation_hints(&actor).await;
+            assert_eq!(hints.len(), 1, "{hints:?}");
+            assert!(
+                hints[0].contains("hand the reading, editing and command work to a subagent")
+                    && !hints[0].contains("independent parts"),
+                "{hints:?}"
+            );
+
+            ask_about(&actor, "what does this flag do?");
+            let mut one_call = prelude_answers(0.2);
+            one_call.answers.insert(
+                "2:fits_single_call".to_owned(),
+                distill_workspace::jev::Answer::Noul { noul: 0.9 },
+            );
+            crate::jev::set_test_decision_answers([Some(one_call)]);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            actor.jev_flush_delegation_hint().await;
+            assert!(delegation_hints(&actor).await.is_empty());
+            assert_eq!(b6_decisions("b6-sequential"), ["delegate", "single"]);
+        })
+        .await;
+    })
+    .await;
+}
+
+/// The mid-turn reminder only reaches a session that can act on it: one
+/// whose prompt names a worker, in a mode that allows subagents, with the
+/// lever on. Anywhere else it would tell the model to use a tool it lacks.
+#[tokio::test(flavor = "current_thread")]
+async fn hands_on_reminder_reaches_only_a_session_that_can_delegate() {
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-hands-on", async {
+            super::mode_policy::set_v2_modes_for_tests(Some(
+                V2Modes::default().with(ExecutionMode::Ultrafast),
+            ));
+            for (flag, worker, mode, reminded) in [
+                (true, Some("worker-model"), ExecutionMode::Normal, true),
+                (true, Some("worker-model"), ExecutionMode::Ultracode, true),
+                (true, None, ExecutionMode::Normal, false),
+                (true, Some("worker-model"), ExecutionMode::Ultrafast, false),
+                (false, Some("worker-model"), ExecutionMode::Normal, false),
+            ] {
+                crate::jev::set_test_flags(flags_with_b6(flag));
+                set_worker_model(&actor, worker);
+                actor.execution_mode.store(mode);
+                ask_about(&actor, "fix the renderer");
+                actor.flush_hands_on_reminder();
+                assert_eq!(
+                    delegation_hints(&actor).await.len(),
+                    usize::from(reminded),
+                    "flag={flag} worker={worker:?} {mode:?}"
+                );
+            }
+            assert_eq!(
+                b6_decisions("b6-hands-on"),
+                ["hands_on_reminder", "hands_on_reminder"]
+            );
+            super::mode_policy::set_v2_modes_for_tests(None);
         })
         .await;
     })

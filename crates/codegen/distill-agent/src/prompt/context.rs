@@ -1149,6 +1149,19 @@ mod tests {
             "delegated work must come with a precise spec"
         );
         assert!(on.contains("Keep what needs judgment no spec can carry"));
+        assert!(
+            on.contains("Judgment settles what gets built, never who writes it")
+                && on.contains("calls for a sharper spec and a harder review"),
+            "judgment and doubt about the worker must not excuse doing delegable work"
+        );
+        assert!(
+            on.contains("An unexplained failure is delegated too, as an investigation"),
+            "debugging is many rounds of reading and running: worker work, reviewed by the main model"
+        );
+        assert!(
+            on.contains("stop and report after about 30 model requests"),
+            "an assignment sized past the child's report budget comes back unfinished"
+        );
         assert!(on.contains("Batch your own diff inspection and any required behavioral checks"));
         assert!(on.contains("Review the actual repository diff independently"));
         assert!(on.contains("Reject duplicated or unrequested implementations even when checks pass"));

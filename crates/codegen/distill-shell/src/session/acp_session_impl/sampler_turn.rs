@@ -651,14 +651,7 @@ impl SessionActor {
     fn project_execution_mode_tools(&self, defs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
         let mode = self.execution_mode.load();
         if !self.auto_stable_tools() {
-            // A pinned mode whose row allows no subagents does not offer the
-            // tool, so the model never spends a round on a refused spawn.
-            // Under Auto the two lean modes keep one list: a list that
-            // changed with the pick would re-read the prompt uncached.
-            let spawn = self.execution_mode.is_auto()
-                || self.mode_policy().runtime.subagent_depth
-                    != distill_tool_types::SubagentDepth::None;
-            return execution_mode_tool_definitions(mode, defs, spawn);
+            return execution_mode_tool_definitions(mode, defs, self.mode_offers_spawn());
         }
         let mut ledger = self.jev_ledger.borrow_mut();
         if !matches!(
@@ -674,6 +667,15 @@ impl SessionActor {
         ledger.auto_full_tools_sent = false;
         drop(ledger);
         execution_mode_tool_definitions(mode, defs, true)
+    }
+
+    /// Whether the mode's tool list offers `spawn_subagent`. A pinned mode
+    /// whose row allows no subagents does not, so the model never spends a
+    /// round on a refused spawn. Under Auto the two lean modes keep one list:
+    /// a list that changed with the pick would re-read the prompt uncached.
+    pub(super) fn mode_offers_spawn(&self) -> bool {
+        self.execution_mode.is_auto()
+            || self.mode_policy().runtime.subagent_depth != distill_tool_types::SubagentDepth::None
     }
 
     /// Whether the session is in Auto with the stable tools array on.

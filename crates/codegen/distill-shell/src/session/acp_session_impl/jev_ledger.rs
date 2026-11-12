@@ -70,8 +70,8 @@ pub(crate) struct JevTurnLedger {
     /// B1 intent for the current human turn.
     pub(crate) turn_intent: Option<String>,
     /// B6: the human request whose delegation hint waits for the next model
-    /// request.
-    pub(crate) delegation_hint: Option<String>,
+    /// request, and the hint's text.
+    pub(crate) delegation_hint: Option<(String, &'static str)>,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// The session's optional tool families. Session-scoped: draining the turn
     /// keeps it, so the tools array only grows when a later request needs

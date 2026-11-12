@@ -57,13 +57,13 @@ b8_review_hygiene     = true # Auto mid-turn review on a large prompt: no return
 f1_followup_label     = true # a message within 10 minutes of the last turn's end also asks whether it reports that result as wrong or incomplete; only the label is recorded, nothing acts on it
 b8_criteria_v2        = true # Auto: the mode question judges the whole request; each mode says what it is for, what it is not for, with example requests; false restores the first question; not yet through replay, shadow or a benchmark
 b8_up_only            = true # Auto: inside a request the mode only moves up (a review needs 0.25 over the current mode, or the escalation ratchet); a leaner pick waits for the next request; false restores the review that moves either way; not yet through replay, shadow or a benchmark
+b6_delegation_hint    = true  # B6: with a worker model, the turn-start request also asks whether the request takes more than one call and whether it has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request when the work is multi-step, and one more for every 8 rounds the main model then works hands-on without delegating
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
 d2_big_output_retention = false # D2: asked at ingest, before the model read the output; it never dropped one
 d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
-b6_delegation_hint    = false # B6: with a worker model, the turn-start request also asks whether the request has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request
 
 # Optional, with the defaults shown
 # base_url      = "https://api.typesafe.ai"

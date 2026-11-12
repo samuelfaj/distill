@@ -283,6 +283,57 @@ async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off
     super::mode_policy::set_v2_modes_for_tests(None);
 }
 
+/// A pinned mode without subagents drops the spawn tool, but the system prompt
+/// keeps `<orchestration>` ("Delegate by default") because it is not rebuilt on
+/// a mode switch. The directive must withdraw that default, and only then: a
+/// mode that offers the tool, Auto, and a session without a worker stay as is.
+#[tokio::test(flavor = "current_thread")]
+async fn a_mode_without_subagents_withdraws_the_delegation_default() {
+    use super::skill_projection_tests::set_worker_model;
+    use super::ultracode::NO_SUBAGENTS_SENTENCE;
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    let all = V2Modes::default()
+        .with(ExecutionMode::Ultrafast)
+        .with(ExecutionMode::Ultrasave)
+        .with(ExecutionMode::Ultracode);
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let actor = super::support::plain_actor().await;
+            super::mode_policy::set_v2_modes_for_tests(Some(all));
+            let stated = |actor: &SessionActor| {
+                actor.inject_execution_mode_reminder();
+                let handle = actor.chat_state_handle.clone();
+                async move {
+                    let conversation = handle.get_conversation().await;
+                    conversation.last().unwrap().text_content()
+                }
+            };
+            for (worker, mode, auto, withdrawn) in [
+                (Some("worker-model"), ExecutionMode::Ultrafast, false, true),
+                (None, ExecutionMode::Ultrafast, false, false),
+                (Some("worker-model"), ExecutionMode::Ultrafast, true, false),
+                (Some("worker-model"), ExecutionMode::Normal, false, false),
+                (Some("worker-model"), ExecutionMode::Ultracode, false, false),
+            ] {
+                set_worker_model(&actor, worker);
+                if auto {
+                    actor.execution_mode.store_auto(mode);
+                } else {
+                    actor.execution_mode.store(mode);
+                }
+                assert_eq!(actor.mode_offers_spawn(), auto || mode != ExecutionMode::Ultrafast);
+                let text = stated(&actor).await;
+                assert_eq!(
+                    text.contains(NO_SUBAGENTS_SENTENCE),
+                    withdrawn,
+                    "worker={worker:?} {mode:?} auto={auto}: {text}"
+                );
+            }
+        })
+        .await;
+    super::mode_policy::set_v2_modes_for_tests(None);
+}
+
 /// UltraFast and UltraSave send only direct-work tools, so planning, feedback,
 /// scheduling and orchestration schemas stop costing tokens and whole rounds.
 #[test]

@@ -11,7 +11,7 @@ async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effo
         let before = actor.chat_state_handle.get_sampling_config().await.map(|cfg| cfg.reasoning_effort);
         for (mode, expected) in [
             (ExecutionMode::Normal, "Normal execution mode is active"),
-            (ExecutionMode::Ultracode, "Ultracode mode is ON"),
+            (ExecutionMode::Ultracode, "UltraCode mode is active"),
             (ExecutionMode::Ultrafast, "UltraFast mode is active"),
             (ExecutionMode::Ultrasave, "UltraSave mode is active"),
             (ExecutionMode::Normal, "Normal execution mode is active"),
@@ -131,6 +131,8 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
     use distill_tools::implementations::distill;
     use distill_tools::implementations::distill::task::types::ExecutionPolicy;
     use distill_tools::registry::types::ToolConfig;
+    // Delegation sentences exist only in the today-row text.
+    super::mode_policy::set_v2_modes_for_tests(Some(distill_tool_types::V2Modes::default()));
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut actor = super::support::plain_actor().await;
@@ -166,6 +168,118 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
             }
         })
         .await;
+    super::mode_policy::set_v2_modes_for_tests(None);
+}
+
+/// A directive that promises what the harness does not do, or asks for
+/// delegation, steers the model against its mode's row; a long one costs
+/// tokens on every statement. The v2 texts say only what their rows enforce
+/// or what the model must do itself, share no sentence, and are shorter
+/// together than the texts they replace.
+#[test]
+fn v2_directives_are_short_distinct_and_free_of_delegation_advice() {
+    use super::ultracode::{
+        ULTRACODE_DIRECTIVE, ULTRACODE_V2_DIRECTIVE, ULTRACODE_V2_REVIEW_SENTENCE,
+        ULTRAFAST_DIRECTIVE, ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
+    };
+    let v2 = [
+        ULTRAFAST_V2_DIRECTIVE,
+        ULTRASAVE_V2_DIRECTIVE,
+        ULTRACODE_V2_DIRECTIVE,
+    ];
+    let today = [
+        ULTRAFAST_DIRECTIVE,
+        ULTRASAVE_DIRECTIVE,
+        ULTRACODE_DIRECTIVE,
+    ];
+    let length = |texts: &[&str]| texts.iter().map(|text| text.len()).sum::<usize>();
+    assert!(
+        length(&v2) < length(&today),
+        "{} >= {}",
+        length(&v2),
+        length(&today)
+    );
+    for text in v2 {
+        let lower = text.to_lowercase();
+        for word in ["delegat", "subagent"] {
+            assert!(!lower.contains(word), "{word}: {text}");
+        }
+    }
+    let sentences = |text: &'static str| text.split_inclusive(". ").map(str::trim);
+    for (index, text) in v2.into_iter().enumerate() {
+        for other in v2.into_iter().skip(index + 1) {
+            for sentence in sentences(text) {
+                assert!(!other.contains(sentence), "shared: {sentence}");
+            }
+        }
+    }
+    assert!(ULTRACODE_V2_DIRECTIVE.ends_with(ULTRACODE_V2_REVIEW_SENTENCE));
+}
+
+/// With `[modes] v2 = []` every mode states exactly the text it stated
+/// before the v2 texts existed; on its v2 row it states the v2 text, and an
+/// UltraCode subagent, whose turns get no turn-end review, is not promised one.
+#[tokio::test(flavor = "current_thread")]
+async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off() {
+    use super::ultracode::{
+        ULTRACODE_V2_DIRECTIVE, ULTRACODE_V2_REVIEW_SENTENCE, ULTRAFAST_DIRECTIVE,
+        ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
+        ultracode_leaf_directive,
+    };
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    // The texts the previous release sent, by length, so an edit to them shows.
+    assert_eq!(
+        [
+            super::ultracode::ULTRACODE_DIRECTIVE.len(),
+            ULTRAFAST_DIRECTIVE.len(),
+            ULTRASAVE_DIRECTIVE.len(),
+        ],
+        [1537, 1118, 1087]
+    );
+    let normal = "Normal execution mode is active. Follow the configured default execution policy.";
+    let all = V2Modes::default()
+        .with(ExecutionMode::Ultrafast)
+        .with(ExecutionMode::Ultrasave)
+        .with(ExecutionMode::Ultracode);
+    let child_ultracode =
+        ULTRACODE_V2_DIRECTIVE.replace(&format!(" {ULTRACODE_V2_REVIEW_SENTENCE}"), "");
+    // The test actor has no spawn tool, so the today-row UltraCode text is the leaf one.
+    let leaf = ultracode_leaf_directive();
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut actor = super::support::plain_actor().await;
+            for (v2, is_subagent, mode, expected) in [
+                (V2Modes::default(), false, ExecutionMode::Normal, normal),
+                (V2Modes::default(), false, ExecutionMode::Ultrafast, ULTRAFAST_DIRECTIVE),
+                (V2Modes::default(), false, ExecutionMode::Ultrasave, ULTRASAVE_DIRECTIVE),
+                (V2Modes::default(), false, ExecutionMode::Ultracode, leaf.as_str()),
+                (all, false, ExecutionMode::Normal, normal),
+                (all, false, ExecutionMode::Ultrafast, ULTRAFAST_V2_DIRECTIVE),
+                (all, false, ExecutionMode::Ultrasave, ULTRASAVE_V2_DIRECTIVE),
+                (all, false, ExecutionMode::Ultracode, ULTRACODE_V2_DIRECTIVE),
+                (all, true, ExecutionMode::Ultracode, child_ultracode.as_str()),
+            ] {
+                super::mode_policy::set_v2_modes_for_tests(Some(v2));
+                actor.startup_hints.is_subagent = is_subagent;
+                actor.execution_mode.store(mode);
+                actor.inject_execution_mode_reminder();
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let expected = super::reminders::wrap_in_reminder_tag(
+                    &format!(
+                        "Current execution mode supersedes all earlier execution mode reminders. {expected}"
+                    ),
+                    actor.reminder_wrapper_tag(),
+                );
+                assert_eq!(
+                    conversation.last().unwrap().text_content(),
+                    expected.text_content(),
+                    "{mode:?} subagent={is_subagent}"
+                );
+            }
+            assert!(!child_ultracode.contains("review"), "{child_ultracode}");
+        })
+        .await;
+    super::mode_policy::set_v2_modes_for_tests(None);
 }
 
 /// UltraFast and UltraSave send only direct-work tools, so planning, feedback,

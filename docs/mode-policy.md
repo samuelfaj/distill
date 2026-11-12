@@ -36,13 +36,16 @@ the independent review described in [UltraCode](ultracode.md).
 
 ```toml
 [modes]
-v2 = ["ultrasave", "ultrafast", "ultracode"]
+v2 = ["ultrasave", "ultrafast", "ultracode"]   # the default when the key is absent
 ```
 
-`[modes] v2` lists the modes that use their `v2` row; the default is the empty
-list, which keeps every mode on `today`. Unknown names are ignored with a
-warning. Listing `ultracode` also turns on the UltraCode turn review, as
-`[modes.ultracode] contract = "v2"` already does.
+`[modes] v2` lists the modes that use their `v2` row. With no key, UltraSave,
+UltraFast and UltraCode all use it. A list is authoritative: a mode left out
+goes back to its `today` row, and `v2 = []` puts every mode on `today`.
+Unknown names are ignored with a warning. UltraCode on its `v2` row runs the
+UltraCode turn review; with UltraCode left out, `[modes.ultracode] contract =
+"v2"` still turns the review on by itself. No `v2` row has been through a
+benchmark campaign yet.
 
 ## What makes the modes distinct
 

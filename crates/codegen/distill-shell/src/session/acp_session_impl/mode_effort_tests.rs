@@ -568,6 +568,68 @@ async fn an_explicit_effort_turns_the_rules_off() {
     .await;
 }
 
+/// The late skill line joins the conversation before the turn's second
+/// request when it is in; one still in flight then is dropped.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn a_late_skill_hint_is_appended_before_round_two_or_dropped() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let line = "<skill_relevance>\nNo skill in the catalog appears relevant to this request.\n</skill_relevance>";
+            for (ready, appended) in [(true, true), (false, false)] {
+                let actor = super::super::support::plain_actor().await;
+                let turn = actor.current_turn_number.get();
+                let hint = if ready {
+                    tokio::task::spawn_local(async move { Some(line.to_owned()) })
+                } else {
+                    tokio::task::spawn_local(std::future::pending::<Option<String>>())
+                };
+                tokio::task::yield_now().await;
+                actor.jev_ledger.borrow_mut().late_skill_hint = Some((turn, hint));
+                actor.flush_late_skill_hint(1);
+                assert!(
+                    actor.jev_ledger.borrow().late_skill_hint.is_some(),
+                    "the first request does not take it"
+                );
+                actor.flush_late_skill_hint(2);
+                assert!(actor.jev_ledger.borrow().late_skill_hint.is_none());
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let shown = conversation
+                    .iter()
+                    .any(|item| item.text_content().contains("<skill_relevance>"));
+                assert_eq!(shown, appended, "ready: {ready}");
+            }
+        })
+        .await;
+}
+
+/// UltraFast v2 waits at most 800 ms for the after-edit review and records
+/// the cut; the today row waits the whole Jev deadline.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[serial_test::serial]
+async fn c4_waits_the_rows_deadline() {
+    let session = "mode-effort-c4";
+    let slow_review = || async {
+        tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
+        7_u8
+    };
+    for (modes, answer, recorded) in [(today(), 7, None), (v2(), 0, Some(&1))] {
+        with_rows(modes, async {
+            let actor = super::super::support::plain_actor().await;
+            actor.execution_mode.store(ExecutionMode::Ultrafast);
+            let got = crate::jev::with_session_scope_and_recorder(
+                session,
+                None,
+                actor.within_c4_deadline(slow_review()),
+            )
+            .await;
+            assert_eq!(got, answer, "{modes:?}");
+            assert_eq!(rows(session).get("ultrafast:c4_deadline"), recorded);
+        })
+        .await;
+    }
+}
+
 /// A pinned UltraFast turn against the mock model: on the v2 row no Jev
 /// question is awaited before the first main request, which runs at the
 /// silent level, and the second request runs at the turn's answer; the today

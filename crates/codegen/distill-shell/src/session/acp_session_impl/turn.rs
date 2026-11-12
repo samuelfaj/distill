@@ -1088,9 +1088,10 @@ impl SessionActor {
             // cached prefix, stay untouched.
             if matches!(input_origin.as_prompt_origin(), super::super::PromptOrigin::User)
                 && Self::extract_bash_command(&prompt_blocks).is_none()
-                && let Some(hint) = self
-                    .jev_skill_relevance_hint(&Self::queue_text_from_blocks(&prompt_blocks))
-                    .await
+                && let Some(hint) = Box::pin(
+                    self.turn_start_skill_hint(&Self::queue_text_from_blocks(&prompt_blocks)),
+                )
+                .await
             {
                 if !skill_info.is_empty() && !skill_info.ends_with('\n') {
                     skill_info.push('\n');
@@ -2994,6 +2995,7 @@ impl SessionActor {
             }
             if !salvage.awaiting_continuation() {
                 self.jev_flush_delegation_hint().await;
+                self.flush_late_skill_hint(loop_index);
                 self.flush_report_budget(
                     loop_index.saturating_sub(1),
                     last_prompt_tokens,

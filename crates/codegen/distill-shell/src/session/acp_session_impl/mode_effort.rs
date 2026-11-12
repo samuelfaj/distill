@@ -6,6 +6,8 @@
 //! Each enforcement records a content-free `policy:<mode>` row
 //! (`crate::jev::record_policy`).
 
+use std::sync::Arc;
+
 use distill_sampling_types::ReasoningEffort;
 use distill_tool_types::{EffortCadence, EffortPolicy, ExecutionMode, ModePolicy};
 use distill_workspace::jev::catalog::routing;
@@ -391,6 +393,78 @@ impl SessionActor {
         {
             self.set_round_effort(cfg, floor);
             crate::jev::record_policy(mode, "effort_floor");
+        }
+    }
+
+    /// The turn-start `<skill_relevance>` line. Awaited where the row waits
+    /// for turn-start questions; otherwise started on a detached task and
+    /// `None` here, and [`Self::flush_late_skill_hint`] appends it before the
+    /// turn's second request if it is in by then.
+    pub(super) async fn turn_start_skill_hint(self: &Arc<Self>, request: &str) -> Option<String> {
+        if self.mode_policy().runtime.jev.await_turn_start {
+            return self.jev_skill_relevance_hint(request).await;
+        }
+        // Nothing to rank: no question, so no wait to skip.
+        if !crate::jev::lever_active(JevLever::P6SkillSuggestion)
+            || request.trim().is_empty()
+            || self.tool_bridge_handle().slash_skills().await.is_empty()
+        {
+            return None;
+        }
+        let actor = Arc::clone(self);
+        let request = request.to_owned();
+        let hint = tokio::task::spawn_local(crate::jev::in_current_turn(async move {
+            actor.jev_skill_relevance_hint(&request).await
+        }));
+        let previous = self
+            .jev_ledger
+            .borrow_mut()
+            .late_skill_hint
+            .replace((self.current_turn_number.get(), hint));
+        if let Some((_, previous)) = previous {
+            previous.abort();
+        }
+        crate::jev::record_policy(self.execution_mode.load(), "jev_wait_skipped");
+        None
+    }
+
+    /// Before the turn's second request (`loop_index` 2): appends the
+    /// detached skill-relevance line as a reminder if it is in, else drops it.
+    pub(super) fn flush_late_skill_hint(&self, loop_index: u32) {
+        if loop_index < 2 {
+            return;
+        }
+        let Some((turn, hint)) = self.jev_ledger.borrow_mut().late_skill_hint.take() else {
+            return;
+        };
+        if turn != self.current_turn_number.get() || !hint.is_finished() {
+            hint.abort();
+            return;
+        }
+        if let Some(line) = futures::FutureExt::now_or_never(hint)
+            .and_then(Result::ok)
+            .flatten()
+        {
+            self.push_system_reminder(&line);
+        }
+    }
+
+    /// The after-edit review (C4) waits at most the row's deadline; past it
+    /// the edit goes on unreviewed, as when Jev times out.
+    pub(super) async fn within_c4_deadline<T: Default>(
+        &self,
+        ask: impl std::future::Future<Output = T>,
+    ) -> T {
+        let deadline = self.mode_policy().runtime.jev.diff_risk_deadline_ms;
+        if deadline >= distill_tool_types::JEV_DEADLINE_MS {
+            return ask.await;
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(deadline), ask).await {
+            Ok(answers) => answers,
+            Err(_) => {
+                crate::jev::record_policy(self.execution_mode.load(), "c4_deadline");
+                T::default()
+            }
         }
     }
 }

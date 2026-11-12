@@ -4192,14 +4192,14 @@ impl SessionActor {
                 state["execution"] = serde_json::json!(execution);
                 let change_questions = verify::change_type_questions().ok();
                 let ([review_answers, change_answers], shadow_answers) =
-                    crate::jev::ask_items_with_shadow(
+                    Box::pin(self.within_c4_deadline(crate::jev::ask_items_with_shadow(
                         state,
                         [
                             (JevLever::C4DiffRisk, Some(questions)),
                             (JevLever::C4DiffRisk, change_questions),
                         ],
                         self.c4_shadow_pack(),
-                    )
+                    )))
                     .await;
                 self.record_c4_shadow(shadow_answers.as_ref(), review_answers.as_ref());
                 if let Some(answers) = change_answers {

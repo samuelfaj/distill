@@ -163,6 +163,8 @@ pub(crate) struct JevTurnLedger {
     /// Failed tools and failed check runs when the last main response
     /// arrived; more now means this round follows a failure.
     failures_at_last_response: u64,
+    /// The turn-start skill-relevance line nothing awaited, with its turn.
+    pub(crate) late_skill_hint: Option<(u64, tokio::task::JoinHandle<Option<String>>)>,
 }
 
 /// What a request did after its final-check reminder.
@@ -542,6 +544,9 @@ impl JevTurnLedger {
         self.last_answered_effort = None;
         self.round_route_kept = false;
         self.failures_at_last_response = 0;
+        if let Some((_, hint)) = self.late_skill_hint.take() {
+            hint.abort();
+        }
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

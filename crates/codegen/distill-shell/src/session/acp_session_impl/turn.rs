@@ -1231,7 +1231,7 @@ impl SessionActor {
             {
                 self.jev_auto_pick_mode(&user_message).await;
             }
-            self.inject_execution_mode_reminder();
+            self.inject_execution_mode_reminder_at_turn_start().await;
             self.inject_fork_reminder().await;
             self.inject_resumed_tasks_reminder();
             if policy.authority.is_human_intent() {

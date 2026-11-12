@@ -27,6 +27,77 @@ async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effo
     }).await;
 }
 
+/// Restating an unchanged mode at every turn start only adds an identical
+/// message the model already has. The turn-start copy is skipped while the
+/// latest directive in live history, after the last compaction output, is
+/// the current mode's; a mode change or a compaction brings it back.
+#[tokio::test(flavor = "current_thread")]
+async fn turn_start_states_the_mode_once_until_it_changes_or_history_is_compacted() {
+    use distill_tool_types::ExecutionMode;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let actor = super::support::plain_actor().await;
+            let directives = |conversation: &[ConversationItem]| -> Vec<String> {
+                conversation
+                    .iter()
+                    .map(ConversationItem::text_content)
+                    .filter(|text| text.contains("supersedes all earlier execution mode reminders"))
+                    .collect()
+            };
+            let turn = |request: &'static str| {
+                let actor = &actor;
+                async move {
+                    actor.inject_execution_mode_reminder_at_turn_start().await;
+                    actor
+                        .chat_state_handle
+                        .push_user_message(ConversationItem::user(request));
+                    actor
+                        .chat_state_handle
+                        .push_assistant_response(ConversationItem::assistant("Done."));
+                }
+            };
+            actor.execution_mode.store(ExecutionMode::Ultrasave);
+            for request in ["one", "two", "three"] {
+                turn(request).await;
+            }
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert_eq!(directives(&conversation).len(), 1, "{conversation:?}");
+
+            actor.execution_mode.store(ExecutionMode::Normal);
+            turn("four").await;
+            let stated = directives(&actor.chat_state_handle.get_conversation().await);
+            assert_eq!(stated.len(), 2);
+            assert!(stated.last().is_some_and(|text| text.contains("Normal execution mode is active")));
+
+            // Back to UltraSave: its old copy is superseded by the Normal one.
+            actor.execution_mode.store(ExecutionMode::Ultrasave);
+            turn("five").await;
+            assert_eq!(directives(&actor.chat_state_handle.get_conversation().await).len(), 3);
+
+            // A compaction output follows the copy: the next turn states the mode again.
+            actor
+                .chat_state_handle
+                .push_user_message(ConversationItem::user_meta("summary of the work so far"));
+            turn("six").await;
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert_eq!(directives(&conversation).len(), 4);
+            let summary = conversation
+                .iter()
+                .position(|item| item.text_content() == "summary of the work so far")
+                .expect("summary");
+            assert_eq!(
+                directives(conversation.get(summary..).unwrap_or_default()).len(),
+                1,
+                "{conversation:?}"
+            );
+
+            // The mid-turn path is unchanged: it always states the mode.
+            actor.inject_execution_mode_reminder();
+            assert_eq!(directives(&actor.chat_state_handle.get_conversation().await).len(), 5);
+        })
+        .await;
+}
+
 /// A child that cannot spawn pays for delegation advice on every turn and may
 /// try a spawn that is refused, so its directive drops exactly those sentences
 /// and keeps the care and verification ones.

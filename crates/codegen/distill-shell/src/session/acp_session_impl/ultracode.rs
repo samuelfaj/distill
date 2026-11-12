@@ -48,8 +48,25 @@ impl SessionActor {
         has_spawn_tool && below_ceiling
     }
 
-    /// Every turn states the authority, including Normal after switching off.
+    /// States the authority for the current mode, including Normal after
+    /// switching off. A mid-turn mode change always calls this.
     pub(super) fn inject_execution_mode_reminder(&self) {
+        self.chat_state_handle
+            .push_user_message(self.execution_mode_reminder());
+    }
+
+    /// Turn start: states the mode unless the live history already does, so
+    /// an unchanged mode is not repeated every turn. Decided from the history
+    /// itself, never a remembered flag, so rewind, fork and resume stay right.
+    pub(super) async fn inject_execution_mode_reminder_at_turn_start(&self) {
+        let reminder = self.execution_mode_reminder();
+        let conversation = self.chat_state_handle.get_conversation().await;
+        if !execution_mode_already_stated(&conversation, &reminder) {
+            self.chat_state_handle.push_user_message(reminder);
+        }
+    }
+
+    fn execution_mode_reminder(&self) -> ConversationItem {
         use distill_tool_types::ExecutionMode;
         let leaf_ultracode;
         let directive = match self.execution_mode.load() {
@@ -62,9 +79,34 @@ impl SessionActor {
             }
             ExecutionMode::Ultrasave => ULTRASAVE_DIRECTIVE,
         };
-        self.push_system_reminder_with_tag(
-            &format!("Current execution mode supersedes all earlier execution mode reminders. {directive}"),
+        super::reminders::wrap_in_reminder_tag(
+            &format!("{DIRECTIVE_LEAD} {directive}"),
             self.reminder_wrapper_tag(),
-        );
+        )
     }
+}
+
+const DIRECTIVE_LEAD: &str = "Current execution mode supersedes all earlier execution mode reminders.";
+
+/// Whether the latest execution-mode directive after the last compaction
+/// output is `reminder`. Compaction drops earlier directives, and a later
+/// directive for another mode supersedes an older copy of this one.
+fn execution_mode_already_stated(conversation: &[ConversationItem], reminder: &ConversationItem) -> bool {
+    use distill_sampling_types::SyntheticReason;
+    let is_user = |item: &ConversationItem, reason: SyntheticReason| {
+        matches!(item, ConversationItem::User(user) if user.synthetic_reason == reason)
+    };
+    let after_compaction = conversation
+        .iter()
+        .rposition(|item| is_user(item, SyntheticReason::CompactionMeta))
+        .map_or(0, |index| index + 1);
+    conversation
+        .get(after_compaction..)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .find(|item| {
+            is_user(item, SyntheticReason::SystemReminder) && item.text_content().contains(DIRECTIVE_LEAD)
+        })
+        .is_some_and(|latest| latest.text_content() == reminder.text_content())
 }

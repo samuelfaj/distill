@@ -550,12 +550,51 @@ Eight levers affect what reaches the model:
   `docs/jev-routing.md`). They are off by default: no pass-rate evidence yet
   shows that compacting more often keeps tasks passing. Their compactions count
   under `compaction_timing` as `compact:max-prompt`, `compact:cold-resume` and
-  `compact:cold-headless`.
+  `compact:cold-headless`. The effective mode's policy row layers on top of
+  them; see "Context by mode" below.
 - `e_retention` keeps only the payload chunks a task still needs, asking one
   question per chunk. It is off by default, and when on runs only on an output
   utility selection left as it was (no lane, a failed or unpaying selection): its
   questions never carried the chunk text (60 logged runs, no trim), and
   utility selection already keeps a result's edges and failure lines.
+
+### Context by mode
+
+The cold-return compaction, the absolute prompt cap and file-read narrowing
+follow the effective mode's policy row (see `docs/mode-policy.md`), so they
+also apply under Auto. Every mode is on its v2 row by default:
+
+| Mode (v2 row) | Cold return | Prompt cap | File reads |
+|---|---|---|---|
+| Normal | `[compaction]` values | `[compaction] max_prompt_tokens` | may be narrowed |
+| UltraSave | `auto`: compacts at a cold moment without asking | 250,000 tokens | may be narrowed (today's floors) |
+| UltraFast | `off`: no question, no compaction for cost | none | may be narrowed |
+| UltraCode | `offer`: asks | none | never narrowed, in children too |
+
+- Precedence, for the cold-return behaviour and the cap: an explicit
+  `[modes.<mode>]` key (`cold_return`, `max_prompt_tokens`; `ultrasave`,
+  `ultrafast` and `ultracode`) wins, then the row's value, then the
+  `[compaction]` key. A cap of `0` turns a cap off at either level.
+- The percent threshold (`auto_compact_threshold_percent`) applies in every
+  mode: it is about fitting the context window, not about cost.
+- UltraSave's automatic compaction starts at the smallest history a summary
+  pays for within 7 later requests at the session model's cache-read price:
+  `N = S + 6.25 × S / (7 × ratio)` with a 10,000-token summary `S`, about
+  100,000 tokens at a 0.1x cache read, 189,000 at 0.05x and 367,000 at 0.025x,
+  and never below `[compaction] cold_return_min_tokens`.
+- The cap fires only before the first request of a human turn, never mid-turn.
+- The 250,000-token cap and UltraSave's automatic compaction have not been
+  benchmarked; compacting more often can lower the pass rate on long tasks.
+- `[modes] v2 = []` turns the rows off: every mode then uses the `[compaction]`
+  keys, with `[modes.ultrasave]` replacing them in UltraSave, and file reads
+  may be narrowed in every mode.
+- `usage.json` counts what the rows did: `policy:<mode>` rows
+  `compaction:cold_return`, `compaction:max_prompt` (a compaction the
+  `[compaction]` keys alone would not have made; the byte fields of
+  `mode_compaction` hold its tokens before and after), `cold_return_skipped`
+  (a question or compaction the row suppressed) and `read_not_narrowed` (at
+  most once per round). `read_reread` / `after-selection` counts, in every
+  mode, a read of a file whose earlier read in the same turn was narrowed.
 
 ### History eviction
 

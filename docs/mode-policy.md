@@ -111,12 +111,36 @@ yet; nothing here is a measured result.
 Each time a policy rule acts, the harness records a policy row: a count under
 `utilityOutcomes["policy:<mode>"]` in the session's `usage.json` and a
 `mode_policy` event in `events.jsonl` with `seq`, `mode`, `rule` and `round`.
-The rule is a short identifier; anything else is replaced by its hash. Two
-rules are recorded today: `review_verdict:reviewed` or
-`review_verdict:unverified` when the UltraCode turn review ends, and
-`compaction:cold_return` or `compaction:max_prompt` when a
-`[modes.ultrasave]` key decided a compaction that the `[compaction]` keys
-alone would not have.
+The rule is a short identifier; anything else is replaced by its hash. The
+rules recorded today: `review_verdict:reviewed` or
+`review_verdict:unverified` when the UltraCode turn review ends;
+`compaction:cold_return` or `compaction:max_prompt` when a mode's row or
+`[modes.<mode>]` key decided a compaction that the `[compaction]` keys alone
+would not have; `cold_return_skipped` when the row suppressed a question or a
+compaction those keys would have made; and `read_not_narrowed` (at most once
+per round) when the row kept a file read whole.
+
+## Context policy
+
+The cold-return compaction, the absolute prompt cap and file-read narrowing
+read the effective mode's row, so they apply under Auto too. On by default
+(every mode is on its v2 row); `[modes] v2 = []` turns them off.
+
+| Row | Cold return | Prompt cap | File reads |
+|---|---|---|---|
+| Normal (both rows), every `today` row | `[compaction]` values | `[compaction]` value | may be narrowed |
+| UltraSave v2 | `auto`, from the price-table floor | 250,000 tokens | may be narrowed |
+| UltraFast v2 | `off` | none | may be narrowed |
+| UltraCode v2 | `offer` | none | never narrowed, in children too |
+
+On the `today` rows `[modes.ultrasave]` still replaces the `[compaction]` keys
+in UltraSave. Precedence on the v2 rows: an explicit `[modes.<mode>]`
+`cold_return` or `max_prompt_tokens` wins, then the row's value, then the
+`[compaction]` key; `0` turns a cap off. The percent threshold applies in
+every mode, and the cap fires only before a human turn's first request. The
+250,000-token cap and UltraSave's automatic compaction have not been
+benchmarked: compacting more often can lower the pass rate on long tasks.
+Details and counters are in `docs/token-saver.md` ("Context by mode").
 
 ## Turn outcome record
 

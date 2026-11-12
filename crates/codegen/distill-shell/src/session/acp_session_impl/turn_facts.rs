@@ -194,6 +194,20 @@ impl TurnFacts {
             worktree: context.worktree.clone(),
             finished_at: std::time::SystemTime::now(),
         };
+        // The marker was just taken, so a check that has one ran on the
+        // current tree.
+        crate::jev::emit_outcome_event(None, |round| {
+            distill_session_events::Event::CheckRecorded {
+                outcome: match outcome {
+                    CheckOutcome::Passed => distill_session_events::CheckRecordedOutcome::Passed,
+                    CheckOutcome::Failed => distill_session_events::CheckRecordedOutcome::Failed,
+                    CheckOutcome::Unknown => distill_session_events::CheckRecordedOutcome::Unknown,
+                },
+                command_hash: crate::jev::outcome_hash(command),
+                on_current_tree: context.worktree.is_some().then_some(true),
+                round,
+            }
+        });
         if let Some(previous) = self.checks.iter_mut().find(|previous| {
             previous.command_hash == check.command_hash
                 && previous.cwd == check.cwd
@@ -340,7 +354,7 @@ pub(crate) fn looks_like_check_command(command: &str) -> bool {
 
 /// Whether a shell command delivers work: `git commit`, `git push`,
 /// `gh pr create` or `gh pr merge`, in any stage of the command.
-fn is_delivery_command(command: &str) -> bool {
+pub(crate) fn is_delivery_command(command: &str) -> bool {
     shell_stages(command).iter().any(|(_, stage)| {
         // Leading `NAME=value` assignments are not the program.
         let mut words = stage

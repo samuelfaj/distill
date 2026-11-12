@@ -110,6 +110,12 @@ pub(crate) async fn handle_with_config(
     } else {
         handle.execution_mode.store(mode);
     }
+    crate::jev::emit_mode_switched(
+        Some(handle.info.id.0.as_ref()),
+        current,
+        mode,
+        distill_session_events::ModeSwitchTrigger::User,
+    );
     if choice != current_choice {
         change_pinned_mode(agent, &handle.info, choice, root).await;
     }

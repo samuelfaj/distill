@@ -1831,6 +1831,94 @@ fn emit_jev_event(build: impl FnOnce(u64, Option<u64>) -> distill_session_events
     writer.emit(build(seq, round));
 }
 
+/// Writes one outcome fact (a check, a reminder and what followed it, a mode
+/// switch, a raised effort floor, a skill hint or read) to the events of
+/// `session_id`, or of the active session when `None`; a no-op outside a
+/// registered session. Facts take no decision sequence number, and only the
+/// active session's facts carry its round.
+pub(crate) fn emit_outcome_event(
+    session_id: Option<&str>,
+    build: impl FnOnce(Option<u64>) -> distill_session_events::Event,
+) {
+    let round = match session_id {
+        Some(_) => None,
+        None => ACTIVE_ROUND_ID.try_with(std::cell::Cell::get).ok(),
+    };
+    let session_id = session_id.map_or_else(active_session_id, str::to_owned);
+    let Some(writer) = session_jev_events()
+        .lock()
+        .ok()
+        .and_then(|sessions| sessions.get(&session_id)?.writer.upgrade())
+    else {
+        return;
+    };
+    writer.emit(build(round));
+}
+
+/// 12 hex over a command, skill name or working-tree marker: an outcome fact
+/// never carries the text itself.
+pub(crate) fn outcome_hash(text: &str) -> String {
+    short_hash(text.as_bytes())
+}
+
+/// An id an outcome fact carries, hashed unless it is a short identifier.
+pub(crate) fn outcome_id(raw: &str) -> String {
+    event_id(raw)
+}
+
+/// One `mode_switched` fact, only when the effective mode really changed.
+pub(crate) fn emit_mode_switched(
+    session_id: Option<&str>,
+    from: distill_tool_types::ExecutionMode,
+    to: distill_tool_types::ExecutionMode,
+    trigger: distill_session_events::ModeSwitchTrigger,
+) {
+    use distill_tool_types::ExecutionMode;
+    let id = |mode| match mode {
+        ExecutionMode::Normal => "normal",
+        ExecutionMode::Ultrafast => "ultrafast",
+        ExecutionMode::Ultracode => "ultracode",
+        ExecutionMode::Ultrasave => "ultrasave",
+    };
+    if from != to {
+        emit_outcome_event(session_id, |round| {
+            distill_session_events::Event::ModeSwitched {
+                from: id(from),
+                to: id(to),
+                trigger,
+                round,
+            }
+        });
+    }
+}
+
+/// One `skill_suggested` or `skill_read` fact for the skill called `name`.
+pub(crate) fn emit_skill_fact(name: &str, read: bool) {
+    let name_hash = outcome_hash(name);
+    emit_outcome_event(None, |round| {
+        if read {
+            distill_session_events::Event::SkillRead { name_hash, round }
+        } else {
+            distill_session_events::Event::SkillSuggested { name_hash, round }
+        }
+    });
+}
+
+/// Runs `body` in a turn scope of `session_id` whose events go to a fresh
+/// file; returns that file's text.
+#[cfg(test)]
+pub(crate) async fn session_events_text_for_test(
+    session_id: &str,
+    body: impl Future<Output = ()>,
+) -> String {
+    let dir = tempfile::tempdir().expect("events dir");
+    let writer = distill_session_events::EventWriter::open(dir.path());
+    register_session_events(session_id, &writer);
+    with_session_scope(session_id.to_owned(), body).await;
+    drop(writer);
+    std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap_or_default()
+}
+
 /// Per-lever counts of each composed label in the session's usage.json
 /// (`utilityOutcomes["jev:<lever>"]`); nothing without a usage recorder.
 fn count_jev_outcome(lever: distill_workspace::jev::flags::JevLever, label: &str) {

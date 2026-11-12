@@ -1514,6 +1514,7 @@ impl SessionActor {
                 }
             }
         };
+        Box::pin(self.emit_final_check_followup()).await;
         if matches!(
             result,
             Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. })
@@ -3719,6 +3720,11 @@ impl SessionActor {
             let final_check_confirmed = std::mem::take(&mut final_check_reply_pending)
                 && final_answer_text.is_none()
                 && is_final_check_confirmation(&response.assistant_text(), !tool_calls.is_empty());
+            if final_check_confirmed
+                && let Some(followup) = self.jev_ledger.borrow_mut().final_check_followup.as_mut()
+            {
+                followup.fixed_token = true;
+            }
             if final_check_confirmed {
                 tracing::info!(
                     prompt_id = %req_id,
@@ -4368,8 +4374,137 @@ impl SessionActor {
             );
             result
         });
-        final_check_reminder(c1.as_ref(), c3.as_ref(), false).is_some()
+        let fires = final_check_reminder(c1.as_ref(), c3.as_ref(), false).is_some();
+        if fires {
+            self.note_final_check_reminder(
+                final_check_label(c1.as_ref(), c3.as_ref()),
+                current_tree,
+            );
+        }
+        fires
     }
+
+    /// The `final_check_reminder` fact; the caller appends the reminder.
+    fn note_final_check_reminder(&self, label: String, worktree: Option<String>) {
+        let mut ledger = self.jev_ledger.borrow_mut();
+        ledger.final_check_reminders = ledger.final_check_reminders.saturating_add(1);
+        let seq = ledger.final_check_reminders;
+        crate::jev::emit_outcome_event(None, |_| {
+            distill_session_events::Event::FinalCheckReminder {
+                seq,
+                label,
+                worktree_hash: worktree.as_deref().map(crate::jev::outcome_hash),
+            }
+        });
+        ledger.final_check_followup = Some(super::jev_ledger::FinalCheckFollowup {
+            reminder_seq: seq,
+            worktree,
+            ..Default::default()
+        });
+    }
+
+    /// What one finished tool call adds to the outcome facts: a round, edit
+    /// or delivery after a final-check reminder, and a skill read.
+    pub(super) async fn note_tool_outcome_facts(
+        &self,
+        tool_name: &str,
+        output: &distill_tools::types::output::ToolOutput,
+    ) {
+        use distill_tools::types::output::{ReadFileOutput, ToolOutput};
+        if let Some(followup) = self.jev_ledger.borrow_mut().final_check_followup.as_mut() {
+            let round = crate::jev::telemetry_context().2;
+            if followup.last_round != Some(round) {
+                followup.last_round = Some(round);
+                followup.tool_rounds = followup.tool_rounds.saturating_add(1);
+            }
+            followup.edited |= is_edit_tool(tool_name);
+            followup.delivered |= matches!(output, ToolOutput::Bash(bash)
+                if super::turn_facts::is_delivery_command(&bash.command));
+        }
+        match output {
+            ToolOutput::Skill(skill) if skill.success => {
+                crate::jev::emit_skill_fact(&skill.skill_name, true);
+            }
+            // A skill is read through its catalog path. Only a Markdown read
+            // pays for the catalog lookup.
+            ToolOutput::ReadFile(ReadFileOutput::FileContent(file))
+                if file
+                    .absolute_path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md")) =>
+            {
+                let read = dunce::canonicalize(&file.absolute_path).ok();
+                let catalog = self.tool_bridge_handle().slash_skills().await;
+                if let Some(skill) = catalog.iter().find(|skill| {
+                    let path = std::path::Path::new(&skill.path);
+                    path == file.absolute_path
+                        || (path.file_name() == file.absolute_path.file_name()
+                            && read.is_some()
+                            && dunce::canonicalize(path).ok() == read)
+                }) {
+                    crate::jev::emit_skill_fact(&skill.name, true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The `final_check_followup` fact of a request that got a reminder, once.
+    async fn emit_final_check_followup(&self) {
+        let Some(followup) = self.jev_ledger.borrow_mut().final_check_followup.take() else {
+            return;
+        };
+        let worktree_changed = match followup.worktree.as_deref() {
+            Some(then) => super::turn_facts::worktree_marker(self.tool_context.cwd.as_path())
+                .await
+                .map(|now| now != then),
+            None => None,
+        };
+        crate::jev::emit_outcome_event(None, |_| {
+            distill_session_events::Event::FinalCheckFollowup {
+                reminder_seq: followup.reminder_seq,
+                tool_rounds: followup.tool_rounds,
+                edited: followup.edited,
+                delivered: followup.delivered,
+                fixed_token: followup.fixed_token,
+                worktree_changed,
+            }
+        });
+    }
+}
+
+/// The labels C1 and C3 recorded for a final check, as one id.
+fn final_check_label(
+    c1: Option<&distill_workspace::jev::catalog::verify::PrematureStop>,
+    c3: Option<&distill_workspace::jev::catalog::verify::CompletionCheck>,
+) -> String {
+    let c1 = c1.map_or("none", |check| {
+        if check.deferred {
+            "defer"
+        } else if check.continue_working {
+            "incomplete"
+        } else {
+            "complete"
+        }
+    });
+    let c3 = c3.map_or("none", |check| {
+        if check.deferred {
+            "defer"
+        } else if check.complete {
+            "complete"
+        } else {
+            "incomplete"
+        }
+    });
+    format!("c1:{c1},c3:{c3}")
+}
+
+/// The edit tools the final check's `edits_made` counts.
+fn is_edit_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "search_replace" | "write" | "hashline_edit" | "apply_patch"
+    )
 }
 #[cfg(test)]
 mod jev_final_check_tests {
@@ -4493,6 +4628,227 @@ mod jev_final_check_tests {
         assert_eq!(evidence["delivery_command_ran"], true);
         let unknown_tree = final_check_evidence(&facts, None);
         assert!(unknown_tree["recorded_checks"][0]["ran_after_last_change"].is_null());
+    }
+}
+
+/// Outcome facts: each lands once in `events.jsonl` at its point, with ids,
+/// numbers and hashes only, so a decision can be judged by what followed it
+/// without the session's text ever reaching the event log.
+#[cfg(test)]
+mod outcome_fact_tests {
+    use super::super::support::*;
+    use super::super::turn_facts::{CheckContext, TurnFacts};
+    use super::*;
+    use distill_tools::types::output::{BashOutput, ToolOutput};
+
+    const SENTINEL: &str = "SENTINEL-7f3a-private-text";
+
+    /// [`crate::jev::session_events_text_for_test`] and its lines.
+    async fn facts_of(
+        session_id: &str,
+        body: impl std::future::Future<Output = ()>,
+    ) -> (String, Vec<serde_json::Value>) {
+        let text = crate::jev::session_events_text_for_test(session_id, body).await;
+        let lines = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("event line is JSON"))
+            .collect();
+        (text, lines)
+    }
+
+    fn of_type<'a>(events: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
+        events
+            .iter()
+            .filter(|event| event["type"] == kind)
+            .collect()
+    }
+
+    fn bash(command: &str, exit_code: i32, output: &str) -> ToolOutput {
+        ToolOutput::Bash(BashOutput {
+            output: Vec::new(),
+            output_for_prompt: output.to_owned(),
+            exit_code,
+            command: command.to_owned(),
+            truncated: false,
+            signal: None,
+            timed_out: false,
+            description: None,
+            current_dir: "/repo".to_owned(),
+            output_file: String::new(),
+            total_bytes: 0,
+            output_delta: None,
+            was_bare_echo: false,
+        })
+    }
+
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// Every recorded check is one fact, merged runs included, so a lean pick
+    /// can later be labelled by a failing check; the command itself (here
+    /// holding a sentinel) never reaches the file, only its hash.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn each_recorded_check_is_one_fact_without_its_command() {
+        let failing = format!("cargo test {SENTINEL}");
+        let (text, events) = facts_of("check-facts", async {
+            crate::jev::begin_model_round();
+            let mut facts = TurnFacts::default();
+            let marked = CheckContext {
+                cwd: "/repo".to_owned(),
+                worktree: Some("tree-1".to_owned()),
+            };
+            facts.note_tool_result_at("1", &bash(&failing, 101, "test result: FAILED"), &marked);
+            facts.note_tool_result_at("2", &bash("ls src", 0, ""), &marked);
+            facts.note_tool_result_at("3", &bash("cargo build", 0, ""), &CheckContext::default());
+        })
+        .await;
+        let checks = of_type(&events, "check_recorded");
+        assert_eq!(checks.len(), 2, "one per check, none for `ls`: {events:?}");
+        assert_eq!(checks[0]["outcome"], "failed");
+        assert_eq!(
+            checks[0]["command_hash"],
+            crate::jev::outcome_hash(&failing)
+        );
+        assert_eq!(checks[0]["command_hash"].as_str().map(str::len), Some(12));
+        assert_eq!(checks[0]["on_current_tree"], true);
+        assert_eq!(checks[0]["round"], 1);
+        assert_eq!(checks[1]["outcome"], "passed");
+        assert!(
+            checks[1].get("on_current_tree").is_none(),
+            "no marker, no claim"
+        );
+        assert!(!text.contains(SENTINEL), "{text}");
+        assert!(!text.contains("cargo"), "{text}");
+    }
+
+    /// The floor fact says the next call's effort really rose; the second
+    /// raise in a turn is refused and records nothing.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_effort_floor_fact_comes_only_when_the_floor_rises() {
+        use distill_sampling_types::ReasoningEffort;
+        let (_, events) = facts_of("floor-facts", async {
+            let mut ledger = super::super::jev_ledger::JevTurnLedger::default();
+            assert!(ledger.raise_effort_floor("high", ReasoningEffort::High));
+            assert!(!ledger.raise_effort_floor("max", ReasoningEffort::Max));
+        })
+        .await;
+        let raised = of_type(&events, "effort_floor_raised");
+        assert_eq!(raised.len(), 1, "{events:?}");
+        assert_eq!(raised[0]["level"], "high");
+        assert_eq!(raised[0]["trigger"], "unspecified");
+    }
+
+    /// A reminder is one fact with its session sequence and the C1/C3 labels;
+    /// its follow-up comes once, when the request ends, counting tool rounds
+    /// (not calls) after the reminder, an edit, a delivery and a shell change
+    /// to the working tree, which only the tree marker can see.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_reminder_and_its_followup_are_one_fact_each() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let repo = tempfile::tempdir().unwrap();
+                git(repo.path(), &["init", "-q"]);
+                std::fs::write(repo.path().join("app.rs"), "one\n").unwrap();
+                let mut actor = plain_actor().await;
+                actor.tool_context.cwd =
+                    distill_paths::AbsPathBuf::new(repo.path().to_path_buf()).unwrap();
+                let session_id = actor.session_info.id.0.to_string();
+                let (text, events) = facts_of(&session_id, async {
+                    crate::jev::begin_model_round();
+                    let tree = super::super::turn_facts::worktree_marker(repo.path()).await;
+                    assert!(tree.is_some());
+                    actor.note_final_check_reminder(
+                        "c1:incomplete,c3:complete".to_owned(),
+                        tree.clone(),
+                    );
+                    crate::jev::begin_model_round();
+                    actor
+                        .note_tool_outcome_facts("read_file", &bash("cat app.rs", 0, ""))
+                        .await;
+                    actor
+                        .note_tool_outcome_facts("search_replace", &bash("true", 0, ""))
+                        .await;
+                    crate::jev::begin_model_round();
+                    std::fs::write(repo.path().join("app.rs"), "two, longer\n").unwrap();
+                    actor
+                        .note_tool_outcome_facts(
+                            "run_terminal_command",
+                            &bash(&format!("git commit -m '{SENTINEL}'"), 0, ""),
+                        )
+                        .await;
+                    crate::jev::begin_model_round();
+                    actor.emit_final_check_followup().await;
+                    actor.emit_final_check_followup().await;
+
+                    // A second reminder with nothing done after it.
+                    actor.note_final_check_reminder(
+                        "c1:complete,c3:incomplete".to_owned(),
+                        super::super::turn_facts::worktree_marker(repo.path()).await,
+                    );
+                    actor.emit_final_check_followup().await;
+                })
+                .await;
+                let reminders = of_type(&events, "final_check_reminder");
+                assert_eq!(reminders.len(), 2, "{events:?}");
+                assert_eq!(reminders[0]["seq"], 1);
+                assert_eq!(reminders[0]["label"], "c1:incomplete,c3:complete");
+                assert_eq!(
+                    reminders[0]["worktree_hash"].as_str().map(str::len),
+                    Some(12)
+                );
+                assert_eq!(reminders[1]["seq"], 2);
+                let followups = of_type(&events, "final_check_followup");
+                assert_eq!(followups.len(), 2, "one per reminder: {events:?}");
+                assert_eq!(followups[0]["reminder_seq"], 1);
+                assert_eq!(followups[0]["tool_rounds"], 2, "three calls in two rounds");
+                assert_eq!(followups[0]["edited"], true);
+                assert_eq!(followups[0]["delivered"], true);
+                assert_eq!(followups[0]["fixed_token"], false);
+                assert_eq!(followups[0]["worktree_changed"], true);
+                assert_eq!(followups[1]["reminder_seq"], 2);
+                assert_eq!(followups[1]["tool_rounds"], 0);
+                assert_eq!(followups[1]["edited"], false);
+                assert_eq!(followups[1]["delivered"], false);
+                assert_eq!(followups[1]["worktree_changed"], false);
+                assert!(!text.contains(SENTINEL), "{text}");
+            })
+            .await;
+    }
+
+    /// Outside a Git worktree there is no marker: the hash and the change
+    /// flag are left out rather than guessed.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn without_a_worktree_marker_the_tree_fields_are_absent() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let outside = tempfile::tempdir().unwrap();
+                let mut actor = plain_actor().await;
+                actor.tool_context.cwd =
+                    distill_paths::AbsPathBuf::new(outside.path().to_path_buf()).unwrap();
+                let session_id = actor.session_info.id.0.to_string();
+                let (_, events) = facts_of(&session_id, async {
+                    actor.note_final_check_reminder("c1:none,c3:incomplete".to_owned(), None);
+                    actor.emit_final_check_followup().await;
+                })
+                .await;
+                let reminder = of_type(&events, "final_check_reminder");
+                assert_eq!(reminder.len(), 1);
+                assert!(reminder[0].get("worktree_hash").is_none());
+                let followup = of_type(&events, "final_check_followup");
+                assert_eq!(followup.len(), 1);
+                assert!(followup[0].get("worktree_changed").is_none());
+            })
+            .await;
     }
 }
 
@@ -4705,6 +5061,108 @@ mod final_check_confirmation_turn_tests {
             .filter(|item| matches!(item, ConversationItem::ToolResult(_)))
             .count();
         assert_eq!(results, 2, "the second tool call ran");
+    }
+
+    const SENTINEL: &str = "SENTINEL-c41b-user-text";
+
+    /// [`run_turn`] with the session's outcome facts written to a file and a
+    /// sentinel in the prompt; returns that file's text.
+    fn run_turn_facts(after_reminder: Vec<ScriptedResponse>) -> String {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            // A debug-build turn future outgrows the usual 16 MiB test stack.
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime");
+                tokio::task::LocalSet::new().block_on(&runtime, async move {
+                    let server = MockInferenceServer::start().await.expect("mock server");
+                    server.enqueue_response("/v1/responses", tool_call("call-1"));
+                    server.enqueue_response("/v1/responses", text(FIRST_FINAL));
+                    for response in after_reminder {
+                        server.enqueue_response("/v1/responses", response);
+                    }
+                    let actor = actor_for(&server).await;
+                    let dir = tempfile::tempdir().unwrap();
+                    let writer = distill_session_events::EventWriter::open(dir.path());
+                    crate::jev::register_session_events(actor.session_info.id.0.as_ref(), &writer);
+                    final_check_finds_work_missing();
+                    let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(format!(
+                        "mark the todo done {SENTINEL}"
+                    )))];
+                    let outcome = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        actor.handle_prompt(
+                            "final-check-facts",
+                            prompt,
+                            PromptMode::Agent,
+                            None,
+                            None,
+                            None,
+                            None,
+                            true,
+                            false,
+                            None,
+                            None,
+                            None,
+                        ),
+                    )
+                    .await
+                    .expect("turn must finish within timeout");
+                    crate::jev::clear_test_decision_answers();
+                    assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
+                    drop(writer);
+                    let text = std::fs::read_to_string(dir.path().join("events.jsonl"))
+                        .unwrap_or_default();
+                    sender.send(text).expect("send result");
+                });
+            })
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread");
+        receiver.recv().expect("turn result")
+    }
+
+    fn facts(text: &str, kind: &str) -> Vec<serde_json::Value> {
+        text.lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON line"))
+            .filter(|event| event["type"] == kind)
+            .collect()
+    }
+
+    /// Real work after the reminder: one reminder fact and, when the turn
+    /// ends, one follow-up counting the two tool rounds that ran after it.
+    /// Neither the request, the replies nor the reminder text is written.
+    #[test]
+    fn the_followup_counts_the_tool_rounds_after_the_reminder() {
+        let last = format!("Re-ran the update twice; done. {SENTINEL}");
+        let text = run_turn_facts(vec![tool_call("call-2"), tool_call("call-3"), text(&last)]);
+        let reminders = facts(&text, "final_check_reminder");
+        assert_eq!(reminders.len(), 1, "{text}");
+        assert_eq!(reminders[0]["seq"], 1);
+        assert_eq!(reminders[0]["label"], "c1:incomplete,c3:incomplete");
+        let followups = facts(&text, "final_check_followup");
+        assert_eq!(followups.len(), 1, "{text}");
+        assert_eq!(followups[0]["reminder_seq"], 1);
+        assert_eq!(followups[0]["tool_rounds"], 2);
+        assert_eq!(followups[0]["edited"], false, "todo_write is not an edit");
+        assert_eq!(followups[0]["delivered"], false);
+        assert_eq!(followups[0]["fixed_token"], false);
+        assert!(!text.contains(SENTINEL), "{text}");
+        assert!(!text.contains(FINAL_CHECK_NOTHING_OUTSTANDING), "{text}");
+        assert!(!text.contains("Review the user request"), "{text}");
+    }
+
+    /// The bare token is a no-op reply: no tool round, `fixed_token` set.
+    #[test]
+    fn the_followup_marks_the_bare_token() {
+        let text = run_turn_facts(vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)]);
+        let followups = facts(&text, "final_check_followup");
+        assert_eq!(followups.len(), 1, "{text}");
+        assert_eq!(followups[0]["tool_rounds"], 0);
+        assert_eq!(followups[0]["fixed_token"], true);
     }
 }
 

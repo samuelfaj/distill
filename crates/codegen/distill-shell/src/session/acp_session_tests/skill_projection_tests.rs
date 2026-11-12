@@ -734,3 +734,132 @@ async fn ultrasave_narrows_descriptors_but_preserves_pins_and_catalog_recovery()
         }
     }).await;
 }
+
+/// A skill name the events must never carry.
+const SENTINEL_SKILL: &str = "sentinel-skill-9d2e";
+
+fn read_of(path: &str) -> distill_tools::types::output::ToolOutput {
+    use distill_tools::types::output::{FileContent, ReadFileOutput, ToolOutput};
+    ToolOutput::ReadFile(ReadFileOutput::FileContent(FileContent {
+        content: String::new(),
+        content_concise: None,
+        absolute_path: path.into(),
+        offset: None,
+        limit: None,
+        raw_output: String::new(),
+        total_lines: 0,
+        extracted_images: Vec::new(),
+    }))
+}
+
+fn skill_call(name: &str, success: bool) -> distill_tools::types::output::ToolOutput {
+    distill_tools::types::output::ToolOutput::Skill(
+        distill_tools::implementations::skills::skill::SkillOutput {
+            success,
+            tool_result: String::new(),
+            skill_name: name.to_owned(),
+            skill_message: None,
+            error: None,
+        },
+    )
+}
+
+/// Whether a skill hint is followed can only be measured against the base
+/// rate if the hint and every skill read are facts. A read counts when it is
+/// a catalog skill's path or a Skill call; the user's own named skill is not
+/// a ranking hint; and the skill name itself never reaches the events.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn ranked_hints_and_skill_reads_are_name_hashed_facts() {
+    with_actor(|actor| async move {
+        let skills = SKILLS
+            .iter()
+            .chain([&SENTINEL_SKILL])
+            .map(
+                |name| distill_tools::implementations::skills::types::SkillInfo {
+                    name: name.to_string(),
+                    description: format!("Does {name} things."),
+                    path: format!("/skills/{name}/SKILL.md"),
+                    enabled: true,
+                    ..Default::default()
+                },
+            )
+            .collect();
+        actor
+            .tool_bridge_handle()
+            .seed_skill_discovery(None, None, skills, None, None, None, Default::default())
+            .await;
+        crate::jev::set_test_decision_answers([
+            Some(ranking(SENTINEL_SKILL, 0.85, [0.9, 0.9, 0.1])),
+            Some(ranking("slides", 0.85, [0.1, 0.1, 0.9])),
+        ]);
+        let session_id = actor.session_info.id.0.to_string();
+        let text = crate::jev::session_events_text_for_test(&session_id, async {
+            let hint = actor
+                .jev_skill_relevance_hint("build the thing")
+                .await
+                .expect("hint");
+            assert!(hint.contains(SENTINEL_SKILL), "{hint}");
+            let none = actor
+                .jev_skill_relevance_hint("explain what a monad is")
+                .await
+                .expect("hint");
+            assert!(none.contains("No skill"), "{none}");
+            let named = actor
+                .jev_skill_relevance_hint("run /graphify on the docs folder")
+                .await
+                .expect("hint");
+            assert!(named.contains("The user named"), "{named}");
+            let path = format!("/skills/{SENTINEL_SKILL}/SKILL.md");
+            actor
+                .note_tool_outcome_facts("read_file", &read_of(&path))
+                .await;
+            actor
+                .note_tool_outcome_facts("read_file", &read_of("/docs/notes/SKILL.md"))
+                .await;
+            actor
+                .note_tool_outcome_facts("read_file", &read_of("/repo/src/main.rs"))
+                .await;
+            actor
+                .note_tool_outcome_facts("skill", &skill_call("pdf", true))
+                .await;
+            actor
+                .note_tool_outcome_facts("skill", &skill_call("brand", false))
+                .await;
+        })
+        .await;
+        let facts = |kind: &str| -> Vec<serde_json::Value> {
+            text.lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|event| event["type"] == kind)
+                .collect()
+        };
+        let suggested = facts("skill_suggested");
+        assert_eq!(suggested.len(), 1, "only the ranked hint: {text}");
+        assert_eq!(
+            suggested[0]["name_hash"],
+            crate::jev::outcome_hash(SENTINEL_SKILL)
+        );
+        let read: Vec<_> = facts("skill_read")
+            .into_iter()
+            .map(|event| event["name_hash"].clone())
+            .collect();
+        assert_eq!(
+            read,
+            [
+                crate::jev::outcome_hash(SENTINEL_SKILL),
+                crate::jev::outcome_hash("pdf")
+            ],
+            "the catalog path and the successful Skill call only: {text}"
+        );
+        // The P6 `jev_decision` line names its options (skill names) by id;
+        // the facts themselves never carry the name.
+        for line in text
+            .lines()
+            .filter(|line| !line.contains("\"type\":\"jev_decision\""))
+        {
+            assert!(!line.contains(SENTINEL_SKILL), "{line}");
+        }
+    })
+    .await;
+}

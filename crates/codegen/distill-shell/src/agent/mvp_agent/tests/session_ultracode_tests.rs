@@ -234,6 +234,43 @@ fn execution_modes_replace_each_other_and_persist_without_changing_pins() {
     });
 }
 
+/// A user's `/mode` that changes the effective mode is one `mode_switched`
+/// fact with the `user` trigger, written to that session's events; a choice
+/// that leaves the effective mode as it was (the same mode again, or Auto,
+/// which keeps the last mode) is no switch and writes none.
+#[test]
+fn a_user_mode_change_is_one_fact_only_when_the_mode_changes() {
+    if run_in_isolated_home("a_user_mode_change_is_one_fact_only_when_the_mode_changes") {
+        return;
+    }
+    run_local_for_bridge_test(|| async {
+        let agent = agent_with_session();
+        let dir = tempfile::tempdir().unwrap();
+        let writer = distill_session_events::EventWriter::open(dir.path());
+        crate::jev::register_session_events(SESSION, &writer);
+        for mode in ["ultrasave", "ultrasave", "auto"] {
+            let params = serde_json::json!({"sessionId": SESSION, "mode": mode});
+            let request = acp::ExtRequest::new(
+                crate::extensions::session_ultracode::MODE_SET_METHOD,
+                serde_json::value::to_raw_value(&params).unwrap().into(),
+            );
+            handle(&agent, &request).await.unwrap();
+        }
+        drop(writer);
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap_or_default();
+        let switches: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|event| event["type"] == "mode_switched")
+            .collect();
+        assert_eq!(switches.len(), 1, "{text}");
+        assert_eq!(switches[0]["from"], "normal");
+        assert_eq!(switches[0]["to"], "ultrasave");
+        assert_eq!(switches[0]["trigger"], "user");
+        assert!(switches[0].get("round").is_none(), "no turn is running");
+    });
+}
+
 mod pinned_mode_model {
     //! `[modes.ultrasave]` / `[modes.ultrafast]`: the model and serving path of a session pinned to a mode.
     use agent_client_protocol as acp;

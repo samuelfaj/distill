@@ -13,7 +13,7 @@ pub mod types;
 pub use log::{EventWriter, WeakEventWriter};
 pub use tracker::EventTracker;
 pub use types::{
-    CancellationCategory, EVENT_SCHEMA_VERSION, Event, JevAnswerSummary, JevNoAnswerKind,
-    McpConfigServer, McpErrorCategory, PermissionDecision, Phase, SessionRelationship,
-    ToolCompletedSource, ToolOutcome, TurnOutcomeLabel,
+    CancellationCategory, CheckRecordedOutcome, EVENT_SCHEMA_VERSION, Event, JevAnswerSummary,
+    JevNoAnswerKind, McpConfigServer, McpErrorCategory, ModeSwitchTrigger, PermissionDecision,
+    Phase, SessionRelationship, ToolCompletedSource, ToolOutcome, TurnOutcomeLabel,
 };

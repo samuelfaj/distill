@@ -365,6 +365,94 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         round: Option<u64>,
     },
+    // Outcome facts a decision is later joined with. Content-free like the
+    // decision events: ids, numbers, booleans and 12-hex hashes only.
+    /// A build, test or lint the harness recorded as a check.
+    CheckRecorded {
+        outcome: CheckRecordedOutcome,
+        /// 12 hex over the full command.
+        command_hash: String,
+        /// Whether the check ran on the working tree as it is now; absent
+        /// when no working-tree marker was taken.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_current_tree: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The turn-end final check appended its reminder.
+    FinalCheckReminder {
+        /// Reminders sent in this session, this one included.
+        seq: u64,
+        /// The labels recorded for C1 and C3, as `c1:<label>,c3:<label>`.
+        label: String,
+        /// 12 hex over the working-tree marker; absent when none was taken.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        worktree_hash: Option<String>,
+    },
+    /// What the request that received a final-check reminder did after it.
+    FinalCheckFollowup {
+        reminder_seq: u64,
+        /// Rounds with at least one tool result after the reminder.
+        tool_rounds: u64,
+        /// An edit tool ran after the reminder.
+        edited: bool,
+        /// A commit, push or PR command ran after the reminder.
+        delivered: bool,
+        /// The first reply to the reminder was only the confirmation token.
+        fixed_token: bool,
+        /// The working-tree marker differs from the reminder's; absent when
+        /// either marker is missing.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        worktree_changed: Option<bool>,
+    },
+    /// The effective execution mode changed.
+    ModeSwitched {
+        from: &'static str,
+        to: &'static str,
+        trigger: ModeSwitchTrigger,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The next call's effort floor actually rose.
+    EffortFloorRaised {
+        level: String,
+        trigger: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The skill ranking surfaced a skill to the model.
+    SkillSuggested {
+        /// 12 hex over the skill name.
+        name_hash: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The model read a catalog skill file or invoked a skill.
+    SkillRead {
+        name_hash: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckRecordedOutcome {
+    Passed,
+    Failed,
+    Unknown,
+}
+
+/// What changed the effective execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeSwitchTrigger {
+    /// Auto's pick when a request starts.
+    RequestStart,
+    /// Auto's review after a tool round.
+    Review,
+    /// The user fixed a mode.
+    User,
 }
 
 /// One Jev answer as the model returned it, without any text: the picked
@@ -885,6 +973,87 @@ mod tests {
                 "kind": "no_credential",
                 "latency_ms": 0
             })
+        );
+    }
+
+    /// The decisions report joins on these names; a rename breaks it silently.
+    #[test]
+    fn outcome_facts_serialize_their_wire_shape() {
+        let shape = |event| serde_json::to_value(event).unwrap();
+        assert_eq!(
+            shape(Event::CheckRecorded {
+                outcome: CheckRecordedOutcome::Failed,
+                command_hash: "0123456789ab".into(),
+                on_current_tree: Some(true),
+                round: Some(3),
+            }),
+            serde_json::json!({"type": "check_recorded", "outcome": "failed",
+                "command_hash": "0123456789ab", "on_current_tree": true, "round": 3})
+        );
+        assert_eq!(
+            shape(Event::CheckRecorded {
+                outcome: CheckRecordedOutcome::Unknown,
+                command_hash: "0123456789ab".into(),
+                on_current_tree: None,
+                round: None,
+            }),
+            serde_json::json!({"type": "check_recorded", "outcome": "unknown",
+                "command_hash": "0123456789ab"})
+        );
+        assert_eq!(
+            shape(Event::FinalCheckReminder {
+                seq: 1,
+                label: "c1:incomplete,c3:complete".into(),
+                worktree_hash: Some("ba9876543210".into()),
+            }),
+            serde_json::json!({"type": "final_check_reminder", "seq": 1,
+                "label": "c1:incomplete,c3:complete", "worktree_hash": "ba9876543210"})
+        );
+        assert_eq!(
+            shape(Event::FinalCheckFollowup {
+                reminder_seq: 1,
+                tool_rounds: 2,
+                edited: true,
+                delivered: false,
+                fixed_token: false,
+                worktree_changed: Some(true),
+            }),
+            serde_json::json!({"type": "final_check_followup", "reminder_seq": 1,
+                "tool_rounds": 2, "edited": true, "delivered": false, "fixed_token": false,
+                "worktree_changed": true})
+        );
+        assert_eq!(
+            shape(Event::ModeSwitched {
+                from: "normal",
+                to: "ultrasave",
+                trigger: ModeSwitchTrigger::RequestStart,
+                round: Some(0),
+            }),
+            serde_json::json!({"type": "mode_switched", "from": "normal", "to": "ultrasave",
+                "trigger": "request_start", "round": 0})
+        );
+        assert_eq!(
+            shape(Event::EffortFloorRaised {
+                level: "high".into(),
+                trigger: "unspecified",
+                round: Some(4),
+            }),
+            serde_json::json!({"type": "effort_floor_raised", "level": "high",
+                "trigger": "unspecified", "round": 4})
+        );
+        assert_eq!(
+            shape(Event::SkillSuggested {
+                name_hash: "0123456789ab".into(),
+                round: None,
+            }),
+            serde_json::json!({"type": "skill_suggested", "name_hash": "0123456789ab"})
+        );
+        assert_eq!(
+            shape(Event::SkillRead {
+                name_hash: "0123456789ab".into(),
+                round: Some(2),
+            }),
+            serde_json::json!({"type": "skill_read", "name_hash": "0123456789ab", "round": 2})
         );
     }
 

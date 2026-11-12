@@ -972,6 +972,13 @@ impl SessionActor {
             let ranking = self
                 .jev_rank_skills(&bounded_request(request), &candidates)
                 .await?;
+            if let Some(skill) = ranking
+                .suggestion
+                .as_deref()
+                .and_then(|key| candidates.iter().find(|skill| skill.dedup_key() == key))
+            {
+                crate::jev::emit_skill_fact(&skill.name, false);
+            }
             match ranking
                 .suggestion
                 .as_deref()

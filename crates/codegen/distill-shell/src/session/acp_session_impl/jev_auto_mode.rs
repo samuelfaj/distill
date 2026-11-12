@@ -368,7 +368,14 @@ impl SessionActor {
             confidence,
             Some(&answers),
         );
-        self.publish_auto_mode(mode, "picked for this request");
+        if self.publish_auto_mode(mode, "picked for this request") {
+            crate::jev::emit_mode_switched(
+                None,
+                current,
+                mode,
+                distill_session_events::ModeSwitchTrigger::RequestStart,
+            );
+        }
     }
 
     /// Reconsider after each completed tool round, including short actions.
@@ -436,6 +443,12 @@ impl SessionActor {
         let switched = self.publish_auto_mode(mode, &reason);
         if switched {
             self.note_review_switch(current, rounds);
+            crate::jev::emit_mode_switched(
+                None,
+                current,
+                mode,
+                distill_session_events::ModeSwitchTrigger::Review,
+            );
         }
         switched
     }
@@ -723,6 +736,50 @@ mod tests {
                 assert_eq!(actor.execution_mode.load(), ExecutionMode::Ultrasave);
                 assert_eq!(crate::jev::test_decision_answers_remaining(), 1);
                 crate::jev::clear_test_decision_answers();
+            })
+            .await;
+    }
+
+    /// A mode abandoned within a few rounds can only be labelled if every
+    /// real change is one `mode_switched` fact with what caused it; picking
+    /// the mode already in force is no switch and writes none.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn every_real_mode_change_is_one_fact_with_its_trigger() {
+        use ExecutionMode::{Normal, Ultracode};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+                let actor = super::super::support::plain_actor().await;
+                actor.execution_mode.store_auto(Normal);
+                let session_id = actor.session_info.id.0.to_string();
+                let text = crate::jev::session_events_text_for_test(&session_id, async {
+                    crate::jev::set_test_decision_answers([Some(answer("normal", 0.9))]);
+                    actor.jev_auto_pick_mode("rename a variable").await;
+                    crate::jev::set_test_decision_answers([Some(answer("ultrasave", 0.9))]);
+                    actor.jev_auto_pick_mode("rename a variable").await;
+                    crate::jev::begin_model_round();
+                    assert!(review(&actor, "ultracode", 1).await);
+                    assert!(!review(&actor, "ultracode", 2).await, "already there");
+                })
+                .await;
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_flags();
+                assert_eq!(actor.execution_mode.load(), Ultracode);
+                let switches: Vec<serde_json::Value> = text
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .filter(|event| event["type"] == "mode_switched")
+                    .collect();
+                assert_eq!(switches.len(), 2, "{text}");
+                assert_eq!(switches[0]["from"], "normal");
+                assert_eq!(switches[0]["to"], "ultrasave");
+                assert_eq!(switches[0]["trigger"], "request_start");
+                assert_eq!(switches[0]["round"], 0);
+                assert_eq!(switches[1]["from"], "ultrasave");
+                assert_eq!(switches[1]["to"], "ultracode");
+                assert_eq!(switches[1]["trigger"], "review");
+                assert_eq!(switches[1]["round"], 1);
             })
             .await;
     }

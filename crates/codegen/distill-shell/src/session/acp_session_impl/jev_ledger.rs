@@ -134,6 +134,26 @@ pub(crate) struct JevTurnLedger {
     /// Escalation ratchet of the current turn: triggers recorded, climbs,
     /// effort level, tier floor. Cleared when the turn drains.
     pub(crate) escalation: super::escalation::EscalationState,
+    /// Outcome facts for `events.jsonl`; no decision reads them.
+    /// Final-check reminders sent in this session. Session-scoped.
+    pub(crate) final_check_reminders: u64,
+    /// The pending reminder and what followed it, emitted once when its
+    /// request ends.
+    pub(crate) final_check_followup: Option<FinalCheckFollowup>,
+}
+
+/// What a request did after its final-check reminder.
+#[derive(Debug, Default)]
+pub(crate) struct FinalCheckFollowup {
+    pub(crate) reminder_seq: u64,
+    /// Working-tree marker at the reminder.
+    pub(crate) worktree: Option<String>,
+    pub(crate) tool_rounds: u64,
+    /// Round of the last tool result counted in `tool_rounds`.
+    pub(crate) last_round: Option<u64>,
+    pub(crate) edited: bool,
+    pub(crate) delivered: bool,
+    pub(crate) fixed_token: bool,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.
@@ -328,7 +348,16 @@ impl JevTurnLedger {
             return false;
         }
         self.review_escalated = true;
-        self.effort_floor = Some((level.into(), value));
+        let level = level.into();
+        // No caller names why; `unspecified` until one does.
+        crate::jev::emit_outcome_event(None, |round| {
+            distill_session_events::Event::EffortFloorRaised {
+                level: crate::jev::outcome_id(&level),
+                trigger: "unspecified",
+                round,
+            }
+        });
+        self.effort_floor = Some((level, value));
         true
     }
 

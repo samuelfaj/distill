@@ -3003,6 +3003,7 @@ impl SessionActor {
             &result.output,
             &check_context,
         );
+        Box::pin(self.note_tool_outcome_facts(requested_tool_name, &result.output)).await;
         let prompt_text = match split_harness_reminders(
             &prompt_text,
             &own_text,

@@ -4,6 +4,7 @@ These four matched cohorts compare native maximum-effort baselines with Distill 
 
 Quality means successful completion within 300 seconds, successful agent exit, unchanged frozen inputs, and a passing unchanged external behavioral grader. Functional-only grader passes are reported separately where they differ. These small fixtures had no human review and cannot establish universal quality equivalence.
 
+<!-- benchmarks:begin -->
 | Pair | Native baseline | Distill main + worker | Native estimated cost | Distill estimated cost | Δ cost | Native quality | Distill quality | Δ quality | Native time | Distill time | Δ time |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Astra | Codex GPT-6 Astra max | GPT-6 Astra auto + GPT-6 Luna auto | $4.07658 | $1.00374 | −75.4% | 9/9 | 9/9 | +0.0% | 440.29 s | 284.99 s | −35.3% |
@@ -12,6 +13,7 @@ Quality means successful completion within 300 seconds, successful agent exit, u
 | DeepSeek | Codex DeepSeek V4.1 Flash max via OpenRouter Responses | DeepSeek auto + free models (OpenRouter free router) auto | ≥$0.09785 | $0.01177 | ≤−87.9%* | 5/9 | 9/9 | +80.0% | 1973.99 s | 490.27 s | −75.2% |
 
 Deltas use `100 * (Distill / native - 1)`. Negative cost and time deltas favor Distill. Quality delta is relative; percentage-point differences are shown separately. There is no measured baseline variation, so baseline variation cells are not applicable.
+<!-- benchmarks:end -->
 
 ## Cohort interpretation
 
@@ -50,6 +52,16 @@ python3 -m tools.task_cost_eval.compare_additional --variant opus-native --claud
 python3 -m tools.task_cost_eval.compare_additional --variant opus-distill --enable-jev --claude-auth "$CLAUDE_AUTH_FILE" --case tax-bug-en --output /tmp/opus-distill-1
 python3 -m tools.task_cost_eval.compare_codex --variant codex --provider openrouter --main-model deepseek/deepseek-v4.1-flash --codex-effort max --case tax-bug-en --output /tmp/deepseek-native-1
 python3 -m tools.task_cost_eval.compare_additional --variant deepseek-free-distill --enable-jev --case tax-bug-en --output /tmp/deepseek-distill-1
+# Per-mode cohorts: a Distill arm takes --mode normal|auto|ultrasave|ultrafast|ultracode. Distill 2.0.46 had no
+# --mode and ran Normal; a current binary without the flag starts in Auto, so pin Normal with --mode normal.
+python3 -B -m tools.task_cost_eval.compare_codex --variant distill --main-model gpt-6-astra --worker-model gpt-6-luna --enable-jev --mode ultrasave --distill "$(command -v distill)" --case tax-bug-en --output /tmp/astra-ultrasave-1
+python3 -B -m tools.task_cost_eval.compare_additional --variant opus-distill --enable-jev --mode auto --distill "$(command -v distill)" --claude-auth "$CLAUDE_AUTH_FILE" --case tax-bug-en --output /tmp/opus-auto-1
+# The cohort driver plans every cell of a family (native plus one arm per mode, 3 tasks x 3 repetitions,
+# alternating arm order); --execute runs each cell once and writes results/requested-DATE-FAMILY.json.
+python3 -B -m tools.task_cost_eval.requested_cohort --families astra,sol,opus,deepseek --distill "$(command -v distill)" --claude-auth "$CLAUDE_AUTH_FILE"
+python3 -B -m tools.task_cost_eval.requested_cohort --families astra,sol,opus,deepseek --distill "$(command -v distill)" --claude-auth "$CLAUDE_AUTH_FILE" --execute
+python3 -B -m tools.task_cost_eval.requested_summary --families tools/task_cost_eval/results/requested-DATE-{astra,sol,opus,deepseek}.json --output tools/task_cost_eval/results/requested-DATE-summary.json
+python3 -B -m tools.task_cost_eval.render_benchmarks --summary tools/task_cost_eval/results/requested-DATE-summary.json --benchmarks BENCHMARKS.md --readme README.md
 ```
 
 Use the same authenticated account for both sides of each provider pair. `CLAUDE_AUTH_FILE` identifies the existing private Claude credential file, never its contents. GPT reads existing Codex OAuth credentials; OpenRouter reads the private Distill auth store. Each measured pair used both arms before advancing to the next task, reversing the starting arm on alternating pairs.
@@ -58,4 +70,6 @@ Setup probes are retained separately in [the pilot record](tools/task_cost_eval/
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tools.task_cost_eval.test_requested_benchmarks tools.task_cost_eval.test_compare_codex tools.task_cost_eval.test_compare_additional tools.task_cost_eval.test_acp_driver
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest tools.task_cost_eval.test_requested_cohort tools.task_cost_eval.test_requested_summary tools.task_cost_eval.test_render_benchmarks
+python3 -B -m tools.task_cost_eval.render_benchmarks --summary tools/task_cost_eval/results/requested-20261016-summary.json --benchmarks BENCHMARKS.md --readme README.md --check
 ```

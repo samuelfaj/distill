@@ -23,27 +23,28 @@ MODES = ('normal', 'auto', 'ultrasave', 'ultrafast', 'ultracode')
 CODEX, ADDITIONAL = 'tools.task_cost_eval.compare_codex', 'tools.task_cost_eval.compare_additional'
 # The 2026-10-16 arms from BENCHMARKS.md; a Distill arm adds --mode and --distill.
 FAMILIES = {
-    'astra': {'label': 'Astra', 'native_label': 'Codex GPT-6 Astra max',
+    'astra': {'label': 'Astra', 'models': 'GPT-6 Astra + GPT-6 Luna', 'native_label': 'Codex GPT-6 Astra max',
               'distill_label': 'GPT-6 Astra auto + GPT-6 Luna auto',
               'native': [CODEX, '--variant', 'codex', '--main-model', 'gpt-6-astra', '--codex-effort', 'max'],
               'distill': [CODEX, '--variant', 'distill', '--main-model', 'gpt-6-astra',
                           '--worker-model', 'gpt-6-luna', '--enable-jev'],
               'credentials': 'Codex ChatGPT OAuth credentials (the same account for both arms) and the '
                              'OpenRouter key in the private Distill auth store (Jev)'},
-    'sol': {'label': 'Sol', 'native_label': 'Codex GPT-6.1 Sol max',
+    'sol': {'label': 'Sol', 'models': 'GPT-6.1 Sol + GPT-6 Luna', 'native_label': 'Codex GPT-6.1 Sol max',
             'distill_label': 'GPT-6.1 Sol auto + GPT-6 Luna auto',
             'native': [CODEX, '--variant', 'codex', '--main-model', 'gpt-6.1-sol', '--codex-effort', 'max'],
             'distill': [CODEX, '--variant', 'distill', '--main-model', 'gpt-6.1-sol',
                         '--worker-model', 'gpt-6-luna', '--enable-jev'],
             'credentials': 'Codex ChatGPT OAuth credentials (the same account for both arms) and the '
                            'OpenRouter key in the private Distill auth store (Jev)'},
-    'opus': {'label': 'Opus', 'native_label': 'Claude Code Opus 5.5 max',
+    'opus': {'label': 'Opus', 'models': 'Opus 5.5 + Haiku 5.5', 'native_label': 'Claude Code Opus 5.5 max',
              'distill_label': 'Opus 5.5 auto + Haiku 5.5 auto',
              'native': [ADDITIONAL, '--variant', 'opus-native'],
              'distill': [ADDITIONAL, '--variant', 'opus-distill', '--enable-jev'], 'claude_auth': True,
              'credentials': 'the private Claude credential file (--claude-auth, both arms) and the '
                             'OpenRouter key in the private Distill auth store (Jev)'},
-    'deepseek': {'label': 'DeepSeek', 'native_label': 'Codex DeepSeek V4.1 Flash max via OpenRouter Responses',
+    'deepseek': {'label': 'DeepSeek', 'models': 'DeepSeek V4.1 Flash + OpenRouter free models',
+                 'native_label': 'Codex DeepSeek V4.1 Flash max via OpenRouter Responses',
                  'distill_label': 'DeepSeek auto + free models (OpenRouter free router) auto',
                  'native': [CODEX, '--variant', 'codex', '--provider', 'openrouter',
                             '--main-model', 'deepseek/deepseek-v4.1-flash', '--codex-effort', 'max'],

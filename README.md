@@ -29,6 +29,8 @@ slash command in the TUI, or pass a flag to headless prompts.
 
 ### UltraSave
 
+<!-- benchmarks:ultrasave:begin -->
+<!-- benchmarks:ultrasave:end -->
 # 93% cheaper
 
 UltraSave cost **0.069x the credits of Normal** on our 20-case benchmark,
@@ -44,6 +46,8 @@ still run before a task counts as done.
 
 ### UltraFast
 
+<!-- benchmarks:ultrafast:begin -->
+<!-- benchmarks:ultrafast:end -->
 # ~2x faster
 
 UltraFast finished in **0.509x the wall time of Normal**, about half,
@@ -59,6 +63,8 @@ model, effort and verification steps stay the same.
 
 ### UltraCode
 
+<!-- benchmarks:ultracode:begin -->
+<!-- benchmarks:ultracode:end -->
 # Extra care
 
 UltraCode means extra care: higher effort and verification discipline. With
@@ -75,6 +81,8 @@ permissions stay the same.
 
 ### Auto
 
+<!-- benchmarks:auto:begin -->
+<!-- benchmarks:auto:end -->
 # Balanced
 
 Auto used **57% less total time** and **77% fewer estimated LLM credits**

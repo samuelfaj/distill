@@ -504,6 +504,79 @@ user has. The default, `plain`, is unchanged. The second prompt and the MCP
 stub are covered by tests against the fake ACP peer only: they have not been
 run with the real binary.
 
+## Per-mode requested cohorts
+
+The requested cohorts in `BENCHMARKS.md` compare a native maximum-effort
+baseline with one Distill arm on the three `cohort-v1.json` tasks. A per-mode
+campaign keeps those arms, families, tasks, the 300-second deadline and the
+graders, and runs one Distill arm per execution mode. `compare_codex --variant
+distill` and the Distill variants of `compare_additional` take `--mode
+normal|auto|ultrasave|ultrafast|ultracode`: `--mode normal` and `--mode auto`
+as written, the Ultra modes as `--ultrasave`, `--ultrafast` or `--ultracode`
+(the flags `compare_parallel.py` passes on its CLI transport). Normal is pinned
+explicitly because a current binary starts a new session in Auto; Distill
+2.0.46, which produced the 2026-10-16 results, predates Auto and ran Normal, so
+a result without an `execution_mode` key reads as Normal. Without `--mode` the
+command is unchanged. Each result records `execution_mode` and
+`execution_mode_activation_confirmed` (the headless line `<Mode> enabled for
+session <id>`); native variants reject `--mode`.
+
+1. The cohort driver plans every cell; with `--execute` it runs them:
+
+   ```sh
+   python3 -B -m tools.task_cost_eval.requested_cohort --families astra,sol,opus,deepseek \
+     --distill "$(command -v distill)" --claude-auth "$CLAUDE_AUTH_FILE" [--execute]
+   ```
+
+   Per family: the native arm and one Distill arm per `--modes` entry (all five
+   by default), three tasks, `--repetitions` (3), so 54 cells, run in order with
+   the arm order reversed on alternate task/repetition groups. Each cell gets a
+   fresh directory under `--output-root` (default `/tmp/requested-DATE`) and
+   runs once: a failed or timed-out cell stays in the result and is never
+   rerun. It writes `results/requested-DATE-FAMILY.json` (the 2026-10-16 family
+   shape plus `mode` per run, `requested_arms`, `modes`, `timeout_s` and
+   per-arm `totals`), and refuses to start when that file or any cell directory
+   exists. Without `--execute` it prints the cells and commands and exits.
+2. The summary builder:
+
+   ```sh
+   python3 -B -m tools.task_cost_eval.requested_summary \
+     --families tools/task_cost_eval/results/requested-DATE-{astra,sol,opus,deepseek}.json \
+     --output tools/task_cost_eval/results/requested-DATE-summary.json [--quality-tolerance 0]
+   ```
+
+   It writes the `requested-20261016-summary.json` shape (`pairs.FAMILY.native`,
+   `distill` = the Normal arm, and the native-against-Normal deltas) plus
+   `pairs.FAMILY.arms.MODE`: totals priced with `comparison_cost`, deltas
+   against native and against Normal, and a quality gate (successes at least
+   Normal's minus the tolerance, with model, worker and mode activation
+   verified). A missing receipt makes the arm cost a lower bound and its
+   deltas bounds. It refuses a pricing record that disagrees with
+   `comparison_cost` and never overwrites its output.
+3. The renderer:
+
+   ```sh
+   python3 -B -m tools.task_cost_eval.render_benchmarks \
+     --summary tools/task_cost_eval/results/requested-DATE-summary.json \
+     --benchmarks BENCHMARKS.md --readme README.md [--check]
+   ```
+
+   It rewrites only the text between `<!-- benchmarks:begin -->` and
+   `<!-- benchmarks:end -->` in `BENCHMARKS.md` (the native table, and for a
+   per-mode summary the Normal note and a "By execution mode" table) and between
+   `<!-- benchmarks:MODE:begin -->` and `<!-- benchmarks:MODE:end -->` in each
+   `README.md` mode cell (a headline and one sentence). Every number comes from
+   the summary; each claim names the family and models, whether the mode was
+   pinned or measured under Auto, the result file and the recorded binary
+   version. A mode without a result, or failing the gate, reads `no claim yet`
+   with the reason. `--check` exits 1 when a file differs from the rendering.
+   The committed 2026-10-16 summary renders the current files unchanged; it has
+   no per-mode arms, so the README regions stay empty. The hand-written text
+   outside the markers (titles, cohort description, cost basis, the current
+   README mode claims) is not regenerated: after the first per-mode render,
+   remove the hand-written README headline and number sentence under each
+   marker pair and update the `BENCHMARKS.md` title and cohort paragraphs.
+
 ## Session usage analyzer
 
 `session_usage.py` reads real session folders and prints aggregates only:

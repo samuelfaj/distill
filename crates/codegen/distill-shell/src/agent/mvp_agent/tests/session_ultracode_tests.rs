@@ -116,6 +116,80 @@ fn ultracode_set_toggles_and_sets_without_touching_effort() {
     });
 }
 
+/// An explicit mode change applies at once; the first one in a session whose last main
+/// prompt is large tells the client once what it costs, and a small prompt says nothing.
+#[test]
+fn a_mode_change_on_a_large_prompt_reports_its_cache_cost_once() {
+    if run_in_isolated_home("a_mode_change_on_a_large_prompt_reports_its_cache_cost_once") {
+        return;
+    }
+    run_local_for_bridge_test(|| async {
+        use crate::extensions::session_ultracode::{
+            MODE_SET_METHOD, MODE_SWITCH_CACHE_COST_METHOD, handle_with_config,
+        };
+        let (agent, mut gateway) = super::build_agent_with_gateway_rx();
+        for (sid, prompt_tokens) in [("large-prompt", 20_000), ("small-prompt", 16_000)] {
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let chat_state = distill_chat_state::ChatStateActor::spawn(
+                Vec::new(),
+                distill_sampling_types::SamplingConfig::default(),
+                Box::new(distill_chat_state::NullChatPersistence),
+                event_tx,
+                tokio_util::sync::CancellationToken::new(),
+            );
+            chat_state.record_last_turn_usage(distill_sampling_types::TokenUsage {
+                prompt_tokens,
+                ..Default::default()
+            });
+            let mut session = make_test_handle("test-model", false, None);
+            session.info.id = acp::SessionId::new(sid);
+            session.chat_state_handle = chat_state;
+            agent.insert_resident(&acp::SessionId::new(sid), session);
+        }
+        let set_mode = |sid: &'static str, mode: &'static str| {
+            let params = serde_json::json!({ "sessionId": sid, "mode": mode });
+            acp::ExtRequest::new(
+                MODE_SET_METHOD,
+                serde_json::value::to_raw_value(&params).unwrap().into(),
+            )
+        };
+        for (sid, mode) in [
+            ("large-prompt", "ultrafast"),
+            ("large-prompt", "ultrasave"),
+            ("large-prompt", "auto"),
+            ("small-prompt", "ultrafast"),
+        ] {
+            Box::pin(handle_with_config(&agent, &set_mode(sid, mode), None))
+                .await
+                .expect("mode set");
+            let handle = agent.resident_handle(&acp::SessionId::new(sid)).unwrap();
+            assert_eq!(
+                handle.execution_mode.choice().id(),
+                mode,
+                "the change applies at once"
+            );
+        }
+        let mut notices = Vec::new();
+        while let Ok(message) = gateway.try_recv() {
+            if let distill_acp_lib::AcpClientMessage::ExtNotification(args) = message
+                && args.request.method.as_ref() == MODE_SWITCH_CACHE_COST_METHOD
+            {
+                notices.push(
+                    serde_json::from_str::<serde_json::Value>(args.request.params.get()).unwrap(),
+                );
+            }
+        }
+        assert_eq!(
+            notices,
+            [serde_json::json!({
+                "sessionId": "large-prompt",
+                "choice": "ultrafast",
+                "uncachedTokens": 20_000
+            })]
+        );
+    });
+}
+
 #[test]
 fn ultracode_set_unknown_session_is_not_found() {
     run_local_for_bridge_test(|| async {

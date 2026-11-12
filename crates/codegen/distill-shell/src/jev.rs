@@ -1094,6 +1094,24 @@ pub fn record_item(
     });
 }
 
+/// Records one enforcement of a per-mode policy rule: counted under
+/// `utilityOutcomes["policy:<mode>"]` in usage.json, kept for the turn
+/// outcome record, and written as a content-free `mode_policy` event. `rule`
+/// is a short identifier; anything else is replaced by its hash.
+pub(crate) fn record_policy(mode: distill_tool_types::ExecutionMode, rule: &str) {
+    let rule = event_id(rule);
+    if let Some(recorder) = active_usage_recorder() {
+        recorder.record_utility_outcome(&format!("policy:{}", mode.id()), &rule, 0, 0, 0);
+    }
+    crate::session::acp_session::mode_policy::note_policy_row(&active_session_id(), mode, &rule);
+    emit_jev_event(|seq, round| distill_session_events::Event::ModePolicy {
+        seq,
+        mode: mode.id(),
+        rule,
+        round,
+    });
+}
+
 /// The decision log and turn-status row half of [`record_item`].
 fn log_item(
     lever: distill_workspace::jev::flags::JevLever,

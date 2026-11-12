@@ -314,10 +314,13 @@ impl SessionActor {
         let threshold_due = self
             .should_auto_compact(tokens, config.context_window)
             .is_some();
-        let settings = match crate::config::load_effective_config() {
-            Ok(root) => BoundarySettings::from_config(
-                &root,
-                self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrasave,
+        let (settings, compaction_settings) = match crate::config::load_effective_config() {
+            Ok(root) => (
+                BoundarySettings::from_config(
+                    &root,
+                    self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrasave,
+                ),
+                BoundarySettings::from_config(&root, false),
             ),
             Err(error) => {
                 tracing::warn!(%error, "cold return: config load failed; keeping the history");
@@ -327,16 +330,16 @@ impl SessionActor {
         // Reading the history is only worth it when the cap would fire.
         let turn_start = settings.max_prompt_tokens.is_some_and(|cap| tokens > cap)
             && awaits_first_request(&self.chat_state_handle.get_conversation().await);
-        let action = decide(
-            settings,
-            Boundary {
-                tokens,
-                threshold_due,
-                cold,
-                interactive: !self.attach_non_interactive.get(),
-                turn_start,
-            },
-        );
+        let boundary = Boundary {
+            tokens,
+            threshold_due,
+            cold,
+            interactive: !self.attach_non_interactive.get(),
+            turn_start,
+        };
+        let action = decide(settings, boundary);
+        // The `[modes.ultrasave]` keys decided this boundary when `[compaction]` alone would not.
+        let by_mode_keys = decide(compaction_settings, boundary) != action;
         let (compact, label) = match action {
             BoundaryAction::Keep => (false, None),
             BoundaryAction::Compact(label) => (true, label),
@@ -358,6 +361,16 @@ impl SessionActor {
         }
         if !compact {
             return;
+        }
+        if by_mode_keys {
+            crate::jev::record_policy(
+                distill_tool_types::ExecutionMode::Ultrasave,
+                if label == Some(MAX_PROMPT_LABEL) {
+                    "compaction:max_prompt"
+                } else {
+                    "compaction:cold_return"
+                },
+            );
         }
         if let Some(label) = label {
             self.chat_state_handle

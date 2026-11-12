@@ -433,6 +433,18 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         round: Option<u64>,
     },
+    /// One enforcement of a per-mode policy rule.
+    ModePolicy {
+        /// Shared with the Jev events.
+        seq: u64,
+        mode: &'static str,
+        /// A short identifier (`effort_ceiling`, `review_verdict:reviewed`).
+        rule: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// What a root prompt turn did, once per turn.
+    TurnOutcome(TurnOutcomeRecord),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -455,6 +467,90 @@ pub enum ModeSwitchTrigger {
     User,
     /// The escalation ratchet moved Auto one step up after a harness signal.
     Ratchet,
+}
+
+/// What one root prompt turn did by mode, written when it ends: an event, an
+/// optional field on the turn's usage.json row, and an optional field of the
+/// turn-end usage sent to the client. Counts and short identifiers only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnOutcomeRecord {
+    /// The user's selection: `auto` or the pinned mode's id.
+    pub mode_choice: String,
+    /// Main-loop rounds of the turn by effective mode id.
+    #[serde(default)]
+    pub mode_rounds: BTreeMap<String, u64>,
+    /// `reviewed`, `checked` or `unverified`.
+    pub verification: String,
+    /// Why the turn is `unverified`: `no_check`, `check_failed`,
+    /// `check_unknown`, `check_stale` or `review_unverified`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_reason: Option<String>,
+    #[serde(default)]
+    pub checks: CheckCounts,
+    #[serde(default)]
+    pub escalations: u64,
+    /// Policy rows recorded during the turn, by `<mode>:<rule>`.
+    #[serde(default)]
+    pub policy: BTreeMap<String, u64>,
+    /// Subagent model calls folded into the turn, their summed API time and,
+    /// when every call reported one, their cost.
+    #[serde(default)]
+    pub child_calls: u64,
+    #[serde(default)]
+    pub child_api_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_cost_usd_ticks: Option<i64>,
+    /// What kept the pinned or effective mode from acting: `no_cheaper_model`,
+    /// `jev_silent`, `effort_pinned`, `auto_runtime_only`, `tier_routing_off`.
+    #[serde(default)]
+    pub blocked: Vec<String>,
+}
+
+/// Recorded checks of the turn by outcome; an identical rerun with the same
+/// outcome is one recorded check.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckCounts {
+    #[serde(default)]
+    pub passed: u64,
+    #[serde(default)]
+    pub failed: u64,
+    #[serde(default)]
+    pub unknown: u64,
+}
+
+impl TurnOutcomeRecord {
+    /// One short line for the end of a turn: mode mix, verification, checks,
+    /// escalations and blockers.
+    pub fn summary_line(&self) -> String {
+        let mut rounds: Vec<(&String, &u64)> = self.mode_rounds.iter().collect();
+        rounds.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let mix = rounds
+            .iter()
+            .map(|(mode, count)| format!("{mode} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut line = format!("Mode {}", self.mode_choice);
+        if !mix.is_empty() {
+            line.push_str(&format!(" ({mix})"));
+        }
+        line.push_str(&format!(" · {}", self.verification));
+        if let Some(reason) = &self.verification_reason {
+            line.push_str(&format!(" ({reason})"));
+        }
+        let CheckCounts {
+            passed,
+            failed,
+            unknown,
+        } = self.checks;
+        line.push_str(&format!(
+            " · checks {passed} passed, {failed} failed, {unknown} unknown · escalations {}",
+            self.escalations
+        ));
+        if !self.blocked.is_empty() {
+            line.push_str(&format!(" · blocked: {}", self.blocked.join(", ")));
+        }
+        line
+    }
 }
 
 /// One Jev answer as the model returned it, without any text: the picked
@@ -1079,6 +1175,78 @@ mod tests {
         assert_eq!(
             obj.get("reason"),
             Some(&serde_json::json!("model_unauthorized"))
+        );
+    }
+
+    /// The analyzer and the usage.json reader rely on these field names.
+    #[test]
+    fn mode_policy_and_turn_outcome_serialize_their_wire_shape() {
+        let row = serde_json::to_value(Event::ModePolicy {
+            seq: 7,
+            mode: "ultracode",
+            rule: "review_verdict:reviewed".into(),
+            round: Some(3),
+        })
+        .unwrap();
+        assert_eq!(
+            row,
+            serde_json::json!({
+                "type": "mode_policy",
+                "seq": 7,
+                "mode": "ultracode",
+                "rule": "review_verdict:reviewed",
+                "round": 3
+            })
+        );
+        let record = TurnOutcomeRecord {
+            mode_choice: "auto".into(),
+            mode_rounds: BTreeMap::from([("normal".into(), 1), ("ultrasave".into(), 3)]),
+            verification: "unverified".into(),
+            verification_reason: Some("check_failed".into()),
+            checks: CheckCounts {
+                passed: 2,
+                failed: 1,
+                unknown: 0,
+            },
+            escalations: 0,
+            policy: BTreeMap::from([("ultrasave:compaction:max_prompt".into(), 1)]),
+            child_calls: 4,
+            child_api_ms: 1200,
+            child_cost_usd_ticks: None,
+            blocked: vec!["jev_silent".into()],
+        };
+        let event = serde_json::to_value(Event::TurnOutcome(record.clone())).unwrap();
+        assert_eq!(
+            event,
+            serde_json::json!({
+                "type": "turn_outcome",
+                "mode_choice": "auto",
+                "mode_rounds": {"normal": 1, "ultrasave": 3},
+                "verification": "unverified",
+                "verification_reason": "check_failed",
+                "checks": {"passed": 2, "failed": 1, "unknown": 0},
+                "escalations": 0,
+                "policy": {"ultrasave:compaction:max_prompt": 1},
+                "child_calls": 4,
+                "child_api_ms": 1200,
+                "blocked": ["jev_silent"]
+            })
+        );
+        let mut stored = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TurnOutcomeRecord>(stored.clone()).unwrap(),
+            record
+        );
+        // Fields added later must not fail an older reader's row.
+        stored
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| key == "mode_choice" || key == "verification");
+        let sparse: TurnOutcomeRecord = serde_json::from_value(stored).unwrap();
+        assert_eq!(sparse.checks, CheckCounts::default());
+        assert_eq!(
+            record.summary_line(),
+            "Mode auto (ultrasave 3, normal 1) · unverified (check_failed) · checks 2 passed, 1 failed, 0 unknown · escalations 0 · blocked: jev_silent"
         );
     }
 }

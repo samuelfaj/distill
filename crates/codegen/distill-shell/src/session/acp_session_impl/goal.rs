@@ -3338,6 +3338,10 @@ impl SessionActor {
                 panel_used,
                 gate_ms,
             });
+        crate::jev::record_policy(
+            distill_tool_types::ExecutionMode::Ultracode,
+            &format!("review_verdict:{}", status.label()),
+        );
         self.send_update(
             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
                 acp::TextContent::new(final_text(status, gaps)),

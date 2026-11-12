@@ -86,6 +86,10 @@ pub struct TurnUsage {
     pub ended_at: String,
     #[serde(flatten)]
     pub usage: UsageSummary,
+    /// What the root turn did by mode; absent for subagent sessions and in
+    /// files written before the record existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<distill_session_events::TurnOutcomeRecord>,
 }
 
 impl UsageSummary {
@@ -511,6 +515,25 @@ impl SessionUsageFile {
             .find(|turn| turn.turn_number == turn_number)
     }
 
+    /// Attaches `outcome` to the row of `turn_number`; `false` when there is none.
+    pub(crate) fn set_turn_outcome(
+        &mut self,
+        turn_number: u32,
+        outcome: distill_session_events::TurnOutcomeRecord,
+    ) -> bool {
+        match self
+            .turns
+            .iter_mut()
+            .find(|turn| turn.turn_number == turn_number)
+        {
+            Some(turn) => {
+                turn.outcome = Some(outcome);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn retain_turns_through(&mut self, max_turn: u32) {
         self.normalize_legacy_incomplete();
         let permanent_incomplete = self.session.permanent_incomplete;
@@ -642,6 +665,7 @@ impl SessionUsageFile {
             turn_number,
             ended_at,
             usage: turn_usage.clone(),
+            outcome: None,
         });
 
         self.session = self.session.saturating_add(&turn_usage);

@@ -287,6 +287,12 @@ pub enum PersistenceMsg {
         prompt_id: Option<String>,
         live: crate::session::usage_file::UsageSummary,
     },
+    /// The turn outcome record of `prompt_id`, attached to the usage.json row
+    /// its `UsageTurn` wrote (sent after it, so the row exists).
+    TurnOutcome {
+        prompt_id: String,
+        outcome: distill_session_events::TurnOutcomeRecord,
+    },
     /// Child usage the session ledger accepted after its spawning prompt's
     /// turn ended. `late` moves to that prompt's row; `live` is the session
     /// ledger right after the fold and is then persisted like `UsageTurn`.
@@ -2436,6 +2442,11 @@ impl SessionPersistence {
                         }
                     }
                 }
+                PersistenceMsg::TurnOutcome { prompt_id, outcome } => {
+                    if let Err(e) = self.persist_turn_outcome(&prompt_id, outcome).await {
+                        tracing::warn!(?e, "failed to write the turn outcome");
+                    }
+                }
                 PersistenceMsg::LateSubagentUsage {
                     prompt_id,
                     turn_number,
@@ -2654,6 +2665,24 @@ impl SessionPersistence {
         self.last_usage_live = Some(live.clone());
         self.last_incoming_turn = incoming;
         self.last_usage_turn = written;
+        Ok(())
+    }
+
+    /// Attach `outcome` to the row written for `prompt_id`; nothing when no row was written.
+    async fn persist_turn_outcome(
+        &mut self,
+        prompt_id: &str,
+        outcome: distill_session_events::TurnOutcomeRecord,
+    ) -> io::Result<()> {
+        let Some(turn) = self.usage_turn_by_prompt.get(prompt_id).copied() else {
+            return Ok(());
+        };
+        let Some(mut file) = self.storage.read_usage(&self.info).await? else {
+            return Ok(());
+        };
+        if file.set_turn_outcome(turn, outcome) {
+            self.storage.write_usage(&self.info, &file).await?;
+        }
         Ok(())
     }
 

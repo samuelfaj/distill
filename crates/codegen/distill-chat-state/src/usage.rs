@@ -172,6 +172,10 @@ impl UsageTotals {
         self.input_tokens.saturating_add(self.output_tokens)
     }
 
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// True whenever one or more calls lack provider-reported cost.
     /// `cost_usd_ticks == None` distinguishes the all-absent case from a
     /// partially reported total; neither case is treated as free.
@@ -310,6 +314,10 @@ pub struct UsageLedger {
     /// Every such break, counted by cause. Telemetry like `last_cache_break`.
     #[serde(default, skip_serializing_if = "CacheBreakCounts::is_empty")]
     pub cache_breaks: CacheBreakCounts,
+    /// The part of `totals` that subagent folds added, so a turn can report
+    /// its children's calls, time and cost apart from its own.
+    #[serde(default, skip_serializing_if = "UsageTotals::is_empty")]
+    pub subagents: UsageTotals,
 }
 
 /// Where the last prompt-cache break happened: the first item of the request
@@ -611,6 +619,9 @@ impl UsageLedger {
         if count_main && attribution.role == "main" {
             self.main_loop_model_calls = self.main_loop_model_calls.saturating_add(1);
         }
+        if !count_main {
+            self.subagents.fold_totals(&call);
+        }
         self.fold_entry(&attribution.model_id, &call);
         if !attribution.usage_complete
             || attribution.usage.is_none()
@@ -688,6 +699,7 @@ impl UsageLedger {
             self.register_pending_attempt(attempt_id.clone());
         }
         for (model_id, totals) in by_model {
+            self.subagents.fold_totals(totals);
             self.fold_entry(model_id, totals);
         }
         if incomplete {
@@ -885,6 +897,43 @@ mod tests {
         assert_eq!(ledger.main_loop_model_calls, 0);
         assert!(ledger.incomplete);
         assert_eq!(ledger.attributions[1], second);
+        // The children's share is kept apart, deduplicated like the totals.
+        assert_eq!(ledger.subagents, ledger.totals);
+    }
+
+    /// A turn reports its children's calls, time and cost apart from its own:
+    /// its own calls never land in `subagents`, aggregate and attributed child
+    /// folds always do.
+    #[test]
+    fn subagent_share_excludes_the_parents_own_calls() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_main_loop_call("parent", &tu(10, 1), Some(50), Some(9));
+        ledger.record_auxiliary_call("jev", Some(&tu(1, 1)), Some(5), Some(1), false);
+        assert!(ledger.subagents.is_empty());
+        let child = UsageTotals {
+            input_tokens: 4,
+            output_tokens: 1,
+            model_calls: 2,
+            api_duration_ms: 30,
+            cost_usd_ticks: Some(6),
+            ..Default::default()
+        };
+        ledger.record_subagent(&[("child".to_owned(), child.clone())], false);
+        assert_eq!(ledger.subagents, child);
+        assert_eq!(ledger.totals.model_calls, 4);
+        let reloaded: UsageLedger = serde_json::from_value(serde_json::json!({
+            "totals": serde_json::to_value(&ledger.totals).unwrap(),
+            "by_model": {},
+            "attributions": [],
+            "main_loop_model_calls": 1,
+            "incomplete": false,
+            "pending_attempts": []
+        }))
+        .unwrap();
+        assert!(
+            reloaded.subagents.is_empty(),
+            "a ledger saved before the field loads"
+        );
     }
 
     #[test]

@@ -712,6 +712,37 @@ fn bash_colon_wildcard_deny_translates_to_prefix() {
     assert_eq!(rule.pattern.as_deref(), Some("sed"));
 }
 
+/// Plain output closes a turn with the shell's turn outcome as one line, read
+/// from the prompt usage; usage without one prints nothing extra.
+#[test]
+fn plain_turn_outcome_line_comes_from_the_prompt_usage() {
+    let mut emitter = HeadlessEmitter::new(OutputFormat::Plain, false);
+    assert_eq!(emitter.turn_outcome_line(), None);
+    emitter.set_usage_from_meta(serde_json::json!({ "usage": { "numTurns": 1 } }).as_object());
+    assert_eq!(emitter.turn_outcome_line(), None);
+    emitter.set_usage_from_meta(
+        serde_json::json!({ "usage": { "numTurns": 1, "turnOutcome": {
+            "mode_choice": "ultrafast",
+            "mode_rounds": { "ultrafast": 2 },
+            "verification": "unverified",
+            "verification_reason": "no_check",
+            "checks": { "passed": 0, "failed": 0, "unknown": 0 },
+            "escalations": 0,
+            "policy": {},
+            "child_calls": 0,
+            "child_api_ms": 0,
+            "blocked": ["tier_routing_off"]
+        } } })
+        .as_object(),
+    );
+    assert_eq!(
+        emitter.turn_outcome_line().as_deref(),
+        Some(
+            "Mode ultrafast (ultrafast 2) · unverified (no_check) · checks 0 passed, 0 failed, 0 unknown · escalations 0 · blocked: tier_routing_off"
+        )
+    );
+}
+
 #[test]
 fn structured_output_without_meta_errors_never_parses_text() {
     let mut emitter = HeadlessEmitter::new(OutputFormat::Json, true);

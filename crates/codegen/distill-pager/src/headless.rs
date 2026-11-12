@@ -258,6 +258,16 @@ impl HeadlessEmitter {
         self.usage = meta.get("usage").cloned();
     }
 
+    /// The turn outcome the shell attached to the prompt's usage, as one line.
+    fn turn_outcome_line(&self) -> Option<String> {
+        let outcome = self.usage.as_ref()?.get("turnOutcome")?.clone();
+        serde_json::from_value::<distill_shell::extensions::notification::TurnOutcomeRecord>(
+            outcome,
+        )
+        .ok()
+        .map(|outcome| outcome.summary_line())
+    }
+
     fn on_text_chunk(&mut self, text: &str) {
         match self.format {
             OutputFormat::Plain => {
@@ -332,6 +342,9 @@ impl HeadlessEmitter {
         match self.format {
             OutputFormat::Plain => {
                 let _ = self.write_out(b"\n", false);
+                if let Some(line) = self.turn_outcome_line() {
+                    eprint_line(&line);
+                }
             }
             OutputFormat::Json => {
                 let result = self.build_json_result(stop_reason, session_id, request_id);

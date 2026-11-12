@@ -499,6 +499,7 @@ mod tests {
             jev_calls: 0,
             utility_calls: 0,
             last_cache_break: None,
+            turn_outcome: None,
         };
         let free = "subscription:free-usage-exhausted quota hit";
         let err = attach_prompt_usage(

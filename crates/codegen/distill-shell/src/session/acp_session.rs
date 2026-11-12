@@ -196,6 +196,8 @@ mod escalation;
 pub(crate) mod jev_auto_mode;
 #[path = "acp_session_impl/jev_shadow_packs.rs"]
 mod jev_shadow_packs;
+#[path = "acp_session_impl/mode_policy.rs"]
+pub(crate) mod mode_policy;
 #[path = "acp_session_impl/jev_tool_result.rs"]
 mod jev_tool_result;
 #[path = "acp_session_impl/native_tool_output.rs"]

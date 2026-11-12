@@ -118,6 +118,8 @@ pub(crate) async fn handle_with_config(
     );
     if choice != current_choice {
         change_pinned_mode(agent, &handle.info, choice, root).await;
+        notify_mode_switch_cache_cost(agent, &handle.info.id, &handle.chat_state_handle, choice)
+            .await;
     }
     if requested_mode.is_some() {
         to_raw_response(&ModeState {
@@ -251,6 +253,47 @@ pub(crate) fn pinned_provider_tier(
     info: &crate::session::info::Info,
 ) -> Option<distill_sampler::ProviderTier> {
     load_pinned_state(info)?.provider_tier
+}
+
+/// Client notice: an explicit mode change in a session whose prompt is large; the next request
+/// may read about `uncachedTokens` without the cache.
+pub const MODE_SWITCH_CACHE_COST_METHOD: &str = "x.ai/session/execution_mode/cache_cost";
+
+/// The change applies at once either way. The first one in a session whose last main prompt
+/// reached the size where a re-read is a real cost tells the client, once, what it costs.
+async fn notify_mode_switch_cache_cost(
+    agent: &MvpAgent,
+    session_id: &acp::SessionId,
+    chat_state: &distill_chat_state::ChatStateHandle,
+    choice: ExecutionModeChoice,
+) {
+    static NOTIFIED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    let Some(tokens) = chat_state
+        .get_last_turn_usage()
+        .await
+        .map(|usage| u64::from(usage.prompt_tokens))
+    else {
+        return;
+    };
+    if tokens < crate::session::acp_session::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS
+        || !NOTIFIED.lock().insert(session_id.0.to_string())
+    {
+        return;
+    }
+    let payload = serde_json::json!({
+        "sessionId": session_id.0.as_ref(),
+        "choice": choice,
+        "uncachedTokens": tokens,
+    });
+    if let Ok(params) = serde_json::value::to_raw_value(&payload) {
+        agent
+            .gateway
+            .forward_fire_and_forget(acp::ExtNotification::new(
+                MODE_SWITCH_CACHE_COST_METHOD,
+                params.into(),
+            ));
+    }
 }
 
 /// Whether this session was already told UltraSave has no cheaper model.

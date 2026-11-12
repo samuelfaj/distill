@@ -1800,8 +1800,10 @@ impl SessionActor {
                 }
             }
         }
-        let usage = self.freeze_prompt_usage(prompt_id).await;
+        let outcome = self.turn_outcome_record(prompt_id).await;
+        let mut usage = self.freeze_prompt_usage(prompt_id).await;
         self.persist_live_usage().await;
+        self.finish_turn_outcome(outcome, usage.as_mut()).await;
         self.persist_cache_resume_state().await;
         drop(turn_scope_guard);
         match result {
@@ -2876,6 +2878,7 @@ impl SessionActor {
             // Auto and explicit /mode changes take effect before the next
             // action, including in children already running when the user switches.
             let execution_mode = self.execution_mode.load();
+            self.note_mode_round(execution_mode);
             if execution_mode != prepared_execution_mode {
                 self.inject_execution_mode_reminder();
                 let next_tools = self.prepare_tool_definitions_timed().await.0;

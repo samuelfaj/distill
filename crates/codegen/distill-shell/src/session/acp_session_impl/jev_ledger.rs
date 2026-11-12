@@ -142,6 +142,12 @@ pub(crate) struct JevTurnLedger {
     pub(crate) final_check_followup: Option<FinalCheckFollowup>,
     /// When the last request ended, for F1's follow-up window. Session-scoped.
     pub(crate) last_request_end: Option<Instant>,
+    /// Main-loop rounds of the current prompt turn by effective mode id; the
+    /// turn outcome record takes them at turn end.
+    pub(crate) mode_rounds: std::collections::BTreeMap<&'static str, u64>,
+    /// Escalations the current prompt turn made; the turn outcome record
+    /// takes it at turn end.
+    pub(crate) turn_escalations: u64,
 }
 
 /// What a request did after its final-check reminder.

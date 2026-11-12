@@ -36,6 +36,9 @@ pub(crate) fn report(usage: Option<&PromptUsage>) -> Option<String> {
     if usage.utility_calls > 0 {
         lines.push(format!("Utility - {}x", usage.utility_calls));
     }
+    if let Some(outcome) = &usage.turn_outcome {
+        lines.push(outcome.summary_line());
+    }
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
@@ -128,6 +131,25 @@ mod tests {
         // Jev calls alone still say something.
         let only_jev = usage(Vec::new(), 7);
         assert_eq!(report(Some(&only_jev)).as_deref(), Some("Jev - 7x"));
+    }
+
+    /// The turn outcome closes the block as one line.
+    #[test]
+    fn the_turn_outcome_is_the_last_line() {
+        let mut with_outcome = usage(Vec::new(), 2);
+        with_outcome.turn_outcome =
+            Some(distill_shell::extensions::notification::TurnOutcomeRecord {
+                mode_choice: "normal".into(),
+                mode_rounds: [("normal".to_owned(), 2)].into(),
+                verification: "checked".into(),
+                ..Default::default()
+            });
+        assert_eq!(
+            report(Some(&with_outcome)).as_deref(),
+            Some(
+                "Jev - 2x\nMode normal (normal 2) · checked · checks 0 passed, 0 failed, 0 unknown · escalations 0"
+            )
+        );
     }
 
     #[test]

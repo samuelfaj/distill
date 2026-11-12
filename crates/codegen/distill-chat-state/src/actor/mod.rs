@@ -302,8 +302,11 @@ impl ChatStateActor {
                 }
                 self.state.sampling_config = *config;
             }
-            ChatStateCommand::StartFromInheritedHistory { parent_trims } => {
-                self.start_from_inherited_history(parent_trims);
+            ChatStateCommand::StartFromInheritedHistory {
+                parent_trims,
+                resumed,
+            } => {
+                self.start_from_inherited_history(parent_trims, resumed);
             }
             ChatStateCommand::RecordCacheLifetime { lifetime } => {
                 self.record_cache_lifetime(lifetime);
@@ -455,6 +458,9 @@ impl ChatStateActor {
             }
             ChatStateCommand::GetRequestTrims { reply } => {
                 let _ = reply.send(self.eviction.request_trims.clone());
+            }
+            ChatStateCommand::GetCacheResumeState { reply } => {
+                let _ = reply.send(self.cache_resume_state());
             }
             ChatStateCommand::GetLastTurnUsage { reply } => {
                 let _ = reply.send(self.state.last_turn_usage.clone());

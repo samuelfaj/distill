@@ -26,7 +26,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use distill_sampling_types::{ContentPart, ConversationItem, ToolCall};
 
@@ -98,7 +98,65 @@ impl ColdReason {
 /// its trimmed text.
 pub type RequestTrims = BTreeMap<String, (usize, Arc<str>)>;
 
-/// Per-session bookkeeping for the pass (in memory: a resumed session starts fresh).
+/// One request trim as persisted: the trimmed result's call id, its length when trimmed and the
+/// text sent instead. The text is kept whole: it names a stored copy, so it cannot be rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedTrim {
+    pub call_id: String,
+    pub original_len: usize,
+    pub text: String,
+}
+
+/// What the last main request left in the provider cache, kept in the session directory so a
+/// reloaded session can tell a cache that is still warm from one that expired.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheResumeState {
+    /// Wall-clock time the last main request completed, in Unix milliseconds: an `Instant` does
+    /// not survive a restart.
+    pub last_request_at_ms: u64,
+    /// The cache lifetime that request got; `None` when its endpoint's is unknown.
+    #[serde(default)]
+    pub cache_lifetime_secs: Option<u64>,
+    /// The request trims sent so far: every later request repeats them.
+    #[serde(default)]
+    pub request_trims: Vec<PersistedTrim>,
+}
+
+impl CacheResumeState {
+    /// How long the cache has sat idle at `now`, while it is still inside the last request's
+    /// lifetime. `None` (cold, as before this record existed) once the lifetime ran out, when it
+    /// is unknown, and when the record cannot be trusted: a request in the future, a repeated call
+    /// id, or a trim no shorter than what it replaced.
+    pub fn warm_idle(&self, now: SystemTime) -> Option<Duration> {
+        let lifetime = Duration::from_secs(self.cache_lifetime_secs?);
+        let sent_at =
+            SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(self.last_request_at_ms))?;
+        let idle = now.duration_since(sent_at).ok()?;
+        let mut ids = BTreeSet::new();
+        let consistent = self
+            .request_trims
+            .iter()
+            .all(|trim| ids.insert(trim.call_id.as_str()) && trim.text.len() < trim.original_len);
+        (consistent && idle < lifetime).then_some(idle)
+    }
+
+    fn trims(&self) -> RequestTrims {
+        self.request_trims
+            .iter()
+            .map(|trim| {
+                (
+                    trim.call_id.clone(),
+                    (trim.original_len, Arc::from(trim.text.as_str())),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Per-session bookkeeping for the pass (in memory; [`CacheResumeState`] carries what a reload
+/// needs).
 #[derive(Debug, Default)]
 pub(crate) struct EvictionState {
     /// Tool rounds in the conversation when the last batch was attempted.
@@ -122,6 +180,8 @@ pub(crate) struct EvictionState {
     /// When the entries of the last one-hour request expire. Until then the history is not idle
     /// past its lifetime, whatever shorter lifetime the requests after it had.
     pub hour_entries_until: Option<Instant>,
+    /// Wall-clock time the last main request completed, for [`CacheResumeState`].
+    pub last_request_at: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -970,17 +1030,47 @@ impl ChatStateActor {
     /// The cache lifetime the last main request had (`None`: its endpoint's is unknown).
     pub(super) fn record_cache_lifetime(&mut self, lifetime: Option<Duration>) {
         self.eviction.cache_lifetime = lifetime;
+        self.eviction.last_request_at = Some(SystemTime::now());
         if let Some(lifetime) = lifetime.filter(|lifetime| *lifetime >= ONE_HOUR_LIFETIME) {
             self.eviction.hour_entries_until = Some(Instant::now() + lifetime);
         }
     }
 
+    /// What a reload of this session needs to know about the cache, once a main request completed
+    /// in this process or a warm record was restored.
+    pub(super) fn cache_resume_state(&self) -> Option<CacheResumeState> {
+        let at = self.eviction.last_request_at?;
+        let last_request_at_ms = at.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_millis();
+        Some(CacheResumeState {
+            last_request_at_ms: u64::try_from(last_request_at_ms).ok()?,
+            cache_lifetime_secs: self
+                .eviction
+                .cache_lifetime
+                .map(|lifetime| lifetime.as_secs()),
+            request_trims: self
+                .eviction
+                .request_trims
+                .iter()
+                .map(|(call_id, (original_len, text))| PersistedTrim {
+                    call_id: call_id.clone(),
+                    original_len: *original_len,
+                    text: text.to_string(),
+                })
+                .collect(),
+        })
+    }
+
     /// Once, before the first request of a session that starts from a history. A verbatim fork
     /// (`parent_trims`) sends its parent's prefix under its parent's cache key: it repeats the
-    /// trims the parent sent, or its first request differs at the first one. Any other history
-    /// (a resume, a summarized fork) has no record of what its earlier requests trimmed, so its
-    /// first request misses the cache anyway: it is cold.
-    pub(super) fn start_from_inherited_history(&mut self, parent_trims: Option<RequestTrims>) {
+    /// trims the parent sent, or its first request differs at the first one. A reloaded session
+    /// (`resumed`) whose last request's cache is still live does the same with the trims it had
+    /// sent, and counts its idle time from that request. Any other history (a resume past that
+    /// lifetime or without a usable record, a summarized fork) misses the cache anyway: it is cold.
+    pub(super) fn start_from_inherited_history(
+        &mut self,
+        parent_trims: Option<RequestTrims>,
+        resumed: Option<CacheResumeState>,
+    ) {
         match parent_trims {
             Some(trims) => self.eviction.request_trims = trims,
             None if self
@@ -989,7 +1079,25 @@ impl ChatStateActor {
                 .iter()
                 .any(|item| !matches!(item, ConversationItem::System(_))) =>
             {
-                self.eviction.cold = Some(ColdReason::Resume);
+                let now = SystemTime::now();
+                let warm = resumed.and_then(|state| {
+                    let idle = state.warm_idle(now)?;
+                    Some((
+                        state,
+                        Instant::now().checked_sub(idle)?,
+                        now.checked_sub(idle)?,
+                    ))
+                });
+                match warm {
+                    Some((state, last_output, last_request_at)) => {
+                        self.eviction.request_trims = state.trims();
+                        self.eviction.cache_lifetime =
+                            state.cache_lifetime_secs.map(Duration::from_secs);
+                        self.eviction.last_model_output = Some(last_output);
+                        self.eviction.last_request_at = Some(last_request_at);
+                    }
+                    None => self.eviction.cold = Some(ColdReason::Resume),
+                }
             }
             None => {}
         }

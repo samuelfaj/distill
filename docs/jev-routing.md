@@ -221,7 +221,12 @@ Messages, 1 hour when asked, 30 minutes on Codex, 10 on Grok and OpenRouter,
 and with `extended_ttl = "auto"` never within the hour after a one-hour write,
 which later requests still read through), a compaction, a model switch or a
 resume. A verbatim fork inherits its parent's
-soft trims.
+soft trims. Each turn also writes `cache_state.json` in the session directory
+(the wall-clock time of the last main request, its cache lifetime and the soft
+trims sent), so a session reloaded inside that lifetime, or a subagent resumed
+inside its source's, repeats the same trims and is not cold; past the lifetime,
+with system prompt updates to fold into the head, or without a readable file,
+the resume is cold as before.
 
 When you type into a session of 100K tokens or more that sat idle past that
 lifetime (a known one only; the hour fallback never counts), the request about
@@ -230,8 +235,9 @@ Compact and continue, Keep full history, or Don't ask again, which writes
 `[compaction] cold_return = "off"`. `cold_return = "auto"` compacts without
 asking. A history already at the auto-compact threshold compacts as usual, and
 headless sessions, subagents, `--no-ask-user`, a client without the question UI
-and no answer within two minutes keep the full history. A resumed session has
-no idle time in the process and is never asked.
+and no answer within two minutes keep the full history. A resumed session is
+asked only when it was reloaded warm and its idle time since the last request
+then passed the lifetime; a cold resume is never asked.
 
 The main system prompt keeps its per-session values, the worker model id and
 the memory roots, in an `<environment>` block at its end, so sessions of one

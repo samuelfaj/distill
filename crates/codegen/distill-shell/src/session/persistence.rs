@@ -303,6 +303,8 @@ pub enum PersistenceMsg {
     },
     /// Persist announcement tracking state (MCP and skill announcement dedup).
     AnnouncementState(crate::session::announcement_state::AnnouncementState),
+    /// Persist what a reload needs to know about the prompt cache ([`CACHE_STATE_FILE`]).
+    CacheResumeState(distill_chat_state::CacheResumeState),
     GoalModeState(crate::session::goal_tracker::GoalOrchestration),
     DeleteGoalModeState {
         respond_to: tokio::sync::oneshot::Sender<io::Result<()>>,
@@ -943,6 +945,32 @@ fn ensure_owner_only_session_dir_in_with(
         sync_dir,
     )?;
     Ok(dir)
+}
+
+/// What the last main request left in the provider cache, so a reload inside its lifetime starts
+/// warm (see `ChatStateHandle::start_from_resumed_history`). Relative to the session directory.
+pub(crate) const CACHE_STATE_FILE: &str = "cache_state.json";
+
+/// Writes [`CACHE_STATE_FILE`] into an existing session directory; a missing one is left alone.
+async fn write_cache_resume_state(
+    dir: &Path,
+    state: &distill_chat_state::CacheResumeState,
+) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let json = serde_json::to_vec(state)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    crate::session::storage::write_bytes_atomic_async(&dir.join(CACHE_STATE_FILE), json).await
+}
+
+/// The record [`CACHE_STATE_FILE`] holds; `None` when it is missing or unreadable, which keeps
+/// the reload cold as before.
+pub(crate) fn load_cache_resume_state(dir: &Path) -> Option<distill_chat_state::CacheResumeState> {
+    let bytes = std::fs::read(dir.join(CACHE_STATE_FILE)).ok()?;
+    serde_json::from_slice(&bytes)
+        .inspect_err(|error| tracing::warn!(%error, "unreadable cache state; resuming cold"))
+        .ok()
 }
 
 /// `session_dir` with an injectable grok home (pure path computation).
@@ -2434,6 +2462,12 @@ impl SessionPersistence {
                         .await
                     {
                         tracing::warn!(?e, "failed to write announcement state");
+                    }
+                }
+                PersistenceMsg::CacheResumeState(state) => {
+                    if let Err(e) = write_cache_resume_state(&session_dir(&self.info), &state).await
+                    {
+                        tracing::warn!(?e, "failed to write cache state");
                     }
                 }
                 PersistenceMsg::Feedback(entry) => {

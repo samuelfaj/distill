@@ -3359,3 +3359,30 @@ async fn retire_checkpoint_marker_failure_does_not_ack_success() {
     );
     actor.stop().await;
 }
+
+/// The cache record a turn leaves is what the next process reads back at spawn; a missing or
+/// unreadable file (a session from before it existed, a torn write) keeps the reload cold, and a
+/// session directory that does not exist is not created for it.
+#[tokio::test]
+async fn cache_resume_state_round_trips_and_a_bad_file_resumes_cold() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(load_cache_resume_state(dir.path()), None, "no file yet");
+    let state = distill_chat_state::CacheResumeState {
+        last_request_at_ms: 1_800_000_000_000,
+        cache_lifetime_secs: Some(300),
+        request_trims: vec![distill_chat_state::PersistedTrim {
+            call_id: "call_1".into(),
+            original_len: 9_000,
+            text: "head\n\n[…trimmed…]\n\ntail".into(),
+        }],
+    };
+    write_cache_resume_state(dir.path(), &state).await.unwrap();
+    assert_eq!(load_cache_resume_state(dir.path()), Some(state.clone()));
+
+    std::fs::write(dir.path().join(CACHE_STATE_FILE), b"{\"lastRequestAtMs\":").unwrap();
+    assert_eq!(load_cache_resume_state(dir.path()), None, "torn file");
+
+    let missing = dir.path().join("gone");
+    write_cache_resume_state(&missing, &state).await.unwrap();
+    assert!(!missing.exists());
+}

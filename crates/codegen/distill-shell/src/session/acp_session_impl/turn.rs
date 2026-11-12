@@ -1800,6 +1800,7 @@ impl SessionActor {
         }
         let usage = self.freeze_prompt_usage(prompt_id).await;
         self.persist_live_usage().await;
+        self.persist_cache_resume_state().await;
         drop(turn_scope_guard);
         match result {
             Ok(outcome) => {
@@ -2597,6 +2598,16 @@ impl SessionActor {
                     "failed to snapshot session usage for persist"
                 );
             }
+        }
+    }
+    /// After a turn: what a reload of this session needs to know about the prompt cache. Nothing
+    /// before the first completed main request.
+    async fn persist_cache_resume_state(&self) {
+        if let Some(state) = self.chat_state_handle.cache_resume_state().await {
+            let _ = self
+                .notifications
+                .persistence_tx
+                .send(PersistenceMsg::CacheResumeState(state));
         }
     }
     /// Shared round-completion bookkeeping (plan cleanup, cancel-streak reset, token sums, feedback prompt).

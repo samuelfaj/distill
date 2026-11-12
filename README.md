@@ -97,6 +97,29 @@ turns out harder. Subagents inherit Auto and adapt independently.
 </tr>
 </table>
 
+### One prompt, five modes
+
+The same prompt in each mode, with DeepSeek V4.1 Flash Ultrafast as the main
+model and GLM 5.3 Flash Ultrafast as the worker (both through OpenGateway):
+
+> Create a view of moon surface and the sky, photorealistic. in three.js
+
+| Mode | Result | Cost | Time | Tokens | Model calls |
+| --- | --- | ---: | ---: | ---: | --- |
+| **UltraSave** | <img src="docs/images/moon/ultrasave.webp" width="320" alt="UltraSave: grey terrain under a starfield"> | **$0.0019** (0.013x) | **2 min 5 s** (0.047x) | 0.39M | 21 GLM |
+| **UltraFast** | <img src="docs/images/moon/ultrafast.webp" width="320" alt="UltraFast: cratered terrain with low-sun shadows and Earth"> | $0.0873 (0.62x) | 31 min 9 s (0.71x) | 15.9M | 143 DeepSeek |
+| **UltraCode** | <img src="docs/images/moon/ultracode.webp" width="320" alt="UltraCode: boulder field with long shadows, Earth and a faint Milky Way"> | $0.2070 (1.46x) | 63 min 36 s (1.44x) | 41.8M | 200 DeepSeek |
+| **Auto** | <img src="docs/images/moon/auto.webp" width="320" alt="Auto: rock-strewn plain with Earth in the sky"> | $0.0620 (0.44x) | 22 min 43 s (0.52x) | 9.2M | 90 DeepSeek |
+| **Normal** | <img src="docs/images/moon/normal.webp" width="320" alt="Normal: craters and boulders under the Milky Way with Earth"> | $0.1417 (1.00x) | 44 min 4 s (1.00x) | 30.1M | 175 DeepSeek |
+
+Ratios are against Normal. One run per mode, all five started at the same time
+on 2026-11-12 with distill 2.0.9 (39f1c6fe0bf8); each finished with exit code 0.
+Cost uses OpenGateway's billed prices that day (DeepSeek $0.09/M input,
+$0.36/M output, $0.0018/M cached; GLM $0.015/M, $0.05/M, $0.003/M) and leaves
+out the Jev routing calls, which have no published price. UltraCode ended with
+`Verification: UNVERIFIED`. Thumbnails are frames captured in headless Chrome
+at 1280×720.
+
 Details:
 [UltraSave](docs/ultrasave.md), [UltraFast](docs/ultrafast.md) and
 [UltraCode](docs/ultracode.md).

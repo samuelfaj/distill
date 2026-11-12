@@ -23,7 +23,7 @@ pub struct BashToolConfig {
     /// Whether to auto-background a command when it times out (default: `true`).
     pub auto_background_on_timeout: Option<bool>,
     /// How long a command may block the foreground before auto-backgrounding, in milliseconds, when `auto_background_on_timeout` is on.
-    /// `None` uses the server default of 15s.
+    /// `None` uses the server default of 120s, which a model `timeout` can lengthen up to 180s.
     /// `Some(0)` disables the short budget, so auto-backgrounding happens only at the model/default timeout.
     pub foreground_block_budget_ms: Option<u64>,
     /// Whether to allow a background `&` operator in foreground commands (default: `true`).
@@ -669,7 +669,7 @@ mod tests {
         );
     }
 
-    // -- foreground_block_budget_ms: only emitted when set (server defaults to 15s) --
+    // -- foreground_block_budget_ms: only emitted when set (server defaults to 120s) --
 
     fn fg_budget(map: &serde_json::Map<String, serde_json::Value>) -> Option<u64> {
         map.get("foreground_block_budget_ms")
@@ -681,7 +681,7 @@ mod tests {
         let local = BashToolConfig::default();
         assert!(
             fg_budget(&local.to_bash_params_json(None, None)).is_none(),
-            "unset budget must not be sent (server keeps 15s default)"
+            "unset budget must not be sent (server keeps its default)"
         );
     }
 

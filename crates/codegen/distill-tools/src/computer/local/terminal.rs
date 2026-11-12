@@ -45,8 +45,9 @@ const SIGTERM_GRACE: Duration = Duration::from_secs(1);
 /// Max background task lifetime; 10 hours to support long monitor and bash runs.
 pub(crate) const BACKGROUND_MAX_RUNTIME: Duration = Duration::from_secs(36_000);
 /// Max time an auto-backgroundable foreground command blocks the turn before it is
-/// backgrounded (never killed), independent of `timeout`. Env: `GROK_FOREGROUND_BLOCK_BUDGET_MS`.
-pub(crate) const FOREGROUND_BLOCK_BUDGET: Duration = Duration::from_secs(15);
+/// backgrounded (never killed), independent of `timeout`. Most commands finish within it, so
+/// waiting here saves a model round spent only on waiting. Env: `GROK_FOREGROUND_BLOCK_BUDGET_MS`.
+pub(crate) const FOREGROUND_BLOCK_BUDGET: Duration = Duration::from_secs(120);
 
 pub(crate) fn foreground_block_budget_from_env() -> Duration {
     std::env::var("GROK_FOREGROUND_BLOCK_BUDGET_MS")

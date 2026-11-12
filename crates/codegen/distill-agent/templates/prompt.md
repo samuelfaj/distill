@@ -62,6 +62,7 @@ ${%- if tools.by_kind.execute or tools.by_kind.monitor %}
 <background_tasks>
 ${%- if tools.by_kind.execute %}
 - Run a long-lived command you own (a build, test suite, or server) as a background command in `${{ tools.by_kind.execute }}`, then continue independent work${%- if system_reminders_enabled %}; its completion is reported to you${%- endif %}.
+- Use background only when you have independent work to do meanwhile; otherwise run the command in the foreground.
 ${%- endif %}
 ${%- if tools.by_kind.monitor %}
 - Use `${{ tools.by_kind.monitor }}` for watch processes, polling, and ongoing observation of external conditions (CI status, log tailing, API polling), SPECIFICALLY for status changes.

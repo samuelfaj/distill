@@ -22,6 +22,9 @@ use crate::jev::types::{Question, QuestionId};
 pub struct LeverThresholds {
     /// B8 mid-request review: probability on a new mode needed to switch to it.
     pub mode_review_switch: f64,
+    /// B8 mid-request review under `b8_up_only`: how far the probability on a
+    /// higher mode must exceed the current mode's for Auto to climb to it.
+    pub mode_review_up_margin: f64,
     /// C1: probability above which a requested item counts as done; the final
     /// check also needs this much confidence that work remains.
     pub c1_item_done: f64,
@@ -45,6 +48,8 @@ impl LeverThresholds {
     /// The floors every Jev model id gets until it is calibrated.
     pub const DEFAULT: Self = Self {
         mode_review_switch: 0.6,
+        // Not fitted: the value the up-only rule was designed with.
+        mode_review_up_margin: 0.25,
         c1_item_done: 0.60,
         c3_item_satisfied: 0.70,
         c3_leftover: 0.30,
@@ -58,6 +63,7 @@ impl LeverThresholds {
     fn set(&mut self, threshold: Threshold, value: f64) {
         let field = match threshold {
             Threshold::ModeReviewSwitch => &mut self.mode_review_switch,
+            Threshold::ModeReviewUpMargin => &mut self.mode_review_up_margin,
             Threshold::C1ItemDone => &mut self.c1_item_done,
             Threshold::C3ItemSatisfied => &mut self.c3_item_satisfied,
             Threshold::C3Leftover => &mut self.c3_leftover,
@@ -81,6 +87,7 @@ impl Default for LeverThresholds {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Threshold {
     ModeReviewSwitch,
+    ModeReviewUpMargin,
     C1ItemDone,
     C3ItemSatisfied,
     C3Leftover,
@@ -107,7 +114,7 @@ pub enum ThresholdPack {
 impl Threshold {
     pub const fn pack(self) -> ThresholdPack {
         match self {
-            Self::ModeReviewSwitch => ThresholdPack::ModeQuestion,
+            Self::ModeReviewSwitch | Self::ModeReviewUpMargin => ThresholdPack::ModeQuestion,
             Self::C1ItemDone => ThresholdPack::PrematureStop,
             Self::C3ItemSatisfied | Self::C3Leftover => ThresholdPack::Completion,
             Self::C4Match
@@ -239,6 +246,10 @@ mod tests {
         assert_eq!(
             t.mode_review_switch, 0.6,
             "jev_auto_mode.rs SWITCH_PROBABILITY"
+        );
+        assert_eq!(
+            t.mode_review_up_margin, 0.25,
+            "the up-only rule's design value"
         );
         assert_eq!(t.c1_item_done, 0.60, "verify.rs ITEM_DONE_FLOOR");
         assert_eq!(t.c3_item_satisfied, 0.70, "verify.rs ITEM_SATISFIED_FLOOR");

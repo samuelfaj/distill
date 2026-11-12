@@ -92,6 +92,8 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b8_stable_tools: cfg.ladder.b8_stable_tools,
             b8_review_hygiene: cfg.ladder.b8_review_hygiene,
             f1_followup_label: cfg.ladder.f1_followup_label,
+            b8_criteria_v2: cfg.ladder.b8_criteria_v2,
+            b8_up_only: cfg.ladder.b8_up_only,
         },
     )
 }

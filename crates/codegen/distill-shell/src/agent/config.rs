@@ -1470,6 +1470,10 @@ pub struct JevLadderConfig {
     /// F1: label a human message within ten minutes of the previous turn's end as reporting that
     /// result wrong or incomplete; recorded only (default off).
     pub f1_followup_label: Option<bool>,
+    /// B8: contrastive mode criteria about the whole request (default on).
+    pub b8_criteria_v2: Option<bool>,
+    /// B8 mid-turn review: the mode only moves up inside a request (default on).
+    pub b8_up_only: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.

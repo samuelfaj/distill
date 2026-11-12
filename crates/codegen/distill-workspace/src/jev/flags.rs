@@ -128,6 +128,10 @@ pub struct JevLadderOverlay {
     pub b8_review_hygiene: Option<bool>,
     /// F1: label a quick next human message as reporting the previous result wrong or incomplete.
     pub f1_followup_label: Option<bool>,
+    /// B8: the mode question judges the request with contrastive criteria.
+    pub b8_criteria_v2: Option<bool>,
+    /// B8 mid-turn review: inside a request the mode only moves up.
+    pub b8_up_only: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -205,6 +209,10 @@ impl JevFlags {
             // Opt-in: it adds a question to the turn-start request and is only
             // recorded, never acted on, until its labels are checked.
             f1_followup_label: false,
+            // On by the owner's choice before any replay, shadow or Auto A/B;
+            // `false` restores the first wording and the free review.
+            b8_criteria_v2: true,
+            b8_up_only: true,
         }
     }
 
@@ -308,6 +316,10 @@ impl JevFlags {
             && resolve_switch(ladder.b8_review_hygiene, None, self.b8_review_hygiene);
         self.f1_followup_label =
             self.enabled && resolve_switch(ladder.f1_followup_label, None, self.f1_followup_label);
+        self.b8_criteria_v2 = self.b8_execution_mode
+            && resolve_switch(ladder.b8_criteria_v2, None, self.b8_criteria_v2);
+        self.b8_up_only =
+            self.b8_execution_mode && resolve_switch(ladder.b8_up_only, None, self.b8_up_only);
         self
     }
 }
@@ -406,6 +418,12 @@ pub struct JevFlags {
     /// also asks whether it reports that result as wrong or incomplete; the
     /// label is recorded and never acted on.
     pub f1_followup_label: bool,
+    /// B8: the mode question describes each option by what it is for, what it
+    /// is not for and example requests, and judges the whole request.
+    pub b8_criteria_v2: bool,
+    /// B8: inside a request Auto's mode only moves up; a leaner pick waits
+    /// for the next request.
+    pub b8_up_only: bool,
 }
 
 impl JevFlags {
@@ -452,6 +470,8 @@ impl JevFlags {
             b8_stable_tools: false,
             b8_review_hygiene: false,
             f1_followup_label: false,
+            b8_criteria_v2: false,
+            b8_up_only: false,
         }
     }
 
@@ -557,6 +577,8 @@ impl JevFlags {
             // Jev nothing, so there is no flag to switch it on.
             JevLever::Escalation => false,
             JevLever::F1FollowupLabel => self.f1_followup_label,
+            JevLever::B8CriteriaV2 => self.b8_criteria_v2,
+            JevLever::B8UpOnly => self.b8_up_only,
         }
     }
 
@@ -610,6 +632,8 @@ pub enum JevLever {
     /// The escalation ratchet's deterministic rows (`[modes] escalation`).
     Escalation,
     F1FollowupLabel,
+    B8CriteriaV2,
+    B8UpOnly,
 }
 
 impl JevLever {
@@ -654,6 +678,8 @@ impl JevLever {
             Self::D6HistoryEviction => "d6_history_eviction",
             Self::Escalation => "escalation",
             Self::F1FollowupLabel => "f1_followup_label",
+            Self::B8CriteriaV2 => "b8_criteria_v2",
+            Self::B8UpOnly => "b8_up_only",
         }
     }
 }
@@ -911,6 +937,37 @@ mod tests {
         assert!(overlaid(None, on).lever_active(JevLever::F1FollowupLabel));
         assert!(!overlaid(Some(false), on).lever_active(JevLever::F1FollowupLabel));
         assert_eq!(JevLever::F1FollowupLabel.as_str(), "f1_followup_label");
+    }
+
+    /// Auto v2's two levers ship on, each has its own off switch, and both
+    /// mean nothing without Auto itself.
+    #[test]
+    fn auto_v2_levers_default_on_and_each_turns_off_alone() {
+        let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
+        let default = overlaid(JevLadderOverlay::default());
+        assert!(default.lever_active(JevLever::B8CriteriaV2));
+        assert!(default.lever_active(JevLever::B8UpOnly));
+        let criteria_off = overlaid(JevLadderOverlay {
+            b8_criteria_v2: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!criteria_off.lever_active(JevLever::B8CriteriaV2));
+        assert!(criteria_off.lever_active(JevLever::B8UpOnly));
+        let up_off = overlaid(JevLadderOverlay {
+            b8_up_only: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(up_off.lever_active(JevLever::B8CriteriaV2));
+        assert!(!up_off.lever_active(JevLever::B8UpOnly));
+        let auto_off = overlaid(JevLadderOverlay {
+            b8_execution_mode: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!auto_off.lever_active(JevLever::B8CriteriaV2));
+        assert!(!auto_off.lever_active(JevLever::B8UpOnly));
+        assert!(!JevFlags::off().lever_active(JevLever::B8UpOnly));
+        assert_eq!(JevLever::B8CriteriaV2.as_str(), "b8_criteria_v2");
+        assert_eq!(JevLever::B8UpOnly.as_str(), "b8_up_only");
     }
 
     #[test]

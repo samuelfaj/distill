@@ -125,7 +125,7 @@ LADDER_KEYS = (
     'c1_premature_stop', 'c3_completion_check', 'c4_diff_risk', 'c5_error_priority', 'c6_injection_screen',
     'd2_big_output_retention', 'd3_post_compaction', 'd4_compaction_timing', 'd5_memory_capture_gate',
     'd6_history_eviction', 'd6_warm_batches', 'b7_subagent_model', 'b8_execution_mode', 'b8_stable_tools',
-    'b8_review_hygiene',
+    'b8_review_hygiene', 'b8_criteria_v2', 'b8_up_only',
 )
 # The final check asks C1 and C3 together; turning it off means both.
 JEV_OFF_GROUPS = {'final_check': ('c1_premature_stop', 'c3_completion_check')}

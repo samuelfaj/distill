@@ -1,0 +1,1 @@
+In tools/task_cost_eval/fixtures/auto_retry_config, bump the retry attempts from 3 to 5.

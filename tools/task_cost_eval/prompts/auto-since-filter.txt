@@ -1,0 +1,3 @@
+Add a `--since YYYY-MM-DD` option to `cli.py list` in tools/task_cost_eval/fixtures/auto_since_filter that only
+shows tasks created on or after that date. It should combine with --status, and an invalid date should print an
+error and exit with status 2.

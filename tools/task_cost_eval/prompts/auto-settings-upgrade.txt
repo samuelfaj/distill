@@ -1,0 +1,5 @@
+In tools/task_cost_eval/fixtures/auto_settings_upgrade we're moving the settings file to version 2: `font` becomes
+{"family": ..., "size": ...} (size defaults to 12 when the old string has none) and `plugins` becomes a list instead
+of a comma-separated string. Add schema.migrate(settings) that upgrades older data, make store.load return
+upgraded settings, and update app.py. Users have hand-edited these files, so keys we don't know about must
+survive, and family names can contain spaces.

@@ -1,0 +1,2 @@
+Rename the `retry_limit` setting to `max_retries` in tools/task_cost_eval/fixtures/auto_rename_setting: the
+default, and everything that reads it. Values and behaviour stay the same.

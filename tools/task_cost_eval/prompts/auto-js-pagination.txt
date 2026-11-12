@@ -1,0 +1,3 @@
+Add pagination to GET /products in tools/task_cost_eval/fixtures/auto_js_pagination. It should accept `limit`
+(default 10, at most 50) and `offset` (default 0) and return {items, total, nextOffset}, where total counts every
+match and nextOffset is null on the last page. Invalid values should get a 400 like the other validation errors.

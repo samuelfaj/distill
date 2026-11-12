@@ -1,0 +1,1 @@
+ENDPOINTS = ('orders', 'search', 'reports')

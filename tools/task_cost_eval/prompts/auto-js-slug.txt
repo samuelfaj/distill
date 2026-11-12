@@ -1,0 +1,2 @@
+Our URL slugs should use hyphens instead of underscores. Change the default separator in
+tools/task_cost_eval/fixtures/auto_js_slug/slug.js and update its test.

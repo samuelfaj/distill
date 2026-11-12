@@ -1,0 +1,5 @@
+Actually the endpoints need different retry policies. Read them from a retry_policies.json next to config.py
+(keys are endpoint names, values look like {"attempts": 2, "backoff_s": 0.1}); endpoints that are not in the
+file, or a missing file, use the defaults from config.py. Add client.policy_for(endpoint) returning
+(attempts, backoff_s), make client.call use it, and add `python3 cli.py show-policy ENDPOINT` that prints the
+effective policy as JSON with those two keys.

@@ -120,6 +120,10 @@ pub(crate) struct JevTurnLedger {
     /// Item hashes of the last main Messages request, to name where a later
     /// cache read broke. Session-scoped, like the cache it traces.
     pub(crate) prefix_trace: super::prompt_cache::PrefixTrace,
+    /// UltraCode v2 turn review of the current prompt: snapshot, rework and
+    /// panel counters, gate clock and status. Keyed by prompt id, so a new
+    /// prompt starts from zero.
+    pub(crate) ultracode_review: crate::session::goal_classifier::turn_review::TurnReviewState,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.
@@ -378,6 +382,16 @@ impl JevTurnLedger {
             self.pending_route_local = false;
             (model, local)
         })
+    }
+
+    /// How `prompt_id`'s UltraCode turn review ended (REVIEWED or
+    /// UNVERIFIED with a reason), for the turn outcome record; `None` when
+    /// that turn was not reviewed.
+    pub(crate) fn ultracode_turn_status(
+        &self,
+        prompt_id: &str,
+    ) -> Option<&crate::session::goal_classifier::turn_review::TurnStatus> {
+        self.ultracode_review.status_for(prompt_id)
     }
 
     /// Drains the turn: rows biggest first, then the ledger is empty again.

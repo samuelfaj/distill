@@ -3910,6 +3910,14 @@ impl SessionActor {
                     salvage.step_boundary();
                     continue;
                 }
+                if !turn_refused
+                    && structured_output_validator.is_none()
+                    && let Some(reminder) = Box::pin(self.ultracode_turn_review(&prompt_id)).await
+                {
+                    self.push_system_reminder(&reminder);
+                    salvage.step_boundary();
+                    continue;
+                }
                 self.finalize_turn_bookkeeping(
                     req_id,
                     std::mem::take(&mut turn_span_totals),
@@ -4043,6 +4051,7 @@ impl SessionActor {
                     },
                 )
                 .await;
+            Box::pin(self.ultracode_turn_snapshot(&prompt_id)).await;
             let execute_tool_calls_result = {
                 let _tool_phase = turn_phases.begin_tool_blocking();
                 self.execute_tool_calls(tool_call_responses).await

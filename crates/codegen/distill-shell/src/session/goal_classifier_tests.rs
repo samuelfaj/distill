@@ -2082,6 +2082,7 @@ fn stage_inputs_resume<'a>(
         tool_names: &[],
         inherit_tool_names: default_inherit_tool_names(),
         harness_checks: &[],
+        turn_changes: None,
     }
 }
 
@@ -3720,6 +3721,7 @@ async fn run_one_skeptic_fails_closed_when_scratch_root_squatted() {
         scratch_dir_ready: true,
         prior_gaps: None,
         harness_checks: "(none recorded)\n",
+        template: GOAL_VERIFIER_PROMPT_TEMPLATE,
     };
 
     let result = run_one_skeptic(

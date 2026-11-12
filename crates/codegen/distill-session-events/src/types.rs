@@ -199,6 +199,24 @@ pub enum Event {
         pattern: &'static str,
     },
 
+    /// UltraCode v2: one independent review run over a turn's patch.
+    UltracodeTurnReview {
+        review: u32,
+        skeptics: u32,
+        verdict: &'static str,
+        latency_ms: u64,
+    },
+    /// UltraCode v2: how a reviewed turn ended.
+    UltracodeTurnStatus {
+        status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        reviews: u32,
+        rework_rounds: u32,
+        panel_used: bool,
+        gate_ms: u64,
+    },
+
     McpConfigResolved {
         servers: Vec<McpConfigServer>,
         disabled: Vec<String>,

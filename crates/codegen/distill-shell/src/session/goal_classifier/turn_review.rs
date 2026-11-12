@@ -2,7 +2,8 @@
 //! UltraCode v2: an independent review of one turn's patch at turn end, with a
 //! status that fails closed.
 //!
-//! Inert unless the effective config sets `[modes.ultracode] contract = "v2"`.
+//! Inert unless the effective config sets `[modes.ultracode] contract = "v2"`
+//! or lists `ultracode` in `[modes] v2`.
 //! The review reuses the goal verification stage with the turn lens and the
 //! turn's own patch (see [`super::turn_snapshot`]). Any outcome in which no
 //! reviewer judged the patch is UNVERIFIED, never a pass.
@@ -29,10 +30,13 @@ pub(crate) const GATE_BUDGET: Duration = Duration::from_secs(15 * 60);
 /// second the goal baseline capture gets, since the user is waiting.
 pub(crate) const SNAPSHOT_BUDGET: Duration = super::GIT_BASELINE_CAPTURE_TIMEOUT;
 
-/// Whether `root`, an effective config, sets `[modes.ultracode] contract = "v2"`.
+/// Whether `root`, an effective config, sets `[modes.ultracode] contract = "v2"`
+/// or lists `ultracode` in `[modes] v2`.
 pub(crate) fn contract_v2_in(root: Option<&toml::Value>) -> bool {
     root.and_then(|root| root.get("modes")?.get("ultracode")?.get("contract")?.as_str())
         .is_some_and(|contract| contract.trim() == "v2")
+        || crate::agent::config::modes_v2(root)
+            .contains(distill_tool_types::ExecutionMode::Ultracode)
 }
 
 #[cfg(test)]

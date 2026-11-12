@@ -1110,6 +1110,32 @@ pub(crate) fn ultrasave_has_no_cheaper_model(root: Option<&toml::Value>) -> bool
         .model
         .is_none()
 }
+/// `[modes] v2` in the effective config `root`: the modes that use their target policy row
+/// (`distill_tool_types::ModePolicy::v2`). Absent, malformed or unknown entries select nothing,
+/// so every mode keeps today's row.
+pub(crate) fn modes_v2(root: Option<&toml::Value>) -> distill_tool_types::V2Modes {
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    let Some(value) = root.and_then(|root| root.get("modes")?.get("v2")) else {
+        return V2Modes::default();
+    };
+    let Some(entries) = value.as_array() else {
+        tracing::warn!("[modes] v2 must be a list of mode names; ignored");
+        return V2Modes::default();
+    };
+    entries.iter().fold(V2Modes::default(), |modes, entry| {
+        match entry
+            .as_str()
+            .map(str::trim)
+            .and_then(ExecutionMode::from_id)
+        {
+            Some(mode) => modes.with(mode),
+            None => {
+                tracing::warn!(%entry, "unknown mode in [modes] v2; ignored");
+                modes
+            }
+        }
+    })
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {
@@ -2044,6 +2070,9 @@ const NON_SERDE_CONFIG_PATHS: &[&str] = &[
     "cli.grove",
     "cli.grove_worktree",
     "cli.nfs_worktree",
+    // `[modes]` and `[modes.<mode>]`, read from the raw root by `modes_v2`,
+    // `pinned_mode_settings`, the cold-return boundary and the UltraCode turn review.
+    "modes",
 ];
 /// [`NON_SERDE_CONFIG_PATHS`] plus the multi-path groups, every registered feature, every
 /// [`UNMIRRORED_BOOLEAN_FEATURES`] key, and the managed policy pins (no-op in plain config.toml).

@@ -416,7 +416,7 @@ pub fn compose_micro_effort_for(
         let mut cumulative = 0.0;
         for candidate in offered {
             cumulative += mass(&candidate.id);
-            if cumulative / total >= 0.5 {
+            if cumulative / total >= distill_tool_types::JEV_CHOICE_QUANTILE {
                 return Some(candidate.id.clone());
             }
         }

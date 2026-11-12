@@ -47,7 +47,8 @@ pub const LONG_CONTEXT_MIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// JSON object, and a lower ceiling is what keeps a decision call cheap.
 pub const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
 /// Deadline for one catalogue item call, before the caller's own resolution.
-pub const DEFAULT_ITEM_BUDGET: Duration = Duration::from_millis(4_000);
+pub const DEFAULT_ITEM_BUDGET: Duration =
+    Duration::from_millis(distill_tool_types::JEV_DEADLINE_MS);
 /// Thinking level a decision call asks for when the configuration does not say.
 /// Decision calls are the cheap lane: they must answer fast and cost little, and
 /// a lever's own threshold decides what to do with a low-confidence answer.

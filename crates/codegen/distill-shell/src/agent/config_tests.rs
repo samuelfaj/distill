@@ -5685,6 +5685,44 @@ fn config_warns_on_section_typo() {
     );
     assert!(unused.iter().any(|k| k == "endpoint"), "got: {unused:?}");
 }
+/// `[modes]` is read from the raw config root, so documented keys there must
+/// not be reported as typos.
+#[test]
+fn modes_table_is_not_reported_unused() {
+    let unused = unused_keys_from_toml(
+        r#"
+            [modes]
+            v2 = ["ultrasave"]
+            [modes.ultrasave]
+            model = "worker"
+            [modes.ultracode]
+            contract = "v2"
+        "#,
+    );
+    assert!(
+        !unused.iter().any(|k| k.starts_with("modes")),
+        "got: {unused:?}"
+    );
+}
+/// `[modes] v2` selects target rows by mode name; anything else selects
+/// nothing, so a typo never turns a lever on.
+#[test]
+fn modes_v2_lists_known_modes_only() {
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    let parse = |text: &str| modes_v2(Some(&toml::from_str(text).unwrap()));
+    assert_eq!(modes_v2(None), V2Modes::default());
+    assert_eq!(parse("[modes]\n"), V2Modes::default());
+    assert_eq!(parse("[modes]\nv2 = []\n"), V2Modes::default());
+    assert_eq!(parse("[modes]\nv2 = \"ultrasave\"\n"), V2Modes::default());
+    let listed = parse("[modes]\nv2 = [\"ultrasave\", \" ultracode \", \"turbo\", 3]\n");
+    assert_eq!(
+        listed,
+        V2Modes::default()
+            .with(ExecutionMode::Ultrasave)
+            .with(ExecutionMode::Ultracode)
+    );
+    assert!(!listed.contains(ExecutionMode::Ultrafast));
+}
 #[test]
 fn known_non_serde_config_paths_are_not_reported_unused() {
     let unused = unused_keys_from_toml(

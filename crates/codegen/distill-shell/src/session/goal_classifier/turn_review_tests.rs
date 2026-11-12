@@ -22,6 +22,17 @@ fn only_the_v2_contract_turns_the_review_on() {
     assert!(contract_v2_in(Some(&parse("[modes.ultracode]\ncontract = \" v2 \"\n"))));
 }
 
+/// Listing `ultracode` in `[modes] v2` selects its target row, whose
+/// turn-end verification is this review; other listed modes do not.
+#[test]
+fn listing_ultracode_in_modes_v2_turns_the_review_on() {
+    let parse = |text: &str| toml::from_str::<toml::Value>(text).unwrap();
+    assert!(contract_v2_in(Some(&parse("[modes]\nv2 = [\"ultracode\"]\n"))));
+    assert!(contract_v2_in(Some(&parse("[modes]\nv2 = [\"ultrasave\", \"ultracode\"]\n"))));
+    assert!(!contract_v2_in(Some(&parse("[modes]\nv2 = [\"ultrasave\", \"ultrafast\"]\n"))));
+    assert!(!contract_v2_in(Some(&parse("[modes]\nv2 = []\n"))));
+}
+
 // ── prose ─────────────────────────────────────────────────────────────
 
 /// A turn that changed only documentation is not reviewed; any code or

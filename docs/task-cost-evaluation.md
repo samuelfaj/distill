@@ -415,6 +415,43 @@ single.json tiered.json` prints both profiles):
   the extra passes refuted before the fix (`refutation_before_fix`). A
   missing optional field gives `INCONCLUSIVE`.
 
+## Mode cohorts
+
+The 20-case cohort is small single-prompt work: Auto never picks Normal or
+UltraCode on it and no run reaches history eviction or compaction. Three more
+cohorts exist for what it cannot show. Their pass rates, lengths and expected
+modes are design targets; none has been run against a model yet.
+
+- `cohort-auto-v1.json`: 12 cases, three per mode a careful human would
+  expect (`expected_mode`, reporting only). Three are two-prompt sessions whose
+  second prompt needs a different kind of work (`expected_followup_mode`).
+- `cohort-long-v1.json`: 4 tasks designed for 150 or more tool rounds
+  (`rounds_target`), each with `timeout_s: 5400`. `generate_long_fixtures.py`
+  writes the fixtures, references and grader data, and a test checks that
+  regenerating reproduces them byte for byte.
+- `cohort-ultracode-hard-v1.json` and `cohort-ultracode-hard-heldout-v1.json`:
+  6 cases each (4 hard, 1 sequential control, 1 small control; `difficulty`),
+  aimed at a 30% to 70% Normal pass rate. Each hard case has an
+  obvious-but-wrong solution under `obvious/` (`obvious_ref`) that passes the
+  fixture's visible tests and fails the hidden grader; `test_mode_cohorts.py`
+  checks that for every hard case.
+
+Case fields the runner reads:
+
+- `followup_prompt_ref`: a second prompt sent in the same session after the
+  first turn ends; the run is graded once at the end. It needs the ACP
+  transport and is part of the frozen inputs.
+- `timeout_s`: replaces `--timeout` for the case. A campaign whose selected
+  cases declare different timeouts is rejected, because verdicts compare one
+  timeout across runs.
+
+`--workspace-profile realistic` seeds each run's isolated home with 12
+synthetic skills, an `AGENTS.md` committed as task input and a local stdio MCP
+stub with two read-only tools, so a campaign measures the prefix a configured
+user has. The default, `plain`, is unchanged. The second prompt and the MCP
+stub are covered by tests against the fake ACP peer only: they have not been
+run with the real binary.
+
 ## Session usage analyzer
 
 `session_usage.py` reads real session folders and prints aggregates only:

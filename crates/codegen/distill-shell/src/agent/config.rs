@@ -1421,6 +1421,11 @@ pub struct JevLadderConfig {
     pub d6_warm_batches: Option<bool>,
     pub b7_subagent_model: Option<bool>,
     pub b8_execution_mode: Option<bool>,
+    /// B8 under Auto: keep the full tools array once it went out (default off).
+    pub b8_stable_tools: Option<bool>,
+    /// B8 mid-turn review: no return to a left mode without a new failure, and a short hold
+    /// after a switch (default off).
+    pub b8_review_hygiene: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.

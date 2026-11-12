@@ -57,6 +57,8 @@ b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
 d2_big_output_retention = false # D2: asked at ingest, before the model read the output; it never dropped one
 d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
+b8_stable_tools       = false # Auto: once the full tool list went out, a lean pick keeps sending it, so a mode switch does not break the prompt cache; unmeasured
+b8_review_hygiene     = false # Auto mid-turn review on a large prompt: no return to a left mode without a new failure, and a 3-round hold after a switch; unmeasured
 b6_delegation_hint    = false # B6: with a worker model, the turn-start request also asks whether the request has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request
 
 # Optional, with the defaults shown

@@ -122,6 +122,10 @@ pub struct JevLadderOverlay {
     pub b7_subagent_model: Option<bool>,
     /// B8: Auto execution mode picks Normal/UltraFast/UltraCode/UltraSave per request.
     pub b8_execution_mode: Option<bool>,
+    /// B8 under Auto: keep the full tools array once it went out, whatever mode is picked.
+    pub b8_stable_tools: Option<bool>,
+    /// B8 mid-turn review: no return to a left mode without a new failure, and a short hold.
+    pub b8_review_hygiene: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -293,8 +297,10 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self.b8_execution_mode =
             self.enabled && resolve_switch(ladder.b8_execution_mode, None, self.b8_execution_mode);
-        self.b8_stable_tools = self.b8_execution_mode && self.b8_stable_tools;
-        self.b8_review_hygiene = self.b8_execution_mode && self.b8_review_hygiene;
+        self.b8_stable_tools = self.b8_execution_mode
+            && resolve_switch(ladder.b8_stable_tools, None, self.b8_stable_tools);
+        self.b8_review_hygiene = self.b8_execution_mode
+            && resolve_switch(ladder.b8_review_hygiene, None, self.b8_review_hygiene);
         self
     }
 }
@@ -839,6 +845,33 @@ mod tests {
             },
         );
         assert!(flags.lever_active(JevLever::P2ReadShortlist));
+    }
+
+    /// Auto's two opt-in rules need their own keys (an A/B arm turns one on alone) and mean
+    /// nothing without Auto itself, so turning Auto off turns them off.
+    #[test]
+    fn autos_opt_in_rules_follow_their_keys_and_the_auto_lever() {
+        let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
+        let tools = overlaid(JevLadderOverlay {
+            b8_stable_tools: Some(true),
+            ..JevLadderOverlay::default()
+        });
+        assert!(tools.lever_active(JevLever::B8StableTools));
+        assert!(!tools.lever_active(JevLever::B8ReviewHygiene));
+        let review = overlaid(JevLadderOverlay {
+            b8_review_hygiene: Some(true),
+            ..JevLadderOverlay::default()
+        });
+        assert!(review.lever_active(JevLever::B8ReviewHygiene));
+        assert!(!review.lever_active(JevLever::B8StableTools));
+        let auto_off = overlaid(JevLadderOverlay {
+            b8_execution_mode: Some(false),
+            b8_stable_tools: Some(true),
+            b8_review_hygiene: Some(true),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!auto_off.lever_active(JevLever::B8StableTools));
+        assert!(!auto_off.lever_active(JevLever::B8ReviewHygiene));
     }
 
     #[test]

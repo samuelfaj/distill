@@ -2885,6 +2885,9 @@ impl SessionActor {
                     );
                     self.chat_state_handle.record_cache_lifetime(cache_lifetime);
                 }
+                let mut usage_context = usage_context;
+                usage_context.cache_lifetime_secs =
+                    cache_lifetime.map(|lifetime| lifetime.as_secs());
                 if let (Some(mut sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
                     sent.cache_lifetime = cache_lifetime;
                     let report = self
@@ -3122,6 +3125,7 @@ impl SessionActor {
             endpoint,
             requested_effort,
             applied_effort,
+            cache_lifetime_secs: None,
         }
     }
 
@@ -3442,6 +3446,7 @@ impl SessionActor {
                 endpoint: None,
                 requested_effort: None,
                 applied_effort: None,
+                cache_lifetime_secs: None,
             },
         );
     }

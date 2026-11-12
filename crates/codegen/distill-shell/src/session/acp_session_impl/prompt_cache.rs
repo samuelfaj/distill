@@ -5,7 +5,7 @@
 use std::hash::Hasher;
 use std::time::Instant;
 
-use distill_sampling_types::{ConversationItem, TokenUsage, ToolCall};
+use distill_sampling_types::{ConversationItem, SyntheticReason, TokenUsage, ToolCall};
 
 /// Whether a wait longer than the default five-minute cache lifetime likely
 /// follows this request: the round it answers blocked on a task or subagent,
@@ -99,21 +99,31 @@ pub(crate) struct SentPrefix {
     /// Hash of what goes out beside the items (tools, model, effort): a change there breaks the
     /// cache with every item intact.
     settings_hash: u64,
+    /// The tools part of `settings_hash`.
+    tools_hash: u64,
     /// The cache lifetime this request got; under it, an intact prefix that missed did not expire.
     pub(super) cache_lifetime: Option<std::time::Duration>,
     prompt_tokens: u32,
     sent_at: Instant,
+    /// The request answers a round that ended with an appended reminder.
+    after_reminder: bool,
+    /// The request answers a round in which the model called no tool.
+    after_no_tool_round: bool,
 }
 
 impl SentPrefix {
     pub(super) fn of(items: &[ConversationItem]) -> Self {
+        let (after_reminder, after_no_tool_round) = round_context(items);
         Self {
             hashes: items.iter().map(item_hash).collect(),
             kinds: items.iter().map(item_kind).collect(),
             settings_hash: 0,
+            tools_hash: 0,
             cache_lifetime: None,
             prompt_tokens: 0,
             sent_at: Instant::now(),
+            after_reminder,
+            after_no_tool_round,
         }
     }
 
@@ -126,8 +136,43 @@ impl SentPrefix {
             "reasoning_effort": &request.reasoning_effort,
             "max_output_tokens": &request.max_output_tokens,
         }));
+        sent.tools_hash = json_hash(&serde_json::json!({
+            "tools": &request.tools,
+            "deferred_tools": &request.deferred_tools,
+        }));
         sent
     }
+}
+
+/// Whether the request answers, inside the same prompt turn, a round that ended with an appended
+/// reminder, and one whose assistant reply called no tool (a reminder or continue message follows).
+fn round_context(items: &[ConversationItem]) -> (bool, bool) {
+    let Some((last_reply, reply)) =
+        items
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(at, item)| match item {
+                ConversationItem::Assistant(reply) => Some((at, reply)),
+                _ => None,
+            })
+    else {
+        return (false, false);
+    };
+    let after = items.get(last_reply + 1..).unwrap_or_default();
+    let user = |item: &ConversationItem, pick: fn(&SyntheticReason) -> bool| {
+        matches!(item, ConversationItem::User(user) if pick(&user.synthetic_reason))
+    };
+    if after
+        .iter()
+        .any(|item| user(item, SyntheticReason::starts_prompt_turn))
+    {
+        return (false, false);
+    }
+    let after_reminder = after
+        .iter()
+        .any(|item| user(item, |reason| *reason == SyntheticReason::SystemReminder));
+    (after_reminder, reply.tool_calls.is_empty())
 }
 
 fn item_hash(item: &ConversationItem) -> u64 {
@@ -201,7 +246,12 @@ impl PrefixTrace {
             "cache_write_tokens": usage.cache_creation_prompt_tokens,
             "secs_since_previous": current.sent_at.duration_since(previous.sent_at).as_secs(),
             "settings_changed": previous.settings_hash != current.settings_hash,
+            "tools_changed": previous.tools_hash != current.tools_hash,
             "previous_cache_lifetime_secs": previous.cache_lifetime.map(|lifetime| lifetime.as_secs()),
+            "cache_lifetime_secs": current.cache_lifetime.map(|lifetime| lifetime.as_secs()),
+            "lifetime_changed": previous.cache_lifetime != current.cache_lifetime,
+            "after_reminder": current.after_reminder,
+            "after_no_tool_round": current.after_no_tool_round,
         }))
     }
 }
@@ -209,14 +259,20 @@ impl PrefixTrace {
 /// The part of an [`PrefixTrace::observe`] report `/usage` shows as the last cache break.
 pub(crate) fn cache_break(report: &serde_json::Value) -> distill_chat_state::CacheBreak {
     let kind = |key: &str| report[key].as_str().map(str::to_owned);
+    let switch = |key: &str| report[key].as_bool().unwrap_or(false);
     distill_chat_state::CacheBreak {
         first_changed_index: report["first_changed_index"].as_u64(),
         changed_kind: kind("kind_before").or_else(|| kind("kind_after")),
         prompt_tokens: report["prompt_tokens"].as_u64().unwrap_or(0),
         cache_read_tokens: report["cache_read_tokens"].as_u64().unwrap_or(0),
         secs_since_previous: report["secs_since_previous"].as_u64().unwrap_or(0),
-        settings_changed: report["settings_changed"].as_bool().unwrap_or(false),
+        settings_changed: switch("settings_changed"),
         cache_lifetime_secs: report["previous_cache_lifetime_secs"].as_u64(),
+        request_cache_lifetime_secs: report["cache_lifetime_secs"].as_u64(),
+        lifetime_changed: switch("lifetime_changed"),
+        tools_changed: switch("tools_changed"),
+        after_reminder: switch("after_reminder"),
+        after_no_tool_round: switch("after_no_tool_round"),
     }
 }
 
@@ -455,5 +511,84 @@ mod tests {
             )
             .expect("an intact prefix that missed is reported");
         assert!(!cache_break(&report).settings_changed);
+    }
+
+    /// The settings hash does not cover the lifetime, so a request that moved a warm five-minute
+    /// prefix to the hour read as "prefix intact, settings unchanged, a few seconds" with no cause.
+    /// The report carries this request's lifetime and the change, and tells tools from the rest.
+    #[test]
+    fn a_break_names_this_requests_lifetime_and_whether_it_changed() {
+        let history = turn(vec![vec![read()], vec![read()]]);
+        let lived = |lifetime_secs: u64| {
+            let mut sent = SentPrefix::of(&history);
+            sent.cache_lifetime = Some(std::time::Duration::from_secs(lifetime_secs));
+            sent
+        };
+        let mut trace = PrefixTrace::default();
+        trace.observe(lived(300), &usage(50_000, 0));
+        let report = trace
+            .observe(lived(3_600), &usage(50_000, 0))
+            .expect("a break is reported");
+        let switched = cache_break(&report);
+        assert_eq!(switched.first_changed_index, None);
+        assert!(!switched.settings_changed && !switched.tools_changed);
+        assert_eq!(switched.cache_lifetime_secs, Some(300));
+        assert_eq!(switched.request_cache_lifetime_secs, Some(3_600));
+        assert!(switched.lifetime_changed);
+        assert_eq!(
+            switched.cause(),
+            distill_chat_state::CacheBreakCause::LifetimeChanged
+        );
+
+        let report = trace
+            .observe(lived(3_600), &usage(50_000, 0))
+            .expect("an intact prefix that missed is reported");
+        assert!(!cache_break(&report).lifetime_changed);
+
+        let with_effort = |effort| distill_sampling_types::ConversationRequest {
+            items: history.clone(),
+            reasoning_effort: effort,
+            ..Default::default()
+        };
+        let mut trace = PrefixTrace::default();
+        trace.observe(
+            SentPrefix::of_request(&with_effort(None)),
+            &usage(50_000, 0),
+        );
+        let report = trace
+            .observe(
+                SentPrefix::of_request(&with_effort(Some(
+                    distill_sampling_types::ReasoningEffort::High,
+                ))),
+                &usage(50_000, 0),
+            )
+            .expect("a break is reported");
+        let effort = cache_break(&report);
+        assert!(effort.settings_changed && !effort.tools_changed);
+    }
+
+    /// Requests after a round that ended in a reminder or without a tool call miss often; the trace
+    /// marks them, but only inside the prompt turn: a human message starts a new turn instead.
+    #[test]
+    fn a_request_after_a_reminder_or_a_toolless_round_is_marked() {
+        let mut reminder = ConversationItem::user("<system-reminder>check</system-reminder>");
+        if let ConversationItem::User(user) = &mut reminder {
+            user.synthetic_reason = SyntheticReason::SystemReminder;
+        }
+        let mut toolless = turn(vec![vec![read()]]);
+        toolless.push(ConversationItem::assistant("done"));
+        toolless.push(reminder.clone());
+        assert_eq!(round_context(&toolless), (true, true));
+
+        let mut after_tools = turn(vec![vec![read()]]);
+        after_tools.push(reminder);
+        assert_eq!(round_context(&after_tools), (true, false));
+
+        assert_eq!(round_context(&turn(vec![vec![read()]])), (false, false));
+
+        let mut next_turn = turn(vec![vec![read()]]);
+        next_turn.push(ConversationItem::assistant("done"));
+        next_turn.push(ConversationItem::user("next question"));
+        assert_eq!(round_context(&next_turn), (false, false));
     }
 }

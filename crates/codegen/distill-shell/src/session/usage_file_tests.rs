@@ -36,6 +36,7 @@ fn attribution(id: &str) -> distill_chat_state::UsageAttribution {
         usage_complete: false,
         api_duration_ms: None,
         cost_usd_ticks: None,
+        cache_lifetime_secs: None,
         cost_basis: distill_chat_state::UsageCostBasis::Unknown,
     }
 }
@@ -225,6 +226,64 @@ fn one_hour_cache_writes_persist_as_turn_deltas_and_old_files_still_load() {
     }))
     .expect("a file from before the split loads");
     assert_eq!(old.cache_creation_1h_tokens, 0);
+}
+
+/// Cache breaks reach usage.json per cause, per turn as a delta like the other counters, and each
+/// main row carries the cache lifetime its request got, so a break can be tied to a lifetime
+/// switch from the file alone. A file written before either existed still loads.
+#[test]
+fn cache_breaks_and_row_lifetimes_persist_and_old_files_still_load() {
+    let mut ledger = UsageLedger::default();
+    let mut main_row = completed_attribution("sampler:1", "main", "claude", Some("1"), 900, 10, 5);
+    main_row.cache_lifetime_secs = Some(300);
+    ledger.record_attribution(main_row);
+    let lifetime_switch = distill_chat_state::CacheBreak {
+        cache_lifetime_secs: Some(300),
+        request_cache_lifetime_secs: Some(3_600),
+        lifetime_changed: true,
+        ..Default::default()
+    };
+    ledger.record_cache_break(lifetime_switch.clone());
+    let first = UsageSummary::from_ledger(&ledger);
+    let mut file = SessionUsageFile::new("sess-1");
+    file.apply_turn(1, "t1", &first, None);
+    ledger.record_cache_break(lifetime_switch);
+    ledger.record_cache_break(distill_chat_state::CacheBreak {
+        first_changed_index: Some(7),
+        after_no_tool_round: true,
+        ..Default::default()
+    });
+    file.apply_turn(2, "t2", &UsageSummary::from_ledger(&ledger), Some(&first));
+
+    let [t1, t2] = file.turns.as_slice() else {
+        panic!("expected two turns: {:?}", file.turns);
+    };
+    assert_eq!(t1.usage.cache_breaks.lifetime_changed, 1);
+    assert_eq!(
+        t2.usage.cache_breaks.lifetime_changed, 1,
+        "turn 2 carries only its own"
+    );
+    assert_eq!(t2.usage.cache_breaks.prefix_changed, 1);
+    assert_eq!(file.session.cache_breaks.lifetime_changed, 2);
+    assert_eq!(file.session.cache_breaks.after_no_tool_round, 1);
+    let json = serde_json::to_value(&file).expect("serialize usage file");
+    assert_eq!(json["session"]["cacheBreaks"]["lifetimeChanged"], 2);
+    assert_eq!(
+        json["session"]["attributions"][0]["cache_lifetime_secs"],
+        300
+    );
+
+    let old: SessionUsageFile = serde_json::from_value(serde_json::json!({
+        "sessionId": "old",
+        "session": {"inputTokens": 10, "modelCalls": 1, "attributions": [{
+            "attempt_id": "a", "role": "main", "model_id": "m",
+            "status": "completed", "cost_basis": "unknown"
+        }]},
+        "turns": [{"turnNumber": 1, "inputTokens": 10, "modelCalls": 1}]
+    }))
+    .expect("a file from before the cache-break counters loads");
+    assert!(old.session.cache_breaks.is_empty());
+    assert_eq!(old.session.attributions[0].cache_lifetime_secs, None);
 }
 
 #[test]

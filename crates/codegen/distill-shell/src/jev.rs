@@ -1083,6 +1083,7 @@ pub(crate) fn record_tagged_workspace_attempt(
                 }),
             api_duration_ms: Some(attempt.latency_ms),
             cost_usd_ticks,
+            cache_lifetime_secs: None,
             cost_basis: if cost_usd_ticks.is_some() {
                 UsageCostBasis::Reported
             } else {

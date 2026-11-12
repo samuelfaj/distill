@@ -19,6 +19,7 @@ impl SessionActor {
             endpoint: None,
             requested_effort: None,
             applied_effort: None,
+            cache_lifetime_secs: None,
         });
         context.attempt_id = format!(
             "{}:retry:{}:{attempt}",

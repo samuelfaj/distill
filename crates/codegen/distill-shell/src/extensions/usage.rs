@@ -352,6 +352,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: None,
             cost_usd_ticks: None,
+            cache_lifetime_secs: None,
             cost_basis: distill_chat_state::UsageCostBasis::Unknown,
         });
         let mut projected = PromptUsage::from(&ledger);

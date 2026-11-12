@@ -285,6 +285,7 @@ impl InitialTitleAttempt {
                 usage_complete: usage.is_some(),
                 api_duration_ms: Some(self.started_at.elapsed().as_millis() as u64),
                 cost_usd_ticks,
+                cache_lifetime_secs: None,
                 cost_basis: if cost_usd_ticks.is_some() {
                     distill_chat_state::UsageCostBasis::Reported
                 } else {

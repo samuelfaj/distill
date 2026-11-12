@@ -1,0 +1,1 @@
+formatDuration(119600) prints "1m 60s". Can you fix it in tools/task_cost_eval/fixtures/auto_js_duration/duration.js?

@@ -984,6 +984,7 @@ mod tests {
             mode: enabled.clone(),
             max_depth: 2,
             off_max_depth: 3,
+            v2: Default::default(),
             capability_ceiling: Some(distill_tool_types::SubagentCapabilityMode::ReadOnly),
             allowed_subagent_types: None,
         });
@@ -1030,6 +1031,39 @@ mod tests {
         )
         .await;
         assert!(result.unwrap_err().to_string().contains("depth limit"));
+    }
+
+    /// The depth a mode allows is its policy row's. UltraFast on its v2 row
+    /// spawns nothing, because a lone child costs a quick task its start-up
+    /// and hand-back; every `today` row keeps the ceiling it had.
+    #[test]
+    fn the_depth_ceiling_follows_the_modes_policy_row() {
+        use distill_tool_types::{AtomicExecutionMode, ExecutionMode, V2Modes};
+        let depth = |mode, v2| {
+            ExecutionPolicy {
+                mode: Arc::new(AtomicExecutionMode::new(mode)),
+                max_depth: 2,
+                off_max_depth: 3,
+                v2,
+                capability_ceiling: None,
+                allowed_subagent_types: None,
+            }
+            .effective_max_depth()
+        };
+        let today = V2Modes::default();
+        let v2 = today
+            .with(ExecutionMode::Ultrafast)
+            .with(ExecutionMode::Ultrasave)
+            .with(ExecutionMode::Ultracode);
+        for (mode, on_today, on_v2) in [
+            (ExecutionMode::Normal, 3, 3),
+            (ExecutionMode::Ultrafast, 1, 0),
+            (ExecutionMode::Ultrasave, 1, 1),
+            (ExecutionMode::Ultracode, 2, 2),
+        ] {
+            assert_eq!(depth(mode, today), on_today, "{mode:?} today");
+            assert_eq!(depth(mode, v2), on_v2, "{mode:?} v2");
+        }
     }
 
     #[tokio::test]

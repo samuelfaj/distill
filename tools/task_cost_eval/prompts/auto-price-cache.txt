@@ -1,0 +1,2 @@
+Customers see old prices for a while after we change them in tools/task_cost_eval/fixtures/auto_price_cache.
+Why does that happen? Don't change anything yet.

@@ -105,6 +105,9 @@ pub struct UsageAttribution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd_ticks: Option<i64>,
     pub cost_basis: UsageCostBasis,
+    /// Main requests only: the prompt-cache lifetime the request got, when its endpoint's is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_lifetime_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +170,10 @@ impl UsageTotals {
 
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
 
     /// True whenever one or more calls lack provider-reported cost.
@@ -304,6 +311,13 @@ pub struct UsageLedger {
     /// leave it alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cache_break: Option<CacheBreak>,
+    /// Every such break, counted by cause. Telemetry like `last_cache_break`.
+    #[serde(default, skip_serializing_if = "CacheBreakCounts::is_empty")]
+    pub cache_breaks: CacheBreakCounts,
+    /// The part of `totals` that subagent folds added, so a turn can report
+    /// its children's calls, time and cost apart from its own.
+    #[serde(default, skip_serializing_if = "UsageTotals::is_empty")]
+    pub subagents: UsageTotals,
 }
 
 /// Where the last prompt-cache break happened: the first item of the request
@@ -332,6 +346,130 @@ pub struct CacheBreak {
     /// The cache lifetime the previous request got, when its endpoint's is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_lifetime_secs: Option<u64>,
+    /// The cache lifetime this request got. The settings check does not cover it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_cache_lifetime_secs: Option<u64>,
+    /// The lifetime differs from the previous request's: on Anthropic, a request that moves a warm
+    /// five-minute prefix to the hour misses everything after the last one-hour entry.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lifetime_changed: bool,
+    /// The tools sent beside the items changed (a part of `settings_changed`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tools_changed: bool,
+    /// The request answers a round that ended with an appended reminder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after_reminder: bool,
+    /// The request answers a round in which the model called no tool.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after_no_tool_round: bool,
+}
+
+/// What a [`CacheBreak`] is counted under: the first of these that explains the miss on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheBreakCause {
+    /// The gap since the previous request outlived that request's cache lifetime.
+    IdleExpired,
+    ToolsChanged,
+    /// The model, effort or output limit changed.
+    SettingsChanged,
+    /// An item of the history changed or went away.
+    PrefixChanged,
+    LifetimeChanged,
+    Unexplained,
+}
+
+impl CacheBreak {
+    pub fn cause(&self) -> CacheBreakCause {
+        if self
+            .cache_lifetime_secs
+            .is_some_and(|lifetime| self.secs_since_previous >= lifetime)
+        {
+            CacheBreakCause::IdleExpired
+        } else if self.tools_changed {
+            CacheBreakCause::ToolsChanged
+        } else if self.settings_changed {
+            CacheBreakCause::SettingsChanged
+        } else if self.first_changed_index.is_some() {
+            CacheBreakCause::PrefixChanged
+        } else if self.lifetime_changed {
+            CacheBreakCause::LifetimeChanged
+        } else {
+            CacheBreakCause::Unexplained
+        }
+    }
+}
+
+/// Main-request cache breaks by [`CacheBreakCause`] (each break counted once), plus two counts of
+/// what the request followed, which overlap the causes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheBreakCounts {
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub idle_expired: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub tools_changed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub settings_changed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub prefix_changed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub lifetime_changed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub unexplained: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub after_reminder: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub after_no_tool_round: u64,
+}
+
+impl CacheBreakCounts {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn record(&mut self, cache_break: &CacheBreak) {
+        let count = match cache_break.cause() {
+            CacheBreakCause::IdleExpired => &mut self.idle_expired,
+            CacheBreakCause::ToolsChanged => &mut self.tools_changed,
+            CacheBreakCause::SettingsChanged => &mut self.settings_changed,
+            CacheBreakCause::PrefixChanged => &mut self.prefix_changed,
+            CacheBreakCause::LifetimeChanged => &mut self.lifetime_changed,
+            CacheBreakCause::Unexplained => &mut self.unexplained,
+        };
+        *count = count.saturating_add(1);
+        self.after_reminder = self
+            .after_reminder
+            .saturating_add(u64::from(cache_break.after_reminder));
+        self.after_no_tool_round = self
+            .after_no_tool_round
+            .saturating_add(u64::from(cache_break.after_no_tool_round));
+    }
+
+    pub fn saturating_add(&self, other: &Self) -> Self {
+        self.combine(other, u64::saturating_add)
+    }
+
+    pub fn saturating_sub(&self, other: &Self) -> Self {
+        self.combine(other, u64::saturating_sub)
+    }
+
+    /// Element-wise maximum: two snapshots of the same monotonic ledger.
+    pub fn max(&self, other: &Self) -> Self {
+        self.combine(other, u64::max)
+    }
+
+    fn combine(&self, other: &Self, op: fn(u64, u64) -> u64) -> Self {
+        Self {
+            idle_expired: op(self.idle_expired, other.idle_expired),
+            tools_changed: op(self.tools_changed, other.tools_changed),
+            settings_changed: op(self.settings_changed, other.settings_changed),
+            prefix_changed: op(self.prefix_changed, other.prefix_changed),
+            lifetime_changed: op(self.lifetime_changed, other.lifetime_changed),
+            unexplained: op(self.unexplained, other.unexplained),
+            after_reminder: op(self.after_reminder, other.after_reminder),
+            after_no_tool_round: op(self.after_no_tool_round, other.after_no_tool_round),
+        }
+    }
 }
 
 impl UsageLedger {
@@ -481,6 +619,9 @@ impl UsageLedger {
         if count_main && attribution.role == "main" {
             self.main_loop_model_calls = self.main_loop_model_calls.saturating_add(1);
         }
+        if !count_main {
+            self.subagents.fold_totals(&call);
+        }
         self.fold_entry(&attribution.model_id, &call);
         if !attribution.usage_complete
             || attribution.usage.is_none()
@@ -558,6 +699,7 @@ impl UsageLedger {
             self.register_pending_attempt(attempt_id.clone());
         }
         for (model_id, totals) in by_model {
+            self.subagents.fold_totals(totals);
             self.fold_entry(model_id, totals);
         }
         if incomplete {
@@ -587,6 +729,7 @@ impl UsageLedger {
     }
 
     pub fn record_cache_break(&mut self, cache_break: CacheBreak) {
+        self.cache_breaks.record(&cache_break);
         self.last_cache_break = Some(cache_break);
     }
 
@@ -672,6 +815,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: None,
             cost_usd_ticks: Some(0),
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Reported,
         });
 
@@ -683,6 +827,7 @@ mod tests {
         legacy.record_attribution(UsageAttribution {
             attempt_id: "legacy-zero".to_owned(),
             cost_usd_ticks: Some(0),
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Unknown,
             ..ledger.attributions[0].clone()
         });
@@ -712,6 +857,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: Some(4),
             cost_usd_ticks: Some(3),
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Reported,
         };
         let second = UsageAttribution {
@@ -734,6 +880,7 @@ mod tests {
             usage_complete: false,
             api_duration_ms: None,
             cost_usd_ticks: None,
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Unknown,
         };
         let mut ledger = UsageLedger::default();
@@ -750,6 +897,43 @@ mod tests {
         assert_eq!(ledger.main_loop_model_calls, 0);
         assert!(ledger.incomplete);
         assert_eq!(ledger.attributions[1], second);
+        // The children's share is kept apart, deduplicated like the totals.
+        assert_eq!(ledger.subagents, ledger.totals);
+    }
+
+    /// A turn reports its children's calls, time and cost apart from its own:
+    /// its own calls never land in `subagents`, aggregate and attributed child
+    /// folds always do.
+    #[test]
+    fn subagent_share_excludes_the_parents_own_calls() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_main_loop_call("parent", &tu(10, 1), Some(50), Some(9));
+        ledger.record_auxiliary_call("jev", Some(&tu(1, 1)), Some(5), Some(1), false);
+        assert!(ledger.subagents.is_empty());
+        let child = UsageTotals {
+            input_tokens: 4,
+            output_tokens: 1,
+            model_calls: 2,
+            api_duration_ms: 30,
+            cost_usd_ticks: Some(6),
+            ..Default::default()
+        };
+        ledger.record_subagent(&[("child".to_owned(), child.clone())], false);
+        assert_eq!(ledger.subagents, child);
+        assert_eq!(ledger.totals.model_calls, 4);
+        let reloaded: UsageLedger = serde_json::from_value(serde_json::json!({
+            "totals": serde_json::to_value(&ledger.totals).unwrap(),
+            "by_model": {},
+            "attributions": [],
+            "main_loop_model_calls": 1,
+            "incomplete": false,
+            "pending_attempts": []
+        }))
+        .unwrap();
+        assert!(
+            reloaded.subagents.is_empty(),
+            "a ledger saved before the field loads"
+        );
     }
 
     #[test]
@@ -780,6 +964,7 @@ mod tests {
                 usage_complete: true,
                 api_duration_ms: Some(1),
                 cost_usd_ticks: Some(1),
+                cache_lifetime_secs: None,
                 cost_basis: UsageCostBasis::Reported,
             });
         }
@@ -828,6 +1013,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: Some(12),
             cost_usd_ticks: None,
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Unknown,
         };
         let mut ledger = UsageLedger::default();
@@ -865,6 +1051,7 @@ mod tests {
             usage_complete: false,
             api_duration_ms: None,
             cost_usd_ticks: None,
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Unknown,
         });
 
@@ -913,6 +1100,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: Some(5),
             cost_usd_ticks: Some(7),
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Reported,
         };
         child.record_attribution(title.clone());
@@ -952,6 +1140,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: None,
             cost_usd_ticks: Some(3),
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Reported,
         };
         let mut session = UsageLedger::default();
@@ -1016,6 +1205,7 @@ mod tests {
             usage_complete: false,
             api_duration_ms: Some(4),
             cost_usd_ticks: None,
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Unknown,
         };
         let mut ledger = UsageLedger::default();
@@ -1086,6 +1276,7 @@ mod tests {
             usage_complete: true,
             api_duration_ms: None,
             cost_usd_ticks: None,
+            cache_lifetime_secs: None,
             cost_basis: UsageCostBasis::Unknown,
         };
         let json = serde_json::to_value(&row).expect("serialize tagged row");
@@ -1158,5 +1349,104 @@ mod tests {
                 .and_then(|b| b.first_changed_index),
             Some(3)
         );
+    }
+
+    /// Only the last break used to be kept, so the commonest cause was invisible: a request that
+    /// moves an intact, warm five-minute prefix to the hour reads as "prefix intact, settings
+    /// unchanged". Every break is now counted under the first cause that explains it alone.
+    #[test]
+    fn every_cache_break_is_counted_under_the_cause_that_explains_it() {
+        let five_minutes = Some(300);
+        let lifetime_switch = CacheBreak {
+            secs_since_previous: 20,
+            cache_lifetime_secs: five_minutes,
+            request_cache_lifetime_secs: Some(3_600),
+            lifetime_changed: true,
+            ..Default::default()
+        };
+        assert_eq!(lifetime_switch.cause(), CacheBreakCause::LifetimeChanged);
+        // Past the previous lifetime the entry was gone whatever else changed.
+        let expired = CacheBreak {
+            secs_since_previous: 300,
+            first_changed_index: Some(4),
+            ..lifetime_switch.clone()
+        };
+        assert_eq!(expired.cause(), CacheBreakCause::IdleExpired);
+        // Tools and other settings come before the items: they invalidate the whole prefix.
+        let tools = CacheBreak {
+            tools_changed: true,
+            settings_changed: true,
+            first_changed_index: Some(4),
+            ..lifetime_switch.clone()
+        };
+        assert_eq!(tools.cause(), CacheBreakCause::ToolsChanged);
+        let effort = CacheBreak {
+            tools_changed: false,
+            ..tools.clone()
+        };
+        assert_eq!(effort.cause(), CacheBreakCause::SettingsChanged);
+        let rewritten = CacheBreak {
+            first_changed_index: Some(4),
+            ..lifetime_switch.clone()
+        };
+        assert_eq!(rewritten.cause(), CacheBreakCause::PrefixChanged);
+        // An unknown previous lifetime cannot prove an expiry.
+        let unknown = CacheBreak {
+            secs_since_previous: 4_000,
+            ..Default::default()
+        };
+        assert_eq!(unknown.cause(), CacheBreakCause::Unexplained);
+
+        let mut ledger = UsageLedger::default();
+        for cache_break in [
+            lifetime_switch.clone(),
+            lifetime_switch,
+            expired,
+            CacheBreak {
+                after_reminder: true,
+                after_no_tool_round: true,
+                ..unknown
+            },
+        ] {
+            ledger.record_cache_break(cache_break);
+        }
+        let counts = &ledger.cache_breaks;
+        assert_eq!(counts.lifetime_changed, 2);
+        assert_eq!(counts.idle_expired, 1);
+        assert_eq!(counts.unexplained, 1);
+        assert_eq!(
+            (counts.after_reminder, counts.after_no_tool_round),
+            (1, 1),
+            "context counts overlap the causes"
+        );
+        assert!(
+            ledger
+                .last_cache_break
+                .as_ref()
+                .is_some_and(|last| last.after_reminder),
+            "/usage still shows the last break"
+        );
+    }
+
+    /// A ledger or row written before the counters and per-row lifetime existed still loads.
+    #[test]
+    fn ledgers_and_rows_without_cache_break_fields_still_parse() {
+        let mut ledger = UsageLedger::default();
+        ledger.record_main_loop_call("a", &tu(100, 10), None, Some(5));
+        let mut json = serde_json::to_value(&ledger).expect("serialize ledger");
+        assert!(
+            json.get("cache_breaks").is_none(),
+            "empty counters are not written"
+        );
+        json.as_object_mut().unwrap().remove("cache_breaks");
+        let old: UsageLedger = serde_json::from_value(json).expect("old ledger parses");
+        assert!(old.cache_breaks.is_empty());
+
+        let row: UsageAttribution = serde_json::from_value(serde_json::json!({
+            "attempt_id": "a", "role": "main", "model_id": "m",
+            "status": "completed", "cost_basis": "unknown"
+        }))
+        .expect("old row parses");
+        assert_eq!(row.cache_lifetime_secs, None);
     }
 }

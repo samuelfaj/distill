@@ -74,6 +74,28 @@ pub fn effective_conversation_output_tokens(
         })
 }
 
+/// The serving path a request to `base_url` may carry: none on OpenRouter, where the model
+/// variant carries it, and no economy tier on the ChatGPT Codex backend, which refuses `flex`
+/// with a client error.
+pub(crate) fn effective_provider_tier(
+    tier: Option<crate::config::ProviderTier>,
+    base_url: &str,
+) -> Option<crate::config::ProviderTier> {
+    tier.filter(|tier| {
+        !is_openrouter_base_url(base_url)
+            && !(matches!(tier, crate::config::ProviderTier::Economy)
+                && is_codex_base_url(base_url))
+    })
+}
+
+/// Whether an `anthropic-beta` header value carries the flag that accepts a
+/// Claude subscription (OAuth) bearer.
+pub(crate) fn names_claude_oauth_beta(value: &str) -> bool {
+    value
+        .split(',')
+        .any(|flag| flag.trim() == CLAUDE_OAUTH_BETA)
+}
+
 fn is_codex_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
@@ -453,7 +475,7 @@ fn apply_openrouter_variant(model: &mut String, base_url: &str, variant: Option<
     model.push_str(variant);
 }
 
-fn is_openrouter_base_url(base_url: &str) -> bool {
+pub(crate) fn is_openrouter_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).is_ok_and(|url| {
         url.scheme() == "https"
             && url
@@ -854,6 +876,8 @@ struct ClientDefaults {
     doom_loop_recovery: Option<distill_sampling_types::DoomLoopRecoveryPolicy>,
     /// OpenRouter routing suffix (`floor`, `nitro`, `exacto`) appended to the wire model slug.
     openrouter_variant: Option<String>,
+    /// See [`SamplerConfig::provider_tier`].
+    provider_tier: Option<crate::config::ProviderTier>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -1180,6 +1204,7 @@ impl SamplingClient {
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
             openrouter_variant: config.openrouter_variant,
+            provider_tier: config.provider_tier,
         };
 
         let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
@@ -1898,6 +1923,13 @@ impl SamplingClient {
             request.inner.store = Some(false);
         }
 
+        if request.inner.service_tier.is_none() {
+            request.inner.service_tier = self.provider_tier().map(|tier| match tier {
+                crate::config::ProviderTier::Fast => rs::ServiceTier::Priority,
+                crate::config::ProviderTier::Economy => rs::ServiceTier::Flex,
+            });
+        }
+
         if let Some(summary) = self.defaults.reasoning_summary {
             let summary = summary.to_responses_api();
             match request.inner.reasoning.as_mut() {
@@ -2339,7 +2371,22 @@ impl SamplingClient {
             prepend_claude_code_identity(&mut request.inner.system);
         }
 
+        // A Claude subscription refuses fast mode without usage credits, and it
+        // answers with a rate-limit error that no retry clears, so a
+        // subscription request never asks for it.
+        if request.inner.speed.is_none()
+            && self.provider_tier() == Some(crate::config::ProviderTier::Fast)
+            && !self.uses_claude_subscription_bearer()
+        {
+            request.inner.speed = Some("fast".to_owned());
+        }
+
         Ok(())
+    }
+
+    /// The serving path this client's requests carry; see [`effective_provider_tier`].
+    fn provider_tier(&self) -> Option<crate::config::ProviderTier> {
+        effective_provider_tier(self.defaults.provider_tier, &self.base_url)
     }
 
     /// True when the request carries the Anthropic beta flag that accepts a
@@ -2349,11 +2396,7 @@ impl SamplingClient {
         self.default_headers
             .get("anthropic-beta")
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(',')
-                    .any(|flag| flag.trim() == CLAUDE_OAUTH_BETA)
-            })
+            .is_some_and(names_claude_oauth_beta)
     }
 
     /// Create a message using the Anthropic Messages API (non-streaming).
@@ -3344,6 +3387,36 @@ mod tests {
         }
     }
 
+    /// A Claude subscription answers a fast-mode request with a rate-limit error unless the
+    /// account has usage credits, and no retry clears it: the whole turn fails. A request that
+    /// carries the subscription's beta flag therefore never asks for fast mode, and
+    /// `sends_provider_tier` agrees, so nothing treats the field as sent.
+    #[test]
+    fn a_claude_subscription_request_never_asks_for_fast_mode() {
+        use crate::config::ProviderTier;
+        let config = |beta: &str| SamplerConfig {
+            provider_tier: Some(ProviderTier::Fast),
+            api_backend: ApiBackend::Messages,
+            extra_headers: [("anthropic-beta".to_owned(), beta.to_owned())]
+                .into_iter()
+                .collect(),
+            ..minimal_config()
+        };
+        let speed = |config: SamplerConfig| {
+            let client = SamplingClient::new(config).expect("client constructs without I/O");
+            let mut messages = MessagesRequestWrapper::new(messages::MessagesRequest::default());
+            client
+                .apply_message_defaults(&mut messages)
+                .expect("defaults apply");
+            serde_json::to_value(&messages.inner).unwrap().get("speed").cloned()
+        };
+        let subscription = format!("some-flag, {CLAUDE_OAUTH_BETA}");
+        assert_eq!(speed(config(&subscription)), None);
+        assert!(!config(&subscription).sends_provider_tier());
+        assert_eq!(speed(config("some-flag")), Some("fast".into()));
+        assert!(config("some-flag").sends_provider_tier());
+    }
+
     /// The routing variant must reach only OpenRouter slugs that carry none, so a user-pinned `:free` is never rewritten.
     #[test]
     fn openrouter_variant_suffixes_only_bare_openrouter_slugs() {
@@ -3377,6 +3450,92 @@ mod tests {
             .apply_defaults(ChatCompletionRequest::new("a/b", vec![]))
             .expect("defaults apply");
         assert_eq!(payload.model.as_deref(), Some("a/b:floor"));
+    }
+
+    /// A provider may reject an unknown serving-path field, so a body carries one only when the
+    /// session configured a tier, and never on OpenRouter, whose path is the model variant.
+    #[test]
+    fn provider_tier_fields_reach_the_body_only_when_configured() {
+        use crate::config::ProviderTier;
+        let bodies = |base_url: &str, tier: Option<ProviderTier>| {
+            let client = SamplingClient::new(SamplerConfig {
+                base_url: base_url.to_owned(),
+                provider_tier: tier,
+                ..minimal_config()
+            })
+            .expect("client constructs without I/O");
+            let mut responses = CreateResponseWrapper::new(rs::CreateResponse::default());
+            client
+                .apply_response_defaults(&mut responses)
+                .expect("defaults apply");
+            let mut messages = MessagesRequestWrapper::new(messages::MessagesRequest::default());
+            client
+                .apply_message_defaults(&mut messages)
+                .expect("defaults apply");
+            (
+                serde_json::to_value(&responses.inner).unwrap(),
+                serde_json::to_value(&messages.inner).unwrap(),
+            )
+        };
+        let direct = "https://example.test";
+
+        let (responses, messages) = bodies(direct, None);
+        assert!(responses.get("service_tier").is_none(), "{responses}");
+        assert!(messages.get("speed").is_none(), "{messages}");
+
+        let (responses, messages) = bodies(direct, Some(ProviderTier::Fast));
+        assert_eq!(responses["service_tier"], "priority");
+        assert_eq!(messages["speed"], "fast");
+
+        let (responses, messages) = bodies(direct, Some(ProviderTier::Economy));
+        assert_eq!(responses["service_tier"], "flex");
+        assert!(
+            messages.get("speed").is_none(),
+            "the Messages API has no economy speed: {messages}"
+        );
+
+        let (responses, messages) =
+            bodies("https://openrouter.ai/api/v1", Some(ProviderTier::Fast));
+        assert!(responses.get("service_tier").is_none(), "{responses}");
+        assert!(messages.get("speed").is_none(), "{messages}");
+
+        // The ChatGPT Codex backend takes the fast path and refuses the economy one, so the
+        // economy tier is never sent there: a pinned UltraSave session on a subscription model
+        // must not open with a refused request.
+        let codex = "https://chatgpt.com/backend-api/codex";
+        let (responses, _) = bodies(codex, Some(ProviderTier::Fast));
+        assert_eq!(responses["service_tier"], "priority");
+        let (responses, _) = bodies(codex, Some(ProviderTier::Economy));
+        assert!(responses.get("service_tier").is_none(), "{responses}");
+
+        // `sends_provider_tier` names exactly the bodies above that carry a field, so a caller
+        // that drops a refused tier never drops one the endpoint did not see.
+        for base_url in [direct, "https://openrouter.ai/api/v1", codex] {
+            for tier in [None, Some(ProviderTier::Fast), Some(ProviderTier::Economy)] {
+                let (responses, messages) = bodies(base_url, tier);
+                for (backend, carried) in [
+                    (
+                        ApiBackend::Responses,
+                        responses.get("service_tier").is_some(),
+                    ),
+                    (ApiBackend::Messages, messages.get("speed").is_some()),
+                    (ApiBackend::ChatCompletions, false),
+                ] {
+                    let config = SamplerConfig {
+                        base_url: base_url.to_owned(),
+                        provider_tier: tier,
+                        api_backend: backend,
+                        ..minimal_config()
+                    };
+                    assert_eq!(
+                        config.sends_provider_tier(),
+                        carried,
+                        "{base_url} {tier:?} {:?}",
+                        config.api_backend
+                    );
+                }
+            }
+        }
     }
 
     /// The shipped path from a model's configured shape to the wire body: the

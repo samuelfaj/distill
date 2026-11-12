@@ -915,6 +915,20 @@ pub struct CompactionConfig {
     /// prompt cache expired while idle does. Read out-of-band at that moment
     /// (`session::acp_session_impl::cold_return`); declared so `serde_ignored` allows the key.
     pub cold_return: Option<String>,
+    /// The smallest history a cold return compacts or offers to compact; unset is 100K tokens.
+    pub cold_return_min_tokens: Option<u64>,
+    /// An absolute cap on the estimated prompt: above it, a human turn compacts before its first
+    /// request. Unset or `0` is off; the percent threshold applies either way.
+    pub max_prompt_tokens: Option<u64>,
+}
+/// `[cache]`: prompt-cache settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// `"off"` (default) or `"auto"`: whether a main request on `api.anthropic.com` may ask for
+    /// the one-hour cache lifetime before a likely long wait. Read once per process
+    /// (`session::acp_session_impl::prompt_cache`); declared so `serde_ignored` allows the key.
+    pub extended_ttl: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1042,6 +1056,116 @@ pub struct ModelsConfig {
     pub subagent_rate_limit_max_attempts: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+}
+/// What a session pinned to a mode runs on: `[modes.ultrasave]` and `[modes.ultrafast]`
+/// `model` and `provider_tier`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PinnedModeSettings {
+    /// The model that leads the pinned session; `None` keeps the session model.
+    pub model: Option<String>,
+    /// The serving path asked of the provider; `None` sends no such field.
+    pub provider_tier: Option<distill_sampler::ProviderTier>,
+}
+/// Settings for a session pinned to `mode`, from the effective config `root`. UltraSave leads on
+/// `[modes.ultrasave] model`: unset or the literal `worker` names `[models] worker` (on by
+/// default, not benchmarked), the literal `session` keeps the session's own model (the off
+/// switch), and any other value is a model id. The utility model never leads. UltraFast keeps
+/// the session model unless `[modes.ultrafast] model` names one. No model is ranked
+/// automatically. The serving path defaults to `fast` for UltraFast and `economy` for
+/// UltraSave; `provider_tier = "off"` sends none.
+pub(crate) fn pinned_mode_settings(
+    root: Option<&toml::Value>,
+    mode: distill_tool_types::ExecutionMode,
+) -> PinnedModeSettings {
+    use distill_tool_types::ExecutionMode;
+    let section = match mode {
+        ExecutionMode::Ultrasave => "ultrasave",
+        ExecutionMode::Ultrafast => "ultrafast",
+        ExecutionMode::Normal | ExecutionMode::Ultracode => return PinnedModeSettings::default(),
+    };
+    let text = |value: &toml::Value| {
+        Some(value.as_str()?.trim().to_owned()).filter(|value| !value.is_empty())
+    };
+    let mode_key = |key: &str| text(root?.get("modes")?.get(section)?.get(key)?);
+    let mut model = mode_key("model");
+    if mode == ExecutionMode::Ultrasave {
+        model = match model.as_deref() {
+            None | Some("worker") => (|| text(root?.get("models")?.get("worker")?))(),
+            Some("session") => None,
+            Some(_) => model,
+        };
+    }
+    // Unset is the mode's own path (not benchmarked); a request an endpoint refuses for it is
+    // resent once without it and the session drops it (see `provider_tier_rejected`).
+    let default_tier = match mode {
+        ExecutionMode::Ultrafast => distill_sampler::ProviderTier::Fast,
+        _ => distill_sampler::ProviderTier::Economy,
+    };
+    let provider_tier = mode_key("provider_tier").map_or(Some(default_tier), |value| {
+        match value.to_ascii_lowercase().as_str() {
+            "fast" => Some(distill_sampler::ProviderTier::Fast),
+            "economy" => Some(distill_sampler::ProviderTier::Economy),
+            "off" => None,
+            _ => {
+                tracing::warn!(mode = section, %value, "unknown provider_tier; sending none");
+                None
+            }
+        }
+    });
+    PinnedModeSettings {
+        model,
+        provider_tier,
+    }
+}
+/// UltraSave has no cheaper model to lead on: no `[models] worker` is configured for an unset
+/// or `worker` key, or the key is `session`, so a pinned UltraSave session keeps its own model.
+pub(crate) fn ultrasave_has_no_cheaper_model(root: Option<&toml::Value>) -> bool {
+    pinned_mode_settings(root, distill_tool_types::ExecutionMode::Ultrasave)
+        .model
+        .is_none()
+}
+/// `[modes] v2` in the effective config `root`: the modes that use their target policy row
+/// (`distill_tool_types::ModePolicy::v2`). Absent, malformed or unknown entries select nothing,
+/// so every mode keeps today's row.
+pub(crate) fn modes_v2(root: Option<&toml::Value>) -> distill_tool_types::V2Modes {
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    // No key: every mode acts on its v2 row. An explicit list, the empty one
+    // included, is authoritative, so `v2 = []` is the off switch.
+    let all = V2Modes::default()
+        .with(ExecutionMode::Ultrasave)
+        .with(ExecutionMode::Ultrafast)
+        .with(ExecutionMode::Ultracode);
+    let Some(value) = root.and_then(|root| root.get("modes")?.get("v2")) else {
+        return all;
+    };
+    let Some(entries) = value.as_array() else {
+        tracing::warn!("[modes] v2 must be a list of mode names; ignored");
+        return all;
+    };
+    entries.iter().fold(V2Modes::default(), |modes, entry| {
+        match entry
+            .as_str()
+            .map(str::trim)
+            .and_then(ExecutionMode::from_id)
+        {
+            Some(mode) => modes.with(mode),
+            None => {
+                tracing::warn!(%entry, "unknown mode in [modes] v2; ignored");
+                modes
+            }
+        }
+    })
+}
+/// `[modes.ultrafast] effort_per_round` in the effective config `root`: the benchmark control arm
+/// in which UltraFast's v2 row decides effort per round instead of once per turn. Default false.
+pub(crate) fn ultrafast_effort_per_round(root: Option<&toml::Value>) -> bool {
+    root.and_then(|root| {
+        root.get("modes")?
+            .get("ultrafast")?
+            .get("effort_per_round")?
+            .as_bool()
+    })
+    .unwrap_or(false)
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1200,6 +1324,16 @@ pub struct JevConfig {
     /// Shadow phase: compute and record decisions without changing behaviour.
     /// Unset ⇒ active (the harness default).
     pub shadow: Option<bool>,
+    /// Shadow packs: extra questions that join a request a live pack already
+    /// makes, recorded with a `shadow:` label and never acted on. Unset ⇒ on
+    /// (not benchmarked); `false` turns them off. Separate from `shadow`,
+    /// which stops the levers that read it from acting.
+    pub shadow_packs: Option<bool>,
+    /// Append the state and questions of every Jev request to
+    /// `<distill home>/jev/states/` for offline replay. Unset ⇒ off. The file
+    /// holds user content (requests, diffs, messages): it stays on this
+    /// machine, outside the session folders that trace uploads read.
+    pub capture_states: Option<bool>,
     /// Endpoint root. Defaults to `https://api.typesafe.ai` in the client.
     pub base_url: Option<String>,
     /// Model alias or pinned version. Defaults to `jev-latest` in the client.
@@ -1354,6 +1488,20 @@ pub struct JevLadderConfig {
     pub d6_warm_batches: Option<bool>,
     pub b7_subagent_model: Option<bool>,
     pub b8_execution_mode: Option<bool>,
+    /// B8 under Auto: keep the full tools array once it went out (default on, not benchmarked;
+    /// `false` turns it off).
+    pub b8_stable_tools: Option<bool>,
+    /// B8 mid-turn review: no return to a left mode without a new failure, and a short hold
+    /// after a switch (default on, not benchmarked; `false` turns it off).
+    pub b8_review_hygiene: Option<bool>,
+    /// F1: label a human message within ten minutes of the previous turn's end as reporting that
+    /// result wrong or incomplete; recorded only (default on, not benchmarked; `false` turns it
+    /// off).
+    pub f1_followup_label: Option<bool>,
+    /// B8: contrastive mode criteria about the whole request (default on).
+    pub b8_criteria_v2: Option<bool>,
+    /// B8 mid-turn review: the mode only moves up inside a request (default on).
+    pub b8_up_only: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.
@@ -1485,6 +1633,8 @@ pub struct Config {
     #[serde(default, skip_serializing)]
     pub compaction: CompactionConfig,
     #[serde(default, skip_serializing)]
+    pub cache: CacheConfig,
+    #[serde(default, skip_serializing)]
     pub managed_mcps: crate::config::ManagedMcpsConfig,
     /// `[auth]` alias: consumed by `expand_auth_alias` before serde.
     /// Typed as `GrokComConfig` (same schema) so sub-field typos are caught.
@@ -1575,7 +1725,7 @@ pub struct Config {
     /// Resolved max subagent nesting depth (see [`crate::config::SubagentsConfig::resolve_max_depth`]).
     #[serde(skip)]
     pub subagents_max_depth: u32,
-    /// UltraCode default two-level ceiling, reduced by explicit depth settings.
+    /// UltraCode depth ceiling: the ordinary default, raised to at most two by an explicit setting.
     #[serde(skip)]
     pub subagents_ultracode_max_depth: u32,
     #[serde(skip)]
@@ -1838,6 +1988,7 @@ impl Default for Config {
             memory: crate::config::MemorySettings::default(),
             memory_v2: crate::config::MemoryV2Settings::default(),
             compaction: CompactionConfig::default(),
+            cache: CacheConfig::default(),
             managed_mcps: crate::config::ManagedMcpsConfig::default(),
             auth: None,
             desktop: None,
@@ -1864,7 +2015,7 @@ impl Default for Config {
             cli_agent_overrides: CliAgentOverrides::default(),
             subagents_enabled: true,
             subagents_max_depth: crate::config::SubagentsConfig::DEFAULT_MAX_DEPTH,
-            subagents_ultracode_max_depth: 2,
+            subagents_ultracode_max_depth: crate::config::SubagentsConfig::DEFAULT_MAX_DEPTH,
             subagents_max_concurrent:
                 distill_tools::implementations::distill::task::admission::DEFAULT_MAX_CONCURRENT,
             subagents_sampling_limit:
@@ -1957,6 +2108,9 @@ const NON_SERDE_CONFIG_PATHS: &[&str] = &[
     "cli.grove",
     "cli.grove_worktree",
     "cli.nfs_worktree",
+    // `[modes]` and `[modes.<mode>]`, read from the raw root by `modes_v2`,
+    // `pinned_mode_settings`, the cold-return boundary and the UltraCode turn review.
+    "modes",
 ];
 /// [`NON_SERDE_CONFIG_PATHS`] plus the multi-path groups, every registered feature, every
 /// [`UNMIRRORED_BOOLEAN_FEATURES`] key, and the managed policy pins (no-op in plain config.toml).
@@ -5404,6 +5558,8 @@ pub(crate) fn sampling_config_for_account(
         reasoning_summary: info.reasoning_summary,
         // The main session sets it per turn; the worker path sets it where it spawns.
         openrouter_variant: None,
+        // Only a session pinned to a mode sets it, per turn (`reconstruct_full_config`).
+        provider_tier: None,
         force_http1: false,
         max_retries: info.max_retries,
         rate_limit_retry_threshold: info.rate_limit_retry_threshold,

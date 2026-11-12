@@ -4911,6 +4911,144 @@ async fn a_resumed_history_is_cold_until_its_first_request() {
     assert!(!fresh.history_is_cold().await);
 }
 
+/// A session reloaded from disk inside its last request's cache lifetime still has a warm prefix
+/// at the provider. Treated as cold, it trimmed again and its first request missed that prefix.
+/// With the record its last process kept (written to disk and read back), it is warm and sends
+/// exactly what the old process would have sent next.
+#[tokio::test]
+async fn a_session_reloaded_inside_the_cache_lifetime_repeats_its_trims_and_stays_warm() {
+    let source = spawn_trimming(vec![]);
+    push_turns(&source, 5, 8_000).await;
+    make_history_cold(&source);
+    let sent = first_request_items(&source).await;
+    assert!(tool_result_text(&sent, 2).contains("[…trimmed…]"));
+    source.record_cache_lifetime(Some(Duration::from_secs(300)));
+    let record = source
+        .cache_resume_state()
+        .await
+        .expect("a completed request leaves a record");
+    let record: crate::CacheResumeState =
+        serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+    let next = first_request_items(&source).await;
+
+    let reloaded = spawn_trimming(source.get_conversation().await);
+    reloaded.start_from_resumed_history(record.clone());
+    assert!(!reloaded.history_is_cold().await, "the cache is still live");
+    assert!(!reloaded.cache_expired_while_idle().await);
+    assert_eq!(
+        serde_json::to_string(&first_request_items(&reloaded).await).unwrap(),
+        serde_json::to_string(&next).unwrap()
+    );
+    assert_eq!(
+        reloaded
+            .cache_resume_state()
+            .await
+            .map(|state| state.last_request_at_ms),
+        Some(record.last_request_at_ms),
+        "a reload with no new request keeps the old request's time"
+    );
+}
+
+/// Warm or cold is decided against the last request's lifetime, at the boundary the in-process
+/// idle check uses (idle equal to the lifetime is cold), on wall-clock time.
+#[test]
+fn a_resume_record_is_warm_only_inside_its_lifetime() {
+    let sent_at = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let record = crate::CacheResumeState {
+        last_request_at_ms: 1_800_000_000_000,
+        cache_lifetime_secs: Some(300),
+        request_trims: vec![crate::PersistedTrim {
+            call_id: "call_0".into(),
+            original_len: 8_000,
+            text: "head[…trimmed…]tail".into(),
+        }],
+    };
+    let at = |secs: u64, millis: u64| {
+        record.warm_idle(sent_at + Duration::from_secs(secs) + Duration::from_millis(millis))
+    };
+    assert_eq!(at(30, 0), Some(Duration::from_secs(30)));
+    assert_eq!(at(299, 999), Some(Duration::from_millis(299_999)));
+    assert_eq!(at(300, 0), None, "idle as long as the lifetime is cold");
+    assert_eq!(
+        record.warm_idle(sent_at - Duration::from_secs(1)),
+        None,
+        "a request after now (a clock change) cannot be trusted"
+    );
+}
+
+/// Whatever cannot be trusted falls back to the old behaviour: the reload is cold and its first
+/// request trims afresh.
+#[tokio::test]
+async fn an_unusable_resume_record_leaves_the_reload_cold() {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let trim = |call_id: &str, original_len: usize| crate::PersistedTrim {
+        call_id: call_id.into(),
+        original_len,
+        text: "short".into(),
+    };
+    let warm = crate::CacheResumeState {
+        last_request_at_ms: now_ms - 1_000,
+        cache_lifetime_secs: Some(300),
+        request_trims: vec![trim("call_0", 8_000)],
+    };
+    let unusable = [
+        crate::CacheResumeState {
+            last_request_at_ms: now_ms - 301_000,
+            ..warm.clone()
+        },
+        crate::CacheResumeState {
+            cache_lifetime_secs: None,
+            ..warm.clone()
+        },
+        crate::CacheResumeState {
+            request_trims: vec![trim("call_0", 8_000), trim("call_0", 9_000)],
+            ..warm.clone()
+        },
+        crate::CacheResumeState {
+            request_trims: vec![trim("call_0", 3)],
+            ..warm.clone()
+        },
+    ];
+    let source = spawn_trimming(vec![]);
+    push_turns(&source, 5, 8_000).await;
+    let history = source.get_conversation().await;
+    for record in unusable {
+        let reloaded = spawn_trimming(history.clone());
+        reloaded.start_from_resumed_history(record.clone());
+        assert!(reloaded.history_is_cold().await, "{record:?}");
+        let request = first_request_items(&reloaded).await;
+        assert!(tool_result_text(&request, 2).contains("[…trimmed…]"));
+    }
+    let reloaded = spawn_trimming(history);
+    reloaded.start_from_resumed_history(warm);
+    assert!(!reloaded.history_is_cold().await);
+}
+
+/// A warm reload counts its idle time from the old process's last request, so a long pause after
+/// the reload still reaches the cold moment the in-process idle check would.
+#[tokio::test]
+async fn a_warm_reload_turns_cold_once_its_lifetime_runs_out() {
+    let source = spawn_trimming(vec![]);
+    push_turns(&source, 2, 10).await;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let reloaded = spawn_trimming(source.get_conversation().await);
+    reloaded.start_from_resumed_history(crate::CacheResumeState {
+        last_request_at_ms: now_ms - 900,
+        cache_lifetime_secs: Some(1),
+        request_trims: Vec::new(),
+    });
+    assert!(!reloaded.history_is_cold().await);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(reloaded.history_is_cold().await);
+    assert!(reloaded.cache_expired_while_idle().await);
+}
+
 /// Old history is rewritten only when the provider cache is gone anyway. A provider's cache
 /// lives as long as its lifetime (five minutes on Anthropic, ten on Grok), far less than the hour
 /// kept as the fallback: idle past the lifetime the last request had, history is cold; while it
@@ -4992,6 +5130,22 @@ async fn hour_entries_keep_the_history_warm_past_a_shorter_last_lifetime() {
         "the hour entries are still live"
     );
     assert!(!handle.cache_expired_while_idle().await);
+}
+
+/// With `[cache] extended_ttl = "off"` (the default) every request reports the five-minute
+/// lifetime, even the one before a subagent wait, so no hour entry postpones the idle check.
+/// Decided: idle past five minutes the provider has dropped the prefix, so history batches and
+/// the cold-return offer apply then, not up to an hour later.
+#[tokio::test]
+async fn without_hour_entries_idle_past_the_short_lifetime_is_cold() {
+    let handle = spawn_trimming(vec![]);
+    push_turns(&handle, 1, 10).await;
+    for _ in 0..2 {
+        handle.record_cache_lifetime(Some(Duration::from_millis(20)));
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(handle.history_is_cold().await);
+    assert!(handle.cache_expired_while_idle().await);
 }
 
 #[tokio::test]

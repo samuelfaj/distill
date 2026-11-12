@@ -1,0 +1,7 @@
+import_batch in tools/task_cost_eval/fixtures/hard_atomic_import loads partner files, and when it hits a bad
+record it stops and leaves half the batch stored. Change it to return {'imported': n, 'unchanged': n,
+'errors': [(index, message), ...]} where errors lists every invalid record in the batch (0-based index and the
+ValueError message), not just the first one. A batch is all or nothing: if there is any error, or the store
+refuses a record with StoreFull (which still reaches the caller), the store has to end up exactly as it was
+before the call. A record equal to the stored one counts as unchanged and is not written again; a different
+one replaces it.

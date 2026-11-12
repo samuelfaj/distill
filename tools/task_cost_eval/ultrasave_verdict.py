@@ -1,12 +1,18 @@
-"""Paired UltraSave money/quality gate over complete provider usage, including failures; tokens are reported."""
+"""Paired UltraSave money/quality gate over complete provider usage, including failures; tokens are reported.
+
+The gate uses the ratio of totals of gate credits (a failed candidate attempt is
+charged at least its baseline's credits); the median of paired ratios is
+reported for continuity only. Fewer than three repetitions report a smoke.
+"""
 from __future__ import annotations
 
 import statistics
 
+from .gates import apply_repetition_rule, case_bootstrap, ratio_of_totals
 from .ultrafast_verdict import (MAX_MISSED_ACCEPTANCES, MAX_QUALITY_REGRESSIONS, quality_reasons,
                                 validated_pairs)
 
-# Predeclared money gate: median paired credit ratio, candidate / baseline.
+# Predeclared money gate: ratio of totals of gate credits, candidate / baseline.
 MAX_CREDIT_RATIO = 0.45
 MAX_CREDIT_RATIO_COMPARE_VERSIONS = 0.85
 
@@ -33,6 +39,13 @@ def token_reasons(results):
     return reasons
 
 
+def gate_credits(baseline, candidate):
+    """A failed attempt keeps its real usage but cannot earn savings credit."""
+    if baseline['passed'] and candidate['passed']:
+        return candidate['credits']
+    return max(candidate['credits'], baseline['credits'])
+
+
 def summarize(rows):
     tokens = {field: sum(row[field] for row in rows) for field in TOKEN_FIELDS}
     return {**tokens, 'total_tokens': tokens['input_tokens'] + tokens['output_tokens'],
@@ -51,7 +64,8 @@ def verdict(results):
                                      compare_versions=compare_versions)
     target = MAX_CREDIT_RATIO_COMPARE_VERSIONS if compare_versions else MAX_CREDIT_RATIO
     report = {'verdict': 'INCOMPLETE', 'reasons': reasons, 'compare_versions': compare_versions,
-              'target': {'maximum_median_paired_credit_ratio': target,
+              'gate_statistic': 'ratio of totals of gate credits',
+              'target': {'maximum_credit_ratio_of_totals': target,
                          'maximum_quality_regressions': MAX_QUALITY_REGRESSIONS,
                          'minimum_candidate_accepted': 'runs - %d' % MAX_MISSED_ACCEPTANCES},
               'credit_basis': results.get('credit_basis'),
@@ -60,10 +74,10 @@ def verdict(results):
               'scope': 'bounded observed sample; no statistical equivalence or general superiority claim',
               'pairs': [], 'baseline': None, 'candidate': None}
     if reasons:
-        return report
+        return apply_repetition_rule(report, results.get('repetitions'))
     reasons.extend(token_reasons(results))
     if reasons:
-        return report
+        return apply_repetition_rule(report, results.get('repetitions'))
 
     for key, pair in sorted(pairs.items()):
         baseline, candidate = pair['baseline'], pair['candidate']
@@ -80,6 +94,8 @@ def verdict(results):
             'raw_token_ratio': raw_ratio, 'token_savings_eligible': both_passed,
             'raw_credit_ratio': raw_credit_ratio,
             'gate_credit_ratio': raw_credit_ratio if both_passed else max(1.0, raw_credit_ratio),
+            'baseline_credits': baseline['credits'],
+            'gate_candidate_credits': gate_credits(baseline, candidate),
             # A failed attempt keeps its real usage but cannot earn savings credit.
             'gate_token_ratio': raw_ratio if both_passed else max(1.0, raw_ratio),
             'quality_regression': baseline['passed'] and not candidate['passed']})
@@ -88,17 +104,23 @@ def verdict(results):
     ratio = statistics.median(pair['gate_token_ratio'] for pair in report['pairs'])
     report['median_paired_token_ratio'] = ratio
     report['median_paired_token_saved_fraction'] = 1 - ratio
-    credit_ratio = statistics.median(pair['gate_credit_ratio'] for pair in report['pairs'])
-    report['median_paired_credit_ratio'] = credit_ratio
-    report['median_paired_credit_saved_fraction'] = 1 - credit_ratio
+    median_credit_ratio = statistics.median(pair['gate_credit_ratio'] for pair in report['pairs'])
+    report['median_paired_credit_ratio'] = median_credit_ratio
+    report['median_paired_credit_saved_fraction'] = 1 - median_credit_ratio
+    credits = (lambda pair: pair['baseline_credits'], lambda pair: pair['gate_candidate_credits'])
+    credit_ratio = ratio_of_totals(report['pairs'], *credits)
+    report['credit_ratio_of_totals'] = credit_ratio
+    report['credit_saved_fraction'] = 1 - credit_ratio
+    report['credit_ratio_bootstrap'] = case_bootstrap(report['pairs'], *credits)
     report['median_raw_paired_credit_ratio'] = statistics.median(pair['raw_credit_ratio'] for pair in report['pairs'])
     report['median_raw_paired_token_ratio'] = statistics.median(pair['raw_token_ratio'] for pair in report['pairs'])
     report['quality_regressions'] = sum(pair['quality_regression'] for pair in report['pairs'])
     if not report['baseline']['accepted']:
         reasons.append('baseline accepted no task; no quality comparison basis')
-        return report
+        return apply_repetition_rule(report, results.get('repetitions'))
     if credit_ratio > target:
-        reasons.append(f'median paired credits did not improve by at least {round((1 - target) * 100)}%')
+        reasons.append(f'credit ratio of totals {credit_ratio:.3f}: credits did not improve by at least '
+                       f'{round((1 - target) * 100)}%')
     reasons.extend(quality_reasons(report, 'UltraSave'))
     report['verdict'] = 'FAIL' if reasons else 'PASS'
-    return report
+    return apply_repetition_rule(report, results.get('repetitions'))

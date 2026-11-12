@@ -224,7 +224,7 @@ fn sanitize_path_control_chars(path: &str) -> Cow<'_, str> {
 }
 
 /// An explicit truncation marker is added so each skeptic knows the diff was elided rather than the agent actually changing little.
-fn truncate_diff(raw: String) -> String {
+pub(super) fn truncate_diff(raw: String) -> String {
     if raw.len() <= GOAL_CLASSIFIER_DIFF_MAX_BYTES {
         return raw;
     }
@@ -248,7 +248,7 @@ fn truncate_diff(raw: String) -> String {
 
 /// Captured workspace changes for the evidence packet: the (truncated) unified diff destined for the patch file plus the COMPLETE changed-file list.
 /// The list is extracted from the full pre-truncation diff and includes untracked files the git layers cannot show.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CapturedChanges {
     pub diff: String,
     pub changed_files: Vec<String>,

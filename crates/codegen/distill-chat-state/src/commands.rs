@@ -184,9 +184,11 @@ pub enum ChatStateCommand {
     UpdateSamplingConfig { config: Box<SamplingConfig> },
 
     /// Sent once, before the first request of a session spawned with a history: a verbatim
-    /// fork's `parent_trims` are the request trims its parent sent; any other history is cold.
+    /// fork's `parent_trims` are the request trims its parent sent; a reloaded session's
+    /// `resumed` record keeps it warm inside its cache lifetime; any other history is cold.
     StartFromInheritedHistory {
         parent_trims: Option<crate::actor::history_eviction::RequestTrims>,
+        resumed: Option<crate::actor::history_eviction::CacheResumeState>,
     },
 
     /// The cache lifetime the last main request had; `None` when the endpoint's is unknown.
@@ -323,6 +325,11 @@ pub enum ChatStateCommand {
     /// The request trims this session's requests sent (see [`Self::StartFromInheritedHistory`]).
     GetRequestTrims {
         reply: oneshot::Sender<crate::actor::history_eviction::RequestTrims>,
+    },
+
+    /// What a reload of this session needs to know about the cache; `None` before any request.
+    GetCacheResumeState {
+        reply: oneshot::Sender<Option<crate::actor::history_eviction::CacheResumeState>>,
     },
 
     /// Retrieve the most recent stashed per-turn `TokenUsage`. Returns

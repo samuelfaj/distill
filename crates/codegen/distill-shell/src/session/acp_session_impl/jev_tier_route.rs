@@ -10,6 +10,13 @@ use super::*;
 
 pub(super) const TIER_QUESTION: &str = "execution_tier";
 
+/// Client notice: tier routing is not running in this session, with the reason.
+pub(super) const TIER_ROUTING_UNAVAILABLE_METHOD: &str = "x.ai/session/tier_routing/unavailable";
+
+/// A routed round failed earlier in this turn; the next turn may route again,
+/// so this reason is not worth a session notice.
+const TIER_ROUTE_OFF_FOR_TURN: &str = "tier route off for this turn";
+
 /// The user's three models, named by role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Tier {
@@ -63,7 +70,12 @@ pub(super) fn compose_tier(
             description: String::new(),
         })
         .collect();
-    let picked = routing::compose_micro_effort_for(answers, &offered, TIER_QUESTION)?;
+    let picked = routing::compose_micro_effort_for(
+        answers,
+        &offered,
+        TIER_QUESTION,
+        distill_tool_types::JEV_CHOICE_QUANTILE,
+    )?;
     entries
         .iter()
         .find(|entry| entry.tier.id() == picked)
@@ -112,15 +124,17 @@ fn tier_questions(
 }
 
 impl SessionActor {
+    /// Whether the effective mode's policy row routes rounds among the user's models.
+    fn mode_routes_tiers(&self) -> bool {
+        self.mode_policy().runtime.tier_routing != distill_tool_types::TierRouting::Off
+    }
+
     /// Whether this round may choose among the user's three models.
     pub(super) fn tier_routing_allowed(&self) -> bool {
-        matches!(
-            self.execution_mode.load(),
-            distill_tool_types::ExecutionMode::Ultrafast
-                | distill_tool_types::ExecutionMode::Ultrasave
-        ) && self
-            .jev_effort_auto
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.mode_routes_tiers()
+            && self
+                .jev_effort_auto
+                .load(std::sync::atomic::Ordering::Relaxed)
             && !self.child_model_routing_locked()
             && !self.child_jev_routing_locked()
             && !self.jev_ledger.borrow().tier_route_off
@@ -129,12 +143,8 @@ impl SessionActor {
 
     /// Why `tier_routing_allowed` said no, for the skip record.
     fn tier_block_reason(&self) -> &'static str {
-        if !matches!(
-            self.execution_mode.load(),
-            distill_tool_types::ExecutionMode::Ultrafast
-                | distill_tool_types::ExecutionMode::Ultrasave
-        ) {
-            "execution mode is not UltraFast/UltraSave"
+        if !self.mode_routes_tiers() {
+            "the mode's policy row does not route tiers"
         } else if !self
             .jev_effort_auto
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -143,9 +153,35 @@ impl SessionActor {
         } else if self.child_model_routing_locked() || self.child_jev_routing_locked() {
             "model routing is locked"
         } else if self.jev_ledger.borrow().tier_route_off {
-            "tier route off for this turn"
+            TIER_ROUTE_OFF_FOR_TURN
         } else {
             "lever b2_execution_tier is off"
+        }
+    }
+
+    /// Tells the client, once per session, why tier routing is not running, so
+    /// an UltraSave/UltraFast round on the main model only is not silent. A
+    /// child stays quiet: the root's notice covers the tree.
+    fn notify_tier_routing_blocked(&self, reason: &str) {
+        if reason == TIER_ROUTE_OFF_FOR_TURN
+            || self.startup_hints.is_subagent
+            || std::mem::replace(&mut self.jev_ledger.borrow_mut().tier_block_notified, true)
+        {
+            return;
+        }
+        let payload = serde_json::json!({
+            "sessionId": self.session_info.id.0.as_ref(),
+            "mode": self.execution_mode.load(),
+            "auto": self.execution_mode.is_auto(),
+            "reason": reason,
+        });
+        if let Ok(params) = serde_json::value::to_raw_value(&payload) {
+            self.notifications
+                .gateway
+                .forward_fire_and_forget(acp::ExtNotification::new(
+                    TIER_ROUTING_UNAVAILABLE_METHOD,
+                    params.into(),
+                ));
         }
     }
 
@@ -176,12 +212,22 @@ impl SessionActor {
             false
         };
         if !self.tier_routing_allowed() {
-            // Normal and UltraCode never route; only the Ultra modes explain a skip.
-            return matches!(
-                self.execution_mode.load(),
-                distill_tool_types::ExecutionMode::Ultrafast
-                    | distill_tool_types::ExecutionMode::Ultrasave
-            ) && skip(self.tier_block_reason());
+            // A mode whose row never routes says nothing; a routing mode explains a skip.
+            let ultra = self.mode_routes_tiers();
+            if ultra {
+                self.notify_tier_routing_blocked(self.tier_block_reason());
+            }
+            return ultra && skip(self.tier_block_reason());
+        }
+        if self.escalation_tier_floor() == Some(Tier::Main) {
+            crate::jev::record_item(
+                JevLever::Escalation,
+                "tier:floor_main",
+                "the tier floor leaves only the main model",
+                None,
+                None,
+            );
+            return false;
         }
         // Account Auto has model authority; Jev must not choose the model there.
         // A pinned route (an explicit `--model`) leaves the model to the user; only
@@ -190,16 +236,17 @@ impl SessionActor {
             .ok()
             .flatten();
         if let Some(route) = route.as_ref().filter(|route| !route.pinned) {
-            return skip(&format!(
-                "account Auto route {:?} owns the model",
-                route.option_id
-            ));
+            let reason = format!("account Auto route {:?} owns the model", route.option_id);
+            self.notify_tier_routing_blocked(&reason);
+            return skip(&reason);
         }
         if crate::accounts::AccountStore::default()
             .load_routing()
             .is_ok_and(|routing| routing.enabled)
         {
-            return skip("account Auto routing is enabled");
+            let reason = "account Auto routing is enabled";
+            self.notify_tier_routing_blocked(reason);
+            return skip(reason);
         }
         let mode = self.execution_mode.load();
         let creds = self.chat_state_handle.get_credentials().await;
@@ -240,7 +287,9 @@ impl SessionActor {
                 }
             }
         }
-        let entries = dedupe_tiers(resolved.iter().map(|(entry, _)| entry.clone()).collect());
+        let all_entries = dedupe_tiers(resolved.iter().map(|(entry, _)| entry.clone()).collect());
+        let entries =
+            super::escalation::at_or_above_floor(all_entries.clone(), self.escalation_tier_floor());
         if entries.len() < 2 {
             return skip("fewer than two distinct usable candidates");
         }
@@ -329,7 +378,7 @@ impl SessionActor {
             return skip("Jev gave no answer");
         };
         let confidence = answers.confidence(TIER_QUESTION);
-        let Some(tier) = compose_tier(&answers, &entries) else {
+        let Some(mut tier) = compose_tier(&answers, &entries) else {
             crate::jev::record_item(
                 JevLever::B2ExecutionTier,
                 "defer",
@@ -339,6 +388,9 @@ impl SessionActor {
             );
             return false;
         };
+        if let Some(kept) = self.escalation_refused_switch(tier, &all_entries) {
+            tier = kept;
+        }
         if tier == Tier::Main {
             crate::jev::record_item(
                 JevLever::B2ExecutionTier,
@@ -388,7 +440,7 @@ impl SessionActor {
         slug: &str,
         effort: Option<distill_sampling_types::ReasoningEffort>,
     ) -> bool {
-        if self.jev_ledger.borrow().tier_route_off {
+        if self.jev_ledger.borrow().tier_route_off || self.escalation_blocks_resume(slug) {
             return false;
         }
         let creds = self.chat_state_handle.get_credentials().await;
@@ -533,6 +585,109 @@ mod tests {
                     assert_eq!(crate::jev::test_decision_answers_remaining(), 1);
                     crate::jev::clear_test_decision_answers();
                 }
+            })
+            .await;
+    }
+
+    /// UltraSave without tier routing runs every round on the main model. The
+    /// client hears why once per session, not on every round or turn, and a
+    /// mode that never routes gets no notice.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_blocked_tier_route_is_announced_once_per_session() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let notices = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<
+                    distill_acp_lib::AcpClientMessage,
+                >| {
+                    let mut found = Vec::new();
+                    while let Ok(message) = rx.try_recv() {
+                        if let distill_acp_lib::AcpClientMessage::ExtNotification(args) = message
+                            && args.request.method.as_ref() == TIER_ROUTING_UNAVAILABLE_METHOD
+                        {
+                            found.push(
+                                serde_json::from_str::<serde_json::Value>(
+                                    args.request.params.get(),
+                                )
+                                .unwrap(),
+                            );
+                        }
+                    }
+                    found
+                };
+                let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+                let actor = super::super::support::create_test_actor(
+                    0,
+                    256_000,
+                    85,
+                    gateway_tx,
+                    persistence_tx,
+                )
+                .await;
+                let mut cfg = SamplingConfig {
+                    model: "main".into(),
+                    ..Default::default()
+                };
+
+                actor
+                    .execution_mode
+                    .store(distill_tool_types::ExecutionMode::Normal);
+                assert!(!actor.jev_route_execution_tier(&mut cfg).await);
+                assert!(notices(&mut gateway_rx).is_empty(), "Normal never routes");
+
+                actor
+                    .execution_mode
+                    .store(distill_tool_types::ExecutionMode::Ultrasave);
+                actor
+                    .jev_effort_auto
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                for _ in 0..3 {
+                    assert!(!actor.jev_route_execution_tier(&mut cfg).await);
+                }
+                actor.jev_ledger.borrow_mut().take_rows();
+                assert!(!actor.jev_route_execution_tier(&mut cfg).await);
+                assert_eq!(cfg.model, "main");
+
+                let found = notices(&mut gateway_rx);
+                assert_eq!(found.len(), 1, "{found:?}");
+                assert_eq!(found[0]["reason"], "effort is not auto");
+                assert_eq!(found[0]["mode"], "ultrasave");
+                assert_eq!(found[0]["sessionId"], "test-actor");
+            })
+            .await;
+    }
+
+    /// Tier routing follows the mode's policy row. UltraFast on its v2 row keeps
+    /// the session's model, because a cheaper tier is not reliably a faster
+    /// one; UltraSave routes on both rows, and UltraFast's `today` row still
+    /// does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tier_routing_follows_the_modes_policy_row() {
+        use super::super::mode_policy::set_v2_modes_for_tests;
+        use distill_tool_types::{ExecutionMode, V2Modes};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let actor = super::super::support::plain_actor().await;
+                actor
+                    .jev_effort_auto
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let all = V2Modes::default()
+                    .with(ExecutionMode::Ultrafast)
+                    .with(ExecutionMode::Ultrasave)
+                    .with(ExecutionMode::Ultracode);
+                for (rows, mode, routes) in [
+                    (all, ExecutionMode::Ultrafast, false),
+                    (all, ExecutionMode::Ultrasave, true),
+                    (V2Modes::default(), ExecutionMode::Ultrafast, true),
+                    (V2Modes::default(), ExecutionMode::Ultrasave, true),
+                    (all, ExecutionMode::Normal, false),
+                    (all, ExecutionMode::Ultracode, false),
+                ] {
+                    set_v2_modes_for_tests(Some(rows));
+                    actor.execution_mode.store(mode);
+                    assert_eq!(actor.mode_routes_tiers(), routes, "{mode:?} on {rows:?}");
+                }
+                set_v2_modes_for_tests(None);
             })
             .await;
     }

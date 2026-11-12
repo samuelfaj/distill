@@ -1,0 +1,2159 @@
+{
+ "columns": {
+  "alerts_amount": [
+   {
+    "expected": {
+     "ok": "1234.5"
+    },
+    "input": "1,234.50"
+   },
+   {
+    "expected": {
+     "ok": "-12.0"
+    },
+    "input": "(12.00)"
+   },
+   {
+    "expected": {
+     "ok": "2.7"
+    },
+    "input": "2.665"
+   },
+   {
+    "expected": {
+     "ok": "2.5"
+    },
+    "input": "2.5"
+   },
+   {
+    "expected": {
+     "ok": "1.0"
+    },
+    "input": "1.0005"
+   },
+   {
+    "expected": {
+     "ok": "7.0"
+    },
+    "input": " 7 "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "abc"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "nan"
+   },
+   {
+    "expected": {
+     "ok": "-1000.3"
+    },
+    "input": "(1,000.255)"
+   },
+   {
+    "expected": {
+     "ok": "-3.2"
+    },
+    "input": "-3.15"
+   },
+   {
+    "expected": {
+     "ok": "0.1"
+    },
+    "input": "0.05"
+   }
+  ],
+  "batches_flag": [
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "ACTIVE"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": " inactive "
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "a"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": "I"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "maybe"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "\tactive\n"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "unknown"
+   }
+  ],
+  "bookings_name": [
+   {
+    "expected": {
+     "ok": "Ana de Silva"
+    },
+    "input": "ana de silva"
+   },
+   {
+    "expected": {
+     "ok": "De Costa"
+    },
+    "input": "DE costa"
+   },
+   {
+    "expected": {
+     "ok": "Maria la Souza"
+    },
+    "input": "MARIA   la  souza"
+   },
+   {
+    "expected": {
+     "ok": "Ana-Luiza Moraes"
+    },
+    "input": "ana-luiza moraes"
+   },
+   {
+    "expected": {
+     "ok": "O'neil de"
+    },
+    "input": "o'NEIL de"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "   "
+   },
+   {
+    "expected": {
+     "ok": "X"
+    },
+    "input": "x"
+   },
+   {
+    "expected": {
+     "ok": "Luis de la Rocha"
+    },
+    "input": "LUIS De LA ROCHA"
+   }
+  ],
+  "budgets_amount": [
+   {
+    "expected": {
+     "ok": "1234.50"
+    },
+    "input": "1,234.50"
+   },
+   {
+    "expected": {
+     "ok": "-12.00"
+    },
+    "input": "(12.00)"
+   },
+   {
+    "expected": {
+     "ok": "2.67"
+    },
+    "input": "2.665"
+   },
+   {
+    "expected": {
+     "ok": "2.50"
+    },
+    "input": "2.5"
+   },
+   {
+    "expected": {
+     "ok": "1.00"
+    },
+    "input": "1.0005"
+   },
+   {
+    "expected": {
+     "ok": "7.00"
+    },
+    "input": " 7 "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "abc"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "nan"
+   },
+   {
+    "expected": {
+     "ok": "-1000.26"
+    },
+    "input": "(1,000.255)"
+   },
+   {
+    "expected": {
+     "ok": "-3.15"
+    },
+    "input": "-3.15"
+   },
+   {
+    "expected": {
+     "ok": "0.05"
+    },
+    "input": "0.05"
+   }
+  ],
+  "carts_phone": [
+   {
+    "expected": {
+     "ok": "+351703692581"
+    },
+    "input": "+351 703692581"
+   },
+   {
+    "expected": {
+     "ok": "+351703692581"
+    },
+    "input": "00351703692581"
+   },
+   {
+    "expected": {
+     "ok": "+351703692581"
+    },
+    "input": "703692581"
+   },
+   {
+    "expected": {
+     "ok": "+351703692581"
+    },
+    "input": "(70) 3692-581"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "70369258"
+   },
+   {
+    "expected": {
+     "ok": "+351703692581"
+    },
+    "input": "351703692581"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no phone"
+   },
+   {
+    "expected": {
+     "ok": "+351703692581"
+    },
+    "input": "+351-703-692581"
+   }
+  ],
+  "comments_country": [
+   {
+    "expected": {
+     "ok": "JP"
+    },
+    "input": "JAPAN"
+   },
+   {
+    "expected": {
+     "ok": "ZA"
+    },
+    "input": "  South Africa "
+   },
+   {
+    "expected": {
+     "ok": "JP"
+    },
+    "input": "jp"
+   },
+   {
+    "expected": {
+     "ok": "ZA"
+    },
+    "input": "south   africa"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "atlantis"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "zz"
+   },
+   {
+    "expected": {
+     "ok": "JP"
+    },
+    "input": "JP"
+   },
+   {
+    "expected": {
+     "ok": "CA"
+    },
+    "input": "canada"
+   }
+  ],
+  "coupons_phone": [
+   {
+    "expected": {
+     "ok": "+4970369258147"
+    },
+    "input": "+49 70369258147"
+   },
+   {
+    "expected": {
+     "ok": "+4970369258147"
+    },
+    "input": "004970369258147"
+   },
+   {
+    "expected": {
+     "ok": "+4970369258147"
+    },
+    "input": "70369258147"
+   },
+   {
+    "expected": {
+     "ok": "+4970369258147"
+    },
+    "input": "(70) 3692-58147"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "7036925814"
+   },
+   {
+    "expected": {
+     "ok": "+4970369258147"
+    },
+    "input": "4970369258147"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no phone"
+   },
+   {
+    "expected": {
+     "ok": "+4970369258147"
+    },
+    "input": "+49-703-69258147"
+   }
+  ],
+  "dishes_flag": [
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "ON"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": " off "
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "enabled"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": "Disabled"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "maybe"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "\ton\n"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "unknown"
+   }
+  ],
+  "events_name": [
+   {
+    "expected": {
+     "ok": "Ana van Silva"
+    },
+    "input": "ana van silva"
+   },
+   {
+    "expected": {
+     "ok": "Van Costa"
+    },
+    "input": "VAN costa"
+   },
+   {
+    "expected": {
+     "ok": "Maria der Souza"
+    },
+    "input": "MARIA   der  souza"
+   },
+   {
+    "expected": {
+     "ok": "Ana-Luiza Moraes"
+    },
+    "input": "ana-luiza moraes"
+   },
+   {
+    "expected": {
+     "ok": "O'neil van"
+    },
+    "input": "o'NEIL van"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "   "
+   },
+   {
+    "expected": {
+     "ok": "X"
+    },
+    "input": "x"
+   },
+   {
+    "expected": {
+     "ok": "Luis van der Rocha"
+    },
+    "input": "LUIS Van DER ROCHA"
+   }
+  ],
+  "exports_postcode": [
+   {
+    "expected": {
+     "ok": "QE4B7NN"
+    },
+    "input": "qe4b 7nn"
+   },
+   {
+    "expected": {
+     "ok": "J93TT"
+    },
+    "input": "J9 3TT"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "J93TT!"
+   },
+   {
+    "expected": {
+     "ok": "XW84PL"
+    },
+    "input": "XW8 4PL"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "  "
+   }
+  ],
+  "files_country": [
+   {
+    "expected": {
+     "ok": "ES"
+    },
+    "input": "SPAIN"
+   },
+   {
+    "expected": {
+     "ok": "ES"
+    },
+    "input": "  Espana "
+   },
+   {
+    "expected": {
+     "ok": "ES"
+    },
+    "input": "es"
+   },
+   {
+    "expected": {
+     "ok": "LK"
+    },
+    "input": "sri   lanka"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "atlantis"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "zz"
+   },
+   {
+    "expected": {
+     "ok": "ES"
+    },
+    "input": "ES"
+   },
+   {
+    "expected": {
+     "ok": "LK"
+    },
+    "input": "sri lanka"
+   }
+  ],
+  "folders_postcode": [
+   {
+    "expected": {
+     "ok": "H3Z2Y7"
+    },
+    "input": "h3z 2y7"
+   },
+   {
+    "expected": {
+     "ok": "H3Z2Y7"
+    },
+    "input": "H3Z2Y7"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "H3Z 2Y7X"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "123456"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "  "
+   }
+  ],
+  "guests_flag": [
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "YES"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": " no "
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "1"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": "0"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "maybe"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "\tyes\n"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "unknown"
+   }
+  ],
+  "imports_postcode": [
+   {
+    "expected": {
+     "ok": "C1425ABC"
+    },
+    "input": "c1425 abc"
+   },
+   {
+    "expected": {
+     "ok": "C1425ABC"
+    },
+    "input": "C1425ABC"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "C1425ABCD"
+   },
+   {
+    "expected": {
+     "ok": "C1425ABC"
+    },
+    "input": "C 1425 ABC"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "  "
+   }
+  ],
+  "invoices_phone": [
+   {
+    "expected": {
+     "ok": "+447036925814"
+    },
+    "input": "+44 7036925814"
+   },
+   {
+    "expected": {
+     "ok": "+447036925814"
+    },
+    "input": "00447036925814"
+   },
+   {
+    "expected": {
+     "ok": "+447036925814"
+    },
+    "input": "7036925814"
+   },
+   {
+    "expected": {
+     "ok": "+447036925814"
+    },
+    "input": "(70) 3692-5814"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "703692581"
+   },
+   {
+    "expected": {
+     "ok": "+447036925814"
+    },
+    "input": "447036925814"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no phone"
+   },
+   {
+    "expected": {
+     "ok": "+447036925814"
+    },
+    "input": "+44-703-6925814"
+   }
+  ],
+  "labels_country": [
+   {
+    "expected": {
+     "ok": "MX"
+    },
+    "input": "MEXICO"
+   },
+   {
+    "expected": {
+     "ok": "CL"
+    },
+    "input": "  Chile "
+   },
+   {
+    "expected": {
+     "ok": "MX"
+    },
+    "input": "mx"
+   },
+   {
+    "expected": {
+     "ok": "CR"
+    },
+    "input": "costa   rica"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "atlantis"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "zz"
+   },
+   {
+    "expected": {
+     "ok": "MX"
+    },
+    "input": "MX"
+   },
+   {
+    "expected": {
+     "ok": "PE"
+    },
+    "input": "peru"
+   }
+  ],
+  "ledgers_date": [
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "2026-03-04"
+   },
+   {
+    "expected": {
+     "ok": "2026-12-31"
+    },
+    "input": " 2026-12-31 "
+   },
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "4/3/2026"
+   },
+   {
+    "expected": {
+     "ok": "2026-01-13"
+    },
+    "input": "13/1/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "1/13/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "30/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2/30/2024"
+   },
+   {
+    "expected": {
+     "ok": "2024-02-29"
+    },
+    "input": "29/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2026-02-30"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "tomorrow"
+   },
+   {
+    "expected": {
+     "ok": "2025-08-07"
+    },
+    "input": "07/08/2025"
+   }
+  ],
+  "members_email": [
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "Ana.Silva@Example.ORG"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": " bob@mail.example.edu "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "a@b@c.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no-at.example.net"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "x@localhost"
+   },
+   {
+    "expected": {
+     "ok": "Mixed.Case@sub.domain.net"
+    },
+    "input": "Mixed.Case@Sub.Domain.NET"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "with space@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "q@uni.EDU"
+   }
+  ],
+  "menus_flag": [
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "SIM"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": " nao "
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "s"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": "N"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "maybe"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "\tsim\n"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "unknown"
+   }
+  ],
+  "orders_phone": [
+   {
+    "expected": {
+     "ok": "+5570369258147"
+    },
+    "input": "+55 70369258147"
+   },
+   {
+    "expected": {
+     "ok": "+5570369258147"
+    },
+    "input": "005570369258147"
+   },
+   {
+    "expected": {
+     "ok": "+5570369258147"
+    },
+    "input": "70369258147"
+   },
+   {
+    "expected": {
+     "ok": "+5570369258147"
+    },
+    "input": "(70) 3692-58147"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "7036925814"
+   },
+   {
+    "expected": {
+     "ok": "+5570369258147"
+    },
+    "input": "5570369258147"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no phone"
+   },
+   {
+    "expected": {
+     "ok": "+5570369258147"
+    },
+    "input": "+55-703-69258147"
+   }
+  ],
+  "payouts_date": [
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "2026-03-04"
+   },
+   {
+    "expected": {
+     "ok": "2026-12-31"
+    },
+    "input": " 2026-12-31 "
+   },
+   {
+    "expected": {
+     "ok": "2026-04-03"
+    },
+    "input": "4/3/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "13/1/2026"
+   },
+   {
+    "expected": {
+     "ok": "2026-01-13"
+    },
+    "input": "1/13/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "30/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2/30/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "29/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2026-02-30"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "tomorrow"
+   },
+   {
+    "expected": {
+     "ok": "2025-07-08"
+    },
+    "input": "07/08/2025"
+   }
+  ],
+  "projects_country": [
+   {
+    "expected": {
+     "ok": "BR"
+    },
+    "input": "BRAZIL"
+   },
+   {
+    "expected": {
+     "ok": "BR"
+    },
+    "input": "  Brasil "
+   },
+   {
+    "expected": {
+     "ok": "BR"
+    },
+    "input": "br"
+   },
+   {
+    "expected": {
+     "ok": "GB"
+    },
+    "input": "united   kingdom"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "atlantis"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "zz"
+   },
+   {
+    "expected": {
+     "ok": "BR"
+    },
+    "input": "BR"
+   },
+   {
+    "expected": {
+     "ok": "GB"
+    },
+    "input": "united kingdom"
+   }
+  ],
+  "quotes_amount": [
+   {
+    "expected": {
+     "ok": "1235"
+    },
+    "input": "1,234.50"
+   },
+   {
+    "expected": {
+     "ok": "-12"
+    },
+    "input": "(12.00)"
+   },
+   {
+    "expected": {
+     "ok": "3"
+    },
+    "input": "2.665"
+   },
+   {
+    "expected": {
+     "ok": "3"
+    },
+    "input": "2.5"
+   },
+   {
+    "expected": {
+     "ok": "1"
+    },
+    "input": "1.0005"
+   },
+   {
+    "expected": {
+     "ok": "7"
+    },
+    "input": " 7 "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "abc"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "nan"
+   },
+   {
+    "expected": {
+     "ok": "-1000"
+    },
+    "input": "(1,000.255)"
+   },
+   {
+    "expected": {
+     "ok": "-3"
+    },
+    "input": "-3.15"
+   },
+   {
+    "expected": {
+     "ok": "0"
+    },
+    "input": "0.05"
+   }
+  ],
+  "receipts_amount": [
+   {
+    "expected": {
+     "ok": "1234.500"
+    },
+    "input": "1,234.50"
+   },
+   {
+    "expected": {
+     "ok": "-12.000"
+    },
+    "input": "(12.00)"
+   },
+   {
+    "expected": {
+     "ok": "2.665"
+    },
+    "input": "2.665"
+   },
+   {
+    "expected": {
+     "ok": "2.500"
+    },
+    "input": "2.5"
+   },
+   {
+    "expected": {
+     "ok": "1.001"
+    },
+    "input": "1.0005"
+   },
+   {
+    "expected": {
+     "ok": "7.000"
+    },
+    "input": " 7 "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "abc"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "nan"
+   },
+   {
+    "expected": {
+     "ok": "-1000.255"
+    },
+    "input": "(1,000.255)"
+   },
+   {
+    "expected": {
+     "ok": "-3.150"
+    },
+    "input": "-3.15"
+   },
+   {
+    "expected": {
+     "ok": "0.050"
+    },
+    "input": "0.05"
+   }
+  ],
+  "refunds_phone": [
+   {
+    "expected": {
+     "ok": "+17036925814"
+    },
+    "input": "+1 7036925814"
+   },
+   {
+    "expected": {
+     "ok": "+17036925814"
+    },
+    "input": "0017036925814"
+   },
+   {
+    "expected": {
+     "ok": "+17036925814"
+    },
+    "input": "7036925814"
+   },
+   {
+    "expected": {
+     "ok": "+17036925814"
+    },
+    "input": "(70) 3692-5814"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "703692581"
+   },
+   {
+    "expected": {
+     "ok": "+17036925814"
+    },
+    "input": "17036925814"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no phone"
+   },
+   {
+    "expected": {
+     "ok": "+17036925814"
+    },
+    "input": "+1-703-6925814"
+   }
+  ],
+  "reminders_name": [
+   {
+    "expected": {
+     "ok": "Ana da Silva"
+    },
+    "input": "ana da silva"
+   },
+   {
+    "expected": {
+     "ok": "Da Costa"
+    },
+    "input": "DA costa"
+   },
+   {
+    "expected": {
+     "ok": "Maria de Souza"
+    },
+    "input": "MARIA   de  souza"
+   },
+   {
+    "expected": {
+     "ok": "Ana-Luiza Moraes"
+    },
+    "input": "ana-luiza moraes"
+   },
+   {
+    "expected": {
+     "ok": "O'neil da"
+    },
+    "input": "o'NEIL da"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "   "
+   },
+   {
+    "expected": {
+     "ok": "X"
+    },
+    "input": "x"
+   },
+   {
+    "expected": {
+     "ok": "Luis da de Rocha"
+    },
+    "input": "LUIS Da DE ROCHA"
+   }
+  ],
+  "reports_email": [
+   {
+    "expected": {
+     "ok": "Ana.Silva@example.org"
+    },
+    "input": "Ana.Silva@Example.ORG"
+   },
+   {
+    "expected": {
+     "ok": "bob@mail.example.edu"
+    },
+    "input": " bob@mail.example.edu "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "a@b@c.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no-at.example.net"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "x@localhost"
+   },
+   {
+    "expected": {
+     "ok": "Mixed.Case@sub.domain.net"
+    },
+    "input": "Mixed.Case@Sub.Domain.NET"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "with space@x.org"
+   },
+   {
+    "expected": {
+     "ok": "q@uni.edu"
+    },
+    "input": "q@uni.EDU"
+   }
+  ],
+  "returns_date": [
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "2026-03-04"
+   },
+   {
+    "expected": {
+     "ok": "2026-12-31"
+    },
+    "input": " 2026-12-31 "
+   },
+   {
+    "expected": {
+     "ok": "2026-04-03"
+    },
+    "input": "4/3/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "13/1/2026"
+   },
+   {
+    "expected": {
+     "ok": "2026-01-13"
+    },
+    "input": "1/13/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "30/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2/30/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "29/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2026-02-30"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "tomorrow"
+   },
+   {
+    "expected": {
+     "ok": "2025-07-08"
+    },
+    "input": "07/08/2025"
+   }
+  ],
+  "rooms_name": [
+   {
+    "expected": {
+     "ok": "Ana di Silva"
+    },
+    "input": "ana di silva"
+   },
+   {
+    "expected": {
+     "ok": "Di Costa"
+    },
+    "input": "DI costa"
+   },
+   {
+    "expected": {
+     "ok": "Maria da Souza"
+    },
+    "input": "MARIA   da  souza"
+   },
+   {
+    "expected": {
+     "ok": "Ana-Luiza Moraes"
+    },
+    "input": "ana-luiza moraes"
+   },
+   {
+    "expected": {
+     "ok": "O'neil di"
+    },
+    "input": "o'NEIL di"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "   "
+   },
+   {
+    "expected": {
+     "ok": "X"
+    },
+    "input": "x"
+   },
+   {
+    "expected": {
+     "ok": "Luis di da Rocha"
+    },
+    "input": "LUIS Di DA ROCHA"
+   }
+  ],
+  "schedules_postcode": [
+   {
+    "expected": {
+     "ok": "123AB4"
+    },
+    "input": "123 ab 4"
+   },
+   {
+    "expected": {
+     "ok": "123AB4"
+    },
+    "input": "123AB4"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "123AB45"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "12AB4"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "  "
+   }
+  ],
+  "sessions_email": [
+   {
+    "expected": {
+     "ok": "Ana.Silva@example.org"
+    },
+    "input": "Ana.Silva@Example.ORG"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": " bob@mail.example.edu "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "a@b@c.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no-at.example.net"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "x@localhost"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "Mixed.Case@Sub.Domain.NET"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "with space@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "q@uni.EDU"
+   }
+  ],
+  "shipments_date": [
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "2026-03-04"
+   },
+   {
+    "expected": {
+     "ok": "2026-12-31"
+    },
+    "input": " 2026-12-31 "
+   },
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "4/3/2026"
+   },
+   {
+    "expected": {
+     "ok": "2026-01-13"
+    },
+    "input": "13/1/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "1/13/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "30/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2/30/2024"
+   },
+   {
+    "expected": {
+     "ok": "2024-02-29"
+    },
+    "input": "29/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2026-02-30"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "tomorrow"
+   },
+   {
+    "expected": {
+     "ok": "2025-08-07"
+    },
+    "input": "07/08/2025"
+   }
+  ],
+  "stocks_flag": [
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "JA"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": " nein "
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "j"
+   },
+   {
+    "expected": {
+     "ok": "false"
+    },
+    "input": "N"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "maybe"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": "true"
+    },
+    "input": "\tja\n"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "unknown"
+   }
+  ],
+  "tasks_country": [
+   {
+    "expected": {
+     "ok": "DE"
+    },
+    "input": "GERMANY"
+   },
+   {
+    "expected": {
+     "ok": "DE"
+    },
+    "input": "  Deutschland "
+   },
+   {
+    "expected": {
+     "ok": "DE"
+    },
+    "input": "de"
+   },
+   {
+    "expected": {
+     "ok": "NZ"
+    },
+    "input": "new   zealand"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "atlantis"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "zz"
+   },
+   {
+    "expected": {
+     "ok": "DE"
+    },
+    "input": "DE"
+   },
+   {
+    "expected": {
+     "ok": "NZ"
+    },
+    "input": "new zealand"
+   }
+  ],
+  "teams_email": [
+   {
+    "expected": {
+     "ok": "Ana.Silva@example.org"
+    },
+    "input": "Ana.Silva@Example.ORG"
+   },
+   {
+    "expected": {
+     "ok": "bob@mail.example.edu"
+    },
+    "input": " bob@mail.example.edu "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "a@b@c.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no-at.example.net"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "x@localhost"
+   },
+   {
+    "expected": {
+     "ok": "Mixed.Case@sub.domain.net"
+    },
+    "input": "Mixed.Case@Sub.Domain.NET"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "with space@x.org"
+   },
+   {
+    "expected": {
+     "ok": "q@uni.edu"
+    },
+    "input": "q@uni.EDU"
+   }
+  ],
+  "tickets_amount": [
+   {
+    "expected": {
+     "ok": "1234.50"
+    },
+    "input": "1,234.50"
+   },
+   {
+    "expected": {
+     "ok": "-12.00"
+    },
+    "input": "(12.00)"
+   },
+   {
+    "expected": {
+     "ok": "2.67"
+    },
+    "input": "2.665"
+   },
+   {
+    "expected": {
+     "ok": "2.50"
+    },
+    "input": "2.5"
+   },
+   {
+    "expected": {
+     "ok": "1.00"
+    },
+    "input": "1.0005"
+   },
+   {
+    "expected": {
+     "ok": "7.00"
+    },
+    "input": " 7 "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "abc"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "nan"
+   },
+   {
+    "expected": {
+     "ok": "-1000.26"
+    },
+    "input": "(1,000.255)"
+   },
+   {
+    "expected": {
+     "ok": "-3.15"
+    },
+    "input": "-3.15"
+   },
+   {
+    "expected": {
+     "ok": "0.05"
+    },
+    "input": "0.05"
+   }
+  ],
+  "tokens_email": [
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "Ana.Silva@Example.ORG"
+   },
+   {
+    "expected": {
+     "ok": "bob@mail.example.edu"
+    },
+    "input": " bob@mail.example.edu "
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "a@b@c.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "no-at.example.net"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "@x.org"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "x@localhost"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "Mixed.Case@Sub.Domain.NET"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "with space@x.org"
+   },
+   {
+    "expected": {
+     "ok": "q@uni.edu"
+    },
+    "input": "q@uni.EDU"
+   }
+  ],
+  "uploads_postcode": [
+   {
+    "expected": {
+     "ok": "1234AB"
+    },
+    "input": "1234 ab"
+   },
+   {
+    "expected": {
+     "ok": "1234AB"
+    },
+    "input": "1234AB"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "1234ABC"
+   },
+   {
+    "expected": {
+     "ok": "1234AB"
+    },
+    "input": "12 34 AB"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": ""
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "  "
+   }
+  ],
+  "vendors_date": [
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "2026-03-04"
+   },
+   {
+    "expected": {
+     "ok": "2026-12-31"
+    },
+    "input": " 2026-12-31 "
+   },
+   {
+    "expected": {
+     "ok": "2026-03-04"
+    },
+    "input": "4/3/2026"
+   },
+   {
+    "expected": {
+     "ok": "2026-01-13"
+    },
+    "input": "13/1/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "1/13/2026"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "30/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2/30/2024"
+   },
+   {
+    "expected": {
+     "ok": "2024-02-29"
+    },
+    "input": "29/2/2024"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "2026-02-30"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "tomorrow"
+   },
+   {
+    "expected": {
+     "ok": "2025-08-07"
+    },
+    "input": "07/08/2025"
+   }
+  ],
+  "venues_name": [
+   {
+    "expected": {
+     "ok": "Ana von Silva"
+    },
+    "input": "ana von silva"
+   },
+   {
+    "expected": {
+     "ok": "Von Costa"
+    },
+    "input": "VON costa"
+   },
+   {
+    "expected": {
+     "ok": "Maria zu Souza"
+    },
+    "input": "MARIA   zu  souza"
+   },
+   {
+    "expected": {
+     "ok": "Ana-Luiza Moraes"
+    },
+    "input": "ana-luiza moraes"
+   },
+   {
+    "expected": {
+     "ok": "O'neil von"
+    },
+    "input": "o'NEIL von"
+   },
+   {
+    "expected": {
+     "ok": null
+    },
+    "input": "   "
+   },
+   {
+    "expected": {
+     "ok": "X"
+    },
+    "input": "x"
+   },
+   {
+    "expected": {
+     "ok": "Luis von zu Rocha"
+    },
+    "input": "LUIS Von ZU ROCHA"
+   }
+  ]
+ },
+ "pipeline": {
+  "clean.csv": "row,orders_phone,invoices_phone,refunds_phone,carts_phone,coupons_phone,shipments_date,returns_date,vendors_date,payouts_date,ledgers_date,budgets_amount,quotes_amount,receipts_amount,tickets_amount,alerts_amount,reports_email,sessions_email,tokens_email,teams_email,members_email,projects_country,tasks_country,comments_country,labels_country,files_country,folders_postcode,uploads_postcode,exports_postcode,imports_postcode,schedules_postcode,reminders_name,events_name,venues_name,bookings_name,rooms_name,guests_flag,menus_flag,dishes_flag,stocks_flag,batches_flag\n1,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-12-31,2025-07-08,2026-01-13,2026-01-13,2026-12-31,-12.00,7,1.001,2.50,1.0,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,DE,CA,MX,LK,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Maria de Souza,X,Ana-Luiza Moraes,De Costa,O'neil di,false,true,false,true,false\n2,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-12-31,2025-07-08,2024-02-29,2026-04-03,2024-02-29,2.67,-12,0.050,2.67,1234.5,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,GB,DE,JP,MX,LK,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,X,Ana van Silva,Ana-Luiza Moraes,O'neil de,Ana di Silva,false,false,false,false,true\n4,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2026-04-03,2026-12-31,2026-01-13,2026-03-04,-12.00,-3,1.001,-3.15,7.0,bob@mail.example.edu,Ana.Silva@example.org,q@uni.edu,bob@mail.example.edu,Mixed.Case@sub.domain.net,GB,DE,JP,CL,LK,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Ana da Silva,X,Maria zu Souza,De Costa,Luis di da Rocha,true,true,false,true,true\n5,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2026-12-31,2026-03-04,2026-04-03,2026-01-13,2.67,3,2.665,-1000.26,7.0,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,DE,ZA,MX,ES,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,Maria de Souza,Van Costa,Ana von Silva,Ana de Silva,O'neil di,false,true,true,true,false\n7,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2025-07-08,2026-01-13,2026-03-04,2024-02-29,2.67,-1000,-3.150,2.67,1.0,bob@mail.example.edu,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,DE,ZA,MX,LK,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Luis da de Rocha,X,O'neil von,De Costa,O'neil di,false,true,false,true,true\n8,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2025-07-08,2026-03-04,2026-04-03,2026-03-04,7.00,7,1234.500,1234.50,-3.2,Mixed.Case@sub.domain.net,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,BR,DE,CA,CL,LK,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Ana da Silva,Ana-Luiza Moraes,Von Costa,Ana de Silva,X,false,true,false,true,true\n10,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2025-07-08,2026-01-13,2026-01-13,2026-03-04,7.00,7,1234.500,1234.50,2.5,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,Mixed.Case@sub.domain.net,Mixed.Case@sub.domain.net,BR,NZ,JP,MX,ES,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,Ana da Silva,O'neil van,O'neil von,Maria la Souza,O'neil di,true,true,true,true,false\n11,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2026-04-03,2026-01-13,2026-04-03,2026-03-04,2.50,1,7.000,2.67,1234.5,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,GB,DE,ZA,MX,ES,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Ana da Silva,Van Costa,Maria zu Souza,Maria la Souza,Maria da Souza,false,false,true,true,true\n13,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-01-13,2026-04-03,2026-12-31,2026-01-13,2025-08-07,1.00,7,-3.150,0.05,2.7,q@uni.edu,Ana.Silva@example.org,q@uni.edu,Mixed.Case@sub.domain.net,Mixed.Case@sub.domain.net,BR,NZ,ZA,MX,LK,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Ana-Luiza Moraes,Van Costa,X,Ana de Silva,Luis di da Rocha,true,false,false,false,true\n14,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2025-08-07,2026-01-13,2026-03-04,2025-07-08,2025-08-07,2.50,3,-12.000,2.50,-12.0,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,DE,CA,CR,ES,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,O'neil da,Maria der Souza,Ana-Luiza Moraes,De Costa,Di Costa,false,true,false,true,false\n16,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2025-08-07,2025-07-08,2026-03-04,2026-12-31,2026-03-04,7.00,0,0.050,-3.15,-1000.3,Ana.Silva@example.org,Ana.Silva@example.org,q@uni.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,GB,DE,ZA,CL,ES,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,Ana-Luiza Moraes,X,X,O'neil de,Luis di da Rocha,true,false,true,false,true\n17,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-12-31,2025-07-08,2026-03-04,2026-12-31,2025-08-07,1.00,3,7.000,2.67,-1000.3,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,BR,DE,JP,MX,LK,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Da Costa,Ana-Luiza Moraes,X,De Costa,Ana-Luiza Moraes,true,true,true,false,true\n19,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2026-04-03,2024-02-29,2026-03-04,2025-08-07,2.67,-1000,2.665,2.67,1234.5,bob@mail.example.edu,Ana.Silva@example.org,q@uni.edu,q@uni.edu,Mixed.Case@sub.domain.net,GB,DE,JP,MX,ES,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Maria de Souza,O'neil van,Luis von zu Rocha,Luis de la Rocha,Di Costa,true,true,true,false,true\n20,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2025-08-07,2026-03-04,2026-03-04,2025-07-08,2026-03-04,2.50,-12,1234.500,1.00,1.0,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,BR,DE,CA,MX,ES,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,O'neil da,X,Ana von Silva,De Costa,Ana-Luiza Moraes,true,true,false,false,true\n22,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2025-07-08,2026-03-04,2026-01-13,2026-03-04,0.05,1235,7.000,-1000.26,1234.5,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,GB,NZ,CA,PE,ES,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,O'neil da,Van Costa,Ana von Silva,Maria la Souza,Luis di da Rocha,true,false,false,false,true\n23,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2026-03-04,2024-02-29,2026-01-13,2026-03-04,1.00,1235,1.001,2.67,7.0,Ana.Silva@example.org,Ana.Silva@example.org,q@uni.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,DE,JP,MX,ES,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,Luis da de Rocha,X,Maria zu Souza,Maria la Souza,O'neil di,true,true,true,false,true\n25,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2026-04-03,2026-03-04,2025-07-08,2026-03-04,-3.15,0,-12.000,-3.15,0.1,Mixed.Case@sub.domain.net,Ana.Silva@example.org,bob@mail.example.edu,Mixed.Case@sub.domain.net,Mixed.Case@sub.domain.net,BR,DE,ZA,PE,ES,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Ana da Silva,X,Ana von Silva,Ana-Luiza Moraes,Ana di Silva,false,false,true,false,true\n26,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2026-12-31,2025-08-07,2026-03-04,2026-03-04,1234.50,1,2.500,2.67,0.1,Mixed.Case@sub.domain.net,Ana.Silva@example.org,q@uni.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,NZ,ZA,MX,LK,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Maria de Souza,Van Costa,Von Costa,Ana de Silva,Ana-Luiza Moraes,false,true,true,false,false\n28,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2025-08-07,2026-03-04,2025-08-07,2025-07-08,2026-03-04,1.00,-3,1.001,1234.50,1234.5,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,Ana.Silva@example.org,Mixed.Case@sub.domain.net,BR,NZ,CA,MX,ES,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Ana da Silva,O'neil van,Maria zu Souza,X,O'neil di,false,true,true,true,false\n29,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-12-31,2026-04-03,2025-08-07,2026-12-31,2025-08-07,1234.50,-1000,-3.150,1234.50,2.5,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,GB,NZ,CA,PE,LK,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,Maria de Souza,Ana-Luiza Moraes,Maria zu Souza,Ana-Luiza Moraes,Luis di da Rocha,true,true,false,true,false\n31,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-03-04,2026-04-03,2025-08-07,2026-04-03,2026-03-04,1234.50,-12,1234.500,1234.50,2.7,Mixed.Case@sub.domain.net,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,BR,NZ,CA,CR,LK,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,O'neil da,Van Costa,Von Costa,Luis de la Rocha,Di Costa,true,false,true,true,true\n32,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-01-13,2026-03-04,2026-03-04,2026-01-13,2024-02-29,-12.00,1235,2.665,0.05,1234.5,bob@mail.example.edu,Ana.Silva@example.org,bob@mail.example.edu,bob@mail.example.edu,Mixed.Case@sub.domain.net,BR,DE,ZA,CL,ES,H3Z2Y7,1234AB,J93TT,C1425ABC,123AB4,O'neil da,Maria der Souza,O'neil von,Ana-Luiza Moraes,X,true,true,true,false,true\n34,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2025-08-07,2026-12-31,2024-02-29,2025-07-08,2025-08-07,7.00,0,2.500,-12.00,7.0,Ana.Silva@example.org,Ana.Silva@example.org,bob@mail.example.edu,q@uni.edu,Mixed.Case@sub.domain.net,GB,DE,JP,MX,ES,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,X,X,Luis von zu Rocha,X,X,false,true,true,false,true\n35,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2025-07-08,2025-08-07,2026-04-03,2026-12-31,1.00,0,-1000.255,-3.15,2.7,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,Mixed.Case@sub.domain.net,Mixed.Case@sub.domain.net,BR,DE,JP,CL,ES,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,Ana-Luiza Moraes,X,Ana-Luiza Moraes,Luis de la Rocha,Luis di da Rocha,false,true,false,false,false\n37,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2026-01-13,2024-02-29,2026-03-04,2026-03-04,0.05,-12,1.001,2.67,-1000.3,Ana.Silva@example.org,Ana.Silva@example.org,q@uni.edu,bob@mail.example.edu,Mixed.Case@sub.domain.net,GB,DE,CA,PE,ES,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Ana-Luiza Moraes,Maria der Souza,Ana von Silva,Ana de Silva,Ana di Silva,false,true,false,true,true\n38,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2024-02-29,2025-07-08,2026-01-13,2026-12-31,2026-03-04,-12.00,3,-1000.255,1.00,-1000.3,q@uni.edu,Ana.Silva@example.org,q@uni.edu,Mixed.Case@sub.domain.net,Mixed.Case@sub.domain.net,BR,NZ,CA,MX,LK,H3Z2Y7,1234AB,XW84PL,C1425ABC,123AB4,X,O'neil van,Maria zu Souza,X,Maria da Souza,false,false,true,false,false\n40,+5570369258147,+447036925814,+17036925814,+351703692581,+4970369258147,2026-01-13,2026-04-03,2024-02-29,2025-07-08,2026-01-13,1.00,1,-3.150,-12.00,7.0,q@uni.edu,Ana.Silva@example.org,bob@mail.example.edu,bob@mail.example.edu,Mixed.Case@sub.domain.net,GB,DE,JP,PE,LK,H3Z2Y7,1234AB,QE4B7NN,C1425ABC,123AB4,Da Costa,Luis van der Rocha,O'neil von,Ana de Silva,Ana-Luiza Moraes,true,true,false,true,true\n",
+  "rejects.csv": "row,columns\n3,vendors_date\n6,carts_phone\n9,returns_date\n12,vendors_date events_name\n15,shipments_date guests_flag\n18,ledgers_date\n21,returns_date alerts_amount\n24,comments_country menus_flag\n27,venues_name\n30,alerts_amount\n33,venues_name\n36,comments_country bookings_name\n39,carts_phone receipts_amount\n"
+ },
+ "raw": "orders_phone,invoices_phone,refunds_phone,carts_phone,coupons_phone,shipments_date,returns_date,vendors_date,payouts_date,ledgers_date,budgets_amount,quotes_amount,receipts_amount,tickets_amount,alerts_amount,reports_email,sessions_email,tokens_email,teams_email,members_email,projects_country,tasks_country,comments_country,labels_country,files_country,folders_postcode,uploads_postcode,exports_postcode,imports_postcode,schedules_postcode,reminders_name,events_name,venues_name,bookings_name,rooms_name,guests_flag,menus_flag,dishes_flag,stocks_flag,batches_flag\n\"+55-703-69258147\",\"7036925814\",\"+1 7036925814\",\"351703692581\",\"004970369258147\",\" 2026-12-31 \",\"07/08/2025\",\"13/1/2026\",\"1/13/2026\",\" 2026-12-31 \",\"(12.00)\",\" 7 \",\"1.0005\",\"2.5\",\"1.0005\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"  Deutschland \",\"canada\",\"mx\",\"sri lanka\",\"H3Z2Y7\",\"12 34 AB\",\"qe4b 7nn\",\"C 1425 ABC\",\"123 ab 4\",\"MARIA   de  souza\",\"x\",\"ana-luiza moraes\",\"DE costa\",\"o'NEIL di\",\" no \",\"SIM\",\" off \",\"JA\",\"I\"\n\"+55-703-69258147\",\"447036925814\",\"17036925814\",\"(70) 3692-581\",\"+49 70369258147\",\" 2026-12-31 \",\"07/08/2025\",\"29/2/2024\",\"4/3/2026\",\"29/2/2024\",\"2.665\",\"(12.00)\",\"0.05\",\"2.665\",\"1,234.50\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"united kingdom\",\"GERMANY\",\"JP\",\"MEXICO\",\"sri lanka\",\"H3Z2Y7\",\"1234AB\",\"qe4b 7nn\",\"C 1425 ABC\",\"123AB4\",\"x\",\"ana van silva\",\"ana-luiza moraes\",\"o'NEIL de\",\"ana di silva\",\"0\",\" nao \",\"Disabled\",\"N\",\"ACTIVE\"\n\"5570369258147\",\"+44 7036925814\",\"(70) 3692-5814\",\"351703692581\",\"+49 70369258147\",\"13/1/2026\",\"07/08/2025\",\"2026-02-30\",\"07/08/2025\",\"07/08/2025\",\"-3.15\",\"0.05\",\"0.05\",\"0.05\",\"(12.00)\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"BR\",\"DE\",\"JAPAN\",\"MEXICO\",\"sri lanka\",\"H3Z2Y7\",\"1234AB\",\"XW8 4PL\",\"C 1425 ABC\",\"123 ab 4\",\"MARIA   de  souza\",\"ana van silva\",\"o'NEIL von\",\"ana-luiza moraes\",\"DI costa\",\"\tyes\n\",\"N\",\" off \",\" nein \",\"a\"\n\"5570369258147\",\"+44-703-6925814\",\"7036925814\",\"+351-703-692581\",\"+49-703-69258147\",\"29/2/2024\",\"4/3/2026\",\" 2026-12-31 \",\"1/13/2026\",\"2026-03-04\",\"(12.00)\",\"-3.15\",\"1.0005\",\"-3.15\",\" 7 \",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"GERMANY\",\"JAPAN\",\"  Chile \",\"sri   lanka\",\"H3Z2Y7\",\"1234 ab\",\"qe4b 7nn\",\"C1425ABC\",\"123AB4\",\"ana da silva\",\"x\",\"MARIA   zu  souza\",\"DE costa\",\"LUIS Di DA ROCHA\",\"1\",\"s\",\" off \",\"\tja\n\",\"\tactive\n\"\n\"+55-703-69258147\",\"7036925814\",\"7036925814\",\"+351-703-692581\",\"+49 70369258147\",\"4/3/2026\",\" 2026-12-31 \",\"2026-03-04\",\"4/3/2026\",\"13/1/2026\",\"2.665\",\"2.665\",\"2.665\",\"(1,000.255)\",\" 7 \",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"BR\",\"DE\",\"south   africa\",\"mx\",\"  Espana \",\"h3z 2y7\",\"1234AB\",\"J9 3TT\",\"C1425ABC\",\"123 ab 4\",\"MARIA   de  souza\",\"VAN costa\",\"ana von silva\",\"ana de silva\",\"o'NEIL di\",\" no \",\"s\",\"\ton\n\",\"j\",\"I\"\n\"(70) 3692-58147\",\"00447036925814\",\"7036925814\",\"no phone\",\"004970369258147\",\"29/2/2024\",\"1/13/2026\",\"4/3/2026\",\"1/13/2026\",\"07/08/2025\",\"0.05\",\"1.0005\",\"-3.15\",\"1.0005\",\"(12.00)\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"BRAZIL\",\"  Deutschland \",\"  South Africa \",\"mx\",\"es\",\"H3Z2Y7\",\"1234 ab\",\"XW8 4PL\",\"c1425 abc\",\"123 ab 4\",\"LUIS Da DE ROCHA\",\"MARIA   der  souza\",\"LUIS Von ZU ROCHA\",\"o'NEIL de\",\"LUIS Di DA ROCHA\",\"\tyes\n\",\"SIM\",\"ON\",\" nein \",\"\tactive\n\"\n\"5570369258147\",\"7036925814\",\"+1 7036925814\",\"00351703692581\",\"004970369258147\",\"2026-03-04\",\"07/08/2025\",\"13/1/2026\",\"2026-03-04\",\"29/2/2024\",\"2.665\",\"(1,000.255)\",\"-3.15\",\"2.665\",\"1.0005\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"de\",\"  South Africa \",\"MX\",\"sri   lanka\",\"h3z 2y7\",\"1234 ab\",\"XW8 4PL\",\"C1425ABC\",\"123 ab 4\",\"LUIS Da DE ROCHA\",\"x\",\"o'NEIL von\",\"DE costa\",\"o'NEIL di\",\"0\",\"SIM\",\" off \",\"JA\",\"ACTIVE\"\n\"+55-703-69258147\",\"+44-703-6925814\",\"0017036925814\",\"+351 703692581\",\"004970369258147\",\"4/3/2026\",\"07/08/2025\",\"2026-03-04\",\"4/3/2026\",\"2026-03-04\",\" 7 \",\" 7 \",\"1,234.50\",\"1,234.50\",\"-3.15\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"  Deutschland \",\"canada\",\"  Chile \",\"sri lanka\",\"h3z 2y7\",\"1234AB\",\"qe4b 7nn\",\"C1425ABC\",\"123AB4\",\"ana da silva\",\"ana-luiza moraes\",\"VON costa\",\"ana de silva\",\"x\",\" no \",\"\tsim\n\",\"Disabled\",\"JA\",\"ACTIVE\"\n\"005570369258147\",\"+44 7036925814\",\"+1-703-6925814\",\"351703692581\",\"70369258147\",\" 2026-12-31 \",\"13/1/2026\",\"13/1/2026\",\" 2026-12-31 \",\"13/1/2026\",\"1.0005\",\"1,234.50\",\"(12.00)\",\"2.665\",\"1,234.50\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"BRAZIL\",\"DE\",\"  South Africa \",\"peru\",\"es\",\"H3Z2Y7\",\"12 34 AB\",\"XW8 4PL\",\"c1425 abc\",\"123AB4\",\"DA costa\",\"o'NEIL van\",\"MARIA   zu  souza\",\"o'NEIL de\",\"LUIS Di DA ROCHA\",\"0\",\"N\",\"Disabled\",\" nein \",\"ACTIVE\"\n\"+55-703-69258147\",\"447036925814\",\"+1 7036925814\",\"+351-703-692581\",\"004970369258147\",\"2026-03-04\",\"07/08/2025\",\"13/1/2026\",\"1/13/2026\",\"2026-03-04\",\" 7 \",\" 7 \",\"1,234.50\",\"1,234.50\",\"2.5\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"BRAZIL\",\"new   zealand\",\"JAPAN\",\"mx\",\"ES\",\"H3Z2Y7\",\"1234AB\",\"J9 3TT\",\"C1425ABC\",\"123AB4\",\"ana da silva\",\"o'NEIL van\",\"o'NEIL von\",\"MARIA   la  souza\",\"o'NEIL di\",\"\tyes\n\",\"\tsim\n\",\"enabled\",\"JA\",\" inactive \"\n\"70369258147\",\"7036925814\",\"0017036925814\",\"+351 703692581\",\"(70) 3692-58147\",\"29/2/2024\",\"4/3/2026\",\"13/1/2026\",\"4/3/2026\",\"4/3/2026\",\"2.5\",\"1.0005\",\" 7 \",\"2.665\",\"1,234.50\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"united kingdom\",\"DE\",\"south   africa\",\"MEXICO\",\"ES\",\"H3Z2Y7\",\"12 34 AB\",\"XW8 4PL\",\"c1425 abc\",\"123 ab 4\",\"ana da silva\",\"VAN costa\",\"MARIA   zu  souza\",\"MARIA   la  souza\",\"MARIA   da  souza\",\" no \",\"N\",\"enabled\",\"\tja\n\",\"ACTIVE\"\n\"5570369258147\",\"00447036925814\",\"17036925814\",\"+351-703-692581\",\"+49-703-69258147\",\"29/2/2024\",\"4/3/2026\",\"2026-02-30\",\"07/08/2025\",\"07/08/2025\",\" 7 \",\"2.5\",\" 7 \",\"1.0005\",\"(1,000.255)\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"united kingdom\",\"new zealand\",\"south   africa\",\"peru\",\"  Espana \",\"H3Z2Y7\",\"1234AB\",\"qe4b 7nn\",\"C1425ABC\",\"123 ab 4\",\"o'NEIL da\",\"   \",\"ana von silva\",\"MARIA   la  souza\",\"LUIS Di DA ROCHA\",\"\tyes\n\",\"SIM\",\"enabled\",\"j\",\"a\"\n\"+55 70369258147\",\"(70) 3692-5814\",\"0017036925814\",\"351703692581\",\"+49 70369258147\",\"13/1/2026\",\"4/3/2026\",\" 2026-12-31 \",\"1/13/2026\",\"07/08/2025\",\"1.0005\",\" 7 \",\"-3.15\",\"0.05\",\"2.665\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"new   zealand\",\"south   africa\",\"MX\",\"sri   lanka\",\"h3z 2y7\",\"1234AB\",\"XW8 4PL\",\"C 1425 ABC\",\"123AB4\",\"ana-luiza moraes\",\"VAN costa\",\"x\",\"ana de silva\",\"LUIS Di DA ROCHA\",\"YES\",\"N\",\" off \",\" nein \",\"\tactive\n\"\n\"70369258147\",\"+44 7036925814\",\"17036925814\",\"+351-703-692581\",\"(70) 3692-58147\",\"07/08/2025\",\"1/13/2026\",\"4/3/2026\",\"07/08/2025\",\"07/08/2025\",\"2.5\",\"2.5\",\"(12.00)\",\"2.5\",\"(12.00)\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"DE\",\"canada\",\"costa   rica\",\"ES\",\"h3z 2y7\",\"1234 ab\",\"qe4b 7nn\",\"c1425 abc\",\"123AB4\",\"o'NEIL da\",\"MARIA   der  souza\",\"ana-luiza moraes\",\"DE costa\",\"DI costa\",\"0\",\"s\",\" off \",\"j\",\"I\"\n\"+55-703-69258147\",\"7036925814\",\"+1-703-6925814\",\"+351 703692581\",\"(70) 3692-58147\",\"1/13/2026\",\"2026-03-04\",\"29/2/2024\",\"1/13/2026\",\"2026-03-04\",\"1.0005\",\"0.05\",\"(1,000.255)\",\"2.5\",\"1.0005\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"new   zealand\",\"south   africa\",\"mx\",\"SPAIN\",\"h3z 2y7\",\"1234AB\",\"XW8 4PL\",\"c1425 abc\",\"123AB4\",\"x\",\"ana van silva\",\"MARIA   zu  souza\",\"x\",\"ana di silva\",\"unknown\",\"N\",\"Disabled\",\"j\",\"I\"\n\"+55-703-69258147\",\"+44-703-6925814\",\"7036925814\",\"+351 703692581\",\"+49 70369258147\",\"07/08/2025\",\"07/08/2025\",\"4/3/2026\",\" 2026-12-31 \",\"4/3/2026\",\" 7 \",\"0.05\",\"0.05\",\"-3.15\",\"(1,000.255)\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"GERMANY\",\"  South Africa \",\"  Chile \",\"ES\",\"H3Z2Y7\",\"1234 ab\",\"J9 3TT\",\"c1425 abc\",\"123 ab 4\",\"ana-luiza moraes\",\"x\",\"x\",\"o'NEIL de\",\"LUIS Di DA ROCHA\",\"\tyes\n\",\" nao \",\"ON\",\"N\",\"ACTIVE\"\n\"70369258147\",\"(70) 3692-5814\",\"+1-703-6925814\",\"+351-703-692581\",\"+49 70369258147\",\" 2026-12-31 \",\"07/08/2025\",\"4/3/2026\",\" 2026-12-31 \",\"07/08/2025\",\"1.0005\",\"2.5\",\" 7 \",\"2.665\",\"(1,000.255)\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"BRAZIL\",\"  Deutschland \",\"jp\",\"MEXICO\",\"sri lanka\",\"H3Z2Y7\",\"1234AB\",\"XW8 4PL\",\"c1425 abc\",\"123 ab 4\",\"DA costa\",\"ana-luiza moraes\",\"x\",\"DE costa\",\"ana-luiza moraes\",\"1\",\"\tsim\n\",\"enabled\",\"N\",\"ACTIVE\"\n\"5570369258147\",\"00447036925814\",\"+1-703-6925814\",\"703692581\",\"70369258147\",\"29/2/2024\",\"2026-03-04\",\"2026-03-04\",\"4/3/2026\",\"2026-02-30\",\"2.665\",\"(12.00)\",\"(12.00)\",\"1,234.50\",\"2.5\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"DE\",\"jp\",\"costa   rica\",\"  Espana \",\"h3z 2y7\",\"1234 ab\",\"XW8 4PL\",\"c1425 abc\",\"123 ab 4\",\"ana-luiza moraes\",\"MARIA   der  souza\",\"ana von silva\",\"LUIS De LA ROCHA\",\"MARIA   da  souza\",\" no \",\"\tsim\n\",\"enabled\",\"N\",\" inactive \"\n\"5570369258147\",\"+44 7036925814\",\"0017036925814\",\"+351 703692581\",\"+49-703-69258147\",\"29/2/2024\",\"4/3/2026\",\"29/2/2024\",\"2026-03-04\",\"07/08/2025\",\"2.665\",\"(1,000.255)\",\"2.665\",\"2.665\",\"1,234.50\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"de\",\"jp\",\"MEXICO\",\"es\",\"H3Z2Y7\",\"1234AB\",\"qe4b 7nn\",\"C 1425 ABC\",\"123 ab 4\",\"MARIA   de  souza\",\"o'NEIL van\",\"LUIS Von ZU ROCHA\",\"LUIS De LA ROCHA\",\"DI costa\",\"1\",\"s\",\"ON\",\" nein \",\"a\"\n\"005570369258147\",\"+44-703-6925814\",\"+1 7036925814\",\"703692581\",\"70369258147\",\"07/08/2025\",\"2026-03-04\",\"2026-03-04\",\"07/08/2025\",\"2026-03-04\",\"2.5\",\"(12.00)\",\"1,234.50\",\"1.0005\",\"1.0005\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"GERMANY\",\"canada\",\"MEXICO\",\"  Espana \",\"h3z 2y7\",\"1234 ab\",\"J9 3TT\",\"C1425ABC\",\"123 ab 4\",\"o'NEIL da\",\"x\",\"ana von silva\",\"DE costa\",\"ana-luiza moraes\",\"1\",\"SIM\",\"Disabled\",\"N\",\"a\"\n\"70369258147\",\"00447036925814\",\"+1-703-6925814\",\"+351 703692581\",\"+49 70369258147\",\"29/2/2024\",\"2026-02-30\",\"4/3/2026\",\"1/13/2026\",\"13/1/2026\",\" 7 \",\"(12.00)\",\"1,234.50\",\"2.5\",\"nan\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"united kingdom\",\"de\",\"canada\",\"mx\",\"sri   lanka\",\"H3Z2Y7\",\"1234 ab\",\"J9 3TT\",\"c1425 abc\",\"123 ab 4\",\"LUIS Da DE ROCHA\",\"MARIA   der  souza\",\"ana-luiza moraes\",\"x\",\"LUIS Di DA ROCHA\",\" no \",\"SIM\",\"ON\",\"j\",\" inactive \"\n\"(70) 3692-58147\",\"+44-703-6925814\",\"17036925814\",\"351703692581\",\"(70) 3692-58147\",\"4/3/2026\",\"07/08/2025\",\"2026-03-04\",\"1/13/2026\",\"2026-03-04\",\"0.05\",\"1,234.50\",\" 7 \",\"(1,000.255)\",\"1,234.50\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"new   zealand\",\"canada\",\"peru\",\"ES\",\"H3Z2Y7\",\"12 34 AB\",\"qe4b 7nn\",\"C 1425 ABC\",\"123AB4\",\"o'NEIL da\",\"VAN costa\",\"ana von silva\",\"MARIA   la  souza\",\"LUIS Di DA ROCHA\",\"\tyes\n\",\" nao \",\"Disabled\",\" nein \",\"\tactive\n\"\n\"70369258147\",\"(70) 3692-5814\",\"17036925814\",\"(70) 3692-581\",\"004970369258147\",\"4/3/2026\",\"2026-03-04\",\"29/2/2024\",\"1/13/2026\",\"4/3/2026\",\"1.0005\",\"1,234.50\",\"1.0005\",\"2.665\",\" 7 \",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"BRAZIL\",\"de\",\"JAPAN\",\"mx\",\"es\",\"H3Z2Y7\",\"1234AB\",\"J9 3TT\",\"C 1425 ABC\",\"123AB4\",\"LUIS Da DE ROCHA\",\"x\",\"MARIA   zu  souza\",\"MARIA   la  souza\",\"o'NEIL di\",\"\tyes\n\",\"\tsim\n\",\"enabled\",\" nein \",\"a\"\n\"005570369258147\",\"447036925814\",\"+1 7036925814\",\"+351 703692581\",\"004970369258147\",\"13/1/2026\",\"2026-03-04\",\"2026-03-04\",\"1/13/2026\",\"2026-03-04\",\"2.5\",\"1.0005\",\"1,234.50\",\"(12.00)\",\" 7 \",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"GERMANY\",\"zz\",\"costa   rica\",\"SPAIN\",\"h3z 2y7\",\"12 34 AB\",\"qe4b 7nn\",\"C1425ABC\",\"123AB4\",\"DA costa\",\"o'NEIL van\",\"MARIA   zu  souza\",\"o'NEIL de\",\"ana-luiza moraes\",\"\tyes\n\",\"\",\"ON\",\"JA\",\"I\"\n\"5570369258147\",\"+44-703-6925814\",\"17036925814\",\"(70) 3692-581\",\"(70) 3692-58147\",\"29/2/2024\",\"4/3/2026\",\"2026-03-04\",\"07/08/2025\",\"4/3/2026\",\"-3.15\",\"0.05\",\"(12.00)\",\"-3.15\",\"0.05\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"de\",\"  South Africa \",\"peru\",\"es\",\"h3z 2y7\",\"1234 ab\",\"XW8 4PL\",\"c1425 abc\",\"123AB4\",\"ana da silva\",\"x\",\"ana von silva\",\"ana-luiza moraes\",\"ana di silva\",\"0\",\"N\",\"enabled\",\" nein \",\"a\"\n\"+55 70369258147\",\"+44 7036925814\",\"0017036925814\",\"+351 703692581\",\"(70) 3692-58147\",\"29/2/2024\",\" 2026-12-31 \",\"07/08/2025\",\"2026-03-04\",\"4/3/2026\",\"1,234.50\",\"1.0005\",\"2.5\",\"2.665\",\"0.05\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"new zealand\",\"south   africa\",\"mx\",\"sri lanka\",\"H3Z2Y7\",\"1234AB\",\"XW8 4PL\",\"c1425 abc\",\"123 ab 4\",\"MARIA   de  souza\",\"VAN costa\",\"VON costa\",\"ana de silva\",\"ana-luiza moraes\",\"0\",\"SIM\",\"\ton\n\",\" nein \",\" inactive \"\n\"70369258147\",\"+44-703-6925814\",\"+1 7036925814\",\"00351703692581\",\"4970369258147\",\"29/2/2024\",\"4/3/2026\",\"07/08/2025\",\"2026-03-04\",\"29/2/2024\",\"2.665\",\"(1,000.255)\",\"(1,000.255)\",\"0.05\",\"2.665\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"  Deutschland \",\"JAPAN\",\"costa   rica\",\"es\",\"h3z 2y7\",\"1234 ab\",\"J9 3TT\",\"C 1425 ABC\",\"123AB4\",\"MARIA   de  souza\",\"x\",\"   \",\"ana de silva\",\"ana-luiza moraes\",\"1\",\"s\",\"enabled\",\"JA\",\"I\"\n\"+55-703-69258147\",\"+44 7036925814\",\"17036925814\",\"351703692581\",\"+49 70369258147\",\"07/08/2025\",\"2026-03-04\",\"07/08/2025\",\"07/08/2025\",\"2026-03-04\",\"1.0005\",\"-3.15\",\"1.0005\",\"1,234.50\",\"1,234.50\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"new zealand\",\"canada\",\"mx\",\"es\",\"h3z 2y7\",\"12 34 AB\",\"qe4b 7nn\",\"C1425ABC\",\"123AB4\",\"ana da silva\",\"o'NEIL van\",\"MARIA   zu  souza\",\"x\",\"o'NEIL di\",\" no \",\"SIM\",\"ON\",\"j\",\"I\"\n\"(70) 3692-58147\",\"+44 7036925814\",\"17036925814\",\"(70) 3692-581\",\"004970369258147\",\" 2026-12-31 \",\"4/3/2026\",\"07/08/2025\",\" 2026-12-31 \",\"07/08/2025\",\"1,234.50\",\"(1,000.255)\",\"-3.15\",\"1,234.50\",\"2.5\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"united kingdom\",\"new zealand\",\"canada\",\"peru\",\"sri lanka\",\"H3Z2Y7\",\"12 34 AB\",\"J9 3TT\",\"C 1425 ABC\",\"123AB4\",\"MARIA   de  souza\",\"ana-luiza moraes\",\"MARIA   zu  souza\",\"ana-luiza moraes\",\"LUIS Di DA ROCHA\",\"YES\",\"SIM\",\"Disabled\",\"j\",\"I\"\n\"5570369258147\",\"+44-703-6925814\",\"7036925814\",\"703692581\",\"(70) 3692-58147\",\"13/1/2026\",\"2026-03-04\",\"13/1/2026\",\"07/08/2025\",\" 2026-12-31 \",\"0.05\",\"-3.15\",\" 7 \",\" 7 \",\"nan\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"GERMANY\",\"south   africa\",\"  Chile \",\"es\",\"H3Z2Y7\",\"12 34 AB\",\"J9 3TT\",\"c1425 abc\",\"123 ab 4\",\"DA costa\",\"ana van silva\",\"x\",\"ana-luiza moraes\",\"o'NEIL di\",\"\tyes\n\",\"N\",\"Disabled\",\"N\",\" inactive \"\n\"5570369258147\",\"(70) 3692-5814\",\"+1-703-6925814\",\"+351 703692581\",\"70369258147\",\"2026-03-04\",\"4/3/2026\",\"07/08/2025\",\"4/3/2026\",\"4/3/2026\",\"1,234.50\",\"(12.00)\",\"1,234.50\",\"1,234.50\",\"2.665\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"new zealand\",\"canada\",\"costa   rica\",\"sri lanka\",\"H3Z2Y7\",\"12 34 AB\",\"qe4b 7nn\",\"C1425ABC\",\"123 ab 4\",\"o'NEIL da\",\"VAN costa\",\"VON costa\",\"LUIS De LA ROCHA\",\"DI costa\",\"YES\",\"N\",\"\ton\n\",\"\tja\n\",\"a\"\n\"+55 70369258147\",\"+44 7036925814\",\"0017036925814\",\"00351703692581\",\"004970369258147\",\"13/1/2026\",\"2026-03-04\",\"2026-03-04\",\"1/13/2026\",\"29/2/2024\",\"(12.00)\",\"1,234.50\",\"2.665\",\"0.05\",\"1,234.50\",\" bob@mail.example.edu \",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"BRAZIL\",\"de\",\"  South Africa \",\"  Chile \",\"ES\",\"h3z 2y7\",\"1234 ab\",\"J9 3TT\",\"C1425ABC\",\"123 ab 4\",\"o'NEIL da\",\"MARIA   der  souza\",\"o'NEIL von\",\"ana-luiza moraes\",\"x\",\"1\",\"\tsim\n\",\"\ton\n\",\"N\",\"ACTIVE\"\n\"70369258147\",\"7036925814\",\"7036925814\",\"+351-703-692581\",\"+49 70369258147\",\"07/08/2025\",\"07/08/2025\",\"4/3/2026\",\"1/13/2026\",\"29/2/2024\",\"2.665\",\"1,234.50\",\"(12.00)\",\"(12.00)\",\"2.5\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"united kingdom\",\"new   zealand\",\"canada\",\"MX\",\"es\",\"h3z 2y7\",\"1234AB\",\"J9 3TT\",\"c1425 abc\",\"123AB4\",\"x\",\"x\",\"   \",\"o'NEIL de\",\"MARIA   da  souza\",\"1\",\"SIM\",\"\ton\n\",\"\tja\n\",\"I\"\n\"70369258147\",\"+44 7036925814\",\"+1 7036925814\",\"+351 703692581\",\"70369258147\",\"07/08/2025\",\" 2026-12-31 \",\"29/2/2024\",\"07/08/2025\",\"07/08/2025\",\" 7 \",\"0.05\",\"2.5\",\"(12.00)\",\" 7 \",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"DE\",\"jp\",\"MEXICO\",\"  Espana \",\"H3Z2Y7\",\"1234AB\",\"qe4b 7nn\",\"C1425ABC\",\"123AB4\",\"x\",\"x\",\"LUIS Von ZU ROCHA\",\"x\",\"x\",\"0\",\"\tsim\n\",\"ON\",\"N\",\"ACTIVE\"\n\"5570369258147\",\"7036925814\",\"7036925814\",\"00351703692581\",\"70369258147\",\"29/2/2024\",\"07/08/2025\",\"07/08/2025\",\"4/3/2026\",\" 2026-12-31 \",\"1.0005\",\"0.05\",\"(1,000.255)\",\"-3.15\",\"2.665\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"BR\",\"DE\",\"jp\",\"  Chile \",\"ES\",\"H3Z2Y7\",\"1234AB\",\"XW8 4PL\",\"C1425ABC\",\"123 ab 4\",\"ana-luiza moraes\",\"x\",\"ana-luiza moraes\",\"LUIS De LA ROCHA\",\"LUIS Di DA ROCHA\",\"0\",\"\tsim\n\",\"Disabled\",\"N\",\" inactive \"\n\"+55-703-69258147\",\"+44-703-6925814\",\"+1-703-6925814\",\"(70) 3692-581\",\"(70) 3692-58147\",\"2026-03-04\",\"2026-03-04\",\"2026-03-04\",\"4/3/2026\",\" 2026-12-31 \",\"1.0005\",\"(12.00)\",\"1,234.50\",\"-3.15\",\"2.5\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"Mixed.Case@Sub.Domain.NET\",\"  Brasil \",\"new   zealand\",\"zz\",\"peru\",\"es\",\"H3Z2Y7\",\"1234AB\",\"XW8 4PL\",\"c1425 abc\",\"123AB4\",\"DA costa\",\"x\",\"o'NEIL von\",\"   \",\"ana-luiza moraes\",\"\tyes\n\",\" nao \",\" off \",\" nein \",\" inactive \"\n\"+55-703-69258147\",\"7036925814\",\"0017036925814\",\"+351 703692581\",\"(70) 3692-58147\",\"29/2/2024\",\"1/13/2026\",\"29/2/2024\",\"2026-03-04\",\"4/3/2026\",\"0.05\",\"(12.00)\",\"1.0005\",\"2.665\",\"(1,000.255)\",\"Ana.Silva@Example.ORG\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"DE\",\"canada\",\"peru\",\"  Espana \",\"H3Z2Y7\",\"1234 ab\",\"qe4b 7nn\",\"c1425 abc\",\"123AB4\",\"ana-luiza moraes\",\"MARIA   der  souza\",\"ana von silva\",\"ana de silva\",\"ana di silva\",\" no \",\"s\",\"Disabled\",\"j\",\"a\"\n\"+55 70369258147\",\"+44 7036925814\",\"+1-703-6925814\",\"+351 703692581\",\"004970369258147\",\"29/2/2024\",\"07/08/2025\",\"13/1/2026\",\" 2026-12-31 \",\"4/3/2026\",\"(12.00)\",\"2.5\",\"(1,000.255)\",\"1.0005\",\"(1,000.255)\",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"br\",\"new zealand\",\"canada\",\"MX\",\"sri lanka\",\"h3z 2y7\",\"1234AB\",\"XW8 4PL\",\"c1425 abc\",\"123AB4\",\"x\",\"o'NEIL van\",\"MARIA   zu  souza\",\"x\",\"MARIA   da  souza\",\" no \",\"N\",\"\ton\n\",\"N\",\" inactive \"\n\"005570369258147\",\"(70) 3692-5814\",\"+1 7036925814\",\"70369258\",\"004970369258147\",\"29/2/2024\",\"07/08/2025\",\"2026-03-04\",\"1/13/2026\",\"07/08/2025\",\"1.0005\",\"0.05\",\"abc\",\"2.665\",\"2.665\",\"Mixed.Case@Sub.Domain.NET\",\"Ana.Silva@Example.ORG\",\"q@uni.EDU\",\"Mixed.Case@Sub.Domain.NET\",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"de\",\"  South Africa \",\"MX\",\"sri lanka\",\"h3z 2y7\",\"1234 ab\",\"J9 3TT\",\"C1425ABC\",\"123AB4\",\"o'NEIL da\",\"ana van silva\",\"MARIA   zu  souza\",\"MARIA   la  souza\",\"LUIS Di DA ROCHA\",\"YES\",\"N\",\"enabled\",\"\tja\n\",\"\tactive\n\"\n\"+55 70369258147\",\"+44 7036925814\",\"7036925814\",\"703692581\",\"4970369258147\",\"13/1/2026\",\"4/3/2026\",\"29/2/2024\",\"07/08/2025\",\"13/1/2026\",\"1.0005\",\"1.0005\",\"-3.15\",\"(12.00)\",\" 7 \",\"q@uni.EDU\",\"Ana.Silva@Example.ORG\",\" bob@mail.example.edu \",\" bob@mail.example.edu \",\"Mixed.Case@Sub.Domain.NET\",\"united   kingdom\",\"  Deutschland \",\"jp\",\"peru\",\"sri lanka\",\"h3z 2y7\",\"12 34 AB\",\"qe4b 7nn\",\"C 1425 ABC\",\"123AB4\",\"DA costa\",\"LUIS Van DER ROCHA\",\"o'NEIL von\",\"ana de silva\",\"ana-luiza moraes\",\"1\",\"s\",\"Disabled\",\"j\",\"ACTIVE\"\n"
+}

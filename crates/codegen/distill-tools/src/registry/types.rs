@@ -1856,8 +1856,8 @@ fn schema_uncached_calls(key: std::any::TypeId) -> u64 {
         .copied()
         .unwrap_or(0)
 }
-/// JSON Schema for `T` with the root `title` and `description` stripped. Pure
-/// and uncached; the per-boot hot path uses [`generate_schema_cached`].
+/// JSON Schema for `T` with the root `title`, `description` and `$schema`
+/// stripped. Pure and uncached; the per-boot hot path uses [`generate_schema_cached`].
 pub fn generate_schema<T: schemars::JsonSchema>() -> serde_json::Value {
     let settings = schemars::generate::SchemaSettings::draft07().with(|s| {
         s.inline_subschemas = true;
@@ -1868,6 +1868,8 @@ pub fn generate_schema<T: schemars::JsonSchema>() -> serde_json::Value {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("title");
         obj.remove("description");
+        // The dialect URI tells no provider anything and is resent with every tool on every request.
+        obj.remove("$schema");
     }
     if let Some(obj) = value.as_object_mut()
         && obj.get("type").and_then(|v| v.as_str()) == Some("object")
@@ -3425,7 +3427,6 @@ mod tests {
             "name": "todo_write",
             "description": "Create and manage a structured task list. The user sees this list live — it is your primary way to show progress.\n\nUse for any task with 3+ steps. Skip for trivial single-step work.",
             "parameters": {
-              "$schema": "http://json-schema.org/draft-07/schema#",
               "required": [
                 "todos"
               ],
@@ -3480,7 +3481,6 @@ mod tests {
             "name": "write",
             "description": "Create or overwrite a file.\n\n- Writing to an existing path replaces the file.\n- Parent directories are created for you.",
             "parameters": {
-              "$schema": "http://json-schema.org/draft-07/schema#",
               "required": [
                 "file_path",
                 "content"
@@ -4855,7 +4855,7 @@ mod tests {
     }
     /// generate_schema strips the boilerplate root `title` (struct name) and root `description` (struct doc "Input for the
     /// <canonical> tool") so the canonical name can't leak via parameters.description after randomization renames the tool.
-    /// $schema and per-property descriptions are retained.
+    /// `$schema` is stripped too (every request resends it); per-property descriptions are retained.
     #[test]
     fn generate_schema_strips_root_title_and_description() {
         let schema = generate_schema::<crate::implementations::distill::bash::BashToolInput>();
@@ -4867,7 +4867,10 @@ mod tests {
             schema.get("description").is_none(),
             "root description (leaks canonical tool name) must be stripped: {schema}"
         );
-        assert!(schema.get("$schema").is_some(), "$schema must be retained");
+        assert!(
+            schema.get("$schema").is_none(),
+            "$schema must be stripped: {schema}"
+        );
         assert!(
             schema
                 .get("properties")

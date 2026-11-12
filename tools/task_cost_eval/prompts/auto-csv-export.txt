@@ -1,0 +1,3 @@
+Add CSV output to the sales report in tools/task_cost_eval/fixtures/auto_csv_export: a render_csv(summary) in
+report.py and a `--format csv` option on cli.py, with text staying the default. Columns are region,total,orders
+and total is in dollars with two decimals. Region names can contain commas and quotes.

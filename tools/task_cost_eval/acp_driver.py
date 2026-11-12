@@ -1,4 +1,4 @@
-"""One-turn, line-delimited ACP client for paired local Distill binaries (POSIX).
+"""One-turn (optionally two-turn), line-delimited ACP client for paired local Distill binaries (POSIX).
 
 Wire contracts: agent-client-protocol 0.10.4 and Distill's headless.rs,
 model_switch.rs and session_ultracode.rs. Extension methods have a wire `_` prefix.
@@ -17,6 +17,8 @@ from .runner import _terminate_owned_group
 
 ULTRACODE_METHOD = '_x.ai/session/ultracode/set'
 EXECUTION_MODE_METHOD = '_x.ai/session/execution_mode/set'
+# jev_auto_mode.rs publish_auto_mode: {sessionId, mode, choice, reason} after each Auto pick.
+MODE_CHANGED_METHODS = ('_x.ai/session/execution_mode/changed', 'x.ai/session/execution_mode/changed')
 EXECUTION_MODES = ('normal', 'ultrafast', 'ultracode', 'ultrasave', 'auto')
 HOOK_RUN_METHOD = '_x.ai/hooks/run'
 STOP_CALLBACK_ID = 'benchmark-root-stop'
@@ -145,6 +147,7 @@ class _Client:
         self.before_stop_feedback = before_stop_feedback
         self.stop_feedback_sent = False
         self.stop_hook_receipts = []
+        self.mode_changes = []
         os.set_blocking(process.stdout.fileno(), False)
         os.set_blocking(process.stdin.fileno(), False)
 
@@ -259,6 +262,9 @@ class _Client:
             return
         if not isinstance(params, dict):
             raise AcpError(f'{method}: invalid params')
+        if method in MODE_CHANGED_METHODS and 'id' not in message:
+            self.mode_changes.append({key: params.get(key) for key in ('sessionId', 'mode', 'choice', 'reason')})
+            return
         if 'id' in message:
             if method == HOOK_RUN_METHOD and self.stop_feedback is not None:
                 feedback_sent = (not self.stop_feedback_sent
@@ -339,10 +345,30 @@ class _Client:
                     sum(1 for pending in self.pending if pending[0] == 'subagent'))
 
 
+def mode_mix(activation_receipt, changes, session):
+    """Effective-mode segments of the root session: the activated mode, then each Auto change.
+
+    The mix counts segments (entries into a mode), not model calls; switches count
+    consecutive segments whose mode differs.
+    """
+    activation = activation_receipt.get('result') if isinstance(activation_receipt, dict) else None
+    timeline = [activation['mode']] if isinstance(activation, dict) and isinstance(activation.get('mode'), str) else []
+    timeline += [change['mode'] for change in changes
+                 if change.get('sessionId') == session and isinstance(change.get('mode'), str)]
+    mix = {}
+    for mode in timeline:
+        mix[mode] = mix.get(mode, 0) + 1
+    return {'effective_mode_timeline': timeline, 'effective_mode_mix': dict(sorted(mix.items())),
+            'mode_switches': sum(a != b for a, b in zip(timeline, timeline[1:]))}
+
+
 def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False, execution_mode=None,
             timeout, output, stop_feedback=None,
-            before_stop_feedback=None):
+            before_stop_feedback=None, followup_prompt=None):
     """Return receipts and failure state; optionally deny one root Stop with feedback.
+
+    followup_prompt, when given, is sent as a second prompt in the same session
+    once the first turn ends with end_turn; one timeout covers both turns.
 
     before_stop_feedback(params, deadline) observes only the first eligible feedback
     before transmission. Trusted controller code may read/copy bounded local files;
@@ -355,7 +381,7 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
     activation_method = EXECUTION_MODE_METHOD if execution_mode is not None else ULTRACODE_METHOD
     result = {'session': None, 'setup_confirmed': False, 'completed': False, 'timed_out': False, 'error': None,
               'exit_code': None, 'cleanup_complete': False}
-    process = client = tree = None
+    process = client = tree = first_receipt = None
     deadline = time.monotonic() + timeout
     inference_deadline = deadline - min(SHUTDOWN_GRACE, timeout / 2)
     with (output / 'stdout.jsonl').open('wb') as stdout, (output / 'stderr.txt').open('w') as stderr, \
@@ -400,18 +426,23 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
                 if activation.get('enabled') is not ultracode:
                     raise AcpError(f'UltraCode activation did not confirm enabled={ultracode}')
             result['setup_confirmed'] = True
-            response = client.request('session/prompt', {'sessionId': session,
-                'prompt': [{'type': 'text', 'text': prompt}], '_meta': {'screenMode': 'headless'}})
-            if response.get('stopReason') != 'end_turn':
-                raise AcpError(f'Prompt did not finish with end_turn: {response.get("stopReason")}')
-            # Drain buffered notifications too: a prompt response can precede tool completion.
-            while True:
-                message = client.receive(block=bool(client.pending))
-                if message is None:
-                    break
-                if 'method' not in message:
-                    raise AcpError('Unexpected response after prompt completion')
-                client.handle(message)
+            # A follow-up prompt is a second user turn in the same session, sent only
+            # after the first turn ended and its tools and children settled.
+            for turn, text in enumerate((prompt,) if followup_prompt is None else (prompt, followup_prompt)):
+                if turn:
+                    first_receipt = client.receipts.get('session/prompt')
+                response = client.request('session/prompt', {'sessionId': session,
+                    'prompt': [{'type': 'text', 'text': text}], '_meta': {'screenMode': 'headless'}})
+                if response.get('stopReason') != 'end_turn':
+                    raise AcpError(f'Prompt did not finish with end_turn: {response.get("stopReason")}')
+                # Drain buffered notifications too: a prompt response can precede tool completion.
+                while True:
+                    message = client.receive(block=bool(client.pending))
+                    if message is None:
+                        break
+                    if 'method' not in message:
+                        raise AcpError('Unexpected response after prompt completion')
+                    client.handle(message)
             tree.refresh(force=True, deadline=inference_deadline)
             process.stdin.close()
             while process.poll() is None:
@@ -435,9 +466,15 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
                         pass
                 result['model_receipt'] = client.receipts.get('session/set_model')
                 result['activation_receipt'] = client.receipts.get(activation_method)
-                result['prompt_receipt'] = client.receipts.get('session/prompt')
+                receipt = client.receipts.get('session/prompt')
+                if followup_prompt is not None:
+                    result['followup_prompt_receipt'] = receipt if first_receipt is not None else None
+                    receipt = first_receipt if first_receipt is not None else receipt
+                result['prompt_receipt'] = receipt
                 result['observed_subagent_attempts'] = len(client.observed_subagents)
                 result['observed_peak_live_subagents'] = client.peak_live_subagents
+                result['mode_changes'] = client.mode_changes
+                result.update(mode_mix(result['activation_receipt'], client.mode_changes, client.session))
             if stop_feedback is not None:
                 result['stop_hook_receipts'] = client.stop_hook_receipts if client is not None else []
                 result['stop_feedback_sent'] = client.stop_feedback_sent if client is not None else False

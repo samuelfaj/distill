@@ -103,7 +103,7 @@ pub struct TerminalRunRequest {
     pub auto_background_on_timeout: bool,
 
     /// When [`Self::auto_background_on_timeout`] is true, maximum time the command may block the turn before being moved to the background (process
-    /// keeps running). Independent of [`Self::timeout`]. `None` → use the terminal backend default (typically 15s). `Some(Duration::MAX)` → no
+    /// keeps running). Independent of [`Self::timeout`]. `None` → use the terminal backend default (typically 120s). `Some(Duration::MAX)` → no
     /// short budget; auto-bg only when `timeout` elapses. `Some(d)` → auto-bg after `d` if still running.
     pub foreground_block_budget: Option<Duration>,
 

@@ -1,0 +1,5 @@
+Account emails in tools/task_cost_eval/fixtures/hard_account_merge should be case-insensitive and unique. Add a
+second migration and make create_account and find_by_email ignore case and surrounding spaces; creating an
+account with an email that is already taken should raise ValueError. The live database already has accounts
+whose emails differ only by case or spaces: merge each group into the account that was created first and move
+the other accounts' orders to it. The migration has to be safe to run more than once.

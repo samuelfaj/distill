@@ -527,7 +527,8 @@ Eight levers affect what reaches the model:
   `/name`, `$name` or a backticked name pins a skill (a manual-only skill only
   as `/name`); a bare word like "review" and a subagent's assignment go to the
   ranking.
-- `p2_read_shortlist` picks line and segment windows instead of whole files.
+- `p2_read_shortlist` picks line and segment windows instead of whole files. It
+  is off by default (see "Turning levers off").
 - `p3_compaction_recorte` decides which segments the compactor must see. It
   runs only on a compaction input that is cold anyway (fitted or lossy) and
   not when a two-pass summary is used: dropping a middle segment of the warm,
@@ -542,11 +543,59 @@ Eight levers affect what reaches the model:
   compact early. It reads the request, the fill level, the end of the last
   assistant message (left out when it looks secret-bearing) and the todo
   statuses; `usage.json` counts each answer under `compaction_timing`.
+  Beside it, `[compaction] max_prompt_tokens` compacts a history above an
+  absolute size before the first request of a human turn, never mid-turn; it
+  is off by default. `[compaction] cold_return` covers reloaded sessions past
+  their cache lifetime by default and headless ones under `"auto"` (see
+  `docs/jev-routing.md`); unset behaves as `"offer"`, `"off"` turns it off, and
+  this default has not been benchmarked: no pass-rate evidence yet shows that
+  compacting more often keeps tasks passing. Their compactions count
+  under `compaction_timing` as `compact:max-prompt`, `compact:cold-resume` and
+  `compact:cold-headless`. The effective mode's policy row layers on top of
+  them; see "Context by mode" below.
 - `e_retention` keeps only the payload chunks a task still needs, asking one
   question per chunk. It is off by default, and when on runs only on an output
   utility selection left as it was (no lane, a failed or unpaying selection): its
   questions never carried the chunk text (60 logged runs, no trim), and
   utility selection already keeps a result's edges and failure lines.
+
+### Context by mode
+
+The cold-return compaction, the absolute prompt cap and file-read narrowing
+follow the effective mode's policy row (see `docs/mode-policy.md`), so they
+also apply under Auto. Every mode is on its v2 row by default:
+
+| Mode (v2 row) | Cold return | Prompt cap | File reads |
+|---|---|---|---|
+| Normal | `[compaction]` values | `[compaction] max_prompt_tokens` | may be narrowed |
+| UltraSave | `auto`: compacts at a cold moment without asking | 250,000 tokens | may be narrowed (today's floors) |
+| UltraFast | `off`: no question, no compaction for cost | none | may be narrowed |
+| UltraCode | `offer`: asks | none | never narrowed, in children too |
+
+- Precedence, for the cold-return behaviour and the cap: an explicit
+  `[modes.<mode>]` key (`cold_return`, `max_prompt_tokens`; `ultrasave`,
+  `ultrafast` and `ultracode`) wins, then the row's value, then the
+  `[compaction]` key. A cap of `0` turns a cap off at either level.
+- The percent threshold (`auto_compact_threshold_percent`) applies in every
+  mode: it is about fitting the context window, not about cost.
+- UltraSave's automatic compaction starts at the smallest history a summary
+  pays for within 7 later requests at the session model's cache-read price:
+  `N = S + 6.25 × S / (7 × ratio)` with a 10,000-token summary `S`, about
+  100,000 tokens at a 0.1x cache read, 189,000 at 0.05x and 367,000 at 0.025x,
+  and never below `[compaction] cold_return_min_tokens`.
+- The cap fires only before the first request of a human turn, never mid-turn.
+- The 250,000-token cap and UltraSave's automatic compaction have not been
+  benchmarked; compacting more often can lower the pass rate on long tasks.
+- `[modes] v2 = []` turns the rows off: every mode then uses the `[compaction]`
+  keys, with `[modes.ultrasave]` replacing them in UltraSave, and file reads
+  may be narrowed in every mode.
+- `usage.json` counts what the rows did: `policy:<mode>` rows
+  `compaction:cold_return`, `compaction:max_prompt` (a compaction the
+  `[compaction]` keys alone would not have made; the byte fields of
+  `mode_compaction` hold its tokens before and after), `cold_return_skipped`
+  (a question or compaction the row suppressed) and `read_not_narrowed` (at
+  most once per round). `read_reread` / `after-selection` counts, in every
+  mode, a read of a file whose earlier read in the same turn was narrowed.
 
 ### History eviction
 
@@ -578,7 +627,9 @@ anyway: a model switch, a compaction, or no model output for an hour. A
 compaction that kept a cached prefix with tool rounds in it (a fork re-pins
 its parent's) is not cold. Warm batches wait for `d6_warm_batches` (off): at
 most once per 25 tool rounds, and only when the bytes removed, replayed for
-25 rounds, are at least ten times the suffix re-billed; those thresholds are
+25 rounds, are at least the suffix re-billed times the inverse of the model's
+cache-read price (ten at 0.1x of input, twenty on Opus and Sonnet at 0.05x,
+forty on Fable and Mythos at 0.025x); those thresholds are
 estimates until `history_batch` and `history_reread` show they pay. Inherited
 history (a fork, a resume) counts as already batched. A resumed session gets
 no idle check, and there is no observed-hit-rate trigger: on a provider whose
@@ -625,6 +676,17 @@ resent each round (one failure, a 429 or a timeout, is retried); the next
 compaction or a model switch lets it try again. A summary the session
 model rejects (degenerate, empty or failing after its retries) gets one try on
 the policy's compaction model or the worker before the failure stands.
+
+With two-pass compaction on, pass 1 starts in the background once the history
+passes the threshold less 10 points (not while a prepared pass 1 waits, after
+two failures in a row, or while auto-compaction is suppressed), and it sends the
+history exactly as the main request does plus its instruction, so it reads the
+main request's cache entry. On a cold history (a model switch, a resume, an
+idle gap) pass 1 and a single-pass compaction write no conversation cache
+entry, and a prompt refresh keeps a prepared pass 1, since the compaction that
+uses it checks the history it summarized. `usage.json` counts pass 1 under
+`compaction_pass1` (`sent`, `used`, `discard:<reason>`), so pass 1 requests per
+applied compaction can be read.
 
 After a compaction the reminder can carry `## Working Set Excerpts`: for up to
 three files this session edited, the lines of their latest read in the current
@@ -792,11 +854,23 @@ These levers stay off by default, each for a stated reason:
 | `e_cheap_agent` | Utility `explore` reports are not yet measured against the worker's; a missed file costs a main follow-up read |
 | `b2_local_model` | Retired: nothing routes a main round to the utility any more, so it switches nothing |
 | `e_prompt_blocks` | The skills part is already cut per request by `p6_skill_suggestion`; cutting AGENTS.md and user rules needs a whitelist of lines that must always travel, and no safe one exists yet, so it would need opt-in and a rule-adherence measurement first |
-| `b2_model_tier` | A money lever waiting for its own cost gate |
 | `c6_injection_screen` | Waiting for a measurement of what the screen itself costs |
+| `p2_read_shortlist` | It paid a Jev call per qualifying document read and narrowed none |
 
-`b6_delegation_hint`, `c1_premature_stop` and `c3_completion_check` are off as
-well; they are quality checks, not savings (B6 is still asked and logged).
+`b2_model_tier`, `b6_delegation_hint`, `c1_premature_stop` and
+`c3_completion_check` are on by default. B6, C1 and C3 are quality checks, not
+savings. C1 and C3 share one request at the end of a main turn that used tools,
+and add at most one reminder per prompt.
+
+These levers are on by default and have not been benchmarked; each turns off
+with `false` under `[jev.ladder]`:
+
+| Lever | What it does |
+|---|---|
+| `b8_stable_tools` | Under Auto a lean pick keeps the full tool list once it went out, so a mode switch keeps the prompt cache; lean rounds then see the planning tools again, and rounds per task are not measured |
+| `b8_review_hygiene` | Auto's mid-turn review on a prompt of 16,384 tokens or more: no return to a left mode without a new failure, and a 3-round hold after a switch; no Auto old-against-new campaign has run |
+| `f1_followup_label` | A message within 10 minutes of the last turn's end adds one question to the turn-start request (does it report that result as wrong or incomplete?); the label is only recorded, and its agreement with a grader is not measured |
+
 Retired lever keys (`e_cheap_task`, `e_lane_choice`, `e_breaker`, …) are
 ignored with a warning.
 

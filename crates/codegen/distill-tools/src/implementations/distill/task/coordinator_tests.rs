@@ -4174,12 +4174,15 @@ async fn workflow_spawns_bypass_the_session_concurrent_limit() {
     harness.actor.abort();
 }
 
+/// UltraCode with the second level opted in (`GROK_SUBAGENTS_MAX_DEPTH=2`); the
+/// default ceiling is one, like Normal.
 fn ultracode_request(id: &str) -> SubagentRequest {
     let mut request = request(id, true);
     request.runtime_overrides.execution_policy = Some(ExecutionPolicy {
         mode: std::sync::Arc::new(distill_tool_types::AtomicExecutionMode::new(distill_tool_types::ExecutionMode::Ultracode)),
         max_depth: 2,
         off_max_depth: 1,
+        v2: Default::default(),
         capability_ceiling: None,
         allowed_subagent_types: None,
     });

@@ -206,27 +206,56 @@ an `x-codex-turn-state`, which the turn's later rounds send back.
 With auto effort, a turn keeps the effort its first round picked on backends
 whose cache is keyed by effort (everything except Messages models with the
 per-message effort marker); a new turn, a model switch, a compaction or a
-prompt under 16K tokens frees it. On `api.anthropic.com`, a round that blocked
-on a task or subagent, or started background work, asks for the one-hour cache
-lifetime (a refusal turns it off for the process once the resend without it
-goes through), and the free fourth
+prompt under 16K tokens frees it. On `api.anthropic.com` every request keeps
+the five-minute cache lifetime by default: moving a warm five-minute prefix to
+the hour re-writes everything after the last one-hour entry at twice the input
+price, since a five-minute hit does not count when a later one-hour breakpoint
+misses. `[cache] extended_ttl = "auto"` restores the per-round choice, where a
+round that blocked on a task or subagent, or started background work, asks for
+the one-hour lifetime (a refusal turns it off for the process once the resend
+without it goes through). The free fourth
 breakpoint anchors on a former tip that moves every 10 rounds. Rewrites of old
 history (soft trims, the retained hard clear, old goal directives) wait for a
 cold moment: idle past the last request's cache lifetime (5 minutes on
 Messages, 1 hour when asked, 30 minutes on Codex, 10 on Grok and OpenRouter,
-and never within the hour after a one-hour write, which later requests still
-read through), a compaction, a model switch or a resume. A verbatim fork inherits its parent's
-soft trims.
+and with `extended_ttl = "auto"` never within the hour after a one-hour write,
+which later requests still read through), a compaction, a model switch or a
+resume. A verbatim fork inherits its parent's
+soft trims. Each turn also writes `cache_state.json` in the session directory
+(the wall-clock time of the last main request, its cache lifetime and the soft
+trims sent), so a session reloaded inside that lifetime, or a subagent resumed
+inside its source's, repeats the same trims and is not cold; past the lifetime,
+with system prompt updates to fold into the head, or without a readable file,
+the resume is cold as before.
 
 When you type into a session of 100K tokens or more that sat idle past that
 lifetime (a known one only; the hour fallback never counts), the request about
 to go out writes the whole history at full price anyway, so the turn first asks:
 Compact and continue, Keep full history, or Don't ask again, which writes
 `[compaction] cold_return = "off"`. `cold_return = "auto"` compacts without
-asking. A history already at the auto-compact threshold compacts as usual, and
-headless sessions, subagents, `--no-ask-user`, a client without the question UI
-and no answer within two minutes keep the full history. A resumed session has
-no idle time in the process and is never asked.
+asking, and `"off"` turns the offer off. A history already at the
+auto-compact threshold compacts as usual, and subagents, `--no-ask-user`, a
+client without the question UI and no answer within two minutes keep the full
+history.
+
+The offer also covers a session reloaded past the lifetime `cache_state.json`
+recorded, before it sends anything; a missing or unreadable file is not a cold
+moment. A headless session cannot be asked, so under the default `"offer"` it
+keeps its history and only `"auto"` compacts it. Leaving `cold_return` unset
+behaves as `"offer"`. This default has not been benchmarked: there is no
+pass-rate evidence yet that compacting more often keeps tasks passing, and each
+compaction replaces a long history with a short summary.
+`[compaction] cold_return_min_tokens` moves
+the 100K floor, which assumes a cache read at 0.1x of input; at 0.05x (Opus
+and Sonnet) or 0.025x (Fable and Mythos) the same payback needs about twice or
+four times the history. `[compaction] max_prompt_tokens` is an absolute cap
+beside `auto_compact_threshold_percent`: a history above it compacts before the
+first request of a human turn, never mid-turn; unset or `0` is off. While the
+effective mode is UltraSave, `[modes.ultrasave] cold_return` and
+`[modes.ultrasave] max_prompt_tokens` replace those two values when set.
+Subagents never compact here. `usage.json` counts each compaction these keys
+decide under `compaction_timing` (`compact:cold-resume`,
+`compact:cold-headless`, `compact:max-prompt`).
 
 The main system prompt keeps its per-session values, the worker model id and
 the memory roots, in an `<environment>` block at its end, so sessions of one
@@ -365,6 +394,197 @@ These levers are on by default:
 | `b2_model_tier` | Whether a call can run on a cheaper tier | Downgrades only, and only in automatic effort mode |
 | `c1_premature_stop` / `c3_completion_check` | Whether the main turn is ending with requested work or proof missing | One advisory reminder per user turn, then the turn ends normally |
 
+## Auto mode
+
+Under Auto one Jev question (`b8_execution_mode`) picks the effective mode
+when a request starts, and a review after each completed tool round may move
+it. Two `[jev.ladder]` keys shape both, and both are on by default:
+
+- `b8_criteria_v2`: the question judges the whole request, not the next step.
+  Each option is an object with the same three fields: what the mode is for,
+  what it is not for, and two or three example requests. UltraSave covers
+  mechanical, fully specified work that is cheap to verify; UltraFast a quick
+  answer or a small fix where waiting is the cost; Normal ordinary multi-step
+  work; UltraCode changes where a wrong result is expensive (hidden
+  invariants, migrations, concurrency, public contracts). The state carries
+  the request once, the mode in force and the switch cost as numbers; from a
+  session's second request on it adds how the previous request ended (failed
+  tool calls, and checks passed, failed and unknown), and a review adds its
+  progress and latest step. UltraSave is left out of the options only when it
+  could change nothing here: no cheaper model, no tier routing, and a runtime
+  row that equals Normal's apart from tier routing (every shipped row differs,
+  so in practice it stays). Below the request-start floor (0.0 until it is
+  fitted) a session's first request falls to Normal and later requests keep
+  their mode. With `[jev] shadow_packs = true` the first wording rides the
+  same request and is recorded as `shadow:mode_v1:<choice>`, so the two can be
+  compared from recorded decisions. `false` restores the first question and
+  state exactly.
+- `b8_up_only`: inside a request the mode only moves up (UltraSave or
+  UltraFast to Normal, Normal to UltraCode): by a review whose probability for
+  the higher mode exceeds the current mode's by at least the climb margin
+  (0.25, `mode_review_up_margin` in the thresholds table), or by the
+  escalation ratchet. A leaner or sideways answer is recorded as `keep` and
+  waits for the next request, whose pick may choose it. At UltraCode the
+  review asks nothing. In UltraFast on its v2 row (no turn-start waits) the
+  review does not hold the next main request: it runs on its own task and its
+  answer applies at the first review after it arrives; a new request drops
+  it. A mid-turn switch appends the mode directive only when the model has
+  something new to read: the tools array changed, or the live history after
+  the last compaction does not already end on the new mode's directive.
+  Normal and UltraSave turns under Auto take the UltraCode review's snapshot
+  before their first tool call, so a climb to UltraCode ends the turn through
+  that review and the review sees the edits made before the climb; a climb
+  from UltraFast is reviewed from the first tool round after it.
+  `b8_review_hygiene` still applies to the climbs that remain. `false`
+  restores the review that moves either way.
+
+Both keys are on by the owner's choice. Neither the new criteria nor the
+up-only rule has been through the replay, shadow and paired-benchmark
+sequence below; that work is still to be done.
+
+## Escalation ratchet
+
+UltraSave and UltraFast give up capacity on purpose (a cheaper tier, a lower
+effort), so they need a way back up that does not depend on one Jev answer. A
+trigger is a harness signal that a turn may need more capacity:
+
+| Trigger | Fires when |
+|---|---|
+| `routed_error` | A request on a tier-routed round fails |
+| `c4_break` | C4 answers breaks, mismatch or incomplete (above its own floor) on an edit that is not prose (`.md`, `.mdx`, `.txt`, `.rst`, or under `docs/`) |
+| `check_failed_twice` | The same recorded check fails, the working tree changes, and it fails again |
+| `identical_calls` | The harness nudges the model out of a run of identical tool calls |
+| `stalled_rounds` | 8 tool rounds in a row bring no new working-tree change and no passing check |
+
+An incomplete final check, two failed commands or a spent budget are not
+triggers: they fire on many runs that pass, and a mode that saves money must
+not buy the expensive model because a turn spent money.
+
+Every trigger is always recorded in shadow, once per turn and only in root
+sessions, as a content-free `escalation` decision row labelled
+`shadow:<trigger>`. With no `[modes] escalation` key all five triggers also
+act. This default has not been benchmarked: no trigger has been fitted
+against its shadow rows yet. An explicit list names the triggers that act, and
+an empty list turns every trigger off, leaving only the shadow rows:
+
+```toml
+[modes]
+escalation = ["check_failed_twice", "c4_break"]   # only these two act
+# escalation = []                                 # none acts; shadow rows only
+```
+
+Unknown names are ignored with one warning. A live trigger climbs a turn-scoped
+ratchet, at most twice per turn and only upward, with or without Jev, and the
+ratchet is cleared when the turn ends:
+
+- UltraSave: first the executor's effort goes up one level for the rest of the
+  turn; then one harness-started, read-only review on the session's model reads
+  the turn's patch, the request and the recorded checks, and its gaps are
+  appended once as a reminder. The main model takes over the rest of the turn
+  only while the last main prompt is under 16,384 tokens; there is no cheap
+  signal for a cold prefix, so the prompt size alone decides.
+- UltraFast: first the effort floor goes up one level; then the rest of the
+  turn follows Normal's effort policy.
+- Auto: each climb moves the effective mode one step up (UltraSave or
+  UltraFast to Normal, Normal to UltraCode) without asking Jev, and the mode
+  does not come back down before the next request.
+
+The tier floor keeps tier routing above a level for the rest of the turn: the
+tiers below it are not offered, and when only the main model is left nothing is
+asked (`tier:floor_main`). A live `c4_break` on an edit made by a routed tier,
+or a live `check_failed_twice`, raises it to the tier above the one that ran
+the round. A turn changes tier at most once, recorded as `tier:escalated`. With
+any trigger live, tier routing also refuses to move a round to a lower tier in
+the middle of a turn once the last main prompt has 16,384 tokens or more, since
+the switch would re-read it uncached; the round keeps its model and the refusal
+is recorded as `tier:refused_midturn`.
+
+The other rows are `climb:effort`, `climb:review`, `climb:normal_effort`,
+`climb:mode:normal` and `climb:mode:ultracode`, and the review's outcome:
+`review:refuted`, `review:not_refuted`, `review:unavailable` or
+`review:skip-prose`.
+
+## Decision policy by mode
+
+Each mode's row in the [mode policy table](mode-policy.md) also decides how
+the harness asks Jev, not only what the prompt says. These rules are on by
+default for UltraFast, UltraSave and UltraCode; `[modes] v2 = []` turns them
+off (every mode back on its today row), and listing modes keeps them only for
+those. Normal does not change. None of this has been benchmarked yet.
+
+| Mode | What its v2 row enforces | Policy rows |
+|---|---|---|
+| UltraFast | No Jev question is awaited before a main request: the turn-start skill ranking runs detached and its line is appended as a reminder before the turn's second request if it is in, else dropped; one effort decision per turn, about the request, asked detached (rounds run at the silent level until it is in, and a later round takes it only where switching effort is free); effort capped at medium; C4 waits at most 800 ms; no utility-model selection of tool results (the deterministic reducers stay) | `jev_wait_skipped`, `effort_ceiling`, `c4_deadline`, `utility_selection_skipped` |
+| UltraSave | Every decision awaited within the 4 s deadline; effort chosen per round at the 0.4 quantile, from a menu that stops at high | `effort_ceiling` |
+| UltraCode | Effort read at the 0.75 quantile; no effort-lowering pass; high at least on the round after a failed tool or a failed recorded check; with Jev silent, the turn's last answered level, else medium | `effort_floor` |
+| All three | A round whose only tool calls wait on background work, and the round that answers the final-check reminder, ask no effort question and keep the last level | `effort_kept` |
+
+The ceiling filters the levels the effort question offers, and a level still
+above it (an effort configured for the session, a redo floor) is lowered and
+recorded as `effort_ceiling`. The escalation ratchet's level is applied after
+the ceiling, so a climb is never capped; UltraFast's second climb hands the
+rest of the turn to Normal's effort rules. Where the prompt cache is keyed by
+effort, the ceiling and the floor act only on a round that sets the turn's
+route, so they never force an uncached re-read in the middle of a turn. An
+explicit effort turns every effort rule off (the turn outcome record shows
+`effort_pinned`). Under Auto the request-start mode pick is still awaited, and
+the rules of the mode it picks apply from then on; the turn-start skill line
+follows the mode in force when the request arrives. Three waits are outside
+these rules: tier routing, where it runs (a worker or utility model is
+configured), still asks before the round that sets the turn's route; the skill
+descriptors of a session's first prompt are still ranked before it is sent;
+and the first-turn memory ranking still runs when memory is on.
+
+`[modes.ultrafast] effort_per_round = true` is a benchmark control arm: it puts
+UltraFast back on today's per-round effort decision and keeps the rest of its
+v2 row.
+
+## Changing a question or a threshold
+
+A new wording, a new question or a moved floor goes through three steps, in
+this order, and stops at the first it fails:
+
+1. **Replay.** Ask Jev again about recorded states with
+   `crates/codegen/distill-workspace/tests/jev_replay.rs` (ignored; it makes
+   paid calls). Run `JEV_REPLAY_MODE=twice` first: the same body asked twice
+   gives each lever's disagreement rate, the noise floor a change must beat.
+   `solo` compares a batched request with its packs asked alone, `models`
+   compares two Jev model ids, and `swap` compares the live wording with a
+   swap (`JEV_REPLAY_SWAP=swap.json`, `{lever, question, instructions?,
+   criteria?}`). The committed set holds hand-written states around the
+   benchmark fixtures only.
+2. **Shadow.** The candidate rides as a shadow pack in the request its lever
+   already sends, on the same state, and is recorded as a `jev_decision`
+   with a `shadow:` label. Nothing acts on it and it never sends a request
+   of its own. Shadow packs are on by default and have not been
+   benchmarked; `[jev] shadow_packs = false` turns them off. With them on, a
+   session pinned to a mode also gets the mode question in its request-start
+   skill ranking, and UltraCode's diff review carries two more notes (an
+   unhandled edge case, an invariant at risk) plus what alert and
+   second-opinion floors of 0.55 and 0.50 would have flagged. This is a
+   separate key from `shadow`, which stops the levers that read it from
+   acting at all.
+3. **Paired benchmark** against the same binary, with no extra regression.
+
+`tools/task_cost_eval/jev_calibrate.py` reads the decision events and
+outcome labels: a reliability table per lever, a threshold only when the
+rarer outcome has at least 30 events, and `--report scorecard`.
+
+The floors of the mode review, the final check (C1, C3) and the diff review
+(C4) are read per served Jev model id from
+`distill_workspace::jev::catalog::thresholds`. Its calibration table is empty,
+so every model id runs on the shipped defaults and is logged as
+`uncalibrated` in the decision log's reason. A calibrated entry names its fit
+window, its number of labelled decisions and the hash of the question it was
+fitted on; a test fails when that question's wording changes.
+
+To build a replay set from real use, set `[jev] capture_states = true`. Each
+Jev request's state and questions are appended to
+`<distill home>/jev/states/<date>-<pid>.jsonl`, readable by the owner only.
+That file holds user content (requests, diffs, final messages), so the key
+is off by default, the file never leaves the machine, and it is kept out of
+the session folders that trace uploads read. Never commit a captured set.
+
 ## The `jev_decide` tool
 
 The main model and its `general-purpose`, `explore`, `plan` and
@@ -429,3 +649,22 @@ for implementation pointers. Utility outcomes per source kind are always in the
 session's `usage.json` (`utilityOutcomes`, and `source_kind`/`final_decision` on
 utility attempt rows), with no content; [Where the token savings come
 from](token-saver.md#the-decision-layer-on-top) says how to read them.
+
+Every recorded decision is also one `jev_decision` line in the session's
+`events.jsonl`: lever, a hash of the question, the served model, each answer
+as numbers and option ids, the composed label, confidence, whether it came
+from the memo, latency and round; an ask that got no answer is one
+`jev_no_answer` line with its cause (`error`, `timeout`, `no_credential`,
+`lever_off`). No state, question text or reason is written, and an id that is
+not a short identifier (a test path, for example) is replaced by its hash.
+`usage.json` counts the same labels per lever under `utilityOutcomes`, key
+`jev:<lever>`, with a failed ask counted as `no_answer:<cause>`.
+So that each decision can be joined with what happened after it, the same
+file also records outcome facts: `check_recorded` (outcome, command hash,
+whether it ran on the current tree), `final_check_reminder` and, when that
+request ends, `final_check_followup` (tool rounds after the reminder, edit,
+commit/push/PR, the bare `NOTHING_OUTSTANDING` reply, working-tree change),
+`mode_switched` (from, to, `request_start`, `review` or `user`),
+`effort_floor_raised`, and `skill_suggested` / `skill_read`. They carry ids,
+numbers, booleans and 12-hex hashes only, never a command, path, skill name,
+model name or message text.

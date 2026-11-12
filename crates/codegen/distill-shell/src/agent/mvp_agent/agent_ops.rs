@@ -4482,6 +4482,7 @@ impl MvpAgent {
                 mode: Arc::new(distill_tool_types::AtomicExecutionMode::default()),
                 max_depth: self.cfg.borrow().subagents_ultracode_max_depth,
                 off_max_depth: self.cfg.borrow().subagents_max_depth,
+                v2: crate::session::acp_session::mode_policy::v2_modes(),
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             },

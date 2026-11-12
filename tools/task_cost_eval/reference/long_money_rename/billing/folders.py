@@ -1,0 +1,11 @@
+from money import Money
+from money import Money as M
+
+
+def line_total_folders(qty):
+    price = Money('JPY', 771)
+    return Money(price.currency, price.cents * qty).to_dict()
+
+
+def double_folders(cents):
+    return (M('USD', cents) + M('USD', cents)).cents

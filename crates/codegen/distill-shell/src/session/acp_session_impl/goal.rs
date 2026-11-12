@@ -114,7 +114,7 @@ impl SessionActor {
                     &check.command,
                     &check.command_hash,
                     &check.cwd,
-                    check.failed,
+                    check.outcome,
                     &check.excerpt,
                     fingerprint,
                 )
@@ -877,32 +877,8 @@ impl SessionActor {
                     None => Vec::new(),
                 }
             };
-            let available_models = self.models_manager.models();
-            let mut cache = PanelResolveCache::default();
-            let mut overrides = Vec::with_capacity(n as usize);
-            for idx in 0..n {
-                let ov = match assignment.get(idx as usize) {
-                    Some(pair) => {
-                        self.resolve_goal_role_override(
-                            "skeptic",
-                            Some(idx),
-                            pair,
-                            RoleCapability::Skeptic,
-                            &event_tx,
-                            &available_models,
-                            &mut cache,
-                        )
-                        .await
-                    }
-                    None => crate::session::goal_planner::RoleSpawnOverride::default(),
-                };
-                overrides.push(ov);
-            }
-            let tool_names = overrides
-                .iter()
-                .map(|ov| role_tool_names_from(ov, &cache, &inherit_tool_names))
-                .collect();
-            (overrides, tool_names)
+            self.resolve_skeptic_panel(&assignment, n, &event_tx, &inherit_tool_names)
+                .await
         };
 
         let spawner: std::sync::Arc<dyn crate::session::goal_classifier::GoalClassifierSpawner> =
@@ -923,19 +899,7 @@ impl SessionActor {
             crate::session::goal_tracker::implementer_scratch_dir(&verifier_id);
         // The harness's own record of the checks this goal ran, so skeptics
         // audit it instead of asking the implementer for log files.
-        let harness_checks: Vec<crate::session::goal_classifier::HarnessCheck> = self
-            .jev_ledger
-            .borrow()
-            .facts
-            .recorded_checks()
-            .iter()
-            .map(|check| crate::session::goal_classifier::HarnessCheck {
-                command: check.command.clone(),
-                passed: !check.failed,
-                excerpt: check.excerpt.clone(),
-                finished_at: check.finished_at,
-            })
-            .collect();
+        let harness_checks = self.recorded_harness_checks();
 
         let inputs = VerificationStageInputs {
             objective: &review_objective,
@@ -969,6 +933,7 @@ impl SessionActor {
             tool_names: &skeptic_tool_names,
             inherit_tool_names: &inherit_tool_names,
             harness_checks: &harness_checks,
+            turn_changes: None,
         };
 
         let result = run_verification_stage(spawner, inputs, &|e| self.events.emit(e)).await;
@@ -982,6 +947,64 @@ impl SessionActor {
             }
         }
         result.outcome
+    }
+
+    /// Spawn overrides and prompt tool names for `n` skeptics from their
+    /// model `assignment`; an index without an assignment inherits.
+    async fn resolve_skeptic_panel(
+        &self,
+        assignment: &[crate::util::config::GoalRoleModel],
+        n: u32,
+        event_tx: &tokio::sync::mpsc::UnboundedSender<
+            distill_tools::implementations::distill::task::types::SubagentEvent,
+        >,
+        inherit_tool_names: &crate::session::goal_role_tools::RoleToolNames,
+    ) -> (
+        Vec<crate::session::goal_planner::RoleSpawnOverride>,
+        Vec<crate::session::goal_role_tools::RoleToolNames>,
+    ) {
+        let available_models = self.models_manager.models();
+        let mut cache = PanelResolveCache::default();
+        let mut overrides = Vec::with_capacity(n as usize);
+        for idx in 0..n {
+            let ov = match assignment.get(idx as usize) {
+                Some(pair) => {
+                    self.resolve_goal_role_override(
+                        "skeptic",
+                        Some(idx),
+                        pair,
+                        RoleCapability::Skeptic,
+                        event_tx,
+                        &available_models,
+                        &mut cache,
+                    )
+                    .await
+                }
+                None => crate::session::goal_planner::RoleSpawnOverride::default(),
+            };
+            overrides.push(ov);
+        }
+        let tool_names = overrides
+            .iter()
+            .map(|ov| role_tool_names_from(ov, &cache, inherit_tool_names))
+            .collect();
+        (overrides, tool_names)
+    }
+
+    /// The checks the harness recorded this request, as the verifier reads them.
+    fn recorded_harness_checks(&self) -> Vec<crate::session::goal_classifier::HarnessCheck> {
+        self.jev_ledger
+            .borrow()
+            .facts
+            .recorded_checks()
+            .iter()
+            .map(|check| crate::session::goal_classifier::HarnessCheck {
+                command: check.command.clone(),
+                outcome: check.outcome,
+                excerpt: check.excerpt.clone(),
+                finished_at: check.finished_at,
+            })
+            .collect()
     }
 
     pub(crate) async fn resolve_goal_single_role_override(
@@ -2990,6 +3013,364 @@ impl SessionActor {
     }
 }
 
+/// One review run over a turn's patch (see `run_turn_patch_review`).
+pub(super) struct TurnPatchReviewRun<'a> {
+    pub(super) verifier_id: &'a str,
+    /// 1-based run within the turn; names this run's files.
+    pub(super) review: u32,
+    pub(super) prior_gaps: Option<&'a str>,
+    pub(super) skeptic_count: u32,
+    /// An escalation review: the session's own model, no UltraCode event.
+    pub(super) escalation: bool,
+}
+
+/// UltraCode v2: the independent turn-end review (see
+/// `goal_classifier::turn_review`). Every entry point is inert unless the
+/// contract is configured.
+impl SessionActor {
+    /// The turn review applies now: the contract is on, this is a root
+    /// session whose effective mode is UltraCode, and no /goal is active (a
+    /// goal has its own verification stage).
+    fn ultracode_turn_review_applies(&self) -> bool {
+        crate::session::goal_classifier::turn_review::contract_v2_configured()
+            && !self.startup_hints.is_subagent
+            && self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultracode
+            && !self.goal_tracker.lock().is_active()
+    }
+
+    /// Under Auto with `b8_up_only` a turn may climb to UltraCode after its
+    /// first edits, and the review at its end must see those edits too, so
+    /// the snapshot is also taken in Normal and UltraSave. Not in UltraFast,
+    /// which waits for nothing but the model and checks: a climb from it is
+    /// reviewed from the first tool round after the climb.
+    fn ultracode_snapshot_before_a_climb(&self) -> bool {
+        crate::session::goal_classifier::turn_review::contract_v2_configured()
+            && !self.startup_hints.is_subagent
+            && self.execution_mode.is_auto()
+            && self.execution_mode.load() != distill_tool_types::ExecutionMode::Ultrafast
+            && crate::jev::lever_active(distill_workspace::jev::flags::JevLever::B8UpOnly)
+            && !self.goal_tracker.lock().is_active()
+    }
+
+    /// Before the first tool call of `prompt_id`: snapshot the tree, so the
+    /// turn-end review sees this turn's changes and not earlier ones.
+    pub(super) async fn ultracode_turn_snapshot(&self, prompt_id: &str) {
+        use crate::session::goal_classifier::turn_review::{SNAPSHOT_BUDGET, TurnReviewState};
+        if !(self.ultracode_turn_review_applies() || self.ultracode_snapshot_before_a_climb())
+            || self
+                .jev_ledger
+                .borrow()
+                .ultracode_review
+                .started_for(prompt_id)
+        {
+            return;
+        }
+        let snapshot = crate::session::goal_classifier::turn_snapshot::capture_turn_snapshot(
+            self.tool_context.cwd.as_path(),
+            SNAPSHOT_BUDGET,
+        )
+        .await;
+        self.jev_ledger.borrow_mut().ultracode_review = TurnReviewState::begin(prompt_id, snapshot);
+    }
+
+    /// At the end of `prompt_id`, after the final check: review the turn's
+    /// patch. `Some` is the rework reminder, and the turn goes on; `None` lets
+    /// the turn end, with the status line appended when it was reviewed.
+    pub(super) async fn ultracode_turn_review(&self, prompt_id: &str) -> Option<String> {
+        use crate::session::goal_classifier::turn_review::{
+            NextStep, has_non_prose, rework_reminder,
+        };
+        use crate::session::goal_classifier::turn_snapshot::{TurnSnapshot, capture_turn_patch};
+        if !self.ultracode_turn_review_applies() {
+            return None;
+        }
+        let snapshot = self
+            .jev_ledger
+            .borrow()
+            .ultracode_review
+            .open_snapshot(prompt_id)
+            .cloned()?;
+        let root = self.tool_context.cwd.as_path().to_path_buf();
+        let step = if snapshot == TurnSnapshot::NoRepository {
+            self.jev_ledger
+                .borrow_mut()
+                .ultracode_review
+                .finish_unreviewed("no repository")
+        } else {
+            match capture_turn_patch(&root, &snapshot).await {
+                Err(error) => self
+                    .jev_ledger
+                    .borrow_mut()
+                    .ultracode_review
+                    .finish_unreviewed(&format!("turn patch unavailable: {error}")),
+                Ok(patch) if !has_non_prose(&patch.changes.changed_files) => return None,
+                Ok(patch) => self.ultracode_review_round(&root, &patch).await,
+            }
+        };
+        match step {
+            NextStep::Rework { gaps } => {
+                self.raise_ultracode_effort_floor();
+                let round = self.jev_ledger.borrow().ultracode_review.rework_rounds();
+                Some(rework_reminder(
+                    round,
+                    &crate::session::goal_classifier::neutralize_reminder_tags(gaps),
+                ))
+            }
+            NextStep::Finish { status, gaps } => {
+                self.finish_ultracode_review(&status, gaps.as_deref()).await;
+                None
+            }
+            // `ultracode_review_round` runs the panel itself.
+            NextStep::Panel => None,
+        }
+    }
+
+    /// One sole-reviewer run, and the panel when its refutation repeats.
+    async fn ultracode_review_round(
+        &self,
+        root: &std::path::Path,
+        patch: &crate::session::goal_classifier::turn_snapshot::TurnPatch,
+    ) -> crate::session::goal_classifier::turn_review::NextStep {
+        use crate::session::goal_classifier::turn_review::{
+            NextStep, PANEL_SKEPTICS, latest_check_blocker,
+        };
+        if let Some(step) = self.jev_ledger.borrow_mut().ultracode_review.before_review() {
+            return step;
+        }
+        let verdict = self.run_ultracode_review(root, patch, 1).await;
+        let current_tree = super::turn_facts::worktree_marker(root).await;
+        let blocker = latest_check_blocker(
+            self.jev_ledger.borrow().facts.recorded_checks(),
+            current_tree.as_deref(),
+        );
+        let step = self
+            .jev_ledger
+            .borrow_mut()
+            .ultracode_review
+            .after_review(verdict, blocker.clone());
+        if step != NextStep::Panel {
+            return step;
+        }
+        if let Some(step) = self.jev_ledger.borrow_mut().ultracode_review.before_review() {
+            return step;
+        }
+        let verdict = self.run_ultracode_review(root, patch, PANEL_SKEPTICS).await;
+        self.jev_ledger
+            .borrow_mut()
+            .ultracode_review
+            .after_panel(verdict, blocker)
+    }
+
+    /// Runs `skeptic_count` reviewers over the turn's patch through the goal
+    /// verification stage, with skeptic models from the configured pool.
+    async fn run_ultracode_review(
+        &self,
+        root: &std::path::Path,
+        patch: &crate::session::goal_classifier::turn_snapshot::TurnPatch,
+        skeptic_count: u32,
+    ) -> crate::session::goal_classifier::turn_review::TurnReviewVerdict {
+        let (verifier_id, review, prior_gaps) = {
+            let ledger = self.jev_ledger.borrow();
+            let state = &ledger.ultracode_review;
+            (
+                state.verifier_id().to_owned(),
+                state.reviews(),
+                state.prior_gaps().map(str::to_owned),
+            )
+        };
+        Box::pin(self.run_turn_patch_review(
+            root,
+            patch,
+            TurnPatchReviewRun {
+                verifier_id: &verifier_id,
+                review,
+                prior_gaps: prior_gaps.as_deref(),
+                skeptic_count,
+                escalation: false,
+            },
+        ))
+        .await
+    }
+
+    /// Runs `run.skeptic_count` reviewers over a turn's patch through the
+    /// goal verification stage. The UltraCode review draws skeptics from the
+    /// configured pool; an escalation review runs one reviewer on the
+    /// session's model and reports through its own decision row.
+    pub(super) async fn run_turn_patch_review(
+        &self,
+        root: &std::path::Path,
+        patch: &crate::session::goal_classifier::turn_snapshot::TurnPatch,
+        run: TurnPatchReviewRun<'_>,
+    ) -> crate::session::goal_classifier::turn_review::TurnReviewVerdict {
+        use crate::session::goal_classifier::turn_review::{
+            TurnReviewInputs, TurnReviewVerdict, run_turn_review,
+        };
+        use crate::session::goal_classifier::{ChannelSpawner, expand_skeptic_assignment};
+        let Some(event_tx) = self.tool_context.subagent_event_tx.clone() else {
+            return TurnReviewVerdict::Unavailable {
+                reason: "no subagent coordinator to run the review".to_owned(),
+            };
+        };
+        let TurnPatchReviewRun {
+            verifier_id,
+            review,
+            prior_gaps,
+            skeptic_count,
+            escalation,
+        } = run;
+        let request = self.jev_last_human_request().await.unwrap_or_default();
+        let final_response = self
+            .chat_state_handle
+            .get_trailing_assistant_report()
+            .await
+            .unwrap_or_default();
+        let model_id = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|c| c.model)
+            .unwrap_or_default();
+        let parent_prompt_id = self
+            .current_prompt_id
+            .lock()
+            .expect("current_prompt_id mutex poisoned")
+            .clone();
+        let task_tool_name = self.resolve_goal_tool_names().await.task;
+        let inherit_tool_names = self.resolve_inherit_role_tool_names().await;
+        let (skeptic_overrides, tool_names) = if self.goal_use_current_model_only || escalation {
+            (
+                vec![
+                    crate::session::goal_planner::RoleSpawnOverride::default();
+                    skeptic_count as usize
+                ],
+                vec![inherit_tool_names.clone(); skeptic_count as usize],
+            )
+        } else {
+            let assignment = expand_skeptic_assignment(
+                &[],
+                &self.goal_role_models.skeptic_pool,
+                skeptic_count as usize,
+            );
+            self.resolve_skeptic_panel(&assignment, skeptic_count, &event_tx, &inherit_tool_names)
+                .await
+        };
+        let spawner: std::sync::Arc<dyn crate::session::goal_classifier::GoalClassifierSpawner> =
+            std::sync::Arc::new(ChannelSpawner {
+                event_tx,
+                foreground_wait: Some(crate::tools::tool_context::subagent_foreground_wait(
+                    self.tool_context.blocking_wait_depth.clone(),
+                )),
+                parent_session_id: self.session_id_string(),
+                parent_prompt_id,
+                cwd: Some(root.to_string_lossy().into_owned()),
+                trace_sink: Some((self.chat_state_handle.clone(), task_tool_name)),
+                skeptic_overrides,
+                // The spawn fail-open telemetry is goal-scoped; the turn
+                // review reports through its own events.
+                events: None,
+            });
+        let scratch_dir = crate::session::goal_tracker::implementer_scratch_dir(verifier_id);
+        let scratch_dir_ready = crate::session::goal_tracker::ensure_goal_scratch_root(verifier_id)
+            .is_ok()
+            && tokio::fs::create_dir_all(&scratch_dir).await.is_ok();
+        let harness_checks = self.recorded_harness_checks();
+        let verdict = run_turn_review(
+            spawner,
+            TurnReviewInputs {
+                request: &request,
+                final_response: &final_response,
+                patch,
+                workspace_root: root,
+                verifier_id,
+                review,
+                model_id: &model_id,
+                scratch_dir: &scratch_dir,
+                scratch_dir_ready,
+                skeptic_count,
+                prior_gaps,
+                tool_names: &tool_names,
+                inherit_tool_names: &inherit_tool_names,
+                harness_checks: &harness_checks,
+            },
+            // The UltraCode review event would count this run as UltraCode's.
+            &|event| {
+                if !escalation {
+                    self.events.emit(event);
+                }
+            },
+        )
+        .await;
+        self.chat_state_handle.flush_harness_trace_turn();
+        verdict
+    }
+
+    /// A refuted turn reworks one effort level higher, through the ledger's
+    /// one review-driven raise per turn.
+    fn raise_ultracode_effort_floor(&self) {
+        let execution = self.jev_ledger.borrow().last_execution.clone();
+        if let Some((model, effort)) = execution
+            && let Some(level) = self.next_effort_level_above(&model, effort)
+            && let Some(value) = self
+                .models_manager
+                .model_reasoning_efforts(&model)
+                .into_iter()
+                .find(|entry| entry.id == level)
+                .map(|entry| entry.value)
+        {
+            self.jev_ledger.borrow_mut().raise_effort_floor(level, value);
+        }
+    }
+
+    /// Reports the status and appends it, after any open gaps, as the last
+    /// line of the turn's final message.
+    async fn finish_ultracode_review(
+        &self,
+        status: &crate::session::goal_classifier::turn_review::TurnStatus,
+        gaps: Option<&str>,
+    ) {
+        use crate::session::goal_classifier::turn_review::{TurnStatus, final_text};
+        let (reviews, rework_rounds, panel_used, gate_ms, verifier_id) = {
+            let ledger = self.jev_ledger.borrow();
+            let state = &ledger.ultracode_review;
+            (
+                state.reviews(),
+                state.rework_rounds(),
+                state.panel_used(),
+                state.gate_elapsed().as_millis() as u64,
+                state.verifier_id().to_owned(),
+            )
+        };
+        self.events
+            .emit(crate::session::events::Event::UltracodeTurnStatus {
+                status: status.label(),
+                reason: match status {
+                    TurnStatus::Reviewed => None,
+                    TurnStatus::Unverified(reason) => Some(reason.clone()),
+                },
+                reviews,
+                rework_rounds,
+                panel_used,
+                gate_ms,
+            });
+        crate::jev::record_policy(
+            distill_tool_types::ExecutionMode::Ultracode,
+            &format!("review_verdict:{}", status.label()),
+        );
+        self.send_update(
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
+                acp::TextContent::new(final_text(status, gaps)),
+            ))),
+            None,
+        )
+        .await;
+        // The review's patch and verdict files belong to this turn only.
+        let _ = tokio::fs::remove_dir_all(crate::session::goal_tracker::goal_scratch_root(
+            &verifier_id,
+        ))
+        .await;
+    }
+}
+
 #[cfg(test)]
 mod role_capability_tests {
     use super::RoleCapability;
@@ -3107,5 +3488,728 @@ mod role_tool_names_tests {
         };
         let tn = role_tool_names_from(&ov, &cache, &inherit_names());
         assert_eq!(tn.read, "parent_read", "fail-open describe ⇒ inherit");
+    }
+}
+
+/// The UltraCode v2 turn review on a session actor, with the reviewer played
+/// by a scripted subagent coordinator (no model is called) and a real git
+/// repository in a temp dir.
+#[cfg(test)]
+mod ultracode_turn_review_tests {
+    use super::super::support::*;
+    use super::*;
+    use crate::session::goal_classifier::parse_verdict_path_from_prompt;
+    use crate::session::goal_classifier::turn_review::{TurnStatus, set_contract_v2_for_tests};
+    use distill_tools::implementations::distill::task::types::{SubagentEvent, SubagentResult};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    const PASS: &str = r#"{"refuted":false,"evidence":"src/c.rs:1 correct","confidence":"high"}"#;
+    const REFUTE_A: &str = r#"{"refuted":true,"evidence":"src/c.rs:1 off by one","confidence":"high"}"#;
+    const REFUTE_B: &str = r#"{"refuted":true,"evidence":"src/c.rs:2 wrong sign","confidence":"high"}"#;
+    const REFUTE_C: &str = r#"{"refuted":true,"evidence":"src/c.rs:3 missing case","confidence":"high"}"#;
+
+    /// Restores the configured contract when a test ends.
+    struct Contract;
+    impl Contract {
+        fn set(on: bool) -> Self {
+            set_contract_v2_for_tests(Some(on));
+            Self
+        }
+    }
+    impl Drop for Contract {
+        fn drop(&mut self) {
+            set_contract_v2_for_tests(None);
+        }
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new(crate::util::subprocess::git_bin())
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    }
+
+    /// A repository whose tree is already dirty before the turn: `a.rs` has
+    /// an uncommitted edit by the user.
+    fn dirty_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn c() {}\n").unwrap();
+        std::fs::write(root.join("README.md"), "# readme\n").unwrap();
+        git(root, &["init", "-q"]);
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "base"]);
+        std::fs::write(root.join("src/a.rs"), "fn a() { user_edit(); }\n").unwrap();
+        dir
+    }
+
+    /// What the scripted reviewer saw and the client was sent.
+    #[derive(Default)]
+    struct Seen {
+        spawns: u32,
+        prompts: Vec<String>,
+        patches: Vec<String>,
+        chunks: Vec<String>,
+    }
+
+    /// An UltraCode root actor in `cwd`. With `verdicts`, a coordinator
+    /// answers each reviewer spawn with the next verdict JSON (the last one
+    /// repeats); `None` leaves the actor without a coordinator.
+    async fn actor_in(
+        cwd: &std::path::Path,
+        verdicts: Option<Vec<&'static str>>,
+    ) -> (SessionActor, Rc<RefCell<Seen>>) {
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        drain_gateway(gateway_rx);
+        let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+        drain_persistence(persistence_rx);
+        let (mut actor, mut events) =
+            create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+        // What the session would forward to the client.
+        let chunks = seen.clone();
+        tokio::task::spawn_local(async move {
+            while let Some(event) = events.recv().await {
+                if let SessionEvent::Notification(SessionNotification::Acp(notification)) = event
+                    && let acp::SessionUpdate::AgentMessageChunk(chunk) = &notification.update
+                    && let acp::ContentBlock::Text(text) = &chunk.content
+                {
+                    chunks.borrow_mut().chunks.push(text.text.clone());
+                }
+            }
+        });
+        actor.tool_context.cwd = distill_paths::AbsPathBuf::new(cwd.to_path_buf()).unwrap();
+        actor
+            .execution_mode
+            .store(distill_tool_types::ExecutionMode::Ultracode);
+        actor.goal_tracker = std::sync::Arc::new(parking_lot::Mutex::new(
+            crate::session::goal_tracker::GoalTracker::new(cwd.join(".goal-state")),
+        ));
+        if let Some(verdicts) = verdicts {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SubagentEvent>();
+            actor.tool_context.subagent_event_tx = Some(tx);
+            let reviewer = seen.clone();
+            tokio::task::spawn_local(async move {
+                let mut next = 0;
+                while let Some(event) = rx.recv().await {
+                    let SubagentEvent::Spawn(req) = event else {
+                        continue;
+                    };
+                    let verdict = verdicts[next.min(verdicts.len() - 1)];
+                    next += 1;
+                    let patch = req
+                        .prompt
+                        .lines()
+                        .find_map(|line| line.strip_prefix("CHANGES_FILE: "))
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                        .unwrap_or_default();
+                    let path = parse_verdict_path_from_prompt(&req.prompt).unwrap();
+                    tokio::fs::write(path, verdict).await.unwrap();
+                    {
+                        let mut seen = reviewer.borrow_mut();
+                        seen.spawns += 1;
+                        seen.prompts.push(req.prompt.clone());
+                        seen.patches.push(patch);
+                    }
+                    let output = if verdict.contains("\"refuted\":true") {
+                        "Refuted"
+                    } else {
+                        "Not Refuted"
+                    };
+                    let id = req.id.clone();
+                    let _ = req.result_tx.send(SubagentResult {
+                        success: true,
+                        output: std::sync::Arc::from(output),
+                        subagent_id: id.clone(),
+                        child_session_id: id,
+                        ..Default::default()
+                    });
+                }
+            });
+        }
+        (actor, seen)
+    }
+
+    fn status(actor: &SessionActor, prompt_id: &str) -> Option<TurnStatus> {
+        actor
+            .jev_ledger
+            .borrow()
+            .ultracode_turn_status(prompt_id)
+            .cloned()
+    }
+
+    async fn review(actor: &SessionActor, prompt_id: &str) -> Option<String> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            actor.ultracode_turn_review(prompt_id),
+        )
+        .await
+        .expect("the review must finish")
+    }
+
+    /// With the key absent nothing changes: no snapshot is taken, no reviewer
+    /// is spawned, no status is kept and nothing is sent to the client.
+    #[tokio::test(flavor = "current_thread")]
+    async fn without_the_contract_there_is_no_snapshot_and_no_review() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(false);
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                assert!(!actor.jev_ledger.borrow().ultracode_review.started_for("p1"));
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(status(&actor, "p1"), None);
+                drain_gateway_turns().await;
+                let seen = seen.borrow();
+                assert_eq!(seen.spawns, 0);
+                assert!(seen.chunks.is_empty());
+            })
+            .await;
+    }
+
+    /// An edit made only through the shell (no edit tool ran) on a tree the
+    /// user had already dirtied is reviewed, and the reviewer sees only the
+    /// turn's own change. A pass ends REVIEWED as the message's last line.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_shell_only_edit_on_a_dirty_tree_is_reviewed() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { shell_edit(); }\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(status(&actor, "p1"), Some(TurnStatus::Reviewed));
+                drain_gateway_turns().await;
+                let seen = seen.borrow();
+                assert_eq!(seen.spawns, 1);
+                let prompt = &seen.prompts[0];
+                assert!(prompt.contains("independent code reviewer"));
+                assert!(prompt.contains("- src/c.rs"));
+                assert!(!prompt.contains("- src/a.rs"), "the user's earlier edit is not the turn's");
+                assert!(seen.patches[0].contains("+fn c() { shell_edit(); }"));
+                assert!(!seen.patches[0].contains("user_edit"));
+                assert_eq!(
+                    seen.chunks.last().and_then(|text| text.lines().last()),
+                    Some("Verification: REVIEWED")
+                );
+            })
+            .await;
+    }
+
+    /// A turn that changed only documentation is not reviewed and gets no
+    /// status.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_prose_only_turn_skips_the_review() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("README.md"), "# readme\nmore\n").unwrap();
+                std::fs::create_dir(repo.path().join("docs")).unwrap();
+                std::fs::write(repo.path().join("docs/example.rs"), "fn example() {}\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(status(&actor, "p1"), None);
+                assert_eq!(seen.borrow().spawns, 0);
+            })
+            .await;
+    }
+
+    /// A /goal has its own verification stage: a turn under an active goal
+    /// takes no snapshot and is never reviewed here.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_goal_turn_skips_the_review() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.goal_tracker.lock().create_goal(
+                    "g1".into(),
+                    "do the thing".into(),
+                    None,
+                    0,
+                    "2026-01-01T00:00:00Z".into(),
+                    None,
+                );
+                actor.ultracode_turn_snapshot("p1").await;
+                assert!(!actor.jev_ledger.borrow().ultracode_review.started_for("p1"));
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(status(&actor, "p1"), None);
+                assert_eq!(seen.borrow().spawns, 0);
+                actor.goal_tracker.lock().clear();
+            })
+            .await;
+    }
+
+    /// A review that cannot run (here: no coordinator) fails closed:
+    /// UNVERIFIED with the reason, never REVIEWED.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_review_that_cannot_run_is_unverified() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), None).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                let Some(TurnStatus::Unverified(reason)) = status(&actor, "p1") else {
+                    panic!("expected UNVERIFIED");
+                };
+                assert!(reason.contains("no subagent coordinator"), "{reason}");
+                drain_gateway_turns().await;
+                let last = seen.borrow().chunks.last().cloned().unwrap_or_default();
+                assert!(last.ends_with(&format!("Verification: UNVERIFIED ({reason})")), "{last}");
+            })
+            .await;
+    }
+
+    /// A reviewer that writes no parsable verdict and answers with a verdict
+    /// token cannot pass the turn: the refutation names no gap, so the turn
+    /// ends UNVERIFIED instead of reworking.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unparsable_verdict_is_unverified() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) =
+                    actor_in(repo.path(), Some(vec!["{\"refuted\":true, not json"])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(
+                    status(&actor, "p1"),
+                    Some(TurnStatus::Unverified(
+                        "the reviewer returned no usable verdict".into()
+                    ))
+                );
+                assert_eq!(seen.borrow().spawns, 1);
+            })
+            .await;
+    }
+
+    /// New gaps each round: two rework rounds with the gaps appended, then
+    /// UNVERIFIED with the gaps and the /goal offer; no panel, and the review
+    /// never runs again for the same prompt.
+    #[tokio::test(flavor = "current_thread")]
+    async fn at_most_two_rework_rounds_per_turn() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) =
+                    actor_in(repo.path(), Some(vec![REFUTE_A, REFUTE_B, REFUTE_C])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                let first = review(&actor, "p1").await.expect("rework round 1");
+                assert!(first.contains("rework round 1 of 2") && first.contains("off by one"));
+                let second = review(&actor, "p1").await.expect("rework round 2");
+                assert!(second.contains("rework round 2 of 2") && second.contains("wrong sign"));
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(
+                    status(&actor, "p1"),
+                    Some(TurnStatus::Unverified(
+                        "still refuted after 2 rework rounds".into()
+                    ))
+                );
+                assert_eq!(review(&actor, "p1").await, None);
+                drain_gateway_turns().await;
+                let seen = seen.borrow();
+                assert_eq!(seen.spawns, 3, "three sole reviews, no panel");
+                assert!(seen.prompts[1].contains("off by one"), "the re-review sees the prior gaps");
+                let last = seen.chunks.last().cloned().unwrap_or_default();
+                assert!(last.contains("missing case") && last.contains("/goal"), "{last}");
+                assert!(!actor.jev_ledger.borrow().ultracode_review.panel_used());
+            })
+            .await;
+    }
+
+    /// The same gaps twice go to one three-reviewer panel; its refutation
+    /// ends the turn UNVERIFIED and nothing runs after it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_repeated_refutation_gets_one_panel() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![REFUTE_A])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                assert!(review(&actor, "p1").await.is_some());
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(
+                    status(&actor, "p1"),
+                    Some(TurnStatus::Unverified(
+                        "refuted again by a three-reviewer panel".into()
+                    ))
+                );
+                let spawns = seen.borrow().spawns;
+                // Sole review, sole re-review, then the panel's first reviewer
+                // (its high-confidence refutation is decisive on its own).
+                assert_eq!(spawns, 3);
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(seen.borrow().spawns, spawns);
+                let ledger = actor.jev_ledger.borrow();
+                assert!(ledger.ultracode_review.panel_used());
+                assert_eq!(ledger.ultracode_review.rework_rounds(), 1);
+            })
+            .await;
+    }
+
+    /// A passing review does not make the turn REVIEWED when the latest
+    /// recorded check failed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_latest_check_blocks_reviewed() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let repo = dirty_repo();
+                let (actor, _seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { 1 }\n").unwrap();
+                let tree = super::super::turn_facts::worktree_marker(repo.path()).await;
+                assert!(tree.is_some());
+                let failed = distill_tools::types::output::ToolOutput::Bash(
+                    distill_tools::types::output::BashOutput {
+                        output: Vec::new(),
+                        output_for_prompt: "test result: FAILED. 1 failed".into(),
+                        exit_code: 101,
+                        command: "cargo test".into(),
+                        truncated: false,
+                        signal: None,
+                        timed_out: false,
+                        description: None,
+                        current_dir: repo.path().display().to_string(),
+                        output_file: String::new(),
+                        total_bytes: 0,
+                        output_delta: None,
+                        was_bare_echo: false,
+                    },
+                );
+                actor.jev_ledger.borrow_mut().facts.note_tool_result_at(
+                    "call-1",
+                    &failed,
+                    &super::super::turn_facts::CheckContext {
+                        cwd: repo.path().display().to_string(),
+                        worktree: tree,
+                    },
+                );
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(
+                    status(&actor, "p1"),
+                    Some(TurnStatus::Unverified("latest check `cargo test` failed".into()))
+                );
+            })
+            .await;
+    }
+
+    /// Outside a git repository there is no patch to review: the turn ends
+    /// UNVERIFIED (no repository) without spawning a reviewer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn outside_a_repository_the_turn_is_unverified() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let dir = tempfile::tempdir().unwrap();
+                let (actor, seen) = actor_in(dir.path(), Some(vec![PASS])).await;
+                actor.ultracode_turn_snapshot("p1").await;
+                std::fs::write(dir.path().join("c.rs"), "fn c() {}\n").unwrap();
+                assert_eq!(review(&actor, "p1").await, None);
+                assert_eq!(
+                    status(&actor, "p1"),
+                    Some(TurnStatus::Unverified("no repository".into()))
+                );
+                assert_eq!(seen.borrow().spawns, 0);
+            })
+            .await;
+    }
+
+    /// What one turn through the real loop left behind.
+    struct LoopTurn {
+        status: Option<TurnStatus>,
+        reworked: bool,
+        spawns: u32,
+        first_prompt: String,
+        chunks: Vec<String>,
+        model_requests: usize,
+    }
+
+    /// Runs one prompt through the real turn loop against a scripted model:
+    /// a tool round, an answer, and a second answer kept for a rework. A task
+    /// standing in for a shell command changes `src/c.rs` once the turn has
+    /// taken its snapshot (or, without the contract, right away).
+    fn run_loop_turn(contract: bool) -> LoopTurn {
+        use distill_test_support::sse::{
+            responses_api_reasoning_then_tool_call_events, responses_api_script_exact,
+        };
+        use distill_test_support::{MockInferenceServer, ScriptedResponse};
+        const PROMPT_ID: &str = "ultracode-turn";
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            // A debug-build turn future outgrows the usual 16 MiB test stack.
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime");
+                tokio::task::LocalSet::new().block_on(&runtime, async move {
+                    let _contract = Contract::set(contract);
+                    crate::jev::set_test_decision_answers([]);
+                    let repo = dirty_repo();
+                    let server = MockInferenceServer::start().await.expect("mock server");
+                    server.enqueue_response(
+                        "/v1/responses",
+                        ScriptedResponse::sse(responses_api_reasoning_then_tool_call_events(
+                            "update",
+                            "call-1",
+                            "todo_write",
+                            r#"{"todos":[{"id":"t1","content":"fix c","status":"completed"}]}"#,
+                            "test",
+                        )),
+                    );
+                    for reply in ["Fixed c.rs.", "Fixed the off-by-one too."] {
+                        server.enqueue_response(
+                            "/v1/responses",
+                            ScriptedResponse::sse(responses_api_script_exact(reply, "test")),
+                        );
+                    }
+                    let (mut actor, seen) =
+                        actor_in(repo.path(), Some(vec![REFUTE_A, PASS])).await;
+                    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+                    actor.sampler_handle = distill_sampler::SamplerActor::spawn(
+                        distill_sampler::SamplerConfig {
+                            api_key: Some("test-key".into()),
+                            base_url: server.url(),
+                            model: "test".into(),
+                            api_backend: distill_sampler::ApiBackend::Responses,
+                            context_window: 256_000,
+                            max_retries: Some(0),
+                            idle_timeout_secs: Some(30),
+                            ..Default::default()
+                        },
+                        distill_sampler::RetryPolicy {
+                            max_retries: 0,
+                            ..Default::default()
+                        },
+                        sampler_tx,
+                    );
+                    *actor.agent.borrow_mut() = test_distill_agent_with_todo().await;
+                    let mut config = actor
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .expect("test actor has sampling config");
+                    config.base_url = server.url();
+                    config.api_backend = distill_sampling_types::ApiBackend::Responses;
+                    config.model = "test".into();
+                    actor.chat_state_handle.update_sampling_config(config);
+                    let mut credentials = actor.chat_state_handle.get_credentials().await;
+                    credentials.api_key = Some("test-key".into());
+                    actor.chat_state_handle.update_credentials(credentials);
+                    actor
+                        .workspace_ops
+                        .bind_local_session(
+                            &actor.session_id_string(),
+                            actor.tool_context.cwd.as_path().to_path_buf(),
+                            actor.tool_context.hunk_tracker_handle.clone(),
+                            actor.agent.borrow().tool_bridge().toolset(),
+                            None,
+                        )
+                        .expect("bind_local_session");
+                    let actor = std::sync::Arc::new(actor);
+                    let drainer = actor.clone();
+                    tokio::task::spawn_local(async move {
+                        while let Some(event) = sampler_rx.recv().await {
+                            drainer.handle_sampling_event(event).await;
+                        }
+                    });
+                    // Plays a shell command: changes a tracked file once the
+                    // turn has taken its snapshot.
+                    let editor = actor.clone();
+                    let file = repo.path().join("src/c.rs");
+                    tokio::task::spawn_local(async move {
+                        while contract
+                            && !editor
+                                .jev_ledger
+                                .borrow()
+                                .ultracode_review
+                                .started_for(PROMPT_ID)
+                        {
+                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        }
+                        std::fs::write(file, "fn c() { shell_edit(); }\n").unwrap();
+                    });
+                    let outcome = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        actor.handle_prompt(
+                            PROMPT_ID,
+                            vec![acp::ContentBlock::Text(acp::TextContent::new(
+                                "fix the off-by-one in c.rs".to_string(),
+                            ))],
+                            PromptMode::Agent,
+                            None,
+                            None,
+                            None,
+                            None,
+                            true,
+                            false,
+                            None,
+                            None,
+                            None,
+                        ),
+                    )
+                    .await
+                    .expect("turn must finish within timeout");
+                    crate::jev::clear_test_decision_answers();
+                    assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
+                    drain_gateway_turns().await;
+                    let conversation = actor.chat_state_handle.get_conversation().await;
+                    let reworked = conversation.iter().any(|item| {
+                        matches!(item, ConversationItem::User(_))
+                            && item.text_content().contains("rework round 1 of 2")
+                            && item.text_content().contains("off by one")
+                    });
+                    let seen = seen.borrow();
+                    sender
+                        .send(LoopTurn {
+                            status: status(&actor, PROMPT_ID),
+                            reworked,
+                            spawns: seen.spawns,
+                            first_prompt: seen.prompts.first().cloned().unwrap_or_default(),
+                            chunks: seen.chunks.clone(),
+                            model_requests: server
+                                .requests()
+                                .iter()
+                                .filter(|request| request.path == "/v1/responses")
+                                .count(),
+                        })
+                        .expect("send result");
+                });
+            })
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread");
+        receiver.recv().expect("turn result")
+    }
+
+    /// In the real loop: the snapshot is taken at the turn's first tool call,
+    /// the file changed after it is reviewed at turn end, the refutation
+    /// sends the turn back to work with the gaps, and the re-review's pass
+    /// ends the turn with REVIEWED as the last line sent to the client.
+    #[test]
+    fn a_refuted_turn_reworks_and_ends_reviewed() {
+        let turn = run_loop_turn(true);
+        assert_eq!(turn.status, Some(TurnStatus::Reviewed));
+        assert!(turn.reworked, "the refutation's gaps must reach the model");
+        assert_eq!(turn.spawns, 2, "one review, one re-review");
+        assert!(turn.first_prompt.contains("OBJECTIVE:\nfix the off-by-one in c.rs"));
+        assert!(turn.first_prompt.contains("- src/c.rs"));
+        assert!(!turn.first_prompt.contains("- src/a.rs"));
+        assert_eq!(
+            turn.chunks.last().and_then(|chunk| chunk.lines().last()),
+            Some("Verification: REVIEWED")
+        );
+        assert_eq!(turn.model_requests, 3, "tool round, first answer, rework answer");
+    }
+
+    /// Without the contract the same turn runs as today: it ends on the first
+    /// answer, with no review, no rework, no status and no status line.
+    #[test]
+    fn without_the_contract_the_loop_turn_is_unchanged() {
+        let turn = run_loop_turn(false);
+        assert_eq!(turn.status, None);
+        assert!(!turn.reworked);
+        assert_eq!(turn.spawns, 0);
+        assert!(!turn.chunks.iter().any(|chunk| chunk.contains("Verification:")));
+        assert_eq!(turn.model_requests, 2, "tool round, first answer");
+    }
+
+    /// Auto reaches UltraCode by its request-start pick or by a climb inside
+    /// the request; either way the turn ends through the review, and a
+    /// climb's review also sees the edits made before it. With `b8_up_only`
+    /// off a Normal turn takes no snapshot, as before.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_auto_ultracode_turn_ends_through_the_review() {
+        use distill_tool_types::ExecutionMode::{Normal, Ultracode};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let flags = |up_only| distill_workspace::jev::JevFlags {
+                    b8_up_only: up_only,
+                    ..distill_workspace::jev::JevFlags::harness_default()
+                };
+                crate::jev::set_test_flags(flags(true));
+                let ultracode = distill_workspace::jev::JevAnswerSet {
+                    model: "test-jev".to_owned(),
+                    answers: [(
+                        "execution_mode".to_owned(),
+                        distill_workspace::jev::Answer::Choice {
+                            choice: "ultracode".to_owned(),
+                            probabilities: [("ultracode".to_owned(), 0.9)].into(),
+                            confidence: Some(0.9),
+                        },
+                    )]
+                    .into(),
+                    usage: Default::default(),
+                    request_id: None,
+                    latency_ms: 0,
+                };
+
+                let repo = dirty_repo();
+                let (actor, _seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.execution_mode.store_auto(Normal);
+                crate::jev::set_test_decision_answers([Some(ultracode)]);
+                actor
+                    .jev_auto_pick_mode("make the cache safe for concurrent writers")
+                    .await;
+                crate::jev::clear_test_decision_answers();
+                assert_eq!(actor.execution_mode.load(), Ultracode);
+                actor.ultracode_turn_snapshot("picked").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { picked(); }\n").unwrap();
+                assert_eq!(review(&actor, "picked").await, None);
+                assert_eq!(status(&actor, "picked"), Some(TurnStatus::Reviewed));
+
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.execution_mode.store_auto(Normal);
+                actor.ultracode_turn_snapshot("climbed").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { before_climb(); }\n")
+                    .unwrap();
+                assert_eq!(actor.escalate_auto_mode(), Some(Ultracode));
+                assert_eq!(review(&actor, "climbed").await, None);
+                assert_eq!(status(&actor, "climbed"), Some(TurnStatus::Reviewed));
+                assert!(seen.borrow().patches[0].contains("before_climb"));
+
+                crate::jev::set_test_flags(flags(false));
+                let repo = dirty_repo();
+                let (actor, _seen) = actor_in(repo.path(), None).await;
+                actor.execution_mode.store_auto(Normal);
+                actor.ultracode_turn_snapshot("first-auto").await;
+                assert!(
+                    !actor
+                        .jev_ledger
+                        .borrow()
+                        .ultracode_review
+                        .started_for("first-auto")
+                );
+                crate::jev::clear_test_flags();
+                drain_gateway_turns().await;
+            })
+            .await;
     }
 }

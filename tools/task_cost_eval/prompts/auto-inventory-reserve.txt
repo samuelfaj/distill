@@ -1,0 +1,4 @@
+The checkout service retries orders, and in tools/task_cost_eval/fixtures/auto_inventory_reserve an order that
+cannot be fully reserved still leaves part of its stock held. Make Inventory.reserve all-or-nothing, make a retry
+of the same order id return the existing reservation without holding stock twice (the same id with different
+lines is a ValueError), and add release(order_id) that gives the stock back and returns whether anything was held.

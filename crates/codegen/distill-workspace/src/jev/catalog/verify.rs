@@ -11,10 +11,12 @@ use std::collections::BTreeMap;
 use crate::jev::error::JevError;
 use crate::jev::types::{JevAnswerSet, Json, Question, QuestionId};
 
+use super::thresholds::{LeverThresholds, thresholds_for};
 use super::{Pick, RANK_PREFIX, Ranked, noul_of, pick_one, rank_by_noul, score_of};
 
-/// C1 — probability above which a requested item counts as done.
-pub const ITEM_DONE_FLOOR: f64 = 0.60;
+/// C1 — probability above which a requested item counts as done. The
+/// default; compose functions read the floor for the answering model.
+pub const ITEM_DONE_FLOOR: f64 = LeverThresholds::DEFAULT.c1_item_done;
 /// C2 — confidence needed before a failure category is used.
 pub const FAILURE_TRIAGE_MIN_CONFIDENCE: f64 = 0.60;
 /// C2 — the categories a failure is sorted into (closed set).
@@ -27,18 +29,18 @@ pub const FAILURE_CATEGORIES: &[&str] = &[
     "other",
 ];
 /// C3 — per-item probability above which a request item counts as satisfied.
-pub const ITEM_SATISFIED_FLOOR: f64 = 0.70;
+pub const ITEM_SATISFIED_FLOOR: f64 = LeverThresholds::DEFAULT.c3_item_satisfied;
 /// C3 — "something requested is still missing" must be below this to call it done.
-pub const LEFTOVER_FLOOR: f64 = 0.30;
+pub const LEFTOVER_FLOOR: f64 = LeverThresholds::DEFAULT.c3_leftover;
 /// C4 (review) — a mismatch is reported only when P(change matches the step) is
 /// below this: a confident negative, not a coin flip.
-pub const DIFF_MATCH_FLOOR: f64 = 0.30;
+pub const DIFF_MATCH_FLOOR: f64 = LeverThresholds::DEFAULT.c4_match;
 /// C4 (review) — probability at or above which a red flag is reported back.
-pub const DIFF_REVIEW_FLAG_FLOOR: f64 = 0.70;
+pub const DIFF_REVIEW_FLAG_FLOOR: f64 = LeverThresholds::DEFAULT.c4_flag;
 /// C4 (review) — the step is redone only when P(step done) is below this.
-pub const STEP_COMPLETE_FLOOR: f64 = 0.30;
+pub const STEP_COMPLETE_FLOOR: f64 = LeverThresholds::DEFAULT.c4_step_complete;
 /// C4 (review) — probability at or above which the redo needs more thinking.
-pub const REDO_HIGHER_FLOOR: f64 = 0.70;
+pub const REDO_HIGHER_FLOOR: f64 = LeverThresholds::DEFAULT.c4_redo_higher;
 /// C6 — probability at or above which a text is flagged as instruction-like.
 pub const INJECTION_FLAG_FLOOR: f64 = 0.50;
 /// C7 — confidence needed before labelling the change type.
@@ -82,16 +84,20 @@ pub struct PrematureStop {
     /// How sure the battery is that work remains: `1 - max(done)` over the
     /// pending items, so a clearly unfinished item reads as high confidence.
     pub confidence: Option<f64>,
+    /// The C1 floor for the model that answered; the final check needs this
+    /// much confidence before it reminds.
+    pub done_floor: f64,
 }
 
 /// C1: keeps working when any item looks unfinished or work remains.
 pub fn compose_premature_stop(answers: &JevAnswerSet, items: &[String]) -> PrematureStop {
+    let done_floor = thresholds_for(&answers.model).c1_item_done;
     let mut pending: Vec<String> = Vec::new();
     let mut most_done: Option<f64> = None;
     for id in items {
         match answers.answers.get(&format!("{RANK_PREFIX}{id}")) {
             Some(crate::jev::types::Answer::Noul { noul }) => {
-                if *noul < ITEM_DONE_FLOOR {
+                if *noul < done_floor {
                     pending.push(id.clone());
                     most_done = Some(most_done.map_or(*noul, |m: f64| m.max(*noul)));
                 }
@@ -102,6 +108,7 @@ pub fn compose_premature_stop(answers: &JevAnswerSet, items: &[String]) -> Prema
                     continue_working: false,
                     deferred: true,
                     confidence: None,
+                    done_floor,
                 };
             }
         }
@@ -112,12 +119,13 @@ pub fn compose_premature_stop(answers: &JevAnswerSet, items: &[String]) -> Prema
             continue_working: false,
             deferred: true,
             confidence: None,
+            done_floor,
         };
     };
-    let continues = !pending.is_empty() || remains >= ITEM_DONE_FLOOR;
+    let continues = !pending.is_empty() || remains >= done_floor;
     let confidence = if !pending.is_empty() {
         Some(1.0 - most_done.unwrap_or(0.0))
-    } else if remains >= ITEM_DONE_FLOOR {
+    } else if remains >= done_floor {
         Some(remains)
     } else {
         None
@@ -127,6 +135,7 @@ pub fn compose_premature_stop(answers: &JevAnswerSet, items: &[String]) -> Prema
         pending,
         deferred: false,
         confidence,
+        done_floor,
     }
 }
 
@@ -222,11 +231,12 @@ pub struct CompletionCheck {
 
 /// C3: a completion claim is only allowed when nothing looks missing.
 pub fn compose_completion(answers: &JevAnswerSet, items: &[String]) -> CompletionCheck {
+    let floors = thresholds_for(&answers.model);
     let mut unsatisfied = Vec::new();
     for id in items {
         match answers.answers.get(&format!("{RANK_PREFIX}{id}")) {
             Some(crate::jev::types::Answer::Noul { noul }) => {
-                if *noul < ITEM_SATISFIED_FLOOR {
+                if *noul < floors.c3_item_satisfied {
                     unsatisfied.push(id.clone());
                 }
             }
@@ -247,7 +257,7 @@ pub fn compose_completion(answers: &JevAnswerSet, items: &[String]) -> Completio
         };
     };
     CompletionCheck {
-        complete: unsatisfied.is_empty() && left_out < LEFTOVER_FLOOR,
+        complete: unsatisfied.is_empty() && left_out < floors.c3_leftover,
         unsatisfied,
         deferred: false,
     }
@@ -267,7 +277,7 @@ pub const REDO_THINKING_QUESTION: &str = "needs_more_thinking";
 pub const SECOND_OPINION_QUESTION: &str = "needs_other_model";
 
 /// C4 — probability above which the review asks for another model's eyes.
-pub const SECOND_OPINION_FLOOR: f64 = 0.70;
+pub const SECOND_OPINION_FLOOR: f64 = LeverThresholds::DEFAULT.c4_second_opinion;
 
 /// C4 (review): one battery per change, asked *after* the edit lands.
 ///
@@ -396,6 +406,7 @@ pub struct DiffReview {
 /// step, and anything unusable defers — the reviewer never claims a change is
 /// fine on a missing answer.
 pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
+    let floors = thresholds_for(&answers.model);
     let matches = noul_of(answers, DIFF_MATCH_QUESTION);
     let breaks = noul_of(answers, DIFF_BREAK_QUESTION);
     let incomplete = noul_of(answers, DIFF_INCOMPLETE_QUESTION);
@@ -405,7 +416,7 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
     // (or a battery that dropped it) means "no second opinion", never a defer of
     // the verdict the other five axes already carry.
     let other_model =
-        noul_of(answers, SECOND_OPINION_QUESTION).unwrap_or(0.0) >= SECOND_OPINION_FLOOR;
+        noul_of(answers, SECOND_OPINION_QUESTION).unwrap_or(0.0) >= floors.c4_second_opinion;
     let (Some(matches), Some(breaks), Some(incomplete), Some(complete), Some(more_thinking)) =
         (matches, breaks, incomplete, complete, more_thinking)
     else {
@@ -419,18 +430,18 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
     // The redo decision is its own axis: a change can read fine and still leave
     // the step unfinished, and an unfinished step is redone — with more thinking
     // when the battery says the setting, not the attempt, was the problem.
-    let redo = if complete >= STEP_COMPLETE_FLOOR {
+    let redo = if complete >= floors.c4_step_complete {
         RedoAction::None
     } else {
         RedoAction::Redo {
-            higher_effort: more_thinking >= REDO_HIGHER_FLOOR,
+            higher_effort: more_thinking >= floors.c4_redo_higher,
         }
     };
-    let (verdict, confidence) = if matches < DIFF_MATCH_FLOOR {
+    let (verdict, confidence) = if matches < floors.c4_match {
         (DiffReviewVerdict::Mismatch, Some(1.0 - matches))
-    } else if breaks >= DIFF_REVIEW_FLAG_FLOOR {
+    } else if breaks >= floors.c4_flag {
         (DiffReviewVerdict::Breaks, Some(breaks))
-    } else if incomplete >= DIFF_REVIEW_FLAG_FLOOR {
+    } else if incomplete >= floors.c4_flag {
         (DiffReviewVerdict::Incomplete, Some(incomplete))
     } else {
         (DiffReviewVerdict::Ok, Some(matches))
@@ -441,6 +452,22 @@ pub fn compose_diff_review(answers: &JevAnswerSet) -> DiffReview {
         redo,
         needs_other_model: other_model,
     }
+}
+
+/// C4 (review): `calibrated` or `uncalibrated` for the floors
+/// [`compose_diff_review`] reads for this model's answers.
+pub fn diff_review_calibration(model_id: &str) -> &'static str {
+    use super::thresholds::{Threshold, calibration_word};
+    calibration_word(
+        model_id,
+        &[
+            Threshold::C4Match,
+            Threshold::C4Flag,
+            Threshold::C4StepComplete,
+            Threshold::C4RedoHigher,
+            Threshold::C4SecondOpinion,
+        ],
+    )
 }
 
 /// C4 (review): the one-line note the model gets back, or `None` when the

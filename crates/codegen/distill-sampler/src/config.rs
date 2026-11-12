@@ -32,6 +32,17 @@ pub enum RequestCompression {
     Zstd,
 }
 
+/// A provider serving path asked for on every request of a client: the session that set
+/// it decides it once, because a change mid-session invalidates the provider prompt cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderTier {
+    /// Responses `service_tier: "priority"`, Messages `speed: "fast"`.
+    Fast,
+    /// Responses `service_tier: "flex"`; the Messages API has no economy path.
+    Economy,
+}
+
 /// All knobs that control a single sampling request.
 /// Auth is selected separately via `auth_scheme`, while `api_backend` controls only the request/response protocol shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +99,10 @@ pub struct SamplerConfig {
     /// OpenRouter routing suffix (`floor`, `nitro`, `exacto`) appended to the wire model slug; `None` sends the slug as is.
     #[serde(default)]
     pub openrouter_variant: Option<String>,
+    /// Serving path field sent to Responses and Messages endpoints (not OpenRouter, which
+    /// takes `openrouter_variant`); `None` sends no such field.
+    #[serde(default)]
+    pub provider_tier: Option<ProviderTier>,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -130,6 +145,27 @@ pub struct SamplerConfig {
     pub header_injector: Option<SharedHeaderInjector>,
 }
 
+impl SamplerConfig {
+    /// Whether a request built from this config carries a serving-path field: Responses
+    /// `service_tier` for either tier, Messages `speed` for `Fast`. OpenRouter takes the model
+    /// variant instead, the ChatGPT Codex backend gets no economy tier, a Claude subscription
+    /// gets no fast mode, and Chat Completions gets no such field.
+    pub fn sends_provider_tier(&self) -> bool {
+        let claude_subscription = self.extra_headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("anthropic-beta")
+                && crate::client::names_claude_oauth_beta(value)
+        });
+        match (
+            crate::client::effective_provider_tier(self.provider_tier, &self.base_url),
+            &self.api_backend,
+        ) {
+            (Some(_), ApiBackend::Responses) => true,
+            (Some(ProviderTier::Fast), ApiBackend::Messages) => !claude_subscription,
+            _ => false,
+        }
+    }
+}
+
 impl Default for SamplerConfig {
     /// Empty defaults so callers can use `..Default::default()` and new fields don't ripple through every literal site.
     fn default() -> Self {
@@ -158,6 +194,7 @@ impl Default for SamplerConfig {
             reasoning_shape: ReasoningShape::default(),
             reasoning_summary: None,
             openrouter_variant: None,
+            provider_tier: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,

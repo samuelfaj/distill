@@ -311,6 +311,16 @@ class StrictDistillAccountingTest(unittest.TestCase):
             self.assertEqual(calls['initial-title:t']['task_id'], 'select_units')
             self.assertEqual(calls['initial-title:t']['source_kind'], 'tool_families')
 
+    def test_per_call_api_duration_is_carried_and_absent_stays_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main, _, rows = self.fixture(root)
+            rows[0]['api_duration_ms'] = 1234
+            self.write_ledger(main, rows)
+            calls = {row['attempt']: row for row in distill_accounting(root, 'main', strict=True)['call_usage']}
+            self.assertEqual(calls['sampler:a']['api_duration_ms'], 1234)
+            self.assertIsNone(calls['initial-title:t']['api_duration_ms'])
+
     def retry_fixture(self, root, *, output_started):
         endpoint = 'https://chatgpt.com/backend-api/codex/responses'
         usage = {'prompt_tokens': 10, 'completion_tokens': 1,
@@ -365,6 +375,59 @@ class StrictDistillAccountingTest(unittest.TestCase):
                 self.assertFalse(result['accounting_complete'])
                 self.assertIsNone(result['credit_estimate'])
                 self.assertTrue(result['accounting_evidence']['reasons'])
+
+    def refusal_fixture(self, root, *, policy_rows):
+        endpoint = 'https://chatgpt.com/backend-api/codex/responses'
+        usage = {'prompt_tokens': 10, 'completion_tokens': 1,
+                 'cached_prompt_tokens': 0, 'reasoning_tokens': 0}
+        refused = {'attempt_id': 'sampler:x', 'request_id': 'resp_x', 'model_id': 'gpt-6-luna',
+                   'role': 'main', 'status': 'rejected', 'usage_complete': False, 'endpoint': endpoint}
+        main = {'attempt_id': 'sampler:a', 'request_id': 'resp_a', 'model_id': 'gpt-6-luna',
+                'role': 'main', 'status': 'completed', 'usage_complete': True,
+                'endpoint': endpoint, 'usage': usage}
+        session = {'attributions': [refused, main], 'modelCalls': 2, 'inputTokens': 10,
+                   'outputTokens': 1, 'cachedReadTokens': 0, 'reasoningTokens': 0,
+                   'usageIsIncomplete': True}
+        if policy_rows:
+            session['utilityOutcomes'] = {
+                'policy:ultrasave': {'decisions': {'provider_tier_rejected': policy_rows}}}
+        path = root / 'sessions/main'
+        path.mkdir(parents=True)
+        (path / 'events.jsonl').write_text(
+            json.dumps({'type': 'turn_started'}) + '\n' + json.dumps({'type': 'turn_ended'}) + '\n')
+        (path / 'updates.jsonl').write_text('')
+        (path / 'usage.json').write_text(json.dumps({'session': session}))
+
+    def test_a_request_refused_for_its_serving_path_is_zero_usage_only_with_the_harness_record(self):
+        # A provider refuses an unknown serving-path field before inference, so the attempt has no
+        # receipt and no cost. That is only safe to assume when the session's own policy row says
+        # the refusal happened; any other refused attempt without a receipt stays unknown.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.refusal_fixture(root, policy_rows=1)
+            result = distill_accounting(root, 'main')
+            self.assertTrue(result['accounting_complete'], result)
+            calls = {row['attempt']: row for row in result['call_usage']}
+            self.assertTrue(calls['sampler:x']['imputed_zero_usage'])
+            self.assertEqual(result['credit_estimate'], credits('gpt-6-luna', 10, 0, 1))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.refusal_fixture(root, policy_rows=0)
+            result = distill_accounting(root, 'main')
+            self.assertFalse(result['accounting_complete'])
+            self.assertIsNone(result['credit_estimate'])
+
+    def test_each_mode_may_only_run_on_the_models_its_design_names(self):
+        # The check exists so a run cannot quietly measure another model. A lean mode routes
+        # root rounds to the worker and UltraCode's reviewer is a child on the session model;
+        # nothing else is allowed, and Normal keeps the strict rule.
+        from .compare_codex import allowed_models
+        self.assertEqual(allowed_models('normal', 'main', 'worker'), ({'main'}, {'worker'}))
+        self.assertEqual(allowed_models(None, 'main', 'worker'), ({'main'}, {'worker'}))
+        for lean in ('ultrasave', 'ultrafast'):
+            self.assertEqual(allowed_models(lean, 'main', 'worker'), ({'main', 'worker'}, {'worker'}))
+        self.assertEqual(allowed_models('ultracode', 'main', 'worker'), ({'main'}, {'worker', 'main'}))
+        self.assertEqual(allowed_models('auto', 'main', 'worker'), ({'main', 'worker'}, {'worker', 'main'}))
 
     def test_call_owner_uses_deepest_ledger_and_durable_child_type_without_model_relabeling(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -485,6 +548,62 @@ class StrictDistillAccountingTest(unittest.TestCase):
             write_updates(({**result, 'toolCallId': 'unrelated-call'},))
             call = next(row for row in distill_accounting(root, 'main')['call_usage'] if row['attempt'] == 'sampler:c')
             self.assertIsNone(call['owner']['spawn_request'])
+
+
+class ModeArmTest(unittest.TestCase):
+    def cell(self, root, mode):
+        import io
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from .compare_codex import run_cell
+        from .test_compare_additional import fake_distill
+        profile = root / 'profile'
+        profile.mkdir(exist_ok=True)
+        (profile / 'codex-auth.json').write_text('{}')
+        output = root / f'cell-{mode}'
+        args = SimpleNamespace(variant='distill', case='tax-bug-en', output=output, distill=fake_distill(root),
+                               codex=root / 'codex', distill_profile=profile, codex_auth=profile / 'codex-auth.json',
+                               timeout=30, main_model='gpt-6-astra', worker_model='gpt-6-luna', enable_jev=False, mode=mode)
+        with patch('tools.task_cost_eval.compare_codex.subscription_account', return_value='account'), \
+             patch('tools.task_cost_eval.compare_codex.Collector'), redirect_stdout(io.StringIO()):
+            run_cell(args)
+        return json.loads((output / 'command.json').read_text()), json.loads((output / 'result.json').read_text())
+
+    def test_mode_reaches_the_distill_command_and_the_run_evidence(self):
+        from .test_compare_additional import command_shape
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plain, plain_result = self.cell(root, None)
+            command, result = self.cell(root, 'ultracode')
+            self.assertEqual(command_shape(command), command_shape(plain) + ['--ultracode'])
+            self.assertEqual((result['execution_mode'], result['execution_mode_activation_confirmed']), ('ultracode', True))
+            self.assertEqual((plain_result['execution_mode'], plain_result['execution_mode_activation_confirmed']), (None, None))
+
+    def test_native_variant_rejects_mode(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from .compare_codex import main, run_cell
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'cell'
+            with self.assertRaisesRegex(ValueError, 'only to the Distill'):
+                run_cell(SimpleNamespace(variant='codex', mode='auto', output=output, codex_auth=output))
+            with patch('tools.task_cost_eval.compare_codex.shutil.which', return_value='/bin/false'), \
+                 patch('sys.stderr'), self.assertRaises(SystemExit):
+                main(['--variant', 'codex', '--case', 'tax-bug-en', '--output', str(output), '--mode', 'normal'])
+            self.assertFalse(output.exists())
+
+    def test_old_result_files_load_as_the_pre_auto_default(self):
+        # The committed cohorts ran a binary older than Auto, without a mode flag: Normal.
+        from .compare_codex import evidence_mode
+        results = Path(__file__).parent / 'results'
+        for family in ('astra', 'sol', 'opus', 'deepseek'):
+            runs = json.loads((results / f'requested-20261016-{family}.json').read_text())['runs']
+            for run in runs:
+                self.assertNotIn('execution_mode', run['result'])
+                self.assertEqual(evidence_mode(run['result']), 'normal' if run['arm'] == 'distill' else None)
+        self.assertIsNone(evidence_mode({'variant': 'distill', 'execution_mode': None}))
+        self.assertEqual(evidence_mode({'variant': 'opus-distill', 'execution_mode': 'auto'}), 'auto')
 
 
 if __name__ == '__main__':

@@ -1,7 +1,9 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Turn deltas come from this process's last applied live ledger, not from persisted session totals (those stay large after resume).
 
-use distill_chat_state::{UsageAttribution, UsageCostBasis, UsageLedger, UtilityOutcomeCounts};
+use distill_chat_state::{
+    CacheBreakCounts, UsageAttribution, UsageCostBasis, UsageLedger, UtilityOutcomeCounts,
+};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -70,6 +72,10 @@ pub struct UsageSummary {
     /// billing: no token, cost or completeness rule reads them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub utility_outcomes: BTreeMap<String, UtilityOutcomeCounts>,
+    /// Main-request prompt-cache breaks by cause; telemetry like `utility_outcomes`. Absent in
+    /// older files.
+    #[serde(default, skip_serializing_if = "CacheBreakCounts::is_empty")]
+    pub cache_breaks: CacheBreakCounts,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -80,6 +86,10 @@ pub struct TurnUsage {
     pub ended_at: String,
     #[serde(flatten)]
     pub usage: UsageSummary,
+    /// What the root turn did by mode; absent for subagent sessions and in
+    /// files written before the record existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<distill_session_events::TurnOutcomeRecord>,
 }
 
 impl UsageSummary {
@@ -98,6 +108,7 @@ impl UsageSummary {
         summary.attributions = ledger.attributions.clone();
         summary.pending_attempt_ids = pending_attempt_ids;
         summary.utility_outcomes = ledger.utility_outcomes.clone();
+        summary.cache_breaks = ledger.cache_breaks.clone();
         summary
     }
 
@@ -125,6 +136,7 @@ impl UsageSummary {
             attributions: Vec::new(),
             pending_attempt_ids: Vec::new(),
             utility_outcomes: BTreeMap::new(),
+            cache_breaks: CacheBreakCounts::default(),
         }
     }
 
@@ -163,6 +175,7 @@ impl UsageSummary {
             &other.utility_outcomes,
             UtilityOutcomeCounts::saturating_add,
         );
+        out.cache_breaks = self.cache_breaks.saturating_add(&other.cache_breaks);
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
         out.turn_count = self.turn_count.saturating_add(other.turn_count);
@@ -201,6 +214,7 @@ impl UsageSummary {
                 &other.pending_attempt_ids,
             ),
             utility_outcomes: BTreeMap::new(),
+            cache_breaks: CacheBreakCounts::default(),
         }
     }
 
@@ -249,6 +263,7 @@ impl UsageSummary {
             })
             .filter(|(_, row)| !row.is_empty())
             .collect();
+        out.cache_breaks = self.cache_breaks.saturating_sub(&other.cache_breaks);
         out.cost_usd_ticks = sub_cost_ticks(self, other, &out.attributions, out.model_calls);
         out.primary_model_id = primary_model(&model_usage);
         out.model_usage = model_usage;
@@ -289,6 +304,7 @@ impl UsageSummary {
             attributions: Vec::new(),
             pending_attempt_ids: self.pending_attempt_ids.clone(),
             utility_outcomes: BTreeMap::new(),
+            cache_breaks: CacheBreakCounts::default(),
         }
     }
 
@@ -303,6 +319,7 @@ impl UsageSummary {
             && self.attributions.is_empty()
             && self.pending_attempt_ids.is_empty()
             && self.utility_outcomes.is_empty()
+            && self.cache_breaks.is_empty()
     }
 
     fn normalize_legacy_incomplete(&mut self) {
@@ -395,6 +412,7 @@ impl UsageSummary {
             &live.utility_outcomes,
             UtilityOutcomeCounts::max,
         );
+        projected.cache_breaks = baseline.cache_breaks.max(&live.cache_breaks);
         projected
             .pending_attempt_ids
             .retain(|attempt_id| !terminal_attempt_ids.contains(attempt_id.as_str()));
@@ -495,6 +513,25 @@ impl SessionUsageFile {
         self.turns
             .iter()
             .find(|turn| turn.turn_number == turn_number)
+    }
+
+    /// Attaches `outcome` to the row of `turn_number`; `false` when there is none.
+    pub(crate) fn set_turn_outcome(
+        &mut self,
+        turn_number: u32,
+        outcome: distill_session_events::TurnOutcomeRecord,
+    ) -> bool {
+        match self
+            .turns
+            .iter_mut()
+            .find(|turn| turn.turn_number == turn_number)
+        {
+            Some(turn) => {
+                turn.outcome = Some(outcome);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn retain_turns_through(&mut self, max_turn: u32) {
@@ -628,6 +665,7 @@ impl SessionUsageFile {
             turn_number,
             ended_at,
             usage: turn_usage.clone(),
+            outcome: None,
         });
 
         self.session = self.session.saturating_add(&turn_usage);
@@ -843,6 +881,7 @@ fn aggregate_residual(live: &UsageSummary, attributed: &UsageSummary) -> UsageSu
     residual.attributions.clear();
     residual.pending_attempt_ids.clear();
     residual.utility_outcomes.clear();
+    residual.cache_breaks = CacheBreakCounts::default();
     residual.usage_is_incomplete = residual.permanent_incomplete;
     for row in residual.model_usage.values_mut() {
         row.attributions.clear();

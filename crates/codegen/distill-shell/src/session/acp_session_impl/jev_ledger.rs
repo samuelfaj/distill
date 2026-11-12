@@ -97,6 +97,9 @@ pub(crate) struct JevTurnLedger {
     /// Catalog slug of the non-main tier model the turn route runs on, so a
     /// kept route resumes that exact entry rather than a wire-id lookalike.
     pub(crate) tier_route_slug: Option<String>,
+    /// The client was already told why tier routing is not running.
+    /// Session-scoped: the turn drain keeps it, so the notice comes once.
+    pub(crate) tier_block_notified: bool,
     /// A model switch that needed an account handoff while a turn ran; applied
     /// when the turn ends. Session-scoped: the turn drain keeps it.
     pub(crate) deferred_model_switch: DeferredModelSwitch,
@@ -117,6 +120,67 @@ pub(crate) struct JevTurnLedger {
     /// Item hashes of the last main Messages request, to name where a later
     /// cache read broke. Session-scoped, like the cache it traces.
     pub(crate) prefix_trace: super::prompt_cache::PrefixTrace,
+    /// UltraCode v2 turn review of the current prompt: snapshot, rework and
+    /// panel counters, gate clock and status. Keyed by prompt id, so a new
+    /// prompt starts from zero.
+    pub(crate) ultracode_review: crate::session::goal_classifier::turn_review::TurnReviewState,
+    /// B8 stable tools: the full tools array went out under Auto, so a lean
+    /// pick keeps sending it while the prompt is large. Session-scoped:
+    /// cleared only when a lean mode re-projects a small or compacted prompt.
+    pub(crate) auto_full_tools_sent: bool,
+    /// How the last drained request ended, for Auto's next request-start
+    /// pick. Session-scoped: each drain replaces it.
+    pub(crate) previous_turn: Option<crate::session::acp_session::jev_auto_mode::PreviousTurn>,
+    /// Escalation ratchet of the current turn: triggers recorded, climbs,
+    /// effort level, tier floor. Cleared when the turn drains.
+    pub(crate) escalation: super::escalation::EscalationState,
+    /// Outcome facts for `events.jsonl`; no decision reads them.
+    /// Final-check reminders sent in this session. Session-scoped.
+    pub(crate) final_check_reminders: u64,
+    /// The pending reminder and what followed it, emitted once when its
+    /// request ends.
+    pub(crate) final_check_followup: Option<FinalCheckFollowup>,
+    /// When the last request ended, for F1's follow-up window. Session-scoped.
+    pub(crate) last_request_end: Option<Instant>,
+    /// Main-loop rounds of the current prompt turn by effective mode id; the
+    /// turn outcome record takes them at turn end.
+    pub(crate) mode_rounds: std::collections::BTreeMap<&'static str, u64>,
+    /// Escalations the current prompt turn made; the turn outcome record
+    /// takes it at turn end.
+    pub(crate) turn_escalations: u64,
+    /// Files whose read the current turn narrowed, so a later read of one
+    /// counts as a re-read after selection. Cleared when the turn drains.
+    pub(crate) narrowed_reads: std::collections::HashSet<std::path::PathBuf>,
+    /// Turn and round in which `read_not_narrowed` was last recorded, so it
+    /// is recorded at most once per round.
+    pub(crate) read_not_narrowed_round: Option<(String, u64)>,
+    /// The turn's one effort decision under a once-per-turn cadence.
+    pub(crate) turn_effort: super::mode_effort::TurnEffort,
+    /// The level the turn's last answered effort question picked.
+    pub(crate) last_answered_effort: Option<(String, distill_sampling_types::ReasoningEffort)>,
+    /// Whether the round being prepared kept the turn's route.
+    pub(crate) round_route_kept: bool,
+    /// Failed tools and failed check runs when the last main response
+    /// arrived; more now means this round follows a failure.
+    failures_at_last_response: u64,
+    /// The turn-start skill-relevance line nothing awaited, with its turn.
+    pub(crate) late_skill_hint: Option<(u64, tokio::task::JoinHandle<Option<String>>)>,
+    /// `(turn, round)` that last recorded a skipped utility selection.
+    pub(crate) utility_skip_recorded: Option<(u64, u64)>,
+}
+
+/// What a request did after its final-check reminder.
+#[derive(Debug, Default)]
+pub(crate) struct FinalCheckFollowup {
+    pub(crate) reminder_seq: u64,
+    /// Working-tree marker at the reminder.
+    pub(crate) worktree: Option<String>,
+    pub(crate) tool_rounds: u64,
+    /// Round of the last tool result counted in `tool_rounds`.
+    pub(crate) last_round: Option<u64>,
+    pub(crate) edited: bool,
+    pub(crate) delivered: bool,
+    pub(crate) fixed_token: bool,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.
@@ -192,11 +256,41 @@ impl JevTurnLedger {
             row.output_tokens = row.output_tokens.saturating_add(output_tokens);
         }
         self.last_main_prompt_tokens = Some(input_tokens);
+        self.failures_at_last_response = self.failure_count();
+    }
+
+    /// Failed tool calls plus failed runs of recorded checks so far.
+    fn failure_count(&self) -> u64 {
+        let failed_checks: u64 = self
+            .facts
+            .recorded_checks()
+            .iter()
+            .filter(|check| check.outcome == super::turn_facts::CheckOutcome::Failed)
+            .map(|check| u64::from(check.failures))
+            .sum();
+        self.facts.failed_tool_count().saturating_add(failed_checks)
+    }
+
+    /// Whether a tool failed, or a recorded check failed, since the last main
+    /// response: the round being prepared follows a failure.
+    pub(crate) fn follows_failure(&self) -> bool {
+        self.failure_count() > self.failures_at_last_response
     }
 
     /// Prompt tokens of the last main response whose prefix may be reused.
     pub(crate) fn last_main_prompt_tokens(&self) -> Option<u64> {
         self.last_main_prompt_tokens
+    }
+
+    /// Whether a lean mode under Auto keeps the full tools array: it already
+    /// went out, and the prompt is large enough that changing the array would
+    /// re-read it uncached at a real cost. After a compaction the prompt size
+    /// is unknown, so the array may be rebuilt.
+    pub(crate) fn keeps_full_tools(&self) -> bool {
+        self.auto_full_tools_sent
+            && self
+                .last_main_prompt_tokens
+                .is_some_and(|tokens| tokens >= EFFORT_SWITCH_FREE_PROMPT_TOKENS)
     }
 
     /// Changed tools or rewritten history cannot reuse the previous prefix.
@@ -242,6 +336,34 @@ impl JevTurnLedger {
             mode,
             failed_tool_count: self.facts.failed_tool_count(),
         });
+    }
+
+    /// The route a once-per-turn cadence keeps: the one this turn's round
+    /// chose, at any prompt size and after a failed tool too. `None` for a
+    /// new turn, another session model or mode, or no route chosen yet.
+    pub(crate) fn per_turn_route(
+        &self,
+        turn: u64,
+        session_model: &str,
+        mode: distill_tool_types::ExecutionMode,
+    ) -> Option<TurnRoute> {
+        let anchor = self.turn_route.as_ref()?;
+        (anchor.turn == turn && anchor.session_model == session_model && anchor.mode == mode)
+            .then(|| anchor.route.clone())
+    }
+
+    /// Replaces the route later rounds keep, leaving what it is anchored to.
+    pub(crate) fn replace_turn_route(&mut self, route: TurnRoute) {
+        if let Some(anchor) = self.turn_route.as_mut() {
+            anchor.route = route;
+        }
+    }
+
+    /// The effort later rounds of the turn keep, when a route is anchored.
+    pub(crate) fn turn_route_effort(
+        &self,
+    ) -> Option<Option<distill_sampling_types::ReasoningEffort>> {
+        self.turn_route.as_ref().map(|anchor| anchor.route.effort)
     }
 
     /// A compaction rewrote the prompt, so the cache the turn route protects is
@@ -300,7 +422,16 @@ impl JevTurnLedger {
             return false;
         }
         self.review_escalated = true;
-        self.effort_floor = Some((level.into(), value));
+        let level = level.into();
+        // No caller names why; `unspecified` until one does.
+        crate::jev::emit_outcome_event(None, |round| {
+            distill_session_events::Event::EffortFloorRaised {
+                level: crate::jev::outcome_id(&level),
+                trigger: "unspecified",
+                round,
+            }
+        });
+        self.effort_floor = Some((level, value));
         true
     }
 
@@ -377,6 +508,16 @@ impl JevTurnLedger {
         })
     }
 
+    /// How `prompt_id`'s UltraCode turn review ended (REVIEWED or
+    /// UNVERIFIED with a reason), for the turn outcome record; `None` when
+    /// that turn was not reviewed.
+    pub(crate) fn ultracode_turn_status(
+        &self,
+        prompt_id: &str,
+    ) -> Option<&crate::session::goal_classifier::turn_review::TurnStatus> {
+        self.ultracode_review.status_for(prompt_id)
+    }
+
     /// Drains the turn: rows biggest first, then the ledger is empty again.
     pub(crate) fn take_rows(&mut self) -> Vec<LedgerRow> {
         let mut rows = std::mem::take(&mut self.rows);
@@ -388,6 +529,9 @@ impl JevTurnLedger {
         self.pending_effort_label = None;
         self.effort_floor = None;
         self.review_escalated = false;
+        self.previous_turn = Some(crate::session::acp_session::jev_auto_mode::PreviousTurn::of(
+            &self.facts,
+        ));
         self.facts = Default::default();
         self.turn_intent = None;
         self.last_execution = None;
@@ -396,6 +540,16 @@ impl JevTurnLedger {
         self.tier_route_active = false;
         self.tier_route_slug = None;
         self.auto_mode = Default::default();
+        self.escalation = Default::default();
+        self.narrowed_reads.clear();
+        std::mem::take(&mut self.turn_effort).abort();
+        self.last_answered_effort = None;
+        self.round_route_kept = false;
+        self.failures_at_last_response = 0;
+        if let Some((_, hint)) = self.late_skill_hint.take() {
+            hint.abort();
+        }
+        self.utility_skip_recorded = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

@@ -189,6 +189,7 @@ fn record_auxiliary_response_with_status(
             usage_complete: response.usage.is_some(),
             api_duration_ms,
             cost_usd_ticks: response.cost_usd_ticks,
+            cache_lifetime_secs: None,
             cost_basis: if response.cost_usd_ticks.is_some() {
                 distill_chat_state::UsageCostBasis::Reported
             } else {
@@ -293,6 +294,7 @@ fn record_auxiliary_failures_with_status(
                 usage_complete: false,
                 api_duration_ms: None,
                 cost_usd_ticks: None,
+                cache_lifetime_secs: None,
                 cost_basis: distill_chat_state::UsageCostBasis::Unknown,
             },
             attribute_to_prompt,

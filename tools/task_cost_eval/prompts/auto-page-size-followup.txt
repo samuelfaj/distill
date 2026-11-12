@@ -1,0 +1,3 @@
+Thanks. Please let callers choose the page size: list_items and list_users should take an optional page_size
+argument that defaults to the configured value and is never allowed above the configured maximum. Existing calls
+must keep working.

@@ -858,8 +858,8 @@ impl SessionActor {
                 .as_ref()
                 .is_some_and(|summary| summary.len() > WORKFLOW_RESULT_SUMMARY_REMINDER_CAP)
         };
-        if !crate::jev::lever_active(distill_workspace::jev::flags::JevLever::ECheapCompress)
-            || !runs.iter().any(cut)
+        if !runs.iter().any(cut)
+            || !self.utility_selection_active()
             || format_workflow_completion_reminder(runs, session_dir, read_tool_name).len()
                 <= WORKFLOW_UTILITY_REMINDER_BYTES
         {

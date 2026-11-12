@@ -319,8 +319,8 @@ impl SessionActor {
                 self.worker_prompt_pending.set(true);
                 return;
             }
+            // A prepared pass-1 note stays: the compaction that uses it checks the history it summarized.
             self.agent.borrow_mut().set_rendered_prompt(rendered);
-            self.abort_and_clear_prefire().await;
             let mut persisted_context = self.agent.borrow().prompt_context().clone();
             persisted_context.normalize_for_persistence();
             save_prompt_context(&self.session_info, &persisted_context);
@@ -334,7 +334,6 @@ impl SessionActor {
                 self.worker_prompt_pending.set(true);
                 return;
             }
-            self.abort_and_clear_prefire().await;
             self.chat_state_handle.update_system_prompt(&head).await;
             save_system_prompt(&self.session_info, &head);
             tracing::info!(
@@ -374,7 +373,6 @@ impl SessionActor {
             return;
         }
         self.agent.borrow_mut().set_rendered_prompt(rendered);
-        self.abort_and_clear_prefire().await;
         let agent = self.agent.borrow();
         let mut persisted_context = agent.prompt_context().clone();
         persisted_context.normalize_for_persistence();
@@ -638,11 +636,16 @@ impl SessionActor {
     }
     /// Abort and join an in-flight prefire pass-1 and drop its NOTE1 cache.
     pub(super) async fn abort_and_clear_prefire(&self) {
+        let mut discarded = self.compaction.prefire.has_cache();
         if let Some(handle) = self.compaction.prefire.take_handle() {
+            discarded |= !handle.is_finished();
             handle.abort();
             let _ = handle.await;
             self.compaction.prefire.finish();
         }
         self.compaction.prefire.clear();
+        if discarded {
+            self.record_pass1_outcome("discard:cleared");
+        }
     }
 }

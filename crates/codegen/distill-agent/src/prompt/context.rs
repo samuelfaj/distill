@@ -245,7 +245,6 @@ impl PromptContext {
             "current_date": self.current_date.as_deref().unwrap_or(""),
             "is_non_interactive": self.is_non_interactive,
             "system_prompt_label": self.system_prompt_label.as_str(),
-            "include_browser_verification": self.include_browser_verification,
         })
     }
     /// Render the full system prompt via `ToolBridge`. Tool names are resolved inside the bridge.
@@ -422,25 +421,19 @@ mod tests {
             system_prompt_label: default_system_prompt_label(),
         }
     }
+    /// The flagged agents already get the detailed browser rule in the first
+    /// user message (`browser_verification::USER_RULE`); a second, shorter copy
+    /// in the system prompt only cost tokens on every request.
     #[test]
-    fn standard_primary_template_renders_browser_verification_only_when_flagged() {
+    fn standard_primary_template_never_repeats_the_browser_verification_rule() {
         let renderer = TemplateRenderer::new(Default::default(), Default::default());
         let mut ctx = test_context();
         ctx.include_browser_verification = true;
         let on = ctx.render_with_renderer(&renderer).unwrap();
         ctx.include_browser_verification = false;
         let off = ctx.render_with_renderer(&renderer).unwrap();
-        let block_start = on
-            .find("\n\n<browser_verification>")
-            .expect("flagged standard template must render browser verification");
-        let block_end =
-            on.find("</browser_verification>").unwrap() + "</browser_verification>".len();
-        assert_eq!(
-            format!("{}{}", &on[..block_start], &on[block_end..]),
-            off,
-            "the flag adds the block and changes nothing else"
-        );
-        assert!(!off.contains("<browser_verification>"));
+        assert_eq!(on, off, "the flag no longer changes the system prompt");
+        assert!(!on.contains("<browser_verification>"));
     }
     #[test]
     fn full_mode_flag_does_not_append_browser_verification() {

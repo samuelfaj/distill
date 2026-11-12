@@ -1,4 +1,5 @@
 //! The browser-verification rule the plan agent injects into the first user message.
+//! It is the only copy: the system prompt does not repeat it.
 
 use crate::prompt::user_message::RuleEntry;
 

@@ -122,6 +122,7 @@ async fn turn_distribution_includes_nested_subagent_efforts_once() {
                 usage_complete: true,
                 api_duration_ms: None,
                 cost_usd_ticks: None,
+                cache_lifetime_secs: None,
                 cost_basis: UsageCostBasis::Unknown,
             };
             actor
@@ -222,6 +223,7 @@ async fn late_child_usage_is_sent_to_spawning_prompt_row_once() {
                 usage_complete: true,
                 api_duration_ms: None,
                 cost_usd_ticks: None,
+                cache_lifetime_secs: None,
                 cost_basis: distill_chat_state::UsageCostBasis::Unknown,
             };
 

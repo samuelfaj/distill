@@ -1355,6 +1355,8 @@ async fn read_parent_sampling_config(
                 doom_loop_recovery: ctx.sampling_config.doom_loop_recovery,
                 reasoning_shape: ctx.sampling_config.reasoning_shape,
                 openrouter_variant: ctx.sampling_config.openrouter_variant.clone(),
+                // The serving path belongs to the pinned root session's own requests.
+                provider_tier: None,
                 header_injector: ctx.sampling_config.header_injector.clone(),
             };
             if inherited
@@ -1855,7 +1857,16 @@ async fn load_initial_context(
                 .copy_session_data(&source_session_info, child_session_info, copy_options)
                 .await
             {
-                Ok(result) => Some(result),
+                Ok(result) => {
+                    // The resumed child starts warm, as a verbatim fork does, while the source's
+                    // last request is inside its cache lifetime. Best effort: without it, cold.
+                    let _ = std::fs::copy(
+                        session::persistence::session_dir(&source_session_info)
+                            .join(session::persistence::CACHE_STATE_FILE),
+                        child_session_dir.join(session::persistence::CACHE_STATE_FILE),
+                    );
+                    Some(result)
+                }
                 Err(e) => {
                     return BootstrapInitialContext::ResumeAbort(format!(
                         "Cannot resume from subagent '{}': failed to copy source session data: {e}",

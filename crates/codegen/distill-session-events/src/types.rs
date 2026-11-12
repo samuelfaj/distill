@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const EVENT_SCHEMA_VERSION: &str = "1.0";
@@ -197,6 +199,24 @@ pub enum Event {
         pattern: &'static str,
     },
 
+    /// UltraCode v2: one independent review run over a turn's patch.
+    UltracodeTurnReview {
+        review: u32,
+        skeptics: u32,
+        verdict: &'static str,
+        latency_ms: u64,
+    },
+    /// UltraCode v2: how a reviewed turn ended.
+    UltracodeTurnStatus {
+        status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        reviews: u32,
+        rework_rounds: u32,
+        panel_used: bool,
+        gate_ms: u64,
+    },
+
     McpConfigResolved {
         servers: Vec<McpConfigServer>,
         disabled: Vec<String>,
@@ -310,6 +330,270 @@ pub enum Event {
         server_name: String,
         enabled: bool,
     },
+    /// One recorded Jev decision. Content-free by contract: ids, numbers and
+    /// the composed label only, never the state, question text or reason.
+    JevDecision {
+        /// Per session and process; shared with `JevNoAnswer`.
+        seq: u64,
+        lever: &'static str,
+        /// 12 hex over the question ids and instruction texts; absent when
+        /// the answers did not come through `ask_item`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        question_hash: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        answers: BTreeMap<String, JevAnswerSummary>,
+        label: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        /// Absent when the provenance of the answers is unknown.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memo: Option<bool>,
+        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// One Jev ask that returned no answer.
+    JevNoAnswer {
+        seq: u64,
+        lever: &'static str,
+        kind: JevNoAnswerKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        question_hash: Option<String>,
+        latency_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    // Outcome facts a decision is later joined with. Content-free like the
+    // decision events: ids, numbers, booleans and 12-hex hashes only.
+    /// A build, test or lint the harness recorded as a check.
+    CheckRecorded {
+        outcome: CheckRecordedOutcome,
+        /// 12 hex over the full command.
+        command_hash: String,
+        /// Whether the check ran on the working tree as it is now; absent
+        /// when no working-tree marker was taken.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_current_tree: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The turn-end final check appended its reminder.
+    FinalCheckReminder {
+        /// Reminders sent in this session, this one included.
+        seq: u64,
+        /// The labels recorded for C1 and C3, as `c1:<label>,c3:<label>`.
+        label: String,
+        /// 12 hex over the working-tree marker; absent when none was taken.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        worktree_hash: Option<String>,
+    },
+    /// What the request that received a final-check reminder did after it.
+    FinalCheckFollowup {
+        reminder_seq: u64,
+        /// Rounds with at least one tool result after the reminder.
+        tool_rounds: u64,
+        /// An edit tool ran after the reminder.
+        edited: bool,
+        /// A commit, push or PR command ran after the reminder.
+        delivered: bool,
+        /// The first reply to the reminder was only the confirmation token.
+        fixed_token: bool,
+        /// The working-tree marker differs from the reminder's; absent when
+        /// either marker is missing.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        worktree_changed: Option<bool>,
+    },
+    /// The effective execution mode changed.
+    ModeSwitched {
+        from: &'static str,
+        to: &'static str,
+        trigger: ModeSwitchTrigger,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The next call's effort floor actually rose.
+    EffortFloorRaised {
+        level: String,
+        trigger: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The skill ranking surfaced a skill to the model.
+    SkillSuggested {
+        /// 12 hex over the skill name.
+        name_hash: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// The model read a catalog skill file or invoked a skill.
+    SkillRead {
+        name_hash: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// One enforcement of a per-mode policy rule.
+    ModePolicy {
+        /// Shared with the Jev events.
+        seq: u64,
+        mode: &'static str,
+        /// A short identifier (`effort_ceiling`, `review_verdict:reviewed`).
+        rule: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u64>,
+    },
+    /// What a root prompt turn did, once per turn.
+    TurnOutcome(TurnOutcomeRecord),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckRecordedOutcome {
+    Passed,
+    Failed,
+    Unknown,
+}
+
+/// What changed the effective execution mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeSwitchTrigger {
+    /// Auto's pick when a request starts.
+    RequestStart,
+    /// Auto's review after a tool round.
+    Review,
+    /// The user fixed a mode.
+    User,
+    /// The escalation ratchet moved Auto one step up after a harness signal.
+    Ratchet,
+}
+
+/// What one root prompt turn did by mode, written when it ends: an event, an
+/// optional field on the turn's usage.json row, and an optional field of the
+/// turn-end usage sent to the client. Counts and short identifiers only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnOutcomeRecord {
+    /// The user's selection: `auto` or the pinned mode's id.
+    pub mode_choice: String,
+    /// Main-loop rounds of the turn by effective mode id.
+    #[serde(default)]
+    pub mode_rounds: BTreeMap<String, u64>,
+    /// `reviewed`, `checked` or `unverified`.
+    pub verification: String,
+    /// Why the turn is `unverified`: `no_check`, `check_failed`,
+    /// `check_unknown`, `check_stale` or `review_unverified`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_reason: Option<String>,
+    #[serde(default)]
+    pub checks: CheckCounts,
+    #[serde(default)]
+    pub escalations: u64,
+    /// Policy rows recorded during the turn, by `<mode>:<rule>`.
+    #[serde(default)]
+    pub policy: BTreeMap<String, u64>,
+    /// Subagent model calls folded into the turn, their summed API time and,
+    /// when every call reported one, their cost.
+    #[serde(default)]
+    pub child_calls: u64,
+    #[serde(default)]
+    pub child_api_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_cost_usd_ticks: Option<i64>,
+    /// What kept the pinned or effective mode from acting: `no_cheaper_model`,
+    /// `jev_silent`, `effort_pinned`, `auto_runtime_only`, `tier_routing_off`.
+    #[serde(default)]
+    pub blocked: Vec<String>,
+}
+
+/// Recorded checks of the turn by outcome; an identical rerun with the same
+/// outcome is one recorded check.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckCounts {
+    #[serde(default)]
+    pub passed: u64,
+    #[serde(default)]
+    pub failed: u64,
+    #[serde(default)]
+    pub unknown: u64,
+}
+
+impl TurnOutcomeRecord {
+    /// One short line for the end of a turn: mode mix, verification, checks,
+    /// escalations and blockers.
+    pub fn summary_line(&self) -> String {
+        let mut rounds: Vec<(&String, &u64)> = self.mode_rounds.iter().collect();
+        rounds.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let mix = rounds
+            .iter()
+            .map(|(mode, count)| format!("{mode} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut line = format!("Mode {}", self.mode_choice);
+        if !mix.is_empty() {
+            line.push_str(&format!(" ({mix})"));
+        }
+        line.push_str(&format!(" · {}", self.verification));
+        if let Some(reason) = &self.verification_reason {
+            line.push_str(&format!(" ({reason})"));
+        }
+        let CheckCounts {
+            passed,
+            failed,
+            unknown,
+        } = self.checks;
+        line.push_str(&format!(
+            " · checks {passed} passed, {failed} failed, {unknown} unknown · escalations {}",
+            self.escalations
+        ));
+        if !self.blocked.is_empty() {
+            line.push_str(&format!(" · blocked: {}", self.blocked.join(", ")));
+        }
+        line
+    }
+}
+
+/// One Jev answer as the model returned it, without any text: the picked
+/// option id and numbers. A distribution over more than eight options keeps
+/// its five most likely entries and counts the rest in `omitted`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JevAnswerSummary {
+    Choice {
+        choice: String,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        probabilities: BTreeMap<String, f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        #[serde(skip_serializing_if = "is_zero")]
+        omitted: usize,
+    },
+    Score {
+        score: f64,
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        probabilities: BTreeMap<String, f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
+        #[serde(skip_serializing_if = "is_zero")]
+        omitted: usize,
+    },
+    Noul {
+        noul: f64,
+    },
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::IntoStaticStr)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum JevNoAnswerKind {
+    Error,
+    Timeout,
+    NoCredential,
+    LeverOff,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -723,6 +1007,154 @@ mod tests {
         assert_eq!(obj.get("role"), Some(&serde_json::json!("planner")));
     }
 
+    /// The analyzer reads these field names; a rename breaks it silently.
+    #[test]
+    fn jev_events_serialize_their_wire_shape() {
+        let decision = serde_json::to_value(Event::JevDecision {
+            seq: 3,
+            lever: "b8_execution_mode",
+            question_hash: Some("0123456789ab".into()),
+            model_id: Some("jev-model".into()),
+            answers: BTreeMap::from([
+                (
+                    "mode".to_owned(),
+                    JevAnswerSummary::Choice {
+                        choice: "normal".into(),
+                        probabilities: BTreeMap::from([("normal".to_owned(), 0.75)]),
+                        confidence: Some(0.5),
+                        omitted: 0,
+                    },
+                ),
+                ("risk".to_owned(), JevAnswerSummary::Noul { noul: 0.25 }),
+            ]),
+            label: "normal".into(),
+            confidence: None,
+            memo: Some(false),
+            latency_ms: 40,
+            round: Some(2),
+        })
+        .unwrap();
+        assert_eq!(
+            decision,
+            serde_json::json!({
+                "type": "jev_decision",
+                "seq": 3,
+                "lever": "b8_execution_mode",
+                "question_hash": "0123456789ab",
+                "model_id": "jev-model",
+                "answers": {
+                    "mode": {"type": "choice", "choice": "normal", "probabilities": {"normal": 0.75}, "confidence": 0.5},
+                    "risk": {"type": "noul", "noul": 0.25}
+                },
+                "label": "normal",
+                "memo": false,
+                "latency_ms": 40,
+                "round": 2
+            })
+        );
+
+        let missing = serde_json::to_value(Event::JevNoAnswer {
+            seq: 4,
+            lever: "c4_diff_risk",
+            kind: JevNoAnswerKind::NoCredential,
+            question_hash: None,
+            latency_ms: 0,
+            round: None,
+        })
+        .unwrap();
+        assert_eq!(
+            missing,
+            serde_json::json!({
+                "type": "jev_no_answer",
+                "seq": 4,
+                "lever": "c4_diff_risk",
+                "kind": "no_credential",
+                "latency_ms": 0
+            })
+        );
+    }
+
+    /// The decisions report joins on these names; a rename breaks it silently.
+    #[test]
+    fn outcome_facts_serialize_their_wire_shape() {
+        let shape = |event| serde_json::to_value(event).unwrap();
+        assert_eq!(
+            shape(Event::CheckRecorded {
+                outcome: CheckRecordedOutcome::Failed,
+                command_hash: "0123456789ab".into(),
+                on_current_tree: Some(true),
+                round: Some(3),
+            }),
+            serde_json::json!({"type": "check_recorded", "outcome": "failed",
+                "command_hash": "0123456789ab", "on_current_tree": true, "round": 3})
+        );
+        assert_eq!(
+            shape(Event::CheckRecorded {
+                outcome: CheckRecordedOutcome::Unknown,
+                command_hash: "0123456789ab".into(),
+                on_current_tree: None,
+                round: None,
+            }),
+            serde_json::json!({"type": "check_recorded", "outcome": "unknown",
+                "command_hash": "0123456789ab"})
+        );
+        assert_eq!(
+            shape(Event::FinalCheckReminder {
+                seq: 1,
+                label: "c1:incomplete,c3:complete".into(),
+                worktree_hash: Some("ba9876543210".into()),
+            }),
+            serde_json::json!({"type": "final_check_reminder", "seq": 1,
+                "label": "c1:incomplete,c3:complete", "worktree_hash": "ba9876543210"})
+        );
+        assert_eq!(
+            shape(Event::FinalCheckFollowup {
+                reminder_seq: 1,
+                tool_rounds: 2,
+                edited: true,
+                delivered: false,
+                fixed_token: false,
+                worktree_changed: Some(true),
+            }),
+            serde_json::json!({"type": "final_check_followup", "reminder_seq": 1,
+                "tool_rounds": 2, "edited": true, "delivered": false, "fixed_token": false,
+                "worktree_changed": true})
+        );
+        assert_eq!(
+            shape(Event::ModeSwitched {
+                from: "normal",
+                to: "ultrasave",
+                trigger: ModeSwitchTrigger::RequestStart,
+                round: Some(0),
+            }),
+            serde_json::json!({"type": "mode_switched", "from": "normal", "to": "ultrasave",
+                "trigger": "request_start", "round": 0})
+        );
+        assert_eq!(
+            shape(Event::EffortFloorRaised {
+                level: "high".into(),
+                trigger: "unspecified",
+                round: Some(4),
+            }),
+            serde_json::json!({"type": "effort_floor_raised", "level": "high",
+                "trigger": "unspecified", "round": 4})
+        );
+        assert_eq!(
+            shape(Event::SkillSuggested {
+                name_hash: "0123456789ab".into(),
+                round: None,
+            }),
+            serde_json::json!({"type": "skill_suggested", "name_hash": "0123456789ab"})
+        );
+        assert_eq!(
+            shape(Event::SkillRead {
+                name_hash: "0123456789ab".into(),
+                round: Some(2),
+            }),
+            serde_json::json!({"type": "skill_read", "name_hash": "0123456789ab", "round": 2})
+        );
+    }
+
     #[test]
     fn goal_role_model_fail_open_omits_skeptic_idx_when_none() {
         let ev = Event::GoalRoleModelFailOpen {
@@ -743,6 +1175,78 @@ mod tests {
         assert_eq!(
             obj.get("reason"),
             Some(&serde_json::json!("model_unauthorized"))
+        );
+    }
+
+    /// The analyzer and the usage.json reader rely on these field names.
+    #[test]
+    fn mode_policy_and_turn_outcome_serialize_their_wire_shape() {
+        let row = serde_json::to_value(Event::ModePolicy {
+            seq: 7,
+            mode: "ultracode",
+            rule: "review_verdict:reviewed".into(),
+            round: Some(3),
+        })
+        .unwrap();
+        assert_eq!(
+            row,
+            serde_json::json!({
+                "type": "mode_policy",
+                "seq": 7,
+                "mode": "ultracode",
+                "rule": "review_verdict:reviewed",
+                "round": 3
+            })
+        );
+        let record = TurnOutcomeRecord {
+            mode_choice: "auto".into(),
+            mode_rounds: BTreeMap::from([("normal".into(), 1), ("ultrasave".into(), 3)]),
+            verification: "unverified".into(),
+            verification_reason: Some("check_failed".into()),
+            checks: CheckCounts {
+                passed: 2,
+                failed: 1,
+                unknown: 0,
+            },
+            escalations: 0,
+            policy: BTreeMap::from([("ultrasave:compaction:max_prompt".into(), 1)]),
+            child_calls: 4,
+            child_api_ms: 1200,
+            child_cost_usd_ticks: None,
+            blocked: vec!["jev_silent".into()],
+        };
+        let event = serde_json::to_value(Event::TurnOutcome(record.clone())).unwrap();
+        assert_eq!(
+            event,
+            serde_json::json!({
+                "type": "turn_outcome",
+                "mode_choice": "auto",
+                "mode_rounds": {"normal": 1, "ultrasave": 3},
+                "verification": "unverified",
+                "verification_reason": "check_failed",
+                "checks": {"passed": 2, "failed": 1, "unknown": 0},
+                "escalations": 0,
+                "policy": {"ultrasave:compaction:max_prompt": 1},
+                "child_calls": 4,
+                "child_api_ms": 1200,
+                "blocked": ["jev_silent"]
+            })
+        );
+        let mut stored = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TurnOutcomeRecord>(stored.clone()).unwrap(),
+            record
+        );
+        // Fields added later must not fail an older reader's row.
+        stored
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| key == "mode_choice" || key == "verification");
+        let sparse: TurnOutcomeRecord = serde_json::from_value(stored).unwrap();
+        assert_eq!(sparse.checks, CheckCounts::default());
+        assert_eq!(
+            record.summary_line(),
+            "Mode auto (ultrasave 3, normal 1) · unverified (check_failed) · checks 2 passed, 1 failed, 0 unknown · escalations 0 · blocked: jev_silent"
         );
     }
 }

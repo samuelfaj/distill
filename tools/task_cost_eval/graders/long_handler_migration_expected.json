@@ -1,0 +1,7374 @@
+{
+ "calls": [
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "alerts",
+     "total": 6
+    },
+    "headers": {
+     "Cache-Control": "max-age=2"
+    },
+    "status": 200
+   },
+   "route": "alerts.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "alerts",
+     "total": 2
+    },
+    "headers": {
+     "Cache-Control": "max-age=2"
+    },
+    "status": 200
+   },
+   "route": "alerts.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "alerts",
+     "total": 2
+    },
+    "headers": {
+     "Cache-Control": "max-age=2"
+    },
+    "status": 200
+   },
+   "route": "alerts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "alerts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "alerts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "alerts.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "batches",
+     "total": 105
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "batches.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "batches",
+     "total": 35
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "batches.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "batches.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "batches.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "batches.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "batches.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/bookings/7"
+    },
+    "status": 201
+   },
+   "route": "bookings.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/bookings/2"
+    },
+    "status": 201
+   },
+   "route": "bookings.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/bookings/0"
+    },
+    "status": 201
+   },
+   "route": "bookings.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "bookings.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "bookings.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "bookings.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "bookings",
+     "total": 42
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "bookings.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "bookings",
+     "total": 14
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "bookings.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "bookings.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "bookings.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "bookings.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "bookings.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/budgets/7"
+    },
+    "status": 201
+   },
+   "route": "budgets.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/budgets/2"
+    },
+    "status": 201
+   },
+   "route": "budgets.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/budgets/0"
+    },
+    "status": 201
+   },
+   "route": "budgets.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "budgets.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "budgets.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "budgets.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "budgets",
+     "total": 78
+    },
+    "headers": {
+     "Cache-Control": "max-age=26"
+    },
+    "status": 200
+   },
+   "route": "budgets.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "budgets",
+     "total": 26
+    },
+    "headers": {
+     "Cache-Control": "max-age=26"
+    },
+    "status": 200
+   },
+   "route": "budgets.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "budgets",
+     "total": 26
+    },
+    "headers": {
+     "Cache-Control": "max-age=26"
+    },
+    "status": 200
+   },
+   "route": "budgets.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "budgets.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "budgets.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "budgets.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "carts",
+     "total": 99
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "carts.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "carts",
+     "total": 33
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "carts.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "carts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "carts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "carts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "carts.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/comments/7"
+    },
+    "status": 201
+   },
+   "route": "comments.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/comments/2"
+    },
+    "status": 201
+   },
+   "route": "comments.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/comments/0"
+    },
+    "status": 201
+   },
+   "route": "comments.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "comments.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "comments.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "comments.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "comments",
+     "total": 42
+    },
+    "headers": {
+     "Cache-Control": "max-age=14"
+    },
+    "status": 200
+   },
+   "route": "comments.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "comments",
+     "total": 14
+    },
+    "headers": {
+     "Cache-Control": "max-age=14"
+    },
+    "status": 200
+   },
+   "route": "comments.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "comments",
+     "total": 14
+    },
+    "headers": {
+     "Cache-Control": "max-age=14"
+    },
+    "status": 200
+   },
+   "route": "comments.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "comments.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "comments.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "comments.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "coupons",
+     "total": 30
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "coupons.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "coupons",
+     "total": 10
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "coupons.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "coupons",
+     "total": 10
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "coupons.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "coupons.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "coupons.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "coupons.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "coupons",
+     "total": 30
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "coupons.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "coupons",
+     "total": 10
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "coupons.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "coupons",
+     "total": 10
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "coupons.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "coupons.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "coupons.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "coupons.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "dishes",
+     "total": 27
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "dishes.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "dishes",
+     "total": 9
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "dishes.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "dishes",
+     "total": 9
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "dishes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "dishes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "dishes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "dishes.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "drivers",
+     "total": 54
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "drivers.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "drivers",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "drivers.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "drivers",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "drivers.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "drivers.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "drivers.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "drivers.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "drivers",
+     "total": 54
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "drivers.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "drivers",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "drivers.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "drivers",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "drivers.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "drivers.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "drivers.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "drivers.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "events",
+     "total": 36
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "events.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "events",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "events.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "events",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "events.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "events.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "events.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "events.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "events",
+     "total": 36
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "events.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "events",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "events.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "events",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "events.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "events.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "events.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "events.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "exports",
+     "total": 15
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "exports.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "exports",
+     "total": 5
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "exports.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "exports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "exports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "exports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "exports.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "files",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "files.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "files",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "files.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "files.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "files.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "files.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "files.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "folders",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "folders.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "folders",
+     "total": 2
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "folders.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "folders",
+     "total": 2
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "folders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "folders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "folders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "folders.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/guests/7"
+    },
+    "status": 201
+   },
+   "route": "guests.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/guests/2"
+    },
+    "status": 201
+   },
+   "route": "guests.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/guests/0"
+    },
+    "status": 201
+   },
+   "route": "guests.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "guests.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "guests.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "guests.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "guests",
+     "total": 21
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "guests.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "guests",
+     "total": 7
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "guests.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "guests",
+     "total": 7
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "guests.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "guests.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "guests.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "guests.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "imports",
+     "total": 102
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "imports.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "imports",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "imports.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "imports",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "imports.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "imports.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "imports.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "imports.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "imports",
+     "total": 102
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "imports.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "imports",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "imports.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "imports",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "imports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "imports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "imports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "imports.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "invoices",
+     "total": 114
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "invoices.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "invoices",
+     "total": 38
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "invoices.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "invoices",
+     "total": 38
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "invoices.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "invoices.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "invoices.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "invoices.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/labels/7"
+    },
+    "status": 201
+   },
+   "route": "labels.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/labels/2"
+    },
+    "status": 201
+   },
+   "route": "labels.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/labels/0"
+    },
+    "status": 201
+   },
+   "route": "labels.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "labels.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "labels.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "labels.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "labels",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "labels.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "labels",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "labels.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "labels",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "labels.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "labels.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "labels.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "labels.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/ledgers/7"
+    },
+    "status": 201
+   },
+   "route": "ledgers.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/ledgers/2"
+    },
+    "status": 201
+   },
+   "route": "ledgers.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/ledgers/0"
+    },
+    "status": 201
+   },
+   "route": "ledgers.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "ledgers.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "ledgers.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "ledgers.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "ledgers",
+     "total": 105
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "ledgers.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "ledgers",
+     "total": 35
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "ledgers.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "ledgers.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "ledgers.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "ledgers.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "ledgers.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "members",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "members.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "members",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "members.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "members",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "members.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "members.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "members.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "members.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "members",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "members.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "members",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "members.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "members",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "members.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "members.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "members.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "members.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "menus",
+     "total": 117
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "menus.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "menus",
+     "total": 39
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "menus.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "menus.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "menus.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "menus.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "menus.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/metrics/7"
+    },
+    "status": 201
+   },
+   "route": "metrics.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/metrics/2"
+    },
+    "status": 201
+   },
+   "route": "metrics.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/metrics/0"
+    },
+    "status": 201
+   },
+   "route": "metrics.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "metrics.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "metrics.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "metrics.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "metrics",
+     "total": 108
+    },
+    "headers": {
+     "Cache-Control": "max-age=36"
+    },
+    "status": 200
+   },
+   "route": "metrics.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "metrics",
+     "total": 36
+    },
+    "headers": {
+     "Cache-Control": "max-age=36"
+    },
+    "status": 200
+   },
+   "route": "metrics.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "metrics",
+     "total": 36
+    },
+    "headers": {
+     "Cache-Control": "max-age=36"
+    },
+    "status": 200
+   },
+   "route": "metrics.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "metrics.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "metrics.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "metrics.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "orders",
+     "total": 60
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "orders.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "orders",
+     "total": 20
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "orders.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "orders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "orders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "orders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "orders.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/payouts/7"
+    },
+    "status": 201
+   },
+   "route": "payouts.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/payouts/2"
+    },
+    "status": 201
+   },
+   "route": "payouts.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/payouts/0"
+    },
+    "status": 201
+   },
+   "route": "payouts.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "payouts.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "payouts.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "payouts.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "payouts",
+     "total": 102
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "payouts.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "payouts",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "payouts.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "payouts",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "payouts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "payouts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "payouts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "payouts.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/plans/7"
+    },
+    "status": 201
+   },
+   "route": "plans.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/plans/2"
+    },
+    "status": 201
+   },
+   "route": "plans.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/plans/0"
+    },
+    "status": 201
+   },
+   "route": "plans.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "plans.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "plans.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "plans.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "plans",
+     "total": 36
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "plans.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "plans",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "plans.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "plans",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "plans.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "plans.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "plans.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "plans.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/projects/7"
+    },
+    "status": 201
+   },
+   "route": "projects.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/projects/2"
+    },
+    "status": 201
+   },
+   "route": "projects.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/projects/0"
+    },
+    "status": 201
+   },
+   "route": "projects.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "projects.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "projects.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "projects.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "projects",
+     "total": 84
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "projects.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "projects",
+     "total": 28
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "projects.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "projects",
+     "total": 28
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "projects.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "projects.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "projects.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "projects.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/quotes/7"
+    },
+    "status": 201
+   },
+   "route": "quotes.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/quotes/2"
+    },
+    "status": 201
+   },
+   "route": "quotes.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/quotes/0"
+    },
+    "status": 201
+   },
+   "route": "quotes.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "quotes.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "quotes.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "quotes.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "quotes",
+     "total": 12
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "quotes.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "quotes",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "quotes.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "quotes",
+     "total": 4
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "quotes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "quotes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "quotes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "quotes.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "receipts",
+     "total": 72
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "receipts.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "receipts",
+     "total": 24
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "receipts.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "receipts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "receipts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "receipts.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "receipts.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "refunds",
+     "total": 78
+    },
+    "headers": {
+     "Cache-Control": "max-age=26"
+    },
+    "status": 200
+   },
+   "route": "refunds.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "refunds",
+     "total": 26
+    },
+    "headers": {
+     "Cache-Control": "max-age=26"
+    },
+    "status": 200
+   },
+   "route": "refunds.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "refunds",
+     "total": 26
+    },
+    "headers": {
+     "Cache-Control": "max-age=26"
+    },
+    "status": 200
+   },
+   "route": "refunds.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "refunds.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "refunds.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "refunds.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "reminders",
+     "total": 63
+    },
+    "headers": {
+     "Cache-Control": "max-age=21"
+    },
+    "status": 200
+   },
+   "route": "reminders.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "reminders",
+     "total": 21
+    },
+    "headers": {
+     "Cache-Control": "max-age=21"
+    },
+    "status": 200
+   },
+   "route": "reminders.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "reminders.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reminders.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reminders.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reminders.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "reminders",
+     "total": 63
+    },
+    "headers": {
+     "Cache-Control": "max-age=21"
+    },
+    "status": 200
+   },
+   "route": "reminders.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "reminders",
+     "total": 21
+    },
+    "headers": {
+     "Cache-Control": "max-age=21"
+    },
+    "status": 200
+   },
+   "route": "reminders.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "reminders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reminders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reminders.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reminders.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "reports",
+     "total": 66
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "reports.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "reports",
+     "total": 22
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "reports.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "reports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reports.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "reports.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "returns",
+     "total": 57
+    },
+    "headers": {
+     "Cache-Control": "max-age=19"
+    },
+    "status": 200
+   },
+   "route": "returns.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "returns",
+     "total": 19
+    },
+    "headers": {
+     "Cache-Control": "max-age=19"
+    },
+    "status": 200
+   },
+   "route": "returns.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "returns.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "returns.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "returns.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "returns.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "returns",
+     "total": 57
+    },
+    "headers": {
+     "Cache-Control": "max-age=19"
+    },
+    "status": 200
+   },
+   "route": "returns.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "returns",
+     "total": 19
+    },
+    "headers": {
+     "Cache-Control": "max-age=19"
+    },
+    "status": 200
+   },
+   "route": "returns.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "returns.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "returns.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "returns.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "returns.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/rooms/7"
+    },
+    "status": 201
+   },
+   "route": "rooms.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/rooms/2"
+    },
+    "status": 201
+   },
+   "route": "rooms.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/rooms/0"
+    },
+    "status": 201
+   },
+   "route": "rooms.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "rooms.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "rooms.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "rooms.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "rooms",
+     "total": 111
+    },
+    "headers": {
+     "Cache-Control": "max-age=37"
+    },
+    "status": 200
+   },
+   "route": "rooms.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "rooms",
+     "total": 37
+    },
+    "headers": {
+     "Cache-Control": "max-age=37"
+    },
+    "status": 200
+   },
+   "route": "rooms.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "rooms",
+     "total": 37
+    },
+    "headers": {
+     "Cache-Control": "max-age=37"
+    },
+    "status": 200
+   },
+   "route": "rooms.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "rooms.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "rooms.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "rooms.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "routes",
+     "total": 93
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "routes.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "routes",
+     "total": 31
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "routes.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "routes",
+     "total": 31
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "routes.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "routes.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "routes.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "routes.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "routes",
+     "total": 93
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "routes.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "routes",
+     "total": 31
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "routes.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "routes",
+     "total": 31
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "routes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "routes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "routes.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "routes.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "schedules",
+     "total": 102
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "schedules.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "schedules",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "schedules.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "schedules",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "schedules.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "schedules.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "schedules.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "schedules.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "schedules",
+     "total": 102
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "schedules.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "schedules",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "schedules.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "schedules",
+     "total": 34
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "schedules.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "schedules.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "schedules.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "schedules.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "sessions",
+     "total": 69
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "sessions.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "sessions",
+     "total": 23
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "sessions.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "sessions",
+     "total": 23
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "sessions.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "sessions.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "sessions.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "sessions.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "sessions",
+     "total": 69
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "sessions.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "sessions",
+     "total": 23
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "sessions.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "sessions",
+     "total": 23
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "sessions.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "sessions.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "sessions.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "sessions.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "shipments",
+     "total": 99
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "shipments.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "shipments",
+     "total": 33
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "shipments.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "shipments",
+     "total": 33
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "shipments.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "shipments.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "shipments.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "shipments.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "shipments",
+     "total": 99
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "shipments.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "shipments",
+     "total": 33
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "shipments.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "shipments",
+     "total": 33
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "shipments.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "shipments.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "shipments.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "shipments.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "stocks",
+     "total": 111
+    },
+    "headers": {
+     "Cache-Control": "max-age=37"
+    },
+    "status": 200
+   },
+   "route": "stocks.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "stocks",
+     "total": 37
+    },
+    "headers": {
+     "Cache-Control": "max-age=37"
+    },
+    "status": 200
+   },
+   "route": "stocks.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "stocks",
+     "total": 37
+    },
+    "headers": {
+     "Cache-Control": "max-age=37"
+    },
+    "status": 200
+   },
+   "route": "stocks.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "stocks.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "stocks.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "stocks.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/surveys/7"
+    },
+    "status": 201
+   },
+   "route": "surveys.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/surveys/2"
+    },
+    "status": 201
+   },
+   "route": "surveys.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/surveys/0"
+    },
+    "status": 201
+   },
+   "route": "surveys.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "surveys.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "surveys.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "surveys.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "surveys",
+     "total": 105
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "surveys.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "surveys",
+     "total": 35
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "surveys.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "surveys",
+     "total": 35
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "surveys.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "surveys.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "surveys.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "surveys.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/tasks/7"
+    },
+    "status": 201
+   },
+   "route": "tasks.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/tasks/2"
+    },
+    "status": 201
+   },
+   "route": "tasks.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/tasks/0"
+    },
+    "status": 201
+   },
+   "route": "tasks.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tasks.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tasks.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tasks.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "tasks",
+     "total": 69
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tasks.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "tasks",
+     "total": 23
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tasks.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "tasks.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tasks.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tasks.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tasks.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "teams",
+     "total": 117
+    },
+    "headers": {
+     "Cache-Control": "max-age=39"
+    },
+    "status": 200
+   },
+   "route": "teams.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "teams",
+     "total": 39
+    },
+    "headers": {
+     "Cache-Control": "max-age=39"
+    },
+    "status": 200
+   },
+   "route": "teams.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "teams.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "teams.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "teams.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "teams.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "teams",
+     "total": 117
+    },
+    "headers": {
+     "Cache-Control": "max-age=39"
+    },
+    "status": 200
+   },
+   "route": "teams.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "teams",
+     "total": 39
+    },
+    "headers": {
+     "Cache-Control": "max-age=39"
+    },
+    "status": 200
+   },
+   "route": "teams.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "teams.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "teams.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "teams.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "teams.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "tickets",
+     "total": 90
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tickets.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "tickets",
+     "total": 30
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tickets.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "tickets",
+     "total": 30
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tickets.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tickets.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tickets.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tickets.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "tokens",
+     "total": 66
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tokens.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "tokens",
+     "total": 22
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tokens.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "tokens",
+     "total": 22
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tokens.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tokens.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tokens.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tokens.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "tokens",
+     "total": 66
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tokens.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "tokens",
+     "total": 22
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tokens.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "tokens",
+     "total": 22
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "tokens.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tokens.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tokens.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "tokens.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/trials/7"
+    },
+    "status": 201
+   },
+   "route": "trials.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/trials/2"
+    },
+    "status": 201
+   },
+   "route": "trials.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/trials/0"
+    },
+    "status": 201
+   },
+   "route": "trials.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "trials.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "trials.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "trials.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "trials",
+     "total": 9
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "trials.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "trials",
+     "total": 3
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "trials.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "trials.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "trials.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "trials.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "trials.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "uploads",
+     "total": 6
+    },
+    "headers": {
+     "Cache-Control": "max-age=2"
+    },
+    "status": 200
+   },
+   "route": "uploads.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "uploads",
+     "total": 2
+    },
+    "headers": {
+     "Cache-Control": "max-age=2"
+    },
+    "status": 200
+   },
+   "route": "uploads.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "uploads",
+     "total": 2
+    },
+    "headers": {
+     "Cache-Control": "max-age=2"
+    },
+    "status": 200
+   },
+   "route": "uploads.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "uploads.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "uploads.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "uploads.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "vehicles",
+     "total": 54
+    },
+    "headers": {
+     "Cache-Control": "max-age=18"
+    },
+    "status": 200
+   },
+   "route": "vehicles.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "vehicles",
+     "total": 18
+    },
+    "headers": {
+     "Cache-Control": "max-age=18"
+    },
+    "status": 200
+   },
+   "route": "vehicles.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "vehicles.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vehicles.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vehicles.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vehicles.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "vehicles",
+     "total": 54
+    },
+    "headers": {
+     "Cache-Control": "max-age=18"
+    },
+    "status": 200
+   },
+   "route": "vehicles.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "vehicles",
+     "total": 18
+    },
+    "headers": {
+     "Cache-Control": "max-age=18"
+    },
+    "status": 200
+   },
+   "route": "vehicles.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "missing id"
+    },
+    "headers": {},
+    "status": 404
+   },
+   "route": "vehicles.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vehicles.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vehicles.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vehicles.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "vendors",
+     "total": 78
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "vendors.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "vendors",
+     "total": 26
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "vendors.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "vendors",
+     "total": 26
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "vendors.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vendors.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vendors.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vendors.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "vendors",
+     "total": 78
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "vendors.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "vendors",
+     "total": 26
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "vendors.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "vendors",
+     "total": 26
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "vendors.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vendors.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vendors.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "vendors.get"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 7
+    },
+    "headers": {
+     "Location": "/venues/7"
+    },
+    "status": 201
+   },
+   "route": "venues.create"
+  },
+  {
+   "method": "POST",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "created": true,
+     "id": 2
+    },
+    "headers": {
+     "Location": "/venues/2"
+    },
+    "status": 201
+   },
+   "route": "venues.create"
+  },
+  {
+   "method": "POST",
+   "request": {},
+   "response": {
+    "body": {
+     "created": true,
+     "id": 0
+    },
+    "headers": {
+     "Location": "/venues/0"
+    },
+    "status": 201
+   },
+   "route": "venues.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "venues.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "venues.create"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "venues.create"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "venues",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "venues.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "venues",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "venues.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "venues",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "venues.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "venues.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "venues.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "venues.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "zones",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "zones.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "zones",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "zones.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "zones",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "zones.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "zones.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "zones.fetch"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "zones.fetch"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "id": 7,
+     "kind": "zones",
+     "total": 18
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "zones.get"
+  },
+  {
+   "method": "GET",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "id": 2,
+     "kind": "zones",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "zones.get"
+  },
+  {
+   "method": "GET",
+   "request": {},
+   "response": {
+    "body": {
+     "id": 0,
+     "kind": "zones",
+     "total": 6
+    },
+    "headers": {},
+    "status": 200
+   },
+   "route": "zones.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 7,
+    "qty": 3
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "zones.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {
+    "id": 2
+   },
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "zones.get"
+  },
+  {
+   "method": "DELETE",
+   "request": {},
+   "response": {
+    "body": {
+     "error": "method not allowed"
+    },
+    "headers": {},
+    "status": 405
+   },
+   "route": "zones.get"
+  }
+ ],
+ "routes": {
+  "alerts.get": [
+   "GET"
+  ],
+  "batches.get": [
+   "GET"
+  ],
+  "bookings.create": [
+   "POST"
+  ],
+  "bookings.get": [
+   "GET"
+  ],
+  "budgets.create": [
+   "POST"
+  ],
+  "budgets.get": [
+   "GET"
+  ],
+  "carts.get": [
+   "GET"
+  ],
+  "comments.create": [
+   "POST"
+  ],
+  "comments.get": [
+   "GET"
+  ],
+  "coupons.fetch": [
+   "GET"
+  ],
+  "coupons.get": [
+   "GET"
+  ],
+  "dishes.get": [
+   "GET"
+  ],
+  "drivers.fetch": [
+   "GET"
+  ],
+  "drivers.get": [
+   "GET"
+  ],
+  "events.fetch": [
+   "GET"
+  ],
+  "events.get": [
+   "GET"
+  ],
+  "exports.get": [
+   "GET"
+  ],
+  "files.get": [
+   "GET"
+  ],
+  "folders.get": [
+   "GET"
+  ],
+  "guests.create": [
+   "POST"
+  ],
+  "guests.get": [
+   "GET"
+  ],
+  "imports.fetch": [
+   "GET"
+  ],
+  "imports.get": [
+   "GET"
+  ],
+  "invoices.get": [
+   "GET"
+  ],
+  "labels.create": [
+   "POST"
+  ],
+  "labels.get": [
+   "GET"
+  ],
+  "ledgers.create": [
+   "POST"
+  ],
+  "ledgers.get": [
+   "GET"
+  ],
+  "members.fetch": [
+   "GET"
+  ],
+  "members.get": [
+   "GET"
+  ],
+  "menus.get": [
+   "GET"
+  ],
+  "metrics.create": [
+   "POST"
+  ],
+  "metrics.get": [
+   "GET"
+  ],
+  "orders.get": [
+   "GET"
+  ],
+  "payouts.create": [
+   "POST"
+  ],
+  "payouts.get": [
+   "GET"
+  ],
+  "plans.create": [
+   "POST"
+  ],
+  "plans.get": [
+   "GET"
+  ],
+  "projects.create": [
+   "POST"
+  ],
+  "projects.get": [
+   "GET"
+  ],
+  "quotes.create": [
+   "POST"
+  ],
+  "quotes.get": [
+   "GET"
+  ],
+  "receipts.get": [
+   "GET"
+  ],
+  "refunds.get": [
+   "GET"
+  ],
+  "reminders.fetch": [
+   "GET"
+  ],
+  "reminders.get": [
+   "GET"
+  ],
+  "reports.get": [
+   "GET"
+  ],
+  "returns.fetch": [
+   "GET"
+  ],
+  "returns.get": [
+   "GET"
+  ],
+  "rooms.create": [
+   "POST"
+  ],
+  "rooms.get": [
+   "GET"
+  ],
+  "routes.fetch": [
+   "GET"
+  ],
+  "routes.get": [
+   "GET"
+  ],
+  "schedules.fetch": [
+   "GET"
+  ],
+  "schedules.get": [
+   "GET"
+  ],
+  "sessions.fetch": [
+   "GET"
+  ],
+  "sessions.get": [
+   "GET"
+  ],
+  "shipments.fetch": [
+   "GET"
+  ],
+  "shipments.get": [
+   "GET"
+  ],
+  "stocks.get": [
+   "GET"
+  ],
+  "surveys.create": [
+   "POST"
+  ],
+  "surveys.get": [
+   "GET"
+  ],
+  "tasks.create": [
+   "POST"
+  ],
+  "tasks.get": [
+   "GET"
+  ],
+  "teams.fetch": [
+   "GET"
+  ],
+  "teams.get": [
+   "GET"
+  ],
+  "tickets.get": [
+   "GET"
+  ],
+  "tokens.fetch": [
+   "GET"
+  ],
+  "tokens.get": [
+   "GET"
+  ],
+  "trials.create": [
+   "POST"
+  ],
+  "trials.get": [
+   "GET"
+  ],
+  "uploads.get": [
+   "GET"
+  ],
+  "vehicles.fetch": [
+   "GET"
+  ],
+  "vehicles.get": [
+   "GET"
+  ],
+  "vendors.fetch": [
+   "GET"
+  ],
+  "vendors.get": [
+   "GET"
+  ],
+  "venues.create": [
+   "POST"
+  ],
+  "venues.get": [
+   "GET"
+  ],
+  "zones.fetch": [
+   "GET"
+  ],
+  "zones.get": [
+   "GET"
+  ]
+ }
+}

@@ -69,6 +69,8 @@ pub(crate) struct ShellCompactionSampler {
     tool_choice: crate::util::config::CompactionToolChoice,
     cancel: tokio_util::sync::CancellationToken,
     usage_recorder: ChatStateHandle,
+    /// Forwarded to `generate_session_compact`: a cold input marks no conversation breakpoint, since no later request reads that entry.
+    one_shot: bool,
     state: Mutex<SamplerState>,
 }
 
@@ -89,6 +91,7 @@ impl ShellCompactionSampler {
         tool_choice: crate::util::config::CompactionToolChoice,
         cancel: tokio_util::sync::CancellationToken,
         usage_recorder: ChatStateHandle,
+        one_shot: bool,
     ) -> Self {
         Self {
             use_short_prompt,
@@ -105,6 +108,7 @@ impl ShellCompactionSampler {
             tool_choice,
             cancel,
             usage_recorder,
+            one_shot,
             state: Mutex::new(SamplerState::default()),
         }
     }
@@ -167,7 +171,7 @@ impl CompactionSampler for ShellCompactionSampler {
             self.tool_choice,
             &self.cancel,
             Some(&observer),
-            false,
+            self.one_shot,
         )
         .await
         {

@@ -1,0 +1,2 @@
+Makes sense, please fix it. After a price changes, every way of reading it (cache.price, cache.prices and
+Shop.quote) has to return the new value, and prices that did not change should still come from the cache.

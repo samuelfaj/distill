@@ -23,9 +23,11 @@ pub mod compaction_timing;
 pub mod context;
 pub mod lanes;
 pub mod memory_capture;
+pub mod review_battery;
 pub mod subagent_model;
 pub mod routing;
 pub mod selection;
+pub mod thresholds;
 pub mod verify;
 
 use crate::jev::types::{Answer, JevAnswerSet};

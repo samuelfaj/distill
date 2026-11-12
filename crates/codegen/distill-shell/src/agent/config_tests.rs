@@ -5685,6 +5685,61 @@ fn config_warns_on_section_typo() {
     );
     assert!(unused.iter().any(|k| k == "endpoint"), "got: {unused:?}");
 }
+/// `[modes]` is read from the raw config root, so documented keys there must
+/// not be reported as typos.
+#[test]
+fn modes_table_is_not_reported_unused() {
+    let unused = unused_keys_from_toml(
+        r#"
+            [modes]
+            v2 = ["ultrasave"]
+            [modes.ultrasave]
+            model = "worker"
+            [modes.ultracode]
+            contract = "v2"
+        "#,
+    );
+    assert!(
+        !unused.iter().any(|k| k.starts_with("modes")),
+        "got: {unused:?}"
+    );
+}
+/// The target rows are the default: with no `[modes] v2` key the three modes
+/// act on them. A list is authoritative and names modes; the empty list is
+/// the off switch, and a typo in it never turns a mode on.
+#[test]
+fn modes_v2_defaults_to_every_mode_and_a_list_overrides_it() {
+    use distill_tool_types::{ExecutionMode, V2Modes};
+    let parse = |text: &str| modes_v2(Some(&toml::from_str(text).unwrap()));
+    let all = V2Modes::default()
+        .with(ExecutionMode::Ultrasave)
+        .with(ExecutionMode::Ultrafast)
+        .with(ExecutionMode::Ultracode);
+    assert_eq!(modes_v2(None), all);
+    assert_eq!(parse("[modes]\n"), all);
+    assert_eq!(parse("[modes]\nv2 = \"ultrasave\"\n"), all, "not a list: ignored");
+    assert_eq!(parse("[modes]\nv2 = []\n"), V2Modes::default());
+    let listed = parse("[modes]\nv2 = [\"ultrasave\", \" ultracode \", \"turbo\", 3]\n");
+    assert_eq!(
+        listed,
+        V2Modes::default()
+            .with(ExecutionMode::Ultrasave)
+            .with(ExecutionMode::Ultracode)
+    );
+    assert!(!listed.contains(ExecutionMode::Ultrafast));
+}
+/// The per-round control arm is opt-in: only a literal `true` under
+/// `[modes.ultrafast]` turns it on, so a benchmark arm cannot leak into a
+/// session by a typo.
+#[test]
+fn ultrafast_effort_per_round_is_off_unless_set_to_true() {
+    let parse = |text: &str| ultrafast_effort_per_round(Some(&toml::from_str(text).unwrap()));
+    assert!(!ultrafast_effort_per_round(None));
+    assert!(!parse("[modes]\nv2 = []\n"));
+    assert!(!parse("[modes.ultrafast]\neffort_per_round = \"yes\"\n"));
+    assert!(!parse("[modes.ultrasave]\neffort_per_round = true\n"));
+    assert!(parse("[modes.ultrafast]\neffort_per_round = true\n"));
+}
 #[test]
 fn known_non_serde_config_paths_are_not_reported_unused() {
     let unused = unused_keys_from_toml(

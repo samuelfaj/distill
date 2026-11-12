@@ -1,0 +1,15 @@
+"""Normalizer for the events_name column (rules in SPEC.md)."""
+PARTICLES = ('van', 'der', 'den')
+
+
+def _word(word, first):
+    if word.casefold() in PARTICLES:
+        return word.casefold()
+    return '-'.join(part[:1].upper() + part[1:].lower() for part in word.split('-'))
+
+
+def normalize(value):
+    words = value.split()
+    if not words:
+        return None
+    return ' '.join(_word(word, index == 0) for index, word in enumerate(words))

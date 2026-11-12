@@ -142,9 +142,17 @@ pub struct PromptUsage {
         skip_serializing_if = "Option::is_none"
     )]
     pub last_cache_break: Option<CacheBreak>,
+    /// What the root turn did by mode; absent for subagents and from older shells.
+    #[serde(
+        default,
+        rename = "turnOutcome",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub turn_outcome: Option<TurnOutcomeRecord>,
 }
 
 pub use distill_chat_state::CacheBreak;
+pub use distill_session_events::TurnOutcomeRecord;
 
 /// One row of a turn's distribution: which model, at which effort, how much.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -365,6 +373,7 @@ impl From<&distill_chat_state::UsageLedger> for PromptUsage {
             jev_calls: 0,
             utility_calls: 0,
             last_cache_break: ledger.last_cache_break.clone(),
+            turn_outcome: None,
         };
         usage.scrub_untrustworthy_costs();
         usage
@@ -2933,6 +2942,7 @@ mod tests {
             jev_calls: 0,
             utility_calls: 0,
             last_cache_break: None,
+            turn_outcome: None,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &partial);
@@ -2969,6 +2979,7 @@ mod tests {
             jev_calls: 0,
             utility_calls: 0,
             last_cache_break: None,
+            turn_outcome: None,
         };
         incomplete.scrub_untrustworthy_costs();
         assert!(incomplete.totals.cost_usd_ticks.is_none());
@@ -3046,6 +3057,7 @@ mod tests {
             jev_calls: 0,
             utility_calls: 0,
             last_cache_break: None,
+            turn_outcome: None,
         };
         usage.scrub_untrustworthy_costs();
         assert!(usage.totals.cost_usd_ticks.is_none());
@@ -3084,6 +3096,7 @@ mod tests {
             jev_calls: 0,
             utility_calls: 0,
             last_cache_break: None,
+            turn_outcome: None,
         };
         let mut result = serde_json::json!({});
         project_result_usage(&mut result, &usage);

@@ -1,0 +1,5 @@
+The handlers in tools/task_cost_eval/fixtures/long_handler_migration/handlers still use the old register()
+API. Move every one of them to the @route decorator and make them return Response objects. Status codes,
+bodies, headers, route names, aliases and allowed methods must stay exactly as they are today. When nothing
+calls register() any more, delete it and the dict/tuple conversion from framework.py.
+`python3 check.py handlers/NAME.py` checks a single module.

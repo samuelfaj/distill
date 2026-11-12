@@ -15,7 +15,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .acp_driver import OwnedTree
+from .acp_driver import EXECUTION_MODES, OwnedTree
 from .evaluate import _sha256_file, _sha256_tree
 from .runner import _terminate_owned_group
 
@@ -28,6 +28,38 @@ CREDIT_RATES = {'gpt-6-astra': (250, 25, 1250), 'gpt-6.1-sol': (50, 2.5, 250),
 # plus delegation/lifecycle. Internal IDs precede model-facing renames, and
 # children inherit the restriction.
 LOCAL_TOOLS = 'run_terminal_cmd,task,get_task_output,kill_task,wait_tasks'
+# Result files written before --mode existed came from binaries that predate
+# Auto (2.0.46): a run without a mode flag ran Normal.
+LEGACY_MODE = 'normal'
+MODE_LABELS = {'normal': 'Normal', 'auto': 'Auto', 'ultrafast': 'UltraFast',
+               'ultracode': 'UltraCode', 'ultrasave': 'UltraSave'}
+
+
+def mode_flags(mode):
+    """Headless flags as compare_parallel's CLI transport passes them. Normal is
+    pinned with --mode normal because a new session without a flag starts in Auto."""
+    if mode is None:
+        return []
+    if mode not in EXECUTION_MODES:
+        raise ValueError(f'mode must be one of {", ".join(EXECUTION_MODES)}')
+    return ['--mode', mode] if mode in ('normal', 'auto') else [f'--{mode}']
+
+
+def evidence_mode(result):
+    """The mode a cell ran in: None for a native agent or a Distill run without a mode flag."""
+    if result.get('variant') in ('codex', 'claude-native', 'opus-native'):
+        return None
+    return result.get('execution_mode', LEGACY_MODE)
+
+
+def mode_activated(stderr, mode, session):
+    """Headless prints this line only after the server confirmed the requested mode."""
+    if mode is None:
+        return None
+    try:
+        return f'{MODE_LABELS[mode]} enabled for session {session}' in stderr.read_text()
+    except OSError:
+        return False
 
 
 def credits(model, incoming, cached, outgoing):
@@ -84,13 +116,16 @@ class CollectorHandler(BaseHTTPRequestHandler):
 
 def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_model='chatgpt/gpt-6-luna',
                    worker_effort='auto', utility_effort='auto', enable_jev=False,
-                   utility_model='chatgpt/gpt-6-luna'):
+                   utility_model='chatgpt/gpt-6-luna', ultrasave_model=None):
+    """Isolated benchmark config. An empty worker_model leaves the worker unset
+    (the main model does all the work); ultrasave_model writes [modes.ultrasave] model."""
+    worker = f'worker = {json.dumps(worker_model)}\n' if worker_model else ''
+    modes = f'[modes.ultrasave]\nmodel = {json.dumps(ultrasave_model)}\n' if ultrasave_model else ''
     return f'''[cli]
 use_leader = false
 [models]
 default = {json.dumps(main_model)}
-worker = {json.dumps(worker_model)}
-worker_effort = {json.dumps(worker_effort)}
+{worker}worker_effort = {json.dumps(worker_effort)}
 session_summary = {json.dumps(utility_model)}
 [jev]
 enabled = true
@@ -119,7 +154,7 @@ rules = false
 skills = false
 agents = false
 hooks = false
-'''
+{modes}'''
 
 
 def distill_accounting(home, session, *, strict=False, zero_usage_attempts=frozenset()):
@@ -418,6 +453,12 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
                  'metadata_path': str(meta_path) if meta_path is not None else None}
         for identity in identities - folded:
             owners.setdefault(identity, []).append(owner)
+    # A request the provider refused for its serving-path field (a client error before inference)
+    # produced no billable tokens. Only as many refused attempts as the harness's own
+    # provider_tier_rejected policy rows are reconciled as zero usage; any other refused
+    # attempt without a receipt keeps its unknown usage.
+    refused = [a['attempt_id'] for a in attributions if a.get('status') == 'rejected' and not a.get('usage')]
+    zero_usage_attempts = frozenset(zero_usage_attempts) | frozenset(refused[:tier_refusals(ledger)])
     rows = []
     for attribution in attributions:
         usage = attribution.get('usage')
@@ -430,7 +471,8 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
                     'endpoint': attribution.get('endpoint'),
                     'owner': call_owners[0] if len(call_owners) == 1 else None,
                     'requested_effort': attribution.get('requested_effort'),
-                    'effort': attribution.get('applied_effort')}
+                    'effort': attribution.get('applied_effort'),
+                    'api_duration_ms': attribution.get('api_duration_ms')}
         if not usage:
             if attribution['attempt_id'] in zero_usage_attempts:
                 rows.append({**identity, 'complete': True, 'imputed_zero_usage': True,
@@ -471,11 +513,31 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
                 and len(root_ids) == len(rows) == ledger['modelCalls']
                 and child_ids <= root_ids and all(r['complete'] and r.get('credits') is not None for r in rows))
     return {'accounting_complete': complete, 'calls': len(rows), 'call_usage': rows,
+            'incomplete_explained': explained_incomplete,
             'ledger_totals_match': totals_match, 'subscription_only': subscription_only,
             'unfolded_child_attempts': sorted(child_ids - root_ids),
             'input_tokens': ledger['inputTokens'], 'output_tokens': ledger['outputTokens'],
             'cached_input_tokens': ledger['cachedReadTokens'], 'reasoning_tokens': ledger['reasoningTokens'],
             'credit_estimate': sum(r['credits'] for r in rows) if complete else None}
+
+
+def tier_refusals(ledger):
+    """How many serving-path refusals the session's own policy rows record."""
+    outcomes = ledger.get('utilityOutcomes') or {}
+    return sum(int(((outcomes.get(f'policy:{mode}') or {}).get('decisions') or {}).get('provider_tier_rejected', 0))
+               for mode in ('ultrafast', 'ultrasave'))
+
+
+def allowed_models(mode, main, worker):
+    """(models a root round may run on, models a child may run on) for a Distill arm.
+
+    A lean mode may route a root round to the worker (tier routing, or the worker leading a
+    pinned UltraSave session), and UltraCode's independent reviewer is a child on the session
+    model. Auto may pick any of them. Every other model still fails the run.
+    """
+    root = {main, worker} if mode in ('auto', 'ultrasave', 'ultrafast') else {main}
+    child = {worker, main} if mode in ('auto', 'ultracode') else {worker}
+    return root, child
 
 
 def codex_accounting(events, stdout, provider='chatgpt'):
@@ -565,6 +627,9 @@ def run_cell(args):
     worker_model = getattr(args, 'worker_model', 'gpt-6-luna')
     codex_effort = getattr(args, 'codex_effort', 'high')
     enable_jev = getattr(args, 'enable_jev', False)
+    mode = getattr(args, 'mode', None)
+    if mode is not None and args.variant != 'distill':
+        raise ValueError('--mode applies only to the Distill variant')
     if provider == 'chatgpt':
         account = subscription_account(distill_auth)
         if not account or account != subscription_account(codex_auth):
@@ -644,6 +709,7 @@ def run_cell(args):
                        str(output / 'prompt.txt'), '--output-format', 'streaming-json',
                        '--model', f'chatgpt/{main_model}']
             command.extend(['--tools', LOCAL_TOOLS])
+            command.extend(mode_flags(mode))
         else:
             main_model = getattr(args, 'main_model', 'gpt-6.1-sol')
             codex_effort = getattr(args, 'codex_effort', 'high')
@@ -708,12 +774,14 @@ def run_cell(args):
     if args.variant == 'distill':
         main_calls = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'main' and r.get('role') in ('main', 'main_retry')]
         children = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'worker' and r.get('role') != 'jev']
-        model_verified = bool(main_calls) and all(r['model'] == expected for r in main_calls)
-        worker_verified = all(r['model'] == worker_model for r in children)
+        root_models, child_models = allowed_models(mode, expected, worker_model)
+        model_verified = bool(main_calls) and all(r['model'] in root_models for r in main_calls)
+        worker_verified = all(r['model'] in child_models for r in children)
     else:
         main_calls = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'main' and r.get('output_tokens', 0) > 0]
         model_verified = bool(main_calls) and all(r['model'] == expected and r['effort'] == codex_effort for r in main_calls)
         worker_verified = True
+    activated = mode_activated(output / 'stderr.txt', mode, session)
     inputs_unchanged = (frozen['fixture_sha256'] == _sha256_tree(ROOT / case['fixture_ref'])
                         and frozen['grader_sha256'] == _sha256_file(ROOT / case['grader']['script_ref']))
     native_payloads = list((executable.parent.parent / 'node_modules/@openai').glob(
@@ -722,7 +790,8 @@ def run_cell(args):
         raise ValueError('Cannot identify the native benchmark executable')
     summary = {'variant': args.variant, 'case': args.case, 'session': session,
                'provider': provider, 'version': version, 'main_model': main_model, 'worker_model': worker_model if args.variant == 'distill' else None,
-               'requested_effort': 'auto' if args.variant == 'distill' else codex_effort, 'jev_enabled': bool(enable_jev and args.variant == 'distill'),
+               'requested_effort': 'auto' if args.variant == 'distill' else codex_effort,
+               'execution_mode': mode, 'execution_mode_activation_confirmed': activated, 'jev_enabled': bool(enable_jev and args.variant == 'distill'),
                'same_subscription_account': provider == 'chatgpt', 'model_verified': model_verified, 'worker_verified': worker_verified,
                'executable_sha256': _sha256_file(executable),
                'native_payload_sha256': _sha256_file(native_payloads[0]),
@@ -736,13 +805,13 @@ def run_cell(args):
                'wall_time_s': round(elapsed, 6), 'exit_code': process.returncode,
                'timed_out': timed_out, 'cleanup_complete': cleanup_complete, 'grader_passed': grade.returncode == 0,
                'cost_basis': 'published_subscription_credit_rates', **accounting}
-    summary['passed'] = process.returncode == 0 and grade.returncode == 0 and inputs_unchanged and not timed_out and model_verified and worker_verified
+    summary['passed'] = process.returncode == 0 and grade.returncode == 0 and inputs_unchanged and not timed_out and model_verified and worker_verified and activated is not False
     (output / 'result.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps({k: v for k, v in summary.items() if k != 'call_usage'}), flush=True)
     return 0 if summary['passed'] and accounting['accounting_complete'] and accounting.get('reference_cost_usd') is not None else 1
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', choices=('distill', 'codex'), required=True)
     parser.add_argument('--case', required=True)
@@ -757,7 +826,12 @@ def main():
     parser.add_argument('--worker-model', default='gpt-6-luna')
     parser.add_argument('--enable-jev', action='store_true')
     parser.add_argument('--provider', choices=('chatgpt', 'openrouter'), default='chatgpt')
-    return run_cell(parser.parse_args())
+    parser.add_argument('--mode', choices=EXECUTION_MODES,
+                        help='distill only: pin this execution mode; omitted, no mode flag is passed')
+    args = parser.parse_args(argv)
+    if args.mode is not None and args.variant != 'distill':
+        parser.error('--mode applies only to --variant distill')
+    return run_cell(args)
 
 
 if __name__ == '__main__':

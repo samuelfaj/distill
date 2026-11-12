@@ -34,10 +34,12 @@ pub(crate) const EXECUTION_MODE_TOOLS: &[&str] = &[
 ];
 
 /// The tool list a mode sends. Modes without a fixed set (Normal, UltraCode)
-/// keep the harness selection unchanged.
+/// keep the harness selection unchanged. `spawn` is whether a lean list
+/// offers `spawn_subagent`.
 pub(crate) fn execution_mode_tool_definitions(
     mode: distill_tool_types::ExecutionMode,
     defs: Vec<ToolDefinition>,
+    spawn: bool,
 ) -> Vec<ToolDefinition> {
     use distill_tool_types::ExecutionMode;
     if !matches!(mode, ExecutionMode::Ultrafast | ExecutionMode::Ultrasave) {
@@ -47,7 +49,7 @@ pub(crate) fn execution_mode_tool_definitions(
         .filter(|def| {
             let name = def.function.name.as_str();
             EXECUTION_MODE_TOOLS.contains(&name)
-                || name == "spawn_subagent"
+                || (spawn && name == "spawn_subagent")
                 || crate::session::mcp_servers::parse_mcp_tool_name(name).is_some()
         })
         .collect()
@@ -218,6 +220,33 @@ pub(super) fn is_client_rejection(error: &distill_sampler::SamplingErrorInfo) ->
     error
         .status_code
         .is_some_and(|status| (400..500).contains(&status) && status != 408 && status != 429)
+}
+
+/// Whether a main request may have failed on its pinned serving-path field (Responses
+/// `service_tier`, Messages `speed`), which no provider has been probed for: it carried the
+/// field and the endpoint refused it with 400, 404 or 422. Authentication, permission and rate
+/// limits, an oversized history and an incompatible history say nothing about the field.
+/// An error that names the serving path is a refusal of it whatever its status: one provider
+/// answers a fast-mode request it will not serve with a rate-limit error that no retry clears.
+pub(super) fn provider_tier_rejected(
+    error: &distill_sampler::SamplingErrorInfo,
+    sent: &SamplingConfig,
+) -> bool {
+    use distill_sampler::SamplingErrorKind;
+    if !sent.sends_provider_tier() || error.kind == SamplingErrorKind::Auth {
+        return false;
+    }
+    let message = error.message.to_ascii_lowercase();
+    if ["fast mode", "service_tier", "service tier"]
+        .iter()
+        .any(|name| message.contains(name))
+    {
+        return true;
+    }
+    error.kind != SamplingErrorKind::RateLimited
+        && matches!(error.status_code, Some(400 | 404 | 422))
+        && !distill_sampling_types::is_context_length_error(&error.message)
+        && !error.message.contains("encrypted_content")
 }
 
 /// Whether a routed round's failed request goes back to the session model. A
@@ -611,8 +640,52 @@ impl SessionActor {
         if plan_active {
             defs
         } else {
-            execution_mode_tool_definitions(self.execution_mode.load(), defs)
+            self.project_execution_mode_tools(defs)
         }
+    }
+
+    /// The execution-mode projection. Under Auto with `b8_stable_tools`, once
+    /// the full list went out a lean pick sends it too: a changed tools array
+    /// re-reads the whole prompt uncached. A small or compacted prompt
+    /// re-projects to the lean list, and a fixed `/mode` always re-projects.
+    fn project_execution_mode_tools(&self, defs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+        let mode = self.execution_mode.load();
+        if !self.auto_stable_tools() {
+            // A pinned mode whose row allows no subagents does not offer the
+            // tool, so the model never spends a round on a refused spawn.
+            // Under Auto the two lean modes keep one list: a list that
+            // changed with the pick would re-read the prompt uncached.
+            let spawn = self.execution_mode.is_auto()
+                || self.mode_policy().runtime.subagent_depth
+                    != distill_tool_types::SubagentDepth::None;
+            return execution_mode_tool_definitions(mode, defs, spawn);
+        }
+        let mut ledger = self.jev_ledger.borrow_mut();
+        if !matches!(
+            mode,
+            distill_tool_types::ExecutionMode::Ultrafast | distill_tool_types::ExecutionMode::Ultrasave
+        ) {
+            ledger.auto_full_tools_sent = true;
+            return defs;
+        }
+        if ledger.keeps_full_tools() {
+            return defs;
+        }
+        ledger.auto_full_tools_sent = false;
+        drop(ledger);
+        execution_mode_tool_definitions(mode, defs, true)
+    }
+
+    /// Whether the session is in Auto with the stable tools array on.
+    fn auto_stable_tools(&self) -> bool {
+        self.execution_mode.is_auto()
+            && crate::jev::lever_active(distill_workspace::jev::flags::JevLever::B8StableTools)
+    }
+
+    /// Whether a lean mode sends the full tools array (and its families) this
+    /// round instead of the lean list.
+    pub(super) fn auto_keeps_full_tools(&self) -> bool {
+        self.auto_stable_tools() && self.jev_ledger.borrow().keeps_full_tools()
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
@@ -941,6 +1014,12 @@ impl SessionActor {
             } else {
                 None
             };
+        // Set when a root session was pinned to a mode with a tier; constant until it leaves.
+        let provider_tier = if self.startup_hints.is_subagent || self.execution_mode.is_auto() {
+            None
+        } else {
+            crate::extensions::session_ultracode::pinned_provider_tier(&self.session_info)
+        };
         let mut restored = SamplingConfig {
             api_key,
             base_url: cfg.base_url,
@@ -991,8 +1070,9 @@ impl SessionActor {
             openrouter_variant: if self.startup_hints.is_subagent {
                 crate::jev::worker_variant()
             } else {
-                crate::jev::main_variant()
+                crate::jev::main_variant_for_tier(provider_tier)
             },
+            provider_tier,
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
         };
         let store = crate::accounts::AccountStore::default();
@@ -1319,13 +1399,16 @@ impl SessionActor {
             session_id, turn_id, round_id, requested_model = sampler_config.model,
             requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
             "model round before Jev routing");
+        Box::pin(self.escalation_before_round()).await;
         // E6: a utility `explore` child runs this round on the utility model at
         // its own effort; the effort passes below belong to the session model.
         if !self.jev_route_cheap_agent(&mut sampler_config).await {
             // Where the effort is part of the cached prefix, a later round of the
             // turn keeps the turn's model and effort: a switch re-reads the whole
             // prompt uncached. Otherwise this round chooses below.
-            if self.jev_keep_turn_effort(&mut sampler_config).await {
+            let kept = self.jev_keep_turn_effort(&mut sampler_config).await;
+            self.jev_ledger.borrow_mut().round_route_kept = kept;
+            if kept {
                 // Effort outside the cached prefix is free to change: re-decide on the kept model.
                 if !effort_keys_cached_prefix(&sampler_config.api_backend, &sampler_config.model) {
                     self.jev_choose_effort(&mut sampler_config).await;
@@ -1339,13 +1422,18 @@ impl SessionActor {
                 // an explicit effort stays fixed.
                 self.jev_choose_effort(&mut sampler_config).await;
                 // B2 (money lever): a routine turn may run at a cheaper setting; the
-                // pass can only lower effort, and it is off until its gate passes.
+                // pass can only lower effort; `b2_model_tier` is on by default.
                 self.jev_apply_model_tier(&mut sampler_config).await;
                 self.jev_anchor_turn_effort(&session_model, &sampler_config);
             }
             // A redo the change review asked for runs at the setting it asked for:
             // the floor wins over anything cheaper chosen above.
             self.jev_apply_effort_floor(&mut sampler_config).await;
+            // The mode's ceiling and failure floor, before the ratchet's floor
+            // so a climb is never capped.
+            self.apply_mode_effort_bounds(&mut sampler_config, kept);
+            // A live escalation keeps its effort level for the rest of the turn.
+            self.escalation_apply_effort_floor(&mut sampler_config);
         }
         if self.tool_context.task_output_token_budget.is_some()
             || self.tool_context.sampler_retry_only_before_output
@@ -1358,6 +1446,11 @@ impl SessionActor {
         // A tier-routed round runs on another of the user's models by Jev's choice;
         // account Auto must not claim it or persist its config as the session's.
         let tier_routed = self.jev_ledger.borrow().tier_route_active;
+        // The pinned serving path belongs to the session model; another model's endpoint may
+        // not offer it.
+        if tier_routed && sampler_config.provider_tier.take().is_some() {
+            sampler_config.openrouter_variant = crate::jev::main_variant();
+        }
         let auto_allowed = (!self.startup_hints.is_subagent || !self.model_routing_locked.get())
             && !tier_routed
             && !sampler_config
@@ -1765,6 +1858,17 @@ impl SessionActor {
                 self.arm_route_overflow_recovery();
                 return Ok(SamplerFailureRecovery::CompactAndResubmit);
             }
+        }
+
+        // The pinned serving path is unprobed: when the endpoint refused a request that carried
+        // it, drop it for the rest of the session and resend once without it. The resent request
+        // carries no tier, so this cannot fire twice.
+        if let Some(sent) = route_config
+            && provider_tier_rejected(&error, sent)
+            && crate::extensions::session_ultracode::drop_rejected_provider_tier(&self.session_info)
+        {
+            self.note_provider_tier_rejected(error.status_code);
+            return Ok(SamplerFailureRecovery::CompactAndResubmit);
         }
 
         // Telemetry and notification for terminal failures
@@ -2767,6 +2871,16 @@ impl SessionActor {
                         .map_err(|_| acp::Error::internal_error())?;
                     self.turn_phases.record_sampling_retries(1);
                 }
+                // Same refused serving path as in `handle_sampling_failure_for_route`.
+                Err(info)
+                    if provider_tier_rejected(&info, &config)
+                        && crate::extensions::session_ultracode::drop_rejected_provider_tier(
+                            &self.session_info,
+                        ) =>
+                {
+                    self.note_provider_tier_rejected(info.status_code);
+                    return Ok(SamplerTurnOutcome::CompactAndResubmit);
+                }
                 Err(info) => {
                     return Err(acp::Error::internal_error().data(
                         crate::sampling::error::terminal_error_data(
@@ -2805,7 +2919,10 @@ impl SessionActor {
             .sampler_usage_context(&request_id_str, &request, route_config)
             .await;
         // Honoured by the client only where the endpoint takes the one-hour lifetime.
-        request.long_cache_ttl = super::prompt_cache::long_wait_likely(&request.items);
+        request.long_cache_ttl = super::prompt_cache::long_cache_ttl(
+            super::prompt_cache::ExtendedTtl::configured(),
+            &request.items,
+        );
         // The endpoint this request goes to, for the cache lifetime it gets (see below).
         let cache_route = match route_config {
             Some(config) => Some((
@@ -2885,6 +3002,9 @@ impl SessionActor {
                     );
                     self.chat_state_handle.record_cache_lifetime(cache_lifetime);
                 }
+                let mut usage_context = usage_context;
+                usage_context.cache_lifetime_secs =
+                    cache_lifetime.map(|lifetime| lifetime.as_secs());
                 if let (Some(mut sent), Some(usage)) = (sent_prefix, response.usage.as_ref()) {
                     sent.cache_lifetime = cache_lifetime;
                     let report = self
@@ -3122,6 +3242,7 @@ impl SessionActor {
             endpoint,
             requested_effort,
             applied_effort,
+            cache_lifetime_secs: None,
         }
     }
 
@@ -3201,6 +3322,31 @@ impl SessionActor {
             },
         ))
         .await;
+    }
+
+    /// Records and announces, once per session, that the endpoint refused the pinned serving
+    /// path and the session goes on without it.
+    fn note_provider_tier_rejected(&self, status_code: Option<u16>) {
+        let mode = self.execution_mode.load();
+        tracing::warn!(
+            session_id = %self.session_info.id.0,
+            ?status_code,
+            "endpoint refused the pinned serving path; resending without it for this session"
+        );
+        crate::jev::record_policy(mode, "provider_tier_rejected");
+        let payload = serde_json::json!({
+            "sessionId": self.session_info.id.0.as_ref(),
+            "mode": mode,
+            "statusCode": status_code,
+        });
+        if let Ok(params) = serde_json::value::to_raw_value(&payload) {
+            self.notifications
+                .gateway
+                .forward_fire_and_forget(acp::ExtNotification::new(
+                    crate::extensions::session_ultracode::PROVIDER_TIER_REJECTED_METHOD,
+                    params.into(),
+                ));
+        }
     }
 
     fn log_rate_limit_budget_spent(
@@ -3442,6 +3588,7 @@ impl SessionActor {
                 endpoint: None,
                 requested_effort: None,
                 applied_effort: None,
+                cache_lifetime_secs: None,
             },
         );
     }

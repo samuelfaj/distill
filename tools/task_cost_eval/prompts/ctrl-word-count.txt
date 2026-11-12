@@ -1,0 +1,2 @@
+count_words in tools/task_cost_eval/fixtures/ctrl_word_count should treat "Hello", "hello" and "hello," as the
+same word: ignore case and strip punctuation from the ends of words. Words made only of punctuation don't count.

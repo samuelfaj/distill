@@ -13,6 +13,15 @@ The mode directive favors direct execution, narrow searches and reads, reuse of
 unchanged evidence, and concise reports. Required checks and error evidence
 remain part of completion.
 
+By default UltraSave is on its `v2` policy row, and its directive states only
+what the harness enforces on that row (automatic effort chosen per round, at
+high or lower) or what the model must do itself: reuse evidence already in
+context, batch independent reads and edits, keep reports to paths and check
+results, and test every stated requirement before finishing. It no longer
+suggests delegating to a subagent. `[modes] v2 = []` restores the previous
+directive described above. No campaign has measured the new directive yet;
+see [Mode policy table](mode-policy.md#directives).
+
 UltraSave advertises only direct-work tools: file inspection and editing,
 search, shell and background-task output, and MCP lookup. Planning, todo,
 delegation, workflow, feedback and scheduling schemas are not sent, so their
@@ -25,6 +34,56 @@ automatic effort decision within the turn, invalidates that reuse after a tool
 failure, and skips the second model-tier effort decision. Explicit effort pins
 and the existing retry effort floor remain authoritative. These mechanisms
 target token economy; the benchmark below determines their observed effect.
+
+By default UltraSave also awaits every Jev decision within the 4 s deadline,
+reads the per-round effort answer at the 0.4 quantile, and never runs above
+high unless the escalation ratchet raised the turn. Rounds that only wait on
+background work, and the round that answers the final-check reminder, keep the
+last level without asking. `[modes] v2 = []` turns this off; it has not been
+benchmarked. See [Decision policy by mode](jev-routing.md#decision-policy-by-mode).
+
+## Model and provider path
+
+These settings apply only to a session pinned to UltraSave (`/ultrasave on`,
+`--ultrasave`, `/mode ultrasave`). Under Auto they never apply, whatever mode
+Auto picks.
+
+```toml
+[modes.ultrasave]
+model = "worker"            # the default; "session" keeps the session's model, or a model id
+provider_tier = "economy"   # the default; "off" sends no serving-path field
+```
+
+- `model`: when the session is pinned, this model becomes the session's model
+  as a session-only explicit pick (the account Auto routing setting on disk is
+  not changed). With the key unset, or `model = "worker"`, a configured
+  `[models] worker` leads the session; this default has not been benchmarked.
+  `model = "session"` turns it off and keeps the session's own model, and any
+  other value names a model id. The utility model is never used, and models
+  are not ranked automatically. Leaving UltraSave restores the previous model,
+  unless you picked another model with `/model` in the meantime. Compaction and
+  other auxiliary requests run on the session's model, as before.
+- With no worker configured, or `model = "session"`, UltraSave has no cheaper
+  model and keeps the session's model; the session log records this once.
+- `provider_tier`: `"economy"` by default; `"off"` turns it off. It is decided
+  once when the session is pinned and kept until the session leaves the mode,
+  because changing it mid-session invalidates the provider's prompt cache. It
+  applies to the session's model only (a round routed to another model goes
+  without it):
+  - Responses API endpoints: `service_tier: "flex"`, except the ChatGPT
+    subscription endpoint, which refuses it; nothing is sent there.
+  - Anthropic Messages endpoints: nothing is sent.
+  - OpenRouter: the model variant stays `floor` when `[models] main_variant`
+    is unset, which is already the default.
+
+No provider has been probed for `service_tier`, and this default has not been
+benchmarked. Whether an endpoint accepts it depends on the endpoint, the model
+and your plan; a flex tier may also answer more slowly. When an endpoint
+refuses a request that carried the field with HTTP 400, 404 or 422, the session
+drops the field for the rest of the session, resends that request once without
+it, records a `provider_tier_rejected` policy row and sends the client one
+`x.ai/session/provider_tier/rejected` notice. No cost or speed claim is made for
+these settings until a provider probe and a paired benchmark have been run.
 
 ## Predeclared paired evaluation
 

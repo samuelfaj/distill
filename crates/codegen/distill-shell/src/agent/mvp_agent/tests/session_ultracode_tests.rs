@@ -116,6 +116,80 @@ fn ultracode_set_toggles_and_sets_without_touching_effort() {
     });
 }
 
+/// An explicit mode change applies at once; the first one in a session whose last main
+/// prompt is large tells the client once what it costs, and a small prompt says nothing.
+#[test]
+fn a_mode_change_on_a_large_prompt_reports_its_cache_cost_once() {
+    if run_in_isolated_home("a_mode_change_on_a_large_prompt_reports_its_cache_cost_once") {
+        return;
+    }
+    run_local_for_bridge_test(|| async {
+        use crate::extensions::session_ultracode::{
+            MODE_SET_METHOD, MODE_SWITCH_CACHE_COST_METHOD, handle_with_config,
+        };
+        let (agent, mut gateway) = super::build_agent_with_gateway_rx();
+        for (sid, prompt_tokens) in [("large-prompt", 20_000), ("small-prompt", 16_000)] {
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let chat_state = distill_chat_state::ChatStateActor::spawn(
+                Vec::new(),
+                distill_sampling_types::SamplingConfig::default(),
+                Box::new(distill_chat_state::NullChatPersistence),
+                event_tx,
+                tokio_util::sync::CancellationToken::new(),
+            );
+            chat_state.record_last_turn_usage(distill_sampling_types::TokenUsage {
+                prompt_tokens,
+                ..Default::default()
+            });
+            let mut session = make_test_handle("test-model", false, None);
+            session.info.id = acp::SessionId::new(sid);
+            session.chat_state_handle = chat_state;
+            agent.insert_resident(&acp::SessionId::new(sid), session);
+        }
+        let set_mode = |sid: &'static str, mode: &'static str| {
+            let params = serde_json::json!({ "sessionId": sid, "mode": mode });
+            acp::ExtRequest::new(
+                MODE_SET_METHOD,
+                serde_json::value::to_raw_value(&params).unwrap().into(),
+            )
+        };
+        for (sid, mode) in [
+            ("large-prompt", "ultrafast"),
+            ("large-prompt", "ultrasave"),
+            ("large-prompt", "auto"),
+            ("small-prompt", "ultrafast"),
+        ] {
+            Box::pin(handle_with_config(&agent, &set_mode(sid, mode), None))
+                .await
+                .expect("mode set");
+            let handle = agent.resident_handle(&acp::SessionId::new(sid)).unwrap();
+            assert_eq!(
+                handle.execution_mode.choice().id(),
+                mode,
+                "the change applies at once"
+            );
+        }
+        let mut notices = Vec::new();
+        while let Ok(message) = gateway.try_recv() {
+            if let distill_acp_lib::AcpClientMessage::ExtNotification(args) = message
+                && args.request.method.as_ref() == MODE_SWITCH_CACHE_COST_METHOD
+            {
+                notices.push(
+                    serde_json::from_str::<serde_json::Value>(args.request.params.get()).unwrap(),
+                );
+            }
+        }
+        assert_eq!(
+            notices,
+            [serde_json::json!({
+                "sessionId": "large-prompt",
+                "choice": "ultrafast",
+                "uncachedTokens": 20_000
+            })]
+        );
+    });
+}
+
 #[test]
 fn ultracode_set_unknown_session_is_not_found() {
     run_local_for_bridge_test(|| async {
@@ -232,4 +306,516 @@ fn execution_modes_replace_each_other_and_persist_without_changing_pins() {
         }
         assert_eq!(root.reasoning_effort, Some(distill_sampling_types::ReasoningEffort::Low));
     });
+}
+
+/// A user's `/mode` that changes the effective mode is one `mode_switched`
+/// fact with the `user` trigger, written to that session's events; a choice
+/// that leaves the effective mode as it was (the same mode again, or Auto,
+/// which keeps the last mode) is no switch and writes none.
+#[test]
+fn a_user_mode_change_is_one_fact_only_when_the_mode_changes() {
+    if run_in_isolated_home("a_user_mode_change_is_one_fact_only_when_the_mode_changes") {
+        return;
+    }
+    run_local_for_bridge_test(|| async {
+        let agent = agent_with_session();
+        let dir = tempfile::tempdir().unwrap();
+        let writer = distill_session_events::EventWriter::open(dir.path());
+        crate::jev::register_session_events(SESSION, &writer);
+        for mode in ["ultrasave", "ultrasave", "auto"] {
+            let params = serde_json::json!({"sessionId": SESSION, "mode": mode});
+            let request = acp::ExtRequest::new(
+                crate::extensions::session_ultracode::MODE_SET_METHOD,
+                serde_json::value::to_raw_value(&params).unwrap().into(),
+            );
+            handle(&agent, &request).await.unwrap();
+        }
+        drop(writer);
+        let text = std::fs::read_to_string(dir.path().join("events.jsonl")).unwrap_or_default();
+        let switches: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|event| event["type"] == "mode_switched")
+            .collect();
+        assert_eq!(switches.len(), 1, "{text}");
+        assert_eq!(switches[0]["from"], "normal");
+        assert_eq!(switches[0]["to"], "ultrasave");
+        assert_eq!(switches[0]["trigger"], "user");
+        assert!(switches[0].get("round").is_none(), "no turn is running");
+    });
+}
+
+mod pinned_mode_model {
+    //! `[modes.ultrasave]` / `[modes.ultrafast]`: the model and serving path of a session pinned to a mode.
+    use agent_client_protocol as acp;
+    use distill_sampler::ProviderTier;
+    use distill_tool_types::ExecutionMode;
+
+    use super::super::{build_minimal_agent_for_tests, run_local_for_bridge_test};
+    use crate::agent::account_routing::{self, tests::NamedAccounts};
+    use crate::agent::config::pinned_mode_settings;
+    use crate::agent::mvp_agent::MvpAgent;
+    use crate::extensions::session_ultracode::{
+        MODE_SET_METHOD, handle_with_config, pinned_provider_tier,
+    };
+
+    const THIRD: &str = "placeholder-model-c";
+
+    fn isolated(test: &str, body: impl FnOnce()) {
+        account_routing::tests::isolated(
+            &format!("agent::mvp_agent::tests::session_ultracode_tests::pinned_mode_model::{test}"),
+            body,
+        );
+    }
+
+    /// Opens one session on `model` (`auto` for account Auto) over the fixture's accounts. The
+    /// agent stays where the caller made it: its session supervisor keeps the agent's address.
+    async fn session_on(
+        agent: &MvpAgent,
+        fixture: &NamedAccounts,
+        model: &str,
+    ) -> (acp::SessionId, tempfile::TempDir) {
+        for (id, entry) in &fixture.models {
+            agent.models_manager.insert_test_entry(id, entry.clone());
+        }
+        let mut third = fixture.models["gpt-6-luna"].clone();
+        third.info.model = THIRD.into();
+        agent.models_manager.insert_test_entry(THIRD, third);
+        agent
+            .initialize_request
+            .set(
+                acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
+                    acp::ClientCapabilities::new()
+                        .fs(acp::FileSystemCapabilities::new())
+                        .terminal(false),
+                ),
+            )
+            .unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = agent
+            .new_session_inner(
+                acp::NewSessionRequest::new(cwd.path().to_path_buf())
+                    .meta(serde_json::json!({ "modelId": model }).as_object().cloned()),
+            )
+            .await
+            .expect("session admission")
+            .session_id;
+        (sid, cwd)
+    }
+
+    async fn set_mode(agent: &MvpAgent, sid: &acp::SessionId, mode: &str, config: &str) {
+        let root: toml::Value = toml::from_str(config).unwrap();
+        let params = serde_json::json!({ "sessionId": sid.0.as_ref(), "mode": mode });
+        let request = acp::ExtRequest::new(
+            MODE_SET_METHOD,
+            serde_json::value::to_raw_value(&params).unwrap().into(),
+        );
+        Box::pin(handle_with_config(agent, &request, Some(&root)))
+            .await
+            .expect("mode set");
+    }
+
+    /// The model every main request and every compaction of the session reads.
+    async fn session_model(agent: &MvpAgent, sid: &acp::SessionId) -> String {
+        let handle = agent.resident_handle(sid).unwrap();
+        let stored = handle
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .unwrap();
+        assert_eq!(
+            handle.model_id.0.as_ref(),
+            stored.model,
+            "ACP and request models agree"
+        );
+        stored.model
+    }
+
+    fn state_file(agent: &MvpAgent, sid: &acp::SessionId) -> std::path::PathBuf {
+        crate::session::persistence::session_dir(&agent.resident_handle(sid).unwrap().info)
+            .join("pinned_mode.json")
+    }
+
+    /// The saving is a cheaper model doing the work, so UltraSave leads on the configured
+    /// worker unless its own key names another model or `session` (the off switch). The utility
+    /// model is a decision helper, never the lead.
+    #[test]
+    fn ultrasave_leads_on_the_worker_or_its_key_never_the_utility_model() {
+        let settings =
+            |config: &str, mode| pinned_mode_settings(Some(&toml::from_str(config).unwrap()), mode);
+        let no_cheaper = |config: &str| {
+            crate::agent::config::ultrasave_has_no_cheaper_model(Some(
+                &toml::from_str(config).unwrap(),
+            ))
+        };
+        let both =
+            "[models]\nworker = \"worker-model\"\n[modes.ultrasave]\nmodel = \"save-model\"\n";
+        assert_eq!(
+            settings(both, ExecutionMode::Ultrasave).model.as_deref(),
+            Some("save-model")
+        );
+        let worker = "[models]\nworker = \"worker-model\"\n";
+        assert_eq!(
+            settings(worker, ExecutionMode::Ultrasave).model.as_deref(),
+            Some("worker-model"),
+            "a configured worker leads by default"
+        );
+        assert!(!no_cheaper(worker));
+        let session =
+            "[models]\nworker = \"worker-model\"\n[modes.ultrasave]\nmodel = \"session\"\n";
+        assert_eq!(
+            settings(session, ExecutionMode::Ultrasave).model,
+            None,
+            "`session` keeps the session's own model"
+        );
+        assert!(no_cheaper(session));
+        let named_worker =
+            "[models]\nworker = \"worker-model\"\n[modes.ultrasave]\nmodel = \"worker\"\n";
+        assert_eq!(
+            settings(named_worker, ExecutionMode::Ultrasave)
+                .model
+                .as_deref(),
+            Some("worker-model")
+        );
+        assert!(!no_cheaper(named_worker));
+        let worker_missing = "[modes.ultrasave]\nmodel = \"worker\"\n";
+        assert_eq!(settings(worker_missing, ExecutionMode::Ultrasave).model, None);
+        assert!(no_cheaper(worker_missing));
+        let utility_only = "[jev.local]\nmodel = \"utility-model\"\n[models]\nworker = \" \"\n";
+        assert_eq!(settings(utility_only, ExecutionMode::Ultrasave).model, None);
+        assert!(no_cheaper(utility_only));
+        assert!(crate::agent::config::ultrasave_has_no_cheaper_model(None));
+        // UltraFast is the same model served faster: the worker never leads it.
+        assert_eq!(settings(worker, ExecutionMode::Ultrafast).model, None);
+        let fast = "[modes.ultrafast]\nmodel = \"fast-model\"\nprovider_tier = \"fast\"\n";
+        assert_eq!(
+            settings(fast, ExecutionMode::Ultrafast),
+            crate::agent::config::PinnedModeSettings {
+                model: Some("fast-model".into()),
+                provider_tier: Some(ProviderTier::Fast),
+            }
+        );
+        let tiers = "[modes.ultrasave]\nprovider_tier = \"Economy\"\n[modes.ultrafast]\nprovider_tier = \"turbo\"\n";
+        assert_eq!(
+            settings(tiers, ExecutionMode::Ultrasave).provider_tier,
+            Some(ProviderTier::Economy)
+        );
+        assert_eq!(
+            settings(tiers, ExecutionMode::Ultrafast).provider_tier,
+            None,
+            "unknown tier"
+        );
+        for mode in [ExecutionMode::Normal, ExecutionMode::Ultracode] {
+            assert_eq!(settings(both, mode), Default::default());
+        }
+    }
+
+    /// With no `provider_tier` key a pinned UltraFast session asks for the fast path and a
+    /// pinned UltraSave one for the economy path; `"off"` sends none.
+    #[test]
+    fn the_serving_path_defaults_per_mode_and_off_sends_none() {
+        let tier = |config: &str, mode| {
+            pinned_mode_settings(Some(&toml::from_str(config).unwrap()), mode).provider_tier
+        };
+        assert_eq!(tier("", ExecutionMode::Ultrafast), Some(ProviderTier::Fast));
+        assert_eq!(
+            tier("", ExecutionMode::Ultrasave),
+            Some(ProviderTier::Economy)
+        );
+        assert_eq!(
+            pinned_mode_settings(None, ExecutionMode::Ultrafast).provider_tier,
+            Some(ProviderTier::Fast)
+        );
+        let off = "[modes.ultrasave]\nprovider_tier = \"off\"\n\
+                   [modes.ultrafast]\nprovider_tier = \"Off\"\n";
+        assert_eq!(tier(off, ExecutionMode::Ultrafast), None);
+        assert_eq!(tier(off, ExecutionMode::Ultrasave), None);
+        for mode in [ExecutionMode::Normal, ExecutionMode::Ultracode] {
+            assert_eq!(tier("", mode), None);
+        }
+    }
+
+    /// The owner's profile: account Auto routing on. A pinned UltraSave session runs its main
+    /// requests on the mode's model as a session-only pick, and the shared Auto profile on disk
+    /// stays on; leaving the mode hands the session back to Auto.
+    #[test]
+    #[serial_test::serial]
+    fn pinned_ultrasave_runs_on_its_model_and_leaves_auto_routing_on_disk() {
+        isolated(
+            "pinned_ultrasave_runs_on_its_model_and_leaves_auto_routing_on_disk",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::HighestRemaining, true);
+                    fixture.quota("three", Some(80.0));
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "auto").await;
+                    let models = agent.models_manager.models();
+                    let next_turn = async || {
+                        let handle = agent.resident_handle(&sid).unwrap();
+                        let stored = handle
+                            .chat_state_handle
+                            .get_sampling_config()
+                            .await
+                            .unwrap();
+                        let turn = distill_sampler::SamplerConfig {
+                            api_key: handle.chat_state_handle.get_credentials().await.api_key,
+                            base_url: stored.base_url.clone(),
+                            model: stored.model.clone(),
+                            api_backend: stored.api_backend.clone(),
+                            extra_headers: stored.extra_headers.clone(),
+                            ..Default::default()
+                        };
+                        let routes =
+                            account_routing::routes_for_turn(&fixture.store, &models, &turn, true)
+                                .await
+                                .unwrap();
+                        (stored, routes)
+                    };
+                    let auto_model = session_model(&agent, &sid).await;
+                    assert_ne!(
+                        auto_model, "gpt-6.1-sol",
+                        "Auto's pick differs from the mode's model"
+                    );
+
+                    let config = "[modes.ultrasave]\nmodel = \"gpt-6.1-sol\"\n";
+                    set_mode(&agent, &sid, "ultrasave", config).await;
+                    let (pinned, routes) = next_turn().await;
+                    assert_eq!(pinned.model, "gpt-6.1-sol");
+                    assert!(
+                        pinned
+                            .extra_headers
+                            .contains_key(account_routing::PIN_HEADER)
+                    );
+                    assert!(
+                        !routes.is_empty()
+                            && routes.iter().all(|route| {
+                                route.option_id.is_none() && route.main_model == "gpt-6.1-sol"
+                            }),
+                        "every main request runs on the mode's model, not an Auto option: {routes:?}"
+                    );
+                    assert!(
+                        fixture.store.load_routing().unwrap().enabled,
+                        "routing.enabled unchanged on disk"
+                    );
+
+                    set_mode(&agent, &sid, "auto", config).await;
+                    let (left, routes) = next_turn().await;
+                    assert!(!left.extra_headers.contains_key(account_routing::PIN_HEADER));
+                    assert!(
+                        routes.iter().any(|route| route.option_id.is_some()),
+                        "back on Auto: {routes:?}"
+                    );
+                    assert_eq!(left.model, auto_model);
+                    assert!(fixture.store.load_routing().unwrap().enabled);
+                    assert!(!state_file(&agent, &sid).exists());
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
+
+    /// Under Auto the effective mode may be UltraSave, but model and serving path are the
+    /// user's pinned choices only: an Auto pick never moves the session off its model.
+    #[test]
+    #[serial_test::serial]
+    fn auto_picking_ultrasave_changes_neither_model_nor_serving_path() {
+        isolated(
+            "auto_picking_ultrasave_changes_neither_model_nor_serving_path",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::OrderedFirst, false);
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "gpt-6.1-sol").await;
+                    let config = "[models]\nworker = \"gpt-6-luna\"\n[modes.ultrasave]\nmodel = \"gpt-6-luna\"\nprovider_tier = \"economy\"\n";
+                    let handle = agent.resident_handle(&sid).unwrap();
+                    assert!(
+                        handle.execution_mode.is_auto(),
+                        "a new session starts in Auto"
+                    );
+                    assert!(handle.execution_mode.pick_auto(ExecutionMode::Ultrasave));
+                    set_mode(&agent, &sid, "auto", config).await;
+                    assert_eq!(handle.execution_mode.load(), ExecutionMode::Ultrasave);
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6.1-sol");
+                    assert_eq!(pinned_provider_tier(&handle.info), None);
+                    assert!(!state_file(&agent, &sid).exists());
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
+
+    /// Leaving the mode gives back the model it replaced, but a model the user picked while
+    /// pinned is their choice and stays. `model = "worker"` leads on the configured worker.
+    #[test]
+    #[serial_test::serial]
+    fn leaving_the_mode_restores_the_model_unless_the_user_picked_another() {
+        isolated(
+            "leaving_the_mode_restores_the_model_unless_the_user_picked_another",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::OrderedFirst, false);
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "gpt-6.1-sol").await;
+                    let config = "[modes.ultrasave]\nmodel = \"gpt-6-luna\"\n";
+                    set_mode(&agent, &sid, "ultrasave", config).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6-luna");
+                    set_mode(&agent, &sid, "normal", config).await;
+                    assert_eq!(
+                        session_model(&agent, &sid).await,
+                        "gpt-6.1-sol",
+                        "restored on leave"
+                    );
+
+                    set_mode(&agent, &sid, "ultrasave", config).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6-luna");
+                    Box::pin(agent.set_model_gated(acp::SetSessionModelRequest::new(
+                        sid.clone(),
+                        acp::ModelId::new(THIRD),
+                    )))
+                    .await
+                    .expect("the user's own pick while pinned");
+                    set_mode(&agent, &sid, "auto", config).await;
+                    assert_eq!(
+                        session_model(&agent, &sid).await,
+                        THIRD,
+                        "the user's pick stays"
+                    );
+
+                    let worker =
+                        "[models]\nworker = \"gpt-6-luna\"\n[modes.ultrasave]\nmodel = \"worker\"\n";
+                    set_mode(&agent, &sid, "ultrasave", worker).await;
+                    assert_eq!(
+                        session_model(&agent, &sid).await,
+                        "gpt-6-luna",
+                        "the named worker"
+                    );
+                    // Switching to another pinned mode leaves this one first.
+                    set_mode(&agent, &sid, "ultrafast", worker).await;
+                    assert_eq!(session_model(&agent, &sid).await, THIRD);
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
+
+    /// A configured worker leads a pinned UltraSave session with no `[modes.ultrasave] model`
+    /// key, and leaving gives the model back; `model = "session"` keeps the session's model.
+    #[test]
+    #[serial_test::serial]
+    fn a_configured_worker_leads_pinned_ultrasave_unless_the_key_says_session() {
+        isolated(
+            "a_configured_worker_leads_pinned_ultrasave_unless_the_key_says_session",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::OrderedFirst, false);
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "gpt-6.1-sol").await;
+                    let worker = "[models]\nworker = \"gpt-6-luna\"\n";
+                    set_mode(&agent, &sid, "ultrasave", worker).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6-luna");
+                    set_mode(&agent, &sid, "normal", worker).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6.1-sol");
+
+                    let session = "[models]\nworker = \"gpt-6-luna\"\n\
+                                   [modes.ultrasave]\nmodel = \"session\"\n";
+                    set_mode(&agent, &sid, "ultrasave", session).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6.1-sol");
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
+
+    /// With `provider_tier = "off"` and no worker or model key, pinning any mode changes neither
+    /// the model, the request config nor the serving path.
+    #[test]
+    #[serial_test::serial]
+    fn without_mode_keys_every_model_choice_and_request_is_unchanged() {
+        isolated(
+            "without_mode_keys_every_model_choice_and_request_is_unchanged",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::OrderedFirst, false);
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "gpt-6.1-sol").await;
+                    let handle = agent.resident_handle(&sid).unwrap();
+                    let before = handle
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .unwrap();
+                    let config = "[jev.local]\nmodel = \"utility-model\"\n\
+                                  [modes.ultrasave]\nprovider_tier = \"off\"\n\
+                                  [modes.ultrafast]\nprovider_tier = \"off\"\n";
+                    for mode in [
+                        "ultrasave",
+                        "ultrafast",
+                        "ultracode",
+                        "normal",
+                        "ultrasave",
+                        "auto",
+                    ] {
+                        set_mode(&agent, &sid, mode, config).await;
+                        let after = handle
+                            .chat_state_handle
+                            .get_sampling_config()
+                            .await
+                            .unwrap();
+                        assert_eq!(after.model, before.model, "{mode}");
+                        assert_eq!(after.extra_headers, before.extra_headers, "{mode}");
+                        assert_eq!(after.reasoning_effort, before.reasoning_effort, "{mode}");
+                        assert_eq!(pinned_provider_tier(&handle.info), None, "{mode}");
+                        assert!(!state_file(&agent, &sid).exists(), "{mode}");
+                    }
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
+
+    /// A tier change mid-session would invalidate the provider prompt cache, so the tier is
+    /// decided when the session is pinned and only leaving the mode clears it.
+    #[test]
+    #[serial_test::serial]
+    fn the_serving_path_is_decided_once_per_pinned_session() {
+        isolated(
+            "the_serving_path_is_decided_once_per_pinned_session",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::OrderedFirst, false);
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "gpt-6.1-sol").await;
+                    let info = agent.resident_handle(&sid).unwrap().info;
+                    let fast = "[modes.ultrafast]\nprovider_tier = \"fast\"\n";
+                    set_mode(&agent, &sid, "ultrafast", fast).await;
+                    assert_eq!(pinned_provider_tier(&info), Some(ProviderTier::Fast));
+                    assert_eq!(
+                        session_model(&agent, &sid).await,
+                        "gpt-6.1-sol",
+                        "same model"
+                    );
+                    let economy = "[modes.ultrafast]\nprovider_tier = \"economy\"\n";
+                    set_mode(&agent, &sid, "ultrafast", economy).await;
+                    assert_eq!(pinned_provider_tier(&info), Some(ProviderTier::Fast));
+                    set_mode(&agent, &sid, "normal", fast).await;
+                    assert_eq!(pinned_provider_tier(&info), None);
+                    set_mode(&agent, &sid, "ultrasave", "").await;
+                    assert_eq!(
+                        pinned_provider_tier(&info),
+                        Some(ProviderTier::Economy),
+                        "the default path of a pinned UltraSave session"
+                    );
+                    set_mode(&agent, &sid, "normal", "").await;
+                    assert_eq!(pinned_provider_tier(&info), None);
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
 }

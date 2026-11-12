@@ -1,0 +1,4 @@
+The feed in tools/task_cost_eval/fixtures/hard_cursor_pages uses an offset as its cursor, so when new posts
+arrive between requests people see the same posts again. Change the cursor to encode the last post returned,
+so the next page continues right after it no matter what was added or removed in the meantime. Cursors are
+opaque strings, a malformed one raises ValueError, and the order of the feed stays the same.

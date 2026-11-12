@@ -1,0 +1,833 @@
+{
+  "date": "2026-11-12",
+  "requested_pairs_only": true,
+  "runs": 162,
+  "inference_reruns": false,
+  "status": "complete",
+  "quality_metric": "Successful completion within the deadline, successful agent exit, unchanged frozen inputs and passing external behavioral grader. Functional-only grade results are shown separately.",
+  "delta_formula": "100 * (arm / baseline - 1) against the native arm and against the Distill Normal arm; cost and time negative is better, quality positive is better. Quality delta is relative; percentage-point changes are separate.",
+  "missing_cost_policy": "A missing call receipt is unknown, not zero. An arm with one is a lower bound from every priceable reported call; a signed cost delta against it is a bound, rounded so that the displayed bound still holds.",
+  "pricing_source": "tools/task_cost_eval/results/requested-20261016-pricing.json",
+  "quality_tolerance": 0,
+  "headline_arm": "normal",
+  "modes": [
+    "normal",
+    "auto",
+    "ultrasave",
+    "ultrafast",
+    "ultracode"
+  ],
+  "cohort": {
+    "cases": [
+      "tax-bug-en",
+      "active-records-pt",
+      "inventory-report-en"
+    ],
+    "repetitions": 3,
+    "timeout_s": 300
+  },
+  "pairs": {
+    "astra": {
+      "source": "tools/task_cost_eval/results/requested-20261112-astra.json",
+      "date": "2026-11-12",
+      "native": {
+        "runs": 9,
+        "quality_passes": 9,
+        "configuration_verified": true,
+        "accounting_complete": true,
+        "wall_time_s": 457.598117,
+        "reference_cost_usd": 3.078608,
+        "known_cost_usd": 3.078608,
+        "missing_cost_cells": 0,
+        "functional_grader_passes": 9,
+        "timeouts": 0,
+        "quality_percent": 100.0,
+        "reference_cost_lower_bound_usd": 3.078608,
+        "unpriced_calls": 0,
+        "priced_calls": 53,
+        "missing_result_cells": 0,
+        "versions": [
+          "codex-cli 0.167.2"
+        ],
+        "source_shas": []
+      },
+      "distill": {
+        "runs": 9,
+        "quality_passes": 9,
+        "configuration_verified": true,
+        "accounting_complete": true,
+        "wall_time_s": 435.500983,
+        "reference_cost_usd": 1.18300596,
+        "known_cost_usd": 1.18300596,
+        "missing_cost_cells": 0,
+        "functional_grader_passes": 9,
+        "timeouts": 0,
+        "quality_percent": 100.0,
+        "reference_cost_lower_bound_usd": 1.18300596,
+        "unpriced_calls": 0,
+        "priced_calls": 201,
+        "missing_result_cells": 0,
+        "versions": [
+          "distill 2.0.9 (39f1c6fe0bf8)"
+        ],
+        "source_shas": [
+          "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+        ],
+        "decision_calls": 111,
+        "worker_generation_calls": 45
+      },
+      "time_delta_percent": -4.828939014187417,
+      "quality_delta_percent": 0.0,
+      "quality_delta_percentage_points": 0.0,
+      "cost_delta_percent": -61.573348734233136,
+      "cost_delta_kind": "point_estimate",
+      "arms": {
+        "normal": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 435.500983,
+          "reference_cost_usd": 1.18300596,
+          "known_cost_usd": 1.18300596,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 1.18300596,
+          "unpriced_calls": 0,
+          "priced_calls": 201,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 111,
+          "worker_generation_calls": 45,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -4.828939014187417,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -61.573348734233136,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": null,
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "auto": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 362.859098,
+          "reference_cost_usd": 0.580742856,
+          "known_cost_usd": 0.580742856,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.580742856,
+          "unpriced_calls": 0,
+          "priced_calls": 218,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 133,
+          "worker_generation_calls": 41,
+          "measured": "under Auto",
+          "vs_native": {
+            "time_delta_percent": -20.703542143290765,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -81.13618700399661,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -16.680073716389288,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -50.90955788591294,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultrasave": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 215.773783,
+          "reference_cost_usd": 0.012411308000000001,
+          "known_cost_usd": 0.012411308000000001,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.012411308000000001,
+          "unpriced_calls": 0,
+          "priced_calls": 68,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 18,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -52.84644429601095,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -99.59685325315857,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -50.45389300533451,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -98.95086682403527,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultrafast": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 196.91808,
+          "reference_cost_usd": 0.948702398,
+          "known_cost_usd": 0.948702398,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.948702398,
+          "unpriced_calls": 0,
+          "priced_calls": 78,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 19,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -56.9670257187706,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -69.18404688092801,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -54.78355097076785,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -19.805780352957814,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultracode": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 651.783394,
+          "reference_cost_usd": 2.58552695,
+          "known_cost_usd": 2.58552695,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 2.58552695,
+          "unpriced_calls": 0,
+          "priced_calls": 236,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 114,
+          "worker_generation_calls": 78,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": 42.43576837096121,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -16.016363564312176,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": 49.66289846468612,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": 118.55569941507311,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        }
+      }
+    },
+    "sol": {
+      "source": "tools/task_cost_eval/results/requested-20261112-sol.json",
+      "date": "2026-11-12",
+      "native": {
+        "runs": 9,
+        "quality_passes": 9,
+        "configuration_verified": true,
+        "accounting_complete": true,
+        "wall_time_s": 479.280041,
+        "reference_cost_usd": 0.5627716,
+        "known_cost_usd": 0.5627716,
+        "missing_cost_cells": 0,
+        "functional_grader_passes": 9,
+        "timeouts": 0,
+        "quality_percent": 100.0,
+        "reference_cost_lower_bound_usd": 0.5627716,
+        "unpriced_calls": 0,
+        "priced_calls": 55,
+        "missing_result_cells": 0,
+        "versions": [
+          "codex-cli 0.167.2"
+        ],
+        "source_shas": []
+      },
+      "distill": {
+        "runs": 9,
+        "quality_passes": 9,
+        "configuration_verified": true,
+        "accounting_complete": true,
+        "wall_time_s": 414.16281499999997,
+        "reference_cost_usd": 0.207416568,
+        "known_cost_usd": 0.207416568,
+        "missing_cost_cells": 0,
+        "functional_grader_passes": 9,
+        "timeouts": 0,
+        "quality_percent": 100.0,
+        "reference_cost_lower_bound_usd": 0.207416568,
+        "unpriced_calls": 0,
+        "priced_calls": 193,
+        "missing_result_cells": 0,
+        "versions": [
+          "distill 2.0.9 (39f1c6fe0bf8)"
+        ],
+        "source_shas": [
+          "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+        ],
+        "decision_calls": 105,
+        "worker_generation_calls": 44
+      },
+      "time_delta_percent": -13.586467290424897,
+      "quality_delta_percent": 0.0,
+      "quality_delta_percentage_points": 0.0,
+      "cost_delta_percent": -63.1437393073851,
+      "cost_delta_kind": "point_estimate",
+      "arms": {
+        "normal": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 414.16281499999997,
+          "reference_cost_usd": 0.207416568,
+          "known_cost_usd": 0.207416568,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.207416568,
+          "unpriced_calls": 0,
+          "priced_calls": 193,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 105,
+          "worker_generation_calls": 44,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -13.586467290424897,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -63.1437393073851,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": null,
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "auto": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 376.645644,
+          "reference_cost_usd": 0.100601656,
+          "known_cost_usd": 0.100601656,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.100601656,
+          "unpriced_calls": 0,
+          "priced_calls": 230,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 142,
+          "worker_generation_calls": 42,
+          "measured": "under Auto",
+          "vs_native": {
+            "time_delta_percent": -21.41428564099125,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -82.12389253473346,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -9.058556113976568,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -51.497772347674754,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultrasave": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 158.063929,
+          "reference_cost_usd": 0.011841746,
+          "known_cost_usd": 0.011841746,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.011841746,
+          "unpriced_calls": 0,
+          "priced_calls": 70,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 18,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -67.02054843130844,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -97.89581670432553,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -61.83531614251751,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -94.29083890733358,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultrafast": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 170.115029,
+          "reference_cost_usd": 0.158138692,
+          "known_cost_usd": 0.158138692,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.158138692,
+          "unpriced_calls": 0,
+          "priced_calls": 74,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 18,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -64.50613118688162,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -71.90002267349668,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -58.92556674842959,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -23.757926608832904,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultracode": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 664.816194,
+          "reference_cost_usd": 0.56270385,
+          "known_cost_usd": 0.56270385,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.56270385,
+          "unpriced_calls": 0,
+          "priced_calls": 243,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [
+            "39f1c6fe0bf8819dbe8e4062a03d5ff88b48b2c6"
+          ],
+          "decision_calls": 119,
+          "worker_generation_calls": 79,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": 38.71142904530005,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -0.012038631658040089,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": 60.52049337167076,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": 171.29165978679194,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        }
+      }
+    },
+    "opus": {
+      "source": "tools/task_cost_eval/results/requested-20261112-opus.json",
+      "date": "2026-11-12",
+      "native": {
+        "runs": 9,
+        "quality_passes": 9,
+        "configuration_verified": true,
+        "accounting_complete": true,
+        "wall_time_s": 768.490715,
+        "reference_cost_usd": 2.5811208,
+        "known_cost_usd": 2.5811208,
+        "missing_cost_cells": 0,
+        "functional_grader_passes": 9,
+        "timeouts": 0,
+        "quality_percent": 100.0,
+        "reference_cost_lower_bound_usd": 2.5811208,
+        "unpriced_calls": 0,
+        "priced_calls": 9,
+        "missing_result_cells": 0,
+        "versions": [
+          "2.1.322 (Claude Code)"
+        ],
+        "source_shas": []
+      },
+      "distill": {
+        "runs": 9,
+        "quality_passes": 9,
+        "configuration_verified": true,
+        "accounting_complete": true,
+        "wall_time_s": 129.140362,
+        "reference_cost_usd": 0.317522888,
+        "known_cost_usd": 0.317522888,
+        "missing_cost_cells": 0,
+        "functional_grader_passes": 9,
+        "timeouts": 0,
+        "quality_percent": 100.0,
+        "reference_cost_lower_bound_usd": 0.317522888,
+        "unpriced_calls": 0,
+        "priced_calls": 96,
+        "missing_result_cells": 0,
+        "versions": [
+          "distill 2.0.9 (39f1c6fe0bf8)"
+        ],
+        "source_shas": [],
+        "decision_calls": 51,
+        "worker_generation_calls": 0
+      },
+      "time_delta_percent": -83.1955859089332,
+      "quality_delta_percent": 0.0,
+      "quality_delta_percentage_points": 0.0,
+      "cost_delta_percent": -87.69825542454271,
+      "cost_delta_kind": "point_estimate",
+      "arms": {
+        "normal": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 129.140362,
+          "reference_cost_usd": 0.317522888,
+          "known_cost_usd": 0.317522888,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.317522888,
+          "unpriced_calls": 0,
+          "priced_calls": 96,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [],
+          "decision_calls": 51,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -83.1955859089332,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -87.69825542454271,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": null,
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "auto": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 152.800337,
+          "reference_cost_usd": 0.13131795200000002,
+          "known_cost_usd": 0.13131795200000002,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.131317952,
+          "unpriced_calls": 0,
+          "priced_calls": 120,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [],
+          "decision_calls": 75,
+          "worker_generation_calls": 0,
+          "measured": "under Auto",
+          "vs_native": {
+            "time_delta_percent": -80.11682717597961,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -94.91236706162687,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": 18.32113108061444,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -58.642996469596234,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultrasave": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 164.240785,
+          "reference_cost_usd": 0.015438956,
+          "known_cost_usd": 0.015438956,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.015438956,
+          "unpriced_calls": 0,
+          "priced_calls": 85,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [],
+          "decision_calls": 38,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -78.62813671079942,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -99.4018506998975,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": 27.18005622440487,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -95.13768720823677,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultrafast": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 105.089302,
+          "reference_cost_usd": 0.3275935,
+          "known_cost_usd": 0.3275935,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 0.3275935,
+          "unpriced_calls": 0,
+          "priced_calls": 63,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [],
+          "decision_calls": 18,
+          "worker_generation_calls": 0,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -86.32523465166393,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -87.30809112072554,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": -18.623968236979238,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": 3.171617663039128,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        },
+        "ultracode": {
+          "runs": 9,
+          "quality_passes": 9,
+          "configuration_verified": true,
+          "accounting_complete": true,
+          "wall_time_s": 260.315577,
+          "reference_cost_usd": 1.005801226,
+          "known_cost_usd": 1.005801226,
+          "missing_cost_cells": 0,
+          "functional_grader_passes": 9,
+          "timeouts": 0,
+          "quality_percent": 100.0,
+          "reference_cost_lower_bound_usd": 1.005801226,
+          "unpriced_calls": 0,
+          "priced_calls": 150,
+          "missing_result_cells": 0,
+          "versions": [
+            "distill 2.0.9 (39f1c6fe0bf8)"
+          ],
+          "source_shas": [],
+          "decision_calls": 71,
+          "worker_generation_calls": 33,
+          "measured": "mode pinned",
+          "vs_native": {
+            "time_delta_percent": -66.1263861854206,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": -61.032384613691846,
+            "cost_delta_kind": "point_estimate"
+          },
+          "vs_normal": {
+            "time_delta_percent": 101.57569095245371,
+            "quality_delta_percent": 0.0,
+            "quality_delta_percentage_points": 0.0,
+            "cost_delta_percent": 216.76495270476374,
+            "cost_delta_kind": "point_estimate"
+          },
+          "quality_gate": {
+            "passed": true,
+            "reason": null
+          }
+        }
+      }
+    }
+  },
+  "credential_path_redaction": "Credential-file arguments are replaced by <private-credential-path> and the operator home directory by ~; raw task artifacts keep the originals."
+}

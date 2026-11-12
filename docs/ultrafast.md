@@ -13,6 +13,69 @@ are not sent, so they cannot spend a model round. It retains the requested model
 reasoning-effort choices, permissions, task requirements, and verification
 obligations. More agents alone do not establish a speed or quality improvement.
 
+By default UltraFast is on its `v2` policy row, and its directive states only
+what the harness enforces on that row (automatic effort set once per turn, at
+medium or lower) or what the model must do itself: batch independent tool
+calls, run focused checks and the full check once at the end, change the
+approach after a failure, and confirm each stated requirement before
+finishing. It gives no delegation advice. `[modes] v2 = []` restores the
+previous directive. No campaign has measured the new directive yet; see
+[Mode policy table](mode-policy.md#directives).
+
+By default UltraFast also waits for nothing but the model and the checks: no
+Jev question is awaited before a main request, the effort is decided once per
+turn without waiting and capped at medium, the after-edit review waits at most
+800 ms, and the utility model does not select tool results. It also runs no
+subagent: a lone child costs its start-up and the hand-back, so the session
+does the work itself. And it keeps the session's own model instead of
+routing a round to a cheaper tier: a cheaper model is not reliably a faster
+one (in a benchmark pilot the worker model answered more slowly than the
+session model), and the result keeps the model you chose. Name a faster model
+with `[modes.ultrafast] model` if you want one. A session pinned to UltraFast is not offered the spawn
+tool; under Auto the tool list stays the same across modes and a spawn is
+refused. `[modes] v2 = []` turns all of this off; it has not been benchmarked.
+See [Decision policy by mode](jev-routing.md#decision-policy-by-mode).
+
+## Model and provider path
+
+These keys apply only to a session pinned to UltraFast (`/ultrafast on`,
+`--ultrafast`, `/mode ultrafast`). Under Auto they never apply, whatever mode
+Auto picks.
+
+```toml
+[modes.ultrafast]
+model = "<model id>"      # optional; unset keeps the session's model
+provider_tier = "fast"    # the default; "off" sends no serving-path field
+```
+
+- `model`: when the session is pinned, this model becomes the session's model
+  as a session-only explicit pick (the account Auto routing setting on disk is
+  not changed). Leaving UltraFast restores the previous model, unless you picked
+  another model with `/model` in the meantime. The default is the session's own
+  model: UltraFast is meant as the same model served faster, not a smaller one.
+- `provider_tier`: `"fast"` by default; `"off"` turns it off. It is decided once
+  when the session is pinned and kept until the session leaves the mode,
+  because changing it mid-session invalidates the provider's prompt cache. It
+  asks for the endpoint's fast serving path on the session's model only (a
+  round routed to another model goes without it):
+  - Responses API endpoints: `service_tier: "priority"`.
+  - Anthropic Messages endpoints: `speed: "fast"`, except on a Claude
+    subscription, which refuses fast mode without usage credits; nothing is
+    sent there.
+  - OpenRouter: the model variant defaults to `nitro` when `[models]
+    main_variant` is unset; an explicit `main_variant` wins. No other field is
+    sent to OpenRouter.
+
+No provider has been probed for these fields, and this default has not been
+benchmarked. Whether an endpoint accepts them depends on the endpoint, the
+model and your plan, and a fast path usually costs more per token. When an
+endpoint refuses a request that carried the field with HTTP 400, 404 or 422,
+the session drops the field for the rest of the session, resends that request
+once without it, records a `provider_tier_rejected` policy row and sends the
+client one `x.ai/session/provider_tier/rejected` notice. No speed or cost claim
+is made for these keys until a provider probe and a paired benchmark have been
+run.
+
 ## Reproducible paired evaluation
 
 The existing comparison runner accepts explicit `--baseline-mode` and

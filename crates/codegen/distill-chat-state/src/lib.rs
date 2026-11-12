@@ -41,7 +41,8 @@ pub mod usage;
 // Re-export main types for convenience
 pub use actor::ChatStateActor;
 pub use actor::history_eviction::READ_REUSE_NOTE_PREFIX;
-pub use actor::history_eviction::RequestTrims;
+pub use actor::history_eviction::cache_read_ratio;
+pub use actor::history_eviction::{CacheResumeState, PersistedTrim, RequestTrims};
 pub use actor::history_eviction::{
     COMPACTION_DIGEST_MARKER, ColdCompactionCandidate, EVICTED_MARKER, SUPERSEDED_MARKER,
     ambiguous_call_ids, cold_compaction_candidates, cold_compaction_digest, shrink_tool_result,
@@ -61,8 +62,8 @@ pub use persistence::{
 };
 pub use types::*;
 pub use usage::{
-    CacheBreak, UsageAttribution, UsageCallStatus, UsageCostBasis, UsageLedger, UsageTotals,
-    UtilityOutcomeCounts,
+    CacheBreak, CacheBreakCause, CacheBreakCounts, UsageAttribution, UsageCallStatus,
+    UsageCostBasis, UsageLedger, UsageTotals, UtilityOutcomeCounts,
 };
 // Re-exported so `distill_chat_state::CompactionDetail` stays a working path for
 // existing callers.

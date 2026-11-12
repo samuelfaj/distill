@@ -262,6 +262,8 @@ pub struct ExecutionPolicy {
     pub mode: Arc<distill_tool_types::AtomicExecutionMode>,
     pub max_depth: u32,
     pub off_max_depth: u32,
+    /// The modes on their v2 policy row; the row names the mode's depth.
+    pub v2: distill_tool_types::V2Modes,
     pub capability_ceiling: Option<SubagentCapabilityMode>,
     pub allowed_subagent_types: Option<Vec<String>>,
 }
@@ -272,13 +274,12 @@ impl ExecutionPolicy {
     }
 
     pub fn effective_max_depth(&self) -> u32 {
-        use distill_tool_types::ExecutionMode;
-        match self.mode.load() {
-            ExecutionMode::Normal => self.off_max_depth,
-            ExecutionMode::Ultrafast | ExecutionMode::Ultrasave => {
-                self.max_depth.min(self.off_max_depth).min(1)
-            }
-            ExecutionMode::Ultracode => self.max_depth,
+        use distill_tool_types::SubagentDepth;
+        match self.v2.policy(self.mode.load()).runtime.subagent_depth {
+            SubagentDepth::Default => self.off_max_depth,
+            SubagentDepth::One => self.max_depth.min(self.off_max_depth).min(1),
+            SubagentDepth::Max => self.max_depth,
+            SubagentDepth::None => 0,
         }
     }
 }

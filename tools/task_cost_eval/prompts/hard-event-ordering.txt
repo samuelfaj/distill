@@ -1,0 +1,6 @@
+The event bus in tools/task_cost_eval/fixtures/hard_event_ordering needs some work. subscribe() should take a
+`once=False` option for handlers that only run for a single event. A handler that raises must not keep the
+remaining handlers from running; emit() raises the first error once delivery is done. Handlers also emit
+events and subscribe or unsubscribe while an event is being delivered: an event emitted from inside a handler
+is delivered only after the current event has reached all of its handlers, and an event goes to the handlers
+that were subscribed at the moment it was emitted.

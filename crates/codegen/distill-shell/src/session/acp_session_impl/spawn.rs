@@ -604,8 +604,23 @@ pub(crate) async fn spawn_session_actor(
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
-    // First in the actor's queue, before anything can read or rewrite the history.
-    chat_state_handle.start_from_inherited_history(startup_hints.inherited_request_trims.take());
+    // First in the actor's queue, before anything can read or rewrite the history. A reload whose
+    // system prompt updates are folded into the head below sends a new prefix: it stays cold.
+    let resumed = (startup_hints.inherited_request_trims.is_none()
+        && (startup_hints.preserve_inherited_system
+            || !conversation
+                .iter()
+                .any(ConversationItem::is_system_prompt_update)))
+    .then(|| {
+        crate::session::persistence::load_cache_resume_state(
+            &crate::session::persistence::session_dir(&session_info),
+        )
+    })
+    .flatten();
+    match (startup_hints.inherited_request_trims.take(), resumed) {
+        (None, Some(resumed)) => chat_state_handle.start_from_resumed_history(resumed),
+        (parent_trims, _) => chat_state_handle.start_from_inherited_history(parent_trims),
+    }
     // Register before the first await and before this function returns control
     // to prompt delivery. Child sessions use this same shared spawn path.
     let _ = persistence
@@ -2129,6 +2144,10 @@ pub(crate) async fn spawn_session_actor(
         trace_config_template: std::cell::RefCell::new(None),
     });
     drop(actor_build_span);
+    crate::jev::register_session_events(
+        session.session_info.id.0.as_ref(),
+        &session.events.writer(),
+    );
     async {
         if owns_permission_manager {
             session.wire_permission_prompt_notification();

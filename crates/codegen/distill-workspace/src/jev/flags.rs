@@ -122,6 +122,16 @@ pub struct JevLadderOverlay {
     pub b7_subagent_model: Option<bool>,
     /// B8: Auto execution mode picks Normal/UltraFast/UltraCode/UltraSave per request.
     pub b8_execution_mode: Option<bool>,
+    /// B8 under Auto: keep the full tools array once it went out, whatever mode is picked.
+    pub b8_stable_tools: Option<bool>,
+    /// B8 mid-turn review: no return to a left mode without a new failure, and a short hold.
+    pub b8_review_hygiene: Option<bool>,
+    /// F1: label a quick next human message as reporting the previous result wrong or incomplete.
+    pub f1_followup_label: Option<bool>,
+    /// B8: the mode question judges the request with contrastive criteria.
+    pub b8_criteria_v2: Option<bool>,
+    /// B8 mid-turn review: inside a request the mode only moves up.
+    pub b8_up_only: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -146,7 +156,9 @@ impl JevFlags {
             enabled: true,
             shadow: false,
             p1_tool_family: true,
-            p2_read_shortlist: true,
+            // Opt-in: it paid a Jev call per qualifying document read and
+            // narrowed none, so the call bought nothing.
+            p2_read_shortlist: false,
             p3_compaction_recorte: true,
             p6_skill_suggestion: true,
             a1_file_to_edit: true,
@@ -189,6 +201,21 @@ impl JevFlags {
             d6_warm_batches: false,
             b7_subagent_model: true,
             b8_execution_mode: true,
+            // On by the owner's decision, not benchmarked: an Auto A/B has not
+            // measured rounds per task with the full tools array in lean modes.
+            // `[jev.ladder] b8_stable_tools = false` turns it off.
+            b8_stable_tools: true,
+            // On, not benchmarked against Auto without the review rules.
+            // `[jev.ladder] b8_review_hygiene = false` turns it off.
+            b8_review_hygiene: true,
+            // On, not benchmarked: it adds a question to the turn-start request
+            // and its label is only recorded, never acted on.
+            // `[jev.ladder] f1_followup_label = false` turns it off.
+            f1_followup_label: true,
+            // On by the owner's choice before any replay, shadow or Auto A/B;
+            // `false` restores the first wording and the free review.
+            b8_criteria_v2: true,
+            b8_up_only: true,
         }
     }
 
@@ -286,6 +313,16 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self.b8_execution_mode =
             self.enabled && resolve_switch(ladder.b8_execution_mode, None, self.b8_execution_mode);
+        self.b8_stable_tools = self.b8_execution_mode
+            && resolve_switch(ladder.b8_stable_tools, None, self.b8_stable_tools);
+        self.b8_review_hygiene = self.b8_execution_mode
+            && resolve_switch(ladder.b8_review_hygiene, None, self.b8_review_hygiene);
+        self.f1_followup_label =
+            self.enabled && resolve_switch(ladder.f1_followup_label, None, self.f1_followup_label);
+        self.b8_criteria_v2 = self.b8_execution_mode
+            && resolve_switch(ladder.b8_criteria_v2, None, self.b8_criteria_v2);
+        self.b8_up_only =
+            self.b8_execution_mode && resolve_switch(ladder.b8_up_only, None, self.b8_up_only);
         self
     }
 }
@@ -373,6 +410,23 @@ pub struct JevFlags {
     pub b7_subagent_model: bool,
     /// B8: Auto execution mode picks the session's effective mode.
     pub b8_execution_mode: bool,
+    /// B8: under Auto, the tools array never shrinks once the full list was
+    /// sent, so a lean pick does not re-read the prompt uncached.
+    pub b8_stable_tools: bool,
+    /// B8: on a large prompt, Auto's per-round review neither returns to a
+    /// mode left this request without a new failure nor switches again
+    /// within a short dwell.
+    pub b8_review_hygiene: bool,
+    /// F1: a human message within ten minutes of the previous turn's end
+    /// also asks whether it reports that result as wrong or incomplete; the
+    /// label is recorded and never acted on.
+    pub f1_followup_label: bool,
+    /// B8: the mode question describes each option by what it is for, what it
+    /// is not for and example requests, and judges the whole request.
+    pub b8_criteria_v2: bool,
+    /// B8: inside a request Auto's mode only moves up; a leaner pick waits
+    /// for the next request.
+    pub b8_up_only: bool,
 }
 
 impl JevFlags {
@@ -416,6 +470,11 @@ impl JevFlags {
             d6_warm_batches: false,
             b7_subagent_model: false,
             b8_execution_mode: false,
+            b8_stable_tools: false,
+            b8_review_hygiene: false,
+            f1_followup_label: false,
+            b8_criteria_v2: false,
+            b8_up_only: false,
         }
     }
 
@@ -515,6 +574,14 @@ impl JevFlags {
             JevLever::D6HistoryEviction => self.d6_history_eviction,
             JevLever::B7SubagentModel => self.b7_subagent_model,
             JevLever::B8ExecutionMode => self.b8_execution_mode,
+            JevLever::B8StableTools => self.b8_stable_tools,
+            JevLever::B8ReviewHygiene => self.b8_review_hygiene,
+            // Harness-internal: names the escalation ratchet's rows and asks
+            // Jev nothing, so there is no flag to switch it on.
+            JevLever::Escalation => false,
+            JevLever::F1FollowupLabel => self.f1_followup_label,
+            JevLever::B8CriteriaV2 => self.b8_criteria_v2,
+            JevLever::B8UpOnly => self.b8_up_only,
         }
     }
 
@@ -553,6 +620,8 @@ pub enum JevLever {
     B6DelegationHint,
     B7SubagentModel,
     B8ExecutionMode,
+    B8StableTools,
+    B8ReviewHygiene,
     C1PrematureStop,
     C3CompletionCheck,
     C4DiffRisk,
@@ -563,6 +632,11 @@ pub enum JevLever {
     D4CompactionTiming,
     D5MemoryCaptureGate,
     D6HistoryEviction,
+    /// The escalation ratchet's deterministic rows (`[modes] escalation`).
+    Escalation,
+    F1FollowupLabel,
+    B8CriteriaV2,
+    B8UpOnly,
 }
 
 impl JevLever {
@@ -593,6 +667,8 @@ impl JevLever {
             Self::B6DelegationHint => "b6_delegation_hint",
             Self::B7SubagentModel => "b7_subagent_model",
             Self::B8ExecutionMode => "b8_execution_mode",
+            Self::B8StableTools => "b8_stable_tools",
+            Self::B8ReviewHygiene => "b8_review_hygiene",
             Self::C1PrematureStop => "c1_premature_stop",
             Self::C3CompletionCheck => "c3_completion_check",
             Self::C4DiffRisk => "c4_diff_risk",
@@ -603,6 +679,10 @@ impl JevLever {
             Self::D4CompactionTiming => "d4_compaction_timing",
             Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
             Self::D6HistoryEviction => "d6_history_eviction",
+            Self::Escalation => "escalation",
+            Self::F1FollowupLabel => "f1_followup_label",
+            Self::B8CriteriaV2 => "b8_criteria_v2",
+            Self::B8UpOnly => "b8_up_only",
         }
     }
 }
@@ -663,7 +743,6 @@ mod tests {
         assert!(!flags.shadow, "active, not shadow, by policy");
         for lever in [
             JevLever::P1ToolFamily,
-            JevLever::P2ReadShortlist,
             JevLever::P3CompactionRecorte,
             JevLever::P6SkillSuggestion,
             JevLever::A1FileToEdit,
@@ -711,10 +790,19 @@ mod tests {
             !flags.e_cheap_agent,
             "utility explore children are opt-in until their reports are measured"
         );
+        assert!(
+            !flags.lever_active(JevLever::P2ReadShortlist),
+            "P2 paid a Jev call per document read and narrowed none, so it is opt-in"
+        );
         for lever in [
             JevLever::B6DelegationHint,
             JevLever::C1PrematureStop,
             JevLever::C3CompletionCheck,
+            // On by the owner's decision without a benchmark; each has a
+            // `[jev.ladder]` key that turns it off.
+            JevLever::B8StableTools,
+            JevLever::B8ReviewHygiene,
+            JevLever::F1FollowupLabel,
         ] {
             assert!(flags.lever_active(lever), "{} must be on", lever.as_str());
         }
@@ -780,15 +868,111 @@ mod tests {
             None,
             Some(true),
             JevLadderOverlay {
-                p2_read_shortlist: Some(false),
+                p6_skill_suggestion: Some(false),
                 ..JevLadderOverlay::default()
             },
         );
         assert!(flags.enabled);
         assert!(flags.shadow, "shadow can be turned on explicitly");
-        assert!(!flags.p2_read_shortlist);
+        assert!(!flags.p6_skill_suggestion);
         assert!(flags.p1_tool_family, "other levers keep the default");
-        assert!(!flags.lever_active(JevLever::P2ReadShortlist));
+        assert!(!flags.lever_active(JevLever::P6SkillSuggestion));
+    }
+
+    /// The P2 key stays so a user can opt back in.
+    #[test]
+    fn an_opt_in_lever_can_be_turned_on() {
+        let flags = JevFlags::harness_default().overlaid(
+            None,
+            None,
+            None,
+            JevLadderOverlay {
+                p2_read_shortlist: Some(true),
+                ..JevLadderOverlay::default()
+            },
+        );
+        assert!(flags.lever_active(JevLever::P2ReadShortlist));
+    }
+
+    /// Auto's two rules are on by default and each has its own off key (an
+    /// A/B arm turns one off alone); they mean nothing without Auto itself, so
+    /// turning Auto off turns them off.
+    #[test]
+    fn autos_rules_are_on_by_default_and_follow_their_keys_and_the_auto_lever() {
+        let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
+        let default = overlaid(JevLadderOverlay::default());
+        assert!(default.lever_active(JevLever::B8StableTools));
+        assert!(default.lever_active(JevLever::B8ReviewHygiene));
+        let tools_off = overlaid(JevLadderOverlay {
+            b8_stable_tools: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!tools_off.lever_active(JevLever::B8StableTools));
+        assert!(tools_off.lever_active(JevLever::B8ReviewHygiene));
+        let review_off = overlaid(JevLadderOverlay {
+            b8_review_hygiene: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!review_off.lever_active(JevLever::B8ReviewHygiene));
+        assert!(review_off.lever_active(JevLever::B8StableTools));
+        let auto_off = overlaid(JevLadderOverlay {
+            b8_execution_mode: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!auto_off.lever_active(JevLever::B8StableTools));
+        assert!(!auto_off.lever_active(JevLever::B8ReviewHygiene));
+    }
+
+    /// The follow-up label is on by default, its key turns it off, and the
+    /// master switch still wins.
+    #[test]
+    fn the_followup_label_is_on_by_default_and_follows_its_key_and_the_master_switch() {
+        let overlaid =
+            |enabled, ladder| JevFlags::harness_default().overlaid(enabled, None, None, ladder);
+        assert!(
+            overlaid(None, JevLadderOverlay::default()).lever_active(JevLever::F1FollowupLabel)
+        );
+        let off = JevLadderOverlay {
+            f1_followup_label: Some(false),
+            ..JevLadderOverlay::default()
+        };
+        assert!(!overlaid(None, off).lever_active(JevLever::F1FollowupLabel));
+        assert!(
+            !overlaid(Some(false), JevLadderOverlay::default())
+                .lever_active(JevLever::F1FollowupLabel)
+        );
+        assert_eq!(JevLever::F1FollowupLabel.as_str(), "f1_followup_label");
+    }
+
+    /// Auto v2's two levers ship on, each has its own off switch, and both
+    /// mean nothing without Auto itself.
+    #[test]
+    fn auto_v2_levers_default_on_and_each_turns_off_alone() {
+        let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
+        let default = overlaid(JevLadderOverlay::default());
+        assert!(default.lever_active(JevLever::B8CriteriaV2));
+        assert!(default.lever_active(JevLever::B8UpOnly));
+        let criteria_off = overlaid(JevLadderOverlay {
+            b8_criteria_v2: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!criteria_off.lever_active(JevLever::B8CriteriaV2));
+        assert!(criteria_off.lever_active(JevLever::B8UpOnly));
+        let up_off = overlaid(JevLadderOverlay {
+            b8_up_only: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(up_off.lever_active(JevLever::B8CriteriaV2));
+        assert!(!up_off.lever_active(JevLever::B8UpOnly));
+        let auto_off = overlaid(JevLadderOverlay {
+            b8_execution_mode: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!auto_off.lever_active(JevLever::B8CriteriaV2));
+        assert!(!auto_off.lever_active(JevLever::B8UpOnly));
+        assert!(!JevFlags::off().lever_active(JevLever::B8UpOnly));
+        assert_eq!(JevLever::B8CriteriaV2.as_str(), "b8_criteria_v2");
+        assert_eq!(JevLever::B8UpOnly.as_str(), "b8_up_only");
     }
 
     #[test]

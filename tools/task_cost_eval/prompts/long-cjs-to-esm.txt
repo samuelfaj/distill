@@ -1,0 +1,4 @@
+Convert the library in tools/task_cost_eval/fixtures/long_cjs_to_esm from CommonJS to ES modules: set
+"type": "module" in package.json and use import/export in index.js and in every file under lib/. Every
+export, default exports included, keeps its name and behaviour. `node check.mjs lib/NAME.js` checks one
+module.

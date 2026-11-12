@@ -1,0 +1,2 @@
+Quick question about tools/task_cost_eval/fixtures/auto_page_size: where is the default page size for the list
+endpoints set, and what is it?

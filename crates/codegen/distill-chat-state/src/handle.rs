@@ -407,7 +407,23 @@ impl ChatStateHandle {
     pub fn start_from_inherited_history(&self, parent_trims: Option<crate::RequestTrims>) {
         let _ = self
             .cmd_tx
-            .send(ChatStateCommand::StartFromInheritedHistory { parent_trims });
+            .send(ChatStateCommand::StartFromInheritedHistory {
+                parent_trims,
+                resumed: None,
+            });
+    }
+
+    /// [`Self::start_from_inherited_history`] for a session reloaded from disk with the record its
+    /// last process kept ([`Self::cache_resume_state`]): inside that request's cache lifetime the
+    /// history is warm and repeats the trims it sent; past it, or with a record that cannot be
+    /// trusted, it is cold as before.
+    pub fn start_from_resumed_history(&self, resumed: crate::CacheResumeState) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::StartFromInheritedHistory {
+                parent_trims: None,
+                resumed: Some(resumed),
+            });
     }
 
     /// The cache lifetime the last main request had (`None`: unknown for its endpoint); idle past
@@ -689,6 +705,16 @@ impl ChatStateHandle {
         })
         .await
         .unwrap_or_default()
+    }
+
+    /// What a reload of this session needs to know about the cache; `None` before any main
+    /// request completed (or when the actor is gone).
+    pub async fn cache_resume_state(&self) -> Option<crate::CacheResumeState> {
+        self.query("GetCacheResumeState", |reply| {
+            ChatStateCommand::GetCacheResumeState { reply }
+        })
+        .await
+        .flatten()
     }
 
     /// Get total accumulated tokens.

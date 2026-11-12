@@ -17,6 +17,8 @@ pub(crate) struct UsageAttemptContext {
     pub(crate) endpoint: Option<String>,
     pub(crate) requested_effort: Option<String>,
     pub(crate) applied_effort: Option<String>,
+    /// The prompt-cache lifetime a completed main request got (set after the call).
+    pub(crate) cache_lifetime_secs: Option<u64>,
 }
 
 impl UsageAttemptContext {
@@ -67,6 +69,7 @@ impl UsageAttemptContext {
             usage_complete,
             api_duration_ms,
             cost_usd_ticks,
+            cache_lifetime_secs: self.cache_lifetime_secs,
             cost_basis: if cost_usd_ticks.is_some() {
                 distill_chat_state::UsageCostBasis::Reported
             } else {
@@ -91,6 +94,7 @@ mod tests {
             endpoint: None,
             requested_effort: None,
             applied_effort: None,
+            cache_lifetime_secs: None,
         }
     }
 
@@ -190,8 +194,8 @@ impl TurnParkState {
 
 /// Recovery decision returned by `SessionActor::handle_sampling_failure` for the sampler-based turn loop.
 pub(crate) enum SamplerFailureRecovery {
-    /// Compaction ran.
-    /// The turn loop should rebuild the request from the compacted conversation and resubmit.
+    /// Compaction ran, or a refused serving path was dropped for the session.
+    /// The turn loop should rebuild the request from the conversation and resubmit.
     CompactAndResubmit,
     /// Resubmit through the auth-retry schedule: recovery succeeded, or the parked
     /// credential-less case. `credential` is the rejected request's wire provenance;

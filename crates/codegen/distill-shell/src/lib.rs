@@ -8,6 +8,10 @@
 )]
 #![warn(unreachable_pub)]
 #![deny(clippy::indexing_slicing)]
+// Turn-loop tests hold the whole turn future by value inside a runtime, a local
+// set and a timeout; computing that type's layout exceeds the default query
+// depth in a from-scratch test build. The non-test build stays at the default.
+#![cfg_attr(test, recursion_limit = "256")]
 #[cfg(all(test, feature = "dhat-heap"))]
 #[global_allocator]
 static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
@@ -48,6 +52,7 @@ pub mod jev_decide;
 pub mod jev_cheap;
 pub mod jev_lanes;
 mod jev_model_facts;
+pub mod jev_shadow;
 pub mod jev_store;
 pub mod stored_output_ask;
 pub mod leader;

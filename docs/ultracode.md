@@ -1,10 +1,32 @@
 # UltraCode
 
-UltraCode lets a session choose whether to execute directly, investigate an
-uncertainty, or delegate smaller tasks that can be verified independently.
-Delegation is optional. There is no agent quota, required tree shape, or promise
+UltraCode means extra care: higher effort and verification discipline. With
+automatic effort it leans one level higher than Normal, and its directive asks
+for the invariants and root cause before an edit and a check of the changed
+behavior and edge cases after it. The session still chooses whether to execute
+directly, investigate an uncertainty, or delegate smaller tasks that can be
+verified independently. Delegation is optional. There is no agent quota, required tree shape, or promise
 that a larger tree will be faster or cheaper. The parent must inspect child
 changes and evidence before accepting the result.
+
+By default UltraCode is on its `v2` policy row, and its directive states only
+what the harness enforces on that row or what the model must do itself: the
+invariants and root cause before an edit, real checks of the changed behavior
+after it, automatic effort that is never lowered for a routine round and is
+at least high after a failed check or tool, and the turn-end review below,
+which appends the verification status to the final message. It carries no
+delegation rules (a subagent's copy also leaves out the review, which runs in
+root sessions only). `[modes] v2 = []` restores the previous directive and
+its delegation rules described above and in [Hierarchy and
+limits](#hierarchy-and-limits). No campaign has measured the new directive
+yet; see [Mode policy table](mode-policy.md#directives).
+
+By default UltraCode also reads the effort answer at the 0.75 quantile, skips
+the pass that may only lower effort, runs at least at high on the round after
+a failed tool or a failed recorded check, and, when Jev is silent, keeps the
+turn's last answered level (else medium). `[modes] v2 = []` turns this off; it
+has not been benchmarked. See
+[Decision policy by mode](jev-routing.md#decision-policy-by-mode).
 
 ## Activate the real mode
 
@@ -31,16 +53,17 @@ the actual mode from session startup metadata after initializing its models,
 so the footer and tier editor reflect the restored selection. An older server
 that omits the metadata defaults the UI to off instead of inheriting the prior
 session's mode. The flag does not
-change the configured model, reasoning effort, permission mode, or profile
-configuration. Interactive startup with `--ultracode` is rejected: use the slash
+change the configured model, permission mode, or profile configuration. An
+explicit reasoning effort stays as configured; with automatic effort, UltraCode
+leans one level higher. Interactive startup with `--ultracode` is rejected: use the slash
 command there. An agent running over `distill agent` uses the ACP endpoint instead.
 
 ## Hierarchy and limits
 
 The root is depth zero. A depth ceiling of one allows children but no
 grandchildren; two allows a child to delegate one more level. UltraCode defaults
-to two child levels and caps its ceiling at two. An explicit lower ceiling wins:
-`GROK_SUBAGENTS_MAX_DEPTH=1` produces the flat comparison. The existing depth
+to one level, like Normal, and caps its ceiling at two:
+`GROK_SUBAGENTS_MAX_DEPTH=2` allows the second level. The existing depth
 environment variable takes precedence over `[subagents] max_depth` and the
 remote setting. The runtime clamps values below one to one and ignores invalid
 environment values; the comparison runner rejects requested depths below one.
@@ -50,8 +73,11 @@ Task children share the root's exclusive mode, including when launched in
 Normal, so later mode changes apply to the existing tree. Normal retains its
 configured depth; UltraFast and UltraSave advertise no delegation tool and UltraCode
 uses its resolved ceiling. Internal planner/verifier agents, workflow children
-and children with an explicit output-token budget remain leaves. Normal UltraCode
-children can delegate within shared root concurrency, depth, cancellation and usage accounting.
+and children with an explicit output-token budget remain leaves. With a ceiling of
+two, UltraCode children can delegate within shared root concurrency, depth,
+cancellation and usage accounting. A child that cannot delegate (no spawn tool,
+or already at the ceiling) gets the UltraCode directive without its delegation
+sentences.
 Subagents running in isolated worktrees are leaves and cannot delegate, with
 UltraCode on or off; shared-workspace UltraCode hierarchy remains available
 within the existing limits.
@@ -67,6 +93,57 @@ depth two permits a hierarchy; it does not prove that any particular task used
 grandchildren. Inspect the saved session, lifecycle events and usage records
 to verify the actual execution tree. Mode activation and a depth setting alone
 are not evidence of completion, capability gains, or cost savings.
+
+## Turn-end review (contract v2)
+
+Contract v2 adds an independent review of each turn that changes code. It is
+on by default, because UltraCode uses its `v2` row when `[modes] v2` is unset
+(see [Mode policy](mode-policy.md)); this default has not been benchmarked. To
+turn it off, leave `ultracode` out of an explicit list and do not set
+`[modes.ultracode] contract = "v2"`, which turns it on whatever the list says:
+
+```toml
+[modes]
+v2 = ["ultrasave", "ultrafast"]   # or v2 = [] for every mode
+```
+
+It applies to root sessions whose effective mode is UltraCode and that have no
+active `/goal` (a goal runs its own verification stage):
+
+- Before the turn's first tool call the harness snapshots the tracked files
+  through a temporary index and lists the untracked files, within one second.
+  Your index, refs and working tree are not modified.
+- After the final check it diffs that snapshot against the working tree,
+  including files created during the turn, so changes made before the turn are
+  not part of the patch. If the snapshot could not be taken, the diff is
+  against HEAD and is labelled as possibly including earlier changes. A turn
+  that changed only `.md`, `.mdx`, `.txt` or `.rst` files or files under
+  `docs/` is not reviewed.
+- One reviewer subagent (from the configured skeptic pool) judges the patch
+  against your request and the checks the harness recorded. It refutes only
+  for a demonstrable defect, an unmet explicit requirement, a failed, unknown
+  or stale check on changed code, or cheating; a missing test is a note unless
+  the request asked for tests.
+- A refutation appends its gaps once and the turn continues one effort level
+  higher. If the same gaps come back, one panel of three reviewers decides.
+  Each turn gets at most two rework rounds, one panel and 15 minutes of
+  review time.
+
+The turn's final message ends with a status line:
+
+- `Verification: REVIEWED`: the reviewer did not refute the patch, and the
+  latest recorded check, if any, passed on the current working tree.
+- `Verification: UNVERIFIED (reason)`: anything else. For example: still
+  refuted after the rework rounds or the panel, the review could not run or
+  returned no usable verdict, the latest check failed, has an unknown outcome
+  or ran before the last change, or the session is not in a git repository.
+  Open gaps are listed above the line, with an offer to continue as a `/goal`.
+
+The status line is shown to the client; it is not added to the conversation
+the model reads. REVIEWED means one independent review found no reason to
+refute the patch. It does not prove the change is correct. The value of
+contract v2 has not been benchmarked: there is no measured effect on accepted
+runs, credits or time yet.
 
 ## Paired comparisons
 

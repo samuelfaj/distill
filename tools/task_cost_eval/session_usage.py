@@ -27,11 +27,14 @@ omitted: `resume` (nothing records that a session was reloaded from disk) and
 `mode-switch` (execution_mode.json keeps only the last choice and mode; no
 per-call mode is stored). The mode-switch cause in cache-breaks is used only
 when a row carries an `execution_mode` field. Cache-break causes come from the
-`cacheBreaks` counters in usage.json when a session has them (assumed shape:
-cause -> count, or cause -> {count, uncached_tokens}); otherwise from
-heuristics: model or effort change, 5-minute to 1-hour lifetime switch (from
-cache_creation_1h_prompt_tokens), gap over 5 minutes before a turn, turn start,
-or unknown mid-turn.
+`cacheBreaks` counters in usage.json when a session has them (cause -> count
+for idleExpired, toolsChanged, settingsChanged, prefixChanged, lifetimeChanged
+and unexplained, plus afterReminder and afterNoToolRound, which count what a
+broken request followed and overlap the causes). The heuristic report beside
+them uses: model or effort change, a cache lifetime change (the row's
+`cache_lifetime_secs` when both rows carry it, else the first 1-hour write
+from cache_creation_1h_prompt_tokens), gap over 5 minutes before a turn, turn
+start, or unknown mid-turn.
 """
 from __future__ import annotations
 
@@ -60,7 +63,9 @@ DEFAULT_PRICES = {
 }
 
 Call = namedtuple('Call', 'attempt role family prompt cached write write_1h output duration_ms effort model '
-                          'turn status label mode day')
+                          'turn status label mode day lifetime', defaults=(None,))
+# usage.json `cacheBreaks` keys that count what a broken request followed; every other key is a cause.
+COUNTER_FOLLOWING = ('afterReminder', 'afterNoToolRound')
 
 
 # ---------------------------------------------------------------- loading
@@ -160,7 +165,8 @@ def load_session(directory, prices, cutoff=None):
             output=tokens.get('completion_tokens') or 0, duration_ms=row.get('api_duration_ms'),
             effort=row.get('applied_effort'), model=row.get('model_id'), turn=row.get('turn_id'),
             status=row.get('status'), label=row.get('source_kind'), mode=row.get('execution_mode'),
-            day=turn_day.get(row.get('turn_id')) or (updated.date() if updated else None)))
+            day=turn_day.get(row.get('turn_id')) or (updated.date() if updated else None),
+            lifetime=row.get('cache_lifetime_secs')))
     parents = {}
     for meta_path in sorted((directory / 'subagents').glob('*/meta.json')):
         try:
@@ -299,7 +305,10 @@ def report_totals(threads, counts, prices):
 def break_cause(call, previous, gap, first_of_turn):
     if call.model != previous.model or call.effort != previous.effort:
         return 'model_or_effort_change'
-    if call.write_1h > 0 and previous.write_1h == 0:
+    if call.lifetime is not None and previous.lifetime is not None:
+        if call.lifetime != previous.lifetime:
+            return 'lifetime_change'
+    elif call.write_1h > 0 and previous.write_1h == 0:
         return 'lifetime_5m_to_1h'
     if call.mode is not None and previous.mode is not None and call.mode != previous.mode:
         return 'mode_switch'
@@ -331,13 +340,12 @@ def report_cache_breaks(threads, prices):
                             'break_rate': breaks / eligible if eligible else None, 'by_cause': dict(causes)}}
     counted = [t['session']['counters'] for t in threads.values() if t['session']['counters']]
     if counted:
-        merged = defaultdict(lambda: {'count': 0, 'uncached_tokens': 0})
+        by_cause, following = Counter(), Counter()
         for counters in counted:
-            for cause, value in counters.items():
-                entry = value if isinstance(value, dict) else {'count': value}
-                merged[cause]['count'] += entry.get('count') or 0
-                merged[cause]['uncached_tokens'] += entry.get('uncached_tokens') or 0
-        report['counters'] = {'sessions': len(counted), 'by_cause': dict(merged)}
+            for key, value in counters.items():
+                if isinstance(value, int):
+                    (following if key in COUNTER_FOLLOWING else by_cause)[key] += value
+        report['counters'] = {'sessions': len(counted), 'by_cause': dict(by_cause), 'following': dict(following)}
     return report
 
 

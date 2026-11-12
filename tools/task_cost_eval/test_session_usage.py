@@ -14,12 +14,12 @@ TS = '2026-01-10T10:00:00+00:00'
 
 
 def call(attempt, role='main', model=OPUS, prompt=1000, cached=0, write=0, write_1h=0, output=100, turn='t1',
-         duration=1000, effort='high', label=None, status='completed'):
+         duration=1000, effort='high', label=None, status='completed', lifetime=None):
     usage = {'prompt_tokens': prompt, 'cached_prompt_tokens': cached, 'cache_creation_prompt_tokens': write,
              'completion_tokens': output, 'reasoning_tokens': 0, 'total_tokens': prompt + output}
     if write_1h:
         usage['cache_creation_1h_prompt_tokens'] = write_1h
-    return {'attempt_id': attempt, 'task_id': None, 'turn_id': turn, 'request_id': None, 'role': role,
+    return {**({} if lifetime is None else {'cache_lifetime_secs': lifetime}), 'attempt_id': attempt, 'task_id': None, 'turn_id': turn, 'request_id': None, 'role': role,
             'model_id': model, 'endpoint': 'https://example.invalid', 'requested_effort': effort,
             'applied_effort': effort, 'status': status, 'usage': usage, 'usage_complete': True,
             'api_duration_ms': duration, 'cost_usd_ticks': None, 'cost_basis': 'unknown', 'source_kind': label}
@@ -184,7 +184,7 @@ class ReportTest(unittest.TestCase):
             events = [{'type': 'turn_started', 'turn_number': 2, 'ts': '2026-01-10T10:20:00.000Z'},
                       {'type': 'turn_started', 'turn_number': 3, 'ts': '2026-01-10T10:02:30.000Z'}]
             write_session(root, 'session-break-0001', rows, turns=turns, events=events,
-                          counters={'tools_changed': 2, 'lifetime_changed': {'count': 1, 'uncached_tokens': 900}})
+                          counters={'toolsChanged': 2, 'lifetimeChanged': 1, 'afterReminder': 3})
             prices, _, threads, _ = analyse(root)
             report = su.report_cache_breaks(threads, prices)
             heuristic = report['heuristic']
@@ -192,8 +192,23 @@ class ReportTest(unittest.TestCase):
             self.assertEqual({cause: entry['breaks'] for cause, entry in heuristic['by_cause'].items()},
                              {'model_or_effort_change': 1, 'lifetime_5m_to_1h': 1, 'mid_turn_unknown': 1,
                               'gap_over_5m': 1, 'turn_start': 1})
-            self.assertEqual(report['counters']['by_cause']['lifetime_changed'], {'count': 1, 'uncached_tokens': 900})
-            self.assertEqual(report['counters']['by_cause']['tools_changed']['count'], 2)
+            # The harness's own counters are reported as written: causes apart from the two
+            # "what the request followed" counts, which overlap the causes and must not be summed in.
+            self.assertEqual(report['counters']['by_cause'], {'toolsChanged': 2, 'lifetimeChanged': 1})
+            self.assertEqual(report['counters']['following'], {'afterReminder': 3})
+
+    def test_recorded_cache_lifetime_decides_the_lifetime_cause(self):
+        # A row's recorded lifetime is what the request asked for; the 1-hour write heuristic
+        # misses a move back to five minutes and fires on a first write that changed nothing.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rows = [call('a', lifetime=300), call('b', cached=0, lifetime=3600),
+                    call('c', cached=0, lifetime=3600, write_1h=500), call('d', cached=0, lifetime=300)]
+            write_session(root, 'session-lifetime-0001', rows)
+            prices, _, threads, _ = analyse(root)
+            causes = su.report_cache_breaks(threads, prices)['heuristic']['by_cause']
+            self.assertEqual({cause: entry['breaks'] for cause, entry in causes.items()},
+                             {'lifetime_change': 2, 'mid_turn_unknown': 1})
 
     def test_rounds_per_turn_and_poll_only_rounds_from_events(self):
         with tempfile.TemporaryDirectory() as directory:

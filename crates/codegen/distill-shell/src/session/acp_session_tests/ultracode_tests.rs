@@ -395,7 +395,7 @@ async fn actor_with_lean_and_full_tools() -> SessionActor {
 
 /// Under Auto, a switch between the lean and the full tool list changed the
 /// tools array and re-read the whole prompt uncached. With `b8_stable_tools`
-/// the array only grows: once the full list went out, UltraSave and UltraFast
+/// (the default) the array only grows: once the full list went out, UltraSave and UltraFast
 /// send exactly the same bytes, so the turn loop sees the same tools and keeps
 /// the cached prompt. A small or compacted prompt may shrink it again, and a
 /// session that started lean grows once, on its first move up.
@@ -405,10 +405,7 @@ async fn auto_never_shrinks_the_tools_array_once_the_full_list_went_out() {
     const LARGE: u64 = super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS;
     tokio::task::LocalSet::new()
         .run_until(async {
-            crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
-                b8_stable_tools: true,
-                ..distill_workspace::jev::JevFlags::harness_default()
-            });
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
             let actor = actor_with_lean_and_full_tools().await;
             actor.execution_mode.store_auto(Ultrasave);
             let arrays = auto_tool_arrays(
@@ -460,15 +457,18 @@ async fn auto_never_shrinks_the_tools_array_once_the_full_list_went_out() {
         .await;
 }
 
-/// With `b8_stable_tools` off (the default) every Auto pick re-projects
-/// exactly as before: the lean modes always send the lean list.
+/// With `[jev.ladder] b8_stable_tools = false` every Auto pick re-projects:
+/// the lean modes always send the lean list.
 #[tokio::test(flavor = "current_thread")]
 async fn without_stable_tools_auto_reprojects_on_every_pick() {
     use distill_tool_types::ExecutionMode::{Normal, Ultrafast, Ultrasave};
     const LARGE: u64 = super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS;
     tokio::task::LocalSet::new()
         .run_until(async {
-            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                b8_stable_tools: false,
+                ..distill_workspace::jev::JevFlags::harness_default()
+            });
             let actor = actor_with_lean_and_full_tools().await;
             actor.execution_mode.store_auto(Normal);
             let arrays = auto_tool_arrays(

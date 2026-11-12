@@ -1116,7 +1116,7 @@ mod tests {
 
     /// On a large prompt a switch can re-read it uncached, and going straight
     /// back to a mode the request just left pays that twice for nothing. With
-    /// `b8_review_hygiene` a left mode comes back only after a new failure,
+    /// `b8_review_hygiene` (the default) a left mode comes back only after a new failure,
     /// and a switch holds for three rounds; every round is still reviewed,
     /// and a small prompt keeps switching freely.
     #[tokio::test(flavor = "current_thread")]
@@ -1126,7 +1126,6 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
-                    b8_review_hygiene: true,
                     b8_up_only: false,
                     ..distill_workspace::jev::JevFlags::harness_default()
                 });
@@ -1160,15 +1159,16 @@ mod tests {
             .await;
     }
 
-    /// With the flag off (the default) and the free review (`b8_up_only` off)
-    /// a large prompt switches as freely as before, including straight back
-    /// to the mode just left.
+    /// With `[jev.ladder] b8_review_hygiene = false` and the free review
+    /// (`b8_up_only` off) a large prompt switches freely, including straight
+    /// back to the mode just left.
     #[tokio::test(flavor = "current_thread")]
     async fn without_review_hygiene_a_large_prompt_still_switches_freely() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
                     b8_up_only: false,
+                    b8_review_hygiene: false,
                     ..distill_workspace::jev::JevFlags::harness_default()
                 });
                 let actor = super::super::support::plain_actor().await;

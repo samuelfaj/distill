@@ -1473,13 +1473,15 @@ pub struct JevLadderConfig {
     pub d6_warm_batches: Option<bool>,
     pub b7_subagent_model: Option<bool>,
     pub b8_execution_mode: Option<bool>,
-    /// B8 under Auto: keep the full tools array once it went out (default off).
+    /// B8 under Auto: keep the full tools array once it went out (default on, not benchmarked;
+    /// `false` turns it off).
     pub b8_stable_tools: Option<bool>,
     /// B8 mid-turn review: no return to a left mode without a new failure, and a short hold
-    /// after a switch (default off).
+    /// after a switch (default on, not benchmarked; `false` turns it off).
     pub b8_review_hygiene: Option<bool>,
     /// F1: label a human message within ten minutes of the previous turn's end as reporting that
-    /// result wrong or incomplete; recorded only (default off).
+    /// result wrong or incomplete; recorded only (default on, not benchmarked; `false` turns it
+    /// off).
     pub f1_followup_label: Option<bool>,
     /// B8: contrastive mode criteria about the whole request (default on).
     pub b8_criteria_v2: Option<bool>,

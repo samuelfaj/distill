@@ -890,14 +890,14 @@ async fn turn_start_ids(actor: &SessionActor, request: &str, followup: f64) -> V
     asked.remove(0)
 }
 
-/// With `f1_followup_label` off (the default) a message right after a turn
-/// sends the same turn-start request as before the lever existed; with it
-/// on, that request also asks whether the message reports the previous
+/// With `f1_followup_label` off a message right after a turn sends the
+/// turn-start request without the lever's question; with it on (the
+/// default), that request also asks whether the message reports the previous
 /// result as wrong, and only the label is recorded. A message with no recent
 /// turn end is never asked.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn the_followup_question_rides_the_turn_start_request_only_when_opted_in() {
+async fn the_followup_question_rides_the_turn_start_request_only_when_on() {
     with_actor(|actor| async move {
         crate::jev::with_session_scope("f1-followup", async {
             crate::jev::set_test_flags(flags_with_f1(false));
@@ -907,7 +907,7 @@ async fn the_followup_question_rides_the_turn_start_request_only_when_opted_in()
             assert_eq!(off, today, "lever off: the request is unchanged");
             assert!(!off.iter().any(|id| id.starts_with("3:")), "{off:?}");
 
-            crate::jev::set_test_flags(flags_with_f1(true));
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
             let on = turn_start_ids(&actor, "the parser still fails", 0.9).await;
             let expected: Vec<String> = today
                 .iter()

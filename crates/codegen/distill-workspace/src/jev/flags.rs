@@ -201,14 +201,17 @@ impl JevFlags {
             d6_warm_batches: false,
             b7_subagent_model: true,
             b8_execution_mode: true,
-            // Opt-in until an Auto A/B shows rounds per task do not rise with
-            // the full tools array in lean modes.
-            b8_stable_tools: false,
-            // Opt-in until an Auto A/B shows no regression from the review rules.
-            b8_review_hygiene: false,
-            // Opt-in: it adds a question to the turn-start request and is only
-            // recorded, never acted on, until its labels are checked.
-            f1_followup_label: false,
+            // On by the owner's decision, not benchmarked: an Auto A/B has not
+            // measured rounds per task with the full tools array in lean modes.
+            // `[jev.ladder] b8_stable_tools = false` turns it off.
+            b8_stable_tools: true,
+            // On, not benchmarked against Auto without the review rules.
+            // `[jev.ladder] b8_review_hygiene = false` turns it off.
+            b8_review_hygiene: true,
+            // On, not benchmarked: it adds a question to the turn-start request
+            // and its label is only recorded, never acted on.
+            // `[jev.ladder] f1_followup_label = false` turns it off.
+            f1_followup_label: true,
             // On by the owner's choice before any replay, shadow or Auto A/B;
             // `false` restores the first wording and the free review.
             b8_criteria_v2: true,
@@ -788,14 +791,6 @@ mod tests {
             "utility explore children are opt-in until their reports are measured"
         );
         assert!(
-            !flags.lever_active(JevLever::B8StableTools),
-            "Auto's stable tools array is opt-in until an Auto A/B shows no regression"
-        );
-        assert!(
-            !flags.lever_active(JevLever::B8ReviewHygiene),
-            "Auto's review rules are opt-in until an Auto A/B shows no regression"
-        );
-        assert!(
             !flags.lever_active(JevLever::P2ReadShortlist),
             "P2 paid a Jev call per document read and narrowed none, so it is opt-in"
         );
@@ -803,6 +798,11 @@ mod tests {
             JevLever::B6DelegationHint,
             JevLever::C1PrematureStop,
             JevLever::C3CompletionCheck,
+            // On by the owner's decision without a benchmark; each has a
+            // `[jev.ladder]` key that turns it off.
+            JevLever::B8StableTools,
+            JevLever::B8ReviewHygiene,
+            JevLever::F1FollowupLabel,
         ] {
             assert!(flags.lever_active(lever), "{} must be on", lever.as_str());
         }
@@ -894,48 +894,53 @@ mod tests {
         assert!(flags.lever_active(JevLever::P2ReadShortlist));
     }
 
-    /// Auto's two opt-in rules need their own keys (an A/B arm turns one on alone) and mean
-    /// nothing without Auto itself, so turning Auto off turns them off.
+    /// Auto's two rules are on by default and each has its own off key (an
+    /// A/B arm turns one off alone); they mean nothing without Auto itself, so
+    /// turning Auto off turns them off.
     #[test]
-    fn autos_opt_in_rules_follow_their_keys_and_the_auto_lever() {
+    fn autos_rules_are_on_by_default_and_follow_their_keys_and_the_auto_lever() {
         let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
-        let tools = overlaid(JevLadderOverlay {
-            b8_stable_tools: Some(true),
+        let default = overlaid(JevLadderOverlay::default());
+        assert!(default.lever_active(JevLever::B8StableTools));
+        assert!(default.lever_active(JevLever::B8ReviewHygiene));
+        let tools_off = overlaid(JevLadderOverlay {
+            b8_stable_tools: Some(false),
             ..JevLadderOverlay::default()
         });
-        assert!(tools.lever_active(JevLever::B8StableTools));
-        assert!(!tools.lever_active(JevLever::B8ReviewHygiene));
-        let review = overlaid(JevLadderOverlay {
-            b8_review_hygiene: Some(true),
+        assert!(!tools_off.lever_active(JevLever::B8StableTools));
+        assert!(tools_off.lever_active(JevLever::B8ReviewHygiene));
+        let review_off = overlaid(JevLadderOverlay {
+            b8_review_hygiene: Some(false),
             ..JevLadderOverlay::default()
         });
-        assert!(review.lever_active(JevLever::B8ReviewHygiene));
-        assert!(!review.lever_active(JevLever::B8StableTools));
+        assert!(!review_off.lever_active(JevLever::B8ReviewHygiene));
+        assert!(review_off.lever_active(JevLever::B8StableTools));
         let auto_off = overlaid(JevLadderOverlay {
             b8_execution_mode: Some(false),
-            b8_stable_tools: Some(true),
-            b8_review_hygiene: Some(true),
             ..JevLadderOverlay::default()
         });
         assert!(!auto_off.lever_active(JevLever::B8StableTools));
         assert!(!auto_off.lever_active(JevLever::B8ReviewHygiene));
     }
 
-    /// The follow-up label adds a question to the turn-start request, so it
-    /// stays off until its key turns it on, and the master switch still wins.
+    /// The follow-up label is on by default, its key turns it off, and the
+    /// master switch still wins.
     #[test]
-    fn the_followup_label_is_opt_in_and_follows_the_master_switch() {
+    fn the_followup_label_is_on_by_default_and_follows_its_key_and_the_master_switch() {
         let overlaid =
             |enabled, ladder| JevFlags::harness_default().overlaid(enabled, None, None, ladder);
         assert!(
-            !overlaid(None, JevLadderOverlay::default()).lever_active(JevLever::F1FollowupLabel)
+            overlaid(None, JevLadderOverlay::default()).lever_active(JevLever::F1FollowupLabel)
         );
-        let on = JevLadderOverlay {
-            f1_followup_label: Some(true),
+        let off = JevLadderOverlay {
+            f1_followup_label: Some(false),
             ..JevLadderOverlay::default()
         };
-        assert!(overlaid(None, on).lever_active(JevLever::F1FollowupLabel));
-        assert!(!overlaid(Some(false), on).lever_active(JevLever::F1FollowupLabel));
+        assert!(!overlaid(None, off).lever_active(JevLever::F1FollowupLabel));
+        assert!(
+            !overlaid(Some(false), JevLadderOverlay::default())
+                .lever_active(JevLever::F1FollowupLabel)
+        );
         assert_eq!(JevLever::F1FollowupLabel.as_str(), "f1_followup_label");
     }
 

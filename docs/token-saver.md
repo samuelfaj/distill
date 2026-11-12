@@ -849,9 +849,6 @@ These levers stay off by default, each for a stated reason:
 |---|---|
 | `e_retention` | One question per chunk, and the questions never carried the chunk text; it runs only on a result utility selection left as it was |
 | `d6_warm_batches` | Rewriting sent history on a warm cache waits until `history_batch` and `history_reread` show it pays |
-| `b8_stable_tools` | Under Auto a lean pick keeps the full tool list once it went out, so a mode switch keeps the prompt cache; lean rounds then see the planning tools again, and rounds per task are not measured yet |
-| `b8_review_hygiene` | Auto's mid-turn review on a prompt of 16,384 tokens or more: no return to a left mode without a new failure, and a 3-round hold after a switch; needs an Auto old-against-new campaign first |
-| `f1_followup_label` | A message within 10 minutes of the last turn's end adds one question to the turn-start request (does it report that result as wrong or incomplete?); the label is only recorded, and its agreement with a grader is not measured yet |
 | `d2_big_output_retention` | Asked at ingest from a 1,200-character head, before the model read the output; it kept every output it judged |
 | `e_cheap_agent` | Utility `explore` reports are not yet measured against the worker's; a missed file costs a main follow-up read |
 | `b2_local_model` | Retired: nothing routes a main round to the utility any more, so it switches nothing |
@@ -863,6 +860,16 @@ These levers stay off by default, each for a stated reason:
 `c3_completion_check` are on by default. B6, C1 and C3 are quality checks, not
 savings. C1 and C3 share one request at the end of a main turn that used tools,
 and add at most one reminder per prompt.
+
+These levers are on by default and have not been benchmarked; each turns off
+with `false` under `[jev.ladder]`:
+
+| Lever | What it does |
+|---|---|
+| `b8_stable_tools` | Under Auto a lean pick keeps the full tool list once it went out, so a mode switch keeps the prompt cache; lean rounds then see the planning tools again, and rounds per task are not measured |
+| `b8_review_hygiene` | Auto's mid-turn review on a prompt of 16,384 tokens or more: no return to a left mode without a new failure, and a 3-round hold after a switch; no Auto old-against-new campaign has run |
+| `f1_followup_label` | A message within 10 minutes of the last turn's end adds one question to the turn-start request (does it report that result as wrong or incomplete?); the label is only recorded, and its agreement with a grader is not measured |
+
 Retired lever keys (`e_cheap_task`, `e_lane_choice`, `e_breaker`, …) are
 ignored with a warning.
 

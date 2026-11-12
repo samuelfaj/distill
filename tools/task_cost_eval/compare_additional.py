@@ -13,7 +13,8 @@ import time
 import uuid
 
 from .acp_driver import EXECUTION_MODES, OwnedTree
-from .compare_codex import ROOT, LOCAL_TOOLS, distill_accounting, distill_config, mode_activated, mode_flags
+from .compare_codex import (ROOT, LOCAL_TOOLS, allowed_models, distill_accounting, distill_config,
+                            mode_activated, mode_flags)
 from .evaluate import _sha256_file, _sha256_tree
 from .runner import _terminate_owned_group
 
@@ -158,7 +159,7 @@ def provider_usage(home, session):
     known = {'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5',
              'deepseek/deepseek-v4.1-flash', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'}
     complete = (bool(rows) and result.get('ledger_totals_match', False)
-                and not ledger.get('usageIsIncomplete', False)
+                and (not ledger.get('usageIsIncomplete', False) or result.get('incomplete_explained', False))
                 and len({r['attempt'] for r in rows}) == len(rows) == ledger.get('modelCalls')
                 and not result.get('unfolded_child_attempts')
                 and all(r.get('complete') and r.get('status') in ('completed', 'rejected') and r.get('owner')
@@ -292,12 +293,17 @@ def run(args):
         else:
             main_calls = [r for r in result.get('call_usage', []) if r.get('agent') == 'main' and r.get('role') in ('main', 'main_retry')]
             children = [r for r in result.get('call_usage', []) if r.get('agent') == 'worker' and r.get('role') != 'jev']
-            result['model_verified'] = bool(main_calls) and all(r['model'] == expected for r in main_calls)
+            # The free router has no single model id: any zero-cost `:free` model is the worker.
+            free_worker = worker == FREE_WORKER
+            root_models, child_models = allowed_models(
+                mode, expected, None if free_worker else worker.removeprefix('claude/'))
+
+            def on(models, row):
+                is_free = row['model'].endswith(':free') and row.get('cost_usd_ticks') == 0
+                return row['model'] in models or (free_worker and None in models and is_free)
+            result['model_verified'] = bool(main_calls) and all(on(root_models, r) for r in main_calls)
             result['worker_used'] = bool(children)
-            if worker == FREE_WORKER:
-                result['worker_verified'] = all(r['model'].endswith(':free') and r.get('cost_usd_ticks') == 0 for r in children)
-            else:
-                result['worker_verified'] = all(r['model'] == worker.removeprefix('claude/') for r in children)
+            result['worker_verified'] = all(on(child_models, r) for r in children)
             result['model_verified'] = result['model_verified'] and result['worker_verified']
     except Exception as error:
         result['error'] = f'{type(error).__name__}: {error}'

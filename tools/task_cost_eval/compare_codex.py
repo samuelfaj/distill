@@ -453,6 +453,12 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
                  'metadata_path': str(meta_path) if meta_path is not None else None}
         for identity in identities - folded:
             owners.setdefault(identity, []).append(owner)
+    # A request the provider refused for its serving-path field (a client error before inference)
+    # produced no billable tokens. Only as many refused attempts as the harness's own
+    # provider_tier_rejected policy rows are reconciled as zero usage; any other refused
+    # attempt without a receipt keeps its unknown usage.
+    refused = [a['attempt_id'] for a in attributions if a.get('status') == 'rejected' and not a.get('usage')]
+    zero_usage_attempts = frozenset(zero_usage_attempts) | frozenset(refused[:tier_refusals(ledger)])
     rows = []
     for attribution in attributions:
         usage = attribution.get('usage')
@@ -507,11 +513,31 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
                 and len(root_ids) == len(rows) == ledger['modelCalls']
                 and child_ids <= root_ids and all(r['complete'] and r.get('credits') is not None for r in rows))
     return {'accounting_complete': complete, 'calls': len(rows), 'call_usage': rows,
+            'incomplete_explained': explained_incomplete,
             'ledger_totals_match': totals_match, 'subscription_only': subscription_only,
             'unfolded_child_attempts': sorted(child_ids - root_ids),
             'input_tokens': ledger['inputTokens'], 'output_tokens': ledger['outputTokens'],
             'cached_input_tokens': ledger['cachedReadTokens'], 'reasoning_tokens': ledger['reasoningTokens'],
             'credit_estimate': sum(r['credits'] for r in rows) if complete else None}
+
+
+def tier_refusals(ledger):
+    """How many serving-path refusals the session's own policy rows record."""
+    outcomes = ledger.get('utilityOutcomes') or {}
+    return sum(int(((outcomes.get(f'policy:{mode}') or {}).get('decisions') or {}).get('provider_tier_rejected', 0))
+               for mode in ('ultrafast', 'ultrasave'))
+
+
+def allowed_models(mode, main, worker):
+    """(models a root round may run on, models a child may run on) for a Distill arm.
+
+    A lean mode may route a root round to the worker (tier routing, or the worker leading a
+    pinned UltraSave session), and UltraCode's independent reviewer is a child on the session
+    model. Auto may pick any of them. Every other model still fails the run.
+    """
+    root = {main, worker} if mode in ('auto', 'ultrasave', 'ultrafast') else {main}
+    child = {worker, main} if mode in ('auto', 'ultracode') else {worker}
+    return root, child
 
 
 def codex_accounting(events, stdout, provider='chatgpt'):
@@ -748,8 +774,9 @@ def run_cell(args):
     if args.variant == 'distill':
         main_calls = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'main' and r.get('role') in ('main', 'main_retry')]
         children = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'worker' and r.get('role') != 'jev']
-        model_verified = bool(main_calls) and all(r['model'] == expected for r in main_calls)
-        worker_verified = all(r['model'] == worker_model for r in children)
+        root_models, child_models = allowed_models(mode, expected, worker_model)
+        model_verified = bool(main_calls) and all(r['model'] in root_models for r in main_calls)
+        worker_verified = all(r['model'] in child_models for r in children)
     else:
         main_calls = [r for r in accounting.get('call_usage', []) if r.get('agent') == 'main' and r.get('output_tokens', 0) > 0]
         model_verified = bool(main_calls) and all(r['model'] == expected and r['effort'] == codex_effort for r in main_calls)

@@ -376,6 +376,59 @@ class StrictDistillAccountingTest(unittest.TestCase):
                 self.assertIsNone(result['credit_estimate'])
                 self.assertTrue(result['accounting_evidence']['reasons'])
 
+    def refusal_fixture(self, root, *, policy_rows):
+        endpoint = 'https://chatgpt.com/backend-api/codex/responses'
+        usage = {'prompt_tokens': 10, 'completion_tokens': 1,
+                 'cached_prompt_tokens': 0, 'reasoning_tokens': 0}
+        refused = {'attempt_id': 'sampler:x', 'request_id': 'resp_x', 'model_id': 'gpt-6-luna',
+                   'role': 'main', 'status': 'rejected', 'usage_complete': False, 'endpoint': endpoint}
+        main = {'attempt_id': 'sampler:a', 'request_id': 'resp_a', 'model_id': 'gpt-6-luna',
+                'role': 'main', 'status': 'completed', 'usage_complete': True,
+                'endpoint': endpoint, 'usage': usage}
+        session = {'attributions': [refused, main], 'modelCalls': 2, 'inputTokens': 10,
+                   'outputTokens': 1, 'cachedReadTokens': 0, 'reasoningTokens': 0,
+                   'usageIsIncomplete': True}
+        if policy_rows:
+            session['utilityOutcomes'] = {
+                'policy:ultrasave': {'decisions': {'provider_tier_rejected': policy_rows}}}
+        path = root / 'sessions/main'
+        path.mkdir(parents=True)
+        (path / 'events.jsonl').write_text(
+            json.dumps({'type': 'turn_started'}) + '\n' + json.dumps({'type': 'turn_ended'}) + '\n')
+        (path / 'updates.jsonl').write_text('')
+        (path / 'usage.json').write_text(json.dumps({'session': session}))
+
+    def test_a_request_refused_for_its_serving_path_is_zero_usage_only_with_the_harness_record(self):
+        # A provider refuses an unknown serving-path field before inference, so the attempt has no
+        # receipt and no cost. That is only safe to assume when the session's own policy row says
+        # the refusal happened; any other refused attempt without a receipt stays unknown.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.refusal_fixture(root, policy_rows=1)
+            result = distill_accounting(root, 'main')
+            self.assertTrue(result['accounting_complete'], result)
+            calls = {row['attempt']: row for row in result['call_usage']}
+            self.assertTrue(calls['sampler:x']['imputed_zero_usage'])
+            self.assertEqual(result['credit_estimate'], credits('gpt-6-luna', 10, 0, 1))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.refusal_fixture(root, policy_rows=0)
+            result = distill_accounting(root, 'main')
+            self.assertFalse(result['accounting_complete'])
+            self.assertIsNone(result['credit_estimate'])
+
+    def test_each_mode_may_only_run_on_the_models_its_design_names(self):
+        # The check exists so a run cannot quietly measure another model. A lean mode routes
+        # root rounds to the worker and UltraCode's reviewer is a child on the session model;
+        # nothing else is allowed, and Normal keeps the strict rule.
+        from .compare_codex import allowed_models
+        self.assertEqual(allowed_models('normal', 'main', 'worker'), ({'main'}, {'worker'}))
+        self.assertEqual(allowed_models(None, 'main', 'worker'), ({'main'}, {'worker'}))
+        for lean in ('ultrasave', 'ultrafast'):
+            self.assertEqual(allowed_models(lean, 'main', 'worker'), ({'main', 'worker'}, {'worker'}))
+        self.assertEqual(allowed_models('ultracode', 'main', 'worker'), ({'main'}, {'worker', 'main'}))
+        self.assertEqual(allowed_models('auto', 'main', 'worker'), ({'main', 'worker'}, {'worker', 'main'}))
+
     def test_call_owner_uses_deepest_ledger_and_durable_child_type_without_model_relabeling(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

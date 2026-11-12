@@ -148,6 +148,12 @@ pub(crate) struct JevTurnLedger {
     /// Escalations the current prompt turn made; the turn outcome record
     /// takes it at turn end.
     pub(crate) turn_escalations: u64,
+    /// Files whose read the current turn narrowed, so a later read of one
+    /// counts as a re-read after selection. Cleared when the turn drains.
+    pub(crate) narrowed_reads: std::collections::HashSet<std::path::PathBuf>,
+    /// Turn and round in which `read_not_narrowed` was last recorded, so it
+    /// is recorded at most once per round.
+    pub(crate) read_not_narrowed_round: Option<(String, u64)>,
 }
 
 /// What a request did after its final-check reminder.
@@ -475,6 +481,7 @@ impl JevTurnLedger {
         self.tier_route_slug = None;
         self.auto_mode = Default::default();
         self.escalation = Default::default();
+        self.narrowed_reads.clear();
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

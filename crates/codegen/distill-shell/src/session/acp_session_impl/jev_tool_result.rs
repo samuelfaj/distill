@@ -2523,6 +2523,7 @@ impl SessionActor {
             ToolOutput::ReadFile(ReadFileOutput::FileContent(file)) => {
                 !(narrowable_read(file, &text) && !negative_read_offset(tool_args))
                     && narrowable_range(file, tool_args, &text).is_none()
+                    || !self.reads_may_be_narrowed()
             }
             ToolOutput::SubagentCompleted(_)
             | ToolOutput::ApplyPatch(_)
@@ -2580,6 +2581,10 @@ impl SessionActor {
         match narrowed {
             Ok((replacement, chunks)) => {
                 count("compress", chunks, replacement.len());
+                if let ToolOutput::ReadFile(ReadFileOutput::FileContent(file)) = output {
+                    let path = file.absolute_path.clone();
+                    self.jev_ledger.borrow_mut().narrowed_reads.insert(path);
+                }
                 replacement
             }
             Err((decision, chunks)) => {
@@ -3229,6 +3234,7 @@ impl SessionActor {
             }
             _ => None,
         };
+        let read_window = read_window.filter(|_| self.reads_may_be_narrowed());
         let read_only_file = read_window.map(|(file, _)| file);
         let read_range = read_only_file.is_some_and(|file| file.offset.is_some() || file.limit.is_some());
         let cheap_eligible = tool != "search_tool"
@@ -3746,6 +3752,10 @@ impl SessionActor {
                         );
                         body = replacement;
                         compressed_by_utility = true;
+                        if let Some((file, _)) = read_window {
+                            let path = file.absolute_path.clone();
+                            self.jev_ledger.borrow_mut().narrowed_reads.insert(path);
+                        }
                     } else {
                         crate::jev::record_item(
                             Lever::ECheapCompress,
@@ -8417,6 +8427,122 @@ mod tests {
                 assert!(narrowed.contains("full output stored at "), "{narrowed}");
                 assert!(narrowed.len() < raw.len() / 2);
                 assert_eq!(failed, other, "unusable answers keep today's bytes");
+            })
+            .await;
+    }
+
+    /// UltraCode keeps everything it reads: on its v2 row a read that Normal
+    /// narrows enters history whole, in the session and in a child of an
+    /// UltraCode root, with one `read_not_narrowed` row per round; on the
+    /// today row it is narrowed again. A later read of a file narrowed earlier
+    /// in the turn is counted as a re-read after selection, in any mode.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn ultracode_v2_reads_are_never_narrowed_and_rereads_are_counted() {
+        use crate::session::acp_session::mode_policy::{set_v2_modes_for_tests, take_policy_rows};
+        use distill_tool_types::{ExecutionMode, V2Modes};
+        use distill_tools::types::output::ReadFileOutput;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                set_v2_modes_for_tests(Some(V2Modes::default().with(ExecutionMode::Ultracode)));
+                crate::jev::set_test_flags(telemetry_flags());
+                let server = utility_server(&["NONE", "NONE", "NONE"]).await;
+                let root = actor_with_utility(&server).await;
+                let mut child = actor_with_utility(&server).await;
+                child.startup_hints.is_subagent = true;
+                child.execution_mode = std::sync::Arc::new(root.execution_mode.inherited());
+                set_utility_review_choices(&["accept", "accept", "accept"]);
+                let raw = handlers_file(420).join("\n");
+                let read = |path: &str| {
+                    let mut file = file_read(path, &raw, 2_000, Some(200));
+                    file.limit = Some(420);
+                    ToolOutput::ReadFile(ReadFileOutput::FileContent(file))
+                };
+                let args = serde_json::json!({"target_file": "/repo/src/handlers.rs", "offset": 200, "limit": 420});
+                let post = async |actor: &SessionActor, output: &ToolOutput, call: &str| {
+                    actor.note_read_after_selection(output, raw.len());
+                    actor
+                        .jev_post_process_tool_result("read_file", "", &args, call, None, output, raw.clone())
+                        .await
+                };
+                let handlers = read("/repo/src/handlers.rs");
+                let other = read("/repo/src/other.rs");
+
+                // Normal narrows the first read; the second read of the same
+                // file is a re-read after selection.
+                let normal = crate::jev::with_session_scope_and_recorder(
+                    "reads-normal",
+                    Some(root.chat_state_handle.clone()),
+                    async {
+                        let narrowed = post(&root, &handlers, "normal-1").await;
+                        let _ = post(&root, &handlers, "normal-2").await;
+                        narrowed
+                    },
+                )
+                .await;
+
+                root.execution_mode.store(ExecutionMode::Ultracode);
+                let session = crate::jev::with_session_scope_and_recorder(
+                    "reads-ultracode",
+                    Some(root.chat_state_handle.clone()),
+                    async {
+                        let first = post(&root, &other, "code-1").await;
+                        let second = post(&root, &other, "code-2").await;
+                        crate::jev::begin_model_round();
+                        let third = post(&root, &other, "code-3").await;
+                        [first, second, third]
+                    },
+                )
+                .await;
+                let in_child = crate::jev::with_session_scope_and_recorder(
+                    "reads-ultracode-child",
+                    Some(child.chat_state_handle.clone()),
+                    post(&child, &other, "child-1"),
+                )
+                .await;
+
+                set_v2_modes_for_tests(Some(V2Modes::default()));
+                let today = crate::jev::with_session_scope_and_recorder(
+                    "reads-today",
+                    Some(child.chat_state_handle.clone()),
+                    post(&child, &other, "child-2"),
+                )
+                .await;
+                set_v2_modes_for_tests(None);
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_local_config();
+                crate::jev::clear_test_flags();
+
+                assert!(normal.len() < raw.len() / 2, "Normal narrows: {normal}");
+                for kept in session.iter().chain([&in_child]) {
+                    assert_eq!(kept, &raw, "UltraCode keeps the whole read");
+                }
+                assert!(today.len() < raw.len() / 2, "the today row narrows: {today}");
+                let not_narrowed =
+                    |session: &str| take_policy_rows(session).get("ultracode:read_not_narrowed").copied();
+                assert_eq!(not_narrowed("reads-ultracode"), Some(2), "once per round");
+                assert_eq!(not_narrowed("reads-ultracode-child"), Some(1));
+                assert_eq!(not_narrowed("reads-today"), None);
+                assert_eq!(not_narrowed("reads-normal"), None);
+
+                let rereads = |actor: &SessionActor| {
+                    let actor = actor.chat_state_handle.clone();
+                    async move {
+                        actor
+                            .try_get_session_usage()
+                            .await
+                            .unwrap()
+                            .utility_outcomes
+                            .get("read_reread")
+                            .map(|row| (row.decisions.clone(), row.bytes_in))
+                    }
+                };
+                assert_eq!(
+                    rereads(&root).await,
+                    Some((std::collections::BTreeMap::from([("after-selection".to_owned(), 1)]), raw.len() as u64)),
+                    "only the read of the file narrowed before counts"
+                );
+                assert_eq!(rereads(&child).await, None);
             })
             .await;
     }

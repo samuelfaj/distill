@@ -44,6 +44,54 @@ impl SessionActor {
         v2_modes().policy(self.execution_mode.load())
     }
 
+    /// Whether a file read may be narrowed before it enters history. A
+    /// subagent's mode is inherited from its root (`AtomicExecutionMode::inherited`),
+    /// so an UltraCode root's children keep whole reads too. A refusal is
+    /// recorded as `read_not_narrowed`, at most once per round.
+    pub(super) fn reads_may_be_narrowed(&self) -> bool {
+        if self.mode_policy().runtime.context.narrow_reads {
+            return true;
+        }
+        let (_, turn, round) = crate::jev::telemetry_context();
+        let round = Some((turn, round));
+        let first_in_round = {
+            let mut ledger = self.jev_ledger.borrow_mut();
+            let first = ledger.read_not_narrowed_round != round;
+            ledger.read_not_narrowed_round = round;
+            first
+        };
+        if first_in_round {
+            crate::jev::record_policy(self.execution_mode.load(), "read_not_narrowed");
+        }
+        false
+    }
+
+    /// Counts a read of a file whose earlier read in this turn was narrowed
+    /// (`read_reread` / `after-selection`, with the bytes read again), in
+    /// every mode: what narrowing costs in extra rounds.
+    pub(super) fn note_read_after_selection(
+        &self,
+        output: &distill_tools::types::output::ToolOutput,
+        bytes: usize,
+    ) {
+        use distill_tools::types::output::{ReadFileOutput, ToolOutput};
+        if let ToolOutput::ReadFile(ReadFileOutput::FileContent(file)) = output
+            && self
+                .jev_ledger
+                .borrow()
+                .narrowed_reads
+                .contains(&file.absolute_path)
+        {
+            crate::jev_cheap::record_utility_outcome(
+                "read_reread",
+                "after-selection",
+                0,
+                bytes,
+                bytes,
+            );
+        }
+    }
+
     /// Counts one main-loop round of the current prompt turn under `mode`.
     pub(super) fn note_mode_round(&self, mode: ExecutionMode) {
         let mut ledger = self.jev_ledger.borrow_mut();

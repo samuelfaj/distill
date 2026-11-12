@@ -454,6 +454,50 @@ The other rows are `climb:effort`, `climb:review`, `climb:normal_effort`,
 `review:refuted`, `review:not_refuted`, `review:unavailable` or
 `review:skip-prose`.
 
+## Changing a question or a threshold
+
+A new wording, a new question or a moved floor goes through three steps, in
+this order, and stops at the first it fails:
+
+1. **Replay.** Ask Jev again about recorded states with
+   `crates/codegen/distill-workspace/tests/jev_replay.rs` (ignored; it makes
+   paid calls). Run `JEV_REPLAY_MODE=twice` first: the same body asked twice
+   gives each lever's disagreement rate, the noise floor a change must beat.
+   `solo` compares a batched request with its packs asked alone, `models`
+   compares two Jev model ids, and `swap` compares the live wording with a
+   swap (`JEV_REPLAY_SWAP=swap.json`, `{lever, question, instructions?,
+   criteria?}`). The committed set holds hand-written states around the
+   benchmark fixtures only.
+2. **Shadow.** The candidate rides as a shadow pack in the request its lever
+   already sends, on the same state, and is recorded as a `jev_decision`
+   with a `shadow:` label. Nothing acts on it and it never sends a request
+   of its own. With `[jev] shadow_packs = true`, a session pinned to a mode
+   also gets the mode question in its request-start skill ranking, and
+   UltraCode's diff review carries two more notes (an unhandled edge case,
+   an invariant at risk) plus what alert and second-opinion floors of 0.55
+   and 0.50 would have flagged. This is a separate key from `shadow`, which
+   stops the levers that read it from acting at all.
+3. **Paired benchmark** against the same binary, with no extra regression.
+
+`tools/task_cost_eval/jev_calibrate.py` reads the decision events and
+outcome labels: a reliability table per lever, a threshold only when the
+rarer outcome has at least 30 events, and `--report scorecard`.
+
+The floors of the mode review, the final check (C1, C3) and the diff review
+(C4) are read per served Jev model id from
+`distill_workspace::jev::catalog::thresholds`. Its calibration table is empty,
+so every model id runs on the shipped defaults and is logged as
+`uncalibrated` in the decision log's reason. A calibrated entry names its fit
+window, its number of labelled decisions and the hash of the question it was
+fitted on; a test fails when that question's wording changes.
+
+To build a replay set from real use, set `[jev] capture_states = true`. Each
+Jev request's state and questions are appended to
+`<distill home>/jev/states/<date>-<pid>.jsonl`, readable by the owner only.
+That file holds user content (requests, diffs, final messages), so the key
+is off by default, the file never leaves the machine, and it is kept out of
+the session folders that trace uploads read. Never commit a captured set.
+
 ## The `jev_decide` tool
 
 The main model and its `general-purpose`, `explore`, `plan` and

@@ -580,3 +580,30 @@ python3 -B -m tools.task_cost_eval.session_usage --days 7 --report decisions \
   through a policy (`--soft-threshold` applied at turn boundaries,
   `--hard-cap`, `--post-size`, `--regrowth`) and prints tokens and
   cost-equivalents against the recorded baseline. It makes no API call.
+
+## Jev calibration and scorecard
+
+```sh
+python3 -B -m tools.task_cost_eval.jev_calibrate [--sessions-root DIR] [--labels FILE] \
+    [--report reliability|scorecard ...] [--lever NAME ...] [--model ID] [--question ID]
+```
+
+- Reads the `jev_decision` and `jev_no_answer` events of each session's
+  `events.jsonl` (and `turn_started` to count turns). It never calls a model
+  and prints no session id, path or text; Jev model ids and question hashes
+  are printed because a calibration entry needs them.
+- `--labels` is a JSON file of outcome labels, per decision
+  (`{"decisions": {"<session folder>": {"<seq>": true}}}`) or per session
+  (`{"sessions": {"<session folder>": false}}`). True means what the decision
+  predicted or acted on was real.
+- `reliability` (default): per lever, probability bins against the observed
+  rate. A threshold is proposed, with its fit window, n and question hashes,
+  only when the rarer outcome has at least 30 events; otherwise the lever is
+  `REFUSED` with the counts. A proposal changes nothing until it passes
+  replay, shadow and a paired benchmark ([Jev routing](jev-routing.md)).
+- `scorecard`: per lever asked, answered, applied, labelled precision of
+  applied decisions with a 95% interval, milliseconds awaited per turn, and
+  `DORMANT` when under 1% of at least 500 answers were applied. Until the
+  events carry an `applied` field, applied means any label other than the
+  deferral labels (`defer`, `keep`, `complete`, `review:ok`, …); `shadow:`
+  decisions are reported apart and never count as applied.

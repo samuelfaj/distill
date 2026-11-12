@@ -436,11 +436,11 @@ mod pinned_mode_model {
             .join("pinned_mode.json")
     }
 
-    /// The saving is a cheaper model doing the work, so UltraSave leads on the model its own
-    /// key names. A configured worker alone must not move a pinned session (the key is the
-    /// opt-in), and the utility model is a decision helper, never the lead.
+    /// The saving is a cheaper model doing the work, so UltraSave leads on the configured
+    /// worker unless its own key names another model or `session` (the off switch). The utility
+    /// model is a decision helper, never the lead.
     #[test]
-    fn ultrasave_leads_only_on_the_model_its_key_names_never_the_utility_model() {
+    fn ultrasave_leads_on_the_worker_or_its_key_never_the_utility_model() {
         let settings =
             |config: &str, mode| pinned_mode_settings(Some(&toml::from_str(config).unwrap()), mode);
         let no_cheaper = |config: &str| {
@@ -455,8 +455,20 @@ mod pinned_mode_model {
             Some("save-model")
         );
         let worker = "[models]\nworker = \"worker-model\"\n";
-        assert_eq!(settings(worker, ExecutionMode::Ultrasave).model, None);
-        assert!(no_cheaper(worker));
+        assert_eq!(
+            settings(worker, ExecutionMode::Ultrasave).model.as_deref(),
+            Some("worker-model"),
+            "a configured worker leads by default"
+        );
+        assert!(!no_cheaper(worker));
+        let session =
+            "[models]\nworker = \"worker-model\"\n[modes.ultrasave]\nmodel = \"session\"\n";
+        assert_eq!(
+            settings(session, ExecutionMode::Ultrasave).model,
+            None,
+            "`session` keeps the session's own model"
+        );
+        assert!(no_cheaper(session));
         let named_worker =
             "[models]\nworker = \"worker-model\"\n[modes.ultrasave]\nmodel = \"worker\"\n";
         assert_eq!(
@@ -658,6 +670,35 @@ mod pinned_mode_model {
                     // Switching to another pinned mode leaves this one first.
                     set_mode(&agent, &sid, "ultrafast", worker).await;
                     assert_eq!(session_model(&agent, &sid).await, THIRD);
+                    agent.remove_session(&sid);
+                });
+            },
+        );
+    }
+
+    /// A configured worker leads a pinned UltraSave session with no `[modes.ultrasave] model`
+    /// key, and leaving gives the model back; `model = "session"` keeps the session's model.
+    #[test]
+    #[serial_test::serial]
+    fn a_configured_worker_leads_pinned_ultrasave_unless_the_key_says_session() {
+        isolated(
+            "a_configured_worker_leads_pinned_ultrasave_unless_the_key_says_session",
+            || {
+                run_local_for_bridge_test(|| async {
+                    let fixture = NamedAccounts::new("http://127.0.0.1:1/v1");
+                    fixture.routing(crate::accounts::AutoStrategy::OrderedFirst, false);
+                    let agent = build_minimal_agent_for_tests();
+                    let (sid, _cwd) = session_on(&agent, &fixture, "gpt-6.1-sol").await;
+                    let worker = "[models]\nworker = \"gpt-6-luna\"\n";
+                    set_mode(&agent, &sid, "ultrasave", worker).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6-luna");
+                    set_mode(&agent, &sid, "normal", worker).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6.1-sol");
+
+                    let session = "[models]\nworker = \"gpt-6-luna\"\n\
+                                   [modes.ultrasave]\nmodel = \"session\"\n";
+                    set_mode(&agent, &sid, "ultrasave", session).await;
+                    assert_eq!(session_model(&agent, &sid).await, "gpt-6.1-sol");
                     agent.remove_session(&sid);
                 });
             },

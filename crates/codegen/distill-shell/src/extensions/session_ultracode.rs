@@ -195,7 +195,7 @@ pub(crate) fn persist_mode(
 const PINNED_MODE_FILE: &str = "pinned_mode.json";
 
 /// What a pinned mode changed in the session, so leaving it can undo that. Absent when the mode
-/// changed nothing, which is always the case with no `[modes.*]` key.
+/// changed nothing.
 #[derive(Default, Serialize, Deserialize)]
 struct PinnedModeState {
     /// The session's model before the mode's model; `auto` when account Auto routing chose it.

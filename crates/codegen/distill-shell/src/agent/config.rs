@@ -1058,7 +1058,7 @@ pub struct ModelsConfig {
     pub stream_tool_calls: Option<bool>,
 }
 /// What a session pinned to a mode runs on: `[modes.ultrasave]` and `[modes.ultrafast]`
-/// `model` and `provider_tier`. Unset keys change nothing.
+/// `model` and `provider_tier`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PinnedModeSettings {
     /// The model that leads the pinned session; `None` keeps the session model.
@@ -1067,9 +1067,11 @@ pub(crate) struct PinnedModeSettings {
     pub provider_tier: Option<distill_sampler::ProviderTier>,
 }
 /// Settings for a session pinned to `mode`, from the effective config `root`. UltraSave leads on
-/// `[modes.ultrasave] model`, where the literal `worker` names `[models] worker`; a configured
-/// worker alone changes nothing, and the utility model never leads. UltraFast keeps the session
-/// model unless `[modes.ultrafast] model` names one. No model is ranked automatically.
+/// `[modes.ultrasave] model`: unset or the literal `worker` names `[models] worker` (on by
+/// default, not benchmarked), the literal `session` keeps the session's own model (the off
+/// switch), and any other value is a model id. The utility model never leads. UltraFast keeps
+/// the session model unless `[modes.ultrafast] model` names one. No model is ranked
+/// automatically.
 pub(crate) fn pinned_mode_settings(
     root: Option<&toml::Value>,
     mode: distill_tool_types::ExecutionMode,
@@ -1085,8 +1087,12 @@ pub(crate) fn pinned_mode_settings(
     };
     let mode_key = |key: &str| text(root?.get("modes")?.get(section)?.get(key)?);
     let mut model = mode_key("model");
-    if mode == ExecutionMode::Ultrasave && model.as_deref() == Some("worker") {
-        model = (|| text(root?.get("models")?.get("worker")?))();
+    if mode == ExecutionMode::Ultrasave {
+        model = match model.as_deref() {
+            None | Some("worker") => (|| text(root?.get("models")?.get("worker")?))(),
+            Some("session") => None,
+            Some(_) => model,
+        };
     }
     let provider_tier = mode_key("provider_tier").and_then(|value| {
         match value.to_ascii_lowercase().as_str() {
@@ -1103,8 +1109,8 @@ pub(crate) fn pinned_mode_settings(
         provider_tier,
     }
 }
-/// UltraSave has no cheaper model to lead on: `[modes.ultrasave] model` is unset, or names a
-/// `worker` that is not configured, so a pinned UltraSave session keeps its own model.
+/// UltraSave has no cheaper model to lead on: no `[models] worker` is configured for an unset
+/// or `worker` key, or the key is `session`, so a pinned UltraSave session keeps its own model.
 pub(crate) fn ultrasave_has_no_cheaper_model(root: Option<&toml::Value>) -> bool {
     pinned_mode_settings(root, distill_tool_types::ExecutionMode::Ultrasave)
         .model
